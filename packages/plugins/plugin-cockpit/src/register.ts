@@ -151,15 +151,15 @@ function idList(value: unknown): string[] | null {
 }
 
 /** Iterates all companies: reads config, calls governCompany for trigger + pause path. */
-export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; already_paused: number; paused: number; errors: number; failed: number }> {
-  const results = { tried: 0, disabled: 0, idle: 0, already_paused: 0, paused: 0, errors: 0, failed: 0 };
+export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; paused: number; errors: number; failed: number; waiting: number; canary_started: number; resumed: number; cleared: number; stuck: number }> {
+  const results = { tried: 0, disabled: 0, idle: 0, paused: 0, errors: 0, failed: 0, waiting: 0, canary_started: 0, resumed: 0, cleared: 0, stuck: 0 };
   for (const row of await listRoles(env.ctx)) {
     results.tried += 1;
     try {
       const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
       const governorConfig = config?.governor as GovernorConfig | undefined;
       const result = await governCompany(env, row.companyId, governorConfig);
-      // `paused` counts agents paused this tick; an already-paused company adds none.
+      // `paused` counts agents paused this tick.
       if (result.outcome === "paused") results.paused += result.paused;
       else results[result.outcome] += 1;
       results.errors += result.errors;
