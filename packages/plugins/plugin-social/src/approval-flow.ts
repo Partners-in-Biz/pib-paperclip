@@ -232,6 +232,17 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
     const scope = scopeOfRow(post);
     const { rule: mediaRule, loadError: rubricLoadError } = await effectiveMediaRule(env, companyId, scope);
 
+    // Fail closed: if playbook load threw and verdict is pass, refuse (same shape as experiment-load failure)
+    if (rubricLoadError) {
+      return {
+        recorded: false,
+        verdict: "pass",
+        refused: true,
+        blockers: ["media rule could not be loaded"],
+        next: "The media rule could not be loaded. Reload and retry record-review-verdict to check again.",
+      };
+    }
+
     // Check if post is text-native based on tags
     const postOverrides = post.overrides as Record<string, unknown> | null | undefined;
     const postTags = (postOverrides?.tags as string[] | null | undefined) || [];
@@ -288,7 +299,7 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
 
     // Format blockers: include platform prefix when multiple platforms have blockers
     const blockersArray = Array.from(allBlockers.entries()).map(([text, platforms]) =>
-      platforms.length === 0 || platforms.split(", ").length === 1 ? text : `${text} (${platforms})`
+      platforms.split(", ").length === 1 ? text : `${text} (${platforms})`
     );
 
     const canPass = minScore >= 80 && blockersArray.length === 0;

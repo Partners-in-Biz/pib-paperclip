@@ -194,7 +194,7 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
     expect(result.score).toBeUndefined();
   });
 
-  it("playbook load failure -> default rule (advise) + warning", async () => {
+  it("no stored playbook -> default rule (advise), pass recorded", async () => {
     const w = seed({ playbookText: null });
     w.post.body = "What's new? Download to learn.";
     w.post.media = [];
@@ -202,6 +202,37 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
     expect(result.recorded).toBe(true);
     expect(result.warnings).toBeDefined();
     expect(result.warnings!.length).toBeGreaterThan(0);
+  });
+
+  it("playbook load failure -> refused (fail closed)", async () => {
+    const w = seed();
+    // Mock parseMediaRule to throw, simulating a playbook parse error
+    vi.spyOn(kit, "parseMediaRule").mockImplementation(() => {
+      throw new Error("Malformed media rule");
+    });
+    w.post.body = "What's new? Download to learn.";
+    w.post.media = [];
+    const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
+    expect(result.recorded).toBe(false);
+    expect(result.refused).toBe(true);
+    expect(result.blockers).toContain("media rule could not be loaded");
+    expect(result.next).toContain("retry");
+  });
+
+  it("playbook load failure with changes verdict -> recorded", async () => {
+    const w = seed();
+    // Mock parseMediaRule to throw
+    vi.spyOn(kit, "parseMediaRule").mockImplementation(() => {
+      throw new Error("Malformed media rule");
+    });
+    w.post.body = "Spring sale starts Friday.";
+    const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), {
+      agentId: "rev-1",
+      verdict: "changes",
+      notes: "Add more detail to the description.",
+    });
+    expect(result.recorded).toBe(true);
+    expect(result.verdict).toBe("changes");
   });
 
   it("TWO-SCOPE ISOLATION: scope B advise, scope A block with different enforcement", async () => {
@@ -295,5 +326,43 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
     const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
     expect(result.recorded).toBe(true);
     expect(result.warnings).toContain("No destinations to check");
+  });
+
+  it("X (Twitter) text-first: no media, no text-native tag, block mode -> recorded", async () => {
+    const spy = vi.spyOn(kit, "scoreCreative").mockImplementation(() => ({
+      score: 90,
+      pass: true,
+      parts: { hook: 0, clarity: 0, brand: 0, cta: 0, format: 0 },
+      blockers: [],
+      notes: [],
+      writing: [],
+    }));
+    const w = seed({
+      accounts: [{ id: "a-x", platform: "x", display_name: "My X Account" }],
+      destinations: [
+        { id: "d1", company_id: "co", post_id: "p1", account_id: "a-x", status: "pending", attempts: 0 },
+      ],
+    });
+    w.post.body = "Just shared my thoughts on the industry.";
+    w.post.media = [];
+    const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
+    expect(result.recorded).toBe(true);
+    expect(result.refused).not.toBe(true);
+    expect(result.score).toBe(90);
+    spy.mockRestore();
+  });
+
+  it("Instagram no media, block mode -> refused (contrast to X text-first)", async () => {
+    const w = seed({
+      accounts: [{ id: "a1", platform: "instagram", display_name: "My Instagram" }],
+      destinations: [
+        { id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 },
+      ],
+    });
+    w.post.body = "Check this out now.";
+    w.post.media = [];
+    const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
+    expect(result.refused).toBe(true);
+    expect(result.recorded).toBe(false);
   });
 });

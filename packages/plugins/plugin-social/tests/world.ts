@@ -27,6 +27,8 @@ export interface WorldOptions {
   config?: Record<string, unknown>;
   /** Post destinations (leave unset for default with one LinkedIn destination). */
   destinations?: Array<{ id: string; company_id: string; post_id: string; account_id: string; status: string; attempts: number }>;
+  /** Accounts to seed (leave unset for default with one LinkedIn account). */
+  accounts?: Array<Partial<AccountRow>>;
   /** Playbook text for the post's scope (including media-rule block if needed). */
   playbookText?: string | null;
   /** Experiment to seed in the growth store. */
@@ -51,7 +53,15 @@ export function approvalWorld(opts: WorldOptions = {}) {
     created_at: new Date(), updated_at: new Date(), experiment_id: null, experiment_arm: null, tags: [],
   };
   const destinations = opts.destinations ?? [{ id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 }];
-  const acct = account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null });
+  const accountsMap = new Map<string, AccountRow>();
+  if (opts.accounts) {
+    for (const acctOpts of opts.accounts) {
+      const id = acctOpts.id || "a1";
+      accountsMap.set(id, account(id, acctOpts));
+    }
+  } else {
+    accountsMap.set("a1", account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null }));
+  }
   let policy: Record<string, unknown> | null = opts.policy
     ? { scope_key: client ? `${client.kind}:${client.id}` : "own", require_reviewer: false, require_owner: true, require_client: false, link_expiry_days: 14, updated_by: "owner-1", updated_at: new Date(), ...opts.policy }
     : null;
@@ -139,8 +149,15 @@ export function approvalWorld(opts: WorldOptions = {}) {
         if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }];
         if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }] : [];
         if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return destinations.filter((d) => d.post_id === params[0]);
-        if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) return [acct];
-        if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) return [acct];
+        if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) {
+          const ids = JSON.parse(params[1] as string) as string[];
+          return ids.map((id) => accountsMap.get(id)).filter((a): a is AccountRow => a !== undefined);
+        }
+        if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) {
+          const id = String(params[0]);
+          const acct = accountsMap.get(id);
+          return acct ? [acct] : [];
+        }
         if (sql.includes(`FROM ${T("approval_policies")}`)) return policy && policy.scope_key === params[1] ? [policy] : [];
         if (sql.includes("SELECT COALESCE(MAX(round), 0)")) {
           const rounds = outcomes.filter((o) => o.post_id === params[0] && o.stage === params[2]).map((o) => Number(o.round));
