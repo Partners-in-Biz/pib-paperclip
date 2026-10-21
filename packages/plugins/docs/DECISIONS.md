@@ -2,6 +2,10 @@
 
 Newest first. One entry per decision. Names of secrets only, never values.
 
+## 2026-10-20 D-001 addendum: how agents use the Drive tools (PAR-4067, epic PAR-3887)
+
+Agents call `drive_folder_resolve`, then `drive_folder_ensure` on `not_found`, then `drive_file_save`, and quote the URL (`plugin-crm/src/skills-references.ts`, `references/drive.md` of `pib-crm-records`). The code reads the CRM secret `driveBrokerToken` and the company's `drive.sharedDriveId`; agents never pass a Shared Drive ID. On `drive_not_bound` they report it once and stop. This replaces the board-made `pib-drive-saving` skill (text kept in `docs/archive/pib-drive-saving.md`; rollback = re-attach it). Every company's agents get the new text on the next deploy.
+
 ## 2026-10-18 D-001 Drive identity and folder registry for project folders (PAR-3727, plan PAR-3718)
 
 **Decided by Peet (PAR-3718, round 4):** the Drive identity is a service identity with write access to the PIB Shared Drive only, full `drive` scope. The single registry is the partnersinbiz-web `lib/workspace-folders` model plus its Google broker. The cockpit calls it through an authenticated endpoint. A cockpit `drive_links` table is the fallback only if the broker is unreachable from the cockpit worker.

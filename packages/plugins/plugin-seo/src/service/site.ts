@@ -4,6 +4,7 @@
  * changes through the PiB Connector, and the change policy.
  */
 import { sameSite } from "@partnersinbiz/pib-plugin-kit/client-sites";
+import { resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
 import { plural } from "../engine/plain.js";
 import { PLUGIN_ID } from "../namespace.js";
 import * as db from "../db.js";
@@ -120,11 +121,30 @@ export async function findClientProject(env: Env, sprint: db.Sprint): Promise<st
   return hits.length === 1 ? String((hits[0] as unknown as { id: string }).id) : null;
 }
 
+/**
+ * The client's project via the kit's resolver (checked against the CRM's client-project links),
+ * or falls back to findClientProject for name-matching. Returns null if the client has no
+ * linked or matching project.
+ */
+export async function findSeoClientProject(env: Env, sprint: db.Sprint): Promise<string | null> {
+  if (!sprint.clientRef || !sprint.clientKind) return findClientProject(env, sprint);
+  try {
+    const scope = { kind: sprint.clientKind, id: sprint.clientRef };
+    const choice = await resolveClientProjectId(env.ctx, sprint.companyId, scope, { kind: "seo" });
+    if (choice.source === "client-link" && choice.projectId) {
+      return choice.projectId;
+    }
+  } catch {
+    // Fall through to name-match fallback on any error
+  }
+  return findClientProject(env, sprint);
+}
+
 /** Link the client's project to a client sprint that has none yet (best effort). Returns the fresh sprint. */
 export async function autoLinkClientProject(env: Env, sprint: db.Sprint): Promise<db.Sprint> {
   if (sprint.clientProjectId || !sprint.clientRef) return sprint;
   try {
-    const id = await findClientProject(env, sprint);
+    const id = await findSeoClientProject(env, sprint);
     if (!id) return sprint;
     await db.updateSprint(env.ctx.db, sprint.companyId, sprint.id, { client_project_id: id, project_id: id });
     return { ...sprint, clientProjectId: id, projectId: id };

@@ -5,8 +5,11 @@
  * baseline, and the gate the deploy asks ("no skill version ships if a golden
  * scenario regressed"). The grader and the gate rule are tested in eval-model.spec.ts.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { evalMarker, evalPrompt, scenarioHash, skillContentHash, type Scenario } from "../src/eval-model.js";
+import { evalMarker, evalPrompt, loadEvalTemplate, parseResultsFile, scenarioHash, skillContentHash, type Scenario } from "../src/eval-model.js";
 import { scenariosFor } from "../src/eval-scenarios.js";
 import { candidateSlugFor, listResults, markBaseline, ownSkills } from "../src/evals.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -196,6 +199,18 @@ d("skill evals (Postgres)", () => {
       expect(out.data.skills.find((s: { skill: string }) => s.skill === SKILL).hash).toBe(info.hash);
       expect(await listResults(w.ctx, A, SKILL)).toEqual([]);
     });
+
+    it("parses evals/agents/results.json (enforce off, minPassRate 0.8)", async () => {
+      // Parse the committed results file from the real location
+      const resultsPath = join(fileURLToPath(new URL(".", import.meta.url)), "../evals/agents/results.json");
+      const content = readFileSync(resultsPath, "utf8");
+      const raw = JSON.parse(content);
+      const parsed = parseResultsFile(raw);
+      expect(parsed.version).toBe(1);
+      expect(parsed.enforce).toBe(false);
+      expect(parsed.minPassRate).toBe(0.8);
+      expect(parsed.skills).toEqual({});
+    });
   });
 
   describe("record", () => {
@@ -311,6 +326,65 @@ d("skill evals (Postgres)", () => {
       const item = { scenarioId: scenarios[0]!.id, issueId: id };
       expect((await call(w, { action: "record", skill: SKILL, mode: "candidate", items: [item] })).error).toContain("needs candidateHash");
       expect((await call(w, { action: "record", skill: SKILL, mode: "candidate", candidateHash: "nope", items: [item] })).error).toContain("needs candidateHash");
+    });
+
+    it("template: rejects a 64-hex hash with a clear message about the 16-hex requirement", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const fullHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", templateHash: fullHash, items: [item] });
+      expect(result.error).toContain("16 hexadecimal characters");
+      expect(result.error).toContain("not 64");
+      expect(result.error).toContain("16-hex hash from skill-eval plan");
+    });
+
+    it("template: rejects a non-16-hex, non-64-hex hash", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", templateHash: "nope", items: [item] });
+      expect(result.error).toContain("16 hexadecimal characters");
+    });
+
+    it("template: rejects an unknown template key", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "nonexistent", templateHash: "0123456789abcdef", items: [item] });
+      expect(result.error).toContain("no eval file for template");
+    });
+
+    it("template: needs templateKey and templateHash", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const noKey = await call(w, { action: "record", skill: SKILL, mode: "template", templateHash: "0123456789abcdef", items: [item] });
+      expect(noKey.error).toContain("needs templateKey");
+      const noHash = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", items: [item] });
+      expect(noHash.error).toContain("needs templateHash");
+    });
+
+    it("template: rejects unknown hash (valid key, harness on real skill not template copy)", async () => {
+      const w = await make();
+      // Mock loadEvalTemplate to return a valid template (would need real scenarios)
+      const spy = vi.spyOn(await import("../src/eval-model.js"), "loadEvalTemplate");
+      spy.mockReturnValue({
+        skill: SKILL,
+        scenarios: [scenarios[0]!],
+      } as any);
+      try {
+        // Create harness run on the real skill (title "Skill test: pib-operator"), not the template copy
+        // This will cause recordOne to refuse it because the skill name doesn't match the template copy name
+        const id = harness(w, scenarios[0]!, right(scenarios[0]!), { title: "Skill test: pib-operator" });
+        const item = { scenarioId: scenarios[0]!.id, issueId: id };
+        // Record with template mode: valid key, unknown hash (no test copy was run for this hash)
+        const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test-template", templateHash: "fedcba9876543210", items: [item] });
+        expect(result.error).toContain("Unknown template hash");
+        expect(result.error).toContain("fedcba9876543210");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("when every scenario has a result it hands back the entry for evals/results.json", async () => {

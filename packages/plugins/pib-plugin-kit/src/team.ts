@@ -29,6 +29,7 @@ export type TeamRoleKey =
   | "inbound-qualifier"
   | "crm-data-steward"
   | "deal-desk"
+  | "revenue-lead"
   | "seo-specialist"
   | "social"
   | "bookkeeper"
@@ -193,6 +194,20 @@ export const TEAM_ROLES: TeamRole[] = [
     "deal-desk",
     [teamSkillKey(PIB_PLUGINS.billing, "invoice-draft")],
   ),
+  {
+    key: "revenue-lead",
+    pluginKey: PIB_PLUGINS.crm,
+    module: "crm",
+    title: "Revenue Lead",
+    summary: "Owns revenue",
+    required: false,
+    coveredBy: "account-manager",
+    setupItemKey: "revenue-lead",
+    skills: withOs(crmSkill("crm-records"), crmSkill("sales-lead")),
+    actions: pluginActions("crm", "crm.resync-agent", { role: "revenue-lead" }),
+    pagePath: "/crm",
+    runProfile: RUN_PROFILES["revenue-lead"],
+  },
   {
     key: "seo-specialist",
     pluginKey: PIB_PLUGINS.seo,

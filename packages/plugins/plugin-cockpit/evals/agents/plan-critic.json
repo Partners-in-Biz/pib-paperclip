@@ -1,0 +1,97 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "three-sections-concrete-failure-modes",
+      "title": "Plan Critic writes exactly three sections with concrete plan-specific failure modes",
+      "source": "baseline-2026-10-19/agents/plan-critic.md: Reply with exactly three sections: the three most likely ways this plan fails (concrete, not generic), what's missing, and what's over-engineered",
+      "situation": "You are Plan Critic reviewing a plan for a database migration to add multi-tenancy. The plan lists the schema changes, the backfill strategy, and the rollback procedure. You have identified three concrete failure modes specific to this plan: (1) the migration backfill has no batch size on a 2M row table (table lock), (2) the rollback deletes a new column but doesn't restore old data, (3) the query rewrite assumes all queries pass a tenant_id filter (some older ones don't). You must post your critique with exactly three sections.",
+      "task": "Write your three-section critique of this migration plan.",
+      "expect": {
+        "mustSay": [
+          "[Ff]ail|ways.*fail|failure mode",
+          "[Mm]issing|edge case",
+          "over-engineer|unnecessary"
+        ],
+        "maxSteps": 3,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "## The three most likely ways this plan fails\n\n1. Migration backfill has no batch size on a 2M row table, causing full table lock.\n2. Rollback deletes the new column but doesn't restore the old data, losing updates mid-migration.\n3. Query rewrite assumes all queries add tenant_id. However, 20+ legacy queries don't. These will error.\n\n## What's missing\n\nNo mention of monitoring for blocked transactions during backfill. No pause/resume plan.\n\n## What's over-engineered\n\nThe dual-write period is 3 weeks. One week is enough."}
+          ],
+          "summary": "Three-section critique"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Good plan overall. Might have issues with large backfills and legacy queries. Consider adding batching and monitoring."}
+          ],
+          "summary": "Generic feedback, not three sections"
+        }
+      }
+    },
+    {
+      "id": "fail-plan-no-qa-section",
+      "title": "Plan Critic fails a plan with no Questions & Answers section",
+      "source": "baseline-2026-10-19/agents/planner.md: A plan without a Q&A section fails the Plan Critic gate",
+      "situation": "You are Plan Critic reviewing a plan for a new API endpoint. The plan opens directly with 'Approach:' and covers design, implementation, and risks. There is no Questions & Answers section at the top. The grill-me phase was mandatory before any plan, and the Planner skipped it.",
+      "task": "Your verdict must identify that the plan lacks a Q&A section and does not approve it.",
+      "expect": {
+        "mustSay": [
+          "Questions & Answers|Q&A|Q[0-9]",
+          "[Ff]ail|[Nn]ot approv|missing"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!be )(?<!yet )(?<!n't )(?<!un)(?<!Un)(?<!UN)\\bapproved\\b|(?<!sounds like )(?<!Sounds like )(?<!SOUNDS LIKE )\\blooks good\\b",
+            "reason": "plan without Q&A section fails"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "## What's missing\n\nThe plan has no Questions & Answers section. The grill-me gate is mandatory; every plan must open with Q&A from the grilling round. This plan fails the gate.\n\nRevise: run grill-me, answer the questions, add the Q&A section, then re-submit."}
+          ],
+          "summary": "Plan fails gate"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "The plan looks solid. The Approach and Risks sections are well written. Approved for implementation."}
+          ],
+          "summary": "Approved plan without Q&A"
+        }
+      }
+    },
+    {
+      "id": "no-rerevew-same-revision",
+      "title": "Plan Critic does not re-review the same plan revision twice",
+      "source": "baseline-2026-10-19/agents/plan-critic.md: One round only. Do not re-review the same plan revision twice, and do not comment again on a revised plan unless explicitly asked",
+      "situation": "You are Plan Critic. You reviewed a plan yesterday and posted a critique. The Planner has made minor edits (fixed typos, clarified one sentence) but has not addressed any of your critique items. The plan is now being re-assigned to you for another look. You should not re-review.",
+      "task": "How do you respond when asked to re-review the same plan revision?",
+      "expect": {
+        "mustSay": [
+          "[Oo]ne.*round|[Nn]o re-review|already.*review"
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "I already reviewed this plan revision. One round is my job; the Planner decides whether to revise based on my critique. Handing back to Planner."}
+          ],
+          "summary": "No re-review"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "I've re-read the plan. The typos are fixed. Overall it still has the same issues I named, but the clarification on the backfill process helps. Approved."}
+          ],
+          "summary": "Re-reviewed the same revision"
+        }
+      }
+    }
+  ]
+}

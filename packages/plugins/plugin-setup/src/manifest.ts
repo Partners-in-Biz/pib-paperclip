@@ -1,7 +1,8 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
+import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.5.6";
+export const VERSION = "0.5.10";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -102,6 +103,7 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "query", key: "companyId" },
     },
   ],
+  tools: TEMPLATE_TOOLS,
   ui: {
     slots: [
       {

@@ -16,6 +16,7 @@ import {
   listCompanyAgents,
   listCrmClients,
   pluginUiBase,
+  registerClientProjectWatch,
   registerCrmProjection,
   registerCrmSiteProjection,
   registerHireWatch,
@@ -172,6 +173,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
     // Client websites (platform, SEO plugin, Connector status) for the wordpress site mode; never the Connector key.
     registerCrmSiteProjection(ctx, NAMESPACE);
+    // A client's issues open in the client's own project (the CRM's link), else the managed SEO project.
+    registerClientProjectWatch(ctx);
     // Tell the CRM which sites need the client's sign-off right away (the 5-minute job repeats it).
     void syncSignoff(e).catch(() => undefined);
     ctx.logger.info("SEO plugin ready");

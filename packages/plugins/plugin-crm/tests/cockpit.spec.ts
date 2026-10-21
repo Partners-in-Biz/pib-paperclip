@@ -196,6 +196,7 @@ describe("CRM cockpit snapshot", () => {
       { role: "inbound-qualifier", agentId: null, status: null },
       { role: "crm-data-steward", agentId: null, status: null },
       { role: "deal-desk", agentId: null, status: null },
+      { role: "revenue-lead", agentId: null, status: null },
     ]);
   });
 
@@ -210,6 +211,7 @@ describe("CRM cockpit snapshot", () => {
       { role: "inbound-qualifier", agentId: null, status: null },
       { role: "crm-data-steward", agentId: null, status: null },
       { role: "deal-desk", agentId: null, status: null },
+      { role: "revenue-lead", agentId: null, status: null },
     ]);
   });
 
