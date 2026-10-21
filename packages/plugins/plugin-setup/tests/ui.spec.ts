@@ -148,7 +148,7 @@ describe("setup UI render", () => {
   });
 
   it("shows the widget until everything required is done, with the one count", () => {
-    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null };
+    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null, drive: null };
     const views = resolveModuleViews({ modules: load.modules, installed, live: { "partnersinbiz.crm": { ok: true, status: crm } }, stored: {} });
     const html = renderToStaticMarkup(createElement(SetupProgressCard, { data: { load, views }, linkFor }));
     expect(html).toContain("Setup progress");

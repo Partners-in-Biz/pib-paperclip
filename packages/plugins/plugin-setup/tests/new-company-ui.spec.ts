@@ -70,6 +70,7 @@ const props = (patch: Partial<NewCompanyViewProps> = {}): NewCompanyViewProps =>
   onPreview: () => undefined,
   previewBusy: null,
   canApprove: true,
+  drive: null,
   ...patch,
 });
 
