@@ -6,7 +6,7 @@
  * `blocker` findings stop a proposal from going to review (a platform would reject it, or the client's brand forbids it).
  * `warn` findings go to the Reviewer with the proposal.
  */
-import { AD_POLICY_CLAIMS } from "@partnersinbiz/pib-plugin-kit";
+import { AD_POLICY_CLAIMS, scoreCreative, type CreativePlatform, type CreativeRubricResult } from "@partnersinbiz/pib-plugin-kit";
 import type { AdPlatform } from "./platforms.js";
 
 export interface CreativeInput {
@@ -33,6 +33,7 @@ export interface CreativeResult {
   blockers: number;
   warnings: number;
   findings: CreativeFinding[];
+  rubric?: CreativeRubricResult;
 }
 
 const LIMITS: Record<AdPlatform, Array<{ field: keyof CreativeInput; max: number; hard: boolean; label: string }>> = {
@@ -113,6 +114,68 @@ export function checkCreative(input: CreativeInput, options: { bannedWords?: str
   }
   const blockers = findings.filter((f) => f.level === "blocker").length;
   return { ok: blockers === 0, blockers, warnings: findings.length - blockers, findings };
+}
+
+/**
+ * Build rubric input from ad creative fields and call scoreCreative.
+ * Merges rubric blockers into the findings, deduping banned_word blockers, and updates ok/blockers/warnings.
+ */
+export function checkCreativeWithRubric(input: CreativeInput, options: { bannedWords?: string[] } = {}): CreativeResult {
+  const baseResult = checkCreative(input, options);
+
+  // Build rubric input
+  const platform = input.platform === "google" ? ("web" as CreativePlatform) : ("facebook" as CreativePlatform);
+  const textParts = [
+    input.headline ?? "",
+    input.primaryText ?? "",
+    input.description ?? "",
+    input.callToAction ?? "",
+  ].filter((s) => s.trim());
+  const text = textParts.join("\n");
+
+  const rubricResult = scoreCreative({
+    platform,
+    text,
+    landingUrl: input.landingUrl ?? undefined,
+    bannedWords: options.bannedWords ?? [],
+  });
+
+  // Merge rubric blockers into findings, deduping banned_word blockers
+  const existingBannedWords = new Set(
+    baseResult.findings
+      .filter((f) => f.rule === "banned_word")
+      .map((f) => {
+        const match = f.text.match(/Uses "([^"]+)"/);
+        return match ? match[1] : "";
+      })
+      .filter(Boolean),
+  );
+
+  const newFindings = [...baseResult.findings];
+  for (const blocker of rubricResult.blockers) {
+    if (blocker.rule === "banned_word") {
+      const match = blocker.text.match(/Uses "([^"]+)"/);
+      const word = match ? match[1] : "";
+      if (existingBannedWords.has(word)) continue; // Dedupe
+    }
+    newFindings.push({
+      level: "blocker",
+      rule: blocker.rule,
+      where: "copy",
+      text: blocker.text,
+    });
+  }
+
+  const blockers = newFindings.filter((f) => f.level === "blocker").length;
+  const warnings = newFindings.length - blockers;
+
+  return {
+    ok: blockers === 0,
+    blockers,
+    warnings,
+    findings: newFindings,
+    rubric: rubricResult,
+  };
 }
 
 /** The creative fields the proposal carries, or null when it carries none (a budget change has no copy). */
