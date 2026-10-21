@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.7.0 everywhere", () => {
-    expect(manifest.version).toBe("0.7.6");
-    expect(PLUGIN_VERSION).toBe("0.7.6");
-    expect(pkg.version).toBe("0.7.6");
+    expect(manifest.version).toBe("0.7.7");
+    expect(PLUGIN_VERSION).toBe("0.7.7");
+    expect(pkg.version).toBe("0.7.7");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {
@@ -42,6 +42,7 @@ describe("manifest 0.6", () => {
       ["redeliver-mail", "*/5 * * * *"],
       ["poll-messaging", "*/10 * * * *"],
       ["setup-status", "19 * * * *"],
+      ["measure-experiments", "37 3 * * *"],
     ]);
     expect(manifest.projects).toEqual([expect.objectContaining({ projectKey: "campaigns", displayName: "Campaigns" })]);
     // No new core tables are read: client project routing and approvals need none.

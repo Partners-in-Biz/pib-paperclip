@@ -85,7 +85,7 @@ Campaigns learns from its own A/B steps. The unit is a campaign step with an A a
 1. \`performance-review\`: running and proposed experiments, pending playbook changes, hypothesis types ranked by UCB.
 2. \`get-playbook\` before you write or change a campaign. The playbook is the scope's rules in markdown.
 3. \`propose-experiment\`: one variable, arms \`control\` (A, what we do now) and \`variant\` (B, the one change). Max 3 running per scope. On \`safe\` a person approves with \`approve-experiment\` or declines with \`reject-experiment\`; on \`reviewed\` the Reviewer may decide what stays internal; on \`full\` the agent decides.
-4. The daily \`measure-experiments\` job judges each step once both versions have 30 sends: win at +15% on the median with 60% of batches ahead, else loss, no change or inconclusive. 21 days after the start it closes as inconclusive.
+4. Tie the campaign to the experiment: pass \`experimentId\` on \`create-campaign\` or \`update-campaign\` (same client). The daily \`measure-experiments\` job scores batches of 5 sends per version, 7 days after each send, once the experiment's \`minPerArm\` batches per version exist: win at +15% on the median with 60% of batches ahead, else loss, no change or inconclusive. 21 days after the start it closes as inconclusive.
 5. \`propose-playbook-change\` with a reason, then \`decide-playbook-change\` to keep (new version) or discard. \`list-experiments\` shows arms and verdicts.
 
 ## Rules
