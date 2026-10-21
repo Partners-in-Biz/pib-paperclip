@@ -11,8 +11,8 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
-import { skillVersion } from "@partnersinbiz/pib-plugin-kit";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
+import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
 import { routineFailedCheck } from "@partnersinbiz/pib-plugin-kit";
@@ -263,8 +263,8 @@ describe("the Operator's references (Wave 3)", () => {
       expect(operator.files!.some((f) => f.path === path), path).toBe(true);
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
-    // The Reviewer stays one file; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
-    expect(skill("pib-reviewer")).not.toHaveProperty("files");
+    // The Reviewer carries only the creative bar; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
+    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH]);
     expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
     expect(companySkillBody()).toContain("`references/owner-checks.md`");
@@ -276,6 +276,25 @@ describe("the Operator's references (Wave 3)", () => {
     expect(gates).toContain("open an issue for the Acceptance agent");
     expect(gates).toContain("The Cockpit has no Run button");
   });
+
+  it("the Reviewer's creative-bar file and the quality-gates reference carry the weights the kit scores by", () => {
+    const reviewer = skill("pib-reviewer") as { markdown: string; files: Array<{ path: string; content: string }> };
+    const bar = reviewer.files.find((f) => f.path === "references/creative-bar.md")!.content;
+    expect(reviewer.markdown).toContain("`references/creative-bar.md`");
+    const gates = operator.files!.find((f) => f.path === "references/quality-gates.md")!.content;
+    expect(gates).toContain("## The creative bar");
+    expect(bar).toContain("no media at all");
+    for (const doc of [bar, gates]) checkBar(doc);
+  });
+
+  function checkBar(gates: string) {
+    for (const [part, points] of Object.entries(CREATIVE_RUBRIC_WEIGHTS)) {
+      expect(gates, part).toMatch(new RegExp(`\\| ${part} \\| ${points} \\|`, "i"));
+    }
+    expect(gates).toContain(`${Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0)} points at most`);
+    expect(gates).toContain(`passes at ${CREATIVE_PASS_SCORE} or more`);
+    for (const rule of ["bans", "approved wording", "media rule", "alt text"]) expect(gates, rule).toContain(rule);
+  }
 
   it("a change to a reference changes the skill's version, so every company's copy is brought up to date", () => {
     const base = skillVersion(operator as never);

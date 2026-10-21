@@ -142,6 +142,19 @@ const instanceConfigSchema: JsonSchema = {
       description: "The mailto or https URI for VAPID JWT signing. Defaults to mailto:cockpit@partnersinbiz.online.",
       default: "mailto:cockpit@partnersinbiz.online",
     },
+    edgeWatch: {
+      type: "object",
+      title: "Edge watch (optional)",
+      description: "Announces when new blocker edges (issue relations) are created, notifying both blocked and blocker issues.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable edge watch",
+          description: "When enabled, posts comments on issues when a new blocker edge is created.",
+          default: true,
+        },
+      },
+    },
   },
 };
 
