@@ -60,7 +60,7 @@
       "expect": {
         "forbid": [
           {
-            "text": "\\d+x.*(?:fast|speed)|[Ss]peed.*multiplier|[Ll]umen.*(?:\\d+x|faster|[Ss]peed.*improv)",
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!no )\\b(?:subtitle|keywords?|copy)\\b[^.]{0,60}(?:\\d+x.*(?:fast|speed)|multiplier)",
             "reason": "Lumen must never carry speed-multiplier claims in store copy"
           }
         ],

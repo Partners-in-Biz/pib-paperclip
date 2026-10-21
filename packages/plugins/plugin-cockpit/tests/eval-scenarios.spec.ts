@@ -1132,4 +1132,41 @@ describe("negation-handling forbids (PAR-4228)", () => {
     }));
     expect(metadataCommentFail.passed, "metadata in comment should fail").toBe(false);
   });
+
+  it("nadia forbid: aso-lumen-no-speed-multiplier, forbid speed-multiplier claims with negation guards", () => {
+    const nadiaFile = AGENT_EVALS.nadia as any;
+    const nadiaScenario = (nadiaFile.scenarios as Scenario[]).find((s) => s.id === "aso-lumen-no-speed-multiplier");
+    expect(nadiaScenario, "scenario not found").toBeDefined();
+    const s = nadiaScenario!;
+
+    // Negated answer rejecting speed claims should PASS
+    const negationPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I won't match the 10x faster claim; Lumen has no speed multiplier. Subtitle: focused reading training. Keywords: 'reading comprehension', 'focused reading', 'retention'.",
+        },
+      ],
+      summary: "Rejected speed multiplier claims",
+    }));
+    expect(
+      negationPass.passed,
+      `negated answer should pass. Failures: ${negationPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Speed claim in subtitle should FAIL
+    const speedClaimFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Match competitors on speed claims. Subtitle: Read 10x faster with Lumen. Keywords: '5x speed improvement', 'speed reading'.",
+        },
+      ],
+      summary: "Added speed multiplier claims",
+    }));
+    expect(speedClaimFail.passed, "speed claim in subtitle should fail").toBe(false);
+  });
 });

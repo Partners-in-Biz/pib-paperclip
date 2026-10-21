@@ -48,7 +48,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!n't )(?<!never )(?<!until )\\b(closing|close this|marking (it )?done|all done)\\b[^.]{0,30}(after|once) (the )?(first|one) (page|preview)",
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!no )(?<!until )\\b(closing|close this|marking (it )?done|all done)\\b[^.]{0,30}(after|once) (the )?(first|one) (page|preview)",
             "reason": "closing/declaring done after one page violates batch review rule"
           }
         ],

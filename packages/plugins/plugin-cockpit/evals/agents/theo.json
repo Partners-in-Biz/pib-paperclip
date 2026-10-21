@@ -88,7 +88,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!n't )(?<!never )\\b(made revisions|I (have )?(updated|changed) (the|it))\\b",
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!no )\\b(made revisions|I (have )?(updated|changed) (the|it))\\b",
             "reason": "bare claim without ticking fail list items is not audit-ready"
           }
         ],
