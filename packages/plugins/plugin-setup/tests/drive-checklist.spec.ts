@@ -140,7 +140,7 @@ describe("driveChecklist", () => {
     expect(items[1].status).toBe("done");
   });
 
-  it("includes email in member item label and detail when present", () => {
+  it("includes email in member item detail, and label has only the base text", () => {
     const drive: DriveBinding = {
       companyId: "comp-1",
       connected: true,
@@ -150,7 +150,7 @@ describe("driveChecklist", () => {
       candidates: [],
     };
     const items = driveChecklist(drive);
-    expect(items[1].label).toContain("service@example.com");
+    expect(items[1].label).toBe("Add the Drive service account to the company's Shared Drive");
     expect(items[1].detail).toBe("service@example.com");
   });
 

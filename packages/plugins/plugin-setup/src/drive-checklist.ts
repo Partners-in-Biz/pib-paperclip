@@ -72,8 +72,8 @@ export function parseDriveBindingEvent(payload: unknown): DriveBinding | null {
 /**
  * Drive checklist items for the New company step.
  * Returns two StepItem entries: (a) "Connect Google Drive (read)",
- * (b) "Add the Drive service account ... to the company's Shared Drive".
- * With no drive data, both are open and use placeholder text without email.
+ * (b) "Add the Drive service account to the company's Shared Drive".
+ * The email, when present, is stored in the detail field for display below the title.
  */
 export function driveChecklist(drive: DriveBinding | null): StepItem[] {
   const items: StepItem[] = [];
@@ -87,15 +87,12 @@ export function driveChecklist(drive: DriveBinding | null): StepItem[] {
 
   // Item 2: Add the Drive service account to the company's Shared Drive
   const accountEmail = drive?.serviceAccountEmail;
-  const label = accountEmail
-    ? `Add the Drive service account ${accountEmail} to the company's Shared Drive`
-    : "Add the Drive service account to the company's Shared Drive";
 
   items.push({
     key: "drive-member",
-    label,
+    label: "Add the Drive service account to the company's Shared Drive",
     status: drive?.serviceAccountIsMember ? "done" : "failed",
-    detail: accountEmail || undefined, // Store email separately for UI copy button
+    detail: accountEmail || undefined, // Store email separately for UI display below title
   });
 
   return items;

@@ -59,15 +59,31 @@ function DriveChecklistCard({ drive, onBind, binding }: {
 
   return (
     <SectionCard title="Google Drive" subtitle="Connect and share the company's Shared Drive with the service account." accent="setup">
-      <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "grid", gap: 12, boxSizing: "border-box", maxWidth: "100%" }}>
         {items.map((item) => (
-          <div key={item.key} style={{ display: "grid", gap: 4 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div key={item.key} style={{ display: "grid", gap: 4, boxSizing: "border-box", maxWidth: "100%" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxSizing: "border-box", maxWidth: "100%" }}>
               <Pill tone={item.status === "done" ? "ok" : "bad"} icon={item.status === "done" ? CircleCheck : CircleAlert} size="sm">
                 {item.status === "done" ? "Done" : "Pending"}
               </Pill>
-              <span style={{ fontSize: 13, fontWeight: 500, minWidth: 0, flex: 1 }}>{item.label}</span>
-              {item.detail && item.key === "drive-member" && (
+              <span style={{ fontSize: 13, fontWeight: 500, minWidth: 0, flex: 1, boxSizing: "border-box" }}>{item.label}</span>
+            </div>
+            {item.detail && item.key === "drive-member" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap", boxSizing: "border-box", maxWidth: "100%" }}>
+                <span
+                  style={{
+                    fontSize: 13,
+                    minWidth: 0,
+                    flex: 1,
+                    boxSizing: "border-box",
+                    maxWidth: "100%",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-all",
+                    color: tokens.muted,
+                  }}
+                >
+                  {item.detail}
+                </span>
                 <button
                   type="button"
                   style={{
@@ -78,6 +94,9 @@ function DriveChecklistCard({ drive, onBind, binding }: {
                     borderRadius: 4,
                     cursor: "pointer",
                     color: tokens.primary,
+                    flexShrink: 0,
+                    boxSizing: "border-box",
+                    whiteSpace: "nowrap",
                   }}
                   onClick={() => {
                     try {
@@ -92,15 +111,15 @@ function DriveChecklistCard({ drive, onBind, binding }: {
                 >
                   Copy
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         ))}
 
         {showPicker && (
-          <div style={{ display: "grid", gap: 8, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
+          <div style={{ display: "grid", gap: 8, padding: "8px 0", borderTop: `1px solid ${tokens.border}`, boxSizing: "border-box", maxWidth: "100%" }}>
             <Field label="Select a Shared Drive">
-              <Select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={binding_ || binding} style={{ maxWidth: "100%", minWidth: 0, width: "100%" }}>
+              <Select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={binding_ || binding} style={{ maxWidth: "100%", minWidth: 0, width: "100%", boxSizing: "border-box", textOverflow: "ellipsis" }}>
                 <option value="">—</option>
                 {candidates.map((c) => (
                   <option key={c.id} value={c.id} title={c.name}>
