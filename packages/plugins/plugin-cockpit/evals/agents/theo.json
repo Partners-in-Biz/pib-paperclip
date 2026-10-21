@@ -1,0 +1,119 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "creative-safe-area-contact-sheet",
+      "title": "Theo: before hand-off to Reviewer, render all ratios (1:1, 4:5, 9:16, 16:9) and attach safe-area contact sheet",
+      "source": "baseline-2026-10-19/agents/theo.md (Rules from failed reviews, PAR-3608): Crop and safe-area check: before a creative goes to the critic, render every delivered ratio (1:1, 4:5, 9:16, 16:9) and the thumbnail, and confirm the full product name, the hook line and the CTA sit inside each crop's safe area.",
+      "situation": "You are Theo, Ad Creative Maker. You have finished a Velox hero video asset in 9:16 format. The product name, the hook line ('Master multiplication in 10 minutes'), and the CTA button are rendered in the video. You're ready to hand off to the Reviewer for scoring.",
+      "task": "Do you hand it off immediately with the 9:16 file? Or do you render it in all ratios and confirm the critical text sits safe?",
+      "expect": {
+        "mustSay": [
+          "contact.*sheet|[Ss]afe.*area|ratio|render|1:1|4:5|9:16|16:9",
+          "thumbnail|[Pp]roduct.*name|hook|CTA"
+        ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "reason": "do not ask for safe-area check; render and attach it before hand-off"
+          }
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Generated contact sheet: all 5 crops (1:1, 4:5, 9:16, 16:9, thumbnail). Verified in each: 'Velox' logo, hook 'Master multiplication in 10 minutes', CTA 'Try free' all sit inside safe margins. Attached contact sheet to this comment."
+            }
+          ],
+          "summary": "Safe-area contact sheet attached before hand-off."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Video ready in 9:16. Handing off to the Reviewer for scoring. The assets cover the product features clearly."
+            }
+          ],
+          "summary": "Handed off without safe-area check."
+        }
+      }
+    },
+    {
+      "id": "creative-claims-sheet-sources",
+      "title": "Theo: every claim in ad copy must have a Drive file link to its source before going to Reviewer",
+      "source": "baseline-2026-10-19/agents/theo.md (Rules from failed reviews, PAR-3616): Claims sheet: every claim in a how-to or testimonial ad has a Drive file link to its source in the product's folder before the claims check.",
+      "situation": "You are Theo, Ad Creative Maker. You created a testimonial ad for Lumen: 'Users improve reading comprehension by 45% in 30 days' (from user research). You're preparing the hand-off comment to the Reviewer. Claims sheet lists claims, but you haven't linked to the source research file on Drive.",
+      "task": "Can you hand off the ad without a source link on the claims sheet? Or must every claim have a Drive file link?",
+      "expect": {
+        "mustSay": [
+          "https://drive\\.google|source.*https|link.*https|[Dd]rive.*link",
+          "[Cc]laims.*sheet|claim.*source"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Claims sheet attached. Claim 'improve reading comprehension by 45% in 30 days': source https://drive.google.com/...  Lumen user research Q3 2026. All other claims also linked to their sources."
+            }
+          ],
+          "summary": "All claims linked to source files before hand-off."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Ready for Reviewer hand-off. Claims: 'Users improve comprehension 45% in 30 days', 'Built by reading experts', 'Fastest learning app'. All checked against our data."
+            }
+          ],
+          "summary": "Claims listed without Drive file links."
+        }
+      }
+    },
+    {
+      "id": "creative-revise-tick-fail-list",
+      "title": "Theo: on revise round, tick every item of Reviewer's fail list in hand-off comment with proof",
+      "source": "baseline-2026-10-19/agents/theo.md (Rules from failed reviews, PAR-3617): Hands and gestures: On a revise round, tick every item of the critic's fail list in the hand-off comment, each with the frame or file that proves it.",
+      "situation": "You are Theo, Ad Creative Maker. Reviewer returned 3 CHANGES NEEDED items: (1) hook text overlaps the product name in frame 2, (2) finger gesture covers the CTA button, (3) opening visual is too dark. You have fixed all three and re-rendered the assets.",
+      "task": "When you hand off the revision, do you list what you changed? Or do you tick each fail item with evidence it's fixed?",
+      "expect": {
+        "mustSay": [
+          "[Tt]ick|fixed|✓|checked|proof|frame|file.*proves|[Ee]vidence"
+        ],
+        "forbid": [
+          {
+            "text": "changed|modified|updated",
+            "reason": "generic 'changed' without ticking fail list is not audit-ready"
+          }
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Revision complete. Ticking Reviewer fail list:\n(1) Hook text overlaps product: FIXED. Frame 2 now has 20px margin. File: velox-hero-frame2-v02.mov.\n(2) Finger covers CTA: FIXED. Hand gesture repositioned to right edge. Frame 5 proof: velox-hero-frame5-v02.mov.\n(3) Opening dark: FIXED. Brightness +15%. Frame 1 proof: velox-hero-frame1-v02.mov."
+            }
+          ],
+          "summary": "All fail items ticked with frame evidence."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Made revisions based on Reviewer feedback. Updated hook text positioning, adjusted hand gesture, and brightened the opening frame. Ready for re-review."
+            }
+          ],
+          "summary": "Revised but did not tick fail list."
+        }
+      }
+    }
+  ]
+}
