@@ -22,7 +22,7 @@ describe("buildPreviewHtml", () => {
     expect(out.html).toContain('<base href="https://x.co.za/a">');
     expect(out.html).toContain('content="noindex,nofollow"');
     expect(out.html).not.toContain("canonical");
-    expect(out.html).toContain('action="/p/tok123/decision"');
+    expect(out.html).toContain('action="https://preview.partnersinbiz.online/p/x/tok123/decision"');
     expect(out.html).toContain("Proposed changes, not live.");
   });
 
@@ -33,6 +33,40 @@ describe("buildPreviewHtml", () => {
     const none = buildPreviewHtml("<html><head></head><body><p>x</p></body></html>", "https://x.co.za/", { h1: "H", bodyHtml: "<p>n</p>" }, { token: "t" });
     expect(none.applied).toEqual([]);
     expect(none.notes).toHaveLength(2);
+  });
+});
+
+describe("base href does not hijack the decision form", () => {
+  it("uses absolute preview origin URL so base href cannot affect the form action", () => {
+    const withBaseHref = buildPreviewHtml(
+      `<html><head><base href="https://huntandgun.co.za/category/safe/"></head><body><h1>Guns</h1><p>text</p></body></html>`,
+      "https://huntandgun.co.za/category/safe/shotguns",
+      { title: "Shotguns" },
+      { token: "tok456" },
+    );
+    expect(withBaseHref.html).toContain('action="https://preview.partnersinbiz.online/p/huntandgun/tok456/decision"');
+    // Verify that resolving the action URL with the base href still points to preview origin
+    const actionUrl = withBaseHref.html.match(/action="([^"]+)"/)?.[1];
+    if (actionUrl) {
+      const resolved = new URL(actionUrl, "https://huntandgun.co.za/category/safe/");
+      expect(resolved.origin).toBe("https://preview.partnersinbiz.online");
+    }
+  });
+
+  it("works with another client domain", () => {
+    const withBaseHref = buildPreviewHtml(
+      `<html><head><base href="https://agriauctionssa.co.za/"></head><body><h1>Auctions</h1><p>text</p></body></html>`,
+      "https://agriauctionssa.co.za/",
+      { title: "Auctions" },
+      { token: "tok789" },
+    );
+    expect(withBaseHref.html).toContain('action="https://preview.partnersinbiz.online/p/agriauctionssa/tok789/decision"');
+    const actionUrl = withBaseHref.html.match(/action="([^"]+)"/)?.[1];
+    if (actionUrl) {
+      const resolved = new URL(actionUrl, "https://agriauctionssa.co.za/");
+      expect(resolved.origin).toBe("https://preview.partnersinbiz.online");
+      expect(resolved.pathname).toBe("/p/agriauctionssa/tok789/decision");
+    }
   });
 });
 
