@@ -575,9 +575,12 @@ const plugin = definePlugin({
     });
 
     // Subscribe to Setup plugin's drive.binding.set event
-    ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event) => {
+    ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
       try {
-        await onDriveBindingSetEvent(ctx, event as any);
+        // Validate event has companyId and payload object before processing
+        if (event.companyId && event.payload && typeof event.payload === "object") {
+          await onDriveBindingSetEvent(ctx, event as unknown as { companyId: string; payload: Record<string, unknown> });
+        }
       } catch (error) {
         ctx.logger.info("CRM drive.binding.set event handler failed", { error: String(error) });
       }

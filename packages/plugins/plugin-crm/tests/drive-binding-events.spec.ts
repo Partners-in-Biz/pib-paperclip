@@ -27,7 +27,7 @@ describe("Drive binding events", () => {
       expect(calls[0][1]).toBe(CO);
       expect(JSON.stringify(calls[0][2])).not.toMatch(/token|secret|Bearer|auth/i);
 
-      setup.emit.mock.calls = [];
+      setup.emit.mockClear();
 
       // Test set
       await tool(setup.harness, "drive_binding_set", { sharedDriveId: "d1" });
@@ -36,7 +36,7 @@ describe("Drive binding events", () => {
       expect(calls[0][2]).toMatchObject({ bound: true, sharedDriveId: "d1" });
       expect(JSON.stringify(calls[0][2])).not.toMatch(/token|secret/i);
 
-      setup.emit.mock.calls = [];
+      setup.emit.mockClear();
 
       // Test status (without token fetch)
       await tool(setup.harness, "drive_binding_status", {});
@@ -59,6 +59,108 @@ describe("Drive binding events", () => {
       setup.harness.ctx.events.emit = originalEmit;
     });
 
+    it("status after discover emits connected:true with stored candidates", async () => {
+      const drives = [{ id: "d1", name: "Drive1" }, { id: "d2", name: "Drive2" }];
+      await tool(setup.harness, "drive_binding_discover", { drives });
+      setup.emit.mockClear();
+
+      // Call status without binding anything
+      await tool(setup.harness, "drive_binding_status", {});
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(1);
+      const payload = calls[0][2];
+      expect(payload).toMatchObject({
+        connected: true, // because candidates.length > 0
+        bound: false,
+        candidates: [
+          { id: "d1", name: "Drive1" },
+          { id: "d2", name: "Drive2" },
+        ],
+      });
+    });
+
+    it("status with nothing stored emits connected:false and empty candidates", async () => {
+      setup.emit.mockClear();
+      await tool(setup.harness, "drive_binding_status", {});
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(1);
+      const payload = calls[0][2];
+      expect(payload).toMatchObject({
+        connected: false,
+        bound: false,
+        candidates: [],
+      });
+    });
+
+    it("set-event payload has exact keys and candidates structure", async () => {
+      const drives = [{ id: "d1", name: "Test1" }, { id: "d2", name: "Test2" }];
+      await tool(setup.harness, "drive_binding_discover", { drives });
+      setup.emit.mockClear();
+
+      await tool(setup.harness, "drive_binding_set", { sharedDriveId: "d1" });
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(1);
+      const payload = calls[0][2] as Record<string, unknown>;
+
+      // Verify exact keys (sorted)
+      const keys = Object.keys(payload).sort();
+      expect(keys).toEqual(["bound", "candidates", "companyId", "connected", "serviceAccountIsMember", "sharedDriveId"]);
+
+      // Verify candidates structure
+      expect(payload.candidates).toEqual([
+        { id: "d1", name: "Test1" },
+        { id: "d2", name: "Test2" },
+      ]);
+
+      // serviceAccountEmail should be absent when unknown
+      expect(payload).not.toHaveProperty("serviceAccountEmail");
+    });
+
+    it("rejected id event leaves drive_binding_status bound:false", async () => {
+      const drives = [{ id: "d1", name: "Test" }];
+      await tool(setup.harness, "drive_binding_discover", { drives });
+      setup.emit.mockClear();
+
+      // Try to bind an invalid id via event (should fail silently)
+      await onDriveBindingSetEvent(setup.harness.ctx, {
+        companyId: CO,
+        payload: { sharedDriveId: "invalid-id" },
+      });
+
+      // Check status - should still be unbound
+      setup.emit.mockClear();
+      await tool(setup.harness, "drive_binding_status", {});
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(1);
+      expect(calls[0][2]).toMatchObject({
+        bound: false,
+      });
+    });
+
+    it("malformed event payload neither throws nor emits", async () => {
+      setup.emit.mockClear();
+
+      // Missing sharedDriveId
+      await expect(
+        onDriveBindingSetEvent(setup.harness.ctx, {
+          companyId: CO,
+          payload: {},
+        })
+      ).resolves.not.toThrow();
+
+      // sharedDriveId is a number instead of string
+      await expect(
+        onDriveBindingSetEvent(setup.harness.ctx, {
+          companyId: CO,
+          payload: { sharedDriveId: 123 },
+        })
+      ).resolves.not.toThrow();
+
+      // No binding events should have been emitted for these invalid payloads
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(0);
+    });
+
     it("rejects discovery id not in candidates", async () => {
       const drives = [{ id: "d1", name: "Test" }];
       await tool(setup.harness, "drive_binding_discover", { drives });
@@ -72,7 +174,7 @@ describe("Drive binding events", () => {
     it("binds valid candidate and emits event", async () => {
       const drives = [{ id: "d1", name: "Test" }];
       await tool(setup.harness, "drive_binding_discover", { drives });
-      setup.emit.mock.calls = [];
+      setup.emit.mockClear();
 
       await onDriveBindingSetEvent(setup.harness.ctx, {
         companyId: CO,
@@ -87,7 +189,7 @@ describe("Drive binding events", () => {
     it("rejects unlisted id without storing or emitting", async () => {
       const drives = [{ id: "d1", name: "Test" }];
       await tool(setup.harness, "drive_binding_discover", { drives });
-      setup.emit.mock.calls = [];
+      setup.emit.mockClear();
 
       await onDriveBindingSetEvent(setup.harness.ctx, {
         companyId: CO,

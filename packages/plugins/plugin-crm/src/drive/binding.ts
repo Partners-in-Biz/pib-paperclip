@@ -71,6 +71,39 @@ async function emitBindingEvent(
   }
 }
 
+/** Helper to publish status event with stored candidates. Reads candidates from state and sets connected appropriately. */
+async function publishStatusEvent(
+  ctx: PluginContext,
+  companyId: string,
+  data: {
+    bound: boolean;
+    sharedDriveId?: string;
+    serviceAccountEmail?: string;
+    serviceAccountIsMember: boolean;
+  },
+): Promise<void> {
+  // Read stored candidates from state
+  const candidatesData = await ctx.state.get(CANDIDATES_STATE_KEY(companyId));
+  const candidates = (Array.isArray(candidatesData) ? candidatesData : []).filter(
+    (c: unknown) => c && typeof c === "object" && typeof (c as Record<string, unknown>).id === "string" && typeof (c as Record<string, unknown>).name === "string"
+  ) as Array<{ id: string; name: string }>;
+
+  const payload: DriveBindingEventPayload = {
+    companyId,
+    connected: data.bound || candidates.length > 0,
+    bound: data.bound,
+    sharedDriveId: data.sharedDriveId,
+    serviceAccountIsMember: data.serviceAccountIsMember,
+    candidates,
+  };
+
+  if (data.serviceAccountEmail) {
+    payload.serviceAccountEmail = data.serviceAccountEmail;
+  }
+
+  await emitBindingEvent(ctx, companyId, payload);
+}
+
 /** Extract config-pinned sharedDriveId. */
 function pinnedDriveId(cfg: Record<string, unknown>): string {
   const driveConfig = (cfg.drive as { sharedDriveId?: string }) || {};
@@ -290,13 +323,10 @@ export async function driveBindingStatus(
 
   // Always return basic status; only fetch identity if token is set
   if (!tokenSet) {
-    await emitBindingEvent(ctx, companyId, {
-      companyId,
-      connected: bound,
+    await publishStatusEvent(ctx, companyId, {
       bound,
       sharedDriveId,
       serviceAccountIsMember: false,
-      candidates: [],
     });
     return {
       bound,
@@ -316,13 +346,10 @@ export async function driveBindingStatus(
     const token = await resolver.get("driveBrokerToken");
     if (!token) {
       // No token available; return status without identity info
-      await emitBindingEvent(ctx, companyId, {
-        companyId,
-        connected: bound,
+      await publishStatusEvent(ctx, companyId, {
         bound,
         sharedDriveId,
         serviceAccountIsMember: false,
-        candidates: [],
       });
       return {
         bound,
@@ -354,15 +381,12 @@ export async function driveBindingStatus(
     identityError = "broker identity unavailable (network error)";
   }
 
-  // Emit event with available info (excluding secrets)
-  await emitBindingEvent(ctx, companyId, {
-    companyId,
-    connected: bound,
+  // Emit event with available info (excluding secrets) and stored candidates
+  await publishStatusEvent(ctx, companyId, {
     bound,
     sharedDriveId,
     serviceAccountEmail,
     serviceAccountIsMember,
-    candidates: [],
   });
 
   const response: DriveBindingStatusResult = {
