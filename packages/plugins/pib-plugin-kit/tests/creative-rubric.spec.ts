@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CREATIVE_PASS_SCORE, REVIEWER_TONE_CAP, scoreCreative, type CreativeRubricInput } from "../src/index.js";
+import { DEFAULT_MEDIA_RULE, CREATIVE_PASS_SCORE, REVIEWER_TONE_CAP, scoreCreative, type CreativeRubricInput } from "../src/index.js";
 
 const good: CreativeRubricInput = {
   platform: "linkedin",
@@ -73,5 +73,45 @@ describe("scoreCreative", () => {
     expect(blocked.pass).toBe(false);
     const ok = scoreCreative({ ...good, text, claimTerms, approvedFacts: ["We guarantee payment in 7 days, in writing."] });
     expect(ok.blockers).toEqual([]);
+  });
+
+  describe("media rule", () => {
+    const bare = { ...good, media: [] };
+    const block = { ...DEFAULT_MEDIA_RULE, enforce: "block" as const };
+    const running = { id: "e1", status: "running", hypothesisType: "media", minPerArm: 3, noMediaPosts: 1 };
+
+    it("does nothing without a rule", () => {
+      expect(scoreCreative(bare).blockers).toEqual([]);
+    });
+    it("warns, never blocks, under enforce: advise", () => {
+      const r = scoreCreative({ ...bare, mediaRule: DEFAULT_MEDIA_RULE });
+      expect(r.blockers).toEqual([]);
+      expect(r.notes.join(" ")).toContain("need one image or a video");
+      expect(r.pass).toBe(true);
+    });
+    it("blocks media_required under enforce: block", () => {
+      const r = scoreCreative({ ...bare, mediaRule: block });
+      expect(r.blockers.map((b) => b.rule)).toEqual(["media_required"]);
+      expect(r.pass).toBe(false);
+    });
+    it("lets a text-native post and an X post go without media", () => {
+      expect(scoreCreative({ ...bare, mediaRule: block, textNative: true }).blockers).toEqual([]);
+      expect(scoreCreative({ ...bare, platform: "x", mediaRule: block }).blockers).toEqual([]);
+    });
+    it("does not count a video over 30 seconds", () => {
+      const r = scoreCreative({ ...bare, mediaRule: block, media: [{ kind: "video", durationSec: 45, altText: "A clip" }] });
+      expect(r.blockers.map((b) => b.rule)).toEqual(["media_required"]);
+    });
+    it("blocks alt_text_missing under enforce: block", () => {
+      const r = scoreCreative({ ...good, mediaRule: block, media: [{ altText: " " }] });
+      expect(r.blockers.map((b) => b.rule)).toEqual(["alt_text_missing"]);
+    });
+    it("exempts only a no_media post in a running media experiment", () => {
+      const tagged = { ...bare, mediaRule: block, experimentId: "e1", arm: "no_media" };
+      expect(scoreCreative({ ...tagged, experiment: running }).blockers).toEqual([]);
+      expect(scoreCreative({ ...tagged, experiment: { ...running, hypothesisType: "hook" } }).blockers).toHaveLength(1);
+      expect(scoreCreative({ ...tagged, experiment: null }).blockers).toHaveLength(1);
+      expect(scoreCreative({ ...tagged, experiment: { ...running, noMediaPosts: 4 } }).blockers).toHaveLength(1);
+    });
   });
 });

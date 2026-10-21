@@ -6,6 +6,7 @@
  * Claims: C27 moves the claim terms into the kit. Until then the caller passes `claimTerms`; with none, no claim is flagged.
  */
 import { writingFindings, type WritingFinding } from "./writing.js";
+import { noMediaExempt, postNeedsMedia, type MediaExperiment, type MediaRule } from "./media-rule.js";
 
 export const CREATIVE_RUBRIC_WEIGHTS = { hook: 20, clarity: 20, brand: 20, cta: 15, format: 15 } as const;
 export const CREATIVE_PASS_SCORE = 80;
@@ -31,7 +32,15 @@ export interface CreativeRubricInput {
   platform: CreativePlatform;
   text: string;
   /** One entry per image or video; empty or missing text means no alt text. */
-  media?: Array<{ altText?: string | null }>;
+  media?: Array<{ altText?: string | null; kind?: "image" | "video"; durationSec?: number | null }>;
+  /** The playbook's media rule (`parseMediaRule`). Missing means no media check. */
+  mediaRule?: MediaRule;
+  /** A question, thread or quote: the text carries the post, so it needs no media. */
+  textNative?: boolean;
+  /** The post's experiment tag and its experiment row, for the `no_media` exemption. */
+  experimentId?: string | null;
+  arm?: string | null;
+  experiment?: MediaExperiment | null;
   landingUrl?: string | null;
   bannedWords?: string[];
   tone?: ToneScore | null;
@@ -42,7 +51,7 @@ export interface CreativeRubricInput {
 }
 
 export interface CreativeBlocker {
-  rule: "banned_word" | "claim_unapproved";
+  rule: "banned_word" | "claim_unapproved" | "media_required" | "alt_text_missing";
   text: string;
 }
 
@@ -173,6 +182,19 @@ export function scoreCreative(input: CreativeRubricInput): CreativeRubricResult 
   }
   if (httpsOk) format += 5;
   else notes.push("The landing page must be a valid https:// address.");
+
+  if (input.mediaRule) {
+    const rule = input.mediaRule;
+    const found = (message: string, id: CreativeBlocker["rule"]) => {
+      if (rule.enforce === "block") blockers.push({ rule: id, text: message });
+      else notes.push(`Warning: ${message}`);
+    };
+    const usable = media.filter((m) => m.kind !== "video" || m.durationSec == null || m.durationSec <= rule.maxVideoSeconds);
+    if (usable.length === 0 && postNeedsMedia(rule, input.platform, input.textNative ?? false) && !noMediaExempt({ experimentId: input.experimentId, arm: input.arm }, input.experiment)) {
+      found(`${input.platform} posts need one image or a video of ${rule.maxVideoSeconds} seconds or less.`, "media_required");
+    }
+    if (rule.altTextRequired && media.some((m) => !m.altText?.trim())) found("Every image or video needs alt text.", "alt_text_missing");
+  }
 
   const parts = { hook, clarity, brand, cta, format };
   const score = hook + clarity + brand + cta + format;
