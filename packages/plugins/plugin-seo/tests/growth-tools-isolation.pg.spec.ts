@@ -103,7 +103,7 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     expect(reviewB.proposedExperiments).toEqual([]);
   });
 
-  it("list-experiments includes proposed experiments for the given scope", async () => {
+  it("list-experiments returns only the calling scope's experiments", async () => {
     const w = world();
     const proposalA = { hypothesis: "CTR hypothesis A scope test", hypothesisType: "hook:question", variable: "OpeningA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
     const proposalB = { hypothesis: "CTR hypothesis B scope test", hypothesisType: "hook:comparison", variable: "OpeningB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
@@ -115,8 +115,74 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     expect(listB.experiments.length).toBeGreaterThanOrEqual(1);
     const expAIds = listA.experiments.map((e: any) => e.experimentId);
     const expBIds = listB.experiments.map((e: any) => e.experimentId);
+    // Positive assertions: each list contains its own experiment
     expect(expAIds).toContain(expA.experimentId);
     expect(expBIds).toContain(expB.experimentId);
+    // Negative assertions: each list must NOT contain the other scope's experiment
+    expect(expAIds).not.toContain(expB.experimentId);
+    expect(expBIds).not.toContain(expA.experimentId);
+  });
+
+  it("performance-review with both scopes seeded returns only the calling scope's experiments", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Review isolation A", hypothesisType: "hook:question", variable: "VarA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "Review isolation B", hypothesisType: "hook:comparison", variable: "VarB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    const reviewA = await w.call("performance-review", { scope: A });
+    const reviewB = await w.call("performance-review", { scope: B });
+    // A's review should not include B's experiment (both proposed in same world)
+    const expAIdFromReviewA = reviewA.proposedExperiments.map((e: any) => e.experimentId);
+    const expBIdFromReviewB = reviewB.proposedExperiments.map((e: any) => e.experimentId);
+    expect(expAIdFromReviewA).not.toContain(expB.experimentId);
+    expect(expBIdFromReviewB).not.toContain(expA.experimentId);
+  });
+
+  it("propose-experiment writes one program per scope", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Program isolation A", hypothesisType: "hook:question", variable: "ProgramVarA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "Program isolation B", hypothesisType: "hook:comparison", variable: "ProgramVarB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    // Query the growth_programs table directly
+    const programs = (await pg.client.query(
+      `SELECT id FROM ${NAMESPACE}.growth_programs WHERE company_id = $1 ORDER BY id`,
+      [w.companyId],
+    )).rows as { id: string }[];
+    // Should have exactly 2 programs with distinct ids
+    expect(programs).toHaveLength(2);
+    const programIds = programs.map((p) => p.id);
+    expect(new Set(programIds).size).toBe(2); // All unique
+    // Each program should have the expected scope key in its id
+    const expectedProgramA = `${w.companyId}:seo:${A}`;
+    const expectedProgramB = `${w.companyId}:seo:${B}`;
+    expect(programIds).toContain(expectedProgramA);
+    expect(programIds).toContain(expectedProgramB);
+    // Each experiment should reference its own program
+    const expARow = (await pg.client.query(
+      `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expA.experimentId],
+    )).rows[0] as { program_id: string };
+    const expBRow = (await pg.client.query(
+      `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expB.experimentId],
+    )).rows[0] as { program_id: string };
+    expect(expARow.program_id).toBe(expectedProgramA);
+    expect(expBRow.program_id).toBe(expectedProgramB);
+  });
+
+  it("wrong-scope string is rejected", async () => {
+    const w = world();
+    let errorThrown = false;
+    try {
+      await w.call("propose-experiment", { scope: "client:company:zzz", hypothesis: "Bad scope", hypothesisType: "hook:question", variable: "BadVar", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] });
+    } catch {
+      errorThrown = true;
+    }
+    expect(errorThrown).toBe(true);
+    // Verify no rows were written
+    const expRows = (await pg.client.query(`SELECT COUNT(*)::int AS c FROM ${NAMESPACE}.growth_experiments WHERE company_id = $1`, [w.companyId])).rows[0] as { c: number };
+    expect(expRows.c).toBe(0);
   });
 
   it("approve-experiment rejects scope B on scope A's experiment", async () => {
