@@ -1,14 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { HANDOFF_EVENTS, trackJob, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { accountHealth, cockpitSnapshot, COCKPIT_SYNC_STALE_MS, pluginLabel } from "../src/cockpit.js";
+import { accountHealth, cockpitSnapshot, COCKPIT_SYNC_STALE_MS, pluginLabel, espHealth } from "../src/cockpit.js";
 import { isLeadCandidate, leadCapturedFrom, runSyncJob, syncAccount, type SyncStats } from "../src/gmail/sync.js";
-import { CO } from "./helpers/memory.js";
+import type { EspAccountQuota } from "../src/esp/types.js";
+import { CO, MemoryStore } from "./helpers/memory.js";
 import { setup } from "./helpers/setup.js";
 import { validateParams, validateRuntimeQuery } from "./helpers/sql-guard.js";
+import type { EspDomainRow } from "../src/esp/types.js";
 
 const NOW = Date.parse("2026-09-26T10:00:00Z");
 const FULL = {
@@ -22,6 +24,7 @@ interface Data {
   accounts?: Array<Record<string, unknown>>;
   sends?: Array<Record<string, unknown>>;
   decisions?: Array<Record<string, unknown>>;
+  esp?: { sent: string; events: string };
   fail?: RegExp;
 }
 
@@ -42,6 +45,7 @@ function cockpitDb(data: Data) {
         if (text.includes(`FROM ${NAMESPACE}.accounts WHERE company_id = $1 AND provider = 'gmail' AND status IN`)) return data.accounts ?? [];
         if (text.includes(`FROM ${NAMESPACE}.send_requests`) && text.includes("ORDER BY sent_at DESC")) return data.sends ?? [];
         if (text.includes(`FROM ${NAMESPACE}.decisions`)) return data.decisions ?? [];
+        if (text.includes("AS sent") && text.includes("AS events")) return data.esp ? [data.esp] : [];
         return [];
       },
       async execute() {
@@ -165,6 +169,81 @@ describe("Mailbox cockpit snapshot", () => {
   it("labels source plugins", () => {
     expect(pluginLabel("partnersinbiz.billing")).toBe("Billing");
     expect(pluginLabel(null)).toBe("a plugin");
+  });
+});
+
+describe("SES cockpit health checks and messages", () => {
+  it("SES topic awaiting confirmation mentions SNS console and Request confirmation", async () => {
+    const { harness } = await boot({
+      counts: COUNTS,
+      esp: { sent: "1", events: "1" },
+    }, {
+      publicBaseUrl: "https://paperclip.example.com",
+      encryptionKey: { type: "secret_ref", secretId: "sec-enc" },
+      google: { clientId: "client-id", clientSecret: { type: "secret_ref", secretId: "sec-google" } },
+      esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: "eu-west-1", accessKeyId: "AKIA...", secretAccessKey: "secret", configurationSet: "pib", snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:mailbox", topicConfirmed: false } },
+    });
+
+    const store = new MemoryStore();
+    const now = new Date().toISOString();
+    await store.upsertEspDomain({
+      company_id: CO, domain: "client.co.za", provider: "ses", provider_domain_id: "dom-1", region: "eu-west-1", status: "verified", records: [], return_path_host: "send.client.co.za", dkim_selector: "dkim", spf_include: "amazonses.com", client_kind: null, client_ref: null, account_id: "acc-1", created_by: "user-1", verified_at: now, checked_at: now, verify_asked_at: null, first_sent_at: null, last_sent_at: null, warmup_exempt: false, daily_cap_override: null, reputation: null, created_at: now, updated_at: now,
+    });
+
+    const health = await espHealth(harness.ctx, CO, store, NOW);
+    const topic = health.health.find((h) => h.key === "mailbox:esp-topic");
+    expect(topic?.detail).toContain("waiting for the SNS subscription");
+    expect(topic?.detail).toContain("in the SNS console");
+    expect(topic?.detail).toContain("Request confirmation");
+    expect(topic?.fix).toContain("Subscriptions tab");
+    expect(topic?.fix).toContain("https://paperclip.example.com/api/plugins/partnersinbiz.mailbox/webhooks/ses");
+  });
+
+  it("SES without domains configured has no SES-specific checks", async () => {
+    const { harness } = await boot({
+      counts: COUNTS,
+      esp: { sent: "0", events: "0" },
+    }, {
+      publicBaseUrl: "https://paperclip.example.com",
+      encryptionKey: { type: "secret_ref", secretId: "sec-enc" },
+      google: { clientId: "client-id", clientSecret: { type: "secret_ref", secretId: "sec-google" } },
+      esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: "eu-west-1", accessKeyId: "AKIA...", secretAccessKey: "secret", configurationSet: "pib", snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:mailbox", topicConfirmed: false } },
+    });
+
+    const store = new MemoryStore();
+    const health = await espHealth(harness.ctx, CO, store, NOW);
+    expect(health.health.find((h) => h.key === "mailbox:esp-sandbox")).toBeUndefined();
+    expect(health.health.find((h) => h.key === "mailbox:esp-topic")).toBeUndefined();
+  });
+
+  it("Resend webhook path uses resend.com not /webhooks/ses", async () => {
+    const { harness } = await boot({
+      counts: COUNTS,
+      esp: { sent: "1", events: "1" },
+    }, {
+      publicBaseUrl: "https://paperclip.example.com",
+      encryptionKey: { type: "secret_ref", secretId: "sec-enc" },
+      google: { clientId: "client-id", clientSecret: { type: "secret_ref", secretId: "sec-google" } },
+      esp: { enabled: true, provider: "resend", ratePerSecond: 10, apiKey: { type: "secret_ref", secretId: "sec-resend" }, webhookSecret: { type: "secret_ref", secretId: "sec-webhook" } },
+    });
+
+    const store = new MemoryStore();
+    const health = await espHealth(harness.ctx, CO, store, NOW);
+    expect(health.health.find((h) => h.key === "mailbox:esp-sandbox")).toBeUndefined();
+    expect(health.health.find((h) => h.key === "mailbox:esp-topic")).toBeUndefined();
+  });
+
+  it("no SES checklist items appear without provider configured", async () => {
+    const { harness } = await boot({
+      counts: COUNTS,
+      esp: { sent: "0", events: "0" },
+    }, {});
+
+    const store = new MemoryStore();
+    const health = await espHealth(harness.ctx, CO, store, NOW);
+    expect(health.health.find((h) => h.key === "mailbox:esp-sandbox")).toBeUndefined();
+    expect(health.health.find((h) => h.key === "mailbox:esp-topic")).toBeUndefined();
+    expect(health.kpis.length).toBe(0);
   });
 });
 

@@ -19,11 +19,11 @@ import {
   type QualityMetric,
   type Tone,
 } from "@partnersinbiz/pib-plugin-kit";
-import { espReadiness, loadMailboxConfig } from "./config.js";
+import { espReadiness, espWebhookUrl, loadMailboxConfig, SES_SANDBOX_LIMIT, SNS_CONFIRMATION_WAITING } from "./config.js";
 import { DOMAIN_JOB_KEY, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY } from "./constants.js";
 import { SqlStore } from "./db.js";
 import { domainHealthChecks } from "./domain-health.js";
-import { readEspState } from "./esp/runtime.js";
+import { knownEspQuota, readEspState } from "./esp/runtime.js";
 import { dailyCap, utcDay } from "./esp/warmup.js";
 import type { DomainCheckRow } from "./gmail/types.js";
 import { TRIAGE_PURPOSE } from "./gmail/triage.js";
@@ -314,22 +314,38 @@ export async function espHealth(ctx: PluginContext, companyId: string, store: Pi
   const config = loaded.config.esp;
   const domains = await store.listEspDomains(companyId);
   // A company that never set the provider up has nothing to report.
-  if (!config.enabled && !config.hasApiKey && domains.length === 0) return out;
+  if (!config.enabled && !config.hasCredentials && domains.length === 0) return out;
   const readiness = espReadiness(config);
   const state = await readEspState(ctx, companyId);
+  const quota = knownEspQuota(companyId);
   const HREF_ESP = "/mailbox?tab=mailboxes";
+  const isSES = config.provider === "ses";
+  const webhookUrl = espWebhookUrl(loaded.config.publicBaseUrl, config.provider);
+
+  // Main provider status (key/webhook/credentials).
   if (state && !state.ok) {
+    const providerName = isSES ? "SES" : "Resend";
+    const consoleHint = isSES ? "(AWS SES console)" : "(resend.com/webhooks)";
     out.health.push({
       key: "mailbox:esp",
       title: "Email provider",
       status: "bad",
-      detail: state.code === "quota" ? `Resend says the sending quota is used up${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.` : `Resend refused the Mailbox's API key${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.`,
+      detail: state.code === "quota" ? `${providerName} says the sending quota is used up${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.` : `${providerName} refused the Mailbox's ${isSES ? "AWS keys" : "API key"}${state.detail ? `: ${state.detail}` : ""}. Mail through the provider waits.`,
       href: HREF_ESP,
-      fix: state.code === "quota" ? "Upgrade the Resend plan or wait for the quota to reset (daily quotas reset at midnight UTC)." : "Create a new Resend API key with Full access, save it as a Paperclip secret and pick it in the Mailbox settings, Email provider.",
+      fix: state.code === "quota"
+        ? isSES ? "Wait for the quota to reset, or increase the sending limit in the SES console." : "Upgrade the Resend plan or wait for the quota to reset (daily quotas reset at midnight UTC)."
+        : isSES ? "Check the AWS keys in the Mailbox settings and create new ones if needed." : "Create a new Resend API key with Full access, save it as a Paperclip secret and pick it in the Mailbox settings, Email provider.",
       since: state.at,
     });
   } else if (domains.length > 0 && !readiness.sending) {
-    out.health.push({ key: "mailbox:esp", title: "Email provider", status: "warn", detail: readiness.blockers.join(" "), href: HREF_ESP, fix: "Finish the Setup items for the email provider: nothing is sent through it until they are done." });
+    out.health.push({
+      key: "mailbox:esp",
+      title: "Email provider",
+      status: "warn",
+      detail: readiness.blockers.join(" "),
+      href: HREF_ESP,
+      fix: "Finish the Setup items for the email provider: nothing is sent through it until they are done."
+    });
   } else {
     // Sends went through the provider but no delivery event has come back: the webhook is not reaching the Mailbox.
     const rows = await ctx.db.query<{ sent: string; events: string }>(
@@ -341,10 +357,58 @@ export async function espHealth(ctx: PluginContext, companyId: string, store: Pi
     const events = n(rows[0]?.events);
     out.health.push(
       sent > 0 && events === 0
-        ? { key: "mailbox:esp", title: "Email provider", status: "warn", detail: `${sent} message${sent === 1 ? "" : "s"} went out through the provider in the last 3 days but no delivery event has come back, so bounces and complaints are not being seen.`, href: HREF_ESP, fix: "Check the Resend webhook: its Endpoint URL, that it is enabled, and that its signing secret is the one saved in the Mailbox settings (resend.com/webhooks shows recent deliveries and their answers)." }
+        ? {
+            key: "mailbox:esp",
+            title: "Email provider",
+            status: "warn",
+            detail: `${sent} message${sent === 1 ? "" : "s"} went out through the provider in the last 3 days but no delivery event has come back, so bounces and complaints are not being seen.`,
+            href: HREF_ESP,
+            fix: isSES
+              ? `Check the SNS topic subscription to this endpoint: ${webhookUrl}. In the SNS console, subscriptions tab, find the subscription and confirm it is showing status "Confirmed".`
+              : `Check the Resend webhook: its Endpoint URL, that it is enabled, and that its signing secret is the one saved in the Mailbox settings (resend.com/webhooks shows recent deliveries and their answers).`
+          }
         : { key: "mailbox:esp", title: "Email provider", status: "ok" },
     );
   }
+
+  // SES-specific: sandbox state and topic confirmation.
+  if (isSES && domains.length > 0) {
+    if (quota && !quota.productionAccessEnabled) {
+      out.health.push({
+        key: "mailbox:esp-sandbox",
+        title: "SES sandbox limitations",
+        status: "warn",
+        detail: SES_SANDBOX_LIMIT + ". Only verified recipients can be sent to; marketing to unverified addresses is refused.",
+        href: HREF_ESP,
+        fix: "Ask AWS to move this SES account out of the sandbox. In the AWS SES console, under Account dashboard, request production access.",
+      });
+    }
+    if (!config.ses.topicConfirmed && domains.length > 0 && state?.ok !== false) {
+      out.health.push({
+        key: "mailbox:esp-topic",
+        title: "SNS topic confirmation",
+        status: "warn",
+        detail: SNS_CONFIRMATION_WAITING + ". Until confirmed, bounces and complaints are not received.",
+        href: HREF_ESP,
+        fix: `In the AWS SNS console, Subscriptions tab, find the subscription to ${webhookUrl}. The status shows Pending; click Request confirmation to verify the subscription. The Mailbox will then record the confirmation.`,
+      });
+    }
+  }
+
+  // 24-hour quota KPI (SES only).
+  if (quota && isSES && domains.length > 0) {
+    const remaining = Math.max(0, quota.max24HourSend - quota.sentLast24Hours);
+    out.kpis.push({
+      key: "esp_quota_remaining",
+      label: "SES 24-hour quota remaining",
+      value: `${remaining} of ${quota.max24HourSend}`,
+      raw: remaining,
+      tone: remaining === 0 ? "bad" : remaining < quota.max24HourSend * 0.2 ? "warn" : "ok",
+      href: HREF_ESP,
+      group: "delivery",
+    });
+  }
+
   const today = utcDay(now);
   let sentToday = 0;
   for (const row of domains.filter((entry) => entry.status === "verified")) {
