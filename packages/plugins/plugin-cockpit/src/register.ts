@@ -72,6 +72,7 @@ import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
+import { riskTierCloseCheck } from "./register-w1c-done.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -558,6 +559,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.info("Memory: could not read Learned lines from a comment", { issueId: event.entityId, error: message(error) });
     }
+    // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
+    await riskTierCloseCheck(env, event);
   });
   // One issue.updated handler (each extra subscription would deliver every event again):
   // an open question follows its issue, and an agent's close of an onboarding or
@@ -591,6 +594,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.info("Push: needs-you trigger failed", { issueId: event.entityId, error: message(error) });
     }
+    // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
+    await riskTierCloseCheck(env, event);
   });
 
   // "Needs you" push trigger fires when an issue is assigned to the owner.

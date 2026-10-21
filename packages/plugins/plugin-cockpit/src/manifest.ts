@@ -155,6 +155,19 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     },
+    riskTierClose: {
+      type: "object",
+      title: "Risk-tier auto-close for low-tier issues (optional)",
+      description: "Automatically closes LOW-tier in_review issues when Code Reviewer and Dogfood Tester both give PASS verdicts.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable risk-tier auto-close",
+          description: "When enabled, closes LOW-tier in_review issues with required PASS verdicts from role agents.",
+          default: false,
+        },
+      },
+    },
   },
 };
 
