@@ -534,27 +534,30 @@ const plugin = definePlugin({
     void startupClientProjectsEmit(ctx).catch((error) => ctx.logger.info("CRM client projects startup emit failed", { error: error instanceof Error ? error.message : String(error) }));
 
     // Event handler for Drive save requests from other plugins (kit's driveSave)
-    ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event) => {
+    // The kit emits this bare event; SDK types don't include it, so we cast the event name
+    ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event: PluginEvent) => {
       const { companyId } = event;
-      const payload = (event.payload as any) || {};
-      const { requestId, kind, name, mimeType, bytes, subfolder, client } = payload;
+      const payload = (event.payload as Record<string, unknown> | undefined) || {};
+      // Extract fields emitted by kit's driveSave: contentBase64 or publicUrl, optional sha256, subfolder, clientKind/clientRef
+      const { requestId, kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
       if (!requestId) return;
 
       try {
         const input: Parameters<typeof saveDriveFile>[2] = {
           companyId,
           projectId: "root",
-          fileKind: kind || "ops",
-          name,
-          mimeType,
+          fileKind: (kind as string) || "ops",
+          name: (name as string) || "",
+          mimeType: (mimeType as string) || "",
         };
-        if (bytes) input.contentBase64 = Buffer.from(bytes as Uint8Array).toString("base64");
-        if (subfolder) input.subfolder = subfolder;
-        if (client) input.path = undefined; // client context is validated separately
+        if (contentBase64) input.contentBase64 = contentBase64 as string;
+        if (publicUrl) input.publicUrl = publicUrl as string;
+        if (sha256) input.sha256 = sha256 as string;
+        if (subfolder) input.subfolder = subfolder as string;
 
-        // Use a fake viewer for internal CRM saves (no user context)
-        const viewer = { companyId, userId: "crm:drive-handler", agentId: null };
-        const result = await saveDriveFile(ctx, viewer as any, input);
+        // Use a system viewer for internal CRM saves (no user context)
+        const viewer: Viewer = { companyId, userId: null, agentId: null, role: null };
+        const result = await saveDriveFile(ctx, viewer, input);
 
         if (result.status === "saved") {
           await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.saved}`, companyId, { requestId, driveFileId: result.driveFileId, url: result.url });
