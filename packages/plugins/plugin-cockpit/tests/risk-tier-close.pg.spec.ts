@@ -22,9 +22,9 @@ d("risk-tier close (Postgres)", () => {
     const w = await worlds.make({
       savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } },
       agents: [
-        { id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" },
-        { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" },
-        { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" },
+        { id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" },
+        { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" },
+        { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" },
       ],
     });
     const id = uuid(), now = new Date().toISOString();
@@ -44,7 +44,7 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("switch off: no-op", async () => {
-    const w = await worlds.make({ agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }] });
+    const w = await worlds.make({ agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-2", title: "Low", status: "in_review", description: "Risk tier: low" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-2", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
@@ -56,7 +56,7 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("high tier: never closes", async () => {
-    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }] });
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-3", title: "High", status: "in_review" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-3", title: "High", status: "in_review", description: "", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
@@ -68,7 +68,7 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("host refuses: one warn, no comment/repair, no retry", async () => {
-    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }] });
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-4", title: "Low", status: "in_review", description: "Risk tier: low" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-4", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
@@ -89,7 +89,7 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("(e) second event: no-op", async () => {
-    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }] });
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-5", title: "Low", status: "in_review", description: "Risk tier: low" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-5", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
@@ -110,7 +110,7 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("(f) verdicts arriving after first event: first event no-op, second event closes", async () => {
-    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }] });
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-6", title: "Low", status: "in_review", description: "Risk tier: low" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-6", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
@@ -129,13 +129,26 @@ d("risk-tier close (Postgres)", () => {
   });
 
   it("(g) PASS from non-role agent: does not close, not in evidence", async () => {
-    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "Dogfood Tester", status: "active" }, { id: "other", companyId: COMPANY, name: "Other", status: "active" }] });
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Code Reviewer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }, { id: "other", companyId: COMPANY, name: "Other", role: "engineer", status: "active" }] });
     const id = uuid(), now = new Date().toISOString();
     await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-7", title: "Low", status: "in_review", description: "Risk tier: low" });
     const issue: any = { id, companyId: COMPANY, identifier: "PAR-7", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
     w.issues.set(id, issue);
     w.comments.push({ id: uuid(), issueId: id, companyId: COMPANY, authorAgentId: "other", authorUserId: null, body: "REVIEW: PASS sha=abc123def456 ci=green", createdAt: now });
     w.comments.push({ id: uuid(), issueId: id, companyId: COMPANY, authorAgentId: "other", authorUserId: null, body: "DOGFOOD: PASS", createdAt: now });
+    await w.fire("issue.comment.created", { companyId: COMPANY, entityId: id });
+    expect(w.issues.get(id)?.status).toBe("in_review");
+    expect((await listRepairs(w.env.ctx, COMPANY, { kind: "risk_tier_close" })).length).toBe(0);
+  });
+
+  it("(h) wrong title: agent with qa role but title 'Engineer' does not count as Code Reviewer", async () => {
+    const w = await worlds.make({ savedConfigs: { [COMPANY]: { riskTierClose: { enabled: true } } }, agents: [{ id: "ap", companyId: COMPANY, name: "Planner", role: "pm", title: "Planner", status: "active" }, { id: "acr", companyId: COMPANY, name: "CR", role: "qa", title: "Engineer", status: "active" }, { id: "adf", companyId: COMPANY, name: "DF", role: "general", title: "Dogfood Tester", status: "active" }] });
+    const id = uuid(), now = new Date().toISOString();
+    await w.pg.addIssueToDb({ id, companyId: COMPANY, identifier: "PAR-8", title: "Low", status: "in_review", description: "Risk tier: low" });
+    const issue: any = { id, companyId: COMPANY, identifier: "PAR-8", title: "Low", status: "in_review", description: "Risk tier: low", assigneeAgentId: null, assigneeUserId: null, createdAt: now, updatedAt: now, createdByAgentId: "ap" };
+    w.issues.set(id, issue);
+    w.comments.push({ id: uuid(), issueId: id, companyId: COMPANY, authorAgentId: "acr", authorUserId: null, body: "REVIEW: PASS sha=abc123def456 ci=green", createdAt: now });
+    w.comments.push({ id: uuid(), issueId: id, companyId: COMPANY, authorAgentId: "adf", authorUserId: null, body: "DOGFOOD: PASS", createdAt: now });
     await w.fire("issue.comment.created", { companyId: COMPANY, entityId: id });
     expect(w.issues.get(id)?.status).toBe("in_review");
     expect((await listRepairs(w.env.ctx, COMPANY, { kind: "risk_tier_close" })).length).toBe(0);

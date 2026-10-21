@@ -4,10 +4,22 @@
  */
 
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import type { HireAgentSummary } from "@partnersinbiz/pib-plugin-kit";
 import { listCompanyAgents } from "@partnersinbiz/pib-plugin-kit";
 import { evaluateIssue, type VerdictComment } from "./risk-tier-model.js";
 import { recordRepair } from "./repairs.js";
 import { message, type Env } from "./env.js";
+
+/**
+ * Match agent by title (case-insensitive, trimmed; fall back to name when title is empty).
+ * Returns true if the agent has the matching title or name.
+ */
+function matchAgentRole(agent: HireAgentSummary, targetRole: string): boolean {
+  const titleToMatch = agent.title?.trim().toLowerCase() ?? "";
+  const nameToMatch = agent.name.trim().toLowerCase();
+  const target = targetRole.toLowerCase();
+  return titleToMatch === target || (titleToMatch === "" && nameToMatch === target);
+}
 
 const IN_FLIGHT = new Set<string>();
 
@@ -39,11 +51,11 @@ async function handleDoneCheck(
     // 4. Load agents by role
     const agents = await listCompanyAgents(env.ctx, companyId);
     const roleAgents = {
-      planner: agents.filter((a) => a.role === "Planner").map((a) => a.id),
-      deliveryLead: agents.filter((a) => a.role === "Delivery Lead").map((a) => a.id),
-      codeReviewer: agents.filter((a) => a.role === "Code Reviewer").map((a) => a.id),
-      dogfoodTester: agents.filter((a) => a.role === "Dogfood Tester").map((a) => a.id),
-      reviewer: agents.filter((a) => a.role === "Reviewer").map((a) => a.id),
+      planner: agents.filter((a) => matchAgentRole(a, "Planner")).map((a) => a.id),
+      deliveryLead: agents.filter((a) => matchAgentRole(a, "Delivery Lead")).map((a) => a.id),
+      codeReviewer: agents.filter((a) => matchAgentRole(a, "Code Reviewer")).map((a) => a.id),
+      dogfoodTester: agents.filter((a) => matchAgentRole(a, "Dogfood Tester")).map((a) => a.id),
+      reviewer: agents.filter((a) => matchAgentRole(a, "Reviewer")).map((a) => a.id),
     };
 
     // 5. Build verdict comments from issue comments with role author info
@@ -74,6 +86,7 @@ async function handleDoneCheck(
       await env.ctx.issues.update(issueId, { status: "done" }, companyId);
     } catch (error) {
       env.ctx.logger.warn("Risk tier close: issue update refused", { issueId, companyId, error: message(error) });
+      // Write a permanent marker to prevent retries on future events (logged once).
       await env.ctx.state.set(
         { scopeKind: "company", scopeId: companyId, namespace: "cockpit", stateKey: markerKey },
         { reason: "refused" }
@@ -84,13 +97,16 @@ async function handleDoneCheck(
     // 9. Post comment and record repair (evidence: only PASS comments from role agents)
     const roleAuthorIds = new Set([...roleAgents.codeReviewer, ...roleAgents.dogfoodTester, ...roleAgents.reviewer]);
     const verdictIds = comments
-      .filter((c) => {
-        const idx = comments.indexOf(c);
-        return idx < verdictComments.length &&
-               roleAuthorIds.has(verdictComments[idx]!.authorAgentId ?? "") &&
-               /(REVIEW|DOGFOOD):\s*PASS\b/.test(verdictComments[idx]!.body);
+      .map((c, idx) => ({
+        id: c.id,
+        verdict: verdictComments[idx],
+      }))
+      .filter(({ verdict }) => {
+        return verdict &&
+               roleAuthorIds.has(verdict.authorAgentId ?? "") &&
+               /(REVIEW|DOGFOOD):\s*PASS\b/.test(verdict.body);
       })
-      .map((c) => c.id);
+      .map(({ id }) => id);
 
     try {
       await env.ctx.issues.createComment(issueId, `Closed by Cockpit: tier low, evidence ${verdictIds.join(", ")}`, companyId);
@@ -123,7 +139,7 @@ async function handleDoneCheck(
 
 /**
  * Hook called from issue.comment.created and issue.updated handlers.
- * Fire-and-forget: exceptions are caught and logged.
+ * Exceptions are caught and logged; handles idempotency internally.
  */
 export async function riskTierCloseCheck(env: Env, event: PluginEvent): Promise<void> {
   if (!event.companyId || !event.entityId) return;
