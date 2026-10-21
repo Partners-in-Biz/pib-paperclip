@@ -1,4 +1,5 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
 /** Every param has a short, exact description, and an enum where the values are fixed. */
@@ -66,26 +67,22 @@ const post: Record<string, JsonSchema> = {
   overrides: OVERRIDES,
 };
 
-const arms: JsonSchema = {
-  type: "array",
-  description: 'Exactly two arms: [{"key":"control","description":"what we do now"},{"key":"variant","description":"the one change"}].',
-  items: {
-    type: "object",
-    required: ["key", "description"],
-    additionalProperties: false,
-    properties: {
-      key: choice(["control", "variant"], "control (what we do now) or variant (the change)"),
-      description: text("What posts in this arm do, in one line"),
-    },
-  },
-};
-
 /** Growth Lab experiment statuses (list-experiments filter). */
 export const EXPERIMENT_STATUSES = ["proposed", "running", "measured", "rejected", "abandoned"] as const;
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
+
+/** Growth Lab tools come from the kit; Social keeps its post wording and the older client params. */
+export const GROWTH_TOOL_KINDS: GrowthDeclarationOptions["kinds"] = ["own", "client"];
+export const GROWTH_TOOL_DESCRIPTIONS: GrowthDeclarationOptions["descriptions"] = {
+  "performance-review": `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first).${OWN}`,
+  "get-playbook": `The scope's playbook (markdown rules to follow when planning posts: rules, what to avoid, constraints such as brand voice and the booking link), its version, recent versions and pending changes. Created on first use.${OWN}`,
+  "list-experiments": `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard.${OWN}`,
+  "propose-experiment": `Propose one experiment that changes one variable. At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
+};
+const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = { kinds: GROWTH_TOOL_KINDS, descriptions: GROWTH_TOOL_DESCRIPTIONS };
 
 export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
@@ -403,79 +400,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,
     parametersSchema: schema([], { postId: text("One post's numbers (omit for the scope's totals)"), ...scope }),
   },
-  {
-    name: "performance-review",
-    displayName: "Performance review",
-    description:
-      `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first).${OWN}`,
-    parametersSchema: schema([], { ...scope, periodDays: int("Days to review, 7–90 (default 28)") }),
-  },
-  {
-    name: "get-playbook",
-    displayName: "Get playbook",
-    description: `The scope's playbook (markdown rules to follow when planning posts: rules, what to avoid, constraints such as brand voice and the booking link), its version, recent versions and pending changes. Created on first use.${OWN}`,
-    parametersSchema: schema([], { ...scope }),
-  },
-  {
-    name: "propose-playbook-change",
-    displayName: "Propose playbook change",
-    description:
-      `Propose one playbook edit with a reason: op add (a line in a section), remove (the exact line) or replace (the whole markdown). A person keeps or discards it unless autopilot is full.${OWN}`,
-    parametersSchema: schema(["reason"], {
-      ...scope,
-      op: choice(["add", "remove", "replace"], "add (default) a line, remove an exact line, or replace the whole playbook"),
-      section: choice(["rules", "avoid", "open", "constraints", "goal"], "For add: rules we follow, things to avoid, open questions, constraints (brand voice, links, banned words) or the goal"),
-      text: text("add: the rule, one line; remove: the exact line from get-playbook"),
-      playbook: text("replace: the whole new playbook markdown"),
-      reason: text("Why, with the evidence (post ids, measured lift)"),
-    }),
-  },
-  {
-    name: "decide-playbook-change",
-    displayName: "Decide playbook change",
-    description: "Keep (new playbook version) or discard a pending playbook change. Agents may only decide when the program's autopilot is full; otherwise a person decides on the Growth tab.",
-    parametersSchema: schema(["changeId", "decision"], {
-      changeId: text("Pending change id (from get-playbook)"),
-      decision: choice(["keep", "discard"], "keep writes a new playbook version; discard drops the change"),
-      note: text("Why (shown with the decision)"),
-    }),
-  },
-  {
-    name: "list-experiments",
-    displayName: "List experiments",
-    description: `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard.${OWN}`,
-    parametersSchema: schema([], {
-      ...scope,
-      status: { type: "array", items: { type: "string", enum: [...EXPERIMENT_STATUSES] }, description: "Only experiments in these statuses (default all)" },
-    }),
-  },
-  {
-    name: "propose-experiment",
-    displayName: "Propose experiment",
-    description:
-      `Propose one experiment that changes one variable. At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
-    parametersSchema: schema(["hypothesis", "hypothesisType", "variable", "arms"], {
-      ...scope,
-      hypothesis: text("What you expect and why, one sentence"),
-      hypothesisType: text("feature:value being tested, e.g. hook:question (pick from performance-review's ranked types)"),
-      variable: text("The one thing the variant changes"),
-      arms,
-      minPerArm: int("Posts needed per arm before measuring, 2–20 (default 3)"),
-      windowDays: int("Scoring window in days; only 7 is supported (the default)"),
-    }),
-  },
-  {
-    name: "approve-experiment",
-    displayName: "Approve experiment",
-    description: "Start a proposed experiment. Only on full autopilot may an agent approve; otherwise a person approves on the Growth tab.",
-    parametersSchema: schema(["experimentId"], { experimentId: text("Proposed experiment id (from list-experiments)"), note: text("Why (shown with the decision)") }),
-  },
-  {
-    name: "reject-experiment",
-    displayName: "Reject experiment",
-    description: "Reject a proposed experiment with a reason (its post tags are cleared). Only on full autopilot may an agent reject.",
-    parametersSchema: schema(["experimentId", "reason"], { experimentId: text("Proposed experiment id (from list-experiments)"), reason: text("Why it is rejected") }),
-  },
+  ...growthToolDeclarations(GROWTH_TOOL_OPTIONS),
   {
     name: "propose-feature-question",
     displayName: "Propose feature question",

@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ASK_OWNER_TOOL, ASKING_HEADING, COMPANY_MEMORY_HEADING, MODULES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, GROWTH_TOOL_NAMES, ASKING_HEADING, COMPANY_MEMORY_HEADING, MODULES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
 import { COMPANY_OS_SKILL_KEY } from "@partnersinbiz/pib-plugin-kit/team";
 import { COMPANY_FLOWS, COMPANY_SKILL_KEY, COMPANY_SKILL_SLUG, companySkillBody, toolNaming } from "../src/company-skill.js";
 import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
@@ -228,7 +228,10 @@ describe("the Reviewer skill", () => {
   it("names only tools that exist (other modules' tools read from their declarations)", () => {
     const declared = (plugin: string) => {
       const source = readFileSync(new URL(`../../plugin-${plugin}/src/tools.ts`, import.meta.url), "utf8");
-      return new Set([...source.matchAll(/name: "([a-z0-9-]+)"/g)].map((m) => m[1]!));
+      const names = new Set([...source.matchAll(/name: "([a-z0-9-]+)"/g)].map((m) => m[1]!));
+      // Plugins that register the kit's growth tools declare them through the factory, not as literals.
+      if (source.includes("growthToolDeclarations(")) for (const name of GROWTH_TOOL_NAMES) names.add(name);
+      return names;
     };
     const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
     // The Reviewer's and the Operator's tool names, and the onboarding checklist's.

@@ -1,4 +1,4 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -130,7 +130,7 @@ import {
 } from "./my-social.js";
 import { handleClientSummary } from "./routes.js";
 import { socialSetupStatus } from "./setup-status.js";
-import { SOCIAL_TOOLS } from "./tools.js";
+import { GROWTH_TOOL_DESCRIPTIONS, GROWTH_TOOL_KINDS, SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
 import { correctTriage } from "./triage.js";
 
@@ -264,28 +264,36 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":
       return accountAnalyticsRecord(ctx, viewer, p);
-    // Growth Lab
-    case "performance-review":
-      return performanceReview(growthEnv(ctx), viewer, p);
-    case "get-playbook":
-      return getPlaybookRecord(growthEnv(ctx), viewer, p);
-    case "propose-playbook-change":
-      return proposePlaybookChange(growthEnv(ctx), viewer, p);
-    case "decide-playbook-change":
-      return decidePlaybookChange(growthEnv(ctx), viewer, p);
-    case "list-experiments":
-      return listExperimentsRecord(growthEnv(ctx), viewer, p);
-    case "propose-experiment":
-      return proposeExperiment(growthEnv(ctx), viewer, p);
-    case "approve-experiment":
-      return approveExperiment(growthEnv(ctx), viewer, p);
-    case "reject-experiment":
-      return rejectExperiment(growthEnv(ctx), viewer, p);
+    // Growth Lab (eight of its tools come from the kit factory, registered in setup)
     case "propose-feature-question":
       return proposeFeatureQuestion(growthEnv(ctx), viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
+}
+
+/** The kit's Growth Lab tools, run for Social: the module switch, the viewer and Social's service. */
+function socialGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<Viewer> {
+  const run = (fn: (env: ReturnType<typeof growthEnv>, viewer: Viewer, p: Record<string, unknown>) => Promise<unknown>) =>
+    (viewer: Viewer, p: Record<string, unknown>) => fn(growthEnv(ctx), viewer, p);
+  return {
+    kinds: GROWTH_TOOL_KINDS,
+    descriptions: GROWTH_TOOL_DESCRIPTIONS,
+    async actor(runContext) {
+      if (!(await socialOn(ctx, runContext.companyId))) throw new Error(MODULE_OFF_MESSAGE);
+      return toolViewer(ctx, runContext);
+    },
+    handlers: {
+      "performance-review": run(performanceReview),
+      "get-playbook": run(getPlaybookRecord),
+      "propose-playbook-change": run(proposePlaybookChange),
+      "decide-playbook-change": run(decidePlaybookChange),
+      "list-experiments": run(listExperimentsRecord),
+      "propose-experiment": run(proposeExperiment),
+      "approve-experiment": run(approveExperiment),
+      "reject-experiment": run(rejectExperiment),
+    },
+  };
 }
 
 function toolContent(name: string, data: unknown): string {
@@ -582,8 +590,10 @@ const plugin = definePlugin({
     const ensure = (companyId: string) => bootstrap!.ensure(companyId);
 
     for (const tool of SOCIAL_TOOLS) {
+      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
+    registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
