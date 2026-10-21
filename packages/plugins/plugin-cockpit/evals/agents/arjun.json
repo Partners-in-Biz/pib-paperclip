@@ -25,7 +25,7 @@
           "Task"
         ],
         "mustNotSay": [
-          "wait.*complete|after.*finish|sequentially|one at a time"
+          "\\bI(?: will|'ll) (wait for|run (?!.*?(?:not |n't ))[^.]{0,40}(?:sequentially|one at a time))"
         ],
         "maxSteps": 4,
         "plainWriting": true
