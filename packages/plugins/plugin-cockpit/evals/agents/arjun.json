@@ -130,7 +130,7 @@
           "[Tt]ask.*implement|implement.*Task"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'m going to) (?:read the state|edit the test|write the component myself)\\b"
+          "\\bI(?: will|'ll|'m going to| am going to) (?:read|edit|write)\\b"
         ],
         "maxSteps": 3,
         "plainWriting": true
