@@ -157,6 +157,18 @@ describe("publish-due engine", () => {
     expect(summary.skipped[0]).toMatch(/not saved/);
     expect(summary.attempted).toBe(0);
   });
+
+  it("publishes promptly even when Drive save never resolves", async () => {
+    const { ctx, post, dest } = world(200, { id: "page-1_55" });
+    // publishPost should return immediately even though saveToDrive is called; Drive saves are not awaited in the job path.
+    const start = Date.now();
+    const summary = await publishDueJob(ctx, async () => undefined);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+    expect(summary).toMatchObject({ companies: 1, posts: 1, attempted: 1, published: 1 });
+    expect(dest).toMatchObject({ status: "published", external_id: "page-1_55" });
+    expect(post.status).toBe("published");
+  });
 });
 
 describe("OAuth completion through the bridge", () => {
