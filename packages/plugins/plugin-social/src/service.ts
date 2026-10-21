@@ -119,6 +119,7 @@ import { spaceOf } from "./space.js";
 import { retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
+import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
@@ -746,6 +747,12 @@ export async function recordClientApprovalRecord(ctx: PluginContext, viewer: Vie
 export async function reviewOutcomesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
   return reviewStats(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 90), 7), 365));
+}
+
+/** `media-compliance`: media and alt-text counts of published posts, and posts live with no Reviewer verdict. */
+export async function mediaComplianceRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return mediaCompliance(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 28), 1), 365));
 }
 
 // ── accounts ────────────────────────────────────────────────────────────────

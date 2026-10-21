@@ -110,6 +110,7 @@ import {
   retryPostRecord,
   requestCreativeRecord,
   reviewOutcomesRecord,
+  mediaComplianceRecord,
   schedulePost,
   setApprovalPolicyRecord,
   setRssActiveRecord,
@@ -245,6 +246,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return requestCreativeRecord(ctx, viewer, p);
     case "review-outcomes":
       return reviewOutcomesRecord(ctx, viewer, p);
+    case "media-compliance":
+      return mediaComplianceRecord(ctx, viewer, p);
     case "create-rss-feed":
       return createRssFeedRecord(ctx, viewer, p);
     case "list-rss-feeds":

@@ -257,6 +257,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema([], { ...scope, days: int("Days to look back, 7-365 (default 90)") }),
   },
   {
+    name: "media-compliance",
+    displayName: "Media compliance",
+    description: `Read-only. Of the posts published in the window (excluding the experiment control arm and posts tagged text-native): how many carried media, how many had alt text on every item, which ones did not, and every post that reached approved, scheduled or published with no Reviewer verdict on record.${OWN}`,
+    parametersSchema: schema([], { ...scope, days: int("Days to look back, 1-365 (default 28)") }),
+  },
+  {
     name: "schedule-post",
     displayName: "Schedule post",
     description: "Schedule an approved post that has no time yet. Fails if a destination would certainly fail (see validate-post).",

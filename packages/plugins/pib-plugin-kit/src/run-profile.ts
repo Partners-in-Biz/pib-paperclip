@@ -64,6 +64,7 @@ export const RUN_PROFILES: Record<TeamRoleKey, RunProfile> = {
   "revenue-lead": sonnet({ hermes: HERMES_FLASH_MODEL }),
   "seo-specialist": sonnet({ hermes: HERMES_FLASH_MODEL, maxConcurrentRuns: 6 }),
   social: sonnet(),
+  "creative-producer": sonnet(),
   bookkeeper: sonnet({ maxTurnsPerRun: 250 }),
   "payroll-clerk": sonnet(),
 };
