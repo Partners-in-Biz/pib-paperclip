@@ -1,6 +1,6 @@
 /**
  * Drive save-request event route for producer plugins.
- * A producer calls `driveSave(ctx, opts)` to request a file save.
+ * A producer calls `driveSave(ctx, opts)` to request a file save, optionally with a CRM subfolder and client context.
  * The CRM handles the upload and replies with `drive.file.saved` or `drive.file.failed`.
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -30,6 +30,8 @@ export type DriveSaveOptions = {
   mimeType: string;
   subfolder?: DriveSubfolder;
   timeoutMs?: number;
+  subfolder?: string;
+  client?: { kind: string; ref: string };
 } & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -73,7 +75,7 @@ export function registerDriveReplies(ctx: Pick<PluginContext, "events">): void {
 
 export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveSaveOptions): Promise<DriveSaveResult> {
   try {
-    const { companyId, kind, name, mimeType, timeoutMs } = opts;
+    const { companyId, kind, name, mimeType, timeoutMs, subfolder, client } = opts;
     const hasBytesOption = "bytes" in opts && opts.bytes !== undefined && opts.bytes !== null;
     const hasUrlOption = "publicUrl" in opts && opts.publicUrl !== undefined && opts.publicUrl !== null;
     const providedRequestId = opts.requestId;
@@ -89,6 +91,19 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
       requestId = randomUUID().replace(/-/g, "");
     } else if (!/^[a-z0-9]+$/i.test(requestId)) {
       return { status: "failed", requestId, reason: "invalid_request_id" };
+    }
+
+    // Validate optional subfolder and client fields
+    if (subfolder !== undefined && (typeof subfolder !== "string" || subfolder.trim().length === 0)) {
+      return { status: "failed", requestId, reason: "invalid_input" };
+    }
+    if (client !== undefined) {
+      if (!client || typeof client !== "object" || !("kind" in client) || !("ref" in client)) {
+        return { status: "failed", requestId, reason: "invalid_input" };
+      }
+      if (typeof client.kind !== "string" || client.kind.trim().length === 0 || typeof client.ref !== "string" || client.ref.trim().length === 0) {
+        return { status: "failed", requestId, reason: "invalid_input" };
+      }
     }
 
     // Register handlers and check for duplicate
@@ -118,6 +133,15 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
         return { status: "failed", requestId, reason: "invalid_input" };
       }
       payload.publicUrl = publicUrl;
+    }
+
+    // Add optional subfolder and client to payload
+    if (subfolder && subfolder.trim().length > 0) {
+      payload.subfolder = subfolder;
+    }
+    if (client && client.kind && client.ref) {
+      payload.clientKind = client.kind;
+      payload.clientRef = client.ref;
     }
 
     // Setup promise and handlers

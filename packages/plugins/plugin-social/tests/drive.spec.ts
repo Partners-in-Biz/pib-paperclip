@@ -180,4 +180,32 @@ describe("saveToDrive", () => {
     const warnMessages = (log.warns || []).map((w: any) => w.msg).join(",");
     expect(warnMessages).not.toContain("no_ack");
   });
+
+  it("does not hang when driveSave never resolves", async () => {
+    const mockDriveSave = vi.fn(
+      () => new Promise<DriveSaveResult>(() => {
+        // Never resolve or reject
+      })
+    );
+
+    const log: any = {};
+    const ctx = fakeCtx(log);
+
+    const savePromise = saveToDrive(ctx, {
+      companyId: "co-1",
+      post: { id: "post-hang", body: "Hang test" },
+      platform: "x",
+      media: [
+        { assetId: null, url: "https://example.com/img.jpg", kind: "image", mime: "image/jpeg", width: 640, height: 480, durationS: null, altText: "Test", bytes: 1024 },
+      ],
+      driveSave: mockDriveSave,
+    });
+
+    // Use Promise.race with a timeout to ensure the operation completes
+    const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    const result = await Promise.race([savePromise, timeoutPromise.then(() => { throw new Error("saveToDrive timed out"); })]);
+
+    expect(result).toBeUndefined();
+    expect(mockDriveSave).toHaveBeenCalled();
+  });
 });
