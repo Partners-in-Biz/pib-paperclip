@@ -109,7 +109,9 @@ import {
   createWorkIssue,
   openApprovalIssue,
   registerClientProjectWatch,
+  GROWTH_TOOL_NAMES,
   registerCompanyBootstrap,
+  registerGrowthTools,
   registerConsentReceiver,
   registerEraseReceiver,
   senderKeyOf,
@@ -139,6 +141,7 @@ import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { onMailDelivery } from "./delivery.js";
 import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSendResult, openIssueOnce, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { campaignsGrowthToolsHost } from "./growth-host.js";
 import { eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
@@ -177,11 +180,13 @@ const plugin = definePlugin({
       if (event.companyId) await rememberDomainHealth(ctx, event.companyId, event.payload).catch(() => false);
     });
     for (const tool of CAMPAIGN_TOOLS) {
+      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, async (params, run) => {
         await skillSync?.ensure(run.companyId).catch(() => undefined);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
+    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx));
     ctx.actions.register("campaigns.load", async (params, context) => {
       if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.

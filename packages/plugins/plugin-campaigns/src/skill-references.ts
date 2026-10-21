@@ -75,3 +75,22 @@ export const PRIVACY_REFERENCE = `# Consent, erasure and retention (POPIA)
 ## Webhook log
 - The host keeps the headers and body of every delivery to the plugin's public webhooks in its own log (an unsubscribe token contains the address). The server operator prunes that log (the README says how).
 `;
+
+export const GROWTH_LAB_REFERENCE = `# Growth Lab for campaigns: what works, per scope
+
+Campaigns learns from its own A/B steps. The unit is a campaign step with an A and a B version (\`create-ab-variant\`); the metric is the reply rate of each step, counted 7 days after each send. Pass \`scope\` on every call: omit it for PiB's own campaigns, or \`client:company:<CRM id>\` / \`client:contact:<CRM id>\`. Product and book scopes are not run here. Never read or write another scope's playbook or experiments.
+
+## The loop
+
+1. \`performance-review\`: running and proposed experiments, pending playbook changes, hypothesis types ranked by UCB.
+2. \`get-playbook\` before you write or change a campaign. The playbook is the scope's rules in markdown.
+3. \`propose-experiment\`: one variable, arms \`control\` (A, what we do now) and \`variant\` (B, the one change). Max 3 running per scope. On \`safe\` a person approves with \`approve-experiment\` or declines with \`reject-experiment\`; on \`reviewed\` the Reviewer may decide what stays internal; on \`full\` the agent decides.
+4. The daily \`measure-experiments\` job judges each step once both versions have 30 sends: win at +15% on the median with 60% of batches ahead, else loss, no change or inconclusive. 21 days after the start it closes as inconclusive.
+5. \`propose-playbook-change\` with a reason, then \`decide-playbook-change\` to keep (new version) or discard. \`list-experiments\` shows arms and verdicts.
+
+## Rules
+
+- Never approve, reject or decide your own proposal unless the scope's autopilot allows it for you.
+- Never invent results. If a step is not measured yet, say "not measured yet".
+- A verdict never launches, edits or sends a campaign. Launches still go through \`request-campaign-approval\` and a person.
+`;

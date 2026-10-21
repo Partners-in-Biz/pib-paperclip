@@ -82,10 +82,10 @@ describe("the skill", () => {
     expect(skill.markdown!.length).toBeLessThanOrEqual(18_000);
     expect(skill.markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(skill.markdown).toContain(ASKING_HEADING);
-    expect(skill.files?.map((file) => file.path)).toEqual(["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md"]);
+    expect(skill.files?.map((file) => file.path)).toEqual(["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md", "references/growth-lab.md"]);
     for (const file of skill.files ?? []) expect(file.content.length, file.path).toBeGreaterThan(500);
     // The skill points at them.
-    for (const path of ["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md"]) expect(CAMPAIGN_SKILL).toContain(path);
+    for (const path of ["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md", "references/growth-lab.md"]) expect(CAMPAIGN_SKILL).toContain(path);
   });
 
   it("names only tools that exist (in the skill and in its references)", () => {
