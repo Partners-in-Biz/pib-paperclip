@@ -92,6 +92,9 @@ export const HANDLERS: Record<string, Handler> = {
   "validate-schema": (env, c, _a, p) => checks.validateSchemaTool(env, c, p),
   "internal-link-audit": (env, c, _a, p) => checks.internalLinkAuditTool(env, c, p),
   "crawler-sim": (env, c, _a, p) => checks.crawlerSimTool(env, c, p),
+  "check-soft404": (env, c, _a, p) => checks.checkSoft404Tool(env, c, p),
+  "check-thin-content": (env, c, _a, p) => checks.checkThinContentTool(env, c, p),
+  "check-byline": (env, c, _a, p) => checks.checkBylineTool(env, c, p),
   "run-pagespeed": (env, c, _a, p) => checks.runPagespeedTool(env, c, p),
   // GSC
   "gsc-connect-url": (env, c, _a, p) => gsc.gscConnectUrl(env, c, p),

@@ -318,3 +318,110 @@ export async function runInternalLinkAudit(
     findings,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Soft-404 probe: check if nonexistent paths return 200 (app shell)
+// ---------------------------------------------------------------------------
+
+export interface Soft404Result {
+  url: string;
+  status: number;
+  findings: CheckFinding[];
+}
+
+export async function runSoft404Check(fetcher: SiteFetcher, siteUrl: string): Promise<Soft404Result> {
+  const origin = originOf(siteUrl);
+  const randomPath = `/pib-soft404-${Math.random().toString(36).slice(2, 10)}`;
+  const url = `${origin}${randomPath}`;
+  const res = await fetcher(url);
+  const findings: CheckFinding[] = [];
+  if (res.status === 200) {
+    findings.push({ category: "soft-404", severity: "high", url: url, finding: "Returns HTTP 200 for nonexistent path (app shell returning 200)" });
+  }
+  return { url, status: res.status, findings };
+}
+
+// ---------------------------------------------------------------------------
+// Byline/date probe: check for author and date info in article pages
+// ---------------------------------------------------------------------------
+
+export interface BylineCheckResult {
+  url: string;
+  finalUrl: string;
+  status: number;
+  isArticle: boolean;
+  findings: CheckFinding[];
+}
+
+export async function runBylineCheck(fetcher: SiteFetcher, url: string): Promise<BylineCheckResult> {
+  const page = await fetcher(url, { headers: { "User-Agent": GOOGLEBOT_UA, Accept: "text/html,application/xhtml+xml" } });
+  const findings: CheckFinding[] = [];
+
+  // Detect if page is article-like
+  const meta = extractMeta(page.text);
+  const path = new URL(page.url).pathname.toLowerCase();
+  const isArticle = /^article$/.test((meta.ogType ?? "").toLowerCase()) ||
+    /\/blog\//.test(path) ||
+    /<article\b/.test(page.text);
+
+  if (isArticle && page.status < 400) {
+    // Check for byline/author
+    const hasAuthor = /\bby\s+\w/i.test(page.text) ||
+      /rel\s*=\s*["\']author/.test(page.text) ||
+      /itemprop\s*=\s*["\']author/.test(page.text) ||
+      /\bauthor\b|byline/.test(page.text);
+
+    // Check for date
+    const hasDate = /<time\b/.test(page.text) ||
+      /datePublished|dateModified|article:published_time|article:modified_time/.test(page.text);
+
+    if (!hasAuthor) {
+      findings.push({ category: "byline", severity: "medium", url: page.url, finding: "No visible author/byline detected" });
+    }
+    if (!hasDate) {
+      findings.push({ category: "byline", severity: "medium", url: page.url, finding: "No publication or update date detected" });
+    }
+  }
+
+  return { url, finalUrl: page.url, status: page.status, isArticle, findings };
+}
+
+// ---------------------------------------------------------------------------
+// Thin-content probe: surface content pages with below-threshold text size
+// ---------------------------------------------------------------------------
+
+export interface ThinContentResult {
+  url: string;
+  finalUrl: string;
+  status: number;
+  textLength: number;
+  findings: CheckFinding[];
+}
+
+export async function runThinContentCheck(fetcher: SiteFetcher, url: string, minChars: number = 200): Promise<ThinContentResult> {
+  const page = await fetcher(url, { headers: { "User-Agent": GOOGLEBOT_UA, Accept: "text/html,application/xhtml+xml" } });
+  const findings: CheckFinding[] = [];
+
+  if (page.status < 400) {
+    const crawler = crawlerView({
+      url,
+      finalUrl: page.url,
+      status: page.status,
+      redirects: page.redirects,
+      headers: page.headers,
+      html: page.text,
+      robots: null,
+    });
+
+    if (crawler.bodyTextLength < minChars) {
+      findings.push({
+        category: "thin-content",
+        severity: "high",
+        url: page.url,
+        finding: `Only ${crawler.bodyTextLength} characters of text (below threshold of ${minChars})`,
+      });
+    }
+  }
+
+  return { url, finalUrl: page.url, status: page.status, textLength: 0, findings };
+}
