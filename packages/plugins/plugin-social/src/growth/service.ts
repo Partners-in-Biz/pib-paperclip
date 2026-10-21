@@ -364,9 +364,35 @@ export async function savePlaybookRecord(env: GrowthEnv, actor: GrowthActor, par
   return kitSavePlaybookRecord(wrappedEnv, actor, params);
 }
 
+/**
+ * Load the effective media rule for a scope (own work or client): stored block from playbook text if present, else default.
+ * Used by both get-playbook and record-review-verdict to ensure consistent rule resolution.
+ * Returns loadError if the playbook could not be loaded (caller decides whether to treat as warning or failure).
+ */
+export async function effectiveMediaRule(
+  env: GrowthEnv,
+  companyId: string,
+  scope: ClientScope,
+): Promise<{ rule: ReturnType<typeof import("@partnersinbiz/pib-plugin-kit").parseMediaRule>; source: "default" | "stored"; loadError?: string }> {
+  const { parseMediaRule, DEFAULT_MEDIA_RULE } = await import("@partnersinbiz/pib-plugin-kit");
+  try {
+    const program = await env.store.findProgram(companyId, GROWTH_CHANNEL, scope);
+    if (!program) return { rule: DEFAULT_MEDIA_RULE, source: "default" };
+    const mediaRule = parseMediaRule(program.playbook);
+    const hasMediaBlock = /```media-rule[^\S\n]*\n([\s\S]*?)```/i.test(program.playbook);
+    return { rule: mediaRule, source: hasMediaBlock ? "stored" : "default" };
+  } catch (err) {
+    return { rule: DEFAULT_MEDIA_RULE, source: "default", loadError: "Playbook could not be loaded, default media rule used" };
+  }
+}
+
 export async function getPlaybookRecord(env: GrowthEnv, actor: GrowthActor, params: Params, options: { versionText?: boolean } = {}) {
   const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
-  return kitGetPlaybookRecord(wrappedEnv, actor, params, options);
+  const result = await kitGetPlaybookRecord(wrappedEnv, actor, params, options);
+  const resolved = await scopeFromParams(env.ctx, actor.companyId, params);
+  const { rule: mediaRule, source: mediaRuleSource } = await effectiveMediaRule(env, actor.companyId, resolved.scope);
+  // loadError is ignored here; get-playbook always returns the effective rule, not a verdict
+  return { ...result, mediaRule, mediaRuleSource };
 }
 
 // ── Program settings and feature questions ─────────────────────────────────
@@ -423,8 +449,9 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
   const toOut = ({ subjectId, ...rest }: ReviewPost) => ({ ...rest, postId: subjectId });
   const { top, bottom } = topAndBottom(enginePosts, 5);
   const lifts = liftsByFeature(enginePosts, 3);
-  const [open, pending] = await Promise.all([
+  const [open, allExperiments, pending] = await Promise.all([
     env.store.listExperiments(companyId, program.id, OPEN_EXPERIMENTS),
+    env.store.listExperiments(companyId, program.id),
     env.store.listChanges(companyId, program.id, "pending"),
   ]);
   const experiments = [];
@@ -433,6 +460,20 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
   const notes: string[] = [];
   if (rows.length === 0) notes.push("No 7-day scores yet. Posts are scored once they are 7 days old on platforms that report reach, impressions or views.");
   else if (withLift.length < rows.length / 2) notes.push(`Only ${withLift.length} of ${enginePosts.length} posts have a lift: an account needs ${BASELINE_MIN}+ earlier scored posts in 30 days for a baseline.`);
+
+  // Media hypothesis injection: inject only if no media experiment exists (finished or open).
+  let rankedHypothesisTypes = rankedHypotheses({ ...programCtx(program), scoreboard: program.scoreboard }, { running: open.map((e) => e.hypothesisType), lifts }, 12);
+  const hasMediaExperiment = allExperiments.some(
+    (e) => e.hypothesisType.startsWith("media:") && ["measured", "rejected", "abandoned", "running", "proposed"].includes(e.status)
+  );
+  if (!hasMediaExperiment) {
+    // Remove any existing media entry to avoid duplication
+    rankedHypothesisTypes = rankedHypothesisTypes.filter((r) => !r.type.startsWith("media:"));
+    // Prepend the media hypothesis with high priority (untried, not running yet)
+    const mediaCandidate = { type: "media:with_media", tries: 0, score: null as number | null, untried: true, running: false, observedLift: null, observedPosts: 0 };
+    rankedHypothesisTypes = [mediaCandidate, ...rankedHypothesisTypes].slice(0, 12);
+  }
+
   return {
     program: programOut(program),
     periodDays,
@@ -447,7 +488,7 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
     runningExperiments: experiments.filter((e) => e.status === "running"),
     proposedExperiments: experiments.filter((e) => e.status === "proposed"),
     pendingChanges: pending.map(changeOut),
-    rankedHypothesisTypes: rankedHypotheses({ ...programCtx(program), scoreboard: program.scoreboard }, { running: open.map((e) => e.hypothesisType), lifts }, 12),
+    rankedHypothesisTypes,
     featureQuestions: {
       builtIn: [...CODE_FEATURES, ...jevFeatureKeys({ topics: programCtx(program).topics, featureQuestions: [] })],
       custom: activeQuestions(program.featureQuestions),

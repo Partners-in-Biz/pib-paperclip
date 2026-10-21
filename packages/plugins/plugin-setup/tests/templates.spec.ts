@@ -27,7 +27,7 @@ import { renderHash } from "../src/render-hash.js";
 import { pickAdapter, renderHire, renderInstructions, templateConfig } from "../src/templates-render.js";
 import { parseSubagents, subagentExtraArgs, subagentsText } from "../src/subagents.js";
 
-const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "revenue-lead", "summarizer", "wiki-maintainer"];
+const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "revenue-lead", "creative-producer", "summarizer", "wiki-maintainer"];
 const DEV_CHAIN = ["delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder"];
 /** The ones that write, review, merge or plan code: the Plan Critic only reads a plan and the Mac Builder has its own rules. */
 const CODE_AGENTS = ["delivery-lead", "planner", "senior-developer", "developer", "code-reviewer"];

@@ -1,8 +1,3 @@
-/**
- * An in-memory world for the approval tests: the posts, destinations, accounts, approval policies, review outcomes and client
- * approval links that approval-flow.ts and client-approval.ts read and write, behind the host SQL guard copy (`fakeCtx`),
- * plus host issues, the Cockpit roles and the CRM projection. Statements are recognised by their text, like the other specs.
- */
 import { vi } from "vitest";
 import type { AccountRow, PostRow } from "../src/db.js";
 import type { PostStatus } from "../src/platforms.js";
@@ -30,6 +25,14 @@ export interface WorldOptions {
   /** The Account Manager agent in the Cockpit team roles (who drafts the client's email). */
   accountManager?: string | null;
   config?: Record<string, unknown>;
+  /** Post destinations (leave unset for default with one LinkedIn destination). */
+  destinations?: Array<{ id: string; company_id: string; post_id: string; account_id: string; status: string; attempts: number }>;
+  /** Accounts to seed (leave unset for default with one LinkedIn account). */
+  accounts?: Array<Partial<AccountRow>>;
+  /** Playbook text for the post's scope (including media-rule block if needed). */
+  playbookText?: string | null;
+  /** Experiment to seed in the growth store. */
+  experiment?: { id: string; programId: string; status: "proposed" | "running" | "measured" | "rejected" | "abandoned"; arms: Array<{ name: string; description: string }> } | null;
 }
 
 export function account(id: string, extra: Partial<AccountRow> = {}): AccountRow {
@@ -43,14 +46,22 @@ export function account(id: string, extra: Partial<AccountRow> = {}): AccountRow
 
 export function approvalWorld(opts: WorldOptions = {}) {
   const client = opts.client === undefined ? { kind: "company" as const, id: "c1", name: "Acme" } : opts.client;
-  const post: Record<string, unknown> = {
+  let post: Record<string, unknown> = {
     id: "p1", company_id: "co", body: "Spring sale starts Friday. Come and see.", overrides: {}, media: [], status: "review", scheduled_at: opts.scheduledAt ?? null, scope: "org",
     owner_user_id: "owner-1", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null, first_comment: null, source: "agent",
     source_ref: null, failure_issue_id: null, published_at: null, error: null, created_by_agent_id: "ag-social", review_issue_id: opts.reviewIssue ?? null, review_returns: 0,
-    created_at: new Date(), updated_at: new Date(),
+    created_at: new Date(), updated_at: new Date(), experiment_id: null, experiment_arm: null, tags: [],
   };
-  const dest = { id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 };
-  const acct = account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null });
+  const destinations = opts.destinations ?? [{ id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 }];
+  const accountsMap = new Map<string, AccountRow>();
+  if (opts.accounts) {
+    for (const acctOpts of opts.accounts) {
+      const id = acctOpts.id || "a1";
+      accountsMap.set(id, account(id, acctOpts));
+    }
+  } else {
+    accountsMap.set("a1", account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null }));
+  }
   let policy: Record<string, unknown> | null = opts.policy
     ? { scope_key: client ? `${client.kind}:${client.id}` : "own", require_reviewer: false, require_owner: true, require_client: false, link_expiry_days: 14, updated_by: "owner-1", updated_at: new Date(), ...opts.policy }
     : null;
@@ -64,6 +75,25 @@ export function approvalWorld(opts: WorldOptions = {}) {
   const issueStatus: Record<string, string> = {};
   let reviewIssue = opts.reviewIssue ?? null;
   const socialAgent = opts.socialAgent === undefined ? "ag-social" : opts.socialAgent;
+
+  // Growth store data
+  const scopeKey = client ? `${client.kind}:${client.id}` : "own";
+  let program: Record<string, unknown> = {
+    id: "prog-1", company_id: "co", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null,
+    channel: "social", objective: "Test objective", metric: "engagement_rate", constraints: {},
+    playbook: opts.playbookText ?? "# Default playbook", playbook_version: 1,
+    autopilot: "safe", scoreboard: {}, feature_questions: [], status: "active", owner_user_id: "owner-1",
+    approval_issue_id: null, approval_week: null, created_at: new Date(), updated_at: new Date(),
+  };
+  const experiment: Record<string, unknown> | null = opts.experiment ? {
+    id: opts.experiment.id, company_id: "co", program_id: opts.experiment.programId,
+    hypothesis: "Test hypothesis", hypothesis_type: "hook", variable: "media_requirements",
+    arms: opts.experiment.arms, metric: "engagement_rate", min_per_arm: 3, window_days: 7,
+    status: opts.experiment.status, proposed_by: "agent:a", approval_issue_id: null,
+    approved_at: null, approved_by: null, started_at: opts.experiment.status === "running" ? new Date().toISOString() : null,
+    measure_after: null, measured_at: null, verdict: null, outcome: null, playbook_diff: null, playbook_decision: null,
+    decision_note: null, created_at: new Date(), updated_at: new Date(),
+  } : null;
 
   const ctx = fakeCtx(
     {
@@ -116,11 +146,18 @@ export function approvalWorld(opts: WorldOptions = {}) {
     {
       queryResult: (sql, params) => {
         if (sql.startsWith("SELECT review_issue_id")) return [{ review_issue_id: reviewIssue }];
-        if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, review_issue_id: reviewIssue }];
-        if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, review_issue_id: reviewIssue }] : [];
-        if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return [dest];
-        if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) return [acct];
-        if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) return [acct];
+        if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }];
+        if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }] : [];
+        if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return destinations.filter((d) => d.post_id === params[0]);
+        if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) {
+          const ids = JSON.parse(params[1] as string) as string[];
+          return ids.map((id) => accountsMap.get(id)).filter((a): a is AccountRow => a !== undefined);
+        }
+        if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) {
+          const id = String(params[0]);
+          const acct = accountsMap.get(id);
+          return acct ? [acct] : [];
+        }
         if (sql.includes(`FROM ${T("approval_policies")}`)) return policy && policy.scope_key === params[1] ? [policy] : [];
         if (sql.includes("SELECT COALESCE(MAX(round), 0)")) {
           const rounds = outcomes.filter((o) => o.post_id === params[0] && o.stage === params[2]).map((o) => Number(o.round));
@@ -144,14 +181,71 @@ export function approvalWorld(opts: WorldOptions = {}) {
         if (sql.includes(`FROM ${T("client_approvals")}`) && sql.includes("status = 'pending' AND expires_at < now()")) {
           return links.filter((l) => l.status === "pending" && Date.parse(String(l.expires_at)) < Date.now()).map((l) => ({ ...l }));
         }
+        // Growth store queries
+        if (sql.includes(`FROM ${T("growth_programs")}`)) {
+          if (sql.includes("WHERE company_id = $1 AND channel = $2")) {
+            // findProgram query: matches on company_id, channel, and optionally client_ref/client_kind
+            const companyId = String(params[0]);
+            const channel = String(params[1]);
+            if (companyId !== "co" || channel !== "social") return [];
+            // Check if it's looking for a specific scope by examining the SQL and params
+            if (sql.includes("AND client_ref IS NULL")) {
+              // Looking for org scope (no client) - check if the seeded program matches
+              return program.client_ref === null ? [program] : [];
+            } else if (sql.includes("client_ref = $3")) {
+              // Looking for a specific client scope - check if the seeded program matches
+              return program.client_ref === String(params[2]) ? [program] : [];
+            }
+            return [program];
+          }
+          if (sql.includes("WHERE company_id = $1 AND id = $2")) {
+            // getProgram query
+            return String(params[0]) === "co" && String(params[1]) === program.id ? [program] : [];
+          }
+        }
+        if (sql.includes(`FROM ${T("growth_experiments")}`)) {
+          if (sql.includes("WHERE company_id = $1 AND id = $2")) {
+            // getExperiment query
+            return String(params[0]) === "co" && experiment && String(params[1]) === experiment.id ? [experiment] : [];
+          }
+        }
         return [];
       },
       executeResult: (sql, params) => {
+        if (sql.startsWith(`INSERT INTO ${T("posts")}`)) {
+          const postId = String(params[0]);
+          post.id = postId;
+          post.company_id = String(params[1]);
+          post.body = String(params[2]);
+          post.overrides = params[3] ? JSON.parse(String(params[3])) : {};
+          post.media = params[4] ? JSON.parse(String(params[4])) : [];
+          post.status = String(params[5]);
+          post.scope = String(params[6]);
+          post.owner_user_id = params[7] ?? null;
+          post.first_comment = params[8] ?? null;
+          post.client_kind = params[9] ?? null;
+          post.client_ref = params[10] ?? null;
+          post.client_name = params[11] ?? null;
+          post.source = String(params[12]);
+          post.source_ref = params[13] ?? null;
+          post.created_by_agent_id = params[14] ?? null;
+          post.scheduled_at = params[16] ? new Date(String(params[16])).toISOString() : null;
+          // Tags are in params at a later index, need to check the SQL to determine position
+          // For now, look for tags in overrides if they were passed
+          return 1;
+        }
         if (sql.startsWith(`UPDATE ${T("posts")}`) && sql.includes("status = ANY(")) {
           const from = JSON.parse(String(params[5])) as string[];
           if (!from.includes(String(post.status))) return 0;
           post.status = params[2];
           if (params[3] === true) post.scheduled_at = params[4];
+          return 1;
+        }
+        if (sql.startsWith(`UPDATE ${T("posts")}`) && sql.includes("body = $2")) {
+          // Standard post update with body, overrides, media, etc.
+          post.body = String(params[1]);
+          post.overrides = params[2] ? JSON.parse(String(params[2])) : {};
+          post.media = params[3] ? JSON.parse(String(params[3])) : [];
           return 1;
         }
         if (sql.includes("SET schedule_issue_id = $3")) {
@@ -211,6 +305,40 @@ export function approvalWorld(opts: WorldOptions = {}) {
           l.status = "expired";
           return 1;
         }
+        if (sql.startsWith(`INSERT INTO ${T("growth_programs")}`)) {
+          // INSERT INTO growth_programs (id, company_id, scope_key, client_kind, client_ref, client_name, project_id, channel, objective, metric, constraints, playbook, playbook_version, autopilot, scoreboard, feature_questions, owner_user_id)
+          // Params: [id, companyId, scopeKey, clientKind, clientRef, clientName, projectId, channel, objective, metric, constraints, playbook, playbookVersion, autopilot, scoreboard, featureQuestions, ownerUserId]
+          const id = String(params[0]);
+          const companyId = String(params[1]);
+          const channel = String(params[7]);
+          // Only replace the seeded program if it's the same company and channel
+          if (companyId === "co" && channel === "social") {
+            program = {
+              id,
+              company_id: companyId,
+              scope_key: params[2] ?? null,
+              client_kind: params[3] ?? null,
+              client_ref: params[4] ?? null,
+              client_name: params[5] ?? null,
+              project_id: params[6] ?? null,
+              channel,
+              objective: String(params[8]),
+              metric: String(params[9]),
+              constraints: params[10] ? JSON.parse(String(params[10])) : {},
+              playbook: String(params[11]),
+              playbook_version: Number(params[12]),
+              autopilot: String(params[13]),
+              scoreboard: params[14] ? JSON.parse(String(params[14])) : {},
+              feature_questions: params[15] ? JSON.parse(String(params[15])) : [],
+              owner_user_id: params[16] ?? null,
+              approval_issue_id: null,
+              approval_week: null,
+              created_at: new Date(),
+              updated_at: new Date(),
+            };
+          }
+          return 1;
+        }
         return 1;
       },
     },
@@ -224,7 +352,7 @@ export function approvalWorld(opts: WorldOptions = {}) {
     l.answered_at = new Date().toISOString();
     l.notified_at = null;
   };
-  return { ctx, post, outcomes, links, created, updates, comments, wakeups, logs, answer, reviewIssueId: () => reviewIssue, policy: () => policy, setIssueStatus: (id: string, status: string) => void (issueStatus[id] = status), dest };
+  return { ctx, post, outcomes, links, created, updates, comments, wakeups, logs, answer, reviewIssueId: () => reviewIssue, policy: () => policy, setIssueStatus: (id: string, status: string) => void (issueStatus[id] = status), destinations };
 }
 
 export const PERSON = { companyId: "co", userId: "owner-1", agentId: null, runId: null, isAgent: false } as const;

@@ -13,7 +13,7 @@ import {
 
 describe("team roles", () => {
   it("lists every recommended PiB agent once, with its plugin's actions", () => {
-    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
+    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "creative-producer", "bookkeeper", "payroll-clerk"]);
     expect(new Set(TEAM_ROLES.map((r) => `${r.pluginKey}:${r.setupItemKey}`)).size).toBe(TEAM_ROLES.length);
     for (const role of TEAM_ROLES) {
       expect(role.actions.options).toMatch(/\.hire-options$/);

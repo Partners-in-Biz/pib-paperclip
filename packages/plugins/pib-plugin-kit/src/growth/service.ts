@@ -102,7 +102,8 @@ export function experimentStatuses(value: unknown): any[] | undefined {
 // The plugin (Social) provides all specifics like configs, copy functions, etc.
 
 export async function ensureProgram(env: any, companyId: string, target: ProgramTarget): Promise<any> {
-  const found = await env.store.findProgram(companyId, E.GROWTH_CHANNEL, target.scope);
+  // `env.channel`, `env.objective` and `env.metric` let a channel other than Social keep its own program (default: Social's).
+  const found = await env.store.findProgram(companyId, env.channel ?? E.GROWTH_CHANNEL, target.scope);
   if (found) {
     if (target.scope && target.name && found.clientName !== target.name) await env.store.updateProgram(companyId, found.id, { clientName: target.name });
     return found;
@@ -115,9 +116,9 @@ export async function ensureProgram(env: any, companyId: string, target: Program
     clientKind: target.scope?.kind ?? null,
     clientRef: target.scope?.id ?? null,
     clientName: target.scope ? target.name : null,
-    channel: E.GROWTH_CHANNEL,
-    objective: E.DEFAULT_OBJECTIVE,
-    metric: E.DEFAULT_METRIC,
+    channel: env.channel ?? E.GROWTH_CHANNEL,
+    objective: env.objective ?? E.DEFAULT_OBJECTIVE,
+    metric: env.metric ?? E.DEFAULT_METRIC,
     constraints: {},
     playbook,
     playbookVersion: 1,
@@ -126,7 +127,7 @@ export async function ensureProgram(env: any, companyId: string, target: Program
     featureQuestions: [],
     ownerUserId: null,
   });
-  const created = await env.store.findProgram(companyId, E.GROWTH_CHANNEL, target.scope);
+  const created = await env.store.findProgram(companyId, env.channel ?? E.GROWTH_CHANNEL, target.scope);
   if (!created) throw new E.GrowthError("The growth program could not be created");
   if (created.id === id) {
     await env.store.insertPlaybookVersion({ programId: id, version: 1, playbook, reason: "Starter playbook", experimentId: null, createdBy: null });
@@ -195,6 +196,8 @@ async function closeIfDecided(env: any, companyId: string, programId: string, is
 }
 
 async function armCounts(env: any, e: any) {
+  // A channel whose items are not posts (Campaigns) has no per-arm post counts.
+  if (typeof env.store.experimentPosts !== "function") return undefined;
   const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
   const count = (arm: string) => {
     const list = posts.filter((p: any) => p.arm === arm);

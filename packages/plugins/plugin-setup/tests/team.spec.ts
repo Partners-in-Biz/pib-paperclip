@@ -84,7 +84,7 @@ const bookkeeper = teamRole("bookkeeper");
 
 describe("team roles", () => {
   it("lists the roles of switched-on modules whose plugin is installed", () => {
-    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
+    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "creative-producer", "bookkeeper", "payroll-clerk"]);
     const installed = {
       "partnersinbiz.cockpit": { status: "ready" },
       "partnersinbiz.seo": { status: "ready" },
@@ -196,7 +196,7 @@ describe("team roles", () => {
     expect(actionSummary({ results: [{ skillKey: "plugin/partnersinbiz-payroll/payroll", action: "failed", error: "boom" }] }).steps).toEqual(["The payroll skill did not sync (boom)."]);
     expect(dropSkillAsks(["Attach the pib-seo-sprint skill to Sam.", "Granted plugin tool access."], seo.skills)).toEqual(["Granted plugin tool access."]);
     // Plain names, never the pib- slug or the plugin id.
-    expect(skillNames(teamRole("social").skills)).toBe("the publishing, writing posts and company operating manual skills");
+    expect(skillNames(teamRole("social").skills)).toBe("the publishing, writing posts, creative work and company operating manual skills");
     expect(skillNames(seo.skills)).toBe("the SEO sprints and company operating manual skills");
     expect(skillLabel("plugin/partnersinbiz-billing/invoice-draft")).toBe("Billing: invoice drafting");
     expect(skillLabel("plugin/partnersinbiz-mailbox/mailbox-draft")).toBe("Mailbox: email drafting");
