@@ -5,6 +5,7 @@ import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { GrowthLedgerError, listLedger, parseLedgerInput, parseMetricInput, recordMetric, scopeText, upsertLedger } from "./growth-ledger.js";
 import { GROWTH_TOOL_NAMES } from "./growth-tool-declarations.js";
+import { checkTag, GrowthTagError, parseTag, writeTag } from "./growth-tagging.js";
 
 export { GROWTH_TOOL_SET } from "./growth-tool-declarations.js";
 
@@ -17,8 +18,12 @@ export async function runGrowthTool(env: Env, name: string, raw: unknown, run: T
   try {
     if (name === GROWTH_TOOL_NAMES.recordMetric) {
       const input = parseMetricInput(p);
+      const tag = parseTag(p);
+      if (tag?.experimentId && tag.arm) await checkTag(env, companyId, { experimentId: tag.experimentId, arm: tag.arm }, input);
       await recordMetric(env, companyId, input);
-      return ok(`Recorded ${input.metric} = ${input.value} for ${input.channel}, ${input.subject}, ${input.window}.`, input);
+      if (tag) await writeTag(env, companyId, tag, input);
+      const tagged = tag?.experimentId ? ` and tagged it to ${tag.experimentId} (${tag.arm})` : tag ? " and cleared its experiment tag" : "";
+      return ok(`Recorded ${input.metric} = ${input.value} for ${input.channel}, ${input.subject}, ${input.window}${tagged}.`, { ...input, experimentId: tag?.experimentId ?? null, arm: tag?.arm ?? null });
     }
     if (name === GROWTH_TOOL_NAMES.ledger) {
       const rows = await listLedger(env, companyId, {
@@ -36,7 +41,7 @@ export async function runGrowthTool(env: Env, name: string, raw: unknown, run: T
     }
     return fail(`Unknown tool ${name}`);
   } catch (error) {
-    if (error instanceof GrowthLedgerError) return fail(error.message);
+    if (error instanceof GrowthLedgerError || error instanceof GrowthTagError) return fail(error.message);
     env.ctx.logger.info("Cockpit growth tool failed", { name, error: message(error) });
     return fail(`${name} failed: ${message(error)}`);
   }

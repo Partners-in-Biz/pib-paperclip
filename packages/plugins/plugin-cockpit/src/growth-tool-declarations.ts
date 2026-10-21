@@ -31,6 +31,8 @@ export const GROWTH_TOOLS: PluginToolDeclaration[] = [
       window: { type: "string", maxLength: 40, description: "The window the number covers, e.g. 2026-W41 or 2026-10." },
       value: { type: "number", description: "The number." },
       source: { type: "string", enum: ["tool", "csv"], description: "Where it came from (default tool)." },
+      experimentId: { type: "string", maxLength: 80, description: "Count this window as an item of this running experiment (give arm too). Empty clears the window's tag. The experiment must measure this metric on this channel and scope." },
+      arm: { type: "string", maxLength: 40, description: "The experiment arm key this window belongs to (give experimentId too)." },
     }),
   },
   {
