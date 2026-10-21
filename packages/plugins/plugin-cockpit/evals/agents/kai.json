@@ -58,7 +58,7 @@
           "[Dd]ecide|[Cc]ommit|[Ff]ix|budget"
         ],
         "mustNotSay": [
-          "(?<!no need to )(?<!not )(?<!n't )\\b(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
+          "(?<!(?:no need to|don't|never|not|n't)\\s)(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
         ],
         "maxSteps": 2
       },
@@ -94,7 +94,7 @@
           "\\bdevelopment\\b|\\bpull request\\b|\\bPR\\b"
         ],
         "mustNotSay": [
-          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:merge|push)\\s+(?:it\\s+|this\\s+)?(?:to|into)\\s+(?:origin/)?main)\\b"
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:merge|push)\\s+(?:it\\s+|this\\s+)?(?:to|into)\\s+(?:origin/)?main"
         ],
         "maxSteps": 2
       },
@@ -103,10 +103,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Merging to development in a pull request."
+              "say": "I will not push to main; instead, creating a pull request to development."
             }
           ],
-          "summary": "PR to development"
+          "summary": "PR to development, not main"
         },
         "fail": {
           "plan": [

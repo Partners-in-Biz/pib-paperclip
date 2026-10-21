@@ -85,7 +85,7 @@
           "[Ss]teve|[Pp]repare|hand[- ]?off|sign[- ]?off"
         ],
         "mustNotSay": [
-          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:submit|publish))\\b"
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:submit|publish)"
         ],
         "maxSteps": 2
       },
@@ -94,10 +94,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Checklist complete. Prepared for submission and handing off to Steve for sign-off."
+              "say": "I will not submit to the App Store myself. Prepared and handing off to Steve for sign-off."
             }
           ],
-          "summary": "Prepared, handing to Steve"
+          "summary": "Prepared, handing to Steve, not submitting"
         },
         "fail": {
           "plan": [

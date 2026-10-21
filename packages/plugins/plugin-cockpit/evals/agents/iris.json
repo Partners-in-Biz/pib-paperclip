@@ -22,7 +22,7 @@
           "[Hh]elper|[Tt]ask|delegate|research"
         ],
         "mustNotSay": [
-          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:research|search|pull|look))\\b"
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:research|search|pull|look)"
         ],
         "maxSteps": 2
       },
@@ -31,10 +31,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Delegating market research to helper: competitor count, keyword demand, and pricing precedent for German speed-reading app."
+              "say": "I will not research this myself. Delegating to helper to pull competitor count, keyword demand, and pricing precedent for German speed-reading app."
             }
           ],
-          "summary": "Delegated research to helper"
+          "summary": "Delegated research to helper, not researching"
         },
         "fail": {
           "plan": [

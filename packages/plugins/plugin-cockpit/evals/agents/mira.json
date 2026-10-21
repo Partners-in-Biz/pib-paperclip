@@ -49,7 +49,7 @@
           "[Pp]lugin[- ]?ads|get[- ]?spend[- ]?ledger|get[- ]?budget"
         ],
         "mustNotSay": [
-          "(?<!not\\s)(?<!the\\s)(?:Meta(?:'s)?\\s+(?:ads\\s+)?console|Ads\\s+Manager)\\b"
+          "Meta(?:'s)?\\s+(?:ads\\s+)?console|Ads\\s+Manager"
         ],
         "maxSteps": 2
       },
@@ -58,7 +58,7 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Reading from plugin-ads tools: get-spend-ledger for today's spend and get-budget-status for pace."
+              "say": "Using plugin-ads tools (get-spend-ledger and get-budget-status) to check today's spend and budget pace on the Velox campaign."
             }
           ],
           "summary": "Used plugin-ads tools"
@@ -85,7 +85,7 @@
           "[Rr]ecommend|[Aa]rjun|owner"
         ],
         "mustNotSay": [
-          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:change|update|set|move)\\s+(?:it|the\\s+)?paywall)\\b"
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:change|update|set|move)\\s+(?:it|the\\s+)?paywall"
         ],
         "maxSteps": 2
       },
@@ -94,10 +94,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Recommend moving paywall to lesson 3 to Arjun for implementation."
+              "say": "I will not change the paywall setting myself. Recommending move from lesson 5 to lesson 3 for Arjun to implement."
             }
           ],
-          "summary": "Recommended change to owner"
+          "summary": "Recommended change to owner, not changing"
         },
         "fail": {
           "plan": [
