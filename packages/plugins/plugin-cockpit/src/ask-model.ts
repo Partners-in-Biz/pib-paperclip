@@ -13,6 +13,7 @@ import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { ASK_OWNER_COMMENT_MARK } from "@partnersinbiz/pib-plugin-kit/asking";
 import type { WaitingItem } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import type { WaitingAskInfo } from "./merge.js";
+import { POLICY_CLASSES, type PolicyClass } from "./owner-defaults-model.js";
 
 export const ASK_KINDS = ["decision", "grant", "money", "legal", "info"] as const;
 export type AskKind = (typeof ASK_KINDS)[number];
@@ -121,6 +122,12 @@ export interface AskInput {
   client: string | null;
   dueBy: string | null;
   effect: AskEffect | null;
+  /** Hours to wait before applying default (positive integer). */
+  defaultAfterHours: number | null;
+  /** The recommended answer (must be one of options if supplied). */
+  recommended: string | null;
+  /** The policy class for auto-answer. */
+  policyClass: PolicyClass | null;
 }
 
 export class AskError extends Error {}
@@ -197,7 +204,32 @@ export function parseAskInput(raw: Record<string, unknown>): AskInput {
     dueBy = value;
   }
   const effect = parseEffect(raw.effect);
-  return { issueId, question, options, why, kind, links, steps, client, dueBy, effect };
+  // Validate defaultAfterHours: must be a positive integer if supplied
+  let defaultAfterHours: number | null = null;
+  if (raw.defaultAfterHours != null) {
+    const val = raw.defaultAfterHours;
+    if (typeof val !== "number" || !Number.isInteger(val) || val <= 0) {
+      throw new AskError("defaultAfterHours must be a positive integer (1 or higher).");
+    }
+    defaultAfterHours = val;
+  }
+  // Validate recommended: must be one of the options if supplied
+  let recommended: string | null = null;
+  if (raw.recommended != null && raw.recommended !== "") {
+    recommended = textOf(raw.recommended);
+    if (!options.length) throw new AskError("recommended requires options to be supplied.");
+    if (!options.includes(recommended)) throw new AskError(`recommended must be one of the options; it is not in the list.`);
+  }
+  // Validate policyClass: must be in POLICY_CLASSES if supplied
+  let policyClass: PolicyClass | null = null;
+  if (raw.policyClass != null && raw.policyClass !== "") {
+    const val = typeof raw.policyClass === "string" ? raw.policyClass.trim() : "";
+    if (!POLICY_CLASSES.includes(val as PolicyClass)) {
+      throw new AskError(`policyClass must be one of ${POLICY_CLASSES.join(", ")}; "${val}" is not recognized.`);
+    }
+    policyClass = val as PolicyClass;
+  }
+  return { issueId, question, options, why, kind, links, steps, client, dueBy, effect, defaultAfterHours, recommended, policyClass };
 }
 
 /** A Paperclip path with the company prefix (`/issues/X` → `/PIB/issues/X`); links that already have it, and https links, stay. */

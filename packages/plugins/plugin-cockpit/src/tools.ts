@@ -13,6 +13,7 @@ import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
 import { GROWTH_TOOLS } from "./growth-tool-declarations.js";
 import { OPS_TOOLS } from "./ops-tool-declarations.js";
 import { BANNED_WORDS_MAX, PROFILE_FIELDS } from "./profile-model.js";
+import { POLICY_CLASSES } from "./owner-defaults-model.js";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -87,7 +88,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.askOwner,
     displayName: "Ask the owner",
     description:
-      "Ask the owner for a decision, a one-time grant (a login consent, a key, a DNS record), money, legal or information you cannot get elsewhere. Once per issue; asking again updates the question. The issue goes to the owner (in review), shows first in the Cockpit's Waiting on you and the daily brief, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next.",
+      "Ask the owner for a decision, a one-time grant (a login consent, a key, a DNS record), money, legal or information you cannot get elsewhere. Once per issue; asking again updates the question. The issue goes to the owner (in review), shows first in the Cockpit's Waiting on you and the daily brief, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next. Optionally set defaultAfterHours, recommended (one of options) and policyClass so a policy can answer if the owner does not by then.",
     parametersSchema: schema(["issueId", "question", "why", "kind"], {
       issueId: { type: "string", description: "The issue you are working on, which waits for the answer (id or identifier, e.g. PIB-23)." },
       question: { type: "string", maxLength: ASK_LIMITS.question, description: `One clear question (at most ${ASK_LIMITS.question} characters).` },
@@ -111,6 +112,9 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       steps: { type: "array", items: { type: "string", maxLength: ASK_LIMITS.stepChars }, maxItems: ASK_LIMITS.steps, description: `Exact steps for anything they must do themselves, in order (up to ${ASK_LIMITS.steps}).` },
       client: { type: "string", pattern: "^(company|contact):[A-Za-z0-9_-]{1,128}$", description: "The client it is about: \"company:<crm id>\" or \"contact:<crm id>\". Omit for own work." },
       dueBy: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "When you need the answer by, YYYY-MM-DD." },
+      defaultAfterHours: { type: "integer", minimum: 1, description: "Hours to wait before applying the default answer (must be 1 or higher)." },
+      recommended: { type: "string", description: "The recommended answer (must be one of the options)." },
+      policyClass: { type: "string", enum: [...POLICY_CLASSES], description: "The policy class for auto-answering the question." },
       effect: {
         type: "object",
         description: "What the system does when the owner says yes to your FIRST option, so a grant takes effect and is checked (not just answered). Only for kind grant or decision, and only an effect a skill or the Setup checklist names (for example mailbox.delegate, cockpit.grant-memory-tools). The owner sees exactly what it will do. After the answer you are woken with what happened: do not ask again.",
