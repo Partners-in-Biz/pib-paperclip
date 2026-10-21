@@ -221,6 +221,111 @@ describe("readVerdicts", () => {
       }).codeReviewer,
     ).toBe("changes");
   });
+  it("PASS by a non-reviewer is ignored", () => {
+    expect(
+      readVerdicts({
+        comments: [c("x1", "REVIEW: PASS sha=abc123456789 ci=green")],
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("none");
+    expect(
+      readVerdicts({
+        comments: [c("dev1", "REVIEW: PASS sha=abc123456789 ci=green")],
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("none");
+    expect(
+      readVerdicts({
+        comments: [c("x1", "DOGFOOD: PASS")],
+        statusChanges: [],
+        roles,
+      }).dogfood,
+    ).toBe("none");
+    expect(
+      readVerdicts({
+        comments: [c("dev1", "DOGFOOD: PASS")],
+        statusChanges: [],
+        roles,
+      }).dogfood,
+    ).toBe("none");
+  });
+  it("hand-back: reviewer PASS then author comment => stale", () => {
+    expect(
+      readVerdicts({
+        comments: [
+          c("rev1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z"),
+          c("dev1", "Updated", "2026-01-01T11:00:00Z"),
+        ],
+        assigneeAgentId: "rev1",
+        statusChanges: [],
+        roles,
+      }).reviewer,
+    ).toBe("stale");
+    expect(
+      readVerdicts({
+        comments: [
+          c("cr1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z"),
+          c("dev1", "Updated", "2026-01-01T11:00:00Z"),
+        ],
+        assigneeAgentId: "cr1",
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("stale");
+  });
+  it("hand-back to tester: codeReviewer PASS with other assignee then author comment => stale", () => {
+    expect(
+      readVerdicts({
+        comments: [
+          c("cr1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z"),
+          c("dev1", "Updated", "2026-01-01T11:00:00Z"),
+        ],
+        assigneeAgentId: "df1",
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("stale");
+  });
+  it("status-change variant: cr1 PASS then status change by author => stale", () => {
+    expect(
+      readVerdicts({
+        comments: [c("cr1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z")],
+        assigneeAgentId: "cr1",
+        statusChanges: [{ actorAgentId: "dev1", at: "2026-01-01T11:00:00Z" }],
+        roles,
+      }).codeReviewer,
+    ).toBe("stale");
+  });
+  it("role-holder and board activity do not invalidate", () => {
+    expect(
+      readVerdicts({
+        comments: [
+          c("cr1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z"),
+          c("df1", "Dogfood note", "2026-01-01T10:30:00Z"),
+          c("dl1", "Delivery note", "2026-01-01T10:45:00Z"),
+          { authorAgentId: null, body: "Board comment", createdAt: "2026-01-01T11:00:00Z" },
+        ],
+        assigneeAgentId: "cr1",
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("pass");
+  });
+  it("assignee that is planner/deliveryLead DOES invalidate", () => {
+    expect(
+      readVerdicts({
+        comments: [
+          c("cr1", "REVIEW: PASS sha=abc123456789 ci=green", "2026-01-01T10:00:00Z"),
+          c("dl1", "Planning note", "2026-01-01T11:00:00Z"),
+        ],
+        assigneeAgentId: "dl1",
+        statusChanges: [],
+        roles,
+      }).codeReviewer,
+    ).toBe("stale");
+  });
 });
 
 describe("closeDecision", () => {

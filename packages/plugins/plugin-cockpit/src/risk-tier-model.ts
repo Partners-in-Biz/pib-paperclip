@@ -68,11 +68,13 @@ export function resolveTier({
 }
 
 function parseVerdict(prefix: "REVIEW" | "DOGFOOD", body: string, strictPass: RegExp): Verdict {
+  const loosePassRegex = new RegExp(`^\\s*${prefix}:\\s*PASS\\b`);
+  const changesRegex = new RegExp(`^\\s*${prefix}:\\s*(CHANGES NEEDED|FAIL)\\b`);
   let hasPass = false, hasChanges = false;
   for (const line of body.split("\n")) {
     if (strictPass.test(line)) hasPass = true;
-    else if (new RegExp(`^\\s*${prefix}:\\s*PASS\\b`).test(line)) hasChanges = true;
-    if (new RegExp(`^\\s*${prefix}:\\s*(CHANGES NEEDED|FAIL)\\b`).test(line)) hasChanges = true;
+    else if (loosePassRegex.test(line)) hasChanges = true;
+    if (changesRegex.test(line)) hasChanges = true;
   }
   return hasChanges ? "changes" : hasPass ? "pass" : "none";
 }
@@ -92,21 +94,45 @@ function lastVerdict(
   return { verdict: "none", index: -1 };
 }
 
+function invalidates(
+  actorId: string | null | undefined,
+  assigneeAgentId: string | null | undefined,
+  roles: TierRoles,
+): boolean {
+  if (!actorId) return false;
+  const isRoleHolder = (id: string) =>
+    roles.codeReviewer.includes(id) ||
+    roles.dogfoodTester.includes(id) ||
+    roles.reviewer.includes(id);
+  if (isRoleHolder(actorId)) return false;
+  const isInAnyRole = (id: string) =>
+    roles.planner.includes(id) ||
+    roles.deliveryLead.includes(id) ||
+    roles.codeReviewer.includes(id) ||
+    roles.dogfoodTester.includes(id) ||
+    roles.reviewer.includes(id);
+  return actorId === assigneeAgentId || !isInAnyRole(actorId);
+}
+
 function isStale(
   verdict: Verdict,
   verdictIdx: number,
   comments: VerdictComment[],
   statusChanges: StatusChange[],
-  assigneeId: string | null | undefined,
-  assigneeHoldsRole: boolean,
+  assigneeAgentId: string | null | undefined,
+  roles: TierRoles,
 ): Verdict {
-  if (verdict !== "pass" || !assigneeId || assigneeHoldsRole) return verdict;
+  if (verdict !== "pass") return verdict;
   const verdictTime = verdictIdx >= 0 ? new Date(comments[verdictIdx].createdAt).getTime() : 0;
   for (let i = verdictIdx + 1; i < comments.length; i++) {
-    if (comments[i].authorAgentId === assigneeId && !comments[i].deletedAt) return "stale";
+    if (!comments[i].deletedAt && invalidates(comments[i].authorAgentId, assigneeAgentId, roles)) {
+      return "stale";
+    }
   }
   for (const s of statusChanges) {
-    if (s.actorAgentId === assigneeId && new Date(s.at).getTime() >= verdictTime) return "stale";
+    if (new Date(s.at).getTime() >= verdictTime && invalidates(s.actorAgentId, assigneeAgentId, roles)) {
+      return "stale";
+    }
   }
   return verdict;
 }
@@ -124,20 +150,15 @@ export function readVerdicts({
 }): Verdicts {
   const active = comments.filter((c) => !c.deletedAt);
   active.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  const assigneeIsRole =
-    assigneeAgentId &&
-    (roles.codeReviewer.includes(assigneeAgentId) ||
-      roles.dogfoodTester.includes(assigneeAgentId) ||
-      roles.reviewer.includes(assigneeAgentId));
   const reviewPass = /^\s*REVIEW: PASS\s+sha=([0-9a-f]{12})(?![0-9a-f])\s+ci=green\b/;
   const dogfoodPass = /^\s*DOGFOOD: PASS\b/;
   const crV = lastVerdict(active, roles.codeReviewer, (b) => parseVerdict("REVIEW", b, reviewPass));
   const dfV = lastVerdict(active, roles.dogfoodTester, (b) => parseVerdict("DOGFOOD", b, dogfoodPass));
   const revV = lastVerdict(active, roles.reviewer, (b) => parseVerdict("REVIEW", b, reviewPass));
   return {
-    codeReviewer: isStale(crV.verdict, crV.index, active, statusChanges, assigneeAgentId, !!assigneeIsRole),
-    dogfood: isStale(dfV.verdict, dfV.index, active, statusChanges, assigneeAgentId, !!assigneeIsRole),
-    reviewer: isStale(revV.verdict, revV.index, active, statusChanges, assigneeAgentId, !!assigneeIsRole),
+    codeReviewer: isStale(crV.verdict, crV.index, active, statusChanges, assigneeAgentId, roles),
+    dogfood: isStale(dfV.verdict, dfV.index, active, statusChanges, assigneeAgentId, roles),
+    reviewer: isStale(revV.verdict, revV.index, active, statusChanges, assigneeAgentId, roles),
   };
 }
 
