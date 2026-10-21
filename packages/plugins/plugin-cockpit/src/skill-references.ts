@@ -26,6 +26,7 @@ export const OPERATOR_REFERENCE_PATHS = {
   credentials: "references/credentials-and-custody.md",
   asking: "references/asking-with-an-effect.md",
   quality: "references/quality-gates.md",
+  stalls: "references/stalls.md",
   coach: "references/skill-coach.md",
 } as const;
 
@@ -223,6 +224,26 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 `;
 
 // ---------------------------------------------------------------------------
+// Stalls: chain_idle and orphan_blocker findings
+// ---------------------------------------------------------------------------
+
+export const STALLS_REFERENCE = `# Acting on stalls and stuck blockers
+
+A **chain_idle** finding marks task work that is not done or cancelled: the thread is inactive and the issue is not moving. An **orphan_blocker** finding marks work blocked by an issue that no longer matters (done, cancelled, or blocked itself with no way out). Handle either within the same run.
+
+## Steps
+
+1. **List findings:** ${T(TOOL_NAMES.watchdogFindings)} (optional \`limit\`).
+2. **Read the issue.** \`GET /api/issues/{id}\` (Paperclip API) and the comments to understand what is blocking it and why.
+3. **Name the real blocker.** A chain_idle issue is inactive; is an agent ready but not running, a person must act, or the issue should not exist? An orphan_blocker issue points to a blocker that changed: is it done, cancelled, or no longer a valid reason to wait?
+4. **Decide and act; never edit another agent's issue fields directly:**
+   - **Over-strict owner edge:** The blocked issue waits on an owner-only check that should not block (the owner-checks rule says so). Comment the issue's assignee with the exact fix: name the blocker issue (for example "Drop PAR-nnn from your blockedByIssueIds, since owner approvals do not block your work") and what they must do. Their comment is the wake.
+   - **Agent is ready but not running:** Comment what to do next to wake it; if it cannot act, reassign to the role that owns it.
+   - **Person must act:** Make sure the owner card with ${T(TOOL_NAMES.askOwner)} has a deadline (\`dueBy\` YYYY-MM-DD), is phrased as a first option that the answer carries out (with \`effect\` and \`params\` if the system can do it), and is on the brief.
+5. **Repair ledger:** When a chain_idle or orphan_blocker finding clears, the Cockpit records it in the repairs ledger. Your closing comment on the issue must state what you fixed so the entry is clear.
+`;
+
+// ---------------------------------------------------------------------------
 // Asking with an effect
 // ---------------------------------------------------------------------------
 
@@ -395,5 +416,6 @@ export const OPERATOR_FILES: Array<{ path: string; content: string }> = [
   { path: OPERATOR_REFERENCE_PATHS.credentials, content: CREDENTIALS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.asking, content: ASKING_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.quality, content: QUALITY_REFERENCE },
+  { path: OPERATOR_REFERENCE_PATHS.stalls, content: STALLS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.coach, content: COACH_REFERENCE },
 ];

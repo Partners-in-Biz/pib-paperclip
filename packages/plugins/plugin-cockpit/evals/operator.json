@@ -389,6 +389,92 @@
           "summary": "Asked."
         }
       }
+    },
+    {
+      "id": "chain-idle-over-strict-owner-edge",
+      "title": "A chain_idle finding on an issue blocked by an over-strict owner edge",
+      "source": "Watchdog: PAR-800 has been inactive for 24 hours and points a chain_idle: marker. It is blocked by PAR-801 which is assigned to the owner. The owner-checks rule says: an owner-only check must not block work.",
+      "situation": "The watchdog finding lists: PAR-800 with title \"chain_idle: Draft the holiday campaign\" (assigned to the Social agent, agent id so-1). Reading PAR-800, it is blocked by PAR-801 \"Owner approve the campaign scope\" (assigned to the owner, user owner-1). The scope is actually done: the owner just needs to tap a button. According to owner-checks, this approval should not block the draft. The company prefix is PAR.",
+      "task": "Fix the chain_idle finding: the blocked issue should not wait on the owner-only check.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:watchdog-findings",
+            "args": {}
+          }
+        ],
+        "apiCalls": [
+          {
+            "method": "GET",
+            "path": "^/api/issues/PAR-800",
+            "args": {}
+          },
+          {
+            "method": "POST",
+            "path": "^/api/issues/PAR-800/comments",
+            "args": {
+              "body": {
+                "notEmpty": true
+              }
+            }
+          }
+        ],
+        "forbid": [
+          {
+            "method": "PATCH",
+            "apiPath": "^/api/issues/PAR-800$",
+            "args": {
+              "blockedByIssueIds": {
+                "exists": true
+              }
+            },
+            "reason": "never edit another agent's issue fields directly; the agent must make the change themselves"
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:watchdog-findings",
+              "args": {},
+              "say": "list findings"
+            },
+            {
+              "kind": "api",
+              "method": "GET",
+              "path": "/api/issues/PAR-800",
+              "args": {},
+              "say": "read the chain_idle issue"
+            },
+            {
+              "kind": "api",
+              "method": "POST",
+              "path": "/api/issues/PAR-800/comments",
+              "args": {
+                "body": "Drop PAR-801 from your blockedByIssueIds, since owner approvals do not block your work. Comment here when you are ready to continue."
+              },
+              "say": "comment with the exact fix and let the agent make the change"
+            }
+          ],
+          "summary": "Commented with the fix and woke the agent."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-800",
+              "args": {
+                "blockedByIssueIds": []
+              },
+              "say": "drop the blocker directly"
+            }
+          ],
+          "summary": "Changed the other agent's issue directly instead of commenting with the fix."
+        }
+      }
     }
   ]
 }
