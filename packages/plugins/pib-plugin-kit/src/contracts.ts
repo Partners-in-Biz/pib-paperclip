@@ -417,3 +417,39 @@ export interface BankMatchResult {
   paymentId?: string | null;
   error?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Growth (any plugin with a growth program → everyone)
+// ---------------------------------------------------------------------------
+
+export const GROWTH_EVENTS = {
+  /** Growth service → everyone: an experiment was measured and has a verdict. */
+  verdict: "growth.verdict",
+  /** Growth service → everyone: a growth program was created or changed. */
+  programUpserted: "growth.program.upserted",
+} as const;
+
+export interface GrowthVerdictEvent {
+  channel: string;
+  /** `null`: the company's own work; otherwise `<kind>:<id>` of the CRM client. */
+  scope_key: string | null;
+  experiment_id: string;
+  verdict: string;
+  relative_change: number | null;
+  /** Tagged items in the experiment. */
+  items: number;
+  min_per_arm: number;
+  /** `pending`, `kept`, `discarded`, or null when the verdict proposes no playbook change. */
+  playbook_decision: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+}
+
+export interface GrowthProgramUpsertedEvent {
+  program_id: string;
+  channel: string;
+  scope_key: string | null;
+  autopilot: string;
+  playbook_version: number;
+  created: boolean;
+}

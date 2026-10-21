@@ -766,3 +766,44 @@ export async function gscCheckAccess(env: Env, companyId: string, params: Params
       : "This is one of our own sites: verify it with gsc-verification-token → repo change → gsc-verify-site (no person needed).",
   };
 }
+
+// ---------------------------------------------------------------------------
+// Growth adapter support
+// ---------------------------------------------------------------------------
+
+/**
+ * Query page+query GSC rows for a sprint within a date range, aggregate by page,
+ * and return the aggregated metrics. Used by the SEO growth adapter.
+ */
+export async function gscPageQueryRows(
+  env: Env,
+  info: CompanyInfo,
+  sprint: db.Sprint,
+  startDate: string,
+  endDate: string,
+): Promise<Map<string, { clicks: number; impressions: number }>> {
+  return withGsc(env, info, sprint, async ({ accessToken, propertyUrl }) => {
+    const property = propertyUrl!;
+    const rows: GscRow[] = [];
+    let lastFull = false;
+    for (let page = 0; page < 2; page += 1) {
+      const batch = await querySearchAnalytics(env.fetch, accessToken, property, {
+        startDate,
+        endDate,
+        dimensions: ["page", "query"],
+        rowLimit: 25000,
+        startRow: page * 25000,
+      });
+      rows.push(...batch);
+      lastFull = batch.length >= 25000;
+      if (!lastFull) break;
+    }
+    if (lastFull) throw new Error("GSC page rows exceed 50000; window too large to read completely");
+    const byPage = aggregatePageRows(rows);
+    const result = new Map<string, { clicks: number; impressions: number }>();
+    for (const [page, agg] of byPage) {
+      result.set(page, { clicks: agg.clicks, impressions: agg.impressions });
+    }
+    return result;
+  });
+}

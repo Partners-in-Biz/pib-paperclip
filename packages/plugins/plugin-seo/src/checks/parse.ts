@@ -68,6 +68,7 @@ export interface PageMeta {
   ogTitle: string | null;
   ogDescription: string | null;
   ogImage: string | null;
+  ogType: string | null;
   twitterCard: string | null;
   h1: string[];
   lang: string | null;
@@ -97,6 +98,7 @@ export function extractMeta(html: string): PageMeta {
     ogTitle: byProperty("og:title"),
     ogDescription: byProperty("og:description"),
     ogImage: byProperty("og:image"),
+    ogType: byProperty("og:type"),
     twitterCard: byName("twitter:card"),
     h1: textOf(html, "h1").filter(Boolean),
     lang: htmlTag?.lang ?? null,

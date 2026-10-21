@@ -16,10 +16,9 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { clientWhere, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { clientWhere, type ClientScope, formatOf } from "@partnersinbiz/pib-plugin-kit";
 import { scopeOfRow } from "./clients.js";
 import { postMedia, table, type PostRow } from "./db.js";
-import { formatOf } from "./growth/engine.js";
 
 export const STAGES = ["reviewer", "owner", "client"] as const;
 export type Stage = (typeof STAGES)[number];

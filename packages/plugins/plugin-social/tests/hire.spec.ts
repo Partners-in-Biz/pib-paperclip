@@ -138,6 +138,7 @@ describe("social hire role", () => {
     expect(SOCIAL_HIRE_ROLE.skills.map((s) => [s.key, s.slug])).toEqual([
       ["plugin/partnersinbiz-social/social-publish", "pib-social-publish"],
       ["plugin/partnersinbiz-social/social-content", "pib-social-content"],
+      ["plugin/partnersinbiz-social/creative-studio", "pib-creative-studio"],
       ["plugin/partnersinbiz-cockpit/company-os", "pib-company-os"],
     ]);
     expect(SOCIAL_HIRE_ROLE.skills.at(-1)).toEqual(COMPANY_OS_HIRE_SKILL);
@@ -146,7 +147,7 @@ describe("social hire role", () => {
   });
 
   it("hire matching leaves out the operating manual every PiB agent carries", () => {
-    expect(SOCIAL_MATCH_ROLE.skills.map((s) => s.slug)).toEqual(["pib-social-publish", "pib-social-content"]);
+    expect(SOCIAL_MATCH_ROLE.skills.map((s) => s.slug)).toEqual(["pib-social-publish", "pib-social-content", "pib-creative-studio"]);
     const seoAgent = { name: "SEO Specialist", adapterConfig: { paperclipSkillSync: { desiredSkills: ["plugin/partnersinbiz-seo/seo-sprint", COMPANY_OS_SKILL_KEY] } } };
     expect(matchesRole(seoAgent, SOCIAL_MATCH_ROLE)).toBe(false);
     expect(matchesRole({ name: "Sam", adapterConfig: withSkills }, SOCIAL_MATCH_ROLE)).toBe(true);
@@ -156,9 +157,9 @@ describe("social hire role", () => {
 
   it("detects missing social skills by canonical key or slug", () => {
     expect(missingSocialSkills({ adapterConfig: withSkills })).toEqual([]);
-    expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: ["company-1/pib-social-publish", "pib-company-os"] } } })).toEqual(["pib-social-content"]);
+    expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: ["company-1/pib-social-publish", "pib-company-os"] } } })).toEqual(["pib-social-content", "pib-creative-studio"]);
     expect(missingSocialSkills({ adapterConfig: { paperclipSkillSync: { desiredSkills: DESIRED_SKILLS } } })).toEqual(["pib-company-os"]);
-    expect(missingSocialSkills({ name: "No config" })).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
+    expect(missingSocialSkills({ name: "No config" })).toEqual(["pib-social-publish", "pib-social-content", "pib-creative-studio", "pib-company-os"]);
   });
 });
 
@@ -171,8 +172,8 @@ describe("wireAgent", () => {
     expect(w.grants).toContainEqual(TOOLS_GRANT);
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "oss" });
     expect(result.toolsGrantAdded).toBe(true);
-    expect(result.missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
-    expect(result.steps.join("\n")).toContain("does not have `pib-social-publish`, `pib-social-content` and `pib-company-os`");
+    expect(result.missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-creative-studio", "pib-company-os"]);
+    expect(result.steps.join("\n")).toContain("does not have `pib-social-publish`, `pib-social-content`, `pib-creative-studio` and `pib-company-os`");
 
     // again: nothing new to grant
     const again = await wireAgent(w.ctx, "co", "oss", "u1");
@@ -213,7 +214,7 @@ describe("hire actions", () => {
     const options = await w.act("social.hire-options");
     expect(options.defaultAssigneeAgentId).toBe("ceo");
     expect(options.draft.title).toBe("Hire: Social Media Manager (Social agent)");
-    expect(options.agents.find((a: { id: string }) => a.id === "oss").missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-company-os"]);
+    expect(options.agents.find((a: { id: string }) => a.id === "oss").missingSkills).toEqual(["pib-social-publish", "pib-social-content", "pib-creative-studio", "pib-company-os"]);
 
     const hire = await w.act("social.start-hire", { title: options.draft.title, description: options.draft.description, assigneeAgentId: "ceo" });
     expect(hire).toMatchObject({ issueId: "issue-1", identifier: "PIB-7", status: "open", assigneeAgentId: "ceo" });
@@ -245,7 +246,7 @@ describe("hire actions", () => {
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "smm" });
     expect(w.comments[0]!.issueId).toBe("issue-1");
     expect(w.comments[0]!.body).toContain("found **Social Media Manager**");
-    expect(w.comments[0]!.body).toContain("has the `pib-social-publish`, `pib-social-content` and `pib-company-os` skills");
+    expect(w.comments[0]!.body).toContain("has the `pib-social-publish`, `pib-social-content`, `pib-creative-studio` and `pib-company-os` skills");
     expect(await socialAgent(w.ctx, "co")).toEqual({ agentId: "smm", active: false, status: "paused" });
     expect(w.managedReconcile).not.toHaveBeenCalled();
   });
@@ -296,12 +297,12 @@ describe("hire actions", () => {
     await w.setup();
     const res = await w.act("social.link-agent", { agentId: "oss" });
     expect(res.agent.id).toBe("oss");
-    expect(res.steps.join("\n")).toContain("Outbound & Social Specialist does not have `pib-social-publish`, `pib-social-content` and `pib-company-os` yet");
+    expect(res.steps.join("\n")).toContain("Outbound & Social Specialist does not have `pib-social-publish`, `pib-social-content`, `pib-creative-studio` and `pib-company-os` yet");
     expect(w.grantsSet).toHaveBeenCalledWith(expect.objectContaining({ principalId: "oss" }));
     expect(w.routineReconcile).toHaveBeenCalledWith("plan-next-week", "co", { assigneeAgentId: "oss" });
 
     const snapshot = await w.act("social.load", {});
-    expect(snapshot.agent).toMatchObject({ agentId: "oss", name: "Outbound & Social Specialist", linkedBy: "manual", active: true, missingSkills: ["pib-social-publish", "pib-social-content", "pib-company-os"] });
+    expect(snapshot.agent).toMatchObject({ agentId: "oss", name: "Outbound & Social Specialist", linkedBy: "manual", active: true, missingSkills: ["pib-social-publish", "pib-social-content", "pib-creative-studio", "pib-company-os"] });
     await expect(w.act("social.link-agent", { agentId: "missing" })).rejects.toThrow(/not found/);
     expect(w.managedReconcile).not.toHaveBeenCalled();
   });

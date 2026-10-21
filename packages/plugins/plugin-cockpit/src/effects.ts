@@ -156,6 +156,11 @@ export async function openCockpitAsk(env: Env, companyId: string, spec: { origin
     effectAnnouncedCount: 0,
     effectResultAt: null,
     handedBackAt: null,
+    defaultAfterHours: null,
+    recommended: null,
+    defaultAppliedAt: null,
+    defaultPolicy: null,
+    deadlineAt: null,
   };
   await insertAsk(env, row);
   const comment = await env.ctx.issues.createComment(issue.id, body, companyId).catch((error) => {
