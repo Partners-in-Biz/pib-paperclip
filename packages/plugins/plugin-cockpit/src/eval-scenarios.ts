@@ -29,6 +29,10 @@ import releaseEngineer from "../evals/agents/release-engineer.json" with { type:
 import loyaltyPlusEngineerMac from "../evals/agents/loyalty-plus-engineer-mac.json" with { type: "json" };
 import productDesigner from "../evals/agents/product-designer.json" with { type: "json" };
 import pib from "../evals/agents/pib.json" with { type: "json" };
+import nadiaAgent from "../evals/agents/nadia.json" with { type: "json" };
+import theoAgent from "../evals/agents/theo.json" with { type: "json" };
+import reviewerAgent from "../evals/agents/reviewer.json" with { type: "json" };
+import acceptanceAgent from "../evals/agents/acceptance.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -62,6 +66,10 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "loyalty-plus-engineer-mac": loyaltyPlusEngineerMac,
   "product-designer": productDesigner,
   pib,
+  nadia: nadiaAgent,
+  theo: theoAgent,
+  reviewer: reviewerAgent,
+  acceptance: acceptanceAgent,
 };
 
 /** Every tool this plugin registers, as agents name it. */

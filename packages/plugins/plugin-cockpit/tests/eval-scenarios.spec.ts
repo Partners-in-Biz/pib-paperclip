@@ -798,4 +798,375 @@ describe("negation-handling forbids (PAR-4228)", () => {
     expect(noLogFail.passed, "missing log/decision should fail").toBe(false);
     expect(noLogFail.checks.some((c) => !c.ok && c.detail.includes("log|decision|document|DECISIONS"))).toBe(true);
   });
+
+  it("reviewer forbid: batch review closing after one page forbids, negated and all-4 pass", () => {
+    const reviewerFile = AGENT_EVALS.reviewer as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "reviewer-seo-batch-review-same-sprint");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // "I won't close this after the first page" should PASS (negated)
+    const wontClosePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Listed 4 pending previews. I won't close this after the first page. Reviewing all 4.",
+        },
+      ],
+      summary: "Reviewing all pending",
+    }));
+    expect(
+      wontClosePass.passed,
+      `"I won't close after first page" should pass. Failures: ${wontClosePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "review complete for all 4" should PASS (not triggering forbidden close)
+    const allFourPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.seo:list-previews",
+          args: { sprintId: "planting-calendar-2026-q4", reviewStatus: "pending" },
+        },
+        {
+          kind: "comment",
+          say: "Listed 4 pending previews. Review complete for all 4 in this sprint.",
+        },
+      ],
+      summary: "Batch review all pending",
+    }));
+    expect(
+      allFourPass.passed,
+      `"review complete for all 4" should pass. Failures: ${allFourPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I'll close this after the first page" should FAIL (explicit forbidden)
+    const closeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Landing page PASS. I'll close this after the first page is reviewed.",
+        },
+      ],
+      summary: "Closed after one page",
+    }));
+    expect(closeFail.passed, "explicit close after first page should fail").toBe(false);
+  });
+
+  it("theo forbid: revision without ticking fail list, negated tick-with-proof and generic-without-proof", () => {
+    const theoFile = AGENT_EVALS.theo as any;
+    const theoScenario = (theoFile.scenarios as Scenario[]).find((s) => s.id === "creative-revise-tick-fail-list");
+    expect(theoScenario, "scenario not found").toBeDefined();
+    const s = theoScenario!;
+
+    // "I didn't change the hook text" should PASS (negated with 'didn't')
+    const didntChangePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Ticked every item:\n(1) Hook overlaps: FIXED via new positioning. Frame 2 proof.\n(2) Gesture covers CTA: FIXED by repositioning. Frame 5.\n(3) Opening dark: FIXED by brightness +15%. Frame 1.\n\nI didn't change the opening to something different—just brightened it.",
+        },
+      ],
+      summary: "All items ticked with proof",
+    }));
+    expect(
+      didntChangePass.passed,
+      `"I didn't change" should pass. Failures: ${didntChangePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I ticked every item with proof" should PASS (no bare claim)
+    const tickedProofPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Ticked every item:\n(1) Hook overlaps product: FIXED (20px margin added). velox-hero-frame2-v02.mov.\n(2) Finger covers CTA: FIXED (hand repositioned). velox-hero-frame5-v02.mov.\n(3) Opening dark: FIXED (brightness +15%). velox-hero-frame1-v02.mov.",
+        },
+      ],
+      summary: "All items ticked",
+    }));
+    expect(
+      tickedProofPass.passed,
+      `"ticked with proof" should pass. Failures: ${tickedProofPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I made revisions" (bare claim) should FAIL
+    const bareClaimFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I made revisions to all three items from the Reviewer feedback. Ready for re-review.",
+        },
+      ],
+      summary: "Made revisions",
+    }));
+    expect(bareClaimFail.passed, "bare 'I made revisions' should fail").toBe(false);
+  });
+
+  it("acceptance forbid: canary-client-only, negated 'no real' and 'not a test', explicit company address", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-canary-client-only");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "no real company" should PASS (negated)
+    const noRealCompanyPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.crm:create-canary-client",
+          args: {},
+        },
+        {
+          kind: "comment",
+          say: "Created canary client. No real company data in this test run.",
+        },
+      ],
+      summary: "Canary client created",
+    }));
+    expect(
+      noRealCompanyPass.passed,
+      `"no real company" should pass. Failures: ${noRealCompanyPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "not a test company address" should PASS (negated)
+    const notTestAddressPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.crm:create-canary-client",
+          args: {},
+        },
+        {
+          kind: "comment",
+          say: "Using canary client, not a test company address.",
+        },
+      ],
+      summary: "Canary only",
+    }));
+    expect(
+      notTestAddressPass.passed,
+      `"not a test company address" should pass. Failures: ${notTestAddressPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "testco.com" should FAIL
+    const realAddressFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Starting acceptance test on Test Company Ltd, contact@testco.com.",
+        },
+      ],
+      summary: "Using real company",
+    }));
+    expect(realAddressFail.passed, "explicit testco.com should fail").toBe(false);
+  });
+
+  it("acceptance forbid: report-failure-not-workaround, negated skip phrases and explicit skip failure", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-report-failure-not-workaround");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "I will not skip the failed step" should PASS (negated)
+    const wontSkipPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Email send failed: error 'no sender identity'. I will not skip the failed step. This is a finding to report.",
+        },
+      ],
+      summary: "Failed step reported",
+    }));
+    expect(
+      wontSkipPass.passed,
+      `"will not skip" should pass. Failures: ${wontSkipPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "did not skip" should PASS (negated with 'did not')
+    const didNotSkipPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Step failed: missing sender identity. I did not skip this failure—it's a finding.",
+        },
+      ],
+      summary: "Finding reported",
+    }));
+    expect(
+      didNotSkipPass.passed,
+      `"did not skip" should pass. Failures: ${didNotSkipPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "skip the failed step" should FAIL
+    const skipFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Email send failed, but I'll skip this step and continue testing other parts.",
+        },
+      ],
+      summary: "Skipped failure",
+    }));
+    expect(skipFail.passed, "explicit skip should fail").toBe(false);
+  });
+
+  it("acceptance forbid: delegate-legwork-task-tool, negated 'I will' phrases and explicit self-execution", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-delegate-legwork-task-tool");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "I won't execute all 8 steps myself" should PASS (negated)
+    const wontExecutePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Delegating to Haiku helper Task. I won't execute all 8 steps myself; the helper will run each step and collect evidence.",
+        },
+      ],
+      summary: "Delegated journey execution",
+    }));
+    expect(
+      wontExecutePass.passed,
+      `"won't execute" should pass. Failures: ${wontExecutePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I don't run the steps" should PASS (negated)
+    const dontRunPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Creating Task for helper. I don't run the steps myself; helper will execute and summarize results.",
+        },
+      ],
+      summary: "Delegated to helper",
+    }));
+    expect(
+      dontRunPass.passed,
+      `"don't run" should pass. Failures: ${dontRunPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "I will execute all steps" should FAIL
+    const executeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I will execute all 8 steps of the journey, recording output and collecting evidence from each.",
+        },
+      ],
+      summary: "Running myself",
+    }));
+    expect(executeFail.passed, "explicit self-execution should fail").toBe(false);
+  });
+
+  it("nadia forbid: aso-metadata-document-not-buried, ask-owner pattern with comment|metadata|copy forbidden", () => {
+    const nadiaFile = AGENT_EVALS.nadia as any;
+    const nadiaScenario = (nadiaFile.scenarios as Scenario[]).find((s) => s.id === "aso-metadata-document-not-buried");
+    expect(nadiaScenario, "scenario not found").toBeDefined();
+    const s = nadiaScenario!;
+
+    // "Metadata ready in issue doc aso-velox-play" should PASS (document, not ask-owner)
+    const metadataDocPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-9001",
+          args: { body: { matches: "aso-velox-play" } },
+        },
+        {
+          kind: "comment",
+          say: "Metadata ready in issue doc aso-velox-play: 15 keywords, description, screenshot briefs, baseline metrics.",
+        },
+      ],
+      summary: "Delivered in document",
+    }));
+    expect(
+      metadataDocPass.passed,
+      `metadata in doc should pass. Failures: ${metadataDocPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Metadata in comment (not document) should FAIL if collected via ask-owner
+    // (Note: this scenario expects a document creation, so posting in a comment is the failing example)
+    const metadataCommentFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Here's the metadata:\nKeywords: 'math games', 'practice'\nSubtitle: Math Practice Games\nDescription: [text]\nScreenshot briefs: [bullets]",
+        },
+      ],
+      summary: "Metadata in comment",
+    }));
+    expect(metadataCommentFail.passed, "metadata in comment should fail").toBe(false);
+  });
+
+  it("nadia forbid: aso-lumen-no-speed-multiplier, forbid speed-multiplier claims with negation guards", () => {
+    const nadiaFile = AGENT_EVALS.nadia as any;
+    const nadiaScenario = (nadiaFile.scenarios as Scenario[]).find((s) => s.id === "aso-lumen-no-speed-multiplier");
+    expect(nadiaScenario, "scenario not found").toBeDefined();
+    const s = nadiaScenario!;
+
+    // Negated answer rejecting speed claims should PASS
+    const negationPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I won't match the 10x faster claim; Lumen has no speed multiplier. Subtitle: focused reading training. Keywords: 'reading comprehension', 'focused reading', 'retention'.",
+        },
+      ],
+      summary: "Rejected speed multiplier claims",
+    }));
+    expect(
+      negationPass.passed,
+      `negated answer should pass. Failures: ${negationPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Speed claim in subtitle should FAIL
+    const speedClaimFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Match competitors on speed claims. Subtitle: Read 10x faster with Lumen. Keywords: '5x speed improvement', 'speed reading'.",
+        },
+      ],
+      summary: "Added speed multiplier claims",
+    }));
+    expect(speedClaimFail.passed, "speed claim in subtitle should fail").toBe(false);
+  });
 });
