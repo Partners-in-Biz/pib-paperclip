@@ -13,6 +13,14 @@ import summarizer from "../evals/agents/summarizer.json" with { type: "json" };
 import crmDataSteward from "../evals/agents/crm-data-steward.json" with { type: "json" };
 import developer from "../evals/agents/developer.json" with { type: "json" };
 import seniorDeveloper from "../evals/agents/senior-developer.json" with { type: "json" };
+import planner from "../evals/agents/planner.json" with { type: "json" };
+import codeReviewer from "../evals/agents/code-reviewer.json" with { type: "json" };
+import planCritic from "../evals/agents/plan-critic.json" with { type: "json" };
+import dogfoodTester from "../evals/agents/dogfood-tester.json" with { type: "json" };
+import releaseEngineer from "../evals/agents/release-engineer.json" with { type: "json" };
+import loyaltyPlusEngineerMac from "../evals/agents/loyalty-plus-engineer-mac.json" with { type: "json" };
+import productDesigner from "../evals/agents/product-designer.json" with { type: "json" };
+import pib from "../evals/agents/pib.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -30,6 +38,14 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "crm-data-steward": crmDataSteward,
   developer,
   "senior-developer": seniorDeveloper,
+  planner,
+  "code-reviewer": codeReviewer,
+  "plan-critic": planCritic,
+  "dogfood-tester": dogfoodTester,
+  "release-engineer": releaseEngineer,
+  "loyalty-plus-engineer-mac": loyaltyPlusEngineerMac,
+  "product-designer": productDesigner,
+  pib,
 };
 
 /** Every tool this plugin registers, as agents name it. */
