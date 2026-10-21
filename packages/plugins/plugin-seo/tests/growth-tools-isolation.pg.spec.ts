@@ -5,8 +5,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { parseScopeKey, runGrowthTool, type GrowthActor, type GrowthToolName, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
-import { seoGrowthEnv, seoGrowthHandlers, type SeoGrowthEnv } from "../src/growth-host.js";
+import { parseScopeKey, runGrowthTool, type ClientScope, type GrowthActor, type GrowthToolName, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { seoGrowthEnv, seoGrowthHandlers, seoScopes, type SeoGrowthEnv } from "../src/growth-host.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
@@ -37,28 +37,19 @@ function world() {
     events: { emit: vi.fn(async () => {}) },
     issues: { get: async () => null, createComment: vi.fn(async () => {}) },
   } as unknown as PluginContext;
+
+  // Mock CRM resolver: only "company:a" and "company:b" exist
+  const mockCrmResolver = async (_ctx: PluginContext, _namespace: string, _companyId: string, scope: ClientScope) => {
+    if (!scope) return null;
+    const fullScopeKey = `client:${scope.kind}:${scope.id}`;
+    if (!KNOWN.has(fullScopeKey)) return null;
+    return { name: `Client ${scope.id}` };
+  };
+
   const env = (): SeoGrowthEnv => ({
     ...seoGrowthEnv(ctx),
     now: () => new Date("2026-10-21T08:00:00Z"),
-    scopes: {
-      fromParams: async (_company, params) => {
-        // resolveGrowthScopeParams converts scope to client before passing to handlers
-        // client format is "kind:ref" (e.g., "company:a")
-        const value = typeof params.client === "string" ? params.client : null;
-        if (!value) return { scope: null, client: null };
-        // Reconstruct the full scope key for KNOWN check (need to add "client:" prefix that was stripped)
-        const fullScopeKey = `client:${value}`;
-        if (!KNOWN.has(fullScopeKey)) throw new Error(`Unknown scope ${fullScopeKey}`);
-        // Parse the client string (e.g., "company:a") to get kind and id
-        const colonIdx = value.indexOf(":");
-        if (colonIdx <= 0) throw new Error(`Invalid client format: ${value}`);
-        const kind = value.slice(0, colonIdx) as "company" | "contact";
-        const id = value.slice(colonIdx + 1);
-        const scope = { kind, id };
-        return { scope, client: { name: `Client ${scope.id}` } };
-      },
-      toParam: (scope) => (scope ? `${scope.kind}:${scope.id}` : "own"),
-    },
+    scopes: seoScopes(ctx, mockCrmResolver),
     issuePort: () => ({ createApproval: async () => ({ id: "issue-1" }), isOpen: async () => true, setStatus: async () => {}, comment: async () => {} }),
   });
   const actor: GrowthActor = { companyId, userId: null, agentId: "agent1", isAgent: true };

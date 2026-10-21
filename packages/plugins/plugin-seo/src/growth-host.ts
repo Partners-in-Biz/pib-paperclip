@@ -35,6 +35,9 @@ import {
   type KitProgram,
   type ScopeResolver,
 } from "@partnersinbiz/pib-plugin-kit";
+
+// Re-export ClientScope for tests
+export type { ClientScope };
 import { createSeoAdapter } from "./growth/adapter.js";
 import { gscPageQueryRows } from "./service/gsc.js";
 import * as db from "./db.js";
@@ -74,7 +77,11 @@ export function seoGrowthStore(ctx: PluginContext): GrowthStore {
 }
 
 /** `client` / `clientKind`+`clientRef` to a CRM-checked scope. A client the CRM does not know is refused before any read or write. */
-export function seoScopes(ctx: PluginContext): SeoGrowthEnv["scopes"] {
+export function seoScopes(
+  ctx: PluginContext,
+  crmResolver?: (ctx: PluginContext, namespace: string, companyId: string, scope: ClientScope) => Promise<{ name: string } | null>,
+): SeoGrowthEnv["scopes"] {
+  const resolver = crmResolver || resolveCrmClient;
   return {
     async fromParams(companyId, params) {
       const scope = clientScopeFromInput(params);
@@ -83,7 +90,7 @@ export function seoScopes(ctx: PluginContext): SeoGrowthEnv["scopes"] {
         throw new SeoError("client must be company:<crm company id> or contact:<crm contact id>. Omit it for PiB's own work.");
       }
       if (!scope) return { scope: null, client: null };
-      const client = await resolveCrmClient(ctx, NAMESPACE, companyId, scope);
+      const client = await resolver(ctx, NAMESPACE, companyId, scope);
       if (!client) throw new SeoError(`CRM ${scope.kind} ${scope.id} was not found. Run the CRM "resync" action if it was just created.`);
       return { scope, client: { name: client.name } };
     },
