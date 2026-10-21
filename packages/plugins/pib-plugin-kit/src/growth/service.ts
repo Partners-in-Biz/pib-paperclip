@@ -3,7 +3,9 @@
  * Re-export by each plugin, with its own specifics (config, paths, copy).
  */
 import { randomUUID } from "node:crypto";
-import type { ClientScope } from "../client-ref.js";
+import { formatClientParam, type ClientScope } from "../client-ref.js";
+import { GROWTH_EVENTS, type GrowthProgramUpsertedEvent, type GrowthVerdictEvent } from "../contracts.js";
+import { recordVerdict } from "../experiments.js";
 import * as E from "./engine.js";
 import type { ApprovalIssuePort, GrowthStore, ScopeResolver } from "./ports.js";
 
@@ -50,6 +52,31 @@ function optString(params: Params, key: string, max = 2000): string | undefined 
 function requirePerson(actor: GrowthActor, what: string): string {
   if (actor.isAgent || !actor.userId) throw new E.GrowthError(`A person must ${what}`);
   return actor.userId;
+}
+
+function scopeKey(scope: ClientScope): string | null {
+  return scope ? formatClientParam(scope) : null;
+}
+
+/** Best effort: a failed emit never breaks the loop. */
+async function emit(env: any, companyId: string, name: string, payload: GrowthVerdictEvent | GrowthProgramUpsertedEvent): Promise<void> {
+  if (!env.ctx?.events?.emit) return;
+  try {
+    await env.ctx.events.emit(name, companyId, payload);
+  } catch (error) {
+    env.ctx.logger?.info("Growth event not emitted", { name, error: errorMessage(error) });
+  }
+}
+
+async function emitProgram(env: any, program: any, created: boolean): Promise<void> {
+  await emit(env, program.companyId, GROWTH_EVENTS.programUpserted, {
+    program_id: program.id,
+    channel: program.channel ?? E.GROWTH_CHANNEL,
+    scope_key: scopeKey(programScope(program)),
+    autopilot: program.autopilot,
+    playbook_version: program.playbookVersion,
+    created,
+  });
 }
 
 export interface ProgramTarget {
@@ -103,6 +130,7 @@ export async function ensureProgram(env: any, companyId: string, target: Program
   if (!created) throw new E.GrowthError("The growth program could not be created");
   if (created.id === id) {
     await env.store.insertPlaybookVersion({ programId: id, version: 1, playbook, reason: "Starter playbook", experimentId: null, createdBy: null });
+    await emitProgram(env, created, true);
   }
   return created;
 }
@@ -428,5 +456,93 @@ export async function updateProgramRecord(env: any, actor: GrowthActor, params: 
     constraints,
     ownerUserId: userId,
   });
-  return env.programOut((await env.store.getProgram(actor.companyId, program.id))!);
+  const updated = (await env.store.getProgram(actor.companyId, program.id))!;
+  await emitProgram(env, updated, false);
+  return env.programOut(updated);
+}
+
+// ── Measuring ───────────────────────────────────────────────────────────────
+
+async function syncItems(env: any, e: any, items: E.ItemState[]): Promise<void> {
+  const stored = new Map<string, any>((await env.store.listItems(e.id)).map((i: any) => [i.postId, i]));
+  for (const item of items) {
+    const prev = stored.get(item.subjectId);
+    if (!prev || prev.arm !== item.arm || prev.value !== item.value) await env.store.upsertItem(e.id, item.arm, item.subjectId, item.value);
+    stored.delete(item.subjectId);
+  }
+  for (const postId of stored.keys()) await env.store.deleteItem(e.id, postId);
+}
+
+/**
+ * Measures one running experiment once every tagged post has its score, or 21 days after it started (then with what
+ * has scores: too few per arm gives `inconclusive`). Writes the verdict, proposes (or on full autopilot keeps) the
+ * playbook change and emits `growth.verdict`. `env.verdictComment` and `env.timezone` come from the plugin.
+ */
+export async function measureExperiment(env: any, e: any): Promise<"waiting" | "measured" | "skipped"> {
+  const now = env.now();
+  const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
+  const items: E.ItemState[] = posts
+    .filter((p: any) => p.arm === "control" || p.arm === "variant")
+    .map((p: any) => ({ subjectId: p.postId, arm: p.arm, published: published(p), value: E.postLift(p.lifts) }));
+  await syncItems(env, e, items);
+  const ready = E.readiness(e, items, now);
+  if (!ready.ready) return "waiting";
+  const program = await env.store.getProgram(e.companyId, e.programId);
+  if (!program) return "skipped";
+  const tz = typeof env.timezone === "function" ? env.timezone(e.companyId) : env.timezone;
+  const outcome = E.measureArms(e, items, ready.reason);
+  const change = E.playbookChangeFor(e, outcome, E.localDate(now, tz));
+  const diff = change ? E.changeDiff(change) : undefined;
+  const ok = await env.store.updateExperiment(e.companyId, e.id, ["running"], {
+    status: "measured",
+    measuredAt: now.toISOString(),
+    verdict: outcome.verdict,
+    outcome: { ...outcome },
+    playbookDiff: diff,
+    playbookDecision: change ? "pending" : undefined,
+  });
+  if (!ok) return "skipped";
+  await env.store.updateProgram(e.companyId, program.id, { scoreboard: recordVerdict(program.scoreboard, e.hypothesisType, outcome.verdict) });
+  let kept = false;
+  if (change) {
+    const changeId = randomUUID();
+    await env.store.insertChange({
+      id: changeId,
+      companyId: e.companyId,
+      programId: program.id,
+      experimentId: e.id,
+      op: change.op,
+      section: change.section,
+      body: change.body,
+      diff: diff!,
+      reason: `Experiment ${outcome.verdict}: ${e.hypothesis}`,
+      baseVersion: program.playbookVersion,
+      proposedBy: "experiment",
+    });
+    const row = await env.store.getChange(e.companyId, changeId);
+    if (E.autoKeep(program.autopilot, outcome.verdict)) {
+      await keepChange(env, { companyId: e.companyId, userId: null, agentId: null, isAgent: true }, row, "Kept automatically (full autopilot)", "autopilot");
+      kept = true;
+    } else if (program.autopilot !== "full") {
+      const fresh = (await env.store.getProgram(e.companyId, program.id)) ?? program;
+      const issueId = await announce(env, fresh, [env.verdictComment(e, outcome.verdict, outcome.reason, null, false), "", ...env.changeLines(row)]);
+      if (issueId) await env.store.updateChange(e.companyId, changeId, { approvalIssueId: issueId }, false);
+    }
+  }
+  if (!change || kept) {
+    await comment(env, e.companyId, e.approvalIssueId, env.verdictComment(e, outcome.verdict, outcome.reason, diff ?? null, kept));
+  }
+  await emit(env, e.companyId, GROWTH_EVENTS.verdict, {
+    channel: program.channel ?? E.GROWTH_CHANNEL,
+    scope_key: scopeKey(programScope(program)),
+    experiment_id: e.id,
+    verdict: outcome.verdict,
+    relative_change: outcome.relativeChange,
+    items: outcome.items,
+    min_per_arm: e.minPerArm,
+    playbook_decision: change ? (kept ? "kept" : "pending") : null,
+    decided_by: kept ? "autopilot" : null,
+    decided_at: kept ? now.toISOString() : null,
+  });
+  return "measured";
 }

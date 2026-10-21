@@ -15,7 +15,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig,
   approveExperiment as kitApproveExperiment, abandonExperiment as kitAbandonExperiment, decidePlaybookChange as kitDecidePlaybookChange,
-  proposeExperiment as kitProposeExperiment, rejectExperiment as kitRejectExperiment, listExperimentsRecord as kitListExperimentsRecord,
+  measureExperiment as kitMeasureExperiment, proposeExperiment as kitProposeExperiment, rejectExperiment as kitRejectExperiment, listExperimentsRecord as kitListExperimentsRecord,
   proposePlaybookChange as kitProposePlaybookChange, getPlaybookRecord as kitGetPlaybookRecord, savePlaybookRecord as kitSavePlaybookRecord,
   ensureProgram as kitEnsureProgram, programForParams as kitProgramForParams, updateProgramRecord as kitUpdateProgramRecord,
   experimentStatuses as kitExperimentStatuses, OPEN_EXPERIMENTS, published, EXPERIMENT_STATUS_VALUES,
@@ -426,59 +426,8 @@ export async function applyExperimentTag(env: GrowthEnv, companyId: string, post
 // ── Measuring (daily job) ───────────────────────────────────────────────────
 
 export async function measureExperiment(env: GrowthEnv, config: SocialConfig, e: Experiment): Promise<"waiting" | "measured" | "skipped"> {
-  const now = env.now();
-  const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
-  const items: E.ItemState[] = posts
-    .filter((p) => p.arm === "control" || p.arm === "variant")
-    .map((p) => ({ subjectId: p.postId, arm: p.arm!, published: published(p), value: E.postLift(p.lifts) }));
-  await syncItems(env, e, items);
-  const ready = E.readiness(e, items, now);
-  if (!ready.ready) return "waiting";
-  const program = await env.store.getProgram(e.companyId, e.programId);
-  if (!program) return "skipped";
-  const outcome = E.measureArms(e, items, ready.reason);
-  const change = E.playbookChangeFor(e, outcome, E.localDate(now, config.timezone));
-  const diff = change ? E.changeDiff(change) : undefined;
-  const ok = await env.store.updateExperiment(e.companyId, e.id, ["running"], {
-    status: "measured",
-    measuredAt: now.toISOString(),
-    verdict: outcome.verdict,
-    outcome: { ...outcome },
-    playbookDiff: diff,
-    playbookDecision: change ? "pending" : undefined,
-  });
-  if (!ok) return "skipped";
-  await env.store.updateProgram(e.companyId, program.id, { scoreboard: recordVerdict(program.scoreboard, e.hypothesisType, outcome.verdict) });
-  let kept = false;
-  if (change) {
-    const changeId = randomUUID();
-    await env.store.insertChange({
-      id: changeId,
-      companyId: e.companyId,
-      programId: program.id,
-      experimentId: e.id,
-      op: change.op,
-      section: change.section,
-      body: change.body,
-      diff: diff!,
-      reason: `Experiment ${outcome.verdict}: ${e.hypothesis}`,
-      baseVersion: program.playbookVersion,
-      proposedBy: "experiment",
-    });
-    const row = (await env.store.getChange(e.companyId, changeId))!;
-    if (E.autoKeep(program.autopilot, outcome.verdict)) {
-      await keepChange(env, { companyId: e.companyId, userId: null, agentId: null, isAgent: true }, row, "Kept automatically (full autopilot)", "autopilot");
-      kept = true;
-    } else if (program.autopilot !== "full") {
-      const fresh = (await env.store.getProgram(e.companyId, program.id)) ?? program;
-      const issueId = await announce(env, config, fresh, [verdictComment(e, outcome.verdict, outcome.reason, null, false), "", ...changeLines(row)]);
-      if (issueId) await env.store.updateChange(e.companyId, changeId, { approvalIssueId: issueId }, false);
-    }
-  }
-  if (!change || kept) {
-    await comment(env, e.companyId, e.approvalIssueId, verdictComment(e, outcome.verdict, outcome.reason, diff ?? null, kept));
-  }
-  return "measured";
+  const wrapped = { ...wrapKitEnv(env), timezone: () => config.timezone, verdictComment };
+  return kitMeasureExperiment(wrapped, e);
 }
 
 export async function measureExperimentsJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>, env: GrowthEnv = growthEnv(ctx)) {
