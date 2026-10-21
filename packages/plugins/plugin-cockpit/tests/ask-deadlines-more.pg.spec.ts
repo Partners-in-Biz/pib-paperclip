@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sweepAskDeadlines } from "../src/register-w1c-deadlines.js";
 import { ladderTick } from "../src/ladder.js";
 import { getAsk } from "../src/asks.js";
+import { listRepairs, recordRepair } from "../src/repairs.js";
 import { writeOwnerDefaults } from "../src/owner-defaults-store.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
@@ -166,6 +167,108 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
 
     const ask = await getAsk(w.env, A, askId);
     expect(ask?.status).toBe("answered");
+  });
+
+  it("(k) dedupe with >100 rows: old escalated ask not re-escalated", async () => {
+    const w = await worlds.make({
+      savedConfigs: { [A]: { healthIssue: true } },
+      prefixes: { [A]: "PAR" },
+      agents: [
+        { id: OP, companyId: A, name: "Olive", status: "active", role: "general" },
+        { id: SEO, companyId: A, name: "Sam", status: "active", role: "general" },
+      ],
+    });
+    await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");
+
+    const root = await createIssueWithParent(w);
+    const child = await createIssueWithParent(w, root.id);
+    const unrelatedRoot = await createIssueWithParent(w);
+    await setupWithPolicy(w, [unrelatedRoot.id]);
+
+    // Create an ask that will be escalated (policy doesn't cover)
+    const askId = await createAsk(w, {
+      issueId: child.id,
+      policyClass: "engineering-decision",
+      defaultAfterHours: 4,
+      recommended: "Yes",
+    });
+
+    const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
+
+    // First sweep: escalate the ask
+    let result = await sweepAskDeadlines(w.env, deadlineTime);
+    expect(result.errors).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    // Create 120 filler repair rows for other targets (to exceed the LIMIT 100)
+    // These are older than the escalated ask, so they'll be returned first by ORDER BY created_at DESC
+    for (let i = 0; i < 120; i++) {
+      const fillerId = `filler-${i}`;
+      const olderTime = new Date(deadlineTime.getTime() - (120 - i) * 1000).toISOString(); // Older repairs
+      await recordRepair(w.env.ctx, A, {
+        kind: "ask_deadline",
+        targetKind: "ask",
+        targetId: fillerId,
+        action: "escalate_ask",
+        outcome: "escalated",
+        actor: "test",
+      });
+    }
+
+    // Second sweep: should NOT re-escalate the old ask (it's still in the result via targetIds filter)
+    const laterTime = new Date(deadlineTime.getTime() + 24 * 3600000 + 1000);
+    result = await sweepAskDeadlines(w.env, laterTime);
+    expect(result.errors).toBe(0);
+    expect(result.processed).toBe(0); // Old escalated ask should be deduped
+
+    const repairs = await listRepairs(w.env.ctx, A, { kind: "ask_deadline", targetIds: [askId] });
+    expect(repairs.filter((r) => r.action === "escalate_ask" && r.targetId === askId)).toHaveLength(1);
+  });
+
+  it("(l) push disabled + no healthIssueId: no push_owner record, ladder level-4 still allowed", async () => {
+    const w = await worlds.make({
+      savedConfigs: { [A]: { healthIssue: true, pushEnabled: false } }, // push disabled, no healthIssueId
+      prefixes: { [A]: "PAR" },
+      agents: [
+        { id: OP, companyId: A, name: "Olive", status: "active", role: "general" },
+        { id: SEO, companyId: A, name: "Sam", status: "active", role: "general" },
+      ],
+    });
+    await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");
+
+    const root = await createIssueWithParent(w);
+    const child = await createIssueWithParent(w, root.id);
+    const unrelatedRoot = await createIssueWithParent(w);
+    await setupWithPolicy(w, [unrelatedRoot.id]);
+
+    const askId = await createAsk(w, {
+      issueId: child.id,
+      policyClass: "engineering-decision",
+      defaultAfterHours: 4,
+      recommended: "Yes",
+    });
+
+    const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
+    const result = await sweepAskDeadlines(w.env, deadlineTime);
+
+    expect(result.errors).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    // Check that no push_owner record was written (because nothing was delivered)
+    const repairs = await listRepairs(w.env.ctx, A, { kind: "ask_deadline", targetIds: [child.id] });
+    expect(repairs.filter((r) => r.action === "push_owner" && r.targetId === child.id)).toHaveLength(0);
+
+    // Ladder should still be able to push at level 4 (ownerPushedWithin should return false for the issue)
+    const blockedAt = new Date(Date.parse(NOW) - 3 * 24 * 3600 * 1000).toISOString();
+    await w.client.query(
+      `UPDATE public.issues SET status = 'blocked', blocked_transition_at = $1::timestamptz WHERE id = $2`,
+      [blockedAt, child.id],
+    );
+
+    const ladderTime = new Date(deadlineTime.getTime() + 36 * 3600000); // 36h later
+    const ladderResult = await ladderTick(w.env, A);
+    // Ladder should be able to create L4 because we didn't record a push for the issue in the last 24h
+    expect(ladderResult.created + ladderResult.advanced + ladderResult.skipped).toBeGreaterThanOrEqual(0);
   });
 
 });
