@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { parseRegion } = require('./redact.cjs');
 const { writeShot } = require('./shot.cjs');
+const { probeAll } = require('./probe.cjs');
+const { exitName } = require('./exit-codes.cjs');
 
 const COMMANDS = ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -78,6 +80,12 @@ function parseArgs(argv) {
     }
     if (arg === '--json') {
       args.json = true;
+    } else if (arg === '--all') {
+      args.all = true;
+    } else if (arg === '--identities') {
+      args.identities = argv[++i];
+    } else if (arg === '--out') {
+      args.out = argv[++i];
     } else if (arg === '--identity') {
       args.identity = argv[++i];
     } else if (arg === '--issue') {
@@ -117,6 +125,7 @@ Commands:
   text      Get text from an element
   shot      Take a screenshot
   close     Close the browser context
+  probe     Check browser session status for identities
 
 Options:
   --identity ID         Identity string (required for most commands)
@@ -128,6 +137,9 @@ Options:
   --redact-region X,Y,W,H  Region to redact in screenshot
   --approval PAR-N      Approval identifier
   --step NAME          Step name for screenshot
+  --all                Check all identities (for probe)
+  --identities LIST    Space-separated identity list (for probe)
+  --out PATH           Output file path (for probe)
   --json               JSON output
   --help               Show this help message
 `;
@@ -152,6 +164,64 @@ async function run(argv, env, deps = {}) {
   }
 
   const { cmd } = parsed;
+
+  // Handle probe command (doesn't require identity)
+  if (cmd === 'probe') {
+    // Get token from environment
+    const token = env.PAPERCLIP_API_KEY;
+    if (!token) {
+      stderr.write('Error: PAPERCLIP_API_KEY environment variable is required\n');
+      return 2;
+    }
+
+    // Get issue
+    const issue = parsed.issue;
+    if (!issue) {
+      stderr.write('Error: --issue is required\n');
+      return 2;
+    }
+
+    if (!parsed.all) {
+      stderr.write('Error: --all is required for probe\n');
+      return 2;
+    }
+
+    // Get identities from flag or env
+    const idStr = parsed.identities || env.PIB_BROWSER_IDENTITIES || '';
+    const identities = idStr ? idStr.split(/\s+/).filter(id => id) : [];
+    if (identities.length === 0) {
+      stderr.write('Error: --identities is required or PIB_BROWSER_IDENTITIES must be set\n');
+      return 2;
+    }
+
+    // Resolve output path
+    const outPath = parsed.out || env.PIB_BROWSER_STATUS || '/home/paperclip/pib-tools/browser-status.json';
+
+    // Define check function that calls open/close via daemon
+    const check = async (identity) => {
+      try {
+        const openReq = { cmd: 'open', token, issue, identity, args: {} };
+        const openResp = await sendFn(openReq, { socketPath: env.PIB_BROWSER_SOCKET || '/run/pib-browser/sock', maxResponseBytes });
+
+        // Close the session
+        try {
+          const closeReq = { cmd: 'close', token, issue, identity, args: {} };
+          await sendFn(closeReq, { socketPath: env.PIB_BROWSER_SOCKET || '/run/pib-browser/sock', maxResponseBytes });
+        } catch (e) {}
+
+        return { exit: openResp.exit || 2, reason: openResp.reason || '' };
+      } catch (e) {
+        return { exit: 3, reason: 'no_browser' };
+      }
+    };
+
+    // Run probe
+    const result = await probeAll({ identities, check, outPath, fs: fsLib, now });
+    if (result.exit !== 0) {
+      stderr.write(`Error: ${result.reason}\n`);
+    }
+    return result.exit;
+  }
 
   // Validate command
   if (!cmd || !COMMANDS.includes(cmd)) {
