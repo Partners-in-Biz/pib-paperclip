@@ -326,6 +326,18 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "store-rendered-asset",
+    displayName: "Store a rendered image",
+    description: `Put an image you rendered (a slide, a branded graphic) on R2, in the scope's Drive "02 Assets" folder, and on a post, in one call. Pass the file as contentBase64 (JPEG, PNG, GIF, WebP, MP4 or MOV; the type is read from its bytes) and an altText that says what it shows (required). With postId the asset is added to that post's media (the post's own client; leave client out). Returns the asset id, and reports a Drive or attach failure next to it: the R2 asset and its alt text are kept, so retry only the part that failed.${OWN}`,
+    parametersSchema: schema(["contentBase64", "altText"], {
+      contentBase64: text("The rendered file, base64 encoded"),
+      altText: text("What the image shows, for screen readers"),
+      name: text("Display name (default: rendered)"),
+      postId: text("Post to add the asset to (optional)"),
+      ...scope,
+    }),
+  },
+  {
     name: "list-issue-attachments",
     displayName: "List issue attachments",
     description: "The files attached to an issue (usually the one you are working on): id, name, size and whether it looks like an importable image or video. No links, no bytes. Use it to find the attachment id for import-media-from-attachment.",
