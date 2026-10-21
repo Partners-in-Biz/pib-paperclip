@@ -89,11 +89,10 @@ export async function recordRepair(
 }
 
 /**
- * Lists repairs for a company, optionally filtered by kind and/or since timestamp.
+ * Lists repairs for a company, optionally filtered by kind, targetIds, and/or since timestamp.
  * Results are ordered by created_at DESC (newest first), then by id DESC.
  * Default limit is 100, clamped to 1..500.
- * When filtering by many targetIds, the function fetches with a higher limit and filters in JavaScript
- * to avoid missing records due to LIMIT applying before the filter.
+ * When targetIds are provided, they are applied in the WHERE clause so LIMIT applies after filtering.
  */
 export async function listRepairs(
   ctx: PluginContext,
@@ -105,12 +104,7 @@ export async function listRepairs(
     limit?: number;
   },
 ): Promise<RepairRow[]> {
-  // When filtering by targetIds, use a much higher limit to ensure we don't miss records
-  // due to LIMIT applying before the JavaScript filter
-  const hasTargetIds = opts?.targetIds && opts.targetIds.length > 0;
-  const baseLimit = opts?.limit ?? 100;
-  // When filtering by targetIds, fetch all records up to the max limit (500) to ensure no truncation
-  const limit = Math.max(1, Math.min(500, hasTargetIds ? 500 : baseLimit));
+  const limit = Math.max(1, Math.min(500, opts?.limit ?? 100));
 
   let query = `SELECT id, company_id, kind, target_kind, target_id, action, outcome, detail, actor, created_at FROM ${TABLE} WHERE company_id = $1`;
   const params: unknown[] = [companyId];
@@ -118,6 +112,20 @@ export async function listRepairs(
   if (opts?.kind) {
     params.push(opts.kind);
     query += ` AND kind = $${params.length}`;
+  }
+
+  if (opts?.targetIds && opts.targetIds.length > 0) {
+    // Build OR clause for each targetId to apply filter in WHERE (before LIMIT)
+    const idClauses = opts.targetIds.map(() => {
+      params.push("");  // Placeholder
+      return `target_id = $${params.length}`;
+    });
+    // Replace placeholders with actual targetIds
+    let idIdx = 0;
+    for (let i = params.length - opts.targetIds.length; i < params.length; i++) {
+      params[i] = opts.targetIds[idIdx++];
+    }
+    query += ` AND (${idClauses.join(" OR ")})`;
   }
 
   if (opts?.since) {
@@ -129,13 +137,5 @@ export async function listRepairs(
   params.push(limit);
 
   const rows = await ctx.db.query<Raw>(query, params);
-  const allRows = rows.map(rowFrom);
-
-  // Filter by targetIds in JavaScript if provided
-  if (hasTargetIds) {
-    const targetIdSet = new Set(opts.targetIds!);
-    return allRows.filter((r) => targetIdSet.has(r.targetId));
-  }
-
-  return allRows;
+  return rows.map(rowFrom);
 }
