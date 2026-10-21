@@ -44,11 +44,11 @@ export function account(id: string, extra: Partial<AccountRow> = {}): AccountRow
 
 export function approvalWorld(opts: WorldOptions = {}) {
   const client = opts.client === undefined ? { kind: "company" as const, id: "c1", name: "Acme" } : opts.client;
-  const post: Record<string, unknown> = {
+  let post: Record<string, unknown> = {
     id: "p1", company_id: "co", body: "Spring sale starts Friday. Come and see.", overrides: {}, media: [], status: "review", scheduled_at: opts.scheduledAt ?? null, scope: "org",
     owner_user_id: "owner-1", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null, first_comment: null, source: "agent",
     source_ref: null, failure_issue_id: null, published_at: null, error: null, created_by_agent_id: "ag-social", review_issue_id: opts.reviewIssue ?? null, review_returns: 0,
-    created_at: new Date(), updated_at: new Date(), experiment_id: null, experiment_arm: null,
+    created_at: new Date(), updated_at: new Date(), experiment_id: null, experiment_arm: null, tags: [],
   };
   const destinations = opts.destinations ?? [{ id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 }];
   const acct = account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null });
@@ -68,7 +68,7 @@ export function approvalWorld(opts: WorldOptions = {}) {
 
   // Growth store data
   const scopeKey = client ? `${client.kind}:${client.id}` : "own";
-  const program: Record<string, unknown> = {
+  let program: Record<string, unknown> = {
     id: "prog-1", company_id: "co", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null,
     channel: "social", objective: "Test objective", metric: "engagement_rate", constraints: {},
     playbook: opts.playbookText ?? "# Default playbook", playbook_version: 1,
@@ -136,8 +136,8 @@ export function approvalWorld(opts: WorldOptions = {}) {
     {
       queryResult: (sql, params) => {
         if (sql.startsWith("SELECT review_issue_id")) return [{ review_issue_id: reviewIssue }];
-        if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, review_issue_id: reviewIssue }];
-        if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, review_issue_id: reviewIssue }] : [];
+        if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }];
+        if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, tags: post.tags ?? [], review_issue_id: reviewIssue }] : [];
         if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return destinations.filter((d) => d.post_id === params[0]);
         if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) return [acct];
         if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) return [acct];
@@ -171,19 +171,19 @@ export function approvalWorld(opts: WorldOptions = {}) {
             const companyId = String(params[0]);
             const channel = String(params[1]);
             if (companyId !== "co" || channel !== "social") return [];
-            // Check if it's looking for a specific scope
+            // Check if it's looking for a specific scope by examining the SQL and params
             if (sql.includes("AND client_ref IS NULL")) {
-              // Looking for org scope (no client)
-              return !client ? [program] : [];
+              // Looking for org scope (no client) - check if the seeded program matches
+              return program.client_ref === null ? [program] : [];
             } else if (sql.includes("client_ref = $3")) {
-              // Looking for a specific client scope
-              return client && client.id === String(params[2]) ? [program] : [];
+              // Looking for a specific client scope - check if the seeded program matches
+              return program.client_ref === String(params[2]) ? [program] : [];
             }
             return [program];
           }
           if (sql.includes("WHERE company_id = $1 AND id = $2")) {
             // getProgram query
-            return String(params[0]) === "co" && String(params[1]) === "prog-1" ? [program] : [];
+            return String(params[0]) === "co" && String(params[1]) === program.id ? [program] : [];
           }
         }
         if (sql.includes(`FROM ${T("growth_experiments")}`)) {
@@ -195,11 +195,40 @@ export function approvalWorld(opts: WorldOptions = {}) {
         return [];
       },
       executeResult: (sql, params) => {
+        if (sql.startsWith(`INSERT INTO ${T("posts")}`)) {
+          const postId = String(params[0]);
+          post.id = postId;
+          post.company_id = String(params[1]);
+          post.body = String(params[2]);
+          post.overrides = params[3] ? JSON.parse(String(params[3])) : {};
+          post.media = params[4] ? JSON.parse(String(params[4])) : [];
+          post.status = String(params[5]);
+          post.scope = String(params[6]);
+          post.owner_user_id = params[7] ?? null;
+          post.first_comment = params[8] ?? null;
+          post.client_kind = params[9] ?? null;
+          post.client_ref = params[10] ?? null;
+          post.client_name = params[11] ?? null;
+          post.source = String(params[12]);
+          post.source_ref = params[13] ?? null;
+          post.created_by_agent_id = params[14] ?? null;
+          post.scheduled_at = params[16] ? new Date(String(params[16])).toISOString() : null;
+          // Tags are in params at a later index, need to check the SQL to determine position
+          // For now, look for tags in overrides if they were passed
+          return 1;
+        }
         if (sql.startsWith(`UPDATE ${T("posts")}`) && sql.includes("status = ANY(")) {
           const from = JSON.parse(String(params[5])) as string[];
           if (!from.includes(String(post.status))) return 0;
           post.status = params[2];
           if (params[3] === true) post.scheduled_at = params[4];
+          return 1;
+        }
+        if (sql.startsWith(`UPDATE ${T("posts")}`) && sql.includes("body = $2")) {
+          // Standard post update with body, overrides, media, etc.
+          post.body = String(params[1]);
+          post.overrides = params[2] ? JSON.parse(String(params[2])) : {};
+          post.media = params[3] ? JSON.parse(String(params[3])) : [];
           return 1;
         }
         if (sql.includes("SET schedule_issue_id = $3")) {
@@ -257,6 +286,40 @@ export function approvalWorld(opts: WorldOptions = {}) {
           const l = links.find((x) => x.id === params[0] && x.status === "pending");
           if (!l) return 0;
           l.status = "expired";
+          return 1;
+        }
+        if (sql.startsWith(`INSERT INTO ${T("growth_programs")}`)) {
+          // INSERT INTO growth_programs (id, company_id, scope_key, client_kind, client_ref, client_name, project_id, channel, objective, metric, constraints, playbook, playbook_version, autopilot, scoreboard, feature_questions, owner_user_id)
+          // Params: [id, companyId, scopeKey, clientKind, clientRef, clientName, projectId, channel, objective, metric, constraints, playbook, playbookVersion, autopilot, scoreboard, featureQuestions, ownerUserId]
+          const id = String(params[0]);
+          const companyId = String(params[1]);
+          const channel = String(params[7]);
+          // Only replace the seeded program if it's the same company and channel
+          if (companyId === "co" && channel === "social") {
+            program = {
+              id,
+              company_id: companyId,
+              scope_key: params[2] ?? null,
+              client_kind: params[3] ?? null,
+              client_ref: params[4] ?? null,
+              client_name: params[5] ?? null,
+              project_id: params[6] ?? null,
+              channel,
+              objective: String(params[8]),
+              metric: String(params[9]),
+              constraints: params[10] ? JSON.parse(String(params[10])) : {},
+              playbook: String(params[11]),
+              playbook_version: Number(params[12]),
+              autopilot: String(params[13]),
+              scoreboard: params[14] ? JSON.parse(String(params[14])) : {},
+              feature_questions: params[15] ? JSON.parse(String(params[15])) : [],
+              owner_user_id: params[16] ?? null,
+              approval_issue_id: null,
+              approval_week: null,
+              created_at: new Date(),
+              updated_at: new Date(),
+            };
+          }
           return 1;
         }
         return 1;
