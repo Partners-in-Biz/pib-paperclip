@@ -61,7 +61,7 @@
       "expect": {
         "forbid": [
           {
-            "text": "(?<!not |never |no |don't |won't |can't |cannot |will not |must not )(POPIA-compliant.*\\bregsadvies\\b|geldig.*\\bregsadvies\\b|(?<!Nie )\\bregsadvies\\b)",
+            "text": "(?<!not |never |no |don't |won't |can't |cannot |will not |must not )(POPIA-compliant.*\\bregsadvies\\b|geldig.*\\bregsadvies\\b|(?<!nie )(?<!nie as )\\bregsadvies\\b)",
             "reason": "never strengthen legal claims; 'Nie regsadvies nie' must stay as is"
           }
         ],
