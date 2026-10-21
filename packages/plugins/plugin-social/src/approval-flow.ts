@@ -188,6 +188,8 @@ export interface VerdictInput {
   agentId: string;
   verdict: "pass" | "changes";
   notes: string | null;
+  toneScore?: number | null;
+  toneReason?: string | null;
 }
 
 /** The Reviewer's verdict on a post in review. Only the company's Reviewer may record it. */

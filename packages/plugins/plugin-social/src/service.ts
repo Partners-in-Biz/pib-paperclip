@@ -205,13 +205,21 @@ function postVisibility(params: Record<string, unknown>): AccountScope {
   return value;
 }
 
-/** Validate and normalise the platform-keyed overrides object. */
-export function normalizeOverrides(value: unknown): Partial<Record<SocialPlatform, PlatformOverride>> | undefined {
+/** Validate and normalise the platform-keyed overrides object and reserved tags key. */
+export function normalizeOverrides(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new SocialError("overrides must be an object keyed by platform");
-  const out: Partial<Record<SocialPlatform, PlatformOverride>> = {};
+  const out: Record<string, unknown> = {};
   for (const [platform, raw] of Object.entries(value as Record<string, unknown>)) {
+    // Handle reserved tags key
+    if (platform === "tags") {
+      if (Array.isArray(raw)) {
+        const tags = raw.map((t) => String(t || "").toLowerCase().trim()).filter((t) => t && t.length > 0);
+        if (tags.length > 0) out.tags = Array.from(new Set(tags)).slice(0, 10); // dedupe, max 10
+      }
+      continue;
+    }
     if (!isSocialPlatform(platform)) throw new SocialError(`Unknown platform in overrides: ${platform}`);
     if (raw == null) continue;
     if (typeof raw !== "object" || Array.isArray(raw)) throw new SocialError(`overrides.${platform} must be an object`);
@@ -292,6 +300,7 @@ function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
 }
 
 export function postOut(row: PostRow, destinations: DestinationRow[] = [], accounts: Map<string, AccountRow> = new Map()) {
+  const tags = ((row.overrides as Record<string, unknown>)?.tags as string[] | undefined) ?? [];
   return {
     id: row.id,
     body: row.body,
@@ -304,6 +313,7 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     firstComment: row.first_comment,
     media: postMedia(row),
     overrides: postOverrides(row),
+    tags: tags.length > 0 ? tags : undefined,
     source: row.source ?? "manual",
     /** The SEO page this draft repurposes (its hand-off key), when it was drafted for one. */
     handoffKey: row.source === "repurpose" ? row.source_ref : null,
@@ -378,7 +388,10 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     );
   }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
-  const overrides = normalizeOverrides(params.overrides) ?? {};
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
+  const overrides = normalizeOverrides(overridesWithTags) ?? {};
   const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
   const row = {
     id: randomUUID(),
@@ -444,10 +457,13 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(params.overrides),
+    overrides: normalizeOverrides(overridesWithTags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
@@ -702,7 +718,11 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const verdict = requiredString(params, "verdict");
   if (verdict !== "pass" && verdict !== "changes") throw new SocialError('verdict must be "pass" or "changes"');
-  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null });
+  const toneScore = params.toneScore != null ? Number(params.toneScore) : null;
+  if (toneScore != null && (!Number.isInteger(toneScore) || toneScore < 0 || toneScore > 20)) {
+    throw new SocialError("toneScore must be a whole number from 0 to 20");
+  }
+  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
 }
 
 /** A person records that the client approved outside the approval page. */

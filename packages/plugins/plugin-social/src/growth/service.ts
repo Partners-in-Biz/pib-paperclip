@@ -364,9 +364,35 @@ export async function savePlaybookRecord(env: GrowthEnv, actor: GrowthActor, par
   return kitSavePlaybookRecord(wrappedEnv, actor, params);
 }
 
+/**
+ * Load the effective media rule for a scope (own work or client): stored block from playbook text if present, else default.
+ * Used by both get-playbook and record-review-verdict to ensure consistent rule resolution.
+ * Returns loadError if the playbook could not be loaded (caller decides whether to treat as warning or failure).
+ */
+export async function effectiveMediaRule(
+  env: GrowthEnv,
+  companyId: string,
+  scope: ClientScope,
+): Promise<{ rule: ReturnType<typeof import("@partnersinbiz/pib-plugin-kit").parseMediaRule>; source: "default" | "stored"; loadError?: string }> {
+  const { parseMediaRule, DEFAULT_MEDIA_RULE } = await import("@partnersinbiz/pib-plugin-kit");
+  try {
+    const program = await env.store.findProgram(companyId, GROWTH_CHANNEL, scope);
+    if (!program) return { rule: DEFAULT_MEDIA_RULE, source: "default" };
+    const mediaRule = parseMediaRule(program.playbook);
+    const hasMediaBlock = /```media-rule[^\S\n]*\n([\s\S]*?)```/i.test(program.playbook);
+    return { rule: mediaRule, source: hasMediaBlock ? "stored" : "default" };
+  } catch (err) {
+    return { rule: DEFAULT_MEDIA_RULE, source: "default", loadError: "Playbook could not be loaded, default media rule used" };
+  }
+}
+
 export async function getPlaybookRecord(env: GrowthEnv, actor: GrowthActor, params: Params, options: { versionText?: boolean } = {}) {
   const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
-  return kitGetPlaybookRecord(wrappedEnv, actor, params, options);
+  const result = await kitGetPlaybookRecord(wrappedEnv, actor, params, options);
+  const resolved = await scopeFromParams(env.ctx, actor.companyId, params);
+  const { rule: mediaRule, source: mediaRuleSource } = await effectiveMediaRule(env, actor.companyId, resolved.scope);
+  // loadError is ignored here; get-playbook always returns the effective rule, not a verdict
+  return { ...result, mediaRule, mediaRuleSource };
 }
 
 // ── Program settings and feature questions ─────────────────────────────────
