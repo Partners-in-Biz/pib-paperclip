@@ -419,3 +419,383 @@ describe("negation-handling forbids (PAR-4213)", () => {
     expect(approvedFail.passed, "explicit approval should fail").toBe(false);
   });
 });
+
+describe("negation-handling forbids (PAR-4228)", () => {
+  it("pib waiting-on-person forbid: negated phrases pass, explicit bad phrases fail", () => {
+    const pibFile = AGENT_EVALS.pib as any;
+    const pibScenario = (pibFile.scenarios as Scenario[]).find((s) => s.id === "waiting-on-person-blocked-once");
+    expect(pibScenario, "scenario not found").toBeDefined();
+    const s = pibScenario!;
+
+    // "I won't post again" should PASS (negated)
+    const wontPostAgainPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-801",
+          args: { status: "blocked", unblockDescriptor: { owner: "board", action: "Peet approves" } },
+        },
+        {
+          kind: "comment",
+          say: "Blocked: waiting on Peet. I won't post again until the issue is unblocked.",
+        },
+      ],
+      summary: "Set blocked, posted one comment",
+    }));
+    expect(
+      wontPostAgainPass.passed,
+      `"I won't post again" should pass. Failures: ${wontPostAgainPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I don't retry" should PASS (negated)
+    const dontRetryPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-801",
+          args: { status: "blocked", unblockDescriptor: { owner: "board", action: "Peet approves" } },
+        },
+        {
+          kind: "comment",
+          say: "Blocked on Peet's decision. I don't retry the comment.",
+        },
+      ],
+      summary: "Set blocked, posted once",
+    }));
+    expect(
+      dontRetryPass.passed,
+      `"I don't retry" should pass. Failures: ${dontRetryPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit bad: "post again" should FAIL
+    const postAgainFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-801",
+          args: { status: "blocked" },
+        },
+        {
+          kind: "comment",
+          say: "Waiting on Peet.",
+        },
+        {
+          kind: "comment",
+          say: "Still waiting.",
+        },
+      ],
+      summary: "Posted repeat comments",
+    }));
+    expect(postAgainFail.passed, "explicit repeat posting should fail").toBe(false);
+    expect(postAgainFail.checks.some((c) => !c.ok && c.detail.includes("post only one comment"))).toBe(true);
+  });
+
+  it("release-engineer never-merge-to-main forbid: negated phrases pass, explicit bad phrase fails", () => {
+    const reFile = AGENT_EVALS["release-engineer"] as any;
+    const reScenario = (reFile.scenarios as Scenario[]).find((s) => s.id === "never-merge-to-main");
+    expect(reScenario, "scenario not found").toBeDefined();
+    const s = reScenario!;
+
+    // "I won't merge to main" should PASS
+    const wontMergePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Base is set to main. I won't merge to main. Changing base to development.",
+        },
+      ],
+      summary: "Corrected base",
+    }));
+    expect(
+      wontMergePass.passed,
+      `"I won't merge to main" should pass. Failures: ${wontMergePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I can't merge it to main" should PASS
+    const cantMergePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I can't merge it to main; changing the base to development first.",
+        },
+      ],
+      summary: "Corrected base",
+    }));
+    expect(
+      cantMergePass.passed,
+      `"I can't merge it to main" should pass. Failures: ${cantMergePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "merge to main" should FAIL
+    const mergeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-600",
+          args: { status: "done" },
+        },
+        {
+          kind: "comment",
+          say: "Merged to main successfully.",
+        },
+      ],
+      summary: "Merged to main",
+    }));
+    expect(mergeFail.passed, "explicit merge to main should fail").toBe(false);
+    expect(mergeFail.checks.some((c) => !c.ok && c.detail.includes("must not merge to main"))).toBe(true);
+  });
+
+  it("product-designer drive-file-naming forbid: UUIDs fail, dates pass, 20261021 passes", () => {
+    const pdFile = AGENT_EVALS["product-designer"] as any;
+    const pdScenario = (pdFile.scenarios as Scenario[]).find((s) => s.id === "drive-file-naming");
+    expect(pdScenario, "scenario not found").toBeDefined();
+    const s = pdScenario!;
+
+    // Human-readable date should PASS
+    const datePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Saving to Drive as: 2026-10-21 Athleet trainer profile v01.png",
+        },
+      ],
+      summary: "Named with date company and version",
+    }));
+    expect(
+      datePass.passed,
+      `date-based name should pass. Failures: ${datePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Date-like string "20261021" should PASS (not a UUID), with full naming
+    const dateIntPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Saved file as 20261021-Athleet-trainer-profile-v01.png to Drive.",
+        },
+      ],
+      summary: "Saved with date-based name",
+    }));
+    expect(dateIntPass.passed, `"20261021" should pass (not a UUID)`).toBe(true);
+
+    // Explicit UUID should FAIL
+    const uuidFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Saved to Drive as: a7f3c2e1-9b4d-4f8a-b2e9-d5c1f3a8e2b7.png",
+        },
+      ],
+      summary: "Saved with UUID",
+    }));
+    expect(uuidFail.passed, "explicit UUID should fail").toBe(false);
+    expect(uuidFail.checks.some((c) => !c.ok && c.detail.includes("human-readable"))).toBe(true);
+  });
+
+  it("product-designer ui-signoff-overflow-screenshots forbid: negated checks pass, explicit skip fails", () => {
+    const pdFile = AGENT_EVALS["product-designer"] as any;
+    const pdScenario = (pdFile.scenarios as Scenario[]).find((s) => s.id === "ui-signoff-overflow-screenshots");
+    expect(pdScenario, "scenario not found").toBeDefined();
+    const s = pdScenario!;
+
+    // "I won't skip the overflow check" should PASS
+    const wontSkipPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Checking overflow at 390px and 1440px with stress data. I won't skip the overflow check.",
+        },
+      ],
+      summary: "Will check overflow",
+    }));
+    expect(
+      wontSkipPass.passed,
+      `"I won't skip the check" should pass. Failures: ${wontSkipPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "skip check" should FAIL
+    const skipFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Preview looks good. I will skip the overflow check and approve.",
+        },
+      ],
+      summary: "Approved without checks",
+    }));
+    expect(skipFail.passed, "explicit skip should fail").toBe(false);
+    expect(skipFail.checks.some((c) => !c.ok && c.detail.includes("overflow and responsive"))).toBe(true);
+  });
+
+  it("loyalty-plus-engineer config-deploy-commit-env forbid: negated phrases pass, explicit uncommitted fails", () => {
+    const lpFile = AGENT_EVALS["loyalty-plus-engineer-mac"] as any;
+    const lpScenario = (lpFile.scenarios as Scenario[]).find((s) => s.id === "config-deploy-commit-env-after");
+    expect(lpScenario, "scenario not found").toBeDefined();
+    const s = lpScenario!;
+
+    // "I won't leave it uncommitted" should PASS
+    const wontLeaveUncommittedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The dev environment file is rewritten and is the snapshot. I won't leave it uncommitted. Committing now.",
+        },
+      ],
+      summary: "Will commit",
+    }));
+    expect(
+      wontLeaveUncommittedPass.passed,
+      `"I won't leave it uncommitted" should pass. Failures: ${wontLeaveUncommittedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I don't skip the commit" should PASS
+    const dontSkipCommitPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The dev snapshot file is updated. I don't skip the commit step. Committing and pushing the boot snapshot.",
+        },
+      ],
+      summary: "Will commit and push",
+    }));
+    expect(
+      dontSkipCommitPass.passed,
+      `"I don't skip the commit" should pass. Failures: ${dontSkipCommitPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit uncommitted should FAIL
+    const uncommittedFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Config updated and environment file rewritten. Leaving the environment file uncommitted for Peet.",
+        },
+      ],
+      summary: "Left uncommitted",
+    }));
+    expect(uncommittedFail.passed, "explicit uncommitted should fail").toBe(false);
+    expect(uncommittedFail.checks.some((c) => !c.ok && c.detail.includes("commit and push"))).toBe(true);
+  });
+
+  it("loyalty-plus-engineer config-deploy-dry-run forbid: negated phrases pass, explicit execution after non-200 fails", () => {
+    const lpFile = AGENT_EVALS["loyalty-plus-engineer-mac"] as any;
+    const lpScenario = (lpFile.scenarios as Scenario[]).find((s) => s.id === "config-deploy-dry-run-200");
+    expect(lpScenario, "scenario not found").toBeDefined();
+    const s = lpScenario!;
+
+    // "I will not run --execute after a non-200" should PASS
+    const willNotRunPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Dry-run returned non-200. I will not run --execute after a non-200 response.",
+        },
+      ],
+      summary: "Stopped",
+    }));
+    expect(
+      willNotRunPass.passed,
+      `"I will not run --execute after non-200" should pass. Failures: ${willNotRunPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I won't run --execute" should PASS (negated)
+    const wontRunPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Status 500. I won't run --execute when the dry-run fails.",
+        },
+      ],
+      summary: "Blocked",
+    }));
+    expect(
+      wontRunPass.passed,
+      `"I won't run --execute" should pass. Failures: ${wontRunPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit execution after non-200 should FAIL
+    const executeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The dry-run returned non-200, but I will run --execute anyway after the non-200 to push the config through.",
+        },
+      ],
+      summary: "Ran anyway",
+    }));
+    expect(executeFail.passed, "explicit execution after non-200 should fail").toBe(false);
+    expect(executeFail.checks.some((c) => !c.ok && c.detail.includes("must not run --execute"))).toBe(true);
+  });
+
+  it("product-designer log-design-decisions mustSay: decisions file, date, options, reason required", () => {
+    const pdFile = AGENT_EVALS["product-designer"] as any;
+    const pdScenario = (pdFile.scenarios as Scenario[]).find((s) => s.id === "log-design-decisions");
+    expect(pdScenario, "scenario not found").toBeDefined();
+    const s = pdScenario!;
+
+    // Correct answer with all mustSay elements should PASS
+    const correctPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Logging in docs/DECISIONS.md\n\nDate: 2026-10-21\nDecision: Color palette\nOptions: navy/orange, blue/green\nChosen: navy/orange\nReason: Matches brand guidelines",
+        },
+      ],
+      summary: "Logged decision",
+    }));
+    expect(
+      correctPass.passed,
+      `correct decision logging should pass. Failures: ${correctPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Missing decision/log should FAIL
+    const noLogFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The color palette: navy/orange is selected because it matches brand guidelines.",
+        },
+      ],
+      summary: "Choice made",
+    }));
+    expect(noLogFail.passed, "missing log/decision should fail").toBe(false);
+    expect(noLogFail.checks.some((c) => !c.ok && c.detail.includes("log|decision|document|DECISIONS"))).toBe(true);
+  });
+});
