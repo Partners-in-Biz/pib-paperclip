@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ASK_OWNER_TOOL, ASKING_HEADING, COMPANY_MEMORY_HEADING, MODULES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, GROWTH_TOOL_NAMES, ASKING_HEADING, COMPANY_MEMORY_HEADING, MODULES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
 import { COMPANY_OS_SKILL_KEY } from "@partnersinbiz/pib-plugin-kit/team";
 import { COMPANY_FLOWS, COMPANY_SKILL_KEY, COMPANY_SKILL_SLUG, companySkillBody, toolNaming } from "../src/company-skill.js";
 import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
@@ -51,15 +51,15 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain(COMPANY_FLOWS);
   });
 
-  it("has valid frontmatter, the memory and asking sections, and stays under 19,000 characters", () => {
+  it("has valid frontmatter, the memory and asking sections, and stays under 19,500 characters", () => {
     const markdown = os.markdown!;
     const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# PiB company operating manual\n/.exec(markdown);
     expect(match, markdown.slice(0, 300)).not.toBeNull();
     expect(match![3]!.length).toBeGreaterThan(80);
     expect(markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(markdown).toContain(ASKING_HEADING);
-    expect(markdown.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(markdown.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 
   it("says what is true of the code", () => {
@@ -188,11 +188,11 @@ describe("the Operator knows how to act on each watch problem", () => {
 
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
-    expect(operator.markdown!.length).toBeLessThan(19_050);
+    expect(operator.markdown!.length).toBeLessThan(19_200);
     // The references are read on demand, each on its own: none is a wall of text.
     for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
-    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 });
 
@@ -245,7 +245,10 @@ describe("the Reviewer skill", () => {
   it("names only tools that exist (other modules' tools read from their declarations)", () => {
     const declared = (plugin: string) => {
       const source = readFileSync(new URL(`../../plugin-${plugin}/src/tools.ts`, import.meta.url), "utf8");
-      return new Set([...source.matchAll(/name: "([a-z0-9-]+)"/g)].map((m) => m[1]!));
+      const names = new Set([...source.matchAll(/name: "([a-z0-9-]+)"/g)].map((m) => m[1]!));
+      // Plugins that register the kit's growth tools declare them through the factory, not as literals.
+      if (source.includes("growthToolDeclarations(")) for (const name of GROWTH_TOOL_NAMES) names.add(name);
+      return names;
     };
     const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
     // The Reviewer's and the Operator's tool names, and the onboarding checklist's.

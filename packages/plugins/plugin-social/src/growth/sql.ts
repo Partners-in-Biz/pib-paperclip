@@ -5,9 +5,8 @@
  * SQL guard rules apply (see db.ts).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createGrowthStore, isClientKind } from "@partnersinbiz/pib-plugin-kit";
+import { createGrowthStore, isClientKind, AUTOPILOT_MODES, type Autopilot } from "@partnersinbiz/pib-plugin-kit";
 import { table } from "../db.js";
-import { AUTOPILOT_MODES, type Autopilot } from "./engine.js";
 import { sqlFeatures } from "./features-sql.js";
 import type { CoreGrowthStore, CoreGrowthTypes, GrowthStore, Program } from "./store.js";
 
@@ -28,5 +27,7 @@ export function sqlCoreStore(ctx: PluginContext): CoreGrowthStore {
 
 /** Core store plus the Social-only features port, as the service sees it. */
 export function sqlGrowthStore(ctx: PluginContext): GrowthStore {
-  return { ...sqlCoreStore(ctx), ...sqlFeatures(ctx) };
+  const core = sqlCoreStore(ctx);
+  const features = sqlFeatures(ctx);
+  return { ...core, ...features } as GrowthStore;
 }

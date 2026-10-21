@@ -128,6 +128,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Tells the Setup plugin what Campaigns still needs, sends the Cockpit snapshot, and announces recent unsubscribes again, for each company.",
       schedule: "19 * * * *",
     },
+    {
+      jobKey: "measure-experiments",
+      displayName: "Measure experiments (Growth Lab)",
+      description: "Judges each running experiment on the reply rate of its campaign's A/B steps, writes the verdict and drafts a playbook change.",
+      schedule: "37 3 * * *",
+    },
   ],
   skills: SKILLS,
   apiRoutes: [
