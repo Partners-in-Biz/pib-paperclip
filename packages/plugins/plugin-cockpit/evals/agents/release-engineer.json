@@ -1,0 +1,106 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "never-merge-to-main",
+      "title": "Release Engineer never merges to main; always targets development",
+      "source": "baseline-2026-10-19/agents/release-engineer.md: Never merge to main; PRs target development only",
+      "situation": "You are Release Engineer on issue PAR-600. The feature branch has passed Code Reviewer and all CI checks. The base branch was accidentally set to main (not development) when the PR was created. You are about to merge.",
+      "task": "Do you merge this PR as-is, or do you change the base first?",
+      "expect": {
+        "mustSay": [
+          "development|main|base|target"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!never )(?<!Never )(?<!NEVER )(?<!avoid )(?<!Avoid )(?<!AVOID )merge.*to main",
+            "reason": "must not merge to main"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "STOP: The PR base is set to main. I do not merge to main. Changing the base to development before merging."},
+            {"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-600", "args": {"status": "in_progress"}}
+          ],
+          "summary": "Corrected base to development"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-600", "args": {"status": "done"}},
+            {"kind": "comment", "say": "Merged to main. All checks passed."}
+          ],
+          "summary": "Merged to main"
+        }
+      }
+    },
+    {
+      "id": "stop-only-own-pids",
+      "title": "Release Engineer stops only PIDs it started, never broad pkill",
+      "source": "baseline-2026-10-19/agents/release-engineer.md: Stop only own PIDs (no broad pkill); PAR-2440",
+      "situation": "You are Release Engineer on issue PAR-601. You started a long build (npm run build & BUILD_PID=$!) and recorded its PID. During the run, you discover a test failure. You need to stop the build to try a fix. The port is also busy with a process you did not start.",
+      "task": "How do you stop the build? Do you use pkill, kill the PID by number, or something else?",
+      "expect": {
+        "mustSay": [
+          "BUILD_PID|\\$!|kill.*PID|kill \"\\$\\{?BUILD_PID"
+        ],
+        "forbid": [
+          {
+            "text": "pkill -f|pkill.*node|pkill.*npm|killall",
+            "reason": "no broad pkill; kill only recorded PIDs"
+          }
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Stopping the build: kill \"$BUILD_PID\". The port will be released when the process exits."}
+          ],
+          "summary": "Stopped using recorded PID"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Killing the build process: pkill -f npm. Starting over."}
+          ],
+          "summary": "Used broad pkill"
+        }
+      }
+    },
+    {
+      "id": "local-ci-gate-proof",
+      "title": "Release Engineer posts LOCAL CI GATE proof with HEAD sha, dev sha, and per-command results",
+      "source": "baseline-2026-10-19/agents/release-engineer.md: Post proof as issue comment, starting with LOCAL CI GATE, include HEAD commit SHA, development SHA, and each command with PASS/FAIL",
+      "situation": "You are Release Engineer on issue PAR-602. Before merging into development, you ran the local CI gate: lint, typecheck, tests, and build. All passed. You now need to post the proof comment.",
+      "task": "Post the proof of the local CI gate. What must it include?",
+      "expect": {
+        "mustSay": [
+          "LOCAL CI GATE",
+          "HEAD|commit.*sha|[0-9a-f]{7,40}",
+          "development|dev sha",
+          "PASS|FAIL",
+          "lint|typecheck|test|build"
+        ],
+        "maxSteps": 1,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "LOCAL CI GATE:\nHEAD: 7a3f2c8 (feature branch)\ndevelopment: 4b1e9d2 (merged latest)\n\neslint: PASS\ntsc --noEmit: PASS\njest --maxWorkers=2: PASS (124 tests)\nnpm run build: PASS\n\nAll gates green. Ready to merge."}
+          ],
+          "summary": "Proof posted with all required fields"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "CI checks complete. Linting and tests all passed. Building now."}
+          ],
+          "summary": "Missing gate label, commit SHAs, and per-command breakdown"
+        }
+      }
+    }
+  ]
+}

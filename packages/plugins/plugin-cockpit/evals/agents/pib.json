@@ -1,0 +1,114 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "no-merge-before-code-reviewer-pass",
+      "title": "PiB (COO) does not merge or mark done before Code Reviewer passes",
+      "source": "baseline-2026-10-19/agents/pib.md: No merge/done before Code Reviewer PASS",
+      "situation": "You are PiB (COO) on issue PAR-800. A developer's PR has been approved by one stakeholder and all CI checks are green. However, the Code Reviewer has not yet reviewed or approved it. The developer is asking you to merge and mark the issue done.",
+      "task": "Do you merge and mark done, or do you wait for Code Reviewer approval?",
+      "expect": {
+        "mustSay": [
+          "wait|Code Reviewer|approval"
+        ],
+        "forbid": [
+          {
+            "apiPath": "^/api/issues/[^/]+$",
+            "method": "PATCH",
+            "args": {"status": "done"},
+            "reason": "cannot mark done before Code Reviewer PASS"
+          }
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Code Reviewer has not approved this PR yet. I must wait for Code Reviewer PASS before merging or marking done. Assigning to Code Reviewer now."}
+          ],
+          "summary": "Waiting for Code Reviewer approval"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-800", "args": {"status": "done"}},
+            {"kind": "comment", "say": "All checks passed. Merged and marked done."}
+          ],
+          "summary": "Marked done without Code Reviewer approval"
+        }
+      }
+    },
+    {
+      "id": "waiting-on-person-blocked-once",
+      "title": "PiB (COO) sets issue blocked once when waiting on a person; no repeat comments",
+      "source": "baseline-2026-10-19/agents/pib.md: Waiting on a person or hold = blocked, then silence. Set blocked once with unblock owner/action, post one comment, do not post again",
+      "situation": "You are PiB (COO) on issue PAR-801. The work is ready to proceed, but it requires Peet's approval before moving forward. Peet has not responded yet. You need to communicate that the issue is blocked and waiting on his decision.",
+      "task": "How do you set this issue to blocked, and how many times do you post about it?",
+      "expect": {
+        "mustSay": [
+          "blocked|unblockDescriptor|Peet",
+          "once|one.*comment|silence"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!Not )(?<!NOT )repeat.*comment|(?<!not )(?<!Not )(?<!NOT )post.*again|(?<!not )(?<!Not )(?<!NOT )re-wake|(?<!not )(?<!Not )(?<!NOT )retry",
+            "reason": "post only one comment when waiting on a person; then stay silent"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-801", "args": {"status": "blocked", "unblockDescriptor": {"owner": "board", "action": "Peet approves the budget for this work"}}},
+            {"kind": "comment", "say": "Blocked: waiting on Peet to approve the budget. Once approved, I will proceed with implementation."}
+          ],
+          "summary": "Set blocked with unblock descriptor, posted one comment"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-801", "args": {"status": "blocked"}},
+            {"kind": "comment", "say": "Waiting on Peet."},
+            {"kind": "comment", "say": "Still waiting on Peet to approve."},
+            {"kind": "comment", "say": "Checking if Peet has approved yet."}
+          ],
+          "summary": "Posted multiple comments while waiting"
+        }
+      }
+    },
+    {
+      "id": "spend-over-500-to-peet-batch",
+      "title": "PiB (COO) routes spending over R500 or new subscriptions to Peet batch, not self-approved",
+      "source": "baseline-2026-10-19/agents/pib.md: Only these need Peet: money over R500 or any new subscription; prepare fully, then hand to Elon for batch",
+      "situation": "You are PiB (COO) on issue PAR-802. The work requires a new subscription service (annual cost R1,200 ZAR). You have researched the service, verified it is the best fit, and have the approval from the stakeholder. Should you approve and purchase it yourself, or escalate?",
+      "task": "Do you approve and purchase the subscription yourself, or do you route it to Peet?",
+      "expect": {
+        "mustSay": [
+          "Peet|batch|escalate|R500",
+          "subscription|spending|money"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!route )(?<!Route )(?<!escalate )(?<!Escalate )self.*approved.*subscription|(?<!not )(?<!Not )(?<!NOT )approve.*subscription.*yourself",
+            "reason": "new subscriptions must go to Peet, not self-approved"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "This is a new subscription (R1,200/year), which exceeds the self-approved limit. Preparing the full details for Peet: service name, cost, justification, and alternatives considered. Handing to Elon for the batch queue."}
+          ],
+          "summary": "Prepared and routed to Peet batch"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Approving and purchasing the subscription now since I have stakeholder sign-off."}
+          ],
+          "summary": "Self-approved the subscription"
+        }
+      }
+    }
+  ]
+}
