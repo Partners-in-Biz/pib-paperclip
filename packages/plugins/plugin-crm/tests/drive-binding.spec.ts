@@ -11,12 +11,12 @@ async function setupBinding(config: Record<string, any> = {}, store?: Record<str
 
 describe("Drive binding tools", () => {
   it("declares two binding tools with schemas and descriptions", () => {
-    // Tools are declared in DRIVE_TOOLS; should have 6 total (4 folder tools + 2 binding tools)
-    expect(DRIVE_TOOLS).toHaveLength(6);
-    expect(DRIVE_TOOLS[4].name).toBe("drive_binding_discover");
-    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_set");
-    expect(DRIVE_TOOLS[4].description).toContain("exact case-insensitive");
-    expect(DRIVE_TOOLS[5].description).toContain("Shared Drive");
+    // Tools are declared in DRIVE_TOOLS; should have 7 total (5 folder tools + 2 binding tools)
+    expect(DRIVE_TOOLS).toHaveLength(7);
+    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_discover");
+    expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
+    expect(DRIVE_TOOLS[5].description).toContain("exact case-insensitive");
+    expect(DRIVE_TOOLS[6].description).toContain("Shared Drive");
   });
 
   it("single exact match (case-insensitive, trimmed) auto-binds", async () => {
