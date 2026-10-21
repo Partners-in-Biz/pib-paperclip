@@ -43,14 +43,14 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (call \`get-approval-status\` to check where a personal post stands; only the post owner can approve).
+A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands; only the owner can approve).
 
 ## Approvals
 
 - \`request-review\` opens the post's review issue by the scope's policy (\`get-approval-policy\`). Sign-offs: the Reviewer's pass (a check), a team member's approval, the client's approval. The post is approved when every sign-off the policy needs is in **for its current version**: editing it makes earlier sign-offs stale. \`get-approval-status\` shows where one post stands.
 - **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
 - **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
-- **Media.** Media missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; calling it again returns the same issue. Attach the asset, then \`request-review\`.
+- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; a repeat call returns it. Attach the asset, then \`request-review\`.
 - \`review-outcomes\` gives first-pass rates per post type. They are inputs for a later autonomy policy; auto-approval is off.
 Full flow, statuses and edge cases: \`references/approvals.md\`.
 
@@ -94,7 +94,7 @@ Each scope (own work, each client) has a Growth program: a goal ("engagement rat
 
 ## Tool list
 
-list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, review-outcomes, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
+list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, review-outcomes, request-creative, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
 `;
 
 const CONTENT_DESCRIPTION =
