@@ -290,4 +290,132 @@ describe("negation-handling forbids (PAR-4213)", () => {
         .join("; ")}`,
     ).toBe(true);
   });
+
+  it("code-reviewer forbid: drip-feed negations pass, actual drip-feed triggers forbid", () => {
+    const reviewerFile = AGENT_EVALS["code-reviewer"] as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "all-findings-one-pass");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // "I won't drip-feed" should PASS (negated)
+    const negatedDripPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED:\n(1) Missing null check\n(2) N+1 query issue\n(3) Schema violation\n\nI won't drip-feed. Fix all three.",
+        },
+      ],
+      summary: "All findings, one pass",
+    }));
+    expect(
+      negatedDripPass.passed,
+      `"I won't drip-feed" should pass. Failures: ${negatedDripPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "rather than drip-feeding" should PASS (negated)
+    const negatedDripFeedingPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED: Three issues found:\n(1) Null check\n(2) N+1\n(3) Schema\n\nRather than drip-feeding these, here's the full list.",
+        },
+      ],
+      summary: "All findings",
+    }));
+    expect(
+      negatedDripFeedingPass.passed,
+      `"rather than drip-feeding" should pass. Failures: ${negatedDripFeedingPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit bad phrase should FAIL
+    const badFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Issue 1: Null check needed\nIssue 2: N+1 problem\nIssue 3: Schema violation\n\nI will follow up with more details in my next pass.",
+        },
+      ],
+      summary: "One issue per comment",
+    }));
+    expect(badFail.passed, "explicit drip-feeding should fail").toBe(false);
+  });
+
+  it("plan-critic forbid: negated approval phrases pass, explicit approval fails", () => {
+    const criticFile = AGENT_EVALS["plan-critic"] as any;
+    const criticScenario = (criticFile.scenarios as Scenario[]).find((s) => s.id === "fail-plan-no-qa-section");
+    expect(criticScenario, "scenario not found").toBeDefined();
+    const s = criticScenario!;
+
+    // "cannot be approved" should PASS (negated with "be")
+    const cannotBeApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Missing Q&A section. This plan cannot be approved without it.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      cannotBeApprovedPass.passed,
+      `"cannot be approved" should pass. Failures: ${cannotBeApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "not yet approved" should PASS (negated with "yet")
+    const notYetApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The plan is not yet approved. No Q&A section found.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      notYetApprovedPass.passed,
+      `"not yet approved" should pass. Failures: ${notYetApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "isn't approved" should PASS (negated with "n't")
+    const isntApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "This plan isn't approved due to missing Q&A section.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      isntApprovedPass.passed,
+      `"isn't approved" should pass. Failures: ${isntApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "approved" should FAIL
+    const approvedFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The plan looks solid. Approved for implementation.",
+        },
+      ],
+      summary: "Approved",
+    }));
+    expect(approvedFail.passed, "explicit approval should fail").toBe(false);
+  });
 });

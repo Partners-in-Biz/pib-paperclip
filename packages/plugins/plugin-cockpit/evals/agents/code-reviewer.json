@@ -90,7 +90,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!won't )(?<!Won't )(?<!can't )(?<!Can't )will (follow|post) (up|more)|(?<!not )(?<!Not )(?<!NOT )(?<!don't )(?<!Don't )(?<!no )(?<!No )post[^.]{0,10}second.*pass|(?<!not )(?<!Not )(?<!NOT )(?<!no )(?<!No )(?<!never )(?<!Never )drip",
+            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!won't )(?<!Won't )(?<!can't )(?<!Can't )will (follow|post) (up|more)|(?<!not )(?<!Not )(?<!NOT )(?<!don't )(?<!Don't )(?<!no )(?<!No )post[^.]{0,10}second.*pass",
             "reason": "no drip-feeding; all findings in one pass"
           }
         ],
