@@ -1,6 +1,6 @@
 # Paid ads
 
-Paperclip plugin `partnersinbiz.ads`. Version 0.3.1.
+Paperclip plugin `partnersinbiz.ads`. Version 0.3.5.
 
 Reads Meta and Google Ads performance into one picture for PiB's own ads and for each client's, keeps monthly budget caps with pacing, raises anomaly alerts, and turns every campaign or budget change into a **proposal with the numbers** that goes to the Reviewer, then a person (and the client, through the CRM, where the scope asks). It is the governed-spend module the audit asked for (Q1a-7, Q9-4, Q10-14), not a port of the old 91-route Ads manager.
 

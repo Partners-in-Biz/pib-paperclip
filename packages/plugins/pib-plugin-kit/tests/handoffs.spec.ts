@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { operatorAgentId, reviewerAgentId, roleAgentUsable, routeRole, routeWork, suppressionEmail, suppressionScope, teamAgentId, type RolesPayload } from "../src/cockpit.js";
+import { operatorAgentId, reviewerAgentId, roleAgentUsable, routeRole, routeRoleForScope, routeWork, suppressionEmail, suppressionScope, teamAgentId, type RolesPayload } from "../src/cockpit.js";
 import { COMPANY_OS_HIRE_SKILL, hireSkills, hireTaskDraft, matchesRole, type HireRole } from "../src/agent-hire.js";
 import { COMPANY_OS_SKILL } from "../src/asking.js";
 import { COMPANY_OS_SKILL_KEY } from "../src/team.js";
@@ -73,6 +73,32 @@ describe("hand-off helpers", () => {
     const staffed = fakeCtx({ team: { ...team, "sales-lead": { agentId: "sl", status: "idle" } } }).ctx;
     expect(await routeRole(staffed, "c1", "sales-lead")).toEqual({ assigneeAgentId: "sl", assigneeUserId: null, via: "sales-lead" });
     expect(await routeRole(fakeCtx({ operatorAgentId: "op" }).ctx, "c1", "inbound-qualifier")).toEqual({ assigneeAgentId: "op", assigneeUserId: null, via: "operator" });
+  });
+
+  it("routes work by scope: own/client/company/contact/book to revenue-lead, product:* to owner if supplied", async () => {
+    const team = { "revenue-lead": { agentId: "rl", status: "idle" }, "operator": { agentId: "op", status: "idle" } };
+    const ctx = fakeCtx({ operatorAgentId: "op", team }).ctx;
+    // own scope routes to revenue-lead
+    expect(await routeRoleForScope(ctx, "c1", "own")).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
+    // client:x routes to revenue-lead
+    expect(await routeRoleForScope(ctx, "c1", "client:abc")).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
+    // book:x routes to revenue-lead
+    expect(await routeRoleForScope(ctx, "c1", "book:xyz")).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
+    // product:a with owner A returns owner (via "product-owner")
+    expect(await routeRoleForScope(ctx, "c1", "product:mira", { productOwnerAgentId: "mira-id" })).toEqual({ assigneeAgentId: "mira-id", assigneeUserId: null, via: "product-owner" });
+    // product:b with owner B (different from A) returns B, not A
+    expect(await routeRoleForScope(ctx, "c1", "product:other", { productOwnerAgentId: "other-id" })).toEqual({ assigneeAgentId: "other-id", assigneeUserId: null, via: "product-owner" });
+    // product:x without owner falls back to revenue-lead
+    expect(await routeRoleForScope(ctx, "c1", "product:none")).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
+    // unknown scope defaults to revenue-lead
+    expect(await routeRoleForScope(ctx, "c1", "unknown:scope")).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
+  });
+
+  it("routeRoleForScope with client:x and product owner supplied never returns the product owner", async () => {
+    const team = { "revenue-lead": { agentId: "rl", status: "idle" } };
+    const ctx = fakeCtx({ team }).ctx;
+    // client:x with a product owner supplied still routes to revenue-lead, not the product owner
+    expect(await routeRoleForScope(ctx, "c1", "client:acme", { productOwnerAgentId: "product-owner" })).toEqual({ assigneeAgentId: "rl", assigneeUserId: null, via: "revenue-lead" });
   });
 
   it("every hire gets the company operating manual", () => {

@@ -47,6 +47,7 @@ jobs:
         package:
           # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
           - pib-plugin-kit
+          - pib-browser
           - plugin-accounting
           - plugin-ads
           - plugin-billing

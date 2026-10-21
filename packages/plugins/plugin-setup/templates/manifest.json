@@ -1,6 +1,6 @@
 {
   "pack": "pib-standard-team",
-  "version": 1,
+  "version": 2,
   "updated": "2026-10-03",
   "description": "The agents a PiB company has that are not kit team roles: the CEO, the dev team (Delivery Lead, Planner, Plan Critic, Senior Developer, Developer, Code Reviewer, Mac Builder), the Growth Marketing Lead (who also holds the Social role), the Summarizer and the Wiki Maintainer. Taken from the live Partners in Biz agents on 2026-10-03 and cleaned up. The kit TEAM_ROLES (Operator, Reviewer, Account Manager, SEO, Social, Bookkeeper, Payroll Clerk and the sales roles) are NOT in this pack: they are staffed in Setup -> Team.",
   "variables": {
@@ -13,7 +13,13 @@
   },
   "sharedBlocks": [
     "execution-contract",
-    "dev-conventions"
+    "dev-conventions",
+    "pib-autonomy",
+    "scheduled-runs",
+    "evidence",
+    "stuck-rule",
+    "anti-loop",
+    "pib-mistakes"
   ],
   "templates": [
     {
@@ -75,6 +81,7 @@
       "group": "dev-team",
       "capabilities": "Turns incoming requests into Paperclip tasks, routes them to the right dev-team agent, chases stalled work and merges passed PRs into development; makes no technical decisions.",
       "reportsTo": "ceo",
+      "escalatesTo": "ceo",
       "adapterPreference": [
         "claude_local"
       ],
@@ -102,7 +109,11 @@
       "requires": {
         "modules": []
       },
-      "notes": []
+      "notes": [],
+      "skeleton": true,
+      "scope": "pib",
+      "evalFile": "delivery-lead.json",
+      "distilled": true
     },
     {
       "key": "planner",
@@ -396,6 +407,49 @@
       "notes": [
         "Holds the kit Social role: hire it through the Social plugin's own hire (Setup does this) so it is linked and wired. Use this template instead of the plain Social agent only when the company wants a growth lead who also does social.",
         "Without this template, Setup -> Team staffs a plain Social agent from the kit role."
+      ]
+    },
+    {
+      "key": "revenue-lead",
+      "name": "Revenue Lead",
+      "title": "Revenue Lead",
+      "role": "general",
+      "icon": "target",
+      "group": "core",
+      "capabilities": "Owns pipeline and revenue outcomes: every deal is owned and moving, clients are invoiced and heard from, and cash is clear. Mira handles product strategy.",
+      "reportsTo": "ceo",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "fromKitRole": "revenue-lead"
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-crm/crm-records",
+        "plugin/partnersinbiz-crm/sales-lead",
+        "plugin/partnersinbiz-cockpit/company-os"
+      ],
+      "file": "revenue-lead",
+      "match": {
+        "names": [
+          "Revenue Lead"
+        ],
+        "titles": [
+          "Revenue Lead",
+          "Business Lead"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": false,
+      "requires": {
+        "modules": [
+          "crm"
+        ]
+      },
+      "scope": "pib",
+      "notes": [
+        "Holds the kit Revenue Lead role: hire it through the CRM plugin's own hire (Setup does this) so it is linked and wired.",
+        "This is the Revenue Lead agent: Mira is the product owner/strategy counterpart; do not confuse the two roles."
       ]
     },
     {

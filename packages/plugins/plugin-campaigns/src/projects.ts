@@ -40,6 +40,6 @@ export async function campaignsProjectId(ctx: PluginContext, companyId: string):
 /** The project to open a campaign's issue in, or undefined for none. */
 export async function projectForCampaign(ctx: PluginContext, companyId: string, campaign: Pick<CampaignDraft, "clientKind" | "clientRef"> | null): Promise<string | undefined> {
   const fallbackProjectId = await campaignsProjectId(ctx, companyId);
-  const choice = await resolveClientProjectId(ctx, companyId, campaign ? campaignScope(campaign) : null, { fallbackProjectId });
+  const choice = await resolveClientProjectId(ctx, companyId, campaign ? campaignScope(campaign) : null, { fallbackProjectId, kind: "campaigns" });
   return choice.projectId ?? undefined;
 }

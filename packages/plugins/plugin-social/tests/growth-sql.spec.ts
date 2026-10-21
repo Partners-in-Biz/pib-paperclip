@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { decisionsMigration, experimentsMigration } from "@partnersinbiz/pib-plugin-kit";
+import { decisionsMigration, experimentsMigrationV1 } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../src/db.js";
 import { sqlGrowthStore } from "../src/growth/sql.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -13,7 +13,7 @@ const T = (name: string) => `${NAMESPACE}.${name}`;
 describe("migration 012", () => {
   it("pastes the kit decisions and experiments tables with our namespace", () => {
     expect(MIGRATION).toContain(decisionsMigration(NAMESPACE).trim());
-    for (const block of experimentsMigration(NAMESPACE).trim().split("\n\n")) expect(MIGRATION).toContain(block.trim());
+    for (const block of experimentsMigrationV1(NAMESPACE).trim().split("\n\n")) expect(MIGRATION).toContain(block.trim());
   });
 
   it("adds triage, scores, features, playbook changes and experiment tags, without deleting anything", () => {

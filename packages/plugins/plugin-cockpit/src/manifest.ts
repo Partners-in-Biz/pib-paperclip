@@ -177,6 +177,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.comments.create",
     "issue.comments.read",
     "issue.relations.read",
+    "issue.attachments.read",
     "approvals.read",
     "agents.read",
     "agents.pause",
@@ -276,6 +277,8 @@ const manifest: PaperclipPluginManifestV1 = {
     { routeKey: "repairs-list", method: "GET", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
     // Governor rehearse: safely tests the quota governor with synthetic failures.
     { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
+    // Owner push: send critical push notifications from external systems to the owner.
+    { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
     {

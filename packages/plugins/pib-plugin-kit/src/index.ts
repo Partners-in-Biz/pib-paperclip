@@ -2,6 +2,8 @@ export * from "./skills.js";
 export * from "./memory.js";
 export * from "./asking.js";
 export * from "./writing.js";
+export * from "./creative-rubric.js";
+export * from "./media-rule.js";
 export * from "./team.js";
 export * from "./crypto.js";
 export * from "./config.js";
@@ -17,6 +19,8 @@ export * from "./contracts.js";
 export * from "./outbox.js";
 export * from "./decisions.js";
 export * from "./experiments.js";
+export * from "./growth/ports.js";
+export * from "./growth/store.js";
 export * from "./pdf.js";
 export * from "./tool-result.js";
 export * from "./setup.js";
@@ -37,7 +41,11 @@ export * from "./waiting.js";
 export * from "./client-project.js";
 export * from "./ask-effects.js";
 export * from "./privacy.js";
+export * from "./growth-scope.js";
 export * from "./sender-scope.js";
+export * from "./growth/engine.js";
+export * from "./growth/types.js";
+export * from "./drive.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
@@ -109,3 +117,4 @@ export function requirePublicBaseUrl(value: unknown): string {
   }
   return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
 }
+export * from "./claims.js";

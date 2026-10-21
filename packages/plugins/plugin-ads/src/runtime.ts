@@ -3,6 +3,7 @@
  * `runtimeFor`; tests pass a mock provider and a fixed clock. Every service takes a runtime, so no service reaches for a global.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { DriveSaveFn } from "./drive.js";
 import { adsConfigFrom, loadAdsConfig, type AdsConfig } from "./config.js";
 import { AdsError } from "./domain.js";
 import { realProvider } from "./providers/registry.js";
@@ -22,12 +23,14 @@ export interface AdsRuntime {
   provider(platform: StoredPlatform): AdsProvider;
   fetchImpl?: typeof fetch;
   now(): Date;
+  /** Tests swap this for a fake; production uses the kit's driveSave. */
+  driveSave?: DriveSaveFn;
 }
 
 export async function runtimeFor(
   ctx: PluginContext,
   companyId: string,
-  overrides: Partial<Pick<AdsRuntime, "provider" | "fetchImpl" | "now" | "config">> = {},
+  overrides: Partial<Pick<AdsRuntime, "provider" | "fetchImpl" | "now" | "config" | "driveSave">> = {},
 ): Promise<AdsRuntime> {
   return {
     ctx,
@@ -36,12 +39,13 @@ export async function runtimeFor(
     provider: overrides.provider ?? ((platform) => providers.resolve(platform)),
     ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {}),
     now: overrides.now ?? (() => clock.now()),
+    ...(overrides.driveSave ? { driveSave: overrides.driveSave } : {}),
   };
 }
 
 /** For tests: a runtime on a config built from plain values. */
-export function runtimeFromRaw(ctx: PluginContext, companyId: string, raw: Record<string, unknown>, overrides: Partial<Pick<AdsRuntime, "provider" | "fetchImpl" | "now">> = {}, uiBase: string | null = null): AdsRuntime {
-  return { ctx, companyId, config: adsConfigFrom(ctx, companyId, raw, uiBase), provider: overrides.provider ?? ((platform) => providers.resolve(platform)), ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {}), now: overrides.now ?? (() => clock.now()) };
+export function runtimeFromRaw(ctx: PluginContext, companyId: string, raw: Record<string, unknown>, overrides: Partial<Pick<AdsRuntime, "provider" | "fetchImpl" | "now" | "driveSave">> = {}, uiBase: string | null = null): AdsRuntime {
+  return { ctx, companyId, config: adsConfigFrom(ctx, companyId, raw, uiBase), provider: overrides.provider ?? ((platform) => providers.resolve(platform)), ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {}), now: overrides.now ?? (() => clock.now()), ...(overrides.driveSave ? { driveSave: overrides.driveSave } : {}) };
 }
 
 /** The adapter's environment. The test platform has no app; a real platform must be switched on and complete (its refusal says what is missing). */

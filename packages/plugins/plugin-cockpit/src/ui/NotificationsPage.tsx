@@ -3,6 +3,7 @@ import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, PageMessage, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Card } from "./components.js";
 import { DeviceList } from "./DeviceList.js";
+import { PushHelp, blockReasonFor } from "./PushHelp.js";
 import {
   registerPushServiceWorker,
   subscriptionToPayload,
@@ -174,6 +175,23 @@ export function NotificationsPage() {
     }
   };
 
+  // Derive block reason from current environment
+  const getReason = () => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") {
+      return null;
+    }
+
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const standalone = (navigator as any).standalone === true;
+    const hasPush = "pushManager" in (navigator.serviceWorker || {});
+    const permission = typeof Notification !== "undefined" ? Notification.permission : "denied";
+    const keyChanged = devices.some((d) => d.state === "needs_resubscribe");
+
+    return blockReasonFor({ standalone, isIos, hasPush, permission, keyChanged });
+  };
+
+  const reason = getReason();
+
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <Card title="Notifications" subtitle="Manage push notifications on your devices">
@@ -195,6 +213,8 @@ export function NotificationsPage() {
         </div>
 
         <DeviceList devices={devices} onMute={handleMute} onRemove={handleRemove} busy={busy} loading={loading} />
+
+        <PushHelp reason={reason} />
       </Card>
     </div>
   );
