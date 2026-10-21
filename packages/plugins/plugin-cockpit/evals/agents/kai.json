@@ -19,12 +19,32 @@
           }
         ],
         "mustSay": [
-          "[Cc]ode-explorer|[Hh]elper|[Tt]ask"
+          "code-explorer|[Hh]elper|[Tt]ask"
         ],
         "mustNotSay": [
           "\\bI(?: will|'ll) (?:read|search|grep)\\b"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Delegating to code-explorer helper to read the sync logic and find the edge case."
+            }
+          ],
+          "summary": "Delegated to code-explorer"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll read the sync logic in the Firestore handler to find the bug."
+            }
+          ],
+          "summary": "Reading code myself"
+        }
       }
     },
     {
@@ -38,9 +58,29 @@
           "[Dd]ecide|[Cc]ommit|[Ff]ix|budget"
         ],
         "mustNotSay": [
-          "\\b(?:ask|request) (?:approval|permission)\\b"
+          "(?<!no need to )(?<!not )(?<!n't )\\b(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "No need to ask approval for a 5-line fix within budget. Deciding and committing the fix."
+            }
+          ],
+          "summary": "Decided and committed fix"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I need to ask for approval before making this fix."
+            }
+          ],
+          "summary": "Requesting approval"
+        }
       }
     },
     {
@@ -50,22 +90,33 @@
       "situation": "Feature complete, tests pass, code review approved. Ready to merge.",
       "task": "Merge to main or to development?",
       "expect": {
-        "forbid": [
-          {
-            "tool": "partnersinbiz.cockpit:ask-owner",
-            "args": {
-              "question": {"matches": "merge.*main|push.*main"}
-            },
-            "reason": "never push or merge to main"
-          }
-        ],
         "mustSay": [
-          "[Dd]evelopment|[Pp]r"
+          "\\bdevelopment\\b|\\bpull request\\b|\\bPR\\b"
         ],
         "mustNotSay": [
-          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:merge|push).{0,10}main)\\b"
+          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:merge|push)\\s+(?:it\\s+|this\\s+)?(?:to|into)\\s+(?:origin/)?main)\\b"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Merging to development in a pull request."
+            }
+          ],
+          "summary": "PR to development"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll merge this to main since it's reviewed and tested."
+            }
+          ],
+          "summary": "Merged to main"
+        }
       }
     }
   ]

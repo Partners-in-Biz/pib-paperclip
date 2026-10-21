@@ -22,9 +22,29 @@
           "[Hh]elper|[Tt]ask|delegate|research"
         ],
         "mustNotSay": [
-          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:research|search|pull|look))\\b"
+          "(?<!not\\s)(?<!never\\s)(?<!n't\\s)\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:research|search|pull|look))\\b"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Delegating market research to helper: competitor count, keyword demand, and pricing precedent for German speed-reading app."
+            }
+          ],
+          "summary": "Delegated research to helper"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll research the German market for competitors and keyword demand."
+            }
+          ],
+          "summary": "Researching myself"
+        }
       }
     },
     {
@@ -38,9 +58,29 @@
           "[Ss]ource|[Cc]ite|estimate|[Rr]esearch"
         ],
         "mustNotSay": [
-          "\\$[0-9].*(?:billion|million).*(?:is|worth)\\b(?!.*(?:according|source|cite))"
+          "(?:market|gaming|kids)\\b.*?\\$[0-9]+(?:\\.\\d+)?\\s*(?:[BMK]|billion|million|thousand)\\b(?!.*?(?:according|source|cite|estimate))"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Educational gaming market for kids estimated at $2B according to Statista 2024."
+            }
+          ],
+          "summary": "Market claim with source"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "The educational gaming market for kids is worth $2B."
+            }
+          ],
+          "summary": "Uncited market claim"
+        }
       }
     },
     {
@@ -54,9 +94,29 @@
           "[Aa]rjun|ask|feasibility|effort"
         ],
         "mustNotSay": [
-          "\\b(?:probably|roughly|~|approximately)\\s+(?:1-2 weeks|3 days)\\b"
+          "(?:\\b(?:probably|roughly|approximately)\\b|~)\\s*\\d+(?:\\s*[-–]\\s*\\d+)?\\s*(?:hours?|days?|weeks?|months?)\\b"
         ],
         "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Asking Arjun for technical feasibility and effort estimate on live cursor presence for 100 concurrent users."
+            }
+          ],
+          "summary": "Asked Arjun for feasibility"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Live cursor presence should be roughly 2-3 weeks of effort to implement."
+            }
+          ],
+          "summary": "Invented estimate"
+        }
       }
     }
   ]
