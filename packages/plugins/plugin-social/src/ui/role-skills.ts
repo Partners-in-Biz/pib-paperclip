@@ -24,13 +24,14 @@ export interface RoleSkill {
 export const COMPANY_OS_ROLE_SKILL: RoleSkill = { key: COMPANY_OS_SKILL_KEY, slug: "pib-company-os" };
 
 /**
- * The Social agent's skills: the plugin's two (the keys the manifest puts in
+ * The Social agent's skills: the plugin's three (the keys the manifest puts in
  * desiredSkills, plugin/partnersinbiz-social/<skillKey>), then the company
  * operating manual, so the page attaches the manual to linked agents too.
  */
 export const ROLE_SKILLS: RoleSkill[] = [
   { key: pluginSkillKey("partnersinbiz.social", "social-publish"), slug: "pib-social-publish" },
   { key: pluginSkillKey("partnersinbiz.social", "social-content"), slug: "pib-social-content" },
+  { key: pluginSkillKey("partnersinbiz.social", "creative-studio"), slug: "pib-creative-studio" },
   COMPANY_OS_ROLE_SKILL,
 ];
 /** "…, so it knows <purpose>." */

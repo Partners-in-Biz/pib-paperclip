@@ -40,13 +40,15 @@ async function withChromium(run) {
 }
 const pool = new Pool({ connectionString: process.env.PREVIEW_DATABASE_URL, max: 4 });
 
+const PREVIEW_ORIGIN = process.env.PREVIEW_ORIGIN ?? "https://preview.partnersinbiz.online";
+
 const SECURITY = {
   "X-Robots-Tag": "noindex, nofollow, noarchive",
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-  "Content-Security-Policy": "default-src * data: blob:; script-src 'none'; style-src * 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'; base-uri *",
+  "Content-Security-Policy": `default-src * data: blob:; script-src 'none'; style-src * 'unsafe-inline'; frame-ancestors 'none'; form-action 'self' ${PREVIEW_ORIGIN}; base-uri *`,
 };
 
 const page = (text) => `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title><body style="font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;text-align:center"><p>${text}</p></body>`;
@@ -197,6 +199,11 @@ ${(() => {
 </div></body>`;
 }
 
+/** Rewrite form action from root-relative to absolute URL for backwards compatibility with stored previews. */
+function rewriteFormAction(html, previewOrigin) {
+  return html.replace(/action="\/p\/(?:[a-z0-9-]{1,30}\/)?([A-Za-z0-9_-]{20,64})\/decision"/g, `action="${previewOrigin}/p/$1/decision"`);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
@@ -217,9 +224,11 @@ const server = http.createServer(async (req, res) => {
       const { rows } = await pool.query(`SELECT html, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
       if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
-      if (key && key === rows[0].review_key) return send(res, 200, rows[0].html);
+      let html = rows[0].html;
+      html = rewriteFormAction(html, PREVIEW_ORIGIN);
+      if (key && key === rows[0].review_key) return send(res, 200, html);
       if (rows[0].review_status !== "passed") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
-      return send(res, 200, rows[0].html);
+      return send(res, 200, html);
     }
     if (req.method === "GET" && sub === "/review") {
       const row = await staff();

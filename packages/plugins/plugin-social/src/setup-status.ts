@@ -7,11 +7,10 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { hireStatus, pluginUiBase, settingsItem, type SetupItem, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { hireStatus, pluginUiBase, settingsItem, GROWTH_CHANNEL, type SetupItem, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import { approvalServiceHealth, checkedApprovalBase } from "./client-approval.js";
 import { DEFAULT_APPROVAL_BASE, loadSocialConfig, type SocialConfig } from "./config.js";
 import { listAccounts } from "./db.js";
-import { GROWTH_CHANNEL } from "./growth/engine.js";
 import { sqlGrowthStore } from "./growth/sql.js";
 import { legacySocialAgent, SOCIAL_AGENT_NAME, SOCIAL_MATCH_ROLE } from "./hire.js";
 import manifest from "./manifest.js";

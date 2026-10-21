@@ -40,6 +40,9 @@ import { registerCockpitEffects, resolveOpenCockpitAsks } from "./effects.js";
 import { activateGoals, businessReviews } from "./goals.js";
 import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
 import { recheckImprovements } from "./improvements.js";
+import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
+import { GROWTH_TOOL_SET, runGrowthTool } from "./growth-tools.js";
+import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
@@ -242,6 +245,26 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await onInvoicePaid(env, event);
     } catch (error) {
       ctx.logger.info("Cockpit invoice.paid handling failed", { error: message(error) });
+    }
+  });
+
+  // Growth verdicts from every channel into the ledger (best effort: the weekly review reconciles through ledger-upsert).
+  for (const pluginKey of GROWTH_VERDICT_SOURCES) {
+    ctx.events.on(pluginEvent(pluginKey, GROWTH_VERDICT_EVENT), async (event) => {
+      try {
+        await onGrowthVerdictEvent(env, pluginKey, event);
+      } catch (error) {
+        ctx.logger.info("Cockpit growth verdict handling failed", { pluginKey, error: message(error) });
+      }
+    });
+  }
+
+  // CRM's own metrics into growth_metrics (website and revenue channels).
+  ctx.events.on(pluginEvent(PIB_PLUGINS.crm, OWN_METRICS_EVENT), async (event) => {
+    try {
+      await onOwnMetricsEvent(env, event);
+    } catch (error) {
+      ctx.logger.info("Cockpit own metrics handling failed", { error: message(error) });
     }
   });
 
@@ -599,11 +622,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
             ? await runAgentReadTool(env, tool.name, params, run)
             : OPS_TOOL_SET.has(tool.name)
               ? await runOpsTool(env, tool.name, params, run)
-              : ACCEPTANCE_TOOL_SET.has(tool.name)
-                ? await runAcceptanceTool(env, tool.name, params, run)
-                : EVAL_TOOL_SET.has(tool.name)
-                  ? await runEvalTool(env, tool.name, params, run)
-                  : await runTool(env, tool.name, params, run);
+              : GROWTH_TOOL_SET.has(tool.name)
+                ? await runGrowthTool(env, tool.name, params, run)
+                : ACCEPTANCE_TOOL_SET.has(tool.name)
+                  ? await runAcceptanceTool(env, tool.name, params, run)
+                  : EVAL_TOOL_SET.has(tool.name)
+                    ? await runEvalTool(env, tool.name, params, run)
+                    : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

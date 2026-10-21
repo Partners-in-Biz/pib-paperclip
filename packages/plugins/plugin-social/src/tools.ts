@@ -1,4 +1,5 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
 /** Every param has a short, exact description, and an enum where the values are fixed. */
@@ -54,29 +55,20 @@ const OWN = " Omit the client for PiB's own work; pass client for a client. Neve
 
 /** Growth Lab tag on a post. */
 const experimentTag: Record<string, JsonSchema> = {
-  experimentId: text("Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag."),
-  arm: choice(["control", "variant"], "Which arm of the experiment the post is: control (what we do now) or variant (the change)."),
+  experimentId: text("Growth Lab experiment id. Empty string clears the tag."),
+  arm: choice(["control", "variant"], "control (current) or variant (change)."),
 };
 
 const post: Record<string, JsonSchema> = {
-  accountIds: ids("Destination account ids of the post's scope (list-connected-accounts; status connected)"),
-  mediaAssetIds: ids("Media asset ids of the post's scope (list-media-assets or import-media-from-url); order = carousel order"),
-  firstComment: text("Posted as the first comment (X: a reply to the post) where the platform allows"),
-  scheduledAt: text(`Proposed publish time, ${ISO_TIME}. When a person approves the post it is scheduled for this time if it is still ahead.`),
+  accountIds: ids("Destination account ids (list-connected-accounts)."),
+  mediaAssetIds: ids("Media asset ids (list-media-assets). Order = carousel order."),
+  firstComment: text("Posted as first comment (or reply on X), where platform allows."),
+  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
   overrides: OVERRIDES,
-};
-
-const arms: JsonSchema = {
-  type: "array",
-  description: 'Exactly two arms: [{"key":"control","description":"what we do now"},{"key":"variant","description":"the one change"}].',
-  items: {
-    type: "object",
-    required: ["key", "description"],
-    additionalProperties: false,
-    properties: {
-      key: choice(["control", "variant"], "control (what we do now) or variant (the change)"),
-      description: text("What posts in this arm do, in one line"),
-    },
+  tags: {
+    type: "array",
+    items: { type: "string" },
+    description: "Post tags (text-native exempts media). Max 10.",
   },
 };
 
@@ -86,6 +78,16 @@ export const EXPERIMENT_STATUSES = ["proposed", "running", "measured", "rejected
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
 }
+
+/** Growth Lab tools come from the kit; Social keeps its post wording and the older client params. */
+export const GROWTH_TOOL_KINDS: GrowthDeclarationOptions["kinds"] = ["own", "client"];
+export const GROWTH_TOOL_DESCRIPTIONS: GrowthDeclarationOptions["descriptions"] = {
+  "performance-review": `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first).${OWN}`,
+  "get-playbook": `The scope's playbook (markdown rules to follow when planning posts: rules, what to avoid, constraints such as brand voice and the booking link), its version, recent versions and pending changes. Created on first use.${OWN}`,
+  "list-experiments": `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard.${OWN}`,
+  "propose-experiment": `Propose one experiment that changes one variable. At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
+};
+const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = { kinds: GROWTH_TOOL_KINDS, descriptions: GROWTH_TOOL_DESCRIPTIONS };
 
 export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
@@ -227,11 +229,25 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "record-review-verdict",
     displayName: "Record review verdict",
     description:
-      "Reviewer only. Record your verdict on a post in review: pass (it is ready for whoever approves) or changes (with notes: one line per problem). A pass is a check, not an approval. The plugin hands the review issue on: after a pass to the person or the Social agent the policy names; after changes back to the Social agent with the post returned to draft. Do not reassign the issue yourself.",
+      "Reviewer only. pass: ready to approve (media required if playbook enforces; returned refused with blockers if missing). changes: send it back to draft with notes. A pass is a check, not an approval. The plugin hands the review issue on.",
     parametersSchema: schema(["postId", "verdict"], {
       postId: POST_ID,
-      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft with your notes."),
-      notes: text("changes: what to fix, one line per problem. pass: optional remarks."),
+      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft."),
+      notes: text("changes: what to fix. pass: optional remarks."),
+      toneScore: { type: "number", minimum: 0, maximum: 20, description: "Tone score 0–20 (optional; requires toneReason)." },
+      toneReason: text("Why you gave this tone score (optional; required for score)."),
+    }),
+  },
+  {
+    name: "request-creative",
+    displayName: "Request creative",
+    description:
+      "Ask for an image or video for a draft post (or one in review). Opens ONE hand-off issue per post (origin creative:<postId>) for the Creative Producer, else the Social agent, the Account Manager, the Operator or the owner, with the brief, each destination's platform spec, the 30-second video cap, the alt-text requirement and the scope's Drive folder (02 Assets). Safe to call again: you get the same issue back (a finished one is reopened). Call it when the Reviewer sends the post back for missing or weak media.",
+    parametersSchema: schema(["postId"], {
+      postId: POST_ID,
+      brief: text("What the asset should show and say, in your words: hook, subject, mood, any text on it"),
+      format: choice(["image", "video"], "image (default) or video"),
+      durationS: int("Video length in seconds, 1-30 (default 30). Longer is refused."),
     }),
   },
   {
@@ -239,6 +255,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     displayName: "Review outcomes",
     description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. These are inputs for a later autonomy policy: auto-approval is off and you never approve.${OWN}`,
     parametersSchema: schema([], { ...scope, days: int("Days to look back, 7-365 (default 90)") }),
+  },
+  {
+    name: "media-compliance",
+    displayName: "Media compliance",
+    description: `Read-only. Of the posts published in the window (excluding the experiment control arm and posts tagged text-native): how many carried media, how many had alt text on every item, which ones did not, and every post that reached approved, scheduled or published with no Reviewer verdict on record.${OWN}`,
+    parametersSchema: schema([], { ...scope, days: int("Days to look back, 1-365 (default 28)") }),
   },
   {
     name: "schedule-post",
@@ -403,79 +425,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,
     parametersSchema: schema([], { postId: text("One post's numbers (omit for the scope's totals)"), ...scope }),
   },
-  {
-    name: "performance-review",
-    displayName: "Performance review",
-    description:
-      `Growth Lab review of one scope: top and bottom 5 posts by 7-day engagement lift (vs the account's trailing 30-day median) with their features, median lift per feature value, running and proposed experiments, pending playbook changes, and hypothesis types ranked by UCB (untried first).${OWN}`,
-    parametersSchema: schema([], { ...scope, periodDays: int("Days to review, 7–90 (default 28)") }),
-  },
-  {
-    name: "get-playbook",
-    displayName: "Get playbook",
-    description: `The scope's playbook (markdown rules to follow when planning posts: rules, what to avoid, constraints such as brand voice and the booking link), its version, recent versions and pending changes. Created on first use.${OWN}`,
-    parametersSchema: schema([], { ...scope }),
-  },
-  {
-    name: "propose-playbook-change",
-    displayName: "Propose playbook change",
-    description:
-      `Propose one playbook edit with a reason: op add (a line in a section), remove (the exact line) or replace (the whole markdown). A person keeps or discards it unless autopilot is full.${OWN}`,
-    parametersSchema: schema(["reason"], {
-      ...scope,
-      op: choice(["add", "remove", "replace"], "add (default) a line, remove an exact line, or replace the whole playbook"),
-      section: choice(["rules", "avoid", "open", "constraints", "goal"], "For add: rules we follow, things to avoid, open questions, constraints (brand voice, links, banned words) or the goal"),
-      text: text("add: the rule, one line; remove: the exact line from get-playbook"),
-      playbook: text("replace: the whole new playbook markdown"),
-      reason: text("Why, with the evidence (post ids, measured lift)"),
-    }),
-  },
-  {
-    name: "decide-playbook-change",
-    displayName: "Decide playbook change",
-    description: "Keep (new playbook version) or discard a pending playbook change. Agents may only decide when the program's autopilot is full; otherwise a person decides on the Growth tab.",
-    parametersSchema: schema(["changeId", "decision"], {
-      changeId: text("Pending change id (from get-playbook)"),
-      decision: choice(["keep", "discard"], "keep writes a new playbook version; discard drops the change"),
-      note: text("Why (shown with the decision)"),
-    }),
-  },
-  {
-    name: "list-experiments",
-    displayName: "List experiments",
-    description: `Growth Lab experiments of one scope with arms, tagged/published/scored post counts per arm, verdicts and the scoreboard.${OWN}`,
-    parametersSchema: schema([], {
-      ...scope,
-      status: { type: "array", items: { type: "string", enum: [...EXPERIMENT_STATUSES] }, description: "Only experiments in these statuses (default all)" },
-    }),
-  },
-  {
-    name: "propose-experiment",
-    displayName: "Propose experiment",
-    description:
-      `Propose one experiment that changes one variable. At most 3 running and 3 proposed per scope. Safe autopilot: a person approves it from the weekly approval issue; full: it starts at once. Then tag posts with experimentId + arm.${OWN}`,
-    parametersSchema: schema(["hypothesis", "hypothesisType", "variable", "arms"], {
-      ...scope,
-      hypothesis: text("What you expect and why, one sentence"),
-      hypothesisType: text("feature:value being tested, e.g. hook:question (pick from performance-review's ranked types)"),
-      variable: text("The one thing the variant changes"),
-      arms,
-      minPerArm: int("Posts needed per arm before measuring, 2–20 (default 3)"),
-      windowDays: int("Scoring window in days; only 7 is supported (the default)"),
-    }),
-  },
-  {
-    name: "approve-experiment",
-    displayName: "Approve experiment",
-    description: "Start a proposed experiment. Only on full autopilot may an agent approve; otherwise a person approves on the Growth tab.",
-    parametersSchema: schema(["experimentId"], { experimentId: text("Proposed experiment id (from list-experiments)"), note: text("Why (shown with the decision)") }),
-  },
-  {
-    name: "reject-experiment",
-    displayName: "Reject experiment",
-    description: "Reject a proposed experiment with a reason (its post tags are cleared). Only on full autopilot may an agent reject.",
-    parametersSchema: schema(["experimentId", "reason"], { experimentId: text("Proposed experiment id (from list-experiments)"), reason: text("Why it is rejected") }),
-  },
+  ...growthToolDeclarations(GROWTH_TOOL_OPTIONS),
   {
     name: "propose-feature-question",
     displayName: "Propose feature question",

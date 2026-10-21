@@ -68,12 +68,12 @@ describe("template-tools", () => {
   });
 
   describe("template-list", () => {
-    it("returns all 11 templates with key, file, scope, hostOwned, hash", async () => {
+    it("returns all 13 templates with key, file, scope, hostOwned, hash", async () => {
       const { ctx } = fakeCtx();
       const pack = loadPack();
       const handler = getHandler(ctx, "template-list");
       const result = await handler({}, { companyId: "test" });
-      expect(result.data.templates).toHaveLength(12);
+      expect(result.data.templates).toHaveLength(13);
       for (const template of result.data.templates) {
         expect(template).toHaveProperty("key");
         expect(template).toHaveProperty("file");
