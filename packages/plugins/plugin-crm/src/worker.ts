@@ -202,7 +202,7 @@ import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
-import { driveBindingDiscover, driveBindingSet, driveBindingStatus } from "./drive/binding.js";
+import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { saveDriveFile } from "./drive/save.js";
 import { listDriveFiles } from "./drive/store.js";
 import { listClientFiles } from "./drive/files-list.js";
@@ -571,6 +571,18 @@ const plugin = definePlugin({
       } catch (error) {
         ctx.logger.info("Drive save event handler failed", { requestId, error: error instanceof Error ? error.message : String(error) });
         await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      }
+    });
+
+    // Subscribe to Setup plugin's drive.binding.set event
+    ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
+      try {
+        // Validate event has companyId and payload object before processing
+        if (event.companyId && event.payload && typeof event.payload === "object") {
+          await onDriveBindingSetEvent(ctx, event as unknown as { companyId: string; payload: Record<string, unknown> });
+        }
+      } catch (error) {
+        ctx.logger.info("CRM drive.binding.set event handler failed", { error: String(error) });
       }
     });
 
