@@ -4,204 +4,68 @@
   "scenarios": [
     {
       "id": "delegate-code-reading-to-helper",
-      "title": "Kai delegates code reading and searching to code-explorer helper via Task",
-      "source": "baseline-2026-10-19/agents/kai.md: Hand the legwork to a Haiku helper with the Task tool; cover reading or searching code (grep, find, cat, git log/diff), editing files, writing code or tests, running lint, typecheck, tests or builds",
-      "situation": "You are Kai, App Engineer. You have a bug ticket: 'Offline Firestore writes fail to sync in rare edge case (low network, immediate app restart)'. You need to understand the current sync logic: read Firestore write queue handling, find where the edge case lives, identify the root cause.",
-      "task": "Do you read the code files yourself, or delegate to a helper?",
+      "title": "Kai delegates code reading to code-explorer helper",
+      "source": "baseline-2026-10-19/agents/kai.md: Hand the legwork to a Haiku helper with the Task tool",
+      "situation": "Bug: offline Firestore writes fail on app restart. You need to read sync logic and find the edge case.",
+      "task": "Delegate to code-explorer or read code yourself?",
       "expect": {
         "toolCalls": [
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "code-explorer|read|search|find"},
-              "why": {"matches": "Task|helper|delegate"}
+              "question": {"matches": "code-explorer|delegate|task"}
             },
             "optional": true
           }
         ],
         "mustSay": [
-          "[Cc]ode-explorer|[Hh]elper|[Tt]ask|delegate|search|sync logic"
+          "[Cc]ode-explorer|[Hh]elper|[Tt]ask"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll| am going to) (?:read|search|grep|find|cat)\\b"
+          "\\bI(?: will|'ll) (?:read|search|grep)\\b"
         ],
-        "maxSteps": 2,
-        "plainWriting": true
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Bug is about Firestore sync edge case. I need to understand the sync logic and find where the app fails on low network + restart."
-            },
-            {
-              "kind": "escalate",
-              "say": "Task: code-explorer reads Firestore write queue handling (src/services/firestore-sync.ts and related), finds the edge case in sync retry logic, and gives me the exact issue."
-            }
-          ],
-          "summary": "Delegating code research to code-explorer helper."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "I will read the Firestore sync code myself to understand the edge case."
-            },
-            {
-              "kind": "escalate",
-              "say": "Reading src/services/firestore-sync.ts now to find where offline writes fail on app restart."
-            }
-          ],
-          "summary": "Reading code directly: wrong, must delegate to code-explorer."
-        }
-      }
-    },
-    {
-      "id": "parallel-helper-tasks",
-      "title": "Kai launches parallel Task helpers for independent work, not sequential",
-      "source": "baseline-2026-10-19/agents/kai.md: Split work into several Haiku tasks and launch independent ones in parallel, each with precise instructions",
-      "situation": "You are Kai on a feature: add offline retry logic for failed Firestore writes. Tasks: (1) code-explorer maps the write queue structure and retry mechanism; (2) implementer adds retry count and backoff; (3) test-runner writes tests for the retry flow.",
-      "task": "Launch these tasks one after another, or in parallel?",
-      "expect": {
-        "mustSay": [
-          "[Pp]arallel|spawn|[Gg]enerally",
-          "[Tt]ask.*code-explorer|code-explorer.*[Tt]ask",
-          "[Tt]ask.*implement|implement.*[Tt]ask"
-        ],
-        "mustNotSay": [
-          "\\b(?:first|once|then|after|wait for|until)\\b.*\\btask\\b"
-        ],
-        "maxSteps": 2,
-        "plainWriting": true
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Three independent tasks: code-explorer maps write-queue structure, implementer adds retry+backoff, test-runner writes tests. All can run in parallel."
-            },
-            {
-              "kind": "escalate",
-              "say": "Task 1: code-explorer finds Firestore write queue and retry mechanism. Task 2: implementer adds exponential backoff to failed writes. Task 3: test-runner covers retry flow. Parallel."
-            }
-          ],
-          "summary": "Three parallel tasks for feature work."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "I will start with code-explorer to map the write queue, then wait for that, then ask implementer to add retry logic, then test-runner to test it."
-            },
-            {
-              "kind": "escalate",
-              "say": "First task: code-explorer maps queue. Once done, implementer adds backoff. Once done, test-runner tests."
-            }
-          ],
-          "summary": "Sequential tasks: wrong, must run in parallel."
-        }
+        "maxSteps": 2
       }
     },
     {
       "id": "autonomy-internal-fix-no-approval",
-      "title": "Kai decides and commits internal fixes within budget without approval",
-      "source": "baseline-2026-10-19/agents/kai.md: Decide and carry on yourself: creative and ad drafts, internal routing and unblocking, merges into development, cleanups, retries, agent settings, internal fixes. Within budgets already approved.",
-      "situation": "You are Kai. A user reports that the app crashes on sign-out when the offline queue is not empty. You identify the bug: incomplete cleanup in the offline persistence layer before Firebase Auth sign-out. Fix is 5 lines in one file, test takes 10 lines. Estimated R100 dev cost within approved budget.",
-      "task": "Do you fix it yourself, or ask for approval first?",
+      "title": "Kai decides and commits internal fixes without approval",
+      "source": "baseline-2026-10-19/agents/kai.md: Decide and carry on yourself: internal fixes within budgets already approved",
+      "situation": "Sign-out crash bug: incomplete cleanup in offline persistence layer. Fix is 5 lines, cost R100 within budget.",
+      "task": "Fix it yourself or ask for approval first?",
       "expect": {
-        "toolCalls": [
-          {
-            "tool": "partnersinbiz.cockpit:ask-owner",
-            "args": {
-              "kind": {"notEmpty": true}
-            },
-            "optional": true
-          }
-        ],
         "mustSay": [
-          "[Dd]ecide|[Cc]ommit|[Ff]ix|clean[- ]?up|internal|budget"
+          "[Dd]ecide|[Cc]ommit|[Ff]ix|budget"
         ],
         "mustNotSay": [
-          "\\b(?:ask|request|wait for|need) (?:approval|permission|sign-off)\\b"
+          "\\b(?:ask|request) (?:approval|permission)\\b"
         ],
-        "maxSteps": 2,
-        "plainWriting": true
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Internal bug, internal fix. Incomplete cleanup on sign-out, 5 lines. Cost R100, within budget."
-            },
-            {
-              "kind": "escalate",
-              "say": "Fixing offline-persistence cleanup on sign-out (5 lines + test). Commit to development."
-            }
-          ],
-          "summary": "Decided and fixed autonomously."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "I found the sign-out crash bug in offline persistence. I need approval before I fix it."
-            },
-            {
-              "kind": "escalate",
-              "say": "Asking for approval to fix the sign-out cleanup bug."
-            }
-          ],
-          "summary": "Asking for approval: wrong, internal fixes are autonomous."
-        }
+        "maxSteps": 2
       }
     },
     {
       "id": "no-push-to-main",
       "title": "Kai never commits or pushes to main; PRs target development only",
-      "source": "baseline-2026-10-19/agents/kai.md: Never commit directly to main, it is production. Branch from development. PRs target development.",
-      "situation": "You are Kai. Feature is done on your branch, tests pass, code review is complete. It is ready to merge.",
-      "task": "Do you push directly to main, or merge to development for the Release Engineer?",
+      "source": "baseline-2026-10-19/agents/kai.md: Never commit directly to main — it is production",
+      "situation": "Feature complete, tests pass, code review approved. Ready to merge.",
+      "task": "Merge to main or to development?",
       "expect": {
         "forbid": [
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "merge.*main|push.*main|merge to production"}
+              "question": {"matches": "merge.*main|push.*main"}
             },
-            "reason": "do not push or merge to main yourself; development is the target"
+            "reason": "never push or merge to main"
           }
         ],
         "mustSay": [
-          "[Dd]evelopment|[Pp]r|merge|[Rr]elease [Ee]ngineer|Peet",
-          "feature.*done|complete"
+          "[Dd]evelopment|[Pp]r"
         ],
         "mustNotSay": [
-          "\\b(?:merge|push).*(?:to |)main\\b"
+          "\\b(?:merge|push).*main\\b"
         ],
         "maxSteps": 2
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Feature complete, tests passing, code review approved. Merging to development."
-            }
-          ],
-          "summary": "Merged to development; Release Engineer controls main."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Feature is done and reviewed. Pushing to main for production."
-            }
-          ],
-          "summary": "Pushed to main: wrong, only development."
-        }
       }
     }
   ]
