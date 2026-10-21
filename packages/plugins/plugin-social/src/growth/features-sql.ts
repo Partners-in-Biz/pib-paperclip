@@ -163,7 +163,7 @@ export function sqlFeatures(ctx: PluginContext): SocialFeaturesPort {
         params,
       );
       return rows.map((r): ScoredPostRow => ({
-        postId: String(r.post_id),
+        subjectId: String(r.post_id),
         body: String(r.body ?? ""),
         platform: str(r.platform),
         accountId: str(r.account_id),

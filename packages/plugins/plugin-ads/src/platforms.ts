@@ -4,7 +4,7 @@
  */
 
 export const PLUGIN_ID = "partnersinbiz.ads";
-export const PLUGIN_VERSION = "0.3.4";
+export const PLUGIN_VERSION = "0.3.5";
 /** Managed project that holds PiB's own ads work (a client's work goes in the client's own project). */
 export const ADS_PROJECT_KEY = "ads";
 export const ADS_ROLE_KEY = "ads-manager";

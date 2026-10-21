@@ -43,6 +43,8 @@ export * from "./ask-effects.js";
 export * from "./privacy.js";
 export * from "./growth-scope.js";
 export * from "./sender-scope.js";
+export * from "./growth/engine.js";
+export * from "./growth/types.js";
 export * from "./drive.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";

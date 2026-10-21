@@ -496,9 +496,9 @@ export async function applyExperimentTag(env: GrowthEnv, companyId: string, post
 async function syncItems(env: GrowthEnv, e: Experiment, items: E.ItemState[]): Promise<void> {
   const stored = new Map((await env.store.listItems(e.id)).map((i) => [i.postId, i]));
   for (const item of items) {
-    const prev = stored.get(item.postId);
-    if (!prev || prev.arm !== item.arm || prev.value !== item.value) await env.store.upsertItem(e.id, item.arm, item.postId, item.value);
-    stored.delete(item.postId);
+    const prev = stored.get(item.subjectId);
+    if (!prev || prev.arm !== item.arm || prev.value !== item.value) await env.store.upsertItem(e.id, item.arm, item.subjectId, item.value);
+    stored.delete(item.subjectId);
   }
   for (const postId of stored.keys()) await env.store.deleteItem(e.id, postId);
 }
@@ -508,7 +508,7 @@ export async function measureExperiment(env: GrowthEnv, config: SocialConfig, e:
   const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
   const items: E.ItemState[] = posts
     .filter((p) => p.arm === "control" || p.arm === "variant")
-    .map((p) => ({ postId: p.postId, arm: p.arm!, published: published(p), value: E.postLift(p.lifts) }));
+    .map((p) => ({ subjectId: p.postId, arm: p.arm!, published: published(p), value: E.postLift(p.lifts) }));
   await syncItems(env, e, items);
   const ready = E.readiness(e, items, now);
   if (!ready.ready) return "waiting";
@@ -781,34 +781,36 @@ export async function performanceReview(env: GrowthEnv, actor: GrowthActor, para
 async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
   const companyId = program.companyId;
   const rows = await env.store.scoredPosts(companyId, programScope(program), E.SCORE_WINDOW, periodDays);
-  const postIds = Array.from(new Set(rows.map((r) => r.postId)));
+  const postIds = Array.from(new Set(rows.map((r) => r.subjectId)));
   const stored = await env.store.postFeatures(companyId, postIds);
   const byPost = new Map<string, Array<{ key: string; value: string | null; confidence: number }>>();
   for (const f of stored) byPost.set(f.postId, [...(byPost.get(f.postId) ?? []), f]);
   const features = new Map([...byPost.entries()].map(([id, list]) => [id, E.usableFeatures(list)]));
-  const posts = E.reviewPosts(rows, features);
-  const { top, bottom } = E.topAndBottom(posts, 5);
-  const lifts = E.liftsByFeature(posts, 3);
+  // Keep engine posts typed (ReviewPost with subjectId) for E.topAndBottom, E.liftsByFeature, withLift and summary counts
+  const enginePosts = E.reviewPosts(rows, features);
+  const toOut = ({ subjectId, ...rest }: E.ReviewPost) => ({ ...rest, postId: subjectId });
+  const { top, bottom } = E.topAndBottom(enginePosts, 5);
+  const lifts = E.liftsByFeature(enginePosts, 3);
   const [open, pending] = await Promise.all([
     env.store.listExperiments(companyId, program.id, OPEN_EXPERIMENTS),
     env.store.listChanges(companyId, program.id, "pending"),
   ]);
   const experiments = [];
   for (const e of open) experiments.push(experimentOut(e, await armCounts(env, e)));
-  const withLift = posts.filter((p) => p.lift !== null);
+  const withLift = enginePosts.filter((p) => p.lift !== null);
   const notes: string[] = [];
   if (rows.length === 0) notes.push("No 7-day scores yet. Posts are scored once they are 7 days old on platforms that report reach, impressions or views.");
-  else if (withLift.length < rows.length / 2) notes.push(`Only ${withLift.length} of ${posts.length} posts have a lift: an account needs ${E.BASELINE_MIN}+ earlier scored posts in 30 days for a baseline.`);
+  else if (withLift.length < rows.length / 2) notes.push(`Only ${withLift.length} of ${enginePosts.length} posts have a lift: an account needs ${E.BASELINE_MIN}+ earlier scored posts in 30 days for a baseline.`);
   return {
     program: programOut(program),
     periodDays,
     summary: {
-      postsScored: posts.length,
+      postsScored: enginePosts.length,
       postsWithLift: withLift.length,
       medianLift: E.postLift(withLift.map((p) => p.lift)),
     },
-    top,
-    bottom,
+    top: top.map(toOut),
+    bottom: bottom.map(toOut),
     featureLifts: lifts,
     runningExperiments: experiments.filter((e) => e.status === "running"),
     proposedExperiments: experiments.filter((e) => e.status === "proposed"),
@@ -869,10 +871,12 @@ function scopeKey(scope: ClientScope): string {
 export async function scoreCompany(env: GrowthEnv, config: SocialConfig) {
   const companyId = config.companyId;
   const rows = await env.store.metricRows(companyId, E.SCORE_WINDOW, 75);
-  const byDestination = new Map(rows.map((r) => [r.destinationId, r]));
-  const scores = E.scoreDestinations(rows, { now: env.now(), sinceDays: 45 });
+  // Build engine rows with a typed map: convert postId (database) to subjectId (engine)
+  const engineRows = rows.map(({ postId, ...rest }) => ({ ...rest, subjectId: postId }));
+  const scores = E.scoreDestinations(engineRows, { now: env.now(), sinceDays: 45 });
   const existing = await env.store.existingScores(companyId, E.SCORE_WINDOW, 75);
   const programs = new Map<string, Program>();
+  const byDestination = new Map(rows.map((r) => [r.destinationId, r]));
   let written = 0;
   for (const s of scores) {
     const row = byDestination.get(s.destinationId)!;
@@ -886,7 +890,7 @@ export async function scoreCompany(env: GrowthEnv, config: SocialConfig) {
       destinationId: s.destinationId,
       window: E.SCORE_WINDOW,
       companyId,
-      postId: s.postId,
+      postId: s.subjectId,
       accountId: s.accountId,
       platform: s.platform,
       programId,
