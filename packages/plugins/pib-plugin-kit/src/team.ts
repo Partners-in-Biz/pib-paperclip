@@ -32,6 +32,7 @@ export type TeamRoleKey =
   | "revenue-lead"
   | "seo-specialist"
   | "social"
+  | "creative-producer"
   | "bookkeeper"
   | "payroll-clerk";
 
@@ -96,6 +97,9 @@ const pluginActions = (prefix: string, resync?: string, params?: Record<string, 
   unlink: `${prefix}.unlink-agent`,
   ...(resync ? { resync } : {}),
 });
+
+/** Skills that live in the company's skill library, not in a plugin (keys are bare slugs). */
+export const COMPANY_LIBRARY_SKILLS = ["higgsfield", "motion-design-principles", "gsap-core", "gsap-timeline"] as const;
 
 const crmSkill = (key: string) => teamSkillKey(PIB_PLUGINS.crm, key);
 
@@ -234,6 +238,21 @@ export const TEAM_ROLES: TeamRole[] = [
     actions: pluginActions("social", "social.activate-agent"),
     pagePath: "/social",
     runProfile: RUN_PROFILES["social"],
+  },
+  {
+    key: "creative-producer",
+    pluginKey: PIB_PLUGINS.social,
+    module: "social",
+    title: "Creative Producer",
+    summary: "Makes images, video and motion for posts and campaigns.",
+    required: false,
+    coveredBy: "social",
+    setupItemKey: "creative-producer",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-content")),
+    extraSkills: [...COMPANY_LIBRARY_SKILLS],
+    actions: pluginActions("social", "social.activate-agent", { role: "creative-producer" }),
+    pagePath: "/social",
+    runProfile: RUN_PROFILES["creative-producer"],
   },
   {
     key: "bookkeeper",

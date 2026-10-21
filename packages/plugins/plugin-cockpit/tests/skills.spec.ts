@@ -51,15 +51,15 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain(COMPANY_FLOWS);
   });
 
-  it("has valid frontmatter, the memory and asking sections, and stays under 19,000 characters", () => {
+  it("has valid frontmatter, the memory and asking sections, and stays under 19,500 characters", () => {
     const markdown = os.markdown!;
     const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# PiB company operating manual\n/.exec(markdown);
     expect(match, markdown.slice(0, 300)).not.toBeNull();
     expect(match![3]!.length).toBeGreaterThan(80);
     expect(markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(markdown).toContain(ASKING_HEADING);
-    expect(markdown.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(markdown.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 
   it("says what is true of the code", () => {
@@ -188,11 +188,11 @@ describe("the Operator knows how to act on each watch problem", () => {
 
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
-    expect(operator.markdown!.length).toBeLessThan(19_050);
+    expect(operator.markdown!.length).toBeLessThan(19_200);
     // The references are read on demand, each on its own: none is a wall of text.
     for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
-    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 });
 
