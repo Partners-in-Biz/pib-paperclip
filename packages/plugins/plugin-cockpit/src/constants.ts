@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.12.3";
+export const VERSION = "0.12.4";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -18,6 +18,8 @@ export const JOBS = {
   credentialsCheck: "credentials-check",
   /** Mondays, before the Weekly retro: one business review issue comparing the goals' actuals to their targets. */
   businessReview: "business-review",
+  /** Mondays 06:30 SAST: one growth review issue per scope owner and one hand-off per channel agent. */
+  growthReview: "growth-review",
   /** Nightly: one acceptance request for the Acceptance agent (the canary journeys), for companies that staffed one. */
   acceptanceNightly: "acceptance-nightly",
   /** Every 15 minutes: pauses agents when quota failures breach thresholds, resumes when safe. */
@@ -57,6 +59,7 @@ export const ORIGIN = {
   onboarding: `plugin:${COCKPIT_PLUGIN}:onboarding`,
   closeout: `plugin:${COCKPIT_PLUGIN}:closeout`,
   businessReview: `plugin:${COCKPIT_PLUGIN}:business-review`,
+  growthReview: `plugin:${COCKPIT_PLUGIN}:growth-review`,
   ask: `plugin:${COCKPIT_PLUGIN}:ask`,
   setup: `plugin:${COCKPIT_PLUGIN}:setup`,
   /** Acceptance requests (the run's trigger issue) and the failures a run opens for the owning role. */
@@ -76,6 +79,8 @@ export const ORIGIN_ID = {
   closeout: "cockpit:closeout:",
   /** `cockpit:business-review:<companyId>:<week>` */
   businessReview: "cockpit:business-review:",
+  /** `cockpit:growth-review:<companyId>:<week>:owner:<agent>` and `...:handoff:<agent>` */
+  growthReview: "cockpit:growth-review:",
   /** `cockpit:ask:<kind>:<companyId>`: a question the Cockpit itself puts to the owner (a grant, a goal). */
   ask: "cockpit:ask:",
   /** `cockpit:acceptance:<request key>` (a request) and `cockpit:acceptance:fail:<run id>:<step id>` (a failed step). */

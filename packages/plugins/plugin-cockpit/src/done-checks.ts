@@ -170,6 +170,7 @@ export function cockpitDoneRules(env: Env): DoneCheckRule[] {
     { originPrefix: ORIGIN_ID.onboarding, label: "Client onboarding", check: onboarding },
     { originPrefix: ORIGIN_ID.closeout, label: "Close-out review", check: onboarding },
     { originPrefix: ORIGIN_ID.businessReview, label: "Weekly business review", check: onboarding },
+    { originPrefix: ORIGIN_ID.growthReview, label: "Weekly growth review", check: onboarding },
     { originPrefix: ORIGIN_ID.health, label: "System health", check: health },
     { originPrefix: LEGACY_ORIGIN_ID.onboarding, label: "Client onboarding", check: onboarding },
     { originPrefix: LEGACY_ORIGIN_ID.health, label: "System health", check: health },
