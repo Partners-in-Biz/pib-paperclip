@@ -14,12 +14,14 @@ import {
   hireOrder,
   loadPack,
   matchTemplate,
+  offeredTemplates,
   parsePack,
   slugify,
   templateByKey,
   templateStaffing,
   templateVars,
   type AgentLike,
+  type AgentTemplate,
 } from "../src/templates.js";
 import { renderHash } from "../src/render-hash.js";
 import { pickAdapter, renderHire, renderInstructions, templateConfig } from "../src/templates-render.js";
@@ -661,5 +663,15 @@ describe("render-hash and subagent integration", () => {
 describe("block expansion", () => {
   it("replaces include markers with the shared block", () => {
     expect(expandBlocks("A\n{{include:x}}\nB", { x: "BLOCK\n" })).toBe("A\nBLOCK\nB\n");
+  });
+});
+
+describe("template scope and filtering", () => {
+  it("offeredTemplates filters to generic only when not ownerCompany", () => {
+    const pack = loadPack();
+    const generic = offeredTemplates(pack.templates, false);
+    const all = offeredTemplates(pack.templates, true);
+    expect(generic.every((t: AgentTemplate) => t.scope !== "pib")).toBe(true);
+    expect(all.length >= generic.length).toBe(true);
   });
 });

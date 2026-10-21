@@ -444,3 +444,21 @@ export function hireOrder(templates: readonly AgentTemplate[]): AgentTemplate[] 
 export function manager(template: AgentTemplate): AgentTemplate | null {
   return template.reportsTo ? templateByKey(template.reportsTo) : null;
 }
+
+/**
+ * The scope of a template: "pib" (for Partners in Biz company only) or "generic"
+ * (for any company). Scope defaults to "generic".
+ */
+export function templateScope(template: AgentTemplate): "pib" | "generic" {
+  return template.scope ?? "generic";
+}
+
+/**
+ * Filters templates to those allowed for a company: if ownerCompany is false,
+ * only templates with "generic" scope are included; if ownerCompany is true,
+ * all templates (generic and pib scope) are included.
+ */
+export function offeredTemplates<T extends { scope?: "pib" | "generic" }>(templates: readonly T[], ownerCompany: boolean): T[] {
+  if (ownerCompany) return [...templates];
+  return templates.filter((template) => (template.scope ?? "generic") === "generic");
+}

@@ -19,6 +19,7 @@ import {
   registerClientProjectWatch,
   registerCrmProjection,
   registerCrmSiteProjection,
+  registerDriveReplies,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -89,6 +90,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     const e = createEnv(ctx);
     env = e;
+    registerDriveReplies(ctx);
     for (const tool of SEO_TOOLS) {
       ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
     }
