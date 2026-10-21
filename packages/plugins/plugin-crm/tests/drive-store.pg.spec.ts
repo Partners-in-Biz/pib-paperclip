@@ -51,7 +51,7 @@ describe.skipIf(!available)("store functions", () => {
   });
 
   it("upsertDriveFile: created=true then false, same id, 1 row", async () => {
-    const input = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "a.txt", sha256: "a".repeat(64), driveFileId: "d1", webUrl: "u", sourcePlugin: null };
+    const input = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "a.txt", sha256: "a".repeat(64), driveFileId: "d1", webUrl: "u", sourcePlugin: null, subfolder: null };
     const r1 = await upsertDriveFile(ctx, input);
     const r2 = await upsertDriveFile(ctx, input);
     expect(r1.created && !r2.created && r1.file.id === r2.file.id).toBe(true);
@@ -60,7 +60,7 @@ describe.skipIf(!available)("store functions", () => {
   });
 
   it("different sha256 or folder gives second row", async () => {
-    const base = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "n", driveFileId: "d", webUrl: "u", sourcePlugin: null };
+    const base = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "n", driveFileId: "d", webUrl: "u", sourcePlugin: null, subfolder: null };
     const r1 = await upsertDriveFile(ctx, { ...base, sha256: "b".repeat(64) });
     const r2 = await upsertDriveFile(ctx, { ...base, sha256: "c".repeat(64) });
     const r3 = await upsertDriveFile(ctx, { ...base, folderId: "f2", sha256: "b".repeat(64) });
@@ -68,13 +68,13 @@ describe.skipIf(!available)("store functions", () => {
   });
 
   it("SQL-level unique (company_id, folder_id, name, sha256)", async () => {
-    const input = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "f.txt", sha256: "d".repeat(64), driveFileId: "d1", webUrl: "u", sourcePlugin: null };
+    const input = { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f1", name: "f.txt", sha256: "d".repeat(64), driveFileId: "d1", webUrl: "u", sourcePlugin: null, subfolder: null };
     await upsertDriveFile(ctx, input);
-    await expect(pg.client.query(`INSERT INTO ${NAMESPACE}.drive_files (id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin) VALUES ('new', $1, $2, $3, $4, $5, $6, $7, $8, $9)`, [CO_A, "p1", "c", "f1", "f.txt", "d".repeat(64), "d1", "u", null])).rejects.toBeDefined();
+    await expect(pg.client.query(`INSERT INTO ${NAMESPACE}.drive_files (id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin, subfolder) VALUES ('new', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [CO_A, "p1", "c", "f1", "f.txt", "d".repeat(64), "d1", "u", null, null])).rejects.toBeDefined();
   });
 
   it("company isolation files", async () => {
-    const input = { projectId: "p1", kind: "c", folderId: "f1", name: "iso.txt", sha256: "e".repeat(64), driveFileId: "d", webUrl: "u", sourcePlugin: null };
+    const input = { projectId: "p1", kind: "c", folderId: "f1", name: "iso.txt", sha256: "e".repeat(64), driveFileId: "d", webUrl: "u", sourcePlugin: null, subfolder: null };
     const a_id = (await upsertDriveFile(ctx, { ...input, companyId: CO_A })).file.id;
     await upsertDriveFile(ctx, { ...input, companyId: CO_B });
     expect(await getDriveFile(ctx, CO_A, a_id)).not.toBeNull();
@@ -101,11 +101,11 @@ describe.skipIf(!available)("store functions", () => {
   });
 
   it("invalid sha256 throws", async () => {
-    await expect(upsertDriveFile(ctx, { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f", name: "n", sha256: "bad", driveFileId: "d", webUrl: "u", sourcePlugin: null })).rejects.toThrow(/must be exactly 64/);
+    await expect(upsertDriveFile(ctx, { companyId: CO_A, projectId: "p1", kind: "c", folderId: "f", name: "n", sha256: "bad", driveFileId: "d", webUrl: "u", sourcePlugin: null, subfolder: null })).rejects.toThrow(/must be exactly 64/);
   });
 
   it("listDriveFiles: company filter, projectId filter, newest first, company B sees nothing", async () => {
-    const base = { projectId: "p1", kind: "c", folderId: "f1", driveFileId: "d", webUrl: "u", sourcePlugin: null };
+    const base = { projectId: "p1", kind: "c", folderId: "f1", driveFileId: "d", webUrl: "u", sourcePlugin: null, subfolder: null };
     const f1 = await upsertDriveFile(ctx, { ...base, companyId: CO_A, name: "1.txt", sha256: "1".repeat(64) });
     await new Promise(r => setTimeout(r, 10));
     const f2 = await upsertDriveFile(ctx, { ...base, companyId: CO_A, name: "2.txt", sha256: "2".repeat(64) });
