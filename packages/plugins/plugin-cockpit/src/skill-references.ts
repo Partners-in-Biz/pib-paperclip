@@ -10,7 +10,7 @@
  * Tool names are built from the declarations, so a renamed tool cannot leave a
  * reference pointing at nothing (a test checks every name exists).
  */
-import { MEMORY_TOOLS } from "@partnersinbiz/pib-plugin-kit";
+import { CLARITY_PENALTY, CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, HOOK_MAX_WORDS, MEMORY_TOOLS, REVIEWER_TONE_CAP, UNSCORED_TONE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_KEY } from "./constants.js";
 import { EVAL_TOOL_NAMES } from "./eval-tool-declarations.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
@@ -275,9 +275,34 @@ Waiting on an answer: do what does not depend on it. Never poll, never comment t
 // Quality gates
 // ---------------------------------------------------------------------------
 
+const CREATIVE_TOTAL = Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0);
+
+/** The creative bar, one text for the Operator's quality reference and the Reviewer's own file. */
+const CREATIVE_BAR_BODY = `A post, email or ad is scored on five parts, ${CREATIVE_TOTAL} points at most, and a post with your tone score tops out at ${CREATIVE_TOTAL - CREATIVE_RUBRIC_WEIGHTS.brand + REVIEWER_TONE_CAP}, not 100. It passes at ${CREATIVE_PASS_SCORE} or more **and** with no blocker: a high score never carries a blocker.
+
+| Part | Points | What earns it |
+|---|---|---|
+| Hook | ${CREATIVE_RUBRIC_WEIGHTS.hook} | The first line is ${HOOK_MAX_WORDS} words or fewer (half), and it asks a question, uses a number, or names a mistake or a myth (half). |
+| Clarity | ${CREATIVE_RUBRIC_WEIGHTS.clarity} | Starts at ${CREATIVE_RUBRIC_WEIGHTS.clarity}; each writing finding (filler, jargon, long sentences) takes off ${CLARITY_PENALTY}. |
+| Brand | ${CREATIVE_RUBRIC_WEIGHTS.brand} | Tone against the profile. Unscored tone counts ${UNSCORED_TONE}; a score you give yourself also counts ${UNSCORED_TONE}; yours as the Reviewer counts only with one sentence of reason, and is capped at ${REVIEWER_TONE_CAP}. |
+| CTA | ${CREATIVE_RUBRIC_WEIGHTS.cta} | Exactly one ask (${CREATIVE_RUBRIC_WEIGHTS.cta}); two or more asks get 5; no ask gets 0. |
+| Format | ${CREATIVE_RUBRIC_WEIGHTS.format} | Alt text on every image or video, or no media at all (5), text within the platform's limit (5), a valid https:// landing page (5). |
+
+**Blockers** fail the work whatever it scores: a word the brand profile bans, a claim about the business with no approved wording, media required by the playbook's media rule and missing, alt text missing when the rule requires it. A media rule set to warn is a note, not a blocker.
+
+How to review with it:
+1. Score each part from the text and the profile; write the score and the reason in the review comment. Tone is your judgement: one sentence says why, or it counts ${UNSCORED_TONE}.
+2. List every blocker with the line it comes from. One blocker is **CHANGES NEEDED** even at 95.
+3. Under ${CREATIVE_PASS_SCORE} is **CHANGES NEEDED** with the weakest part first and the corrected text.
+4. A Reviewer's tone score above ${REVIEWER_TONE_CAP} does not count. Do not argue a weak hook or a missing ask up with tone.
+`;
+
+export const CREATIVE_BAR_PATH = "references/creative-bar.md";
+export const CREATIVE_BAR_REFERENCE = `# The creative bar\n\n${CREATIVE_BAR_BODY}`;
+
 export const QUALITY_REFERENCE = `# Quality gates: proof, review, acceptance and skill checks
 
-Four things keep "done" honest. The Cockpit raises a health check for each; this is what to do.
+Five things keep "done" honest. The Cockpit raises a health check for each; this is what to do.
 
 ## Finished code with no proof
 
@@ -306,6 +331,10 @@ When the owner has staffed an Acceptance agent, journeys run on the canary clien
 ## Skill changes and their evals
 
 A skill change can make agents worse and nobody sees it until a client does. Before one ships: ${T(EVAL_TOOL_NAMES.eval)} \`plan\` (mode candidate), make the harness runs it lists, \`record\`, \`gate\`. After it is deployed: \`plan\` (live), \`record\`, then \`baseline\`. A skill version that fails the gate does not ship; a regression after a deploy is reverted (the previous plugin version is one deploy away). The Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`.
+
+## The creative bar
+
+${CREATIVE_BAR_BODY}
 
 ## Pages
 

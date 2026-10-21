@@ -78,7 +78,6 @@ const SHORT_ROLE: Partial<Record<string, string>> = {
   "inbound-qualifier": "new leads",
   "crm-data-steward": "clean records",
   "deal-desk": "quotes",
-  "revenue-lead": "r",
 };
 
 /** Cases: durable work products that no module owns. Short on purpose: the API detail is in the paperclip skill's `references/cases.md`. */
@@ -170,7 +169,7 @@ Roles are staffed in **Setup → Team**. If your role's tools or skills are miss
 - **Brand, audience and sender details**: ours from \`company-profile\` (Cockpit), a client's from \`get-client-profile\` (CRM). Fill empty fields you learn with \`update-company-profile\` / \`update-client-profile\`; changing a set value is the owner's call.
 
 ## How work moves
-- **Everything is an issue.** You are woken on issues assigned to you or by a routine. Do the work in the same run and leave the issue in a clear state: \`done\` (with evidence), \`in_review\` (with a real reviewer or approval), or \`blocked\` with an \`unblockDescriptor\` (who must do what; a block with none is flagged after a day). \`WAITING-ON-OWNER\` checks never block: \`references/owner-checks.md\`.
+- **Everything is an issue.** Woken on assigned issues or by a routine. Do the work in the same run and leave the issue in a clear state: \`done\` (with evidence), \`in_review\` (with a real reviewer or approval), or \`blocked\` with an \`unblockDescriptor\` (who must do what; a block with none is flagged after a day). \`WAITING-ON-OWNER\`:\`references/owner-checks.md\`.
 - **A run ends with your turn** (30 min max) and kills what you started. Detach builds/tests (\`setsid nohup … > <log> 2>&1 < /dev/null &\`), poll. Servers (\`next start\`) never exit: detach, curl within 20s, cap commands with \`timeout 60\`. Never end a turn to "wait" or leave an issue \`in_progress\` without a comment.
 - **Hand-offs**: when another role owns the next step, create an issue for that agent: title \`Hand-off: <what> (<client or own>)\`, the context and links, and what "done" means, and always a \`projectId\` (the client's project, or **PiB Platform** for own platform work; a task with no project has no repository and a code agent cannot work on it). Don't do their work.
 - **People are asked only for** money, legal, one-time grants (a login consent, a key, DNS) and real judgement: through the module's approval step, or \`ask-owner\`. Never ask a person to do what an agent can do.
