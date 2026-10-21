@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { teamRole } from "@partnersinbiz/pib-plugin-kit/team";
 import { pickHiringAgent, toHiringCandidates } from "../src/hiring.js";
 import { matureCompanyWarning, MATURE_AGENT_COUNT, ownerGrants, planSteps, type OwnerGrant } from "../src/bootstrap.js";
@@ -11,6 +11,7 @@ import { loadStarterPack } from "../src/starter-pack.js";
 import { starterPackHash } from "../src/new-company.js";
 import { GrantList, NewCompanyView, StarterPackCard, StepRow, TemplateList, templateRowState, type NewCompanyState, type NewCompanyViewProps, type StarterPackView } from "../src/ui/new-company.js";
 import { HiringNotice, RunProfileLine } from "../src/ui/team.js";
+import type { DriveBinding } from "../src/drive-checklist.js";
 
 const linkFor = (href: string) => ({ href: `/ACM${href}` });
 const perms = { canCreateAgents: true };
@@ -283,5 +284,75 @@ describe("Team: who hires, and the run profile", () => {
   it("opens the New company section from a link", () => {
     expect(setupFocus("?section=new-company", "")).toEqual({ section: "new-company", anchor: null });
     expect(setupFocus("?section=nope", "")).toEqual({ section: null, anchor: null });
+  });
+});
+
+describe("the Drive checklist card", () => {
+  it("shows both items open with no select when drive is null", () => {
+    const out = html(props({ drive: null }));
+    expect(out).toContain("Connect Google Drive (read)");
+    expect(out).toContain("Add the Drive service account to the company&#x27;s Shared Drive");
+    expect(out).not.toContain("Select a Shared Drive");
+  });
+
+  it("shows first item done and second item open with email and Copy button when connected but not member", () => {
+    const drive: DriveBinding = {
+      companyId: "co-1",
+      connected: true,
+      bound: false,
+      serviceAccountEmail: "drive-agent@company.iam.gserviceaccount.com",
+      serviceAccountIsMember: false,
+      candidates: [],
+    };
+    const out = html(props({ drive }));
+    expect(out).toContain("Done");
+    expect(out).toContain("Pending");
+    expect(out).toContain("drive-agent@company.iam.gserviceaccount.com");
+    expect(out).toContain("<button");
+    expect(out).toContain("Copy");
+    expect(out).not.toContain("Select a Shared Drive");
+  });
+
+  it("shows both items done with no select when bound and member", () => {
+    const drive: DriveBinding = {
+      companyId: "co-1",
+      connected: true,
+      bound: true,
+      sharedDriveId: "drive-123",
+      serviceAccountEmail: "drive-agent@company.iam.gserviceaccount.com",
+      serviceAccountIsMember: true,
+      candidates: [],
+    };
+    const out = html(props({ drive }));
+    expect(out).toMatch(/Done.*Done/s);
+    expect(out).not.toContain("Select a Shared Drive");
+  });
+
+  it("shows a select with 3 candidates and long name truncated with title attribute", () => {
+    const longName = "A".repeat(300);
+    const drive: DriveBinding = {
+      companyId: "co-1",
+      connected: true,
+      bound: false,
+      serviceAccountEmail: "drive-agent@company.iam.gserviceaccount.com",
+      serviceAccountIsMember: false,
+      candidates: [
+        { id: "d1", name: "Drive One" },
+        { id: "d2", name: "Drive Two" },
+        { id: "d3", name: longName },
+      ],
+    };
+    const bindCalled = vi.fn().mockResolvedValue(undefined);
+    const out = html(props({ drive, onDriveBind: bindCalled }));
+    expect(out).toContain("Select a Shared Drive");
+    expect(out).toContain('value="d1"');
+    expect(out).toContain("Drive One");
+    expect(out).toContain("Drive Two");
+    // Long name should be truncated to 47 chars + ellipsis
+    expect(out).toContain(`${longName.slice(0, 47)}…`);
+    // Title attribute should be present for accessibility
+    expect(out).toContain(`title="${longName}"`);
+    // Should show "Use this drive" button
+    expect(out).toContain("Use this drive");
   });
 });

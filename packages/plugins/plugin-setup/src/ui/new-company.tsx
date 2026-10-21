@@ -80,7 +80,13 @@ function DriveChecklistCard({ drive, onBind, binding }: {
                     color: tokens.primary,
                   }}
                   onClick={() => {
-                    navigator.clipboard.writeText(item.detail!).catch(() => {});
+                    try {
+                      if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(item.detail!).catch(() => {});
+                      }
+                    } catch {
+                      // Clipboard API missing or blocked; do nothing.
+                    }
                   }}
                   title={item.detail}
                 >
@@ -94,10 +100,10 @@ function DriveChecklistCard({ drive, onBind, binding }: {
         {showPicker && (
           <div style={{ display: "grid", gap: 8, padding: "8px 0", borderTop: `1px solid ${tokens.border}` }}>
             <Field label="Select a Shared Drive">
-              <Select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={binding_ || binding}>
+              <Select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={binding_ || binding} style={{ maxWidth: "100%", minWidth: 0, width: "100%" }}>
                 <option value="">—</option>
                 {candidates.map((c) => (
-                  <option key={c.id} value={c.id} title={c.name} style={{ minWidth: 0 }}>
+                  <option key={c.id} value={c.id} title={c.name}>
                     {c.name.length > 50 ? `${c.name.slice(0, 47)}…` : c.name}
                   </option>
                 ))}
