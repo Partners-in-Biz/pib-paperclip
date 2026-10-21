@@ -53,6 +53,7 @@ const campaignFields: Record<string, JsonSchema> = {
   ...clientParams,
   startAt: str("ISO date or time. The first step is not due before it; empty starts on approval."),
   endAt: str("ISO date or time the campaign is meant to end. For reporting only."),
+  experimentId: str("Growth Lab experiment this campaign tests (from propose-experiment, same client). The daily measure-experiments job judges its A/B steps. Omit when it tests nothing."),
 };
 
 const stepBody = str("Plain-text body. Merge tokens: {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}, {{unsubscribe_url}}; add a fallback as {{first_name|there}}. Say who we are and why they get it. A footer with the sender and how to opt out (an unsubscribe link and reply STOP) is added to every email by the plugin (with delivery issue it is already at the end of the step issue: send it whole); an SMS gets 'Reply STOP to opt out.' unless the text already tells the reader to reply STOP.");
