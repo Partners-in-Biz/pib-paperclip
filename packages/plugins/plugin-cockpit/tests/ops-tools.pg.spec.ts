@@ -58,7 +58,7 @@ d("the ops tools (Postgres)", () => {
   it("every tool the Cockpit declares is registered, and an unknown name is refused", async () => {
     const w = await make();
     for (const tool of OPS_TOOLS) expect(w.tools.has(tool.name), tool.name).toBe(true);
-    expect(OPS_TOOLS.map((t) => t.name)).toEqual(["measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record"]);
+    expect(OPS_TOOLS.map((t) => t.name)).toEqual(["measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save"]);
   });
 
   describe("measure-report", () => {

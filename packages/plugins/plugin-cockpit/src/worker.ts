@@ -1,4 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { registerDriveReplies } from "@partnersinbiz/pib-plugin-kit";
 import type { Env } from "./env.js";
 import { handleApiRoute, registerCockpit } from "./register.js";
 
@@ -6,6 +7,7 @@ let env: Env | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    registerDriveReplies(ctx);
     env = registerCockpit(ctx);
     ctx.logger.info("Cockpit plugin ready");
   },
