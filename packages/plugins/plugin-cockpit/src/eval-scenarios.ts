@@ -33,6 +33,10 @@ import nadiaAgent from "../evals/agents/nadia.json" with { type: "json" };
 import theoAgent from "../evals/agents/theo.json" with { type: "json" };
 import reviewerAgent from "../evals/agents/reviewer.json" with { type: "json" };
 import acceptanceAgent from "../evals/agents/acceptance.json" with { type: "json" };
+import salesLead from "../evals/agents/sales-lead.json" with { type: "json" };
+import dealDesk from "../evals/agents/deal-desk.json" with { type: "json" };
+import seoSpecialist from "../evals/agents/seo-specialist.json" with { type: "json" };
+import outboundSocial from "../evals/agents/outbound-social-specialist.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -58,6 +62,10 @@ export const AGENT_EVALS: Record<string, unknown> = {
   iris,
   mira,
   "revenue-lead": revenueLead,
+  "sales-lead": salesLead,
+  "deal-desk": dealDesk,
+  "seo-specialist": seoSpecialist,
+  "outbound-social-specialist": outboundSocial,
   planner,
   "code-reviewer": codeReviewer,
   "plan-critic": planCritic,

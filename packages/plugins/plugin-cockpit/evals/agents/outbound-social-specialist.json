@@ -1,0 +1,163 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "outbound-social-specialist-social-hand-off-only",
+      "title": "Social work only on hand-off: don't own the platform, draft when assigned",
+      "source": "baseline-2026-10-19/agents/outbound-social-specialist.md: Social on hand-off only - draft posts only when Revenue Lead hands you a task; every outward post routed for approval",
+      "situation": "Revenue Lead assigned: 'Draft LinkedIn post for Athleet app launch.' One post needed, scheduled for Friday 10:00 SAST.",
+      "task": "Draft and route the post.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.social:create-post",
+            "args": {
+              "handoffKey": {}
+            }
+          }
+        ],
+        "mustSay": [
+          "create.post|request.review|approval|route"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not |never |no )\\b(I(?: will|'ll|'m)\\s+(?:schedule|publish|launch|post))\\b",
+            "reason": "outbound specialist drafts only; every post routed for approval before scheduling"
+          }
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.social:create-post",
+              "args": {
+                "body": "Athleet is live. Join athletes on the app. Download on iOS and Android.",
+                "handoffKey": "athleet-launch-2026-10",
+                "scheduledAt": "2026-10-25T10:00:00+02:00"
+              }
+            },
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.social:request-review",
+              "args": {
+                "postId": "post:athleet-launch-lnk"
+              }
+            }
+          ],
+          "summary": "Drafted and routed post for approval."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.social:schedule-post",
+              "args": {
+                "postId": "post:athleet-launch"
+              }
+            }
+          ],
+          "summary": "Scheduled post directly without approval."
+        }
+      }
+    },
+    {
+      "id": "outbound-social-specialist-call-ready-crm-rule",
+      "title": "Lead handed for outbound: complete call-ready CRM record first (phone, website, score, deal, talking points)",
+      "source": "baseline-2026-10-19/agents/outbound-social-specialist.md: Standing rule - every lead handed to Peet must be complete in Paperclip CRM before call",
+      "situation": "Lead: RetailTech Inc, Sarah Johnson, sarah@retailtech.co, website unknown, score unknown. Need to prepare for outbound sequence.",
+      "task": "Can you start the outbound sequence?",
+      "expect": {
+        "forbid": [
+          {
+            "text": "(?<!after |once |when )\\b(I(?: will|'ll|'m)\\s+(?:start|create|enroll|launch)\\s+(?:sequence|campaign|outbound))\\b",
+            "reason": "call-ready records require complete CRM data (phone, website, score, deal, talking points) before outbound sequence"
+          }
+        ],
+        "mustSay": [
+          "phone|website|score|deal|talking points|log.activity|complete"
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Lead incomplete: Sarah Johnson missing website and score. Logging talking points and updating CRM before sequence."
+            },
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.crm:update-contact",
+              "args": {
+                "contactId": "contact:sarah-johnson",
+                "website": "retailtech.co.za",
+                "score": 65
+              }
+            }
+          ],
+          "summary": "Completed CRM record before sequence."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Starting outbound sequence for Sarah Johnson now."
+            }
+          ],
+          "summary": "Started sequence without completing CRM record."
+        }
+      }
+    },
+    {
+      "id": "outbound-social-specialist-no-boosted-posts",
+      "title": "Boosted or paid posts: hand to Revenue Lead, not your work",
+      "source": "baseline-2026-10-19/agents/outbound-social-specialist.md: Paid work belongs elsewhere - ads, boosted posts, paid social are the Revenue Lead's",
+      "situation": "Partner proposes: 'Boost the launch post with R500 spend on LinkedIn.' Draft ready.",
+      "task": "Should you boost the post yourself?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.social:schedule-post",
+            "args": {
+              "boosted": true
+            },
+            "reason": "boosted or paid posts are the Revenue Lead's work, not account manager's"
+          }
+        ],
+        "mustSay": [
+          "Revenue Lead|hand off|paid|boost|not.*work"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Post draft is ready, but boost is paid work. Handing to Revenue Lead for budget and targeting approval."
+            }
+          ],
+          "summary": "Handed boosted post to Revenue Lead."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.social:schedule-post",
+              "args": {
+                "postId": "post:launch-001",
+                "boosted": true,
+                "budgetUSD": 50
+              }
+            }
+          ],
+          "summary": "Boosted the post myself."
+        }
+      }
+    }
+  ]
+}
