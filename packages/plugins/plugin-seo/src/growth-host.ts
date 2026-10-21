@@ -44,8 +44,7 @@ import * as db from "./db.js";
 import { t } from "./db.js";
 import { NAMESPACE } from "./namespace.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { SeoError, type Env } from "./service/common.js";
-import { companyInfo } from "./service/common.js";
+import { SeoError, type Env, errorMessage, companyInfo } from "./service/common.js";
 
 /** `growth_experiment_items.subject_kind` for SEO: the item is a page. */
 export const SUBJECT_KIND = "page";
@@ -227,48 +226,63 @@ export function seoGrowthHandlers(envFor: () => SeoGrowthEnv): Partial<GrowthToo
   } as unknown as GrowthToolsHost<GrowthActor>["handlers"];
 }
 
+/**
+ * Creates a fetchRows function for the SEO growth adapter.
+ * This function aggregates GSC metrics from all sprints of the given scope.
+ * If a company or sprint fails to fetch, it logs a warning and continues.
+ * Exported for testing the error handling behavior.
+ */
+export function createFetchRowsFunction(ctx: PluginContext): (scopeKey: string, startDate: string, endDate: string) => Promise<Map<string, { clicks: number; impressions: number }>> {
+  return async (scopeKey: string, startDate: string, endDate: string) => {
+    // Parse scopeKey into a ClientScope
+    let scope: ClientScope | null = null;
+    if (scopeKey !== "own") {
+      const match = scopeKey.match(/^client:(\w+):(.+)$/);
+      if (match) {
+        scope = { kind: match[1] as "company" | "contact", id: match[2] };
+      }
+    }
+
+    // Aggregate GSC data from all companies' sprints with this scope
+    const results = new Map<string, { clicks: number; impressions: number }>();
+
+    // Get all companies that have sprints
+    const allCompanies = await ctx.db.query<{ company_id: string }>(
+      `SELECT DISTINCT company_id FROM ${t("sprints")} ORDER BY company_id`,
+    );
+
+    for (const { company_id: companyId } of allCompanies) {
+      const sprints = await db.listSprints(ctx.db, companyId, { scope });
+
+      for (const sprint of sprints) {
+        const env = { ctx } as unknown as Env;
+        try {
+          const info = await companyInfo(env, companyId);
+          const pageMetrics = await gscPageQueryRows(env, info, sprint, startDate, endDate);
+          for (const [url, metrics] of pageMetrics) {
+            const existing = results.get(url) ?? { clicks: 0, impressions: 0 };
+            results.set(url, { clicks: existing.clicks + metrics.clicks, impressions: existing.impressions + metrics.impressions });
+          }
+        } catch (error) {
+          ctx.logger.warn("GSC data fetch failed, skipping sprint", {
+            companyId,
+            sprintId: sprint.id,
+            scopeKey,
+            error: errorMessage(error),
+          });
+        }
+      }
+    }
+
+    return results;
+  };
+}
+
 export function seoGrowthEnv(ctx: PluginContext, store: GrowthStore = seoGrowthStore(ctx)): SeoGrowthEnv {
   // Adapter factory: created fresh for each env so fetchRows has proper closure
   const createAdapterForEnv = () =>
     createSeoAdapter({
-      fetchRows: async (scopeKey: string, startDate: string, endDate: string) => {
-        // Parse scopeKey into a ClientScope
-        let scope: ClientScope | null = null;
-        if (scopeKey !== "own") {
-          const match = scopeKey.match(/^client:(\w+):(.+)$/);
-          if (match) {
-            scope = { kind: match[1] as "company" | "contact", id: match[2] };
-          }
-        }
-
-        // Aggregate GSC data from all companies' sprints with this scope
-        const results = new Map<string, { clicks: number; impressions: number }>();
-
-        // Get all companies that have sprints
-        const allCompanies = await ctx.db.query<{ company_id: string }>(
-          `SELECT DISTINCT company_id FROM ${t("sprints")} ORDER BY company_id`,
-        );
-
-        for (const { company_id: companyId } of allCompanies) {
-          const sprints = await db.listSprints(ctx.db, companyId, { scope });
-
-          for (const sprint of sprints) {
-            const env = { ctx } as unknown as Env;
-            try {
-              const info = await companyInfo(env, companyId);
-              const pageMetrics = await gscPageQueryRows(env, info, sprint, startDate, endDate);
-              for (const [url, metrics] of pageMetrics) {
-                const existing = results.get(url) ?? { clicks: 0, impressions: 0 };
-                results.set(url, { clicks: existing.clicks + metrics.clicks, impressions: existing.impressions + metrics.impressions });
-              }
-            } catch {
-              // Skip companies/sprints without GSC access
-            }
-          }
-        }
-
-        return results;
-      },
+      fetchRows: createFetchRowsFunction(ctx),
     });
 
   const adapter = createAdapterForEnv();
