@@ -42,8 +42,8 @@ export const MEASURE_CUTOFF_DAYS = 21;
 export const FEATURE_PURPOSE = "growth-post-features";
 export const CAPTION_LIMIT = 1000;
 
-export type Autopilot = "off" | "safe" | "full";
-export const AUTOPILOT_MODES: Autopilot[] = ["off", "safe", "full"];
+export type Autopilot = "off" | "safe" | "reviewed" | "full";
+export const AUTOPILOT_MODES: Autopilot[] = ["off", "safe", "reviewed", "full"];
 
 export class GrowthError extends Error {
   constructor(message: string) {
@@ -584,9 +584,25 @@ export function autoKeep(autopilot: Autopilot, verdict: Verdict): boolean {
   return autopilot === "full" && verdict === "win";
 }
 
-/** Agents approve experiments and decide playbook changes only on full autopilot. */
-export function agentMayDecide(autopilot: Autopilot): boolean {
-  return autopilot === "full";
+/** Agents approve experiments and decide playbook changes only on full autopilot. Backward-compatible: 1-arg calls stay safe. */
+export function agentMayDecide(autopilot: Autopilot, opts?: { isReviewer?: boolean }): boolean {
+  return autopilot === "full" || (autopilot === "reviewed" && opts?.isReviewer === true);
+}
+
+/** Whether an actor may decide (person always; agent only per autopilot and role). */
+export interface LifecycleActor {
+  isAgent: boolean;
+  isReviewer?: boolean;
+}
+
+export function mayDecide(autopilot: Autopilot, actor: LifecycleActor, what: "experiment" | "playbookChange" | "clientPost"): boolean {
+  if (!actor.isAgent) return true;
+  if (autopilot === "full") return true;
+  if (autopilot === "reviewed") {
+    if (what === "clientPost") return false;
+    return actor.isReviewer === true;
+  }
+  return false;
 }
 
 // ── Playbook edits ──────────────────────────────────────────────────────────

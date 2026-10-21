@@ -4,6 +4,21 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 
 **Important:** This is not a plugin (no manifest). It is a supporting utility for the Paperclip platform.
 
+## Commands
+
+### Browser Session Control
+- `pib-browser open` - Open a browser context
+- `pib-browser goto` - Navigate to a URL
+- `pib-browser click` - Click an element
+- `pib-browser fill` - Fill a form field
+- `pib-browser text` - Get text from an element
+- `pib-browser shot` - Take a screenshot
+- `pib-browser close` - Close the browser context
+
+### Status and Evidence
+- `pib-browser probe --all --identities <list>` - Check browser session status for identities, writes `/home/paperclip/pib-tools/browser-status.json`
+- `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string; returns attachmentId and sha256 of local file)
+
 ## Exit Codes
 
 | Code | Meaning |
