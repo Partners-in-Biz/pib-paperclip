@@ -4,8 +4,7 @@
  * it on the plugin namespace, and the tests use an in-memory copy with the
  * same semantics.
  */
-import type { ClientKind, FeaturesPort, GrowthStore as KitGrowthStore, Scoreboard } from "@partnersinbiz/pib-plugin-kit";
-import type { ArmSpec, Autopilot, ChangeSpec, FeatureQuestion, FeatureValue, ScoredPostRow } from "./engine.js";
+import type { ClientKind, FeaturesPort, GrowthStore as KitGrowthStore, Scoreboard, ArmSpec, Autopilot, ChangeSpec, FeatureQuestion, FeatureValue, ScoredPostRow } from "@partnersinbiz/pib-plugin-kit";
 
 export interface ProgramConstraints {
   /** Topics Jev picks from when tagging posts (none: no topic feature). */
