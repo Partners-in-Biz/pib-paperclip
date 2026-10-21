@@ -67,6 +67,7 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
@@ -515,6 +516,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
+  });
+  ctx.jobs.register(JOBS.pushDigest, async () => {
+    ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
   });
 
   registerMemoryActions(env);
