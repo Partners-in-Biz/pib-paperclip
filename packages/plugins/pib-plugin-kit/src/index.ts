@@ -19,6 +19,8 @@ export * from "./contracts.js";
 export * from "./outbox.js";
 export * from "./decisions.js";
 export * from "./experiments.js";
+export * from "./growth/ports.js";
+export * from "./growth/store.js";
 export * from "./pdf.js";
 export * from "./tool-result.js";
 export * from "./setup.js";
@@ -41,6 +43,8 @@ export * from "./ask-effects.js";
 export * from "./privacy.js";
 export * from "./growth-scope.js";
 export * from "./sender-scope.js";
+export * from "./growth/engine.js";
+export * from "./growth/types.js";
 export * from "./drive.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";

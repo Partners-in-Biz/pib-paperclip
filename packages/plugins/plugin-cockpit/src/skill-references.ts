@@ -29,6 +29,8 @@ export const OPERATOR_REFERENCE_PATHS = {
   coach: "references/skill-coach.md",
 } as const;
 
+export const OWNER_CHECKS_REFERENCE_PATH = "references/owner-checks.md";
+
 // ---------------------------------------------------------------------------
 // Health checks
 // ---------------------------------------------------------------------------
@@ -223,6 +225,27 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 // ---------------------------------------------------------------------------
 // Asking with an effect
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Owner checks
+// ---------------------------------------------------------------------------
+
+export const OWNER_CHECKS_REFERENCE = `# Owner checks: they never block work
+
+An owner-only check is something only the company owner can do: a tap, a switch flip, an approval, a key, a consent. It is its own issue, assigned to the owner. It blocks nothing and shows as \`WAITING-ON-OWNER\`; the Operator reads that list every day.
+
+## The rule
+
+- An owner-only check is raised once, as a sibling issue assigned to the owner (use \`${T(TOOL_NAMES.askOwner)}\` when it is a question or grant tied to one of your issues).
+- You never add a blocker edge (\`blockedByIssueIds\`) whose blocker is assigned to the owner or has no assignee. An issue nobody owns is never a blocker either.
+- Your own issue keeps moving: finish everything that does not depend on the check, then hand over or close with a note that names the sibling owner issue.
+- If your issue truly cannot continue, set it \`blocked\` with an \`unblockDescriptor\` naming the owner and the exact action. Do not point blockedByIssueIds at the owner's issue.
+- The Delivery Lead raises owner asks once for the program; the Planner lists them as siblings in the plan, never as dependencies.
+
+## Example
+
+PAR-200 (build) needs the owner to tap approve in Stripe. Do: open PAR-201 "Tap approve in Stripe" assigned to the owner, finish the rest of PAR-200, mention PAR-201 in the closing comment. Don't: set PAR-200 blockedByIssueIds to [PAR-201].
+`;
 
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
 
