@@ -196,6 +196,7 @@ export interface GrowthLedgerRow {
   scopeKey: string;
   experimentId: string;
   verdict: "win" | "loss" | "no_change" | "inconclusive" | null;
+  /** Relative change as a fraction: 0.12 = +12%, -0.052 = -5.2%. */
   relativeChange: number | null;
   items: number | null;
   playbookDecision: "kept" | "discarded" | "pending" | null;
@@ -227,7 +228,7 @@ export function businessReviewContent(input: {
     const unit = goal.unit ? ` ${goal.unit}` : "";
     const last = progress.current !== null && progress.change !== null ? fmt(progress.current - progress.change) + unit : "–";
     lines.push(
-      `| ${escapePipe(goal.title)} | ${escapePipe(goal.metricLabel ?? goal.metricKey)} (${goal.period}) | ${goal.direction === "lower" ? "at most " : ""}${fmt(goal.targetValue)}${unit} | ${progress.current === null ? "–" : fmt(progress.current) + unit} | ${last} | ${progress.progress === null ? "–" : `${Math.round(progress.progress * 100)}%`} | ${STATE_LABEL[progress.state]} |`,
+      `| ${goal.title} | ${goal.metricLabel ?? goal.metricKey} (${goal.period}) | ${goal.direction === "lower" ? "at most " : ""}${fmt(goal.targetValue)}${unit} | ${progress.current === null ? "–" : fmt(progress.current) + unit} | ${last} | ${progress.progress === null ? "–" : `${Math.round(progress.progress * 100)}%`} | ${STATE_LABEL[progress.state]} |`,
     );
   }
   lines.push("");
@@ -241,9 +242,9 @@ export function businessReviewContent(input: {
     lines.push("| Channel | Scope | Experiment | Verdict | Change | Playbook |");
     lines.push("|---|---|---|---|---|---|");
     for (const row of growthLedger) {
-      const changeStr = row.relativeChange === null || row.relativeChange === undefined
+      const changeStr = row.relativeChange === null
         ? "n/a"
-        : `${row.relativeChange >= 0 ? "+" : ""}${Math.round(row.relativeChange * 10) / 10}%`;
+        : `${row.relativeChange >= 0 ? "+" : ""}${Math.round(row.relativeChange * 100 * 10) / 10}%`;
       const verdictStr = row.verdict ?? "pending";
       lines.push(
         `| ${escapePipe(row.channel)} | ${escapePipe(row.scopeKey)} | ${escapePipe(row.experimentId)} | ${verdictStr} | ${changeStr} | ${row.playbookDecision ?? "–"} |`,
@@ -258,15 +259,17 @@ export function businessReviewContent(input: {
     if (losses > 0) summaryParts.push(`${losses} loss${losses === 1 ? "" : "es"}`);
     if (noChanges > 0) summaryParts.push(`${noChanges} no change${noChanges === 1 ? "" : "s"}`);
     if (inconclusive > 0) summaryParts.push(`${inconclusive} inconclusive`);
-    const summary = summaryParts.join(", ");
-    lines.push(`Summary: ${summary}.`);
+    if (summaryParts.length > 0) {
+      const summary = summaryParts.join(", ");
+      lines.push(`Summary: ${summary}.`);
+    }
   }
   lines.push("");
 
   lines.push("## Checklist", "");
   for (const { goal, progress } of rows.filter((r) => r.progress.state === "behind" || r.progress.state === "no_data")) {
-    if (progress.state === "behind") lines.push(`- [ ] **${escapePipe(goal.title)}** is behind (${progress.progress === null ? "" : `${Math.round(progress.progress * 100)}% of the way`}): find the cause in the modules' numbers, name the change that moves it, hand it to the agent that owns it (a Hand-off issue), and say when you will look again.`);
-    else lines.push(`- [ ] **${escapePipe(goal.title)}** has no number: ${rows.find((r) => r.goal.id === goal.id)?.note ?? "the Cockpit could not read it"}. Fix the source, or record it with goal-set (id, value).`);
+    if (progress.state === "behind") lines.push(`- [ ] **${goal.title}** is behind (${progress.progress === null ? "" : `${Math.round(progress.progress * 100)}% of the way`}): find the cause in the modules' numbers, name the change that moves it, hand it to the agent that owns it (a Hand-off issue), and say when you will look again.`);
+    else lines.push(`- [ ] **${goal.title}** has no number: ${rows.find((r) => r.goal.id === goal.id)?.note ?? "the Cockpit could not read it"}. Fix the source, or record it with goal-set (id, value).`);
   }
   if (behind.length === 0 && noData.length === 0) lines.push("- [ ] Nothing is behind. Say in one line what drove the best number, and whether any target should be raised (ask the owner, one question, if so).");
   lines.push(

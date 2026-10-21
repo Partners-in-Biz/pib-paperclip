@@ -169,7 +169,7 @@ describe("the weekly business review", () => {
           scopeKey: "organic_leads",
           experimentId: "exp001",
           verdict: "win",
-          relativeChange: 12.5,
+          relativeChange: 0.125,
           items: 50,
           playbookDecision: "kept",
           decidedAt: "2026-09-28T10:00:00Z",
@@ -215,7 +215,7 @@ describe("the weekly business review", () => {
           scopeKey: "engagement",
           experimentId: "exp003",
           verdict: null,
-          relativeChange: -5.2,
+          relativeChange: -0.052,
           items: 100,
           playbookDecision: "pending",
           decidedAt: "2026-09-28T14:00:00Z",
@@ -243,13 +243,28 @@ describe("the weekly business review", () => {
       cockpitHref: "/cockpit",
       rows: [row(goal(), 31, 20)],
       growthLedger: [
-        { channel: "A", scopeKey: "x", experimentId: "e1", verdict: "win", relativeChange: 5, items: 10, playbookDecision: "kept", decidedAt: "2026-09-28T10:00:00Z" },
-        { channel: "B", scopeKey: "y", experimentId: "e2", verdict: "loss", relativeChange: -3, items: 15, playbookDecision: "discarded", decidedAt: "2026-09-28T11:00:00Z" },
-        { channel: "C", scopeKey: "z", experimentId: "e3", verdict: "no_change", relativeChange: 0.1, items: 20, playbookDecision: "pending", decidedAt: "2026-09-28T12:00:00Z" },
+        { channel: "A", scopeKey: "x", experimentId: "e1", verdict: "win", relativeChange: 0.05, items: 10, playbookDecision: "kept", decidedAt: "2026-09-28T10:00:00Z" },
+        { channel: "B", scopeKey: "y", experimentId: "e2", verdict: "loss", relativeChange: -0.03, items: 15, playbookDecision: "discarded", decidedAt: "2026-09-28T11:00:00Z" },
+        { channel: "C", scopeKey: "z", experimentId: "e3", verdict: "no_change", relativeChange: 0.001, items: 20, playbookDecision: "pending", decidedAt: "2026-09-28T12:00:00Z" },
         { channel: "D", scopeKey: "w", experimentId: "e4", verdict: "inconclusive", relativeChange: null, items: 8, playbookDecision: "pending", decidedAt: "2026-09-28T13:00:00Z" },
       ],
     });
     expect(description).toContain("Summary: 1 win, 1 loss, 1 no change, 1 inconclusive.");
+  });
+
+  it("omits summary line when all verdicts are null", () => {
+    const { description } = businessReviewContent({
+      weekLabel: "2026-09-28",
+      proposedWaiting: 0,
+      cockpitHref: "/cockpit",
+      rows: [row(goal(), 31, 20)],
+      growthLedger: [
+        { channel: "A", scopeKey: "x", experimentId: "e1", verdict: null, relativeChange: 0.05, items: 10, playbookDecision: "pending", decidedAt: "2026-09-28T10:00:00Z" },
+        { channel: "B", scopeKey: "y", experimentId: "e2", verdict: null, relativeChange: null, items: 15, playbookDecision: "pending", decidedAt: "2026-09-28T11:00:00Z" },
+      ],
+    });
+    expect(description).not.toContain("Summary:");
+    expect(description).not.toContain("Summary: .");
   });
 });
 
