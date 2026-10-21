@@ -46,20 +46,20 @@ function world() {
     return { name: `Client ${scope.id}` };
   };
 
-  const env = (): SeoGrowthEnv => ({
-    ...seoGrowthEnv(ctx),
+  const env = (cid: string): SeoGrowthEnv => ({
+    ...seoGrowthEnv(ctx, cid),
     now: () => new Date("2026-10-21T08:00:00Z"),
     scopes: seoScopes(ctx, mockCrmResolver),
     issuePort: () => ({ createApproval: async () => ({ id: "issue-1" }), isOpen: async () => true, setStatus: async () => {}, comment: async () => {} }),
   });
   const actor: GrowthActor = { companyId, userId: null, agentId: "agent1", isAgent: true };
-  const host: GrowthToolsHost = { kinds: ["own", "client"], actor: async () => actor, handlers: seoGrowthHandlers(() => env()) as unknown as GrowthToolsHost<GrowthActor>["handlers"] };
+  const host: GrowthToolsHost = { kinds: ["own", "client"], actor: async () => actor, handlers: seoGrowthHandlers((cid) => env(cid)) as unknown as GrowthToolsHost<GrowthActor>["handlers"] };
   const call = async (name: GrowthToolName, params: Record<string, unknown>): Promise<any> => {
     const result = await runGrowthTool(host, name, params, { companyId, agentId: "agent1", runId: "r1" } as unknown as ToolRunContext);
     if (result.error) throw new Error(result.error);
     return result.data;
   };
-  const store = env().store;
+  const store = env(companyId).store;
   return { companyId, call, store };
 }
 

@@ -215,8 +215,8 @@ export async function performanceReview(env: SeoGrowthEnv, actor: GrowthActor, p
 }
 
 /** The five non-playbook handlers. The three playbook tools remain on SEO's native tables. */
-export function seoGrowthHandlers(envFor: () => SeoGrowthEnv): Partial<GrowthToolsHost<GrowthActor>["handlers"]> {
-  const run = (fn: (env: SeoGrowthEnv, actor: GrowthActor, p: Record<string, unknown>) => Promise<unknown>) => (actor: GrowthActor, p: Record<string, unknown>) => fn(envFor(), actor, p);
+export function seoGrowthHandlers(envFor: (companyId: string) => SeoGrowthEnv): Partial<GrowthToolsHost<GrowthActor>["handlers"]> {
+  const run = (fn: (env: SeoGrowthEnv, actor: GrowthActor, p: Record<string, unknown>) => Promise<unknown>) => (actor: GrowthActor, p: Record<string, unknown>) => fn(envFor(actor.companyId), actor, p);
   return {
     "performance-review": run(performanceReview),
     "list-experiments": run(listExperimentsRecord),
@@ -228,11 +228,12 @@ export function seoGrowthHandlers(envFor: () => SeoGrowthEnv): Partial<GrowthToo
 
 /**
  * Creates a fetchRows function for the SEO growth adapter.
- * This function aggregates GSC metrics from all sprints of the given scope.
- * If a company or sprint fails to fetch, it logs a warning and continues.
+ * This function aggregates GSC metrics from sprints of the given scope,
+ * scoped to a specific company. If a sprint fails to fetch, it logs a warning
+ * and continues.
  * Exported for testing the error handling behavior.
  */
-export function createFetchRowsFunction(ctx: PluginContext): (scopeKey: string, startDate: string, endDate: string) => Promise<Map<string, { clicks: number; impressions: number }>> {
+export function createFetchRowsFunction(ctx: PluginContext, companyId: string): (scopeKey: string, startDate: string, endDate: string) => Promise<Map<string, { clicks: number; impressions: number }>> {
   return async (scopeKey: string, startDate: string, endDate: string) => {
     // Parse scopeKey into a ClientScope
     let scope: ClientScope | null = null;
@@ -243,34 +244,27 @@ export function createFetchRowsFunction(ctx: PluginContext): (scopeKey: string, 
       }
     }
 
-    // Aggregate GSC data from all companies' sprints with this scope
+    // Aggregate GSC data from this company's sprints with the given scope
     const results = new Map<string, { clicks: number; impressions: number }>();
 
-    // Get all companies that have sprints
-    const allCompanies = await ctx.db.query<{ company_id: string }>(
-      `SELECT DISTINCT company_id FROM ${t("sprints")} ORDER BY company_id`,
-    );
+    const sprints = await db.listSprints(ctx.db, companyId, { scope });
 
-    for (const { company_id: companyId } of allCompanies) {
-      const sprints = await db.listSprints(ctx.db, companyId, { scope });
-
-      for (const sprint of sprints) {
-        const env = { ctx } as unknown as Env;
-        try {
-          const info = await companyInfo(env, companyId);
-          const pageMetrics = await gscPageQueryRows(env, info, sprint, startDate, endDate);
-          for (const [url, metrics] of pageMetrics) {
-            const existing = results.get(url) ?? { clicks: 0, impressions: 0 };
-            results.set(url, { clicks: existing.clicks + metrics.clicks, impressions: existing.impressions + metrics.impressions });
-          }
-        } catch (error) {
-          ctx.logger.warn("GSC data fetch failed, skipping sprint", {
-            companyId,
-            sprintId: sprint.id,
-            scopeKey,
-            error: errorMessage(error),
-          });
+    for (const sprint of sprints) {
+      const env = { ctx } as unknown as Env;
+      try {
+        const info = await companyInfo(env, companyId);
+        const pageMetrics = await gscPageQueryRows(env, info, sprint, startDate, endDate);
+        for (const [url, metrics] of pageMetrics) {
+          const existing = results.get(url) ?? { clicks: 0, impressions: 0 };
+          results.set(url, { clicks: existing.clicks + metrics.clicks, impressions: existing.impressions + metrics.impressions });
         }
+      } catch (error) {
+        ctx.logger.warn("GSC data fetch failed, skipping sprint", {
+          companyId,
+          sprintId: sprint.id,
+          scopeKey,
+          error: errorMessage(error),
+        });
       }
     }
 
@@ -278,11 +272,11 @@ export function createFetchRowsFunction(ctx: PluginContext): (scopeKey: string, 
   };
 }
 
-export function seoGrowthEnv(ctx: PluginContext, store: GrowthStore = seoGrowthStore(ctx)): SeoGrowthEnv {
+export function seoGrowthEnv(ctx: PluginContext, companyId: string, store: GrowthStore = seoGrowthStore(ctx)): SeoGrowthEnv {
   // Adapter factory: created fresh for each env so fetchRows has proper closure
   const createAdapterForEnv = () =>
     createSeoAdapter({
-      fetchRows: createFetchRowsFunction(ctx),
+      fetchRows: createFetchRowsFunction(ctx, companyId),
     });
 
   const adapter = createAdapterForEnv();
@@ -332,8 +326,6 @@ export function seoGrowthEnv(ctx: PluginContext, store: GrowthStore = seoGrowthS
 
 /** The kit's five tools, run for SEO: the module switch, the caller and the kit service. Agent decisions on `reviewed` need the Reviewer role. */
 export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthActor> {
-  const env = seoGrowthEnv(ctx);
-
   return {
     kinds: ["own", "client"],
     descriptions: {
@@ -346,6 +338,6 @@ export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthAc
       const reviewer = agentId ? (await reviewerAgentId(ctx, runContext.companyId)) === agentId : false;
       return { companyId: runContext.companyId, userId: null, agentId, isAgent: Boolean(agentId), isReviewer: reviewer };
     },
-    handlers: seoGrowthHandlers(() => env),
+    handlers: seoGrowthHandlers((companyId) => seoGrowthEnv(ctx, companyId)),
   } as unknown as GrowthToolsHost<GrowthActor>;
 }
