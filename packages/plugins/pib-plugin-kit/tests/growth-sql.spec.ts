@@ -51,7 +51,7 @@ describe("generic growth store SQL", () => {
       expect(statements.length).toBe(24);
       for (const { sql } of statements) {
         expect(sql.replace(/;\s*$/, "")).not.toContain(";");
-        const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z0-9_.]+)/g)].map((m) => m[1]);
+        const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!SET\b)([A-Za-z0-9_.]+)/g)].map((m) => m[1]);
         expect(tables.length).toBeGreaterThan(0);
         for (const t of tables) expect(t).toMatch(new RegExp(`^${NS}\\.growth_`));
       }
