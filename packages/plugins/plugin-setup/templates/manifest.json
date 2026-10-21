@@ -453,6 +453,51 @@
       ]
     },
     {
+      "key": "creative-producer",
+      "name": "Creative Producer",
+      "title": "Creative Producer",
+      "role": "general",
+      "icon": "wand",
+      "group": "marketing",
+      "capabilities": "Makes the images, video and motion for posts and campaigns to the creative rubric: briefs in, on-brand assets out, every asset sent for review. Works under the Revenue Lead.",
+      "reportsTo": "revenue-lead",
+      "adapterPreference": [
+        "claude_local"
+      ],
+      "runProfile": {
+        "fromKitRole": "creative-producer"
+      },
+      "desiredSkills": [
+        "plugin/partnersinbiz-social/social-content",
+        "plugin/partnersinbiz-cockpit/company-os",
+        "higgsfield",
+        "motion-design-principles",
+        "gsap-core",
+        "gsap-timeline"
+      ],
+      "file": "creative-producer",
+      "match": {
+        "names": [
+          "Creative Producer"
+        ],
+        "titles": [
+          "Creative Producer"
+        ]
+      },
+      "provisioning": "hire",
+      "defaultOn": false,
+      "requires": {
+        "modules": [
+          "social"
+        ]
+      },
+      "scope": "pib",
+      "notes": [
+        "Off by default: hire it when a company wants generated images, video or motion, not only written posts. The hire is the owner's.",
+        "Reports to the Revenue Lead. While it is unstaffed, the Social agent covers its work."
+      ]
+    },
+    {
       "key": "summarizer",
       "name": "Summarizer",
       "title": "Summarizer",

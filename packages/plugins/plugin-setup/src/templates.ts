@@ -14,7 +14,7 @@
  * hired through that plugin's own hire so the plugin links and wires it.
  */
 import { RUN_PROFILES, type RunProfile } from "@partnersinbiz/pib-plugin-kit/run-profile";
-import { TEAM_ROLES, teamSkillKey, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
+import { COMPANY_LIBRARY_SKILLS, TEAM_ROLES, teamSkillKey, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
 import { PACK_AGENT_FILES, PACK_MANIFEST_JSON, PACK_SHARED_BLOCKS } from "./pack/data.generated.js";
 import { parseSubagents, type SubagentPolicy } from "./subagents.js";
 
@@ -195,7 +195,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
     const profile = resolveProfile(key, t.runProfile, problems);
     const desiredSkills = strs(t.desiredSkills);
     if (desiredSkills.length === 0) problems.push(`${key}: desiredSkills is empty`);
-    for (const skill of desiredSkills) if (!SKILL_RE.test(skill)) problems.push(`${key}: skill key ${JSON.stringify(skill)} is not a canonical skill key`);
+    for (const skill of desiredSkills) if (!SKILL_RE.test(skill) && !(COMPANY_LIBRARY_SKILLS as readonly string[]).includes(skill)) problems.push(`${key}: skill key ${JSON.stringify(skill)} is not a canonical skill key`);
     if (new Set(desiredSkills).size !== desiredSkills.length) problems.push(`${key}: a skill is listed twice`);
     if (str(t.provisioning) === "hire" && !desiredSkills.includes(COMPANY_OS_KEY)) problems.push(`${key}: every hired agent carries the company operating manual (${COMPANY_OS_KEY})`);
     const kitRole = t.kitRole === undefined ? undefined : str(t.kitRole);
