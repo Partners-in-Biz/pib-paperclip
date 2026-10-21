@@ -47,15 +47,11 @@
         "fail": {
           "plan": [
             {
-              "kind": "comment",
-              "say": "I will first ask code-explorer to find the webhook code."
-            },
-            {
               "kind": "escalate",
-              "say": "Once code-explorer finishes I will spawn the implementer task with the findings."
+              "say": "First, I need code-explorer to find the webhook code. Once that finishes, I will ask for implementer to make the changes."
             }
           ],
-          "summary": "Sequential delegation: wrong, tasks must run in parallel."
+          "summary": "Sequential: wrong, must run in parallel."
         }
       }
     },
