@@ -177,11 +177,10 @@ function changeOut(c: KitChange) {
 }
 
 export async function performanceReview(env: SeoGrowthEnv, actor: GrowthActor, params: Record<string, unknown>) {
+  // Resolve the scope from params
   const { scope } = await env.scopes.fromParams(actor.companyId, params);
-  const scopeKey = env.scopes.toParam(scope);
-  const programId = `${actor.companyId}:seo:${scopeKey}`;
-
-  const program = (await env.store.getProgram(actor.companyId, programId)) as KitProgram | null;
+  // Find the program for this scope (returns null if no program exists yet)
+  const program = (await env.store.findProgram(actor.companyId, "seo", scope)) as KitProgram | null;
   if (!program) {
     return {
       program: null,

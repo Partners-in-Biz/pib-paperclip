@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { parseClientParam, runGrowthTool, type GrowthActor, type GrowthToolName, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { parseScopeKey, runGrowthTool, type GrowthActor, type GrowthToolName, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import { seoGrowthEnv, seoGrowthHandlers, type SeoGrowthEnv } from "../src/growth-host.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
@@ -42,14 +42,22 @@ function world() {
     now: () => new Date("2026-10-21T08:00:00Z"),
     scopes: {
       fromParams: async (_company, params) => {
-        const value = typeof params.scope === "string" ? params.scope : null;
+        // resolveGrowthScopeParams converts scope to client before passing to handlers
+        // client format is "kind:ref" (e.g., "company:a")
+        const value = typeof params.client === "string" ? params.client : null;
         if (!value) return { scope: null, client: null };
-        if (value === "own") return { scope: null, client: null };
-        const scope = parseClientParam(value);
-        if (!scope || !KNOWN.has(value)) throw new Error(`Unknown scope ${value}`);
+        // Reconstruct the full scope key for KNOWN check (need to add "client:" prefix that was stripped)
+        const fullScopeKey = `client:${value}`;
+        if (!KNOWN.has(fullScopeKey)) throw new Error(`Unknown scope ${fullScopeKey}`);
+        // Parse the client string (e.g., "company:a") to get kind and id
+        const colonIdx = value.indexOf(":");
+        if (colonIdx <= 0) throw new Error(`Invalid client format: ${value}`);
+        const kind = value.slice(0, colonIdx) as "company" | "contact";
+        const id = value.slice(colonIdx + 1);
+        const scope = { kind, id };
         return { scope, client: { name: `Client ${scope.id}` } };
       },
-      toParam: (scope) => (scope ? `client:${scope.kind}:${scope.id}` : "own"),
+      toParam: (scope) => (scope ? `${scope.kind}:${scope.id}` : "own"),
     },
     issuePort: () => ({ createApproval: async () => ({ id: "issue-1" }), isOpen: async () => true, setStatus: async () => {}, comment: async () => {} }),
   });
@@ -82,6 +90,28 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     expect(expRows.c).toBe(1);
     const programs = (await pg.client.query(`SELECT DISTINCT channel FROM ${NAMESPACE}.growth_programs WHERE company_id = $1`, [w.companyId])).rows;
     expect(programs).toEqual([{ channel: "seo" }]);
+  });
+
+  it("scope A and B resolve to distinct non-null scope keys", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Scope key test A", hypothesisType: "hook:question", variable: "KeyTestA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "Scope key test B", hypothesisType: "hook:comparison", variable: "KeyTestB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    // Both experiments should reference different programs (different scope keys)
+    const expARow = (await pg.client.query(
+      `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expA.experimentId],
+    )).rows[0] as { program_id: string };
+    const expBRow = (await pg.client.query(
+      `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expB.experimentId],
+    )).rows[0] as { program_id: string };
+    // The program IDs must be different (different scope keys)
+    expect(expARow.program_id).not.toBe(expBRow.program_id);
+    // And both must be non-"own" (not ${companyId}:seo:own)
+    expect(expARow.program_id).not.toBe(`${w.companyId}:seo:own`);
+    expect(expBRow.program_id).not.toBe(`${w.companyId}:seo:own`);
   });
 
   it("list-experiments returns proposed experiments", async () => {
@@ -146,19 +176,22 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
     // Query the growth_programs table directly
     const programs = (await pg.client.query(
-      `SELECT id FROM ${NAMESPACE}.growth_programs WHERE company_id = $1 ORDER BY id`,
+      `SELECT id, scope_key FROM ${NAMESPACE}.growth_programs WHERE company_id = $1 ORDER BY id`,
       [w.companyId],
-    )).rows as { id: string }[];
+    )).rows as { id: string; scope_key: string }[];
     // Should have exactly 2 programs with distinct ids
     expect(programs).toHaveLength(2);
     const programIds = programs.map((p) => p.id);
     expect(new Set(programIds).size).toBe(2); // All unique
-    // Each program should have the expected scope key in its id
-    const expectedProgramA = `${w.companyId}:seo:${A}`;
-    const expectedProgramB = `${w.companyId}:seo:${B}`;
-    expect(programIds).toContain(expectedProgramA);
-    expect(programIds).toContain(expectedProgramB);
-    // Each experiment should reference its own program
+    // Each program should have the expected scope key
+    const expectedScopeKeyA = "client:company:a";
+    const expectedScopeKeyB = "client:company:b";
+    // Verify scope keys are distinct
+    const scopeKeys = programs.map((p) => p.scope_key);
+    expect(new Set(scopeKeys).size).toBe(2); // All unique
+    expect(scopeKeys).toContain(expectedScopeKeyA);
+    expect(scopeKeys).toContain(expectedScopeKeyB);
+    // Each experiment should reference its own program (different from the other)
     const expARow = (await pg.client.query(
       `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
       [expA.experimentId],
@@ -167,8 +200,11 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
       `SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
       [expB.experimentId],
     )).rows[0] as { program_id: string };
-    expect(expARow.program_id).toBe(expectedProgramA);
-    expect(expBRow.program_id).toBe(expectedProgramB);
+    // Experiments should reference different programs
+    expect(expARow.program_id).not.toBe(expBRow.program_id);
+    // Each experiment's program should match one of the created programs
+    expect(programIds).toContain(expARow.program_id);
+    expect(programIds).toContain(expBRow.program_id);
   });
 
   it("wrong-scope string is rejected", async () => {
@@ -189,26 +225,14 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     const w = world();
     const proposalA = { hypothesis: "Approve scope test A", hypothesisType: "hook:question", variable: "VarApprovalA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
     const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
-    let errorThrown = false;
-    try {
-      await w.call("approve-experiment", { scope: B, experimentId: expA.experimentId });
-    } catch (e) {
-      errorThrown = true;
-    }
-    expect(errorThrown).toBe(true);
+    await expect(w.call("approve-experiment", { scope: B, experimentId: expA.experimentId })).rejects.toThrow();
   });
 
   it("approve-experiment with scope B and A's experiment id must error and leave A's row as proposed", async () => {
     const w = world();
     const proposalA = { hypothesis: "Approval test A", hypothesisType: "hook:question", variable: "VarApprovalA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
     const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
-    let errorThrown = false;
-    try {
-      await w.call("approve-experiment", { scope: B, experimentId: expA.experimentId });
-    } catch (e) {
-      errorThrown = true;
-    }
-    expect(errorThrown).toBe(true);
+    await expect(w.call("approve-experiment", { scope: B, experimentId: expA.experimentId })).rejects.toThrow();
     const expRow = (await pg.client.query(
       `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
       [expA.experimentId],
@@ -263,13 +287,7 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     const w = world();
     const proposalA = { hypothesis: "Reject test A", hypothesisType: "hook:question", variable: "VarRejectA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
     const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
-    let errorThrown = false;
-    try {
-      await w.call("reject-experiment", { scope: B, experimentId: expA.experimentId });
-    } catch (e) {
-      errorThrown = true;
-    }
-    expect(errorThrown).toBe(true);
+    await expect(w.call("reject-experiment", { scope: B, experimentId: expA.experimentId })).rejects.toThrow();
     const expRow = (await pg.client.query(
       `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
       [expA.experimentId],
@@ -283,13 +301,7 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     const proposalB = { hypothesis: "Reject test B", hypothesisType: "hook:comparison", variable: "VarRejectB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
     const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
     const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
-    let errorThrown = false;
-    try {
-      await w.call("reject-experiment", { scope: B, experimentId: expA.experimentId, reason: "Wrong scope" });
-    } catch {
-      errorThrown = true;
-    }
-    expect(errorThrown).toBe(true);
+    await expect(w.call("reject-experiment", { scope: B, experimentId: expA.experimentId, reason: "Wrong scope" })).rejects.toThrow();
     const listA = await w.call("list-experiments", { scope: A });
     const stillFound = listA.experiments.some((e: any) => e.experimentId === expA.experimentId);
     expect(stillFound).toBe(true);
