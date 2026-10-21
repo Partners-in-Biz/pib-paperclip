@@ -43,13 +43,14 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (call \`get-approval-status\` to check where a personal post stands; only the post owner can approve). Migrations 016–017 add nullable columns and indexes for personal scope; rollback simply reverts to the prior plugin version.
+A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (call \`get-approval-status\` to check where a personal post stands; only the post owner can approve).
 
 ## Approvals
 
 - \`request-review\` opens the post's review issue by the scope's policy (\`get-approval-policy\`). Sign-offs: the Reviewer's pass (a check), a team member's approval, the client's approval. The post is approved when every sign-off the policy needs is in **for its current version**: editing it makes earlier sign-offs stale. \`get-approval-status\` shows where one post stands.
-- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. The plugin comments on the issue and wakes you when the client answers. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
+- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
 - **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
+- **Media.** Media missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; calling it again returns the same issue. Attach the asset, then \`request-review\`.
 - \`review-outcomes\` gives first-pass rates per post type. They are inputs for a later autonomy policy; auto-approval is off.
 Full flow, statuses and edge cases: \`references/approvals.md\`.
 

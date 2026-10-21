@@ -358,7 +358,7 @@ export async function sendBackForChanges(ctx: PluginContext, companyId: string, 
   if (person) {
     await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_returns = review_returns + 1 WHERE id = $1 AND company_id = $2`, [post.id, companyId]).catch(() => undefined);
   }
-  const text = `${who} asked for changes:\n\n> ${notes.replace(/\n/g, "\n> ")}\n\nThe post is back in draft. Fix every point, then send it for review again (\`request-review\`).`;
+  const text = `${who} asked for changes:\n\n> ${notes.replace(/\n/g, "\n> ")}\n\nThe post is back in draft. Fix every point, then send it for review again (\`request-review\`). If the problem is the image or video (missing, off-brand, wrong format, no alt text), call \`request-creative\` for this post first: it opens the hand-off for whoever makes the asset.`;
   // The note has to reach the Social agent even when its review issue was closed or never opened: handToSocialAgent opens a fresh one then.
   await handToSocialAgent(ctx, companyId, post, { task: "changes", note: text, wakeReason: "Changes requested on a social post" });
 }
