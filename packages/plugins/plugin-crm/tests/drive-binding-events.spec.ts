@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { boot, CO, tool, toolRaw } from "./helpers/crm.js";
-import { DRIVE_BINDING_EVENT } from "../src/drive/binding.js";
+import { DRIVE_BINDING_EVENT, onDriveBindingSetEvent } from "../src/drive/binding.js";
 
 describe("Drive binding events", () => {
   let setup: Awaited<ReturnType<typeof boot>>;
@@ -25,14 +25,14 @@ describe("Drive binding events", () => {
 
       await tool(setup.harness, "drive_binding_discover", { drives });
 
-      // Check that emit was called with the right event name
+      // Check that emit was called with the bare event name
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       expect(bindingCalls).toHaveLength(1);
 
       const [eventName, companyId, payloadUntyped] = bindingCalls[0];
       const payload = payloadUntyped as any;
-      expect(eventName).toBe(DRIVE_BINDING_EVENT);
+      expect(eventName).toBe("drive.binding");
       expect(companyId).toBe(CO);
 
       // Verify payload shape and no secrets
@@ -62,12 +62,12 @@ describe("Drive binding events", () => {
       await tool(setup.harness, "drive_binding_set", { sharedDriveId: "d1" });
 
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       expect(bindingCalls).toHaveLength(1);
 
       const [eventName, companyId, payloadUntyped] = bindingCalls[0];
       const payload = payloadUntyped as any;
-      expect(eventName).toBe(DRIVE_BINDING_EVENT);
+      expect(eventName).toBe("drive.binding");
       expect(companyId).toBe(CO);
 
       // Verify bound state
@@ -99,7 +99,7 @@ describe("Drive binding events", () => {
 
       // Verify no event was emitted (because tool failed)
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       expect(bindingCalls).toHaveLength(0);
     });
 
@@ -109,7 +109,7 @@ describe("Drive binding events", () => {
       await tool(setup.harness, "drive_binding_discover", { drives });
 
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       const payload = bindingCalls[0][2];
 
       // Check for exact keys (no extra, no missing)
@@ -153,7 +153,7 @@ describe("Drive binding events", () => {
       await tool(setup.harness, "drive_binding_status", {});
 
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       expect(bindingCalls).toHaveLength(1);
 
       const payload = bindingCalls[0][2] as any;
@@ -181,7 +181,7 @@ describe("Drive binding events", () => {
       await tool(setup.harness, "drive_binding_status", {});
 
       const calls = setup.emit.mock.calls;
-      const bindingCalls = calls.filter((c) => c[0] === DRIVE_BINDING_EVENT);
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
       const payload = bindingCalls[0][2] as any;
 
       // Ensure identityError is not in payload (it's in the tool response, not the event)
@@ -212,6 +212,95 @@ describe("Drive binding events", () => {
 
       // Restore
       setup.harness.ctx.events.emit = originalEmit;
+    });
+
+    it("emits bare event name (not prefixed) to ctx.events.emit", async () => {
+      const drives = [{ id: "d1", name: "Test Drive" }];
+
+      await tool(setup.harness, "drive_binding_discover", { drives });
+
+      const calls = setup.emit.mock.calls;
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
+      expect(bindingCalls).toHaveLength(1);
+
+      // Verify it's the bare name, not the full prefixed name
+      const [eventName] = bindingCalls[0];
+      expect(eventName).toBe("drive.binding");
+      expect(eventName).not.toBe(DRIVE_BINDING_EVENT); // Should not be the full prefixed name
+    });
+  });
+
+  describe("Setup plugin drive.binding.set event handler", () => {
+    it("binds drive from valid candidate via event handler", async () => {
+      const drives = [
+        { id: "d1", name: "Drive One" },
+        { id: "d2", name: "Drive Two" },
+      ];
+
+      // First discover to populate candidates
+      await tool(setup.harness, "drive_binding_discover", { drives });
+      setup.emit.mock.calls = []; // Clear previous calls
+
+      // Call the handler directly (simulates event dispatch)
+      await onDriveBindingSetEvent(setup.harness.ctx, {
+        companyId: CO,
+        payload: { sharedDriveId: "d1" },
+      });
+
+      // Verify binding was set and event was emitted
+      const calls = setup.emit.mock.calls;
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
+      expect(bindingCalls).toHaveLength(1);
+
+      const [, companyId, payload] = bindingCalls[0];
+      expect(companyId).toBe(CO);
+      expect(payload).toMatchObject({
+        bound: true,
+        sharedDriveId: "d1",
+      });
+    });
+
+    it("rejects drive id not in candidates via event handler", async () => {
+      const drives = [{ id: "d1", name: "Drive One" }];
+
+      // First discover to populate candidates
+      await tool(setup.harness, "drive_binding_discover", { drives });
+      setup.emit.mock.calls = []; // Clear previous calls
+
+      // Call the handler with an invalid id (does not throw, just logs and returns)
+      await onDriveBindingSetEvent(setup.harness.ctx, {
+        companyId: CO,
+        payload: { sharedDriveId: "d_invalid" },
+      });
+
+      // Verify nothing was stored (handler logged and returned, no error thrown)
+      const calls = setup.emit.mock.calls;
+      const bindingCalls = calls.filter((c) => c[0] === "drive.binding");
+      expect(bindingCalls).toHaveLength(0); // No emit because handler rejected the id
+    });
+
+    it("handler errors do not throw", async () => {
+      const drives = [{ id: "d1", name: "Drive One" }];
+
+      // First discover to populate candidates
+      await tool(setup.harness, "drive_binding_discover", { drives });
+
+      // Mock state.set to throw
+      const originalSet = setup.harness.ctx.state.set;
+      setup.harness.ctx.state.set = async () => {
+        throw new Error("State set failed");
+      };
+
+      // Call the handler; it should not throw even though state.set fails
+      await expect(
+        onDriveBindingSetEvent(setup.harness.ctx, {
+          companyId: CO,
+          payload: { sharedDriveId: "d1" },
+        }),
+      ).resolves.not.toThrow();
+
+      // Restore
+      setup.harness.ctx.state.set = originalSet;
     });
   });
 });

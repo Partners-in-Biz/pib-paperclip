@@ -8,8 +8,11 @@ import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { readConfig, SecretResolver, PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
 
-/** Drive binding event emitted by CRM after binding changes */
-export const DRIVE_BINDING_EVENT = pluginEvent(PIB_PLUGINS.crm, "drive.binding");
+/** Drive binding event bare name (emitted as this, subscribers use pluginEvent to subscribe) */
+const DRIVE_BINDING_EVENT_BARE = "drive.binding";
+
+/** Drive binding event full name for subscribers */
+export const DRIVE_BINDING_EVENT = pluginEvent(PIB_PLUGINS.crm, DRIVE_BINDING_EVENT_BARE);
 
 /** Interface for the drive.binding event payload */
 export interface DriveBindingEventPayload {
@@ -59,7 +62,7 @@ async function emitBindingEvent(
   payload: DriveBindingEventPayload,
 ): Promise<void> {
   try {
-    await ctx.events.emit(DRIVE_BINDING_EVENT, companyId, payload as unknown as Record<string, unknown>);
+    await ctx.events.emit(DRIVE_BINDING_EVENT_BARE, companyId, payload as unknown as Record<string, unknown>);
   } catch (error) {
     ctx.logger.info("drive.binding event emit failed (non-fatal)", {
       companyId,
@@ -377,4 +380,74 @@ export async function driveBindingStatus(
   }
 
   return response;
+}
+
+/**
+ * Handler for Setup plugin's drive.binding.set event.
+ * Called when Setup plugin requests CRM to bind a Shared Drive.
+ * Reuses the same logic as driveBindingSet tool but as an event handler.
+ */
+export async function onDriveBindingSetEvent(
+  ctx: PluginContext,
+  event: { companyId: string; payload: Record<string, unknown> },
+): Promise<void> {
+  const companyId = event.companyId;
+  const sharedDriveId = event.payload.sharedDriveId as string | undefined;
+
+  if (!sharedDriveId) {
+    ctx.logger.info("drive.binding.set event received without sharedDriveId", { companyId });
+    return;
+  }
+
+  try {
+    const cfg = await readConfig(ctx, companyId);
+
+    // Check if config-pinned
+    const configSharedDriveId = (cfg.drive as { sharedDriveId?: string })?.sharedDriveId || "";
+    if (configSharedDriveId !== "") {
+      ctx.logger.info("drive.binding.set event ignored: company has pinned Shared Drive in settings", {
+        companyId,
+        sharedDriveId,
+      });
+      return;
+    }
+
+    // Get the candidates from state
+    const candidatesData = await ctx.state.get(CANDIDATES_STATE_KEY(companyId));
+    const candidates = (Array.isArray(candidatesData) ? candidatesData : []) as Array<{ id: string; name: string }>;
+
+    // Verify sharedDriveId is in the candidate list
+    const found = candidates.find((c) => c.id === sharedDriveId);
+    if (!found) {
+      ctx.logger.info("drive.binding.set event rejected: id not in discovered candidates", {
+        companyId,
+        sharedDriveId,
+      });
+      return;
+    }
+
+    // Store the binding
+    const newBinding: BindingState = {
+      sharedDriveId,
+      name: found.name,
+      setBoundAt: new Date().toISOString(),
+    };
+    await ctx.state.set(BINDING_STATE_KEY(companyId), newBinding);
+
+    // Emit binding event
+    await emitBindingEvent(ctx, companyId, {
+      companyId,
+      connected: true,
+      bound: true,
+      sharedDriveId,
+      serviceAccountIsMember: false,
+      candidates,
+    });
+  } catch (error) {
+    ctx.logger.info("drive.binding.set event handler failed", {
+      companyId,
+      sharedDriveId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
