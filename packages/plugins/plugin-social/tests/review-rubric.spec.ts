@@ -22,13 +22,14 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
 
   it.each<{ name: string; body: string; media: Array<{ kind?: string; altText?: string | null }>; score: number; shouldRecord: boolean }>([
     { name: "score 80 -> recorded", body: "Strong content with proven strategies and clear value.", media: [{ kind: "image", altText: "Value" }], score: 80, shouldRecord: true },
-    { name: "score 79 -> refused", body: "Score 79 test.", media: [], score: 79, shouldRecord: false },
+    { name: "score 79 -> refused", body: "Score 79 test.", media: [{ kind: "image", altText: "Value" }], score: 79, shouldRecord: false },
   ])("block mode exact thresholds: $name", async ({ body, media, score, shouldRecord }) => {
-    const spy = vi.spyOn(kit, "scoreCreative").mockImplementation((args: any) => ({
+    // No blockers in either case and media with alt text present: the score is the only variable.
+    const spy = vi.spyOn(kit, "scoreCreative").mockImplementation(() => ({
       score,
       pass: score >= 80,
       parts: { hook: 0, clarity: 0, brand: 0, cta: 0, format: 0 },
-      blockers: score < 80 ? [{ rule: "media_required" as const, text: "threshold" }] : [],
+      blockers: [],
       notes: [],
       writing: [],
     }));
@@ -46,6 +47,7 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
       expect(result.recorded).toBe(false);
       expect(result.refused).toBe(true);
       expect(result.score).toBe(score);
+      expect(result.blockers).toEqual([]);
     }
     spy.mockRestore();
   });
