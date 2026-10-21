@@ -3,6 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { driveBindingDiscover, driveBindingSet, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
@@ -53,6 +54,18 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "List project Drive kinds",
     description: "Read the Drive folder kinds for specified projects or all projects in the company. Returns kind and optional scopeRef for each. A client-linked project (has a client_projects row) with no kind row defaults to 'client' kind. Unlinked projects without a kind row are omitted. Company-scoped; read-only.",
     parametersSchema: schema([], { projectIds: { type: "array", items: { type: "string" }, description: "Optional list of project ids. If omitted, returns all projects for the company." } }),
+  },
+  {
+    name: "drive_binding_discover",
+    displayName: "Discover Shared Drives",
+    description: "Bind this company to one of its Google Shared Drives. Call this with the list of shared drives from the company's Google Drive read connection (agent lists them, read-only: never write via the connection). Looks for an exact case-insensitive name match to the Paperclip company name. If exactly one matches, binds automatically and returns bound:true, autoPicked:true. Otherwise returns the candidates (bound:false, reason:'none'|'several') so you can call drive_binding_set with the one to use.",
+    parametersSchema: schema(["drives"], { drives: { type: "array", items: { type: "object", properties: { id: text("The Shared Drive ID."), name: text("The Shared Drive name.") }, required: ["id", "name"] }, description: "List of {id, name} from the company's Shared Drive discovery." } }),
+  },
+  {
+    name: "drive_binding_set",
+    displayName: "Set Shared Drive binding",
+    description: "Bind this company to a specific Shared Drive. Pass the sharedDriveId from drive_binding_discover (must be in the candidate list from the last discover call). The ID must be in the discovered list or this fails; run discover first. If the company's Shared Drive is pinned in settings, this fails with a clear message. Read-only discovery should never write.",
+    parametersSchema: schema(["sharedDriveId"], { sharedDriveId: text("The Shared Drive ID from the candidate list (drive_binding_discover).", 100) }),
   },
 ];
 
@@ -138,9 +151,8 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
   const cfg = await readConfig(ctx, companyId);
   if (!cfg.driveBrokerToken) return null;
 
-  // Read the Shared Drive binding from company settings
-  const driveConfig = (cfg.drive as { sharedDriveId?: string }) || {};
-  const sharedDriveId = (driveConfig.sharedDriveId || "").trim();
+  // Get effective binding (config or state)
+  const sharedDriveId = await effectiveSharedDriveId(ctx, companyId, cfg);
 
   // Check binding FIRST before reading token
   if (!sharedDriveId) {
