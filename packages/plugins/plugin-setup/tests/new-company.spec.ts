@@ -206,7 +206,7 @@ describe("setup.new-company", () => {
   it("reads the state of a company that was never touched", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asUser(A));
-    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 11 }, hires: [] });
+    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 12 }, hires: [] });
     expect(state.steps).toHaveLength(10);
     expect(state.starterPack).toMatchObject({ approved: false, needsOwnerOk: true, version: 1 });
     expect(state.starterPack.facts.length).toBe(loadStarterPack().facts.length);
