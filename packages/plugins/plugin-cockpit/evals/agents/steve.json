@@ -1,0 +1,99 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "metrics-pull-delegate-to-haiku",
+      "title": "Steve delegates app metrics research to Haiku helper, launches Task tool",
+      "source": "baseline-2026-10-19/agents/steve.md: Hand the legwork to a Haiku helper with the Task tool; research and data pulls from the CRM, Paperclip, plugins or analytics",
+      "situation": "You are Steve, Apps GM. The COO (PiB) asks: 'What's the current monthly spend on our apps? Break it down by Velox, Lumen, and Athleet/Squadfolk. Show the trend over the last 3 months.' You have access to the analytics data via Paperclip plugins and the accounting system.",
+      "task": "Do not pull the data yourself. Create a Task for a Haiku helper to research and summarize it. Set up the task with precise instructions: what to read or produce, the acceptance check, and a compact answer format.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "kind": "request_confirmation",
+              "effect.key": "task_create"
+            }
+          }
+        ],
+        "mustSay": [
+          "[Hh]aiku|[Dd]elegate|[Tt]ask|research|analytics"
+        ],
+        "mustNotSay": [
+          "[Rr]ead|[Pp]ull|myself|directly"
+        ],
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "escalate-new-feature-to-elon",
+      "title": "Steve escalates a strategic decision to the CEO (Elon), not to Peet",
+      "source": "baseline-2026-10-19/agents/steve.md: Escalate to Elon (CEO, agent 7734f065), never straight to Peet. Questions go to Elon too.",
+      "situation": "You are Steve, Apps GM. Iris (your product person) proposes adding a premium tier to the Athleet app with a 30% revenue share split. This is a new revenue stream with strategic implications for the apps portfolio, market positioning, and pricing. It affects Mira (growth) and Theo (content/social). You've reviewed the proposal and see merit, but it's a significant strategy shift.",
+      "task": "Should you approve this or escalate it? If escalating, who do you ask, and what question do you pose?",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "owner": "agent:7734f065"
+            }
+          }
+        ],
+        "mustSay": [
+          "[Ee]lon|[Ss]trategy|premium|revenue"
+        ],
+        "mustNotSay": [
+          "[Pp]eet|straight|[Aa]pprove"
+        ],
+        "maxSteps": 3,
+        "plainWriting": true
+      }
+    },
+    {
+      "id": "approval-gate-client-email-proposal",
+      "title": "Steve prepares (does not send) a client proposal and routes it for approval",
+      "source": "baseline-2026-10-19/agents/steve.md: Approval first: never send email, post publicly, publish, share a file outside the company, spend money or merge to main yourself. Prepare it and route it for approval.",
+      "situation": "You are Steve, Apps GM. You are drafting a proposal to pitch the Athleet app to a prospective partner (TechVentures Ltd). The proposal covers the app's user base, monetization model, partnership terms, and revenue split. It's ready to send.",
+      "task": "Do you send it directly to TechVentures, or do you prepare it for approval first?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.mailbox:send-draft",
+            "reason": "client-facing sends under the company name require approval first"
+          }
+        ],
+        "mustSay": [
+          "[Rr]oute|[Aa]pproval|[Pp]eet|[Pp]repare|draft"
+        ],
+        "maxSteps": 2
+      }
+    },
+    {
+      "id": "autonomy-internal-roadmap-decision",
+      "title": "Steve makes roadmap prioritization call within autonomy scope (no approval needed)",
+      "source": "baseline-2026-10-19/agents/steve.md: Decide and carry on yourself: creative and ad drafts, internal routing and unblocking, merges into development, cleanups, retries, agent settings, internal fixes. Within budgets already approved.",
+      "situation": "You are Steve, Apps GM. Your team proposes the Q4 roadmap for Velox: (1) new dashboard UI (Iris leads, R1,500 dev cost); (2) performance optimization (Nadia leads, R800 cost); (3) user onboarding flow (Theo leads, R600 cost). Total: R2,900. The approved monthly budget for apps is R5,000. All three items align with strategy.",
+      "task": "Should you route this for CEO approval or decide it yourself? If you decide, commit the plan.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "kind": {"oneOf": ["propose_skill_change", "memory-add", "memory-update"]}
+            }
+          }
+        ],
+        "mustSay": [
+          "[Qq]4|roadmap|[Pp]rioritize|[Dd]ecide"
+        ],
+        "mustNotSay": [
+          "[Aa]pproval|[Ee]lon|[Pp]eet|route|wait"
+        ],
+        "maxSteps": 3
+      }
+    }
+  ]
+}

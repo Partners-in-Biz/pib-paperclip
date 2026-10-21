@@ -13,6 +13,10 @@ import summarizer from "../evals/agents/summarizer.json" with { type: "json" };
 import crmDataSteward from "../evals/agents/crm-data-steward.json" with { type: "json" };
 import developer from "../evals/agents/developer.json" with { type: "json" };
 import seniorDeveloper from "../evals/agents/senior-developer.json" with { type: "json" };
+import steve from "../evals/agents/steve.json" with { type: "json" };
+import afrikaansEditor from "../evals/agents/afrikaans-editor.json" with { type: "json" };
+import revenueLead from "../evals/agents/revenue-lead.json" with { type: "json" };
+import arjun from "../evals/agents/arjun.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -30,6 +34,10 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "crm-data-steward": crmDataSteward,
   developer,
   "senior-developer": seniorDeveloper,
+  steve,
+  "afrikaans-editor": afrikaansEditor,
+  "revenue-lead": revenueLead,
+  arjun,
 };
 
 /** Every tool this plugin registers, as agents name it. */
