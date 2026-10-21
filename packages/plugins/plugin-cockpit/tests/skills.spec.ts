@@ -11,7 +11,7 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
 import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
@@ -263,8 +263,8 @@ describe("the Operator's references (Wave 3)", () => {
       expect(operator.files!.some((f) => f.path === path), path).toBe(true);
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
-    // The Reviewer stays one file; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
-    expect(skill("pib-reviewer")).not.toHaveProperty("files");
+    // The Reviewer carries only the creative bar; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
+    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH]);
     expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
     expect(companySkillBody()).toContain("`references/owner-checks.md`");
