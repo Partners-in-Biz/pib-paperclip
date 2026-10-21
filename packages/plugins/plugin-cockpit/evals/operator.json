@@ -393,7 +393,7 @@
     {
       "id": "chain-idle-over-strict-owner-edge",
       "title": "A chain_idle finding on an issue blocked by an over-strict owner edge",
-      "source": "Watchdog: PAR-800 has been inactive for 24 hours and points a chain_idle: marker. It is blocked by PAR-801 which is assigned to the owner. The owner-checks rule says: an owner-only check must not block work.",
+      "source": "Watchdog: PAR-800 has been inactive for 24 hours with a chain_idle finding. It is blocked by PAR-801 which is assigned to the owner. The owner-checks rule says: an owner-only check must not block work.",
       "situation": "The watchdog finding lists: PAR-800 with title \"chain_idle: Draft the holiday campaign\" (assigned to the Social agent, agent id so-1). Reading PAR-800, it is blocked by PAR-801 \"Owner approve the campaign scope\" (assigned to the owner, user owner-1). The scope is actually done: the owner just needs to tap a button. According to owner-checks, this approval should not block the draft. The company prefix is PAR.",
       "task": "Fix the chain_idle finding: the blocked issue should not wait on the owner-only check.",
       "expect": {
@@ -414,7 +414,7 @@
             "path": "^/api/issues/PAR-800/comments",
             "args": {
               "body": {
-                "notEmpty": true
+                "matches": "PAR-801|blockedByIssueIds"
               }
             }
           }

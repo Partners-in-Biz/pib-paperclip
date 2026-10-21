@@ -120,9 +120,9 @@ d("propose-skill-change (Postgres)", () => {
 
   it("refuses a change that takes a skill over its character budget, one that grows it too fast, and one with a secret", async () => {
     const w = await make();
-    // The Operator's SKILL.md is within 200 characters of its test budget: a paragraph does not fit.
+    // The Operator's SKILL.md budget is 19000; adding a large paragraph should exceed it.
     const anchor = operator.markdown.split("\n").find((l) => l.startsWith("## Never"))!;
-    const paragraph = Array.from({ length: 6 }, (_, i) => `+Line ${i}: a rule that costs every run tokens, ${"x".repeat(60)}`).join("\n");
+    const paragraph = Array.from({ length: 15 }, (_, i) => `+Line ${i}: a rule that costs every run tokens, ${"x".repeat(60)}`).join("\n");
     const over = await propose(w, { skill: "pib-operator", diff: ["@@ @@", ` ${anchor}`, paragraph].join("\n") });
     expect(over.error).toContain("over its 18950 budget");
     const big = Array.from({ length: 30 }, (_, i) => `+Rule ${i}: ${"y".repeat(70)}`).join("\n");

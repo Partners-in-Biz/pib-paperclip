@@ -236,11 +236,11 @@ A **chain_idle** finding marks task work that is not done or cancelled: the thre
 1. **List findings:** ${T(TOOL_NAMES.watchdogFindings)} (optional \`limit\`).
 2. **Read the issue.** \`GET /api/issues/{id}\` (Paperclip API) and the comments to understand what is blocking it and why.
 3. **Name the real blocker.** A chain_idle issue is inactive; is an agent ready but not running, a person must act, or the issue should not exist? An orphan_blocker issue points to a blocker that changed: is it done, cancelled, or no longer a valid reason to wait?
-4. **Decide and act; never edit another agent's issue fields directly:**
-   - **Over-strict owner edge:** The blocked issue waits on an owner-only check that should not block (the owner-checks rule says so). Comment the issue's assignee with the exact fix: name the blocker issue (for example "Drop PAR-nnn from your blockedByIssueIds, since owner approvals do not block your work") and what they must do. Their comment is the wake.
-   - **Agent is ready but not running:** Comment what to do next to wake it; if it cannot act, reassign to the role that owns it.
-   - **Person must act:** Make sure the owner card with ${T(TOOL_NAMES.askOwner)} has a deadline (\`dueBy\` YYYY-MM-DD), is phrased as a first option that the answer carries out (with \`effect\` and \`params\` if the system can do it), and is on the brief.
-5. **Repair ledger:** When a chain_idle or orphan_blocker finding clears, the Cockpit records it in the repairs ledger. Your closing comment on the issue must state what you fixed so the entry is clear.
+4. **Decide and act.** Never patch another agent's issue fields directly; comment instead so the agent makes the change. For chain_idle and orphan_blocker findings:
+   - **Over-strict owner edge:** The blocked issue waits on an owner-only check that should not block (the owner-checks rule says so). Comment the issue's assignee with the exact fix: name the blocker issue (for example "Drop PAR-nnn from your blockedByIssueIds, since owner approvals do not block your work"). Their comment is the wake.
+   - **Agent is ready but not running:** Comment what to do next to wake it.
+   - **Person must act:** Call ${T(TOOL_NAMES.askOwner)} on the blocked issue. Set \`kind\` to \`decision\` or \`grant\` and \`dueBy\` to a deadline. If a yes can be carried out by the system, add \`effect\` with \`key\` and \`params\` so the answer does it. List every \`link\` and \`step\` the owner needs. Put it on the brief.
+5. **Record what was fixed:** Comment on the blocked issue with what you did to fix it (cleared the blocker, contacted the agent, asked the owner). The Cockpit's repairs ledger reads your comment.
 `;
 
 // ---------------------------------------------------------------------------

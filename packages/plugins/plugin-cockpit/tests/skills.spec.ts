@@ -164,8 +164,8 @@ describe("the Operator knows how to act on each watch problem", () => {
       "`blockedByIssueIds`",
       "`unblockDescriptor`",
       "PATCH /api/issues/{id}",
-      "set it `todo` and wake the assignee, or cancel it with a reason",
-      "assignee idle for 12 hours",
+      "ask-owner",
+      "idle in-progress",
     ]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
   });
 
