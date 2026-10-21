@@ -63,6 +63,7 @@ import {
   updateProgramRecord,
 } from "./growth/service.js";
 import { spaceOf } from "./space.js";
+import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
@@ -229,6 +230,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return registerAsset(ctx, viewer.companyId, p);
     case "import-media-from-url":
       return importFromUrl(ctx, viewer.companyId, p);
+    case "store-rendered-asset":
+      return storeRenderedAsset(ctx, viewer, p);
     case "list-issue-attachments":
       return listIssueAttachments(ctx, viewer.companyId, p);
     case "import-media-from-attachment":
