@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
 const net = require('node:net');
-const { loadConfig, createServer, listen } = require('../src/daemon.cjs');
+const { loadConfig, createServer, listen, buildDaemon } = require('../src/daemon.cjs');
 function mkSocket(fn) {
   const tmpDir = fs.mkdtempSync(path.join(tmpdir(), 'pib-'));
   const sock = path.join(tmpDir, 't.sock');
@@ -330,4 +330,146 @@ test('listen - rejects live server and preserves socket', () => {
       );
     });
   });
+});
+
+test('buildDaemon - wires Playwright browser and does not return no_browser', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(tmpdir(), 'pib-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    const handoffDir = path.join(tmpDir, 'handoff');
+    const sockPath = path.join(tmpDir, 'daemon.sock');
+    const policyPath = path.join(tmpDir, 'policy.json');
+
+    const policy = {
+      version: 1,
+      agents: { a1: { identities: ['client:ca:meta'] } },
+      identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } }
+    };
+    fs.writeFileSync(policyPath, JSON.stringify(policy));
+
+    let recordedHeadless = null;
+    const fakePlaywright = {
+      chromium: {
+        launchPersistentContext: async (profilePath, options) => {
+          recordedHeadless = options.headless;
+          return {
+            pages: () => [],
+            newPage: async () => ({
+              goto: async () => {},
+              locator: () => ({ filter: () => ({}), click: async () => {}, innerText: async () => 'Home', fill: async () => {}, first: () => ({}) }),
+              url: () => 'https://business.facebook.com/latest/home',
+              mainFrame: () => ({}),
+              on: () => {},
+              screenshot: async () => {},
+              close: async () => {}
+            }),
+            route: async () => {},
+            on: () => {},
+            close: async () => {}
+          };
+        }
+      }
+    };
+
+    const profilesDir = path.join(tmpDir, 'profiles');
+    const env = {
+      PIB_BROWSER_POLICY: policyPath,
+      PIB_BROWSER_STATE_DIR: stateDir,
+      PIB_BROWSER_HANDOFF_DIR: handoffDir,
+      PIB_BROWSER_SOCKET: sockPath,
+      PIB_BROWSER_PROFILES: profilesDir
+    };
+
+    const { dispatch, browser, policyResult } = buildDaemon(env, {
+      playwright: fakePlaywright,
+      fetch: async () => ({ ok: true, json: async () => ({ ok: true, agentId: 'a1', companyId: 'ca' }) })
+    });
+
+    assert(browser, 'browser should be returned (not null)');
+    assert(typeof browser.newContext === 'function', 'browser should have newContext method');
+    assert(policyResult.ok, 'policyResult should be ok');
+
+    const result = await dispatch({
+      cmd: 'open',
+      token: 'test-token',
+      issue: 'PAR-1234',
+      identity: 'client:ca:meta'
+    });
+
+    const { EXIT } = require('../src/exit-codes.cjs');
+    assert.notEqual(result.exit, EXIT.NO_BROWSER, 'exit should not be NO_BROWSER when browser is wired');
+    assert.notEqual(result.reason, 'no_browser', 'reason should not be no_browser when browser is wired');
+
+    // Directly trigger launchPersistentContext by calling newContext and a method
+    const ctx = browser.newContext({ origins: ['https://business.facebook.com'], guard: () => true, identity: 'test' });
+    try {
+      await ctx.text('body');
+    } catch (e) {
+      // Expected with fake browser
+    }
+
+    assert.equal(recordedHeadless, false, 'headless should be false when PIB_BROWSER_HEADLESS not set (defaults to 0)');
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+});
+
+test('buildDaemon - respects PIB_BROWSER_HEADLESS=1 for headless mode', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(tmpdir(), 'pib-'));
+  try {
+    const stateDir = path.join(tmpDir, 'state');
+    const handoffDir = path.join(tmpDir, 'handoff');
+    const sockPath = path.join(tmpDir, 'daemon.sock');
+    const policyPath = path.join(tmpDir, 'policy.json');
+
+    const policy = {
+      version: 1,
+      agents: { a1: { identities: ['client:ca:meta'] } },
+      identities: { 'client:ca:meta': { origins: ['https://business.facebook.com'] } }
+    };
+    fs.writeFileSync(policyPath, JSON.stringify(policy));
+
+    let recordedHeadlessHeadless = null;
+    const fakePlaywright = {
+      chromium: {
+        launchPersistentContext: async (profilePath, options) => {
+          recordedHeadlessHeadless = options.headless;
+          return {
+            pages: () => [],
+            newPage: async () => ({ goto: async () => {}, locator: () => ({}), url: () => '', mainFrame: () => ({}), on: () => {}, screenshot: async () => {}, close: async () => {} }),
+            route: async () => {},
+            on: () => {},
+            close: async () => {}
+          };
+        }
+      }
+    };
+
+    const profilesDir = path.join(tmpDir, 'profiles');
+    const env = {
+      PIB_BROWSER_POLICY: policyPath,
+      PIB_BROWSER_STATE_DIR: stateDir,
+      PIB_BROWSER_HANDOFF_DIR: handoffDir,
+      PIB_BROWSER_SOCKET: sockPath,
+      PIB_BROWSER_PROFILES: profilesDir,
+      PIB_BROWSER_HEADLESS: '1'
+    };
+
+    const { browser } = buildDaemon(env, {
+      playwright: fakePlaywright,
+      fetch: async () => ({ ok: true, json: async () => ({ ok: true, agentId: 'a1' }) })
+    });
+
+    // Directly trigger launchPersistentContext
+    const ctx = browser.newContext({ origins: ['https://business.facebook.com'], guard: () => true, identity: 'test' });
+    try {
+      await ctx.text('body');
+    } catch (e) {
+      // Expected with fake browser
+    }
+
+    assert.equal(recordedHeadlessHeadless, true, 'headless should be true when PIB_BROWSER_HEADLESS=1');
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
 });

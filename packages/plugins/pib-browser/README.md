@@ -38,6 +38,23 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - No secrets or credentials are stored in this package
 - All sensitive data is managed externally
 
+## Service environment
+
+The daemon reads the following environment variables at startup:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PIB_BROWSER_POLICY` | (required) | Path to policy JSON file |
+| `PIB_BROWSER_SITES` | (optional) | Path to sites JSON file |
+| `PIB_BROWSER_PROFILES` | `/var/lib/pib-browser/profiles` | Directory for browser profiles |
+| `PIB_BROWSER_STATE_DIR` | `/var/lib/pib-browser` | Directory for approval store state |
+| `PIB_BROWSER_HANDOFF_DIR` | `/run/pib-browser/handoff` | Directory for handoff state |
+| `PIB_BROWSER_SOCKET` | (required) | Unix socket path for daemon |
+| `PIB_BROWSER_SOCKET_MODE` | `0o660` | Socket file permissions (octal) |
+| `PIB_BROWSER_CHROMIUM` | (unset) | Explicit path to Chromium executable |
+| `PIB_BROWSER_HEADLESS` | `0` | `0` for headed (default), `1` for headless |
+| `DISPLAY` | `:99` | X server display for headed mode (typically set by systemd service to `:99` via Xvfb) |
+
 ## Build and Test
 
 ```sh
