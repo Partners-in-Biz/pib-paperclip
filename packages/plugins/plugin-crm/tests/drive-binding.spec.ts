@@ -52,14 +52,14 @@ async function setupBinding(config: Record<string, any> = {}, store?: Record<str
 
 describe("Drive binding tools", () => {
   it("declares three binding tools with schemas and descriptions", () => {
-    // Tools are declared in DRIVE_TOOLS; should have 7 total (4 folder tools + 3 binding tools)
-    expect(DRIVE_TOOLS).toHaveLength(7);
-    expect(DRIVE_TOOLS[4].name).toBe("drive_binding_discover");
-    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_set");
-    expect(DRIVE_TOOLS[6].name).toBe("drive_binding_status");
-    expect(DRIVE_TOOLS[4].description).toContain("exact case-insensitive");
-    expect(DRIVE_TOOLS[5].description).toContain("Shared Drive");
-    expect(DRIVE_TOOLS[6].description).toContain("read-only");
+    // Tools are declared in DRIVE_TOOLS; should have 8 total (5 folder tools + 3 binding tools)
+    expect(DRIVE_TOOLS).toHaveLength(8);
+    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_discover");
+    expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
+    expect(DRIVE_TOOLS[7].name).toBe("drive_binding_status");
+    expect(DRIVE_TOOLS[5].description).toContain("exact case-insensitive");
+    expect(DRIVE_TOOLS[6].description).toContain("Shared Drive");
+    expect(DRIVE_TOOLS[7].description).toContain("read-only");
   });
 
   it("empty/new company: status shows not bound, tokenSet true, calls identity without shared_drive_id", async () => {

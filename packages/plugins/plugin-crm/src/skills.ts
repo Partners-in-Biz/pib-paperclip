@@ -1,6 +1,6 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
-import { CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
+import { CANARY_REFERENCE, DRIVE_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
 import { CARE_REFERENCE_FILES, CLIENT_CARE_SECTION } from "./skills-care.js";
 import { GROWTH_REFERENCE_FILES, GROWTH_SECTION } from "./skills-growth.js";
 import { DATA_STEWARD_SKILL, DEAL_DESK_SKILL, INBOUND_QUALIFY_SKILL, SALES_LEAD_SKILL } from "./skills-sales.js";
@@ -47,8 +47,9 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 - **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
 ## Files in Drive
-\`drive_folder_resolve\` looks up the Google Drive folder (path, URL) for a project or company. ALWAYS call first before saving any file to Drive. Never hard-code a folder ID.
-\`drive_folder_ensure\` creates the standard Drive folder tree (once) and returns its path and URL. Call resolve first; call this only when resolve says not_found. Safe to call again: existing folder returned unchanged. Returns needs_human_look when another project or company would get the same name — ask a human, do not retry or rename.
+\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
+\`drive_folder_ensure\` creates (once) the standard Drive folder tree for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
 
 ## Binding a company's Shared Drive
 \`drive_binding_discover\`, \`drive_binding_set\`, \`drive_binding_status\`: bind the company's Shared Drive. Discover lists it from the read-only Drive connection; it auto-binds on exact match or returns candidates. Set with the ID. Status checks binding and access.
@@ -136,6 +137,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/services.md", content: SERVICES_REFERENCE },
       { path: "references/new-client.md", content: NEW_CLIENT_REFERENCE },
       { path: "references/canary.md", content: CANARY_REFERENCE },
+      { path: "references/drive.md", content: DRIVE_REFERENCE },
       ...CARE_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
       ...GROWTH_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
     ],

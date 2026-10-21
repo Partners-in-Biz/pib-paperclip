@@ -29,6 +29,7 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
   const handlers = new Map<string, Array<(event: PluginEvent) => Promise<void>>>();
   const actions = new Map<string, (params: Record<string, unknown>, context: unknown) => Promise<unknown>>();
   const jobs = new Map<string, () => Promise<void>>();
+  const tools = new Map<string, (params: unknown, context: unknown) => Promise<unknown>>();
   const issues = new Map<string, FakeIssue>();
   const state = new Map<string, unknown>();
   const configs = options.savedConfigs ?? {};
@@ -48,6 +49,7 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
     },
     actions: { register: (key: string, fn: (params: Record<string, unknown>, context: unknown) => Promise<unknown>) => actions.set(key, fn) },
     jobs: { register: (key: string, fn: () => Promise<void>) => jobs.set(key, fn) },
+    tools: { register: (name: string, _decl: unknown, fn: (params: unknown, context: unknown) => Promise<unknown>) => tools.set(name, fn) },
     config: { get: async (companyId: string) => configs[companyId] ?? {} },
     state: {
       get: async (key: Parameters<typeof stateKey>[0]) => state.get(stateKey(key)) ?? null,
@@ -95,7 +97,7 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
     for (const fn of handlers.get(name) ?? []) await fn({ eventId: "e", eventType: name as PluginEvent["eventType"], occurredAt: new Date().toISOString(), companyId: "", payload: null, ...event } as PluginEvent);
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, issues, state, configs, fire, wakes };
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, state, configs, fire, wakes };
 }
 
 export function fixedClock(iso: string) {

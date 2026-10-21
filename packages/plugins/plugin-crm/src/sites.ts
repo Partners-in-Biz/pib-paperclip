@@ -53,13 +53,14 @@ import { sendHandoff } from "./handoffs.js";
 import { deleteSiteMonitorOf } from "./monitor.js";
 import { parseClientRef, requireClient } from "./lookup.js";
 import { companyPrefix, pagePath, refOf, type ClientKind } from "./refs.js";
+import { emitClientProjects } from "./client-projects-emit.js";
+import { CLIENT_PROJECT_KINDS, type ClientProjectKind } from "./project-groups.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const CLIENT_PROJECT_KINDS = ["seo", "website", "app", "social", "ads", "campaigns", "book", "platform", "ops"] as const;
-export type ClientProjectKind = (typeof CLIENT_PROJECT_KINDS)[number];
+export { CLIENT_PROJECT_KINDS, type ClientProjectKind };
 
 // ---------------------------------------------------------------------------
 // Records
@@ -1134,6 +1135,7 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
   try {
     if (existing) {
       await ctx.db.execute(`UPDATE ${table(ctx, "client_projects")} SET kind = $1 WHERE id = $2`, [kind ?? null, existing.id]);
+      await emitClientProjects(ctx, viewer.companyId, { clientKind: client.kind, clientRef: client.id });
       return { projectId: project.id, name: project.name, client: ref, linked: true, kind: kind ?? null, kindChanged: true, previousKind: existing.kind };
     }
     await ctx.db.execute(
@@ -1142,6 +1144,7 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
        ON CONFLICT (company_id, project_id) DO NOTHING`,
       [randomUUID(), viewer.companyId, client.kind, client.id, project.id, kind ?? null, actorOf(viewer)],
     );
+    await emitClientProjects(ctx, viewer.companyId, { clientKind: client.kind, clientRef: client.id });
   } catch (err) {
     // Two requests racing for the same kind: the partial unique index lets one win.
     const code = (err as { code?: unknown } | null)?.code;
@@ -1157,10 +1160,25 @@ export async function unlinkClientProject(ctx: PluginContext, viewer: Viewer, pa
   await requireClient(ctx, viewer, client);
   const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
   if (!projectId) throw new CrmError("projectId is required");
+
+  // Read the link before deleting so we can emit for the client
+  const rows = await ctx.db.query<{ client_kind: "company" | "contact"; client_ref: string }>(
+    `SELECT client_kind, client_ref FROM ${table(ctx, "client_projects")}
+     WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND project_id = $4`,
+    [viewer.companyId, client.kind, client.id, projectId],
+  );
+  const existingLink = rows[0];
+
   await ctx.db.execute(
     `DELETE FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 AND project_id = $4`,
     [viewer.companyId, client.kind, client.id, projectId],
   );
+
+  // Emit only if the link existed
+  if (existingLink) {
+    await emitClientProjects(ctx, viewer.companyId, { clientKind: existingLink.client_kind, clientRef: existingLink.client_ref });
+  }
+
   return { projectId, unlinked: true };
 }
 

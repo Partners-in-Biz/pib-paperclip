@@ -205,11 +205,17 @@ const SECRET_CACHE_MS = 5 * 60_000;
 const secretCache = new Map<string, { at: number; value: string | undefined }>();
 
 /**
- * Asks Cloudflare whether the visitor passed the check. `unavailable` (no secret
- * saved, Cloudflare unreachable) lets the request through: a lead is worth more
- * than a missed check, and the other defences still apply.
+ * Asks Cloudflare whether the visitor passed the check. Called only when the source has a site key.
+ * Returns:
+ * - "ok" or "failed": token verified with Cloudflare.
+ * - "misconfigured": the source has a site key but the secret is DEFINITIVELY missing.
+ *   The lead is rejected, and the bad config is logged (warn level). The missing
+ *   secret is never cached (every failed request re-checks).
+ * - "unavailable": secret read throws, Cloudflare is unreachable, or fetch fails.
+ *   The lead is stored (fail-open), the error is logged (warn level), and a
+ *   structured event is included for alerting.
  */
-export async function verifyTurnstile(ctx: PluginContext, companyId: string, token: string | null, ip: string | null): Promise<"ok" | "failed" | "unavailable"> {
+export async function verifyTurnstile(ctx: PluginContext, companyId: string, token: string | null, ip: string | null): Promise<"ok" | "failed" | "unavailable" | "misconfigured"> {
   let secret: string | undefined;
   const cached = secretCache.get(companyId);
   if (cached && Date.now() - cached.at < SECRET_CACHE_MS) {
@@ -218,23 +224,33 @@ export async function verifyTurnstile(ctx: PluginContext, companyId: string, tok
     try {
       const config = await readConfig(ctx, companyId);
       secret = await new SecretResolver(ctx, companyId, config).get("leads.turnstileSecret");
-      secretCache.set(companyId, { at: Date.now(), value: secret });
+      // Only cache if secret is present. The caller only invokes this when the source
+      // has a site key, so an empty secret means misconfigured (never cache the absence).
+      if (secret) {
+        secretCache.set(companyId, { at: Date.now(), value: secret });
+      } else {
+        ctx.logger.warn("CRM Turnstile secret is not configured; lead forms with site keys are refused", { event: "turnstile_misconfigured" });
+        return "misconfigured";
+      }
     } catch (error) {
-      ctx.logger.info("CRM Turnstile secret could not be read; the check is skipped", { error: error instanceof Error ? error.message : String(error) });
+      ctx.logger.warn("CRM Turnstile secret could not be read; the check is skipped", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
       return "unavailable";
     }
   }
-  if (!secret) return "unavailable";
+  if (!secret) return "misconfigured";
   if (!token) return "failed";
   try {
     const form = new URLSearchParams({ secret, response: token });
     if (ip) form.set("remoteip", ip);
     const response = await ctx.http.fetch(TURNSTILE_VERIFY, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString() });
-    if (!response.ok) return "unavailable";
+    if (!response.ok) {
+      ctx.logger.warn("CRM Turnstile check returned non-OK; the request passes", { event: "turnstile_unavailable", reason: `http_${response.status}` });
+      return "unavailable";
+    }
     const body = asRecord(await response.json().catch(() => ({})));
     return body.success === true ? "ok" : "failed";
   } catch (error) {
-    ctx.logger.info("CRM Turnstile check did not answer; the request passes", { error: error instanceof Error ? error.message : String(error) });
+    ctx.logger.warn("CRM Turnstile check did not answer; the request passes", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
     return "unavailable";
   }
 }
@@ -310,6 +326,7 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     if (!signed && source.turnstileSiteKey) {
       const verdict = await verifyTurnstile(ctx, source.companyId, cleanText(body.turnstileToken, 4_000) || null, ip);
       if (verdict === "failed") throw new LeadRejected("Please complete the spam check and send again.", "bot_check");
+      if (verdict === "misconfigured") throw new LeadRejected("This form is temporarily unavailable", "bot_check");
     }
 
     const parsed = parseSubmission(body, { extraBlockedDomains: settings.blockedDomains, allowReserved: source.canary });
