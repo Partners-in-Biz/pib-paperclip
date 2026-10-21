@@ -17,6 +17,16 @@
             }
           }
         ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.crm:create-deal",
+            "reason": "create-deal must not be called before find-records has returned to check for duplicates"
+          },
+          {
+            "tool": "partnersinbiz.crm:create-contact",
+            "reason": "create-contact must not be called before find-records has returned to check for duplicates"
+          }
+        ],
         "mustNotSay": [
           "\\b(I(?:\\s+will|'ll)\\s+(?:create|add|start).*(?:deal|contact|record)\\b)(?!.*(?:find|search|check|after))"
         ],

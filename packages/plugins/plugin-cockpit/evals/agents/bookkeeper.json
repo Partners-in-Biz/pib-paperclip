@@ -128,6 +128,12 @@
             "optional": true
           }
         ],
+        "forbid": [
+          {
+            "text": "(?<!not\\s)(?<!n't\\s)(?<!never\\s)(?<!didn't\\s)(?<!haven't\\s)(?:is|was)\\s(?:now\\s)?(?:reconciled|complete|done|fixed|balanced)",
+            "reason": "cannot claim reconciliation is complete when the reviewer rejected it; post the 3-line postmortem instead"
+          }
+        ],
         "mustSay": [
           "[Ww]hat happened|[Rr]oot cause|[Ff]ix",
           "[Rr]ule to add",
