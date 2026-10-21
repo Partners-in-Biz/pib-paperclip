@@ -117,6 +117,7 @@ import {
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
 import { retryPost } from "./publish.js";
+import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
@@ -723,6 +724,13 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
     throw new SocialError("toneScore must be a whole number from 0 to 20");
   }
   return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `request-creative`: the hand-off issue for a post's image or video. */
+export async function requestCreativeRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const durationS = params.durationS != null ? Number(params.durationS) : null;
+  return requestCreative(ctx, viewer.companyId, post, { brief: optionalString(params, "brief"), format: optionalString(params, "format"), durationS });
 }
 
 /** A person records that the client approved outside the approval page. */
