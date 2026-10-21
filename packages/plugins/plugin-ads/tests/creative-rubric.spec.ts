@@ -41,6 +41,24 @@ describe("creative rubric integration (PAR-4166)", () => {
     expect(result.blockers).toBe(0);
   });
 
+  it("copy with rubric score < 80 and no blockers still has ok=true and rubric.pass=false (score is advisory)", () => {
+    const result = checkCreativeWithRubric({
+      ...metaInput,
+      headline: "A?",
+      primaryText: "B.",
+      description: "C",
+      callToAction: "D",
+      landingUrl: "https://acme.test",
+    });
+    // No blockers: banned words, length, policy, security all pass
+    expect(result.blockers).toBe(0);
+    expect(result.ok).toBe(true);
+    // Rubric score is low (due to short text)
+    expect(result.rubric).toBeDefined();
+    expect(result.rubric!.score).toBeLessThan(80);
+    expect(result.rubric!.pass).toBe(false);
+  });
+
   it("banned word gives a blocker in both checkCreative and checkCreativeWithRubric", () => {
     const bannedList = { bannedWords: ["cheap"] };
     const base = checkCreative({ ...metaInput, headline: "Cheap solutions" }, bannedList);
@@ -77,7 +95,7 @@ describe("creative rubric integration (PAR-4166)", () => {
     expect(result.blockers).toBeGreaterThanOrEqual(1);
   });
 
-  it("scope isolation (unit): copy with 'guaranteed' passes when not in bannedWords, even if platform policy warns", () => {
+  it("checkCreative is pure and does not depend on scope: copy with 'guaranteed' passes when not in bannedWords, even if platform policy warns", () => {
     // 'Guaranteed' triggers a platform policy warning but no banned_word
     const result = checkCreativeWithRubric({
       ...metaInput,
@@ -93,43 +111,53 @@ describe("creative rubric integration (PAR-4166)", () => {
     expect(result.blockers).toBe(0); // Only blockers count toward ok=false
   });
 
-  it("platform mapping: meta -> facebook, google -> web in rubric call", () => {
-    const metaResult = checkCreativeWithRubric({
+  it("platform mapping: meta -> facebook, google -> web in rubric call, with different limits", () => {
+    // Meta allows longer headlines and descriptions; Google has stricter limits
+    // Meta: headline max ~40, Google: headline max 30
+    const metaCopy = {
       ...metaInput,
-      headline: "Test headline with a question?",
-      primaryText: "Body text.",
-      description: "Desc.",
+      headline: "This is a longer meta headline that exceeds google limits by far",
+      primaryText: "Body text for meta with more room.",
+      description: "Longer description for meta.",
       callToAction: "Learn more",
       landingUrl: "https://acme.test",
-    });
-    expect(metaResult.rubric).toBeDefined();
-
-    const googleResult = checkCreativeWithRubric({
+    };
+    const googleCopy = {
       ...googleInput,
-      headline: "Test headline with a number? 5 ways.",
-      primaryText: "Body text.",
-      description: "Desc",
+      headline: "This is a longer google headline exceeds limits",
+      primaryText: "Body text for google.",
+      description: "Desc for google",
       callToAction: "Learn more",
       landingUrl: "https://acme.test",
-    });
+    };
+
+    const metaResult = checkCreativeWithRubric(metaCopy);
+    const googleResult = checkCreativeWithRubric(googleCopy);
+
+    expect(metaResult.rubric).toBeDefined();
     expect(googleResult.rubric).toBeDefined();
-    // Both should have rubric results (exact scores may differ due to platform limits)
-    expect(metaResult.rubric!.score).toBeGreaterThan(0);
-    expect(googleResult.rubric!.score).toBeGreaterThan(0);
+    // Meta allows the longer headline: no blocker for length (soft limit produces warn, not blocker)
+    expect(metaResult.findings.some((f) => f.rule === "length" && f.where === "headline" && f.level === "blocker")).toBe(false);
+    // Google has stricter headline limit (30 chars hard): expect a blocker
+    expect(googleResult.findings.some((f) => f.rule === "length" && f.where === "headline" && f.level === "blocker")).toBe(true);
   });
 
   it("note includes rubric score in checkCreativeWithRubric result (worker integration)", () => {
     const result = checkCreativeWithRubric({
       ...metaInput,
-      headline: "Test?",
-      primaryText: "Body.",
-      description: "Desc.",
+      headline: "How to succeed? 12 proven ways.",
+      primaryText: "Learn effective strategies. Real results from our clients.",
+      description: "Start today.",
       callToAction: "Learn more",
       landingUrl: "https://acme.test",
     });
     expect(result.rubric).toBeDefined();
     expect(result.rubric!.score).toBeGreaterThanOrEqual(0);
     expect(result.rubric!.score).toBeLessThanOrEqual(100);
+    // The note text should mention the score and the advisory message
+    const note = `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric!.score}. A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check.`;
+    expect(note).toContain(`score ${result.rubric!.score}`);
+    expect(note).toContain("A score under 80 is advisory");
   });
 });
 

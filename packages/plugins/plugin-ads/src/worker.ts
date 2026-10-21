@@ -171,7 +171,7 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
         { platform, headline: optionalString(p, "headline") ?? null, primaryText: optionalString(p, "primaryText") ?? null, description: optionalString(p, "description") ?? null, callToAction: optionalString(p, "callToAction") ?? null, landingUrl: optionalString(p, "landingUrl") ?? null, specialAdCategories: Array.isArray(p.specialAdCategories) ? p.specialAdCategories.filter((s): s is string => typeof s === "string") : [] },
         { bannedWords: [...(scope?.banned_words ?? []), ...extra] },
       );
-      return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric?.score ?? 0}. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile.` };
+      return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric?.score ?? 0}. A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile.` };
     }
     case "upload-ad-media": {
       const accountId = requiredString(p, "accountId");
