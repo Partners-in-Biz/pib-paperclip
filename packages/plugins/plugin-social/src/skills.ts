@@ -149,6 +149,8 @@ For each scope with connected accounts (own work first, then each client):
 
 Posts need visuals: carousels, branded images, short videos. Make them yourself from the client's brand (their profile, and the colours, fonts and logo from their site): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
 
+**The media rule.** The scope's playbook can carry a \`media-rule\` block (\`get-playbook\` shows it; with none the default applies: LinkedIn, Instagram and Facebook posts need an image or a video, a video counts only up to 30 seconds, every image needs alt text, and question, thread and quote posts need no media). The Reviewer checks it when it records a verdict, and with \`enforce: block\` a post that misses it cannot pass. Write the post's media in the same pass as its copy. If you cannot make it yourself, or the Reviewer sends the post back for missing or weak media, call \`request-creative\`: the full route is in the \`pib-creative-studio\` skill.
+
 ## Scope
 
 - Own work = no client. Client work = pass \`client\` (\`company:<id>\` or \`contact:<id>\`) from the issue.
@@ -332,8 +334,42 @@ Open the first and last slide as images and read the text at phone size. Fix ove
 ## 6. AI-generated images and video (optional, never required)
 If your run has an image or video generation tool or connection (for example Higgsfield or Seedance), use it for backgrounds or B-roll only and bring the result through steps 2-5. If it does not, write exact, paste-ready prompts in the issue for a person and carry on with the HTML pipeline. Do not pretend a generated person is a real client, employee or customer.
 
-## 7. Keep the generator
+## 7. Hand-off from \`request-creative\`
+When the work comes from a \`request-creative\` issue (one per post), the \`pib-creative-studio\` skill has the steps: brief, storyboard, render (this file), R2 import, Drive folder, \`update-post\` with the asset ids. Limits that apply to every asset: video 30 seconds at most, alt text on every image.
+
+## 8. Keep the generator
 Save your templates and scripts as one zip attached to the issue (\`<client>-asset-generator.zip\`) and name it in your close-out comment, so the next run changes the copy instead of rebuilding the design.
+`;
+
+const CREATIVE_DESCRIPTION =
+  "Produce the image or video for a social post: read the brief from the hand-off issue, storyboard it, render it from the client's brand, store it (R2 through the Social plugin, a copy in the scope's Drive 02 Assets folder), attach it to the post with alt text and send it back for review. Use on a hand-off issue from request-creative or whenever a post needs media.";
+
+export const CREATIVE_STUDIO_BODY = `# Creative studio (pib-creative-studio)
+
+You make the image or short video for one social post and hand it back. The Social agent asks with \`request-creative\`; it opens ONE issue per post (origin \`creative:<postId>\`), for the Creative Producer, or for the Social agent, Account Manager or Operator while none is hired. Calling it again returns the same issue.
+
+## Ground rules
+
+- **One post, one scope.** The issue names the post and its scope. Pass the same \`client\` on every call (nothing for own work). Never use another scope's brand, copy, accounts or media.
+- **You make media. You do not approve, schedule or publish.** The post goes back through \`request-review\`.
+- **Brief first.** Read the issue: brief, each destination's platform spec, the 30-second video cap, the alt-text requirement and the Drive folder. Then \`get-playbook\` (its \`media-rule\` and what has performed) and the client's brand (\`get-client-profile\`). A missing brief or brand: ask once with \`${ASK_OWNER_TOOL}\`, work from a neutral design meanwhile.
+- No stock or borrowed images, no invented stats, testimonials or people. Never paste tokens or credentials anywhere.
+
+## Steps
+
+1. **Brief.** Write the one-line point of the asset, the format (image, carousel or video) and the size per destination in the issue (sizes: \`references/media-studio.md\` in the social-content skill).
+2. **Storyboard.** Carousel: one line per slide, slide 1 is the hook, last slide the call to action. Video: one line per shot with seconds, at most 30 in total. Post the storyboard as a comment before you render, so the Reviewer sees what was meant.
+3. **Render.** Follow \`references/media-studio.md\`: HTML slides to PNG, ffmpeg for video. Look at the result at phone size. Fix overflow, contrast and safe areas.
+4. **Store on R2.** Attach each file to this issue, \`list-issue-attachments\`, then \`import-media-from-attachment\` with the post's \`client\` and an \`altText\` that says what is in it (an asset id comes back; the plugin stores the file on R2). A public https file instead: \`import-media-from-url\`. Check what you may reuse first with \`list-media-assets\`.
+5. **Drive.** The scope's Drive folder is \`02 Assets\`, and the plugin saves the media of a published post there. Also name the finished files and the generator zip in your close-out comment so a person finds them. Never move, rename or share existing Drive files.
+6. **Attach to the post.** \`update-post\` with \`mediaAssetIds\` in slide order (it replaces the list), then \`validate-post\` and fix every problem it lists. Then \`request-review\`.
+7. **Close.** One comment: post id, asset ids, alt text, what the storyboard was, and anything the Reviewer should look at. A Reviewer who sends it back reopens the issue: change the asset, not the copy, unless the issue says so.
+
+## Check before you hand back
+
+- Every image has alt text. A video is 30 seconds or less.
+- Text is readable at phone size and inside the safe area.
+- \`media-compliance\` shows how the scope is doing against the media rule, if you want the numbers.
 `;
 
 export const PLAN_ROUTINE_TITLE = "Weekly social review & plan";
@@ -371,6 +407,13 @@ export const SKILLS: SocialSkill[] = [
       { path: "references/platforms.md", content: PLATFORMS_REFERENCE },
       { path: "references/media-studio.md", content: MEDIA_STUDIO_REFERENCE },
     ],
+  },
+  {
+    skillKey: "creative-studio",
+    displayName: "Creative studio",
+    slug: "pib-creative-studio",
+    description: CREATIVE_DESCRIPTION,
+    markdown: withFrontmatter({ name: "pib-creative-studio", description: CREATIVE_DESCRIPTION }, CREATIVE_STUDIO_BODY),
   },
 ];
 

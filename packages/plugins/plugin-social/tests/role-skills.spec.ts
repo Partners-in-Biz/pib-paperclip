@@ -33,7 +33,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Social role skills", () => {
   it("uses the skill keys the manifest and the hire role ask for, then the operating manual", () => {
-    expect(KEYS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content", "plugin/partnersinbiz-cockpit/company-os"]);
+    expect(KEYS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content", "plugin/partnersinbiz-social/creative-studio", "plugin/partnersinbiz-cockpit/company-os"]);
     expect(KEYS.slice(0, -1)).toEqual(DESIRED_SKILLS);
     expect(ROLE_SKILLS.map((s) => s.slug)).toEqual([...SKILLS.map((s) => s.slug), "pib-company-os"]);
     expect(SOCIAL_HIRE_ROLE.skills.map((s) => s.key)).toEqual(KEYS);
