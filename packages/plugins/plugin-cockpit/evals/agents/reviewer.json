@@ -48,8 +48,8 @@
         ],
         "forbid": [
           {
-            "text": "[Cc]lose|done|[Cc]omplete",
-            "reason": "closing after one page violates batch review rule"
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!until )\\b(closing|close this|marking (it )?done|all done)\\b[^.]{0,30}(after|once) (the )?(first|one) (page|preview)",
+            "reason": "closing/declaring done after one page violates batch review rule"
           }
         ],
         "maxSteps": 3

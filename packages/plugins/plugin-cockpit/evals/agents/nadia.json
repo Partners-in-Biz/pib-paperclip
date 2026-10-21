@@ -104,7 +104,7 @@
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "comment|metadata|keywords|copy"}
+              "question": {"matches": "\\b(comment|metadata|keywords|copy)\\b"}
             },
             "reason": "metadata must be a document, not collected via ask-owner question"
           }

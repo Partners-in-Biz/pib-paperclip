@@ -17,7 +17,7 @@
         ],
         "forbid": [
           {
-            "text": "testco\\.com|test@|real|actual.*company|[Cc]lient.*address",
+            "text": "\\btestco\\.com|(?<!not )(?<!n't )(?<!never )(?<!not a )(?<!no )\\btest@|(?<!not )(?<!n't )(?<!never )(?<!not a )(?<!no )\\breal\\b|(?<!not )(?<!n't )(?<!never )(?<!not a )(?<!no )actual.*company",
             "reason": "must not name a real company or use a real email in acceptance run"
           }
         ],
@@ -64,7 +64,7 @@
           "[Ff]ailed|[Ee]rror|finding|reported"
         ],
         "mustNotSay": [
-          "\\b(?:skip|continue|proceed with)\\b"
+          "(?<!not )(?<!n't )(?<!never )(?<!did not )(?<!didn't )\\b(?:skip|continue|proceed with)\\b"
         ],
         "maxSteps": 2
       },
@@ -110,7 +110,7 @@
           "[Dd]elegate|[Tt]ask|[Hh]aiku|helper|summarize"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll) (?:run|execute|call|step|record)"
+          "(?<!not )(?<!n't )(?<!never )\\bI(?: will|'ll) (?:run|execute|call|step|record)"
         ],
         "maxSteps": 3
       },

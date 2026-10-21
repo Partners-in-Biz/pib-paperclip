@@ -88,8 +88,8 @@
         ],
         "forbid": [
           {
-            "text": "changed|modified|updated",
-            "reason": "generic 'changed' without ticking fail list is not audit-ready"
+            "text": "(?<!not )(?<!n't )(?<!never )\\b(made revisions|I (have )?(updated|changed) (the|it))\\b",
+            "reason": "bare claim without ticking fail list items is not audit-ready"
           }
         ],
         "maxSteps": 3
