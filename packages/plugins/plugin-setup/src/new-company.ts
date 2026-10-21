@@ -11,7 +11,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { configSaved, createWorkIssue, runProfileConfig, TEAM_ROLES, type RunProfile } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createWorkIssue, readConfig, runProfileConfig, TEAM_ROLES, type RunProfile } from "@partnersinbiz/pib-plugin-kit";
 import {
   BOOTSTRAP_STEPS,
   clip,
@@ -48,7 +48,7 @@ import {
 import { SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { loadStarterPack, parseImportResult, starterPackExport, type StarterPack } from "./starter-pack.js";
-import { loadPack, matchTemplate, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
+import { loadPack, matchTemplate, offeredTemplates, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
 import { pickAdapter, renderHire, templateConfig } from "./templates-render.js";
 import { message, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
 
@@ -84,6 +84,15 @@ async function companyLookup(ctx: PluginContext, companyId: string): Promise<{ f
     return { found: false, info: { id: companyId, name: "the company", prefix: null, requireApproval: null } };
   } catch {
     return { found: false, info: { id: companyId, name: "the company", prefix: null, requireApproval: null } };
+  }
+}
+
+/** Whether this is Partners in Biz's own company, as set in the ownerCompany plugin setting. Fails closed (false) on any error. */
+export async function isOwnerCompany(ctx: PluginContext, companyId: string): Promise<boolean> {
+  try {
+    return (await readConfig(ctx, companyId)).ownerCompany === true;
+  } catch {
+    return false;
   }
 }
 
@@ -180,12 +189,13 @@ export async function starterPackForImport(ctx: PluginContext, clock: Clock = sy
 // ---------------------------------------------------------------------------
 
 export async function loadNewCompany(ctx: PluginContext, companyId: string, options: { includeFacts?: boolean } = {}) {
-  const [run, facts, hires, starterPack, statusRows] = await Promise.all([
+  const [run, facts, hires, starterPack, statusRows, owner] = await Promise.all([
     getRun(ctx, companyId),
     planFacts(ctx, companyId),
     listTemplateHires(ctx, companyId),
     starterPackView(ctx, companyId, options),
     listStatuses(ctx, companyId).catch(() => []),
+    isOwnerCompany(ctx, companyId),
   ]);
   const steps = planSteps(run, facts);
   const pack = loadPack();
@@ -199,6 +209,7 @@ export async function loadNewCompany(ctx: PluginContext, companyId: string, opti
     hires,
     starterPack,
     pack: { name: pack.pack, version: pack.version, updated: pack.updated, templates: pack.templates.length },
+    ownerCompany: owner,
   };
 }
 
@@ -376,6 +387,8 @@ function templateOrThrow(key: unknown): AgentTemplate {
 
 export async function templateDraft(ctx: PluginContext, input: DraftInput) {
   const template = templateOrThrow(input.key);
+  const owner = await isOwnerCompany(ctx, input.companyId);
+  if (template.scope === "pib" && !owner) throw new SetupError(`Template "${template.key}" is for the Partners in Biz company only.`);
   const { vars } = await varsFor(ctx, input);
   const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents) });
   return { key: template.key, kitRole: template.kitRole ?? null, provisioning: template.provisioning, title: draft.title, description: draft.description, payload: draft.payload, adapterType: draft.adapterType, warnings: draft.warnings };
@@ -398,6 +411,8 @@ export async function startTemplateHire(
 ) {
   if (!input.userId) throw new SetupError("Only a board user can open a hire task");
   const template = templateOrThrow(input.key);
+  const owner = await isOwnerCompany(ctx, input.companyId);
+  if (template.scope === "pib" && !owner) throw new SetupError(`Template "${template.key}" is for the Partners in Biz company only.`);
   if (template.kitRole) {
     const role = TEAM_ROLES.find((entry) => entry.key === template.kitRole);
     throw new SetupError(`${template.name} holds the ${role?.title ?? template.kitRole} role: hire it from Setup -> Team (it uses ${role?.pluginKey ?? "the plugin"}'s own hire, so the agent is linked and wired). Use setup.template-draft for its description.`);
@@ -464,10 +479,13 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
   const { company, vars } = await varsFor(ctx, input);
   const agents = toAgentLikes(input.agents);
   const pack = loadPack();
+  const owner = await isOwnerCompany(ctx, input.companyId);
+  const templates = offeredTemplates(pack.templates, owner);
   return {
     company: { id: company.id, name: company.name, prefix: company.prefix },
+    ownerCompany: owner,
     pack: { name: pack.pack, version: pack.version, updated: pack.updated },
-    templates: pack.templates.map((template) => {
+    templates: templates.map((template) => {
       const draft = renderHire(template, { vars, agents });
       const adapterType = pickAdapter(template);
       const config = templateConfig(template, adapterType);

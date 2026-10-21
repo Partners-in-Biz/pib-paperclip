@@ -14,7 +14,13 @@ describe("what 0.14.0 declares", () => {
   it("is the next version, in the package and the manifest", async () => {
     expect(PLUGIN_VERSION).toBe("0.24.4");
     expect(manifest.version).toBe("0.24.4");
+    expect(PLUGIN_VERSION).toBe("0.24.2");
+    expect(manifest.version).toBe("0.24.2");
+    expect(PLUGIN_VERSION).toBe("0.24.4");
+    expect(manifest.version).toBe("0.24.4");
     const pkg = JSON.parse((await import("node:fs")).readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(pkg.version).toBe("0.24.4");
+    expect(pkg.version).toBe("0.24.2");
     expect(pkg.version).toBe("0.24.4");
   });
 

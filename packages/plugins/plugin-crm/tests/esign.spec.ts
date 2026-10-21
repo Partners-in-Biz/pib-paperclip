@@ -146,6 +146,36 @@ describe("making a document", () => {
   });
 });
 
+describe("templates must be marked as reviewed for real clients to send", () => {
+  it("a real client with templatesReviewed false rejects send-for-signature", async () => {
+    const booted = await bootCare();
+    await enableFor(booted, "company:acme", { templatesReviewed: false });
+    const made = await makeDoc(booted, "company:acme");
+    expect(made.status).toBe("draft");
+    await expect(tool(booted.harness, "send-for-signature", { documentId: made.documentId })).rejects.toThrow(/templates are not marked as reviewed by a lawyer/);
+    // The document stays draft, no approval was opened, no status changed.
+    const doc = docRow(booted);
+    expect(doc.status).toBe("draft");
+    expect(booted.store.care_approvals ?? []).toHaveLength(0);
+  });
+
+  it("a real client with templatesReviewed true can send", async () => {
+    const booted = await bootCare();
+    await enableFor(booted, "company:acme", { templatesReviewed: true });
+    const made = await makeDoc(booted, "company:acme");
+    const sent = await tool<Record<string, any>>(booted.harness, "send-for-signature", { documentId: made.documentId });
+    expect(sent.status).toBe("awaiting_approval");
+  });
+
+  it("a canary client can send regardless of templates reviewed status", async () => {
+    const booted = await bootCare();
+    const client = await canaryClient(booted);
+    const made = await makeDoc(booted, client);
+    const sent = await tool(booted.harness, "send-for-signature", { documentId: made.documentId });
+    expect(sent.status).toBe("awaiting_approval");
+  });
+});
+
 describe("sending: the link is made only when a person approves, and nobody reads it", () => {
   it("opens an approval that shows the text and the email with a note where the link goes", async () => {
     const booted = await bootCare();
