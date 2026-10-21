@@ -13,7 +13,7 @@
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "\\b(mark.*call.?ready|call.?ready|hand.*to|prepare.*peet)\\b"}
+              "question": {"matches": "(?<!can't |cannot |won't |shouldn't |must not |should not )\\b(call.?ready|mark.*call.?ready|hand(ed|ing)? (it |this )?to|prepare.*peet)\\b"}
             },
             "reason": "incomplete leads missing phone cannot be call-ready; they fail the standing rule"
           }
