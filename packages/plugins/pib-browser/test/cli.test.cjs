@@ -278,3 +278,103 @@ test('~200 KiB valid JSON response is accepted', async (t) => {
     });
   }
 });
+
+test('probe exit code mapping with nullish coalescing: ok:true exit:0', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-probe-test-'));
+  const statusPath = path.join(tempDir, 'status.json');
+
+  try {
+    const code = await run(['probe', '--all', '--issue', 'PAR-1', '--identities', 'test:id1'], {
+      PAPERCLIP_API_KEY: 'test_token',
+      PIB_BROWSER_STATUS: statusPath
+    }, {
+      stdout,
+      stderr,
+      send: async (req) => {
+        assert.equal(req.cmd, 'open');
+        return { exit: 0, ok: true };
+      }
+    });
+
+    assert.equal(code, 0);
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    assert.equal(status.identities['test:id1'].ok, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('probe exit code mapping with nullish coalescing: ok:false exit:6', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-probe-test-'));
+  const statusPath = path.join(tempDir, 'status.json');
+
+  try {
+    const code = await run(['probe', '--all', '--issue', 'PAR-1', '--identities', 'test:id2'], {
+      PAPERCLIP_API_KEY: 'test_token',
+      PIB_BROWSER_STATUS: statusPath
+    }, {
+      stdout,
+      stderr,
+      send: async (req) => {
+        return { exit: 6, ok: false, reason: 'session_expired' };
+      }
+    });
+
+    assert.equal(code, 0);
+    const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    assert.equal(status.identities['test:id2'].ok, false);
+    assert.equal(status.identities['test:id2'].reason, 'session_expired');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('probe missing --issue returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--all', '--identities', 'test:id'], {
+    PAPERCLIP_API_KEY: 'test_token'
+  }, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('--issue'));
+});
+
+test('probe missing --all returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--issue', 'PAR-1234', '--identities', 'test:id'], {
+    PAPERCLIP_API_KEY: 'test_token'
+  }, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('--all'));
+});
+
+test('probe missing PAPERCLIP_API_KEY returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--all', '--issue', 'PAR-1234', '--identities', 'test:id'], {}, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('PAPERCLIP_API_KEY'));
+});
