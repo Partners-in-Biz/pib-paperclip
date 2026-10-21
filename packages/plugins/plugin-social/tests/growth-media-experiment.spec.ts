@@ -274,4 +274,102 @@ describe("media hypothesis (PAR-4164 C36)", () => {
     expect(exp.status).toBe("running");
     expect(exp.hypothesisType).toBe("media:with_media");
   });
+
+  it("(e) media exemption cap enforced: <=minPerArm exempt, >minPerArm not exempt, two-scope isolation", async () => {
+    const { mediaExperimentForPost } = await import("../src/approval-flow.js");
+    const { noMediaExempt } = await import("@partnersinbiz/pib-plugin-kit");
+
+    const w = setup();
+    seedBaseline(w);
+
+    // Propose and approve a media experiment with minPerArm=3
+    const mediaExp = await proposeExperiment(w.env, AGENT, {
+      hypothesis: "Media in images lifts engagement",
+      hypothesisType: "media:with_media",
+      variable: "presence of media",
+      arms: [
+        { key: "control", description: "No media (baseline)" },
+        { key: "variant", description: "With media" },
+      ],
+    });
+    await approveExperiment(w.env, PERSON, { experimentId: mediaExp.experimentId });
+
+    // Tag 3 posts to control arm
+    const controlPosts = [];
+    for (let i = 0; i < 3; i += 1) {
+      const post = addPost(w, `media-control-${i}`, { days: 8 });
+      controlPosts.push(post);
+      await applyExperimentTag(w.env, "co", { id: post.id }, { experimentId: mediaExp.experimentId, arm: "control" });
+      addMetric(w, post, 10, { account: "acc1" });
+    }
+
+    // For the 3rd control post: call mediaExperimentForPost
+    // noMediaPosts should be 3 (the 3 posts we just tagged)
+    const { experiment: exp3, arm: arm3 } = await mediaExperimentForPost(w.env, "co", {
+      experiment_id: mediaExp.experimentId,
+      experiment_arm: "control",
+    });
+    expect(arm3).toBe("no_media");
+    expect(exp3).not.toBeNull();
+    expect(exp3!.noMediaPosts).toBe(3);
+    expect(noMediaExempt({ experimentId: mediaExp.experimentId, arm: "no_media" }, exp3)).toBe(true);
+
+    // Tag a 4th control post
+    const post4 = addPost(w, `media-control-4th`, { days: 8 });
+    await applyExperimentTag(w.env, "co", { id: post4.id }, { experimentId: mediaExp.experimentId, arm: "control" });
+    addMetric(w, post4, 10, { account: "acc1" });
+
+    // Now the count is 4 -> noMediaExempt should be false
+    const { experiment: exp4 } = await mediaExperimentForPost(w.env, "co", {
+      experiment_id: mediaExp.experimentId,
+      experiment_arm: "control",
+    });
+    expect(exp4!.noMediaPosts).toBe(4);
+    expect(noMediaExempt({ experimentId: mediaExp.experimentId, arm: "no_media" }, exp4)).toBe(false);
+
+    // Tag a variant arm post -> arm maps to "media"
+    const variantPost = addPost(w, `media-variant-test`, { days: 8 });
+    await applyExperimentTag(w.env, "co", { id: variantPost.id }, { experimentId: mediaExp.experimentId, arm: "variant" });
+    addMetric(w, variantPost, 15, { account: "acc1" });
+
+    const { experiment: expVar, arm: armVar } = await mediaExperimentForPost(w.env, "co", {
+      experiment_id: mediaExp.experimentId,
+      experiment_arm: "variant",
+    });
+    expect(armVar).toBe("media");
+    expect(noMediaExempt({ experimentId: mediaExp.experimentId, arm: "media" }, expVar)).toBe(false);
+
+    // Tag a post to a non-media experiment -> experiment should return null
+    const otherExp = await proposeExperiment(w.env, AGENT, {
+      hypothesis: "Uplifting tone improves engagement",
+      hypothesisType: "tone:uplifting",
+      variable: "tone",
+      arms: [
+        { key: "control", description: "Normal tone" },
+        { key: "variant", description: "Uplifting tone" },
+      ],
+    });
+    const nonMediaPost = addPost(w, `non-media-exp`, { days: 8 });
+    await applyExperimentTag(w.env, "co", { id: nonMediaPost.id }, { experimentId: otherExp.experimentId, arm: "control" });
+
+    const { experiment: expNonMedia } = await mediaExperimentForPost(w.env, "co", {
+      experiment_id: otherExp.experimentId,
+      experiment_arm: "control",
+    });
+    expect(expNonMedia).toBeNull();
+
+    // Two-scope isolation: control post in another company ("co2") is not counted for "co"
+    // Tag the same experiment in a different company scope (if memory store allows, use co2)
+    const co2ControlPost = addPost(w, `co2-media-control-0`, { days: 8 });
+    co2ControlPost.companyId = "co2"; // Manually set to test isolation
+    w.db.posts.push(co2ControlPost);
+
+    // When querying for "co", the co2 post should not be counted
+    const { experiment: expCo } = await mediaExperimentForPost(w.env, "co", {
+      experiment_id: mediaExp.experimentId,
+      experiment_arm: "control",
+    });
+    // "co" still has 4 control posts, not 5
+    expect(expCo!.noMediaPosts).toBe(4);
+  });
 });

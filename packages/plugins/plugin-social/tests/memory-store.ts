@@ -227,6 +227,14 @@ export function memoryStore() {
           };
         });
     },
+    async countArmPosts(companyId, experimentId, arm) {
+      const postIds = new Set(
+        db.posts
+          .filter((p) => p.companyId === companyId && p.experimentId === experimentId && p.experimentArm === arm)
+          .map((p) => p.id),
+      );
+      return postIds.size;
+    },
   };
   return { store, db };
 }
