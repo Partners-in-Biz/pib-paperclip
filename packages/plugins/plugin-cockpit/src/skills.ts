@@ -52,6 +52,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(TOOL_NAMES.postBrief)} | Post the daily brief on this week's "Daily brief" issue. |
 | ${T(TOOL_NAMES.askOwner)} | One question to the owner on the issue that waits for it; the reply comes back on that issue. |
 | ${T(TOOL_NAMES.profile)} / ${T(TOOL_NAMES.updateProfile)} | The company's own profile; fill empty fields from the website and past work. |
+| ${T(TOOL_NAMES.repairsList)}, ${T(TOOL_NAMES.governorState)}, ${T(TOOL_NAMES.watchdogFindings)} | Repairs, pauses, findings. |
 | ${T(OPS_TOOL_NAMES.measure)} | What the work cost and how it went: notional spend, tokens, run time, retries, failures, plan limits, review coverage. \`parts: ["clients"]\` adds each customer's effort against what they paid. |
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
