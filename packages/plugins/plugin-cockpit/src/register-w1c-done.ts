@@ -97,16 +97,8 @@ async function handleDoneCheck(
     // 9. Post comment and record repair (evidence: only PASS comments from role agents)
     const roleAuthorIds = new Set([...roleAgents.codeReviewer, ...roleAgents.dogfoodTester, ...roleAgents.reviewer]);
     const verdictIds = comments
-      .map((c, idx) => ({
-        id: c.id,
-        verdict: verdictComments[idx],
-      }))
-      .filter(({ verdict }) => {
-        return verdict &&
-               roleAuthorIds.has(verdict.authorAgentId ?? "") &&
-               /(REVIEW|DOGFOOD):\s*PASS\b/.test(verdict.body);
-      })
-      .map(({ id }) => id);
+      .filter((_, i) => roleAuthorIds.has(verdictComments[i].authorAgentId ?? "") && /(REVIEW|DOGFOOD):\s*PASS\b/.test(verdictComments[i].body))
+      .map((c) => c.id);
 
     try {
       await env.ctx.issues.createComment(issueId, `Closed by Cockpit: tier low, evidence ${verdictIds.join(", ")}`, companyId);
