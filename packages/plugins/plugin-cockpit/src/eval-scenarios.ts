@@ -16,6 +16,10 @@ import seniorDeveloper from "../evals/agents/senior-developer.json" with { type:
 import afrikaansEditor from "../evals/agents/afrikaans-editor.json" with { type: "json" };
 import arjun from "../evals/agents/arjun.json" with { type: "json" };
 import steve from "../evals/agents/steve.json" with { type: "json" };
+import kai from "../evals/agents/kai.json" with { type: "json" };
+import ren from "../evals/agents/ren.json" with { type: "json" };
+import iris from "../evals/agents/iris.json" with { type: "json" };
+import mira from "../evals/agents/mira.json" with { type: "json" };
 import revenueLead from "../evals/agents/revenue-lead.json" with { type: "json" };
 import planner from "../evals/agents/planner.json" with { type: "json" };
 import codeReviewer from "../evals/agents/code-reviewer.json" with { type: "json" };
@@ -45,6 +49,10 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "afrikaans-editor": afrikaansEditor,
   arjun,
   steve,
+  kai,
+  ren,
+  iris,
+  mira,
   "revenue-lead": revenueLead,
   planner,
   "code-reviewer": codeReviewer,

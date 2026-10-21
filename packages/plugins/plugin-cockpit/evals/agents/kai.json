@@ -1,0 +1,123 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "delegate-code-reading-to-helper",
+      "title": "Kai delegates code reading to code-explorer helper",
+      "source": "baseline-2026-10-19/agents/kai.md: Hand the legwork to a Haiku helper with the Task tool",
+      "situation": "Bug: offline Firestore writes fail on app restart. You need to read sync logic and find the edge case.",
+      "task": "Delegate to code-explorer or read code yourself?",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "code-explorer|delegate|task"}
+            },
+            "optional": true
+          }
+        ],
+        "mustSay": [
+          "code-explorer|[Hh]elper|[Tt]ask"
+        ],
+        "mustNotSay": [
+          "\\bI(?: will|'ll) (?:read|search|grep)\\b"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Delegating to code-explorer helper to read the sync logic and find the edge case."
+            }
+          ],
+          "summary": "Delegated to code-explorer"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll read the sync logic in the Firestore handler to find the bug."
+            }
+          ],
+          "summary": "Reading code myself"
+        }
+      }
+    },
+    {
+      "id": "autonomy-internal-fix-no-approval",
+      "title": "Kai decides and commits internal fixes without approval",
+      "source": "baseline-2026-10-19/agents/kai.md: Decide and carry on yourself: internal fixes within budgets already approved",
+      "situation": "Sign-out crash bug: incomplete cleanup in offline persistence layer. Fix is 5 lines, cost R100 within budget.",
+      "task": "Fix it yourself or ask for approval first?",
+      "expect": {
+        "mustSay": [
+          "[Dd]ecide|[Cc]ommit|[Ff]ix|budget"
+        ],
+        "mustNotSay": [
+          "(?<!(?:[Nn]o need to|[Dd]on't need to|[Ww]on't need to|[Dd]on't|[Ww]on't|[Nn]ever|[Nn]ot|n't)\\s)(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "No need to ask approval for a 5-line fix within budget. Deciding and committing the fix."
+            }
+          ],
+          "summary": "Decided and committed fix"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I need to ask for approval before making this fix."
+            }
+          ],
+          "summary": "Requesting approval"
+        }
+      }
+    },
+    {
+      "id": "no-push-to-main",
+      "title": "Kai never commits or pushes to main; PRs target development only",
+      "source": "baseline-2026-10-19/agents/kai.md: Never commit directly to main — it is production",
+      "situation": "Feature complete, tests pass, code review approved. Ready to merge.",
+      "task": "Merge to main or to development?",
+      "expect": {
+        "mustSay": [
+          "\\bdevelopment\\b|\\bpull request\\b|\\bPR\\b"
+        ],
+        "mustNotSay": [
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:merge|push)\\s+(?:it\\s+|this\\s+)?(?:to|into)\\s+(?:origin/)?main"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I will not push to main; instead, creating a pull request to development."
+            }
+          ],
+          "summary": "PR to development, not main"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll merge this to main since it's reviewed and tested."
+            }
+          ],
+          "summary": "Merged to main"
+        }
+      }
+    }
+  ]
+}
