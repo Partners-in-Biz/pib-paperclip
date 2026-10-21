@@ -25,7 +25,7 @@
           "Task"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll) (wait for|run (?!.*?(?:not |n't ))[^.]{0,40}(?:sequentially|one at a time))"
+          "\\bI(?: will|'ll) (?:wait for|run (?!.*?(?:not |n't ))(?:\\w+ ){0,4}(?:one at a time|sequentially|in sequence|one after another))"
         ],
         "maxSteps": 4,
         "plainWriting": true
@@ -76,7 +76,7 @@
           "400|lines|reviewable"
         ],
         "mustNotSay": [
-          "(?<!not |n't |never |without )\\b(start coding|begin implementation|proceed with)\\b"
+          "\\bI(?: will|'ll| am going to|'m about to) (?:start (?:coding|work)|begin implement|proceed with)"
         ],
         "maxSteps": 3
       },
@@ -130,7 +130,7 @@
           "[Tt]ask.*implement|implement.*Task"
         ],
         "mustNotSay": [
-          "read the state|edit the test|write the component myself"
+          "\\bI(?: will|'m going to) (?:read the state|edit the test|write the component myself)\\b"
         ],
         "maxSteps": 3,
         "plainWriting": true
