@@ -9,7 +9,7 @@
  *   what the landing page posts) or in the `x-unsubscribe-token` header (what a
  *   front-door rule sets for an RFC 8058 one-click POST, which carries the token in
  *   the address, not the body). The token is checked against the company's secret.
- *   A bad token is refused with one plain message and nothing is learnt from it.
+ *   A bad token is logged silently and returns normally (200); the host learns nothing from it.
  *   Unsubscribing twice is harmless.
  * - `messaging-inbound` takes a reply forwarded as JSON with the company's shared
  *   secret (see `inbound.ts`).
@@ -27,8 +27,6 @@ import { announceSuppression, suppressAddress, suppressionPayload } from "./supp
 import { WEBHOOK_KEYS, WEBHOOKS } from "./webhook-keys.js";
 
 export { WEBHOOKS, WEBHOOK_KEYS };
-
-const REFUSED = "This unsubscribe link is not valid.";
 
 function header(headers: PluginWebhookInput["headers"], name: string): string {
   const value = headers[name] ?? headers[name.toLowerCase()];
@@ -57,10 +55,14 @@ export async function unsubscribeByLink(ctx: PluginContext, payload: Unsubscribe
   ctx.logger.info("Unsubscribed through a link", { companyId: payload.companyId, senderKey: payload.senderKey, added: outcome.created, stopped: outcome.stoppedContacts });
 }
 
+/** Returns normally whether the token is valid or not; logs refusals silently. */
 export async function handleUnsubscribeWebhook(ctx: PluginContext, input: Pick<PluginWebhookInput, "headers" | "parsedBody">): Promise<void> {
   const token = tokenFrom(input);
   const payload = token ? await checkUnsubscribeToken(ctx, token) : null;
-  if (!payload) throw new Error(REFUSED);
+  if (!payload) {
+    ctx.logger.info("Unsubscribe link refused", { reason: "invalid_token" });
+    return;
+  }
   await unsubscribeByLink(ctx, payload);
 }
 

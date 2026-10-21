@@ -618,3 +618,33 @@ export function offlineGate(skills: Array<{ slug: string; hash: string; scenario
 export function resultsEntry(state: SkillState, measuredAt: string, runs: string[]): ResultsEntry & { hash: string } {
   return { hash: state.hash, passRate: state.passRate, scenarios: Object.fromEntries(Object.entries(state.scenarios).map(([id, v]) => [id, v.passed])), measuredAt, runs };
 }
+
+// ---------------------------------------------------------------------------
+// Template eval loader
+// ---------------------------------------------------------------------------
+
+const TEMPLATE_KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Load and validate a scenario from a bundled registry of evals/agents/<key>.json templates. */
+export function loadEvalTemplate(
+  key: string,
+  registry: Record<string, unknown> = {},
+  slugs: readonly string[] = ["pib-operator", "pib-reviewer", "pib-company-os", "pib-acceptance"],
+  knownTool: (name: string) => boolean = () => true,
+): ScenarioFile {
+  // Validate key format to prevent path traversal and prototype pollution
+  if (!TEMPLATE_KEY_RE.test(key)) {
+    throw new EvalError(
+      `Template key must start with a letter or digit and contain only lowercase letters, digits, and hyphens (got "${key}").`,
+    );
+  }
+
+  // Look up in registry using own-property check to avoid prototype pollution
+  if (!Object.hasOwn(registry, key)) {
+    throw new EvalError(`no eval file for template "${key}": evals/agents/${key}.json`);
+  }
+
+  const raw = registry[key];
+
+  return parseScenarioFile(raw, slugs, knownTool);
+}
