@@ -1169,4 +1169,58 @@ describe("negation-handling forbids (PAR-4228)", () => {
     }));
     expect(speedClaimFail.passed, "speed claim in subtitle should fail").toBe(false);
   });
+
+  it("sales-lead forbid: incomplete-no-phone, negated call-ready passes, bare call-ready fails", () => {
+    const file = AGENT_EVALS["sales-lead"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "sales-lead-call-ready-incomplete-no-phone");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    // Negated: "Not ready until phone..." should PASS
+    const negPass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(negPass.passed, `negated should pass. Failures: ${negPass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    // Explicit: "ready to hand...for the call" should FAIL
+    const failPass = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(failPass.passed, "bare call-ready should fail").toBe(false);
+  });
+
+  it("deal-desk forbid: off-catalogue-escalate, no discount percent", () => {
+    const file = AGENT_EVALS["deal-desk"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "deal-desk-off-catalogue-escalate-not-quote");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `pass should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "discount quote should fail").toBe(false);
+  });
+
+  it("seo-specialist forbid: branch-off-development, negated main PR passes", () => {
+    const file = AGENT_EVALS["seo-specialist"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "seo-specialist-branch-off-development");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `negated should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "PR to main should fail").toBe(false);
+  });
+
+  it("outbound-social forbid: social-hand-off-only, negated schedule passes", () => {
+    const file = AGENT_EVALS["outbound-social-specialist"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "outbound-social-specialist-social-hand-off-only");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `negated should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "direct schedule should fail").toBe(false);
+  });
 });
