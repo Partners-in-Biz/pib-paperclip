@@ -66,6 +66,7 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { registerW1cEdge } from "./register-w1c-edge.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -197,6 +198,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     ...(["operator", "reviewer"] as const).map((kind) => ({ role: HIRE_MATCH_ROLES[kind], onLinked: onLinkedFor(env, kind) })),
     { role: ACCEPTANCE_MATCH_ROLE, onLinked: onAcceptanceLinked(env) },
   ]);
+  // Edge watch: announce when new blocker edges are created.
+  registerW1cEdge(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {

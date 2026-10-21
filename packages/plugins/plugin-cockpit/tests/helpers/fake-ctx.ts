@@ -102,8 +102,6 @@ export function fakeCtx(options: {
   installedSkills?: Record<string, InstalledCopy>;
   /** Mutable map of run id -> status for canary heartbeat_runs queries. */
   runStatus?: Record<string, string>;
-  /** Agent ids whose resume should fail (for testing error cases). */
-  resumeFails?: string[];
 } = {}) {
   const store: Store = { core_issues: options.coreIssues ?? [], core_runs: options.runs ?? [] };
   const OPEN = ["todo", "in_progress", "in_review", "blocked"];
