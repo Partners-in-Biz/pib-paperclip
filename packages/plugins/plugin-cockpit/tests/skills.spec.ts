@@ -241,8 +241,8 @@ describe("the Operator's references (Wave 3)", () => {
       expect(operator.files!.some((f) => f.path === path), path).toBe(true);
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
-    // The Reviewer stays one file; the manual carries one reference (how to look at a page) for every role, and the Acceptance skill its own two.
-    expect(skill("pib-reviewer")).not.toHaveProperty("files");
+    // The Reviewer ships one file, the creative bar; the manual carries one reference (how to look at a page) for every role, and the Acceptance skill its own two.
+    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/creative-bar.md"]);
     expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
   });
@@ -254,16 +254,24 @@ describe("the Operator's references (Wave 3)", () => {
     expect(gates).toContain("The Cockpit has no Run button");
   });
 
-  it("the quality-gates reference carries the creative bar with the weights the kit scores by", () => {
+  it("the Reviewer's creative-bar file and the quality-gates reference carry the weights the kit scores by", () => {
+    const reviewer = skill("pib-reviewer") as { markdown: string; files: Array<{ path: string; content: string }> };
+    const bar = reviewer.files.find((f) => f.path === "references/creative-bar.md")!.content;
+    expect(reviewer.markdown).toContain("`references/creative-bar.md`");
     const gates = operator.files!.find((f) => f.path === "references/quality-gates.md")!.content;
     expect(gates).toContain("## The creative bar");
+    expect(bar).toContain("no media at all");
+    for (const doc of [bar, gates]) checkBar(doc);
+  });
+
+  function checkBar(gates: string) {
     for (const [part, points] of Object.entries(CREATIVE_RUBRIC_WEIGHTS)) {
       expect(gates, part).toMatch(new RegExp(`\\| ${part} \\| ${points} \\|`, "i"));
     }
     expect(gates).toContain(`${Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0)} points at most`);
     expect(gates).toContain(`passes at ${CREATIVE_PASS_SCORE} or more`);
     for (const rule of ["bans", "approved wording", "media rule", "alt text"]) expect(gates, rule).toContain(rule);
-  });
+  }
 
   it("a change to a reference changes the skill's version, so every company's copy is brought up to date", () => {
     const base = skillVersion(operator as never);
