@@ -175,7 +175,7 @@ describe("a fresh company with a CEO", () => {
   it("opens the optional roles only when asked", async () => {
     const f = fake({ options: { includeOptionalRoles: true } });
     await runClientSteps(f.env, ["roles"]);
-    expect(f.roleHires.map((hire) => hire.role).sort()).toEqual(["account-manager", "bookkeeper", "crm-data-steward", "deal-desk", "inbound-qualifier", "operator", "reviewer", "sales-lead", "seo-specialist", "social"].sort());
+    expect(f.roleHires.map((hire) => hire.role).sort()).toEqual(["account-manager", "bookkeeper", "crm-data-steward", "deal-desk", "inbound-qualifier", "operator", "revenue-lead", "reviewer", "sales-lead", "seo-specialist", "social"].sort());
   });
 
   it("leaves a role alone when its agent is fine, needs attention, or has an open hire task", async () => {
@@ -539,6 +539,6 @@ describe("summarising a step", () => {
     expect(summarizeItems([item("skipped")]).status).toBe("skipped");
     expect(summarizeItems([]).status).toBe("done");
     expect(summarizeItems([item("done"), item("failed")], "role").detail).toBe("2 roles: 1 done, 1 failed.");
-    expect(TEAM_ROLES.length).toBe(11);
+    expect(TEAM_ROLES.length).toBe(12);
   });
 });

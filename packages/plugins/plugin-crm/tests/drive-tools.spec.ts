@@ -60,21 +60,23 @@ function linked(baseSeed: Record<string, any>, coId: string, name: string) {
 }
 
 describe("Drive folder tools", () => {
-  it("declares resolve, ensure, set, list, and binding tools with schemas and descriptions", () => {
-    expect(DRIVE_TOOLS).toHaveLength(6);
+  it("declares resolve, ensure, file-save, set, list, and binding tools with schemas and descriptions", () => {
+    expect(DRIVE_TOOLS).toHaveLength(7);
     expect(DRIVE_TOOLS[0].name).toBe("drive_folder_resolve");
     expect(DRIVE_TOOLS[1].name).toBe("drive_folder_ensure");
-    expect(DRIVE_TOOLS[2].name).toBe("drive_project_kind_set");
-    expect(DRIVE_TOOLS[3].name).toBe("drive_project_kind_list");
-    expect(DRIVE_TOOLS[4].name).toBe("drive_binding_discover");
-    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_set");
+    expect(DRIVE_TOOLS[2].name).toBe("drive_file_save");
+    expect(DRIVE_TOOLS[3].name).toBe("drive_project_kind_set");
+    expect(DRIVE_TOOLS[4].name).toBe("drive_project_kind_list");
+    expect(DRIVE_TOOLS[5].name).toBe("drive_binding_discover");
+    expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
     expect(DRIVE_TOOLS[0].description).toContain("Never hard-code");
     expect(DRIVE_TOOLS[0].description).toContain("ALWAYS call this first");
     expect(DRIVE_TOOLS[1].description).toContain("Never hard-code");
-    expect(DRIVE_TOOLS[2].description).toContain("Drive folder kind");
-    expect(DRIVE_TOOLS[3].description).toContain("read-only");
-    expect(DRIVE_TOOLS[4].description).toContain("Shared Drives");
-    expect(DRIVE_TOOLS[5].description).toContain("Shared Drive");
+    expect(DRIVE_TOOLS[2].description).toContain("deduplicates");
+    expect(DRIVE_TOOLS[3].description).toContain("Drive folder kind");
+    expect(DRIVE_TOOLS[4].description).toContain("read-only");
+    expect(DRIVE_TOOLS[5].description).toContain("Shared Drives");
+    expect(DRIVE_TOOLS[6].description).toContain("Shared Drive");
   });
 
   it("(a) company-linked project idempotent: create then exists", async () => {

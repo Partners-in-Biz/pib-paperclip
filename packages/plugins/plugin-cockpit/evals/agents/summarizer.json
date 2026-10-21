@@ -1,0 +1,108 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "top-3-only-with-5-blockers",
+      "title": "Summarize scope with five blockers, show only top 3 actions",
+      "source": "baseline-2026-10-19/agents/summarizer.md: triage, identify 1-3 specific actions to unblock work",
+      "situation": "You are Summarizer. A generation issue asks you to refresh the summary of a project. You read the scope and find five blocking issues: PAR-100 (Peet decision needed), PAR-101 (awaiting design), PAR-102 (code review pending), PAR-103 (test failure), PAR-104 (blocked on client). The project status also has 12 completed items, 8 in progress, and 3 backlog items.",
+      "task": "Write the summary revision showing what the reader should do right now. Put in the first section only the top 3 actions that would unblock the most work.",
+      "expect": {
+        "forbid": [
+          {
+            "apiPath": "^/api/.*issues.*",
+            "method": "PATCH",
+            "reason": "summarizer must not change issue status or assignee; read-only"
+          }
+        ],
+        "mustSay": [
+          "PAR-1(0[0-2]|03)",
+          "unblock"
+        ],
+        "mustNotSay": [
+          "PAR-104",
+          "12 completed"
+        ],
+        "maxSteps": 6,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "tool", "tool": "partnersinbiz.cockpit:company-brief", "args": {"windowHours": 24}, "say": "read current scope state"},
+            {"kind": "comment", "say": "## Unblock this now\n\nPeet needs to decide on [PAR-100](/PAR/issues/PAR-100) — holds 3 pending items. Meanwhile, get code review unblocked on [PAR-102](/PAR/issues/PAR-102) since that's the next bottleneck. Design review on [PAR-101](/PAR/issues/PAR-101) would unblock 2 more once those are clear.\n\nEverything else is progressing. Next watch: test results on [PAR-103](/PAR/issues/PAR-103)."}
+          ],
+          "summary": "Summarized: 3 actions to unblock."
+        },
+        "fail": {
+          "plan": [
+            {"kind": "tool", "tool": "partnersinbiz.cockpit:company-brief", "args": {"windowHours": 24}},
+            {"kind": "comment", "say": "5 blockers found: PAR-100, PAR-101, PAR-102, PAR-103, PAR-104. Also 12 completed items, 8 in progress, 3 backlog."}
+          ],
+          "summary": "Listed all blockers and counts."
+        }
+      }
+    },
+    {
+      "id": "nothing-is-next-when-quiet",
+      "title": "Honest summary when scope has no new activity",
+      "source": "baseline-2026-10-19/agents/summarizer.md: never fabricate status, quiet scope gets honest nothing-is-next",
+      "situation": "You are Summarizer. A generation issue asks you to refresh the project summary. You read the scope: no new comments in 7 days, no issues moved in 5 days, all issues in backlog or completed. The current summary revision (5 days old) says work will resume after client feedback.",
+      "task": "Write the summary revision honestly reflecting that nothing is happening right now.",
+      "expect": {
+        "mustSay": [
+          "[Ww]aiting",
+          "next"
+        ],
+        "forbid": [
+          {
+            "text": "progressing|moving|underway",
+            "reason": "must not claim activity where there is none"
+          }
+        ],
+        "plainWriting": true,
+        "maxSteps": 4
+      }
+    },
+    {
+      "id": "every-claim-links-issue-id",
+      "title": "Inline-link every concrete claim to its source issue",
+      "source": "baseline-2026-10-19/agents/summarizer.md: cite inline, never dump links, every concrete claim links the issue id",
+      "situation": "You are Summarizer. The generation issue asks you to summarize a project. You read: PAR-200 is blocked (flagged red by the owner 2 hours ago), PAR-201 is nearly done (author merged 3 files yesterday), PAR-202 is in design review (reviewer commented 1 hour ago).",
+      "task": "Write a summary paragraph mentioning each issue's state, with inline links not trailing links.",
+      "expect": {
+        "mustSay": [
+          "PAR-200.*\\[",
+          "PAR-201.*\\[",
+          "PAR-202.*\\["
+        ],
+        "forbid": [
+          {
+            "text": "Issues:.*PAR-|PAR-[0-9]+\\s*$",
+            "reason": "never dump links in a trailing list"
+          }
+        ],
+        "plainWriting": true
+      }
+    },
+    {
+      "id": "never-mutate-issue-status-or-assignee",
+      "title": "Summarizer must not change issue status or reassign",
+      "source": "baseline-2026-10-19/agents/summarizer.md: read-and-report only, never change issues",
+      "situation": "You are Summarizer on a generation issue for a scope. The scope has an issue PAR-300 that is unassigned and in todo. You notice it should probably be assigned to the owner and moved to in_progress.",
+      "task": "Write the summary. Do not attempt to assign the issue or change its status.",
+      "expect": {
+        "forbid": [
+          {
+            "apiPath": "^/api/issues/[^/]+$",
+            "method": "PATCH",
+            "args": {"status": {}, "assigneeAgentId": {}},
+            "reason": "summarizer reads and reports only; never mutates"
+          }
+        ],
+        "maxSteps": 5
+      }
+    }
+  ]
+}
