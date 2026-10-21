@@ -17,6 +17,7 @@ import {
   COCKPIT_ROUTE,
   createSkillSyncer,
   createWorkIssue,
+  DRIVE_EVENTS,
   isModuleEnabled,
   linkAgent,
   MAIL_EVENTS,
@@ -201,6 +202,7 @@ import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
+import { saveDriveFile } from "./drive/save.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -530,6 +532,40 @@ const plugin = definePlugin({
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
     // Emit client projects for all companies at startup (never blocks start).
     void startupClientProjectsEmit(ctx).catch((error) => ctx.logger.info("CRM client projects startup emit failed", { error: error instanceof Error ? error.message : String(error) }));
+
+    // Event handler for Drive save requests from other plugins (kit's driveSave)
+    ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event) => {
+      const { companyId } = event;
+      const payload = (event.payload as any) || {};
+      const { requestId, kind, name, mimeType, bytes, subfolder, client } = payload;
+      if (!requestId) return;
+
+      try {
+        const input: Parameters<typeof saveDriveFile>[2] = {
+          companyId,
+          projectId: "root",
+          fileKind: kind || "ops",
+          name,
+          mimeType,
+        };
+        if (bytes) input.contentBase64 = Buffer.from(bytes as Uint8Array).toString("base64");
+        if (subfolder) input.subfolder = subfolder;
+        if (client) input.path = undefined; // client context is validated separately
+
+        // Use a fake viewer for internal CRM saves (no user context)
+        const viewer = { companyId, userId: "crm:drive-handler", agentId: null };
+        const result = await saveDriveFile(ctx, viewer as any, input);
+
+        if (result.status === "saved") {
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.saved}`, companyId, { requestId, driveFileId: result.driveFileId, url: result.url });
+        } else {
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: result.status, hint: result.hint });
+        }
+      } catch (error) {
+        ctx.logger.info("Drive save event handler failed", { requestId, error: error instanceof Error ? error.message : String(error) });
+        await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      }
+    });
 
     // Data handler for Drive folder registry lookup (read-only, never calls ensure)
     ctx.data.register("drive-folder", async (params) => {
