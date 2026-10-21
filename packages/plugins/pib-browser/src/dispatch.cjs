@@ -1,5 +1,8 @@
 'use strict';
 const path = require('path');
+const fs = require('node:fs');
+const os = require('node:os');
+const crypto = require('node:crypto');
 const { EXIT } = require('./exit-codes.cjs');
 const { authenticate, ISSUE_RE } = require('./auth.cjs');
 const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
@@ -42,7 +45,7 @@ function createDispatcher(deps = {}) {
   };
 
   async function dispatch(request, overrideDeps = null) {
-    const { authenticate, browser, policy, sites, clock, evidenceDir } = overrideDeps || deps;
+    const { authenticate, browser, policy, sites, clock } = overrideDeps || deps;
 
     try {
       const { cmd, token, issue, identity: identityStr, args = {} } = request || {};
@@ -107,7 +110,8 @@ function createDispatcher(deps = {}) {
           try {
             ctx = browser.newContext({
               origins,
-              guard: makeGuard(origins)
+              guard: makeGuard(origins),
+              identity: identityStr
             });
 
             await ctx.goto(site.loggedIn.url);
@@ -279,34 +283,61 @@ function createDispatcher(deps = {}) {
             }
           }
 
-          if (expect && !(await ctx.hasText(expect))) {
-            return { exit: EXIT.EXPECT_MISSING, ok: false, reason: 'expect_missing' };
+          let expectMatched = false;
+          if (expect) {
+            if (!(await ctx.hasText(expect))) {
+              return { exit: EXIT.EXPECT_MISSING, ok: false, reason: 'expect_missing' };
+            }
+            expectMatched = true;
           }
 
-          const identifier = auth.issue.identifier;
-          if (!identifier || !ISSUE_RE.test(identifier)) {
+          // Get redact selectors from site
+          const redactSelectors = site.redact || [];
+
+          // Capture to daemon-private temp directory
+          let tempDir, tempPath;
+          try {
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-browser-'), { mode: 0o700 });
+            tempPath = path.join(tempDir, 'shot.png');
+
+            const resultPath = await ctx.shot(tempPath, {
+              region: parsedRegion,
+              redactSelectors
+            });
+
+            if (!resultPath) {
+              try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
+              return { exit: EXIT.NO_SCREENSHOT, ok: false, reason: 'no_screenshot' };
+            }
+
+            // Read the file
+            const bytes = fs.readFileSync(tempPath);
+            const b64 = bytes.toString('base64');
+            const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+            const byteLength = bytes.length;
+            const pageUrl = ctx.url();
+
+            // Clean up temp directory
+            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
+
+            const violation = await afterOp(ctx, sessionKey);
+            if (violation) return violation;
+
+            return {
+              exit: EXIT.DONE,
+              ok: true,
+              data: {
+                bytes: b64,
+                sha256,
+                byteLength,
+                url: pageUrl,
+                expected: expectMatched
+              }
+            };
+          } catch (e) {
+            try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch (cleanup) {}
             return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
           }
-
-          if (!evidenceDir || !path.isAbsolute(evidenceDir)) {
-            return { exit: EXIT.USAGE, ok: false, reason: 'evidence_dir_invalid' };
-          }
-
-          const issueDir = `${evidenceDir}/${identifier}`;
-          const timestamp = clock().toISOString().replace(/[:.]/g, '-');
-          const counter = (shotCounters.get(identifier) || 0) + 1;
-          shotCounters.set(identifier, counter);
-
-          const resultPath = await ctx.shot(`${issueDir}/${timestamp}-${counter}.png`, {
-            region: parsedRegion
-          });
-
-          if (!resultPath) {
-            return { exit: EXIT.NO_SCREENSHOT, ok: false, reason: 'no_screenshot' };
-          }
-
-          const violation = await afterOp(ctx, sessionKey);
-          return violation || { exit: EXIT.DONE, ok: true, data: { path: resultPath } };
         }
 
         if (cmd === 'close') {
