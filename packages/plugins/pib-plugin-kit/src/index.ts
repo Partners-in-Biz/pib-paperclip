@@ -20,6 +20,7 @@ export * from "./outbox.js";
 export * from "./decisions.js";
 export * from "./experiments.js";
 export * from "./growth/ports.js";
+export * from "./growth/store.js";
 export * from "./pdf.js";
 export * from "./tool-result.js";
 export * from "./setup.js";

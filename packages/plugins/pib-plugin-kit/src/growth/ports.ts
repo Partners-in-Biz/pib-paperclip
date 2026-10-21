@@ -8,7 +8,7 @@
 import type { ClientScope } from "../client-ref.js";
 
 /** One scope: own work (`null`) or one CRM client. */
-export type ScopeKey = ClientScope;
+export type GrowthScope = ClientScope;
 
 /** The entity types a store trades in. Every field is a plugin-owned type. */
 export interface GrowthStoreTypes {
@@ -29,7 +29,7 @@ export interface GrowthStoreTypes {
 
 /** Programs, playbook versions, experiments, items and playbook changes. Every read and write is company-scoped. */
 export interface GrowthStore<T extends GrowthStoreTypes = GrowthStoreTypes> {
-  findProgram(companyId: string, channel: string, scope: ScopeKey): Promise<T["program"] | null>;
+  findProgram(companyId: string, channel: string, scope: GrowthScope): Promise<T["program"] | null>;
   getProgram(companyId: string, id: string): Promise<T["program"] | null>;
   insertProgram(program: T["newProgram"]): Promise<void>;
   updateProgram(companyId: string, id: string, patch: T["programPatch"]): Promise<void>;
@@ -66,9 +66,9 @@ export interface ApprovalIssuePort<Create = unknown> {
 }
 
 /** Tool params to a scope and back. Unknown clients are refused by `fromParams`. */
-export interface ScopeResolver<Params = Record<string, unknown>, Resolved extends { scope: ScopeKey } = { scope: ScopeKey }> {
+export interface ScopeResolver<Params = Record<string, unknown>, Resolved extends { scope: GrowthScope } = { scope: GrowthScope }> {
   fromParams(companyId: string, params: Params): Promise<Resolved>;
-  toParam(scope: ScopeKey): string;
+  toParam(scope: GrowthScope): string;
 }
 
 /** Post-like subjects: features, scores, experiment tags and the metrics behind them. */
@@ -85,7 +85,7 @@ export interface FeaturesPort<
   postsToTag(companyId: string, sinceDays: number, limit: number): Promise<Post[]>;
   upsertFeatures(companyId: string, programId: string | null, postId: string, values: Feature[], model: string | null): Promise<void>;
   postFeatures(companyId: string, postIds: string[]): Promise<StoredFeature[]>;
-  scoredPosts(companyId: string, scope: ScopeKey, window: string, sinceDays: number): Promise<ScoredRow[]>;
+  scoredPosts(companyId: string, scope: GrowthScope, window: string, sinceDays: number): Promise<ScoredRow[]>;
   existingScores(companyId: string, window: string, sinceDays: number): Promise<Map<string, Score>>;
   upsertScore(score: ScoreWrite): Promise<void>;
   companiesWithMetrics(window: string, sinceDays: number): Promise<string[]>;
