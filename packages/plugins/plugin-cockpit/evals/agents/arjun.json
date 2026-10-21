@@ -76,7 +76,7 @@
           "400|lines|reviewable"
         ],
         "mustNotSay": [
-          "start coding|begin implementation|proceed"
+          "(?<!not |n't |never |without )\\b(start coding|begin implementation|proceed with)\\b"
         ],
         "maxSteps": 3
       },
