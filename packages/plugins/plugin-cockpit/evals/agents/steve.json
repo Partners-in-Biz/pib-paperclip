@@ -22,7 +22,7 @@
           "[Hh]aiku|[Dd]elegate|[Tt]ask|research|analytics"
         ],
         "mustNotSay": [
-          "\\bI (will|'ll) (read|pull)\\b"
+          "\\bI(?: will|'ll) (read|pull)\\b"
         ],
         "maxSteps": 3
       }
