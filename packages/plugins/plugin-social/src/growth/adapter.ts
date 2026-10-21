@@ -24,6 +24,28 @@ const socialMetricSource: MetricSource = {
   },
 };
 
+/** Helper: true if any finished hypothesis is a media type. */
+function hasFinishedMediaHypothesis(finishedTypes?: string[]): boolean {
+  return (finishedTypes ?? []).some((t) => t.startsWith("media:"));
+}
+
+/**
+ * Social hypothesis candidates: the kit's list plus a media hypothesis first
+ * if no media experiment has been measured, rejected, or abandoned for this scope.
+ * The media hypothesis uses arms keyed "media" (variant) and "no_media" (control),
+ * matching the names in noMediaExempt's post.arm check (kit/src/media-rule.ts).
+ */
+export function socialHypothesisCandidates(program: ProgramFeatureContext & { finishedHypothesisTypes?: string[] }): string[] {
+  const candidates = kitHypothesisCandidates({ scoreboard: {}, ...program });
+  if (!hasFinishedMediaHypothesis(program.finishedHypothesisTypes)) {
+    // Remove any existing media entry to avoid duplication
+    const filtered = candidates.filter((c) => !c.startsWith("media:"));
+    // Prepend the media hypothesis
+    return ["media:with_media", ...filtered];
+  }
+  return candidates;
+}
+
 /**
  * Social Growth Lab adapter: channel defaults and hypothesis generation.
  * Experiment defaults (minPerArm: 3, windowDays: 7) come from normalizeProposal.
@@ -36,6 +58,6 @@ export const socialAdapter: ChannelAdapter = {
   minPerArm: 3,
   windowDays: 7,
   hypothesisCandidates: (program: ProgramFeatureContext) =>
-    kitHypothesisCandidates({ scoreboard: {}, ...program }),
+    socialHypothesisCandidates({ scoreboard: {}, ...program } as ProgramFeatureContext & { finishedHypothesisTypes?: string[] }),
   source: socialMetricSource,
 };

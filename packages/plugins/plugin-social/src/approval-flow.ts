@@ -250,18 +250,27 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
 
     // Load experiment if tagged (for control arm exemption)
     let mediaExperiment: MediaExperiment | null = null;
+    let experimentArmName = post.experiment_arm; // Will be normalized for media experiments
     if (post.experiment_id) {
       try {
         const exp = await env.store.getExperiment(companyId, post.experiment_id);
         if (exp) {
-          // Map the full Experiment to MediaExperiment (only include needed fields)
+          // Map the full Experiment to MediaExperiment (only include needed fields).
+          // Normalize hypothesisType to the feature part (before colon) for noMediaExempt compatibility:
+          // the kit's noMediaExempt checks experiment.hypothesisType === "media", so "media:with_media" must become "media".
           mediaExperiment = {
             id: exp.id,
             status: exp.status,
-            hypothesisType: exp.hypothesisType,
+            hypothesisType: exp.hypothesisType.split(":")[0] || exp.hypothesisType,
             minPerArm: exp.minPerArm,
             noMediaPosts: 0, // Will be calculated by scoreCreative if needed
           };
+          // Normalize arm names for media experiments: kit uses "control"/"variant", but noMediaExempt expects "no_media"/"media".
+          // For a media experiment, "control" arm = "no_media" (the control has no media), "variant" arm = "media" (variant tests with media).
+          if (exp.hypothesisType.startsWith("media:")) {
+            if (experimentArmName === "control") experimentArmName = "no_media";
+            else if (experimentArmName === "variant") experimentArmName = "media";
+          }
         }
       } catch {
         // Experiment load failure is not fatal; just skip the exemption
@@ -283,7 +292,7 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
         mediaRule,
         textNative,
         experimentId: post.experiment_id ?? null,
-        arm: post.experiment_arm ?? null,
+        arm: experimentArmName ?? null,
         experiment: mediaExperiment,
         tone: input.toneScore != null && input.toneReason?.trim() ? { score: input.toneScore, source: "reviewer", reason: input.toneReason } : (input.toneScore != null ? { score: input.toneScore, source: "reviewer" } : null),
       });
