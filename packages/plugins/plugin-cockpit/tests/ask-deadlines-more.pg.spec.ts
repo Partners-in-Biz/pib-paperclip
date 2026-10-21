@@ -200,11 +200,12 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
     expect(result.errors).toBe(0);
     expect(result.escalated).toBe(1);
 
-    // Create 120 filler repair rows for other targets (to exceed the LIMIT 100)
-    // These are older than the escalated ask, so they'll be returned first by ORDER BY created_at DESC
-    for (let i = 0; i < 120; i++) {
+    // Create 550 filler repair rows for other targets (to exceed the LIMIT 500).
+    // This proves the targetIds filter is applied in SQL WHERE clause, not after LIMIT,
+    // because the escalate_ask for askId will be retrieved even though there are 550
+    // newer repairs in the ask_deadline kind.
+    for (let i = 0; i < 550; i++) {
       const fillerId = `filler-${i}`;
-      const olderTime = new Date(deadlineTime.getTime() - (120 - i) * 1000).toISOString(); // Older repairs
       await recordRepair(w.env.ctx, A, {
         kind: "ask_deadline",
         targetKind: "ask",
