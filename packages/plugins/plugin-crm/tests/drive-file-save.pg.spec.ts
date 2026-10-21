@@ -91,6 +91,10 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
           }
           return result.data;
         },
+        identity: async (sharedDriveId?: string) => ({
+          serviceAccountEmail: "test-sa@project.iam.gserviceaccount.com",
+          isMember: true,
+        }),
       };
       return broker;
     };

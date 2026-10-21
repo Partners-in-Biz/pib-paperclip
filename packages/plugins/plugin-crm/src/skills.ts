@@ -52,7 +52,7 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 \`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
 
 ## Binding a company's Shared Drive
-\`drive_binding_discover\` and \`drive_binding_set\`: bind the company's Shared Drive. Discover lists available shared drives from the read-only Google Drive connection; it auto-binds on exact case-insensitive company name match or returns candidates. Set to bind a specific drive from the candidate list.
+\`drive_binding_discover\`, \`drive_binding_set\`, \`drive_binding_status\`: bind the company's Shared Drive. Discover lists it from the read-only Drive connection; it auto-binds on exact match or returns candidates. Set with the ID. Status checks binding and access.
 
 ## Project Drive folder kinds
 \`drive_project_kind_set\` and \`drive_project_kind_list\` organize projects by folder branch type (client, product, book, marketing, company). \`set\` works for any project, including own projects with no client link; pass projectId, kind, and optional scopeRef (e.g., for marketing campaigns). \`list\` (read-only) returns kinds for specified projects or all in the company; a client-linked project with no explicit kind defaults to "client".
