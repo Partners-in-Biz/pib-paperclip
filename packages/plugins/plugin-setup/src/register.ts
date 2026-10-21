@@ -1,5 +1,6 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { getChoice } from "./db.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
 import { JOBS } from "./manifest.js";
@@ -7,7 +8,7 @@ import { SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { approveStarterPack, bootstrapCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
 import { registerTemplateTools } from "./template-tools.js";
-import { loadSetup, message, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
+import { loadSetup, message, onDriveBind, onDriveBindingEvent, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
 
 /** Registers everything; exported for tests. */
 export function registerSetup(ctx: PluginContext): void {
@@ -20,6 +21,14 @@ export function registerSetup(ctx: PluginContext): void {
       }
     });
   }
+  // Listen to CRM's drive.binding event to track Google Drive setup state
+  ctx.events.on(pluginEvent(PIB_PLUGINS.crm, DRIVE_BINDING_EVENT), async (event) => {
+    try {
+      await onDriveBindingEvent(ctx, event);
+    } catch (error) {
+      ctx.logger.info("Setup drive binding event failed", { error: message(error) });
+    }
+  });
   registerTemplateTools(ctx);
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", async (params, context) => {
@@ -109,6 +118,13 @@ function registerNewCompany(ctx: PluginContext): void {
     requiredCompany(context);
     user(context);
     return starterPackForImport(ctx);
+  });
+  ctx.actions.register("setup.drive-bind", async (params, context) => {
+    const companyId = requiredCompany(context);
+    return onDriveBind(ctx, {
+      companyId,
+      sharedDriveId: params.sharedDriveId,
+    });
   });
 }
 

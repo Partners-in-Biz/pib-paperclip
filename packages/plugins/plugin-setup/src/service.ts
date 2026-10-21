@@ -5,7 +5,8 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_BINDING_EVENT, DRIVE_BINDING_SET_EVENT, parseDriveBindingEvent, type DriveBinding } from "./drive-checklist.js";
 import { moduleOfPlugin, MODULES, SETUP_EVENTS, type ModulesPayload, type SetupStatus, type SetupSummary } from "./kit-setup.js";
 import { currentGrants, grantsMarkdown } from "./bootstrap.js";
 import {
@@ -46,6 +47,56 @@ export interface Clock {
 const systemClock: Clock = { now: () => new Date() };
 
 const INSTALLED_STATE = { scopeKind: "instance" as const, namespace: "setup", stateKey: "installed-plugins" };
+
+// ---------------------------------------------------------------------------
+// Drive binding (CRM integration)
+// ---------------------------------------------------------------------------
+
+const driveBindingState = (companyId: string) => ({ scopeKind: "company" as const, namespace: "setup", stateKey: `drive-binding:${companyId}` });
+
+export async function onDriveBindingEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
+  const binding = parseDriveBindingEvent(event.payload);
+  if (!binding) return;
+  try {
+    await ctx.state.set(driveBindingState(binding.companyId), binding);
+  } catch (error) {
+    ctx.logger.info("Could not store drive binding", { companyId: binding.companyId, error: message(error) });
+  }
+}
+
+export async function readDriveBinding(ctx: PluginContext, companyId: string): Promise<DriveBinding | null> {
+  try {
+    const raw = await ctx.state.get(driveBindingState(companyId));
+    const parsed = parseDriveBindingEvent(raw);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function onDriveBind(ctx: PluginContext, input: { companyId: string; sharedDriveId: unknown }): Promise<{ ok: boolean; error?: string }> {
+  const binding = await readDriveBinding(ctx, input.companyId);
+  const driveId = String(input.sharedDriveId ?? "");
+
+  // Reject if the ID is not in the candidates
+  if (!binding || !binding.candidates.some((c) => c.id === driveId)) {
+    return { ok: false, error: "Drive ID not in available candidates" };
+  }
+
+  // Emit the drive.binding.set event for the CRM to handle
+  try {
+    await ctx.events.emit(
+      DRIVE_BINDING_SET_EVENT,
+      input.companyId,
+      { companyId: input.companyId, sharedDriveId: driveId } as unknown as Record<string, unknown>,
+    );
+  } catch (error) {
+    ctx.logger.info("Could not emit drive binding set event", { companyId: input.companyId, error: message(error) });
+    return { ok: false, error: "Could not send binding request" };
+  }
+
+  return { ok: true };
+}
 
 // ---------------------------------------------------------------------------
 // Module choice
@@ -386,13 +437,14 @@ export async function weeklyFinishSetup(ctx: PluginContext, clock: Clock = syste
 
 export async function loadSetup(ctx: PluginContext, companyId: string, params: Record<string, unknown> = {}) {
   if (params.installed) await rememberInstalled(ctx, params.installed);
-  const [choice, statuses, issue, saved, installed, run] = await Promise.all([
+  const [choice, statuses, issue, saved, installed, run, drive] = await Promise.all([
     getChoice(ctx, companyId),
     listStatuses(ctx, companyId),
     getFinishIssue(ctx, companyId),
     configSaved(ctx, companyId),
     readInstalled(ctx),
     getRun(ctx, companyId).catch(() => null),
+    readDriveBinding(ctx, companyId),
   ]);
   return {
     modules: choice?.modules ?? null,
@@ -402,6 +454,7 @@ export async function loadSetup(ctx: PluginContext, companyId: string, params: R
     finishIssueId: issue?.issueId ?? null,
     settingsSaved: saved,
     installed,
+    drive: drive ?? null,
     // Where the New company bootstrap stands (null: the plugin never saw this company, or it predates the bootstrap).
     bootstrap: run ? { status: run.status, updatedAt: run.updatedAt } : null,
     // The one setup count (kit setupSummary): the sidebar badge and the Cockpit show it as it is.
