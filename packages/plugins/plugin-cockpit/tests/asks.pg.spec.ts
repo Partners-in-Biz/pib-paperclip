@@ -188,7 +188,7 @@ d("ask defaults (Postgres)", () => {
     expect(stored.deadline_at).toBeNull();
   });
 
-  it("answerAskByPolicy: answer, idempotent, userId null, missing null", async () => {
+  it("answerAskByPolicy: answer, idempotent (already-closed returns null), userId null, missing null", async () => {
     const w = await make();
     const askId = ((await w.tools.get("ask-owner")!({
       issueId: (await issue(w)).id,
@@ -203,9 +203,14 @@ d("ask defaults (Postgres)", () => {
     expect(r1?.defaultPolicy).toBe("hire");
     expect(r1?.answeredByUserId).toBeNull();
 
+    // Second call on already-closed ask returns null (caller can distinguish whether IT closed it)
     const r2 = await answerAskByPolicy(w.env, A, askId, "other", "No");
-    expect(r2?.answer).toBe("Yes");
-    expect(r2?.defaultPolicy).toBe("hire");
+    expect(r2).toBeNull();
+
+    // Verify the ask wasn't changed by r2's attempt
+    const stored = await getAsk(w.env, A, askId);
+    expect(stored?.answer).toBe("Yes");
+    expect(stored?.defaultPolicy).toBe("hire");
 
     expect(await answerAskByPolicy(w.env, A, "missing", "hire", "Yes")).toBeNull();
   });
