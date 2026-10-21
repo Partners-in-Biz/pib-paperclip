@@ -124,12 +124,6 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Mondays 07:00 SAST: detectors, health, capped optimization proposals and one approval issue per sprint.",
       schedule: "0 5 * * 1",
     },
-    {
-      jobKey: "measure-experiments",
-      displayName: "Measure experiments (Growth Lab)",
-      description: "Judges each running experiment on the GSC metrics of its pages, writes the verdict and drafts a playbook change.",
-      schedule: "37 3 * * *",
-    },
   ],
   apiRoutes: [
     {

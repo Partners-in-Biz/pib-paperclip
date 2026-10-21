@@ -11,7 +11,7 @@ import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
-const KNOWN = new Set(["company:a", "company:b"]);
+const KNOWN = new Set(["client:company:a", "client:company:b"]);
 const A = "client:company:a";
 const B = "client:company:b";
 let pg: PgHarness;
@@ -91,5 +91,141 @@ describe.skipIf(!available)("seo growth tools: two-scope isolation", () => {
     const list = await w.call("list-experiments", { scope: A });
     expect(list.experiments).toHaveLength(1);
     expect(list.experiments[0].experimentId).toBe(exp.experimentId);
+  });
+
+  it("performance-review with scope B does not include scope A's program/experiments", async () => {
+    const w = world();
+    const proposal = { hypothesis: "Test query improves CTR", hypothesisType: "hook:question", variable: "Opening", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposal });
+    const reviewB = await w.call("performance-review", { scope: B });
+    expect(reviewB.program).toBe(null);
+    expect(reviewB.runningExperiments).toEqual([]);
+    expect(reviewB.proposedExperiments).toEqual([]);
+  });
+
+  it("list-experiments includes proposed experiments for the given scope", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "CTR hypothesis A scope test", hypothesisType: "hook:question", variable: "OpeningA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "CTR hypothesis B scope test", hypothesisType: "hook:comparison", variable: "OpeningB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    const listA = await w.call("list-experiments", { scope: A });
+    const listB = await w.call("list-experiments", { scope: B });
+    expect(listA.experiments.length).toBeGreaterThanOrEqual(1);
+    expect(listB.experiments.length).toBeGreaterThanOrEqual(1);
+    const expAIds = listA.experiments.map((e: any) => e.experimentId);
+    const expBIds = listB.experiments.map((e: any) => e.experimentId);
+    expect(expAIds).toContain(expA.experimentId);
+    expect(expBIds).toContain(expB.experimentId);
+  });
+
+  it("approve-experiment rejects scope B on scope A's experiment", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Approve scope test A", hypothesisType: "hook:question", variable: "VarApprovalA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    let errorThrown = false;
+    try {
+      await w.call("approve-experiment", { scope: B, experimentId: expA.experimentId });
+    } catch (e) {
+      errorThrown = true;
+    }
+    expect(errorThrown).toBe(true);
+  });
+
+  it("approve-experiment with scope B and A's experiment id must error and leave A's row as proposed", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Approval test A", hypothesisType: "hook:question", variable: "VarApprovalA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    let errorThrown = false;
+    try {
+      await w.call("approve-experiment", { scope: B, experimentId: expA.experimentId });
+    } catch (e) {
+      errorThrown = true;
+    }
+    expect(errorThrown).toBe(true);
+    const expRow = (await pg.client.query(
+      `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expA.experimentId],
+    )).rows[0] as { status: string };
+    expect(expRow.status).toBe("proposed");
+  });
+
+  it("approve-experiment happy path in scope A with full autopilot changes status", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Approve test", hypothesisType: "hook:question", variable: "VarApproveA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const progRow = (await pg.client.query(
+      `SELECT id FROM ${NAMESPACE}.growth_programs WHERE company_id = $1 AND id = (SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $2)`,
+      [w.companyId, expA.experimentId],
+    )).rows[0] as { id: string };
+    await pg.client.query(
+      `UPDATE ${NAMESPACE}.growth_programs SET autopilot = $1 WHERE id = $2`,
+      ["full", progRow.id],
+    );
+    const approved = await w.call("approve-experiment", { scope: A, experimentId: expA.experimentId });
+    expect(approved.experimentId).toBe(expA.experimentId);
+    const expRow = (await pg.client.query(
+      `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expA.experimentId],
+    )).rows[0] as { status: string };
+    expect(["approved", "running"]).toContain(expRow.status);
+  });
+
+  it("approve-experiment happy path leaves scope B's experiment untouched", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Isolation test A", hypothesisType: "hook:question", variable: "VarIsoA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "Isolation test B", hypothesisType: "hook:comparison", variable: "VarIsoB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    const progRowA = (await pg.client.query(
+      `SELECT id FROM ${NAMESPACE}.growth_programs WHERE company_id = $1 AND id = (SELECT program_id FROM ${NAMESPACE}.growth_experiments WHERE id = $2)`,
+      [w.companyId, expA.experimentId],
+    )).rows[0] as { id: string };
+    await pg.client.query(
+      `UPDATE ${NAMESPACE}.growth_programs SET autopilot = $1 WHERE id = $2`,
+      ["full", progRowA.id],
+    );
+    await w.call("approve-experiment", { scope: A, experimentId: expA.experimentId });
+    const expBRow = (await pg.client.query(
+      `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expB.experimentId],
+    )).rows[0] as { status: string };
+    expect(expBRow.status).toBe("proposed");
+  });
+
+  it("reject-experiment with scope B and A's experiment id must error and leave A's row as proposed", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Reject test A", hypothesisType: "hook:question", variable: "VarRejectA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    let errorThrown = false;
+    try {
+      await w.call("reject-experiment", { scope: B, experimentId: expA.experimentId });
+    } catch (e) {
+      errorThrown = true;
+    }
+    expect(errorThrown).toBe(true);
+    const expRow = (await pg.client.query(
+      `SELECT status FROM ${NAMESPACE}.growth_experiments WHERE id = $1`,
+      [expA.experimentId],
+    )).rows[0] as { status: string };
+    expect(expRow.status).toBe("proposed");
+  });
+
+  it("reject-experiment with scope B does not affect scope A", async () => {
+    const w = world();
+    const proposalA = { hypothesis: "Reject test A", hypothesisType: "hook:question", variable: "VarRejectA", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const proposalB = { hypothesis: "Reject test B", hypothesisType: "hook:comparison", variable: "VarRejectB", arms: [{ key: "control", description: "control" }, { key: "variant", description: "variant" }] };
+    const expA = await w.call("propose-experiment", { scope: A, ...proposalA });
+    const expB = await w.call("propose-experiment", { scope: B, ...proposalB });
+    let errorThrown = false;
+    try {
+      await w.call("reject-experiment", { scope: B, experimentId: expA.experimentId, reason: "Wrong scope" });
+    } catch {
+      errorThrown = true;
+    }
+    expect(errorThrown).toBe(true);
+    const listA = await w.call("list-experiments", { scope: A });
+    const stillFound = listA.experiments.some((e: any) => e.experimentId === expA.experimentId);
+    expect(stillFound).toBe(true);
   });
 });

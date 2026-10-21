@@ -84,7 +84,6 @@ import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
 import { seoGrowthToolsHost } from "./growth-host.js";
-import { measureExperimentsJob } from "./growth-measure.js";
 
 let env: Env | null = null;
 
@@ -142,10 +141,6 @@ const plugin = definePlugin({
     ctx.jobs.register(WEEKLY_JOB_KEY, async (job) => {
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
-    });
-    ctx.jobs.register("measure-experiments", async () => {
-      const summary = await measureExperimentsJob(ctx);
-      if (summary.experiments) ctx.logger.info("Growth experiments measured", summary);
     });
     // The Mailbox's answer to an approval email draft request: the Gmail link goes on the sprint's Needs you.
     ctx.events.on(DRAFT_RESULT_EVENT, async (event) => {

@@ -24,8 +24,8 @@ describe("manifest", () => {
     expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs", "issue_comments"]);
   });
 
-  it("schedules the daily, preview-answer, weekly and measure-experiments jobs", () => {
-    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-previews", "*/5 * * * *"], ["seo-weekly", "0 5 * * 1"], ["measure-experiments", "37 3 * * *"]]);
+  it("schedules the daily, preview-answer and weekly jobs", () => {
+    expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["seo-daily", "5 * * * *"], ["seo-previews", "*/5 * * * *"], ["seo-weekly", "0 5 * * 1"]]);
   });
 
   it("declares the OAuth, client-summary, setup-status and cockpit routes with company resolution", () => {
