@@ -10,6 +10,7 @@ import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
 import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
 import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
+import { GROWTH_TOOLS } from "./growth-tool-declarations.js";
 import { OPS_TOOLS } from "./ops-tool-declarations.js";
 import { BANNED_WORDS_MAX, PROFILE_FIELDS } from "./profile-model.js";
 
@@ -168,6 +169,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
   },
   ...MEMORY_TOOL_DECLARATIONS,
   ...OPS_TOOLS,
+  ...GROWTH_TOOLS,
   ...ACCEPTANCE_TOOLS,
   ...EVAL_TOOLS,
 ];
