@@ -31,7 +31,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { discoverAccounts, registerAccount, removeAccount } from "./accounts.js";
 import { agentSummary, hireOptions, onAdsAgentLinked, resumeHint, resyncAgent, tryLinkAdsHire } from "./agent.js";
-import { checkCreative } from "./creative.js";
+import { checkCreative, checkCreativeWithRubric } from "./creative.js";
 import { cockpitSnapshot, publishCockpitSnapshots } from "./cockpit.js";
 import { refreshAllConnections, tokenFor } from "./connections.js";
 import { deleteExpiredOauthSessions, getConnection, getScope, updateConnection, audit, getAccount } from "./db.js";
@@ -167,11 +167,11 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
       const scope = await getScope(rt.ctx, rt.companyId, oneScope(p));
       const extra = Array.isArray(p.bannedWords) ? p.bannedWords.filter((w): w is string => typeof w === "string") : [];
       const platform = p.platform === "google" ? "google" : "meta";
-      const result = checkCreative(
+      const result = checkCreativeWithRubric(
         { platform, headline: optionalString(p, "headline") ?? null, primaryText: optionalString(p, "primaryText") ?? null, description: optionalString(p, "description") ?? null, callToAction: optionalString(p, "callToAction") ?? null, landingUrl: optionalString(p, "landingUrl") ?? null, specialAdCategories: Array.isArray(p.specialAdCategories) ? p.specialAdCategories.filter((s): s is string => typeof s === "string") : [] },
         { bannedWords: [...(scope?.banned_words ?? []), ...extra] },
       );
-      return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: "A machine check only. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile." };
+      return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric?.score ?? 0}. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile.` };
     }
     case "upload-ad-media": {
       const accountId = requiredString(p, "accountId");

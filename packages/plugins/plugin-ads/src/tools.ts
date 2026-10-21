@@ -163,7 +163,7 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
   {
     name: "check-ad-creative",
     displayName: "Check ad copy",
-    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
+    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. Also scores the copy on the shared creative rubric (out of 100; 80 passes). It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
     parametersSchema: schema(["platform"], {
       client,
       platform: oneOf(["meta", "google"], "Which platform's rules."),
