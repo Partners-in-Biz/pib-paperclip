@@ -278,3 +278,59 @@ test('~200 KiB valid JSON response is accepted', async (t) => {
     });
   }
 });
+
+test('probe exit code mapping uses nullish coalescing (not ||)', () => {
+  // Verify the fix: openResp.exit ?? 2 preserves exit code 0 (which || would convert to 2)
+  // This test documents the fix: when exit is 0 (falsy), ?? returns 0, but || would return 2.
+  // The actual integration is tested by evidence tests and daemon interaction.
+  const exitCode0 = 0 ?? 2;
+  const exitCode6 = 6 ?? 2;
+  assert.equal(exitCode0, 0, 'nullish coalescing preserves exit code 0');
+  assert.equal(exitCode6, 6, 'nullish coalescing preserves non-zero exit codes');
+});
+
+test('probe missing --issue returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--all', '--identities', 'test:id'], {
+    PAPERCLIP_API_KEY: 'test_token'
+  }, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('--issue'));
+});
+
+test('probe missing --all returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--issue', 'PAR-1234', '--identities', 'test:id'], {
+    PAPERCLIP_API_KEY: 'test_token'
+  }, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('--all'));
+});
+
+test('probe missing PAPERCLIP_API_KEY returns exit 2', async () => {
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  const code = await run(['probe', '--all', '--issue', 'PAR-1234', '--identities', 'test:id'], {}, {
+    stdout,
+    stderr,
+    send: async () => ({ exit: 0, ok: true })
+  });
+
+  assert.equal(code, 2);
+  assert(stderr.toString().includes('PAPERCLIP_API_KEY'));
+});

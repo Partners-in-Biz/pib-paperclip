@@ -5,7 +5,6 @@ const path = require('node:path');
 const { parseRegion } = require('./redact.cjs');
 const { writeShot } = require('./shot.cjs');
 const { probeAll } = require('./probe.cjs');
-const { exitName } = require('./exit-codes.cjs');
 
 const COMMANDS = ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -209,7 +208,10 @@ async function run(argv, env, deps = {}) {
           await sendFn(closeReq, { socketPath: env.PIB_BROWSER_SOCKET || '/run/pib-browser/sock', maxResponseBytes });
         } catch (e) {}
 
-        return { exit: openResp.exit || 2, reason: openResp.reason || '' };
+        // Use ?? instead of || to preserve exit code 0; treat ok:true as success
+        const exitCode = openResp.exit ?? 2;
+        const isOk = openResp.ok === true;
+        return { exit: isOk ? 0 : exitCode, reason: openResp.reason || '' };
       } catch (e) {
         return { exit: 3, reason: 'no_browser' };
       }

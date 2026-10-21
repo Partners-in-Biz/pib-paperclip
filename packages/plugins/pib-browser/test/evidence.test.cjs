@@ -261,7 +261,7 @@ test('evidence redacts errors', async () => {
   fs.rmSync(tmpDir, { recursive: true });
 });
 
-test('evidence passes step argument to upload script', async () => {
+test('evidence passes step name as title argument to upload script', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
   const pngPath = path.join(tmpDir, 'test.png');
   const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -287,9 +287,48 @@ test('evidence passes step argument to upload script', async () => {
   });
 
   assert.equal(code, 0);
-  assert.ok(capturedArgs.includes('--step'));
-  const stepIndex = capturedArgs.indexOf('--step');
-  assert.equal(capturedArgs[stepIndex + 1], 'screenshot_1');
+  assert.ok(capturedArgs.includes('--title'));
+  const titleIndex = capturedArgs.indexOf('--title');
+  assert.equal(capturedArgs[titleIndex + 1], 'screenshot_1');
+  assert.ok(!capturedArgs.includes('--step'), '--step flag should not be passed to upload script');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('evidence uses --title for step name in upload script call', async () => {
+  // Test that the step name is passed as --title to the upload script, not --step.
+  // This verifies the fix that changes the argument from --step to --title.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  fs.writeFileSync(pngPath, pngData);
+
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+
+  let capturedArgs;
+  const mockSpawn = (cmd, args) => {
+    capturedArgs = args;
+    return {
+      status: 0,
+      signal: null,
+      stdout: '{"attachment": {"id": "test-id"}, "workProduct": null, "chatComment": null}'
+    };
+  };
+
+  const code = await run([pngPath, '--issue', 'PAR-456', '--step', 'verify_step'], {}, {
+    spawnSync: mockSpawn,
+    stdout,
+    stderr
+  });
+
+  assert.equal(code, 0);
+  // Verify --title is used, not --step
+  assert.ok(capturedArgs.includes('--title'), '--title flag should be present');
+  assert.ok(!capturedArgs.includes('--step'), '--step flag should NOT be present');
+
+  const titleIndex = capturedArgs.indexOf('--title');
+  assert.equal(capturedArgs[titleIndex + 1], 'verify_step', 'title should contain step name');
 
   fs.rmSync(tmpDir, { recursive: true });
 });

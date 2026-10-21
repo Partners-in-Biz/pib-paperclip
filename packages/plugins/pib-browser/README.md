@@ -17,7 +17,7 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 
 ### Status and Evidence
 - `pib-browser probe --all --identities <list>` - Check browser session status for identities, writes `/home/paperclip/pib-tools/browser-status.json`
-- `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string)
+- `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string; returns attachmentId and sha256 of local file)
 
 ## Exit Codes
 

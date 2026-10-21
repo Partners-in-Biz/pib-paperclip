@@ -90,7 +90,7 @@ async function run(argv, env, deps = {}) {
   // Resolve upload script path
   const scriptPath = env.PIB_UPLOAD_ARTIFACT_SCRIPT ||
     path.resolve(__dirname, '../../../../skills/paperclip/scripts/paperclip-upload-artifact.sh');
-  const result = spawn(scriptPath, [imagePath, '--issue-id', issue, '--step', step, '--output', 'json'], {
+  const result = spawn(scriptPath, [imagePath, '--issue-id', issue, '--title', step, '--output', 'json'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
