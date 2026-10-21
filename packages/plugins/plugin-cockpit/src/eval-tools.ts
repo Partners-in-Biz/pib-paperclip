@@ -63,7 +63,7 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
         const items = Array.isArray(p.items) ? (p.items as Array<{ scenarioId?: unknown; issueId?: unknown }>).filter((i) => typeof i.scenarioId === "string" && typeof i.issueId === "string").map((i) => ({ scenarioId: String(i.scenarioId), issueId: String(i.issueId) })) : [];
         if (items.length === 0) return fail("record needs items: [{scenarioId, issueId}] for the finished harness tasks.");
         const recordMode: "live" | "candidate" | "template" = p.mode === "template" ? "template" : mode;
-        const done = await recordEval(env, companyId, { skill, mode: recordMode, candidateHash: text(p.candidateHash, 40), items });
+        const done = await recordEval(env, companyId, { skill, mode: recordMode, candidateHash: text(p.candidateHash, 40), templateKey: typeof p.templateKey === "string" ? p.templateKey : undefined, templateHash: text(p.templateHash, 64), items });
         const graded = done.recorded.filter((r) => r.state === "graded");
         const passed = graded.filter((r) => r.passed).length;
         const pending = done.recorded.filter((r) => r.state === "not-done").length;

@@ -35,7 +35,7 @@ export interface Pg {
   stop: () => Promise<void>;
 }
 
-export async function startPg(): Promise<Pg> {
+export async function startPg(opts?: { upTo?: string }): Promise<Pg> {
   const { default: EmbeddedPostgres } = (await import(EMBEDDED)) as { default: new (opts: Record<string, unknown>) => { initialise: () => Promise<void>; start: () => Promise<void>; stop: () => Promise<void>; getPgClient: () => PgClient } };
   const dir = mkdtempSync(join(tmpdir(), "ads-pg-"));
   const port = await freePort();
@@ -48,6 +48,7 @@ export async function startPg(): Promise<Pg> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   const migrations = join(PLUGIN_ROOT, "migrations");
   for (const file of readdirSync(migrations).sort()) {
+    if (opts?.upTo && file.slice(0, 3) > opts.upTo) continue;
     const sql = readFileSync(join(migrations, file), "utf8");
     validateMigration(sql, NAMESPACE, []);
     await client.query(sql);

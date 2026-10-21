@@ -12,10 +12,10 @@ const NEW_TOOLS = [...ESIGN_TOOLS, ...GROWTH_TOOLS];
 
 describe("what 0.14.0 declares", () => {
   it("is the next version, in the package and the manifest", async () => {
-    expect(PLUGIN_VERSION).toBe("0.22.1");
-    expect(manifest.version).toBe("0.22.1");
+    expect(PLUGIN_VERSION).toBe("0.24.1");
+    expect(manifest.version).toBe("0.24.1");
     const pkg = JSON.parse((await import("node:fs")).readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(pkg.version).toBe("0.22.1");
+    expect(pkg.version).toBe("0.24.1");
   });
 
   it("adds no capability and no core table: the host already lets this plugin do all of it", () => {
@@ -31,7 +31,7 @@ describe("what 0.14.0 declares", () => {
 
   it("declares three public endpoints, each its own key, and the same jobs as before (the new work rides in the care job)", () => {
     expect((manifest.webhooks ?? []).map((hook) => hook.endpointKey)).toEqual(["lead", "sign", "ev"]);
-    expect((manifest.jobs ?? []).map((job) => job.jobKey)).toEqual(["open-due-steps", "redeliver-mail", "held-leads", "emit-recent", "emit-all", "setup-status", "sales-daily", "services-check", "site-monitor", "client-care", "client-health", "client-report-monthly", "sales-weekly"]);
+    expect((manifest.jobs ?? []).map((job) => job.jobKey)).toEqual(["open-due-steps", "redeliver-mail", "held-leads", "emit-recent", "emit-all", "setup-status", "sales-daily", "services-check", "site-monitor", "client-care", "client-health", "client-report-monthly", "sales-weekly", "own-metrics"]);
   });
 
   it("declares every new tool once, with every parameter described and no extra parameters accepted", () => {

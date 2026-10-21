@@ -61,6 +61,7 @@ export const RUN_PROFILES: Record<TeamRoleKey, RunProfile> = {
   "inbound-qualifier": haiku({ hermes: HERMES_FLASH_MODEL, maxTurnsPerRun: 120, maxConcurrentRuns: 4 }),
   "crm-data-steward": haiku({ hermes: HERMES_FLASH_MODEL, maxTurnsPerRun: 150 }),
   "deal-desk": sonnet(),
+  "revenue-lead": sonnet({ hermes: HERMES_FLASH_MODEL }),
   "seo-specialist": sonnet({ hermes: HERMES_FLASH_MODEL, maxConcurrentRuns: 6 }),
   social: sonnet(),
   bookkeeper: sonnet({ maxTurnsPerRun: 250 }),
