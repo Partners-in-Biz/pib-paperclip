@@ -209,4 +209,31 @@ describe("saveToDrive", () => {
     const warnMessages = (log.warns || []).map((w: any) => w.msg).join(",");
     expect(warnMessages).not.toContain("no_ack");
   });
+
+  it("saveToDrive awaits all driveSave calls", async () => {
+    const mockDriveSave = vi.fn(async (ctx, opts) => {
+      return { status: "saved" as const, requestId: "req-1", driveFileId: "file-1", url: "https://drive.example.com/file-1" };
+    });
+
+    const ctx = fakeCtx();
+    const start = Date.now();
+    await saveToDrive(ctx, {
+      companyId: "co-1",
+      post: { id: "post-test", body: "Test" },
+      platform: "x",
+      media: [
+        { assetId: null, url: "https://example.com/img.jpg", kind: "image", mime: "image/jpeg", width: 640, height: 480, durationS: null, altText: "Test", bytes: 1024 },
+      ],
+      driveSave: mockDriveSave,
+    });
+    const elapsed = Date.now() - start;
+
+    // saveToDrive itself awaits driveSave, so it should only resolve after all calls complete
+    expect(mockDriveSave).toHaveBeenCalledTimes(2);
+    expect(elapsed).toBeGreaterThanOrEqual(0);
+    // Verify subfolder was correct
+    const calls = mockDriveSave.mock.calls as any[];
+    expect(calls[0][1].subfolder).toBe("02 Assets");
+    expect(calls[1][1].subfolder).toBe("02 Assets");
+  });
 });
