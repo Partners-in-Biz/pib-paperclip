@@ -19,6 +19,7 @@ import {
   parseClientParam,
   redeliver,
   registerCrmProjection,
+  registerDriveReplies,
   checkDoneOnUpdate,
   registerCompanyBootstrap,
   registerModuleWatch,
@@ -374,6 +375,7 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
+    registerDriveReplies(ctx);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
