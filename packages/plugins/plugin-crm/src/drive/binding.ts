@@ -6,7 +6,21 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { readConfig, SecretResolver, PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
+
+/** Drive binding event emitted by CRM after binding changes */
+export const DRIVE_BINDING_EVENT = pluginEvent(PIB_PLUGINS.crm, "drive.binding");
+
+/** Interface for the drive.binding event payload */
+export interface DriveBindingEventPayload {
+  companyId: string;
+  connected: boolean; // bound || stored candidates non-empty
+  bound: boolean;
+  sharedDriveId?: string;
+  serviceAccountEmail?: string;
+  serviceAccountIsMember: boolean;
+  candidates: Array<{ id: string; name: string }>;
+}
 
 // State key structure for company-scoped binding and candidates
 const BINDING_STATE_KEY = (companyId: string) => ({
@@ -36,6 +50,22 @@ interface DriveBindingStatusResult {
   serviceAccountEmail?: string;
   serviceAccountIsMember: boolean;
   identityError?: string;
+}
+
+/** Helper to emit drive.binding event. Failures do not fail the tool. */
+async function emitBindingEvent(
+  ctx: PluginContext,
+  companyId: string,
+  payload: DriveBindingEventPayload,
+): Promise<void> {
+  try {
+    await ctx.events.emit(DRIVE_BINDING_EVENT, companyId, payload as unknown as Record<string, unknown>);
+  } catch (error) {
+    ctx.logger.info("drive.binding event emit failed (non-fatal)", {
+      companyId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** Extract config-pinned sharedDriveId. */
@@ -108,6 +138,14 @@ export async function driveBindingDiscover(
 
   // Report existing binding if config-pinned (highest precedence)
   if (isConfigPinned) {
+    await emitBindingEvent(ctx, companyId, {
+      companyId,
+      connected: true,
+      bound: true,
+      sharedDriveId: configSharedDriveId,
+      serviceAccountIsMember: false,
+      candidates: drives,
+    });
     return {
       bound: true,
       sharedDriveId: configSharedDriveId,
@@ -120,6 +158,14 @@ export async function driveBindingDiscover(
   const existingBinding = await ctx.state.get(BINDING_STATE_KEY(companyId));
   if (existingBinding && typeof existingBinding === "object") {
     const binding = existingBinding as BindingState;
+    await emitBindingEvent(ctx, companyId, {
+      companyId,
+      connected: true,
+      bound: true,
+      sharedDriveId: binding.sharedDriveId,
+      serviceAccountIsMember: false,
+      candidates: drives,
+    });
     return {
       bound: true,
       sharedDriveId: binding.sharedDriveId,
@@ -141,6 +187,14 @@ export async function driveBindingDiscover(
       setBoundAt: new Date().toISOString(),
     };
     await ctx.state.set(BINDING_STATE_KEY(companyId), newBinding);
+    await emitBindingEvent(ctx, companyId, {
+      companyId,
+      connected: true,
+      bound: true,
+      sharedDriveId: match.id,
+      serviceAccountIsMember: false,
+      candidates: drives,
+    });
     return {
       bound: true,
       sharedDriveId: match.id,
@@ -150,6 +204,13 @@ export async function driveBindingDiscover(
   }
 
   // Multiple or no matches: don't set, just return candidates
+  await emitBindingEvent(ctx, companyId, {
+    companyId,
+    connected: drives.length > 0,
+    bound: false,
+    serviceAccountIsMember: false,
+    candidates: drives,
+  });
   return {
     bound: false,
     candidates: drives,
@@ -192,6 +253,16 @@ export async function driveBindingSet(
   };
   await ctx.state.set(BINDING_STATE_KEY(companyId), newBinding);
 
+  // Emit binding event
+  await emitBindingEvent(ctx, companyId, {
+    companyId,
+    connected: true,
+    bound: true,
+    sharedDriveId,
+    serviceAccountIsMember: false,
+    candidates,
+  });
+
   return {
     bound: true,
     sharedDriveId,
@@ -216,6 +287,14 @@ export async function driveBindingStatus(
 
   // Always return basic status; only fetch identity if token is set
   if (!tokenSet) {
+    await emitBindingEvent(ctx, companyId, {
+      companyId,
+      connected: bound,
+      bound,
+      sharedDriveId,
+      serviceAccountIsMember: false,
+      candidates: [],
+    });
     return {
       bound,
       sharedDriveId,
@@ -234,6 +313,14 @@ export async function driveBindingStatus(
     const token = await resolver.get("driveBrokerToken");
     if (!token) {
       // No token available; return status without identity info
+      await emitBindingEvent(ctx, companyId, {
+        companyId,
+        connected: bound,
+        bound,
+        sharedDriveId,
+        serviceAccountIsMember: false,
+        candidates: [],
+      });
       return {
         bound,
         sharedDriveId,
@@ -263,6 +350,17 @@ export async function driveBindingStatus(
   } catch {
     identityError = "broker identity unavailable (network error)";
   }
+
+  // Emit event with available info (excluding secrets)
+  await emitBindingEvent(ctx, companyId, {
+    companyId,
+    connected: bound,
+    bound,
+    sharedDriveId,
+    serviceAccountEmail,
+    serviceAccountIsMember,
+    candidates: [],
+  });
 
   const response: DriveBindingStatusResult = {
     bound,
