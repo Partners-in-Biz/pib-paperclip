@@ -97,7 +97,7 @@ function FileGroupSection({ group }: { group: FileGroup }) {
 }
 
 /**
- * Display all saved Drive files for a project, grouped by folder.
+ * Display all saved Drive files for a project, grouped by subfolder.
  * Shows an empty state when no files are available, or an error state on failure.
  */
 export function DriveFiles({ projectId }: DriveFilesProps) {
@@ -125,7 +125,7 @@ export function DriveFiles({ projectId }: DriveFilesProps) {
         <p style={{ fontSize: "13px", color: tokens.muted, margin: 0 }}>No files saved yet.</p>
       ) : (
         groups.map((group) => (
-          <FileGroupSection key={group.folderId} group={group} />
+          <FileGroupSection key={group.subfolder ?? "root"} group={group} />
         ))
       )}
     </div>

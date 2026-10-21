@@ -17,32 +17,58 @@ function driveFile(overrides: Partial<DriveFile> = {}): DriveFile {
     driveFileId: "drive-f1",
     webUrl: "https://drive.google.com/file/d/abc/view",
     sourcePlugin: "crm",
+    subfolder: null,
     createdAt: NOW,
     ...overrides,
   };
 }
 
 describe("listClientFiles", () => {
-  it("groups files by folder_id and filters non-https URLs", () => {
+  it("groups files by subfolder and filters non-https URLs", () => {
     const files = [
-      driveFile({ folderId: "f1" }),
-      driveFile({ folderId: "f2", webUrl: "http://bad.com" }),
+      driveFile({ subfolder: "03 Deliverables" }),
+      driveFile({ subfolder: "03 Deliverables", webUrl: "http://bad.com" }),
     ];
     const groups = listClientFiles(files);
     expect(groups).toHaveLength(1);
-    expect(groups[0]!.label).toBe("Other files");
+    expect(groups[0]!.label).toBe("03 Deliverables");
   });
 
-  it("orders files by creation date (newest first)", () => {
-    const older = driveFile({ name: "old.pdf", createdAt: "2026-10-19T00:00:00Z" });
-    const newer = driveFile({ name: "new.pdf" });
+  it("orders groups by subfolder number ascending, null subfolders last", () => {
+    const files = [
+      driveFile({ subfolder: "03 Deliverables" }),
+      driveFile({ subfolder: "01 Briefs" }),
+      driveFile({ subfolder: null }),
+    ];
+    const groups = listClientFiles(files);
+    expect(groups).toHaveLength(3);
+    expect(groups[0]!.label).toBe("01 Briefs");
+    expect(groups[1]!.label).toBe("03 Deliverables");
+    expect(groups[2]!.label).toBe("Project root files");
+  });
+
+  it("orders files by creation date (newest first) within each group", () => {
+    const older = driveFile({ name: "old.pdf", subfolder: "03 Deliverables", createdAt: "2026-10-19T00:00:00Z" });
+    const newer = driveFile({ name: "new.pdf", subfolder: "03 Deliverables" });
     const groups = listClientFiles([older, newer]);
     expect(groups[0]!.files[0]!.name).toBe("new.pdf");
+    expect(groups[0]!.files[1]!.name).toBe("old.pdf");
   });
 
   it("excludes groups with no https URLs", () => {
-    const files = [driveFile({ webUrl: "http://bad.com" })];
+    const files = [driveFile({ subfolder: "03 Deliverables", webUrl: "http://bad.com" })];
     expect(listClientFiles(files)).toHaveLength(0);
+  });
+
+  it("handles unknown subfolder strings by placing them in root group", () => {
+    const files = [
+      driveFile({ subfolder: "invalid folder name" }),
+      driveFile({ subfolder: "01 Briefs" }),
+    ];
+    const groups = listClientFiles(files);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.label).toBe("01 Briefs");
+    expect(groups[1]!.label).toBe("invalid folder name");
   });
 });
 
@@ -82,6 +108,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f1",
         web_url: "https://drive.google.com/file/d/abc/view",
         source_plugin: "crm",
+        subfolder: "03 Deliverables",
         created_at: NOW,
       },
       {
@@ -95,6 +122,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f2",
         web_url: "https://drive.google.com/file/d/def/view",
         source_plugin: "crm",
+        subfolder: "03 Deliverables",
         created_at: NOW,
       },
     ];
@@ -120,6 +148,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f1",
         web_url: "https://drive.google.com/file/d/abc/view",
         source_plugin: "crm",
+        subfolder: "03 Deliverables",
         created_at: NOW,
       },
       {
@@ -133,6 +162,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f2",
         web_url: "http://example.com/file",
         source_plugin: "crm",
+        subfolder: "03 Deliverables",
         created_at: NOW,
       },
     ];

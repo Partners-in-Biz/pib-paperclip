@@ -1,6 +1,6 @@
 /**
- * Pure function to list client project files grouped by folder.
- * No database context or side effects. Groups drive files by folder_id.
+ * Pure function to list client project files grouped by subfolder.
+ * No database context or side effects. Groups drive files by subfolder value.
  */
 import type { DriveFile } from "./store.js";
 
@@ -12,9 +12,9 @@ export interface ClientFile {
 }
 
 export interface FileGroup {
-  folderId: string;
+  subfolder: string | null;
   label: string;
-  sortNumber: number; // For ordering: 1-5, 99, or 999 for unmapped
+  sortNumber: number; // For ordering: 1-5, 99, or 999 for root files
   files: ClientFile[];
 }
 
@@ -47,9 +47,20 @@ function mapToClientFiles(files: DriveFile[]): ClientFile[] {
 }
 
 /**
- * List and group drive files by folder. Files are ordered by creation date
- * (newest first) within each group. Currently, most files are saved to the
- * project root folder, so typically one group labeled "Other files".
+ * Extract the leading number from a subfolder name (e.g. "03 Deliverables" -> 3).
+ * Returns 999 for null/unknown subfolders, indicating they should appear last.
+ */
+function getSortNumber(subfolder: string | null): number {
+  if (!subfolder) return 999;
+  const match = subfolder.match(/^(\d+)/);
+  return match ? parseInt(match[1], 10) : 999;
+}
+
+/**
+ * List and group drive files by subfolder. Files are ordered by creation date
+ * (newest first) within each group. Files are grouped by their saved subfolder
+ * value (e.g. "03 Deliverables"). Files with null/unknown subfolder are grouped
+ * in "Project root files" and appear last.
  *
  * Files with non-https URLs are filtered out and not returned.
  *
@@ -57,22 +68,25 @@ function mapToClientFiles(files: DriveFile[]): ClientFile[] {
  * @returns Array of grouped and sorted FileGroup objects
  */
 export function listClientFiles(files: DriveFile[]): FileGroup[] {
-  const byFolder = new Map<string, DriveFile[]>();
+  const bySubfolder = new Map<string | null, DriveFile[]>();
   for (const file of files) {
-    if (!byFolder.has(file.folderId)) {
-      byFolder.set(file.folderId, []);
+    const key = file.subfolder ?? null;
+    if (!bySubfolder.has(key)) {
+      bySubfolder.set(key, []);
     }
-    byFolder.get(file.folderId)!.push(file);
+    bySubfolder.get(key)!.push(file);
   }
 
   const groups: FileGroup[] = [];
-  for (const [folderId, folderFiles] of byFolder.entries()) {
-    const clientFiles = mapToClientFiles(folderFiles);
+  for (const [subfolder, subfolderFiles] of bySubfolder.entries()) {
+    const clientFiles = mapToClientFiles(subfolderFiles);
     if (clientFiles.length > 0) {
+      const sortNumber = getSortNumber(subfolder);
+      const label = subfolder || "Project root files";
       groups.push({
-        folderId,
-        label: "Other files",
-        sortNumber: 999,
+        subfolder,
+        label,
+        sortNumber,
         files: clientFiles.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
       });
     }
