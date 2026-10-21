@@ -83,16 +83,21 @@ export function lifetimeBudgetMinor(p: Pick<ProposalRow, "kind" | "payload" | "i
   return null;
 }
 
+/** Determine if Elon can approve (within threshold) or if Peet is required from a spend amount. */
+export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, lifetimeMinor: number | null): OwnerRoute {
+  const threshold = ownerThresholdMinor(scope);
+  const route: OwnerRoute["route"] = lifetimeMinor === null || lifetimeMinor > threshold ? "peet_required" : "elon";
+  return {
+    route,
+    lifetimeMinor,
+    thresholdMinor: threshold,
+  };
+}
+
 /** Determine if Elon can approve (within threshold) or if Peet is required. */
 export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, p: Pick<ProposalRow, "kind" | "payload" | "impact">): OwnerRoute {
   const lifetime = lifetimeBudgetMinor(p);
-  const threshold = ownerThresholdMinor(scope);
-  const route: OwnerRoute["route"] = lifetime === null || lifetime > threshold ? "peet_required" : "elon";
-  return {
-    route,
-    lifetimeMinor: lifetime,
-    thresholdMinor: threshold,
-  };
+  return routeForSpend(scope, lifetime);
 }
 
 /** Extract owner route from proposal impact object. */
