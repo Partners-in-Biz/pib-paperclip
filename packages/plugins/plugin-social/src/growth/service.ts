@@ -12,7 +12,14 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig } from "@partnersinbiz/pib-plugin-kit";
+import {
+  decide, decideMany, recordVerdict, starterPlaybook, type ClientScope, type DecisionClientConfig,
+  approveExperiment as kitApproveExperiment, abandonExperiment as kitAbandonExperiment, decidePlaybookChange as kitDecidePlaybookChange,
+  proposeExperiment as kitProposeExperiment, rejectExperiment as kitRejectExperiment, listExperimentsRecord as kitListExperimentsRecord,
+  proposePlaybookChange as kitProposePlaybookChange, getPlaybookRecord as kitGetPlaybookRecord, savePlaybookRecord as kitSavePlaybookRecord,
+  ensureProgram as kitEnsureProgram, programForParams as kitProgramForParams, updateProgramRecord as kitUpdateProgramRecord,
+  experimentStatuses as kitExperimentStatuses, OPEN_EXPERIMENTS, published, EXPERIMENT_STATUS_VALUES,
+} from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
 import { ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
@@ -43,6 +50,40 @@ export function growthEnv(ctx: PluginContext, store: GrowthStore = sqlGrowthStor
   return { ctx, store, now: () => new Date() };
 }
 
+// Helper to wrap an env for the kit service functions
+function wrapKitEnv(env: GrowthEnv): any {
+  return {
+    ...env,
+    issuePort: (companyId: string) => issuePort(env),
+    starterPlaybook: (target: any) => {
+      const title = target.scope ? `${target.name ?? target.scope.id} social` : "PiB social";
+      return starterPlaybook(title).replace("(what we optimise, in one sentence)", E.DEFAULT_OBJECTIVE);
+    },
+    programOut,
+    experimentOut,
+    changeOut,
+    experimentLines,
+    changeLines,
+    actorLabel,
+    timezone: () => "UTC", // Will be overridden in wrapKitEnvWithConfig
+    buildApprovalInput: async (program: any, week: string, lines: string[], scope: any) => {
+      const config = await loadSocialConfig(env.ctx, program.companyId);
+      return {
+        companyId: program.companyId,
+        projectId: await projectIdFor(env.ctx, program.companyId, scope),
+        title: approvalIssueTitle(program, week),
+        description: approvalIssueDescription(program, lines, await socialPath(env.ctx, program.companyId, { tab: "growth" }, scope)),
+        priority: "medium",
+        originKind: ORIGIN_KIND,
+        originId: `${SOCIAL_ORIGINS.growth}${program.id}:${week}`,
+        assigneeUserId: await personAssignee(env.ctx, program.companyId, program.ownerUserId),
+        wake: false,
+      };
+    },
+    socialScopes: (ctx: PluginContext) => socialScopes(ctx),
+  };
+}
+
 /** Who acts (the plugin Viewer fits). */
 export interface GrowthActor {
   companyId: string;
@@ -52,8 +93,6 @@ export interface GrowthActor {
 }
 
 type Params = Record<string, unknown>;
-
-const OPEN_EXPERIMENTS: Experiment["status"][] = ["proposed", "running"];
 
 function actorId(a: GrowthActor): string {
   return a.isAgent ? `agent:${a.agentId ?? "unknown"}` : `user:${a.userId ?? "unknown"}`;
@@ -88,62 +127,22 @@ function requirePerson(actor: GrowthActor, what: string): string {
 
 // ── Programs ────────────────────────────────────────────────────────────────
 
-export interface ProgramTarget {
-  scope: ClientScope;
-  name: string | null;
-}
-
-export function targetOfResolved(r: ResolvedScope): ProgramTarget {
+export function targetOfResolved(r: ResolvedScope): { scope: ClientScope; name: string | null } {
   return { scope: r.scope, name: r.client?.name ?? null };
 }
 
-export function targetOfRow(row: { client_kind?: string | null; client_ref?: string | null; client_name?: string | null }): ProgramTarget {
+export function targetOfRow(row: { client_kind?: string | null; client_ref?: string | null; client_name?: string | null }): { scope: ClientScope; name: string | null } {
   return { scope: scopeOfRow(row), name: row.client_ref ? row.client_name ?? null : null };
 }
 
-function starter(target: ProgramTarget): string {
-  const title = target.scope ? `${target.name ?? target.scope.id} social` : "PiB social";
-  return starterPlaybook(title).replace("(what we optimise, in one sentence)", E.DEFAULT_OBJECTIVE);
-}
-
 /** The program for a scope, created on first use with the kit starter playbook. */
-export async function ensureProgram(env: GrowthEnv, companyId: string, target: ProgramTarget): Promise<Program> {
-  const found = await env.store.findProgram(companyId, E.GROWTH_CHANNEL, target.scope);
-  if (found) {
-    if (target.scope && target.name && found.clientName !== target.name) await env.store.updateProgram(companyId, found.id, { clientName: target.name });
-    return found;
-  }
-  const id = randomUUID();
-  const playbook = starter(target);
-  await env.store.insertProgram({
-    id,
-    companyId,
-    clientKind: target.scope?.kind ?? null,
-    clientRef: target.scope?.id ?? null,
-    clientName: target.scope ? target.name : null,
-    channel: E.GROWTH_CHANNEL,
-    objective: E.DEFAULT_OBJECTIVE,
-    metric: E.DEFAULT_METRIC,
-    constraints: {},
-    playbook,
-    playbookVersion: 1,
-    autopilot: "safe",
-    scoreboard: {},
-    featureQuestions: [],
-    ownerUserId: null,
-  });
-  const created = await env.store.findProgram(companyId, E.GROWTH_CHANNEL, target.scope);
-  if (!created) throw new E.GrowthError("The growth program could not be created");
-  if (created.id === id) {
-    await env.store.insertPlaybookVersion({ programId: id, version: 1, playbook, reason: "Starter playbook", experimentId: null, createdBy: null });
-  }
-  return created;
+export async function ensureProgram(env: GrowthEnv, companyId: string, target: { scope: ClientScope; name: string | null }): Promise<Program> {
+  return kitEnsureProgram(wrapKitEnv(env), companyId, target);
 }
 
 /** The program named by `client` / `clientKind` + `clientRef` (own work when left out). Unknown clients are refused. */
 export async function programForParams(env: GrowthEnv, actor: GrowthActor, params: Params): Promise<Program> {
-  const resolved = await (env.scopes ?? socialScopes(env.ctx)).fromParams(actor.companyId, params);
-  return ensureProgram(env, actor.companyId, targetOfResolved(resolved));
+  return kitProgramForParams(wrapKitEnv(env), actor, params);
 }
 
 function programScope(program: Pick<Program, "clientKind" | "clientRef">): ClientScope {
@@ -238,8 +237,6 @@ async function closeIfDecided(env: GrowthEnv, companyId: string, programId: stri
   }
 }
 
-// ── Experiments ─────────────────────────────────────────────────────────────
-
 async function armCounts(env: GrowthEnv, e: Experiment) {
   const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
   const count = (arm: string) => {
@@ -249,11 +246,43 @@ async function armCounts(env: GrowthEnv, e: Experiment) {
   return { control: count("control"), variant: count("variant") };
 }
 
-function published(p: ExperimentPost): boolean {
-  return p.status === "published" || p.status === "partially_published";
+async function syncItems(env: GrowthEnv, e: Experiment, items: E.ItemState[]): Promise<void> {
+  const stored = new Map((await env.store.listItems(e.id)).map((i) => [i.postId, i]));
+  for (const item of items) {
+    const prev = stored.get(item.subjectId);
+    if (!prev || prev.arm !== item.arm || prev.value !== item.value) await env.store.upsertItem(e.id, item.arm, item.subjectId, item.value);
+    stored.delete(item.subjectId);
+  }
+  for (const postId of stored.keys()) await env.store.deleteItem(e.id, postId);
 }
 
-export function experimentOut(e: Experiment, counts?: Awaited<ReturnType<typeof armCounts>>) {
+async function keepChange(env: GrowthEnv, actor: GrowthActor, change: PlaybookChange, note: string | undefined, by?: string): Promise<number> {
+  const current = await env.store.getProgram(change.companyId, change.programId);
+  if (!current) throw new E.GrowthError("The growth program was not found");
+  const spec: E.ChangeSpec = { op: change.op, section: E.isSection(change.section) ? change.section : null, body: change.body };
+  E.applyPlaybookChange(current.playbook, spec); // validate before claiming
+  const decidedBy = by ?? actorId(actor);
+  if (!(await env.store.updateChange(change.companyId, change.id, { status: "kept", decidedBy, decisionNote: note }, true))) {
+    throw new E.GrowthError("This change was already decided");
+  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const program = await env.store.getProgram(change.companyId, change.programId);
+    if (!program) throw new E.GrowthError("The growth program was not found");
+    const next = E.applyPlaybookChange(program.playbook, spec);
+    if (await env.store.savePlaybook(change.companyId, change.programId, program.playbookVersion, next)) {
+      const version = program.playbookVersion + 1;
+      await env.store.insertPlaybookVersion({ programId: change.programId, version, playbook: next, reason: change.reason, experimentId: change.experimentId, createdBy: decidedBy });
+      await env.store.updateChange(change.companyId, change.id, { resultVersion: version }, false);
+      if (change.experimentId) await env.store.updateExperiment(change.companyId, change.experimentId, null, { playbookDecision: "kept" });
+      return version;
+    }
+  }
+  throw new E.GrowthError("The playbook changed while saving. Reload and try again.");
+}
+
+// ── Experiments ─────────────────────────────────────────────────────────────
+
+export function experimentOut(e: Experiment, counts?: any) {
   const outcome = e.outcome ?? {};
   return {
     experimentId: e.id,
@@ -283,139 +312,39 @@ export function experimentOut(e: Experiment, counts?: Awaited<ReturnType<typeof 
   };
 }
 
-async function startExperiment(env: GrowthEnv, e: Experiment, actor: GrowthActor, note: string | undefined): Promise<boolean> {
-  const now = env.now();
-  return env.store.updateExperiment(e.companyId, e.id, ["proposed"], {
-    status: "running",
-    approvedAt: now.toISOString(),
-    approvedBy: actorId(actor),
-    startedAt: now.toISOString(),
-    measureAfter: E.addDaysIso(now, E.MEASURE_CUTOFF_DAYS),
-    decisionNote: note,
-  });
+async function wrapKitEnvWithConfig(env: GrowthEnv, companyId: string): Promise<any> {
+  const config = await loadSocialConfig(env.ctx, companyId);
+  const baseEnv = wrapKitEnv(env);
+  return {
+    ...baseEnv,
+    timezone: () => config.timezone,
+  };
 }
 
 export async function proposeExperiment(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const program = await programForParams(env, actor, params);
-  const input = E.normalizeProposal(params);
-  const open = await env.store.listExperiments(actor.companyId, program.id, OPEN_EXPERIMENTS);
-  const blocker = E.proposalBlocker({
-    autopilot: actor.isAgent ? program.autopilot : program.autopilot === "off" ? "safe" : program.autopilot,
-    running: open.filter((e) => e.status === "running").length,
-    proposed: open.filter((e) => e.status === "proposed").length,
-    openTypes: open.map((e) => e.hypothesisType),
-    hypothesisType: input.hypothesisType,
-  });
-  if (blocker) throw new E.GrowthError(blocker);
-  const id = randomUUID();
-  await env.store.insertExperiment({
-    id,
-    companyId: actor.companyId,
-    programId: program.id,
-    hypothesis: input.hypothesis,
-    hypothesisType: input.hypothesisType,
-    variable: input.variable,
-    arms: input.arms,
-    metric: program.metric,
-    minPerArm: input.minPerArm,
-    windowDays: input.windowDays,
-    status: "proposed",
-    proposedBy: actorId(actor),
-  });
-  let e = (await env.store.getExperiment(actor.companyId, id))!;
-  let message: string;
-  if (program.autopilot === "full") {
-    await startExperiment(env, e, actor, "Started on full autopilot");
-    message = "Full autopilot: the experiment is running. Tag this week's posts with experimentId and arm (control/variant).";
-  } else {
-    const config = await loadSocialConfig(env.ctx, actor.companyId);
-    const issueId = await announce(env, config, program, experimentLines(e));
-    if (issueId) await env.store.updateExperiment(actor.companyId, id, null, { approvalIssueId: issueId });
-    message = "Waiting for a person to approve it (it is on this week's approval issue). You can already tag draft posts with experimentId and arm; they count once it is approved.";
-  }
-  e = (await env.store.getExperiment(actor.companyId, id))!;
-  return { ...experimentOut(e), message };
-}
-
-async function requireExperiment(env: GrowthEnv, companyId: string, id: string): Promise<{ experiment: Experiment; program: Program }> {
-  const experiment = await env.store.getExperiment(companyId, id);
-  if (!experiment) throw new E.GrowthError(`Experiment ${id} was not found`);
-  const program = await env.store.getProgram(companyId, experiment.programId);
-  if (!program) throw new E.GrowthError("The experiment's program was not found");
-  return { experiment, program };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitProposeExperiment(wrappedEnv, actor, params);
 }
 
 export async function approveExperiment(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const { experiment, program } = await requireExperiment(env, actor.companyId, reqString(params, "experimentId"));
-  if (experiment.status !== "proposed") throw new E.GrowthError(`This experiment is already ${experiment.status}`);
-  if (actor.isAgent && !E.agentMayDecide(program.autopilot)) {
-    throw new E.GrowthError("Only a person approves experiments unless the program's autopilot is full. Leave it on the approval issue.");
-  }
-  const running = await env.store.listExperiments(actor.companyId, program.id, ["running"]);
-  if (running.length >= E.MAX_RUNNING) throw new E.GrowthError(`${E.MAX_RUNNING} experiments are already running for ${program.clientName ?? "own work"}. Wait for one to be measured, or abandon one.`);
-  const note = optString(params, "note", 1000);
-  if (!(await startExperiment(env, experiment, actor, note))) throw new E.GrowthError("The experiment changed while you were deciding. Reload and try again.");
-  await comment(env, actor.companyId, experiment.approvalIssueId, `Approved by ${actorLabel(actor)}: ${experiment.hypothesis}${note ? ` — ${note}` : ""}`);
-  await closeIfDecided(env, actor.companyId, program.id, experiment.approvalIssueId);
-  return { ...experimentOut((await env.store.getExperiment(actor.companyId, experiment.id))!), message: "Running. Tag posts with experimentId and arm; it is measured once each arm has its 7-day scores (or after 21 days)." };
-}
-
-async function clearTags(env: GrowthEnv, e: Experiment): Promise<number> {
-  const posts = await env.store.experimentPosts(e.companyId, e.id, E.SCORE_WINDOW);
-  for (const p of posts) {
-    await env.store.setPostExperiment(e.companyId, p.postId, null, null);
-    await env.store.deleteItem(e.id, p.postId);
-  }
-  return posts.length;
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitApproveExperiment(wrappedEnv, actor, params);
 }
 
 export async function rejectExperiment(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const { experiment, program } = await requireExperiment(env, actor.companyId, reqString(params, "experimentId"));
-  if (experiment.status !== "proposed") throw new E.GrowthError(`This experiment is already ${experiment.status}`);
-  if (actor.isAgent && !E.agentMayDecide(program.autopilot)) throw new E.GrowthError("Only a person rejects experiments unless the program's autopilot is full.");
-  const reason = reqString(params, "reason", 1000);
-  if (!(await env.store.updateExperiment(actor.companyId, experiment.id, ["proposed"], { status: "rejected", decisionNote: reason }))) {
-    throw new E.GrowthError("The experiment changed while you were deciding. Reload and try again.");
-  }
-  const untagged = await clearTags(env, experiment);
-  await comment(env, actor.companyId, experiment.approvalIssueId, `Rejected by ${actorLabel(actor)}: ${experiment.hypothesis} — ${reason}`);
-  await closeIfDecided(env, actor.companyId, program.id, experiment.approvalIssueId);
-  return { experimentId: experiment.id, status: "rejected", untaggedPosts: untagged };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitRejectExperiment(wrappedEnv, actor, params);
 }
 
 /** A person stops a proposed or running experiment. Tagged posts keep their tag as history. */
 export async function abandonExperiment(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  requirePerson(actor, "abandon an experiment");
-  const { experiment, program } = await requireExperiment(env, actor.companyId, reqString(params, "experimentId"));
-  if (!OPEN_EXPERIMENTS.includes(experiment.status)) throw new E.GrowthError(`This experiment is already ${experiment.status}`);
-  const reason = optString(params, "reason", 1000) ?? "Abandoned by a person";
-  if (!(await env.store.updateExperiment(actor.companyId, experiment.id, OPEN_EXPERIMENTS, { status: "abandoned", decisionNote: reason }))) {
-    throw new E.GrowthError("The experiment changed while you were deciding. Reload and try again.");
-  }
-  await closeIfDecided(env, actor.companyId, program.id, experiment.approvalIssueId);
-  return { experimentId: experiment.id, status: "abandoned" };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitAbandonExperiment(wrappedEnv, actor, params);
 }
 
 export async function listExperimentsRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const program = await programForParams(env, actor, params);
-  const statuses = experimentStatuses(params.status);
-  const list = await env.store.listExperiments(actor.companyId, program.id, statuses);
-  const out = [];
-  for (const e of list.slice(0, 50)) out.push(experimentOut(e, OPEN_EXPERIMENTS.includes(e.status) ? await armCounts(env, e) : undefined));
-  return { programId: program.id, client: programOut(program).client, scoreboard: program.scoreboard, experiments: out };
-}
-
-const EXPERIMENT_STATUS_VALUES: Experiment["status"][] = ["proposed", "running", "measured", "rejected", "abandoned"];
-
-/** `status` as a list of statuses, or the older comma-separated text. Unknown values are refused. */
-export function experimentStatuses(value: unknown): Experiment["status"][] | undefined {
-  if (value == null || value === "") return undefined;
-  const list = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(",") : null;
-  if (!list) throw new E.GrowthError(`status must be a list of: ${EXPERIMENT_STATUS_VALUES.join(", ")}`);
-  const out = list.map((s) => s.trim()).filter(Boolean);
-  const bad = out.find((s) => !(EXPERIMENT_STATUS_VALUES as string[]).includes(s));
-  if (bad) throw new E.GrowthError(`Unknown experiment status "${bad}" (use ${EXPERIMENT_STATUS_VALUES.join(", ")})`);
-  return out.length ? (out as Experiment["status"][]) : undefined;
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitListExperimentsRecord(wrappedEnv, actor, params);
 }
 
 /** Experiments a post in this scope can be tagged with (composer select). */
@@ -447,6 +376,9 @@ export interface TagPlan {
   previous: string | null;
   changed: boolean;
 }
+
+// Re-export from kit for backward compatibility
+export const experimentStatuses = kitExperimentStatuses;
 
 /**
  * Check a tag before anything is written: the experiment must be proposed or
@@ -492,16 +424,6 @@ export async function applyExperimentTag(env: GrowthEnv, companyId: string, post
 }
 
 // ── Measuring (daily job) ───────────────────────────────────────────────────
-
-async function syncItems(env: GrowthEnv, e: Experiment, items: E.ItemState[]): Promise<void> {
-  const stored = new Map((await env.store.listItems(e.id)).map((i) => [i.postId, i]));
-  for (const item of items) {
-    const prev = stored.get(item.subjectId);
-    if (!prev || prev.arm !== item.arm || prev.value !== item.value) await env.store.upsertItem(e.id, item.arm, item.subjectId, item.value);
-    stored.delete(item.subjectId);
-  }
-  for (const postId of stored.keys()) await env.store.deleteItem(e.id, postId);
-}
 
 export async function measureExperiment(env: GrowthEnv, config: SocialConfig, e: Experiment): Promise<"waiting" | "measured" | "skipped"> {
   const now = env.now();
@@ -583,10 +505,6 @@ export async function measureExperimentsJob(ctx: PluginContext, ensureCompany: (
 
 // ── Playbook ────────────────────────────────────────────────────────────────
 
-function changeSpec(c: PlaybookChange): E.ChangeSpec {
-  return { op: c.op, section: E.isSection(c.section) ? c.section : null, body: c.body };
-}
-
 export function changeOut(c: PlaybookChange) {
   return {
     changeId: c.id,
@@ -607,142 +525,33 @@ export function changeOut(c: PlaybookChange) {
   };
 }
 
-/** Write a new playbook version (guarded by the version it was based on). */
-async function writePlaybook(env: GrowthEnv, companyId: string, programId: string, edit: (playbook: string) => string, meta: { reason: string; experimentId: string | null; createdBy: string }): Promise<number> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const program = await env.store.getProgram(companyId, programId);
-    if (!program) throw new E.GrowthError("The growth program was not found");
-    const next = edit(program.playbook);
-    if (await env.store.savePlaybook(companyId, programId, program.playbookVersion, next)) {
-      const version = program.playbookVersion + 1;
-      await env.store.insertPlaybookVersion({ programId, version, playbook: next, reason: meta.reason, experimentId: meta.experimentId, createdBy: meta.createdBy });
-      return version;
-    }
-  }
-  throw new E.GrowthError("The playbook changed while saving. Reload and try again.");
-}
-
-async function keepChange(env: GrowthEnv, actor: GrowthActor, change: PlaybookChange, note: string | undefined, by?: string): Promise<number> {
-  const current = await env.store.getProgram(change.companyId, change.programId);
-  if (!current) throw new E.GrowthError("The growth program was not found");
-  const spec = changeSpec(change);
-  E.applyPlaybookChange(current.playbook, spec); // validate before claiming
-  const decidedBy = by ?? actorId(actor);
-  if (!(await env.store.updateChange(change.companyId, change.id, { status: "kept", decidedBy, decisionNote: note }, true))) {
-    throw new E.GrowthError("This change was already decided");
-  }
-  const version = await writePlaybook(env, change.companyId, change.programId, (playbook) => E.applyPlaybookChange(playbook, spec), {
-    reason: change.reason,
-    experimentId: change.experimentId,
-    createdBy: decidedBy,
-  });
-  await env.store.updateChange(change.companyId, change.id, { resultVersion: version }, false);
-  if (change.experimentId) await env.store.updateExperiment(change.companyId, change.experimentId, null, { playbookDecision: "kept" });
-  return version;
-}
-
 export async function decidePlaybookChange(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const change = await env.store.getChange(actor.companyId, reqString(params, "changeId"));
-  if (!change) throw new E.GrowthError("That playbook change was not found");
-  if (change.status !== "pending") throw new E.GrowthError(`This change was already ${change.status}`);
-  const program = await env.store.getProgram(actor.companyId, change.programId);
-  if (!program) throw new E.GrowthError("The growth program was not found");
-  if (actor.isAgent && !E.agentMayDecide(program.autopilot)) {
-    throw new E.GrowthError("Only a person keeps or discards playbook changes unless the program's autopilot is full. Leave it on the approval issue.");
-  }
-  const decision = params.decision;
-  if (decision !== "keep" && decision !== "discard") throw new E.GrowthError("decision must be keep or discard");
-  const note = optString(params, "note", 1000);
-  let version: number | null = null;
-  if (decision === "keep") {
-    version = await keepChange(env, actor, change, note);
-  } else {
-    if (!(await env.store.updateChange(actor.companyId, change.id, { status: "discarded", decidedBy: actorId(actor), decisionNote: note }, true))) {
-      throw new E.GrowthError("This change was already decided");
-    }
-    if (change.experimentId) await env.store.updateExperiment(actor.companyId, change.experimentId, null, { playbookDecision: "discarded" });
-  }
-  await comment(env, actor.companyId, change.approvalIssueId, `${decision === "keep" ? `Kept (playbook v${version})` : "Discarded"} by ${actorLabel(actor)}: ${change.diff}${note ? ` — ${note}` : ""}`);
-  await closeIfDecided(env, actor.companyId, program.id, change.approvalIssueId);
-  return { changeId: change.id, status: decision === "keep" ? "kept" : "discarded", playbookVersion: version ?? program.playbookVersion };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitDecidePlaybookChange(wrappedEnv, actor, params);
 }
 
 export async function proposePlaybookChange(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const program = await programForParams(env, actor, params);
-  if (actor.isAgent && program.autopilot === "off") throw new E.GrowthError("Growth autopilot is off for this program, so agents do not propose playbook changes.");
-  const spec = E.normalizeChange(params);
-  E.applyPlaybookChange(program.playbook, spec); // refuse a removal that does not match now
-  const reason = reqString(params, "reason", 500);
-  const pending = await env.store.listChanges(actor.companyId, program.id, "pending");
-  if (pending.length >= 10) throw new E.GrowthError("10 playbook changes are already waiting. Wait until they are decided.");
-  const id = randomUUID();
-  const diff = E.changeDiff(spec, program.playbook);
-  await env.store.insertChange({ id, companyId: actor.companyId, programId: program.id, experimentId: null, op: spec.op, section: spec.section, body: spec.body, diff, reason, baseVersion: program.playbookVersion, proposedBy: actorId(actor) });
-  const change = (await env.store.getChange(actor.companyId, id))!;
-  let message = "Full autopilot: decide it with decide-playbook-change.";
-  if (program.autopilot !== "full") {
-    const config = await loadSocialConfig(env.ctx, actor.companyId);
-    const issueId = await announce(env, config, program, changeLines(change));
-    if (issueId) await env.store.updateChange(actor.companyId, id, { approvalIssueId: issueId }, false);
-    message = "Waiting for a person to keep or discard it (it is on this week's approval issue).";
-  }
-  return { ...changeOut((await env.store.getChange(actor.companyId, id))!), message };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitProposePlaybookChange(wrappedEnv, actor, params);
 }
 
 /** A person edits the playbook directly: a new version at once. */
 export async function savePlaybookRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const userId = requirePerson(actor, "edit the playbook");
-  const program = await programForParams(env, actor, params);
-  const playbook = reqString(params, "playbook", 20_000);
-  const reason = optString(params, "reason", 500) ?? "Edited by a person";
-  const version = await writePlaybook(env, actor.companyId, program.id, () => `${playbook.trim()}\n`, { reason, experimentId: null, createdBy: `user:${userId}` });
-  return { programId: program.id, playbookVersion: version };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitSavePlaybookRecord(wrappedEnv, actor, params);
 }
 
 export async function getPlaybookRecord(env: GrowthEnv, actor: GrowthActor, params: Params, options: { versionText?: boolean } = {}) {
-  const program = await programForParams(env, actor, params);
-  const [versions, pending] = await Promise.all([
-    env.store.listPlaybookVersions(program.id, 10),
-    env.store.listChanges(actor.companyId, program.id, "pending"),
-  ]);
-  return {
-    ...programOut(program),
-    playbook: program.playbook,
-    versions: versions.map((v) => ({ version: v.version, reason: v.reason, experimentId: v.experimentId, createdBy: v.createdBy, createdAt: v.createdAt, ...(options.versionText ? { playbook: v.playbook } : {}) })),
-    pendingChanges: pending.map(changeOut),
-  };
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitGetPlaybookRecord(wrappedEnv, actor, params, options);
 }
 
 // ── Program settings and feature questions ─────────────────────────────────
 
-function topicList(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
-  const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[,\n]/) : null;
-  if (!raw) throw new E.GrowthError("topics must be a list (or comma-separated text)");
-  const topics = Array.from(new Set(raw.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean)));
-  if (topics.length > 30 || topics.some((t) => t.length > 60)) throw new E.GrowthError("Up to 30 topics, 60 characters each");
-  return topics;
-}
-
 /** People change the program: objective, autopilot, topics and constraints. */
 export async function updateProgramRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
-  const userId = requirePerson(actor, "change the growth program");
-  const program = await programForParams(env, actor, params);
-  const autopilot = params.autopilot;
-  if (autopilot !== undefined && !E.AUTOPILOT_MODES.includes(autopilot as E.Autopilot)) throw new E.GrowthError("autopilot must be off, safe or full");
-  const topics = topicList(params.topics);
-  const constraints: ProgramConstraints = { ...program.constraints };
-  if (topics) constraints.topics = topics;
-  for (const key of ["brandVoice", "platforms", "cadence"] as const) {
-    if (params[key] !== undefined) constraints[key] = optString(params, key, 1000) ?? "";
-  }
-  await env.store.updateProgram(actor.companyId, program.id, {
-    objective: optString(params, "objective", 500),
-    autopilot: autopilot as E.Autopilot | undefined,
-    constraints,
-    ownerUserId: userId,
-  });
-  return programOut((await env.store.getProgram(actor.companyId, program.id))!);
+  const wrappedEnv = await wrapKitEnvWithConfig(env, actor.companyId);
+  return kitUpdateProgramRecord(wrappedEnv, actor, params);
 }
 
 export async function proposeFeatureQuestion(env: GrowthEnv, actor: GrowthActor, params: Params) {
