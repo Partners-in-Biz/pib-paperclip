@@ -23,7 +23,7 @@ export const GROWTH_TOOLS: PluginToolDeclaration[] = [
     name: GROWTH_TOOL_NAMES.recordMetric,
     displayName: "Record a growth metric",
     description:
-      "Record one channel number for one scope and window (e.g. website conversions for client:company:<id> in 2026-W41). The same channel, scope, metric and window keeps one number: calling again replaces it, so a retry never double counts.",
+      "Record one channel number for one scope and window (e.g. website conversions for client:company:<id> in 2026-W41). The same channel, scope, metric and window keeps one number: calling again replaces it, so a retry never double counts. With experimentId and arm, the number is written first and then the tag: if the tag write fails the number stays, and the same call again fixes the tag.",
     parametersSchema: schema(["channel", "subject", "metric", "window", "value"], {
       channel: { type: "string", maxLength: 60, description: "The channel, e.g. website, aso, book, revenue, social, seo, campaigns." },
       subject: { type: "string", description: SCOPE },
