@@ -24,6 +24,10 @@ import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, is
 import { currentSignoffs, outcomesForPost, recordOutcome, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
 import { validatePostRow } from "./validate.js";
+import { growthEnv } from "./growth/host.js";
+import { effectiveMediaRule } from "./growth/service.js";
+import type { Experiment } from "./growth/store.js";
+import type { MediaExperiment } from "@partnersinbiz/pib-plugin-kit";
 
 export interface SignoffState {
   policy: ApprovalPolicy;
@@ -193,7 +197,7 @@ export interface VerdictInput {
 }
 
 /** The Reviewer's verdict on a post in review. Only the company's Reviewer may record it. */
-export async function recordReviewerVerdict(ctx: PluginContext, companyId: string, post: PostRow, input: VerdictInput): Promise<{ recorded: boolean; verdict: string; next: string }> {
+export async function recordReviewerVerdict(ctx: PluginContext, companyId: string, post: PostRow, input: VerdictInput): Promise<{ recorded: boolean; verdict: string; next: string; refused?: boolean; blockers?: string[]; score?: number; warnings?: string[] }> {
   const reviewer = await reviewerAgentId(ctx, companyId);
   if (!reviewer) throw new SocialError("This company has no Reviewer set (Setup → Team), so there is nobody to record a review verdict.");
   if (reviewer !== input.agentId) throw new SocialError("Only the Reviewer records a review verdict. You draft and send posts for review.");
@@ -201,14 +205,135 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
   const notes = input.notes?.trim() || null;
   if (input.verdict === "changes" && !notes) throw new SocialError("Say what has to change (notes): the Social agent works from your list.");
   const before = await signoffState(ctx, companyId, post);
-  await recordSignoff(ctx, companyId, post, before.hash, "reviewer", input.verdict === "pass" ? "approved" : "changes", "tool", { agentId: input.agentId }, notes);
-  const actor: ReviewActor = { companyId, userId: null, isAgent: true };
-  if (input.verdict === "changes") {
-    await sendBackForChanges(ctx, companyId, post, "The Reviewer", notes ?? "", false);
-    return { recorded: true, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
+
+  // For "pass", run the creative rubric and check media rule enforcement
+  if (input.verdict === "pass") {
+    const { scoreCreative } = await import("@partnersinbiz/pib-plugin-kit");
+    const destinations = await destinationsForPost(ctx, post.id);
+    const accounts = await getAccountsByIds(ctx, companyId, destinations.map((d) => d.account_id));
+    const platforms = accounts.map((a) => a.platform).filter((p): p is "linkedin" | "instagram" | "facebook" | "x" | "email" | "web" => ["linkedin", "instagram", "facebook", "x", "email", "web"].includes(p));
+
+    // No destinations: return pass with warning
+    if (platforms.length === 0) {
+      return {
+        recorded: true,
+        verdict: "pass",
+        next: "No destinations to check. Add accounts if needed.",
+        warnings: ["No destinations to check"],
+      };
+    }
+
+    // Get the post's media and parse it
+    const media = (post.media as Array<{ kind?: string; altText?: string | null; durationSec?: number | null }> | unknown) || [];
+    const mediaArray = Array.isArray(media) ? media : [];
+
+    // Load the effective media rule for the post's scope
+    const env = growthEnv(ctx);
+    const scope = scopeOfRow(post);
+    const { rule: mediaRule, loadError: rubricLoadError } = await effectiveMediaRule(env, companyId, scope);
+
+    // Check if post is text-native based on tags
+    const postOverrides = post.overrides as Record<string, unknown> | null | undefined;
+    const postTags = (postOverrides?.tags as string[] | null | undefined) || [];
+    const textNative = Array.isArray(postTags) && postTags.includes("text-native");
+
+    // Load experiment if tagged (for control arm exemption)
+    let mediaExperiment: MediaExperiment | null = null;
+    if (post.experiment_id) {
+      try {
+        const exp = await env.store.getExperiment(companyId, post.experiment_id);
+        if (exp) {
+          // Map the full Experiment to MediaExperiment (only include needed fields)
+          mediaExperiment = {
+            id: exp.id,
+            status: exp.status,
+            hypothesisType: exp.hypothesisType,
+            minPerArm: exp.minPerArm,
+            noMediaPosts: 0, // Will be calculated by scoreCreative if needed
+          };
+        }
+      } catch {
+        // Experiment load failure is not fatal; just skip the exemption
+        mediaExperiment = null;
+      }
+    }
+
+    // Score the post for each platform and aggregate all blockers
+    let minScore = 100;
+    let allBlockers: Map<string, string> = new Map(); // blocker text -> platform list
+    let allWarnings: Set<string> = new Set();
+
+    for (const platform of platforms) {
+      const platformOverrides = postOverrides?.[platform] as Record<string, string> | undefined;
+      const result = scoreCreative({
+        platform,
+        text: platformOverrides?.text ?? post.body ?? "",
+        media: mediaArray,
+        mediaRule,
+        textNative,
+        experimentId: post.experiment_id ?? null,
+        arm: post.experiment_arm ?? null,
+        experiment: mediaExperiment,
+        tone: input.toneScore != null && input.toneReason?.trim() ? { score: input.toneScore, source: "reviewer", reason: input.toneReason } : (input.toneScore != null ? { score: input.toneScore, source: "reviewer" } : null),
+      });
+
+      minScore = Math.min(minScore, result.score);
+      result.blockers.forEach((b) => {
+        const key = b.text;
+        const current = allBlockers.get(key) || "";
+        allBlockers.set(key, current ? `${current}, ${platform}` : platform);
+      });
+      result.notes.forEach((w) => allWarnings.add(w));
+    }
+
+    // Format blockers: include platform prefix when multiple platforms have blockers
+    const blockersArray = Array.from(allBlockers.entries()).map(([text, platforms]) =>
+      platforms.length === 0 || platforms.split(", ").length === 1 ? text : `${text} (${platforms})`
+    );
+
+    const canPass = minScore >= 80 && blockersArray.length === 0;
+    const shouldBlock = mediaRule.enforce === "block" && !canPass;
+
+    // If rubric failed to load in block mode, use DEFAULT_MEDIA_RULE (advise) + warning + pass
+    // If in block mode and can't pass, refuse
+    if (shouldBlock) {
+      const nextAction = blockersArray.length > 0
+        ? `Fix these blockers with update-post and attach media with alt text if needed, then request review again: ${blockersArray.join("; ")}.`
+        : `Address the scoring issues and request review again. Score: ${minScore}.`;
+      return {
+        recorded: false,
+        verdict: "pass",
+        refused: true,
+        blockers: blockersArray,
+        score: minScore,
+        next: nextAction,
+      };
+    }
+
+    // Record the pass and include score and warnings
+    await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "tool", { agentId: input.agentId }, notes);
+    const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+    const progress = await afterSignoff(ctx, actor, post, withSignoff(before, "reviewer"), "A person");
+
+    const warnings = Array.from(allWarnings);
+    if (rubricLoadError) {
+      warnings.push(rubricLoadError);
+    }
+
+    return {
+      recorded: true,
+      verdict: "pass",
+      score: minScore,
+      warnings: warnings.length > 0 ? warnings : undefined,
+      next: progress.completed ? "Nothing else was needed: the post is approved." : `Handed on: ${stageList(progress.pending)} still has to approve. Nothing is posted until then.`,
+    };
   }
-  const progress = await afterSignoff(ctx, actor, post, withSignoff(before, "reviewer"), "A person");
-  return { recorded: true, verdict: "pass", next: progress.completed ? "Nothing else was needed: the post is approved." : `Handed on: ${stageList(progress.pending)} still has to approve. Nothing is posted until then.` };
+
+  // For "changes", don't run the rubric
+  await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "changes", "tool", { agentId: input.agentId }, notes);
+  const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+  await sendBackForChanges(ctx, companyId, post, "The Reviewer", notes ?? "", false);
+  return { recorded: true, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
 }
 
 /**
