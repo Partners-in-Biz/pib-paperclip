@@ -273,6 +273,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Every night at 04:00 UTC (06:00 SAST): for each company, if any push_log rows with status 'deferred' exist created since 22:00 SAST, sends one digest push titled \"N items waited overnight\" with url /cockpit, then marks those rows 'collapsed'. Idempotent.",
       schedule: "0 4 * * *",
     },
+    {
+      jobKey: JOBS.askDeadlines,
+      displayName: "Ask deadline sweep",
+      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
+      schedule: "*/15 * * * *",
+    },
   ],
   apiRoutes: [
     // Read by the Cockpit page itself and the Setup plugin (kit contracts).

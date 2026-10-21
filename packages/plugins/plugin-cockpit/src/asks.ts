@@ -176,6 +176,22 @@ export async function getAsk(env: Env, companyId: string, id: string): Promise<A
   return rows[0] ? rowFrom(rows[0]) : null;
 }
 
+export async function listCompaniesWithDueAsks(env: Env, nowIso: string): Promise<string[]> {
+  const rows = await env.ctx.db.query<{ company_id: string }>(
+    `SELECT DISTINCT company_id FROM ${TABLE} WHERE status = 'open' AND default_applied_at IS NULL AND deadline_at IS NOT NULL AND deadline_at <= $1`,
+    [nowIso],
+  );
+  return rows.map((r) => String(r.company_id));
+}
+
+export async function listDueAsks(env: Env, companyId: string, nowIso: string): Promise<AskRow[]> {
+  const rows = await env.ctx.db.query<Record<string, unknown>>(
+    `SELECT ${COLUMNS} FROM ${TABLE} WHERE company_id = $1 AND status = 'open' AND default_applied_at IS NULL AND deadline_at IS NOT NULL AND deadline_at <= $2 ORDER BY deadline_at ASC`,
+    [companyId, nowIso],
+  );
+  return rows.map(rowFrom);
+}
+
 export async function insertAsk(env: Env, row: AskRow): Promise<void> {
   await env.ctx.db.execute(
     `INSERT INTO ${TABLE} (id, company_id, issue_id, issue_identifier, issue_title, agent_id, return_agent_id, run_id, question, options, why, kind, links, steps, client_ref, due_by, owner_user_id, status, asked_at, updated_at, source, effect, default_after_hours, recommended, default_applied_at, default_policy, deadline_at)
@@ -556,7 +572,7 @@ async function answerAsk(env: Env, ask: AskRow, comment: { id: string; body: str
 export async function answerAskByPolicy(env: Env, companyId: string, askId: string, policy: string, answer: string): Promise<AskRow | null> {
   const ask = await getAsk(env, companyId, askId);
   if (!ask) return null;
-  if (ask.status !== "open") return ask; // idempotent: already closed, return as-is
+  if (ask.status !== "open") return null; // return null if already closed: caller must dedupe
   const result = await applyAnswer(env, ask, { kind: "policy", policy, answer });
   if (!result) return null; // closeAsk guard prevented the update
   return getAsk(env, companyId, askId); // return the updated ask

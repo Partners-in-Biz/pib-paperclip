@@ -309,7 +309,7 @@ export interface AskView {
 }
 
 /** An open ask as a "Waiting on you" item (`ask` set, so it sorts first and renders as a question). */
-export function askWaitingItem(ask: AskView): WaitingItem & { ask: WaitingAskInfo } {
+export function askWaitingItem(ask: AskView, escalatedAt?: string): WaitingItem & { ask: WaitingAskInfo } {
   return {
     key: `ask:${ask.id}`,
     title: ask.question,
@@ -318,7 +318,7 @@ export function askWaitingItem(ask: AskView): WaitingItem & { ask: WaitingAskInf
     issueId: ask.issueId,
     kind: ASK_WAITING_KIND[ask.kind],
     since: ask.askedAt,
-    ask: { id: ask.id, kind: ask.kind, question: ask.question, options: ask.options, why: ask.why, askedBy: ask.askedBy, askedAt: ask.askedAt, dueBy: ask.dueBy, clientName: ask.clientName },
+    ask: { id: ask.id, kind: ask.kind, question: ask.question, options: ask.options, why: ask.why, askedBy: ask.askedBy, askedAt: ask.askedAt, dueBy: ask.dueBy, clientName: ask.clientName, ...(escalatedAt ? { escalatedAt } : {}) },
   };
 }
 

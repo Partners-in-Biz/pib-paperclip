@@ -24,6 +24,8 @@ export const JOBS = {
   governor: "governor",
   /** Every night at 04:00 UTC (06:00 SAST): sends one digest push "N items waited overnight" for each company, collapsing the deferred rows. */
   pushDigest: "push-digest",
+  /** Every 15 minutes: sweeps asks with expired deadlines, applies standing policy or escalates to owner. */
+  askDeadlines: "ask-deadlines",
 } as const;
 
 export const ROUTINES = {
