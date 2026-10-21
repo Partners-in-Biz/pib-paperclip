@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
-import { planFolders, companyFolderName, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
+import { planFolders, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
@@ -38,6 +38,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       contentBase64: text("File content as base64 (mutually exclusive with path). Binary-safe."),
       path: text("Absolute local file path (mutually exclusive with contentBase64). Must be inside an allowed root. Max 5 MB."),
       sha256: text("Optional: hex-encoded sha256 to verify the file content after decode/read.", 64),
+      subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder within the project's Drive folder (01 Briefs, 02 Assets, 03 Deliverables, 04 Reports, 05 Evidence, 99 Archive). Omit to save to project root."),
       requestId: text("Optional: request ID for correlation.", 100),
     }),
   },
@@ -78,6 +79,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
   const id = params.entity_id as string;
+  const include_tree = params.include_tree as boolean | undefined; // Internal param: get tree for already-ensured folders
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
@@ -99,7 +101,8 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if (existing) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  // If folder exists and we don't need the tree with subfolders, return early
+  if (existing && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
 
   const facts = await loadDriveFacts(ctx, viewer, type, id);
   const siblings = await loadDriveSiblings(ctx, viewer, type, id);
@@ -125,7 +128,10 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   }
 
   if (!lastResult) throw new CrmError("No plan steps executed");
-  return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree };
+  // Use the tree from the last step (the leaf folder) which includes subfolders
+  // Fall back to accumulated tree if lastResult.tree is empty (broker may return [])
+  const finalTree = lastResult.tree?.length ? lastResult.tree : tree;
+  return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree: finalTree };
 }
 
 export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
@@ -332,6 +338,7 @@ export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: 
     contentBase64: params.contentBase64 as string | undefined,
     path: params.path as string | undefined,
     sha256: params.sha256 as string | undefined,
+    subfolder: params.subfolder as string | undefined,
     requestId: params.requestId as string | undefined,
   };
 
