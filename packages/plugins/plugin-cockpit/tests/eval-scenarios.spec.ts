@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { evalPrompt, gradeAnswer, scenarioHash, type Scenario } from "../src/eval-model.js";
 import { cockpitToolNames, RESULTS_FILE, SCENARIO_FILES, scenariosFor, scenarioSkills } from "../src/eval-scenarios.js";
 import { ownSkills } from "../src/evals.js";
+import { AGENT_EVALS } from "../src/eval-scenarios.js";
 
 type ToolDecl = { name: string; parametersSchema?: { properties?: Record<string, unknown> } };
 const PLUGINS = ["crm", "billing", "social", "seo", "campaigns", "mailbox", "accounting"] as const;
@@ -158,5 +159,263 @@ describe("the committed gate file", () => {
     expect(new Set(hashes).size).toBe(hashes.length);
     expect(scenariosFor("pib-operator").length).toBeGreaterThanOrEqual(4);
     expect(new Set(ownSkills().map((s) => s.hash)).size).toBe(ownSkills().length);
+  });
+});
+
+describe("eval scenario examples verification", () => {
+  it("all scenario files have scenarios with examples that pass/fail correctly", () => {
+    let totalScenariosWithExamples = 0;
+    for (const [agentKey, evalFile] of Object.entries(AGENT_EVALS)) {
+      const file = evalFile as any;
+      if (!file.scenarios || !Array.isArray(file.scenarios)) continue;
+
+      const scenariosWithExamples = (file.scenarios as Scenario[]).filter((s) => s.examples);
+      totalScenariosWithExamples += scenariosWithExamples.length;
+
+      for (const scenario of scenariosWithExamples) {
+        const examples = scenario.examples!;
+
+        // Pass example must pass
+        const passOutput = JSON.stringify({
+          plan: examples.pass.plan,
+          summary: examples.pass.summary ?? "",
+        });
+        const passResult = gradeAnswer(scenario, `\`\`\`json\n${passOutput}\n\`\`\``);
+        expect(
+          passResult.passed,
+          `${agentKey}/${scenario.id}: pass example should pass. Failures: ${passResult.checks
+            .filter((c) => !c.ok)
+            .map((c) => c.detail)
+            .join("; ")}`,
+        ).toBe(true);
+
+        // Fail example must fail
+        const failOutput = JSON.stringify({
+          plan: examples.fail.plan,
+          summary: examples.fail.summary ?? "",
+        });
+        const failResult = gradeAnswer(scenario, `\`\`\`json\n${failOutput}\n\`\`\``);
+        expect(failResult.passed, `${agentKey}/${scenario.id}: fail example should fail but passed`).toBe(false);
+      }
+    }
+    expect(totalScenariosWithExamples, "at least one agent eval file should have scenario examples").toBeGreaterThan(0);
+  });
+});
+
+describe("negation-handling forbids (PAR-4213)", () => {
+  it("planner forbid: negated phrases pass, explicit bad phrases fail", () => {
+    const plannerFile = AGENT_EVALS.planner as any;
+    const plannerScenario = (plannerFile.scenarios as Scenario[]).find((s) => s.id === "plan-names-risks-rollback-split");
+    expect(plannerScenario, "scenario not found").toBeDefined();
+    const s = plannerScenario!;
+
+    // Negated phrase should PASS (not trigger forbid)
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Not a single PR of 530 lines: split into child issues, with risks and a rollback plan",
+        },
+      ],
+      summary: "Split into child issues",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit bad phrase should FAIL (trigger forbid)
+    const badFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Merge this into development as one PR.",
+        },
+      ],
+      summary: "Single PR",
+    }));
+    expect(badFail.passed, "explicit bad phrase should fail").toBe(false);
+    expect(badFail.checks.some((c) => !c.ok && c.detail.includes("work over 400 lines must be split"))).toBe(true);
+  });
+
+  it("code-reviewer forbid: negated second-pass phrase passes", () => {
+    const reviewerFile = AGENT_EVALS["code-reviewer"] as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "all-findings-one-pass");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // Negated second-pass phrase should PASS
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED:\n(1) User profile: missing null check\n(2) Query issue: N+1 problem\n(3) API response: violates schema\n\nI will not post a second pass. Fix all three, then re-request review.",
+        },
+      ],
+      summary: "All findings, one pass",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated second-pass phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+  });
+
+  it("plan-critic forbid: negated approval phrase passes", () => {
+    const criticFile = AGENT_EVALS["plan-critic"] as any;
+    const criticScenario = (criticFile.scenarios as Scenario[]).find((s) => s.id === "fail-plan-no-qa-section");
+    expect(criticScenario, "scenario not found").toBeDefined();
+    const s = criticScenario!;
+
+    // Negated approval should PASS
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "What's missing\n\nThe plan has no Questions & Answers section. Not approved: no QA section found.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated approval phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+  });
+
+  it("code-reviewer forbid: drip-feed negations pass, actual drip-feed triggers forbid", () => {
+    const reviewerFile = AGENT_EVALS["code-reviewer"] as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "all-findings-one-pass");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // "I won't drip-feed" should PASS (negated)
+    const negatedDripPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED:\n(1) Missing null check\n(2) N+1 query issue\n(3) Schema violation\n\nI won't drip-feed. Fix all three.",
+        },
+      ],
+      summary: "All findings, one pass",
+    }));
+    expect(
+      negatedDripPass.passed,
+      `"I won't drip-feed" should pass. Failures: ${negatedDripPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "rather than drip-feeding" should PASS (negated)
+    const negatedDripFeedingPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED: Three issues found:\n(1) Null check\n(2) N+1\n(3) Schema\n\nRather than drip-feeding these, here's the full list.",
+        },
+      ],
+      summary: "All findings",
+    }));
+    expect(
+      negatedDripFeedingPass.passed,
+      `"rather than drip-feeding" should pass. Failures: ${negatedDripFeedingPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit bad phrase should FAIL
+    const badFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Issue 1: Null check needed\nIssue 2: N+1 problem\nIssue 3: Schema violation\n\nI will follow up with more details in my next pass.",
+        },
+      ],
+      summary: "One issue per comment",
+    }));
+    expect(badFail.passed, "explicit drip-feeding should fail").toBe(false);
+  });
+
+  it("plan-critic forbid: negated approval phrases pass, explicit approval fails", () => {
+    const criticFile = AGENT_EVALS["plan-critic"] as any;
+    const criticScenario = (criticFile.scenarios as Scenario[]).find((s) => s.id === "fail-plan-no-qa-section");
+    expect(criticScenario, "scenario not found").toBeDefined();
+    const s = criticScenario!;
+
+    // "cannot be approved" should PASS (negated with "be")
+    const cannotBeApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Missing Q&A section. This plan cannot be approved without it.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      cannotBeApprovedPass.passed,
+      `"cannot be approved" should pass. Failures: ${cannotBeApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "not yet approved" should PASS (negated with "yet")
+    const notYetApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The plan is not yet approved. No Q&A section found.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      notYetApprovedPass.passed,
+      `"not yet approved" should pass. Failures: ${notYetApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "isn't approved" should PASS (negated with "n't")
+    const isntApprovedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "This plan isn't approved due to missing Q&A section.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      isntApprovedPass.passed,
+      `"isn't approved" should pass. Failures: ${isntApprovedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "approved" should FAIL
+    const approvedFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "The plan looks solid. Approved for implementation.",
+        },
+      ],
+      summary: "Approved",
+    }));
+    expect(approvedFail.passed, "explicit approval should fail").toBe(false);
   });
 });
