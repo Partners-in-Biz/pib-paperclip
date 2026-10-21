@@ -30,7 +30,6 @@ export type DriveSaveOptions = {
   mimeType: string;
   subfolder?: DriveSubfolder;
   timeoutMs?: number;
-  subfolder?: string;
   client?: { kind: string; ref: string };
 } & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
 
