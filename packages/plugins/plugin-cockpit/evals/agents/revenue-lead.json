@@ -108,7 +108,7 @@
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "(?<!is )(?<!was )(?<!already )(?<!have )(?<!has )(?<!don't )(?<!not )(spend|budget|approve.*campaign|campaign.*approve)"}
+              "question": {"matches": "spend|budget|approve.*campaign|campaign.*approve"}
             },
             "reason": "budget approval under R500 goes to Elon, not the owner"
           }

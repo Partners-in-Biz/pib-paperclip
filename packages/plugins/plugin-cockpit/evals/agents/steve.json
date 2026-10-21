@@ -46,7 +46,7 @@
           "[Ee]lon|[Ss]trategy|premium|revenue"
         ],
         "mustNotSay": [
-          "\\b(I\\s+(?:will|am going to)\\s+(?:ask|contact|message|escalate)\\s+(?:to\\s+)?Peet)\\b"
+          "\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:ask|contact|message|escalate)\\s+(?:to\\s+)?Peet)\\b"
         ],
         "maxSteps": 3,
         "plainWriting": true
@@ -90,7 +90,7 @@
           "[Qq]4|roadmap|[Pp]rioritize|[Dd]ecide"
         ],
         "mustNotSay": [
-          "(?<!no )(?<!not )(?<!without )(?<!never )(?<!n't )\\b(I\\s+(?:will|'ll)\\s+(?:wait\\s+for|ask\\s+for\\s+approval|route\\s+(?:to|this\\s+to)))\\b"
+          "(?<!no )(?<!not )(?<!without )(?<!never )(?<!n't )\\b(I(?:\\s+will|'ll)\\s+(?:wait\\s+for|ask\\s+for\\s+approval|route\\s+(?:to|this\\s+to)))\\b"
         ],
         "maxSteps": 3
       }
