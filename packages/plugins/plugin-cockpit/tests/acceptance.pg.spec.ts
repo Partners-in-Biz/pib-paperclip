@@ -764,15 +764,15 @@ d("acceptance runs (Postgres)", () => {
       expect((await getRun(w.ctx, A, runId))!.state.abortReason).toContain("not the canary client");
     });
 
-    it("a release of the CRM asks for all six CRM journeys in one request, e-sign and the visit counter among them", async () => {
+    it("a release of the CRM asks for all seven CRM journeys in one request, e-sign and the visit counter among them", async () => {
       const w = await make();
       const status = (version: string) => ({ companyId: A, payload: { plugin: "partnersinbiz.crm", module: "crm", title: "CRM", version, items: [], checkedAt: NOW } });
       await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.13.0"));
       await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.14.0"));
       const requests = [...w.issues.values()].filter((i) => i.originKind === ORIGIN.acceptance);
       expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject({ title: "Acceptance request: 6 journeys (2026-10-04)", originId: "cockpit:acceptance:release:partnersinbiz.crm:0.14.0", assigneeAgentId: ACC });
-      for (const key of ["esign", "site-events", "lead-capture", "quote-to-invoice", "email-sequence-dry-run", "client-report"]) expect(requests[0]!.description).toContain(`\`${key}\``);
+      expect(requests[0]).toMatchObject({ title: "Acceptance request: 7 journeys (2026-10-04)", originId: "cockpit:acceptance:release:partnersinbiz.crm:0.14.0", assigneeAgentId: ACC });
+      for (const key of ["esign", "site-events", "lead-capture", "quote-to-invoice", "email-sequence-dry-run", "client-report", "support-case-nps"]) expect(requests[0]!.description).toContain(`\`${key}\``);
       expect(requests[0]!.description).toContain("Document prepared and sent for signature");
       expect(requests[0]!.description).toContain("Site visit counter");
       // The nightly request is still the lead form alone.
@@ -1303,6 +1303,66 @@ d("acceptance runs (Postgres)", () => {
       expect(refiled.data.failureIssues["mark-prospect"]).toBeDefined();
       const again = await call(w, "acceptance-report", { runId, file: true });
       expect(again.data.refiled).toBe(false);
+    });
+  });
+
+  describe("the support case and NPS journey (0.11.0)", () => {
+    const CASE = "c0ffee00-0000-4000-8000-000000000001";
+    const FB = "fb000000-0000-4000-8000-000000000001";
+    const canaryClient = { client: CANARY, contact: { ref: "contact:canary-contact-1a2b3c4d", email: "canary@canary.invalid" }, leadForm: { embed: { example: "https://paperclip.example/_plugins/u/ui/lead-example.html", curl: "curl -sS -X POST 'https://paperclip.example/api/lead'" } }, rules: ["draft only"] };
+    /** The low-score issue is made by the CRM while the run is open, in the host's table, where the Cockpit's net finds it; the others are the approval and the case's work issue. */
+    const issues = async (w: Hybrid): Promise<string> => {
+      w.issues.set("issue-nps", { id: "issue-nps", companyId: A, title: "Approve NPS request to PiB Canary Co", description: `Request for ${CANARY}`, status: "todo", assigneeAgentId: REV, identifier: "PAR-981", originKind: "plugin:partnersinbiz.crm" });
+      w.issues.set("issue-case", { id: "issue-case", companyId: A, title: "Support: Acceptance rehearsal r1 (PiB Canary Co)", description: `Case for ${CANARY}`, status: "todo", assigneeAgentId: AM, identifier: "PAR-982", originKind: "plugin:partnersinbiz.crm", originId: `crm:support-case:${CASE}` });
+      return strayIssue(w, "Unhappy client: PiB Canary Co scored 3", { assigneeUserId: null, assigneeAgentId: AM, originKind: "plugin:partnersinbiz.crm", originId: `crm:feedback-low:${FB}` });
+    };
+    const item = (over: Record<string, unknown> = {}) => ({ feedbackId: FB, kind: "nps", status: "draft", score: null, comment: null, requestedAt: null, answeredAt: null, ...over });
+    /** What each step returns when the CRM works (the shapes the CRM's own tools return). */
+    const outputs = (lowId: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      "ensure-canary": canaryClient,
+      "open-case": { created: true, caseId: CASE, client: CANARY, title: "Acceptance rehearsal r1: the canary cannot find its invoices", status: "new", source: "manual", severity: "normal", issueId: "issue-case" },
+      "list-case": { count: 1, cases: [{ caseId: CASE, source: "manual", status: "new" }] },
+      "request-feedback": { feedbackId: FB, kind: "nps", to: "Canary Contact <canary@canary.invalid>", approvalIssueId: "issue-nps" },
+      "feedback-is-draft": { care: { feedback: { items: [item()] } } },
+      "record-low-score": { feedbackId: FB, kind: "nps", score: 3, lowScoreIssue: true },
+      "find-low-score-issue": { issueId: lowId },
+      "feedback-answered": { care: { feedback: { items: [item({ status: "answered", score: 3, answeredAt: NOW })] } } },
+      cleanup: { cleaned: true, company: CANARY },
+      ...over,
+    });
+    const statuses = async (w: Hybrid, runId: string) => Object.fromEntries((await getRun(w.ctx, A, runId))!.state.steps.map((st) => [st.id, st.status]));
+
+    it("passes when the CRM works: the request is a draft behind the Reviewer's approval, a low score opens the issue, and the rehearsal's issues are cancelled", async () => {
+      const w = await make();
+      const low = await issues(w);
+      const { runId, last } = await work(w, "support-case-nps", outputs(low), { issueId: requestIssue(w), afterStart: () => w.clock.set(at(10)) });
+      expect(JSON.stringify((await getRun(w.ctx, A, runId))!.state.steps.filter((st) => st.status !== "passed").map((st) => [st.id, st.status, st.checks.filter((c) => !c.ok)]))).toBe("[]");
+      expect(last.data.status).toBe("passed");
+      expect((await getRun(w.ctx, A, runId))!.state.captures).toMatchObject({ caseId: CASE, feedbackId: FB });
+      expect(w.issues.get("issue-nps")!.status).toBe("cancelled");
+      expect(w.issues.get("issue-case")!.status).toBe("cancelled");
+      expect(w.issues.get(low)!.status).toBe("cancelled");
+    });
+
+    it("fails when the feedback request is not a draft (it was sent), and still cleans up", async () => {
+      const w = await make();
+      const low = await issues(w);
+      const { runId, last } = await work(w, "support-case-nps", outputs(low, { "feedback-is-draft": { care: { feedback: { items: [item({ status: "requested", requestedAt: NOW })] } } } }));
+      expect(last.data.status).toBe("failed");
+      expect(await statuses(w, runId)).toMatchObject({ "request-feedback": "passed", "feedback-is-draft": "failed", cleanup: "passed" });
+    });
+
+    it("fails when the NPS approval skipped the Reviewer, and when a low score opened no issue", async () => {
+      const w = await make();
+      const low = await issues(w);
+      w.issues.set("issue-nps", { ...w.issues.get("issue-nps")!, assigneeAgentId: AM });
+      const first = await work(w, "support-case-nps", outputs(low));
+      expect((await statuses(w, first.runId))["request-feedback"]).toBe("failed");
+      const w2 = await make();
+      const low2 = await issues(w2);
+      const second = await work(w2, "support-case-nps", outputs(low2), { errors: { "find-low-score-issue": "no feedback-low issue" } });
+      expect(second.last.data.status).toBe("failed");
+      expect(await statuses(w2, second.runId)).toMatchObject({ "record-low-score": "passed", "find-low-score-issue": "failed", cleanup: "passed" });
     });
   });
 
