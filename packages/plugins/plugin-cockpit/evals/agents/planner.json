@@ -72,7 +72,7 @@
         ],
         "forbid": [
           {
-            "text": "commit.*single.*PR.*530|merge.*530.*single|all.*530.*single",
+            "text": "merge.*as.*one.*PR|commit.*as.*one.*PR|single.*PR.*530|one.*PR.*530",
             "reason": "work over 400 lines must be split"
           }
         ],

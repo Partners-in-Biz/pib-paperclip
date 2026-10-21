@@ -15,8 +15,8 @@
         ],
         "forbid": [
           {
-            "text": "@example\\.com[^\\]]",
-            "reason": "must use test data marked [dogfood], not real customer emails"
+            "text": "@gmail\\.com|@yahoo\\.com|@hotmail\\.com|@(company|client)\\.com",
+            "reason": "must use test data marked [dogfood], not real customer email domains"
           }
         ],
         "maxSteps": 1
