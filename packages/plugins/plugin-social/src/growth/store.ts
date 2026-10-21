@@ -1,9 +1,10 @@
 /**
- * Growth Lab data. The service talks to this interface; `sqlGrowthStore`
- * (sql.ts) implements it on the plugin namespace, and the tests use an
- * in-memory copy with the same semantics.
+ * Growth Lab data. The service talks to this interface (the kit ports with
+ * Social's row types); `sqlGrowthStore` (sql.ts, features-sql.ts) implements
+ * it on the plugin namespace, and the tests use an in-memory copy with the
+ * same semantics.
  */
-import type { ClientKind, ClientScope, Scoreboard } from "@partnersinbiz/pib-plugin-kit";
+import type { ClientKind, FeaturesPort, GrowthStore as KitGrowthStore, Scoreboard } from "@partnersinbiz/pib-plugin-kit";
 import type { ArmSpec, Autopilot, ChangeSpec, FeatureQuestion, FeatureValue, ScoredPostRow } from "./engine.js";
 
 export interface ProgramConstraints {
@@ -220,43 +221,24 @@ export interface StoredFeature {
   source: string;
 }
 
-export interface GrowthStore {
-  findProgram(companyId: string, channel: string, scope: ClientScope): Promise<Program | null>;
-  getProgram(companyId: string, id: string): Promise<Program | null>;
-  insertProgram(program: NewProgram): Promise<void>;
-  updateProgram(companyId: string, id: string, patch: ProgramPatch): Promise<void>;
-  /** Replace the playbook when it is still at `expectedVersion`; bumps the version. */
-  savePlaybook(companyId: string, id: string, expectedVersion: number, playbook: string): Promise<boolean>;
-  insertPlaybookVersion(input: { programId: string; version: number; playbook: string; reason: string; experimentId: string | null; createdBy: string | null }): Promise<void>;
-  listPlaybookVersions(programId: string, limit: number): Promise<PlaybookVersion[]>;
+/** The Social-only half: post features, scores, metrics and experiment tags on posts. */
+export type SocialFeaturesPort = FeaturesPort<TaggablePost, FeatureValue, StoredFeature, ExistingScore, ScoreWrite, ScoredPostRow, MetricRow, ExperimentPost>;
 
-  insertExperiment(experiment: NewExperiment): Promise<void>;
-  getExperiment(companyId: string, id: string): Promise<Experiment | null>;
-  listExperiments(companyId: string, programId: string, statuses?: ExperimentStatus[]): Promise<Experiment[]>;
-  /** Applies only when the experiment is in one of `from` (null: any status). */
-  updateExperiment(companyId: string, id: string, from: ExperimentStatus[] | null, patch: ExperimentPatch): Promise<boolean>;
-  companiesWithRunningExperiments(): Promise<string[]>;
-  runningExperiments(companyId: string): Promise<Experiment[]>;
+/** Programs, playbook versions, experiments, items and changes. */
+export type CoreGrowthStore = KitGrowthStore<{
+  program: Program;
+  newProgram: NewProgram;
+  programPatch: ProgramPatch;
+  version: PlaybookVersion;
+  experiment: Experiment;
+  experimentStatus: ExperimentStatus;
+  newExperiment: NewExperiment;
+  experimentPatch: ExperimentPatch;
+  item: ExperimentItem;
+  change: PlaybookChange;
+  changeStatus: PlaybookChange["status"];
+  newChange: NewChange;
+  changePatch: ChangePatch;
+}>;
 
-  upsertItem(experimentId: string, arm: string, postId: string, value: number | null): Promise<void>;
-  deleteItem(experimentId: string, postId: string): Promise<void>;
-  listItems(experimentId: string): Promise<ExperimentItem[]>;
-  experimentPosts(companyId: string, experimentId: string, window: string): Promise<ExperimentPost[]>;
-  setPostExperiment(companyId: string, postId: string, experimentId: string | null, arm: string | null): Promise<boolean>;
-
-  insertChange(change: NewChange): Promise<void>;
-  getChange(companyId: string, id: string): Promise<PlaybookChange | null>;
-  listChanges(companyId: string, programId: string, status?: PlaybookChange["status"]): Promise<PlaybookChange[]>;
-  /** With `onlyPending`, applies only while the change is still pending. */
-  updateChange(companyId: string, id: string, patch: ChangePatch, onlyPending: boolean): Promise<boolean>;
-
-  companiesWithMetrics(window: string, sinceDays: number): Promise<string[]>;
-  metricRows(companyId: string, window: string, sinceDays: number): Promise<MetricRow[]>;
-  existingScores(companyId: string, window: string, sinceDays: number): Promise<Map<string, ExistingScore>>;
-  upsertScore(score: ScoreWrite): Promise<void>;
-
-  postsToTag(companyId: string, sinceDays: number, limit: number): Promise<TaggablePost[]>;
-  upsertFeatures(companyId: string, programId: string | null, postId: string, values: FeatureValue[], model: string | null): Promise<void>;
-  postFeatures(companyId: string, postIds: string[]): Promise<StoredFeature[]>;
-  scoredPosts(companyId: string, scope: ClientScope, window: string, sinceDays: number): Promise<ScoredPostRow[]>;
-}
+export type GrowthStore = CoreGrowthStore & SocialFeaturesPort;
