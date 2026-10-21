@@ -78,7 +78,6 @@ const SHORT_ROLE: Partial<Record<string, string>> = {
   "inbound-qualifier": "new leads",
   "crm-data-steward": "clean records",
   "deal-desk": "quotes",
-  "revenue-lead": "r",
 };
 
 /** Cases: durable work products that no module owns. Short on purpose: the API detail is in the paperclip skill's `references/cases.md`. */

@@ -46,6 +46,7 @@ import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
+import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
@@ -66,6 +67,7 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { registerW1cEdge } from "./register-w1c-edge.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -197,6 +199,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     ...(["operator", "reviewer"] as const).map((kind) => ({ role: HIRE_MATCH_ROLES[kind], onLinked: onLinkedFor(env, kind) })),
     { role: ACCEPTANCE_MATCH_ROLE, onLinked: onAcceptanceLinked(env) },
   ]);
+  // Edge watch: announce when new blocker edges are created.
+  registerW1cEdge(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -532,6 +536,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // an open question follows its issue, and an agent's close of an onboarding or
   // System health issue is checked (unfinished work reopens with what is missing).
   const doneCheck = doneCheckFor(env);
+  const outwardGate = outwardGateFor(env);
   ctx.events.on("issue.updated", async (event) => {
     try {
       await onAskIssueUpdated(env, event);
@@ -548,6 +553,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await doneCheck(event);
     } catch (error) {
       ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    }
+    try {
+      await outwardGate(event);
+    } catch (error) {
+      ctx.logger.info("Outward gate failed", { issueId: event.entityId, error: message(error) });
     }
     try {
       await onIssueNeedsYou(env, event);
