@@ -224,6 +224,8 @@ describe("thin-content probe", () => {
     expect(result.findings.length).toBeGreaterThan(0);
     expect(result.findings[0]!.finding).toContain("below threshold");
     expect(result.findings[0]!.severity).toBe("high");
+    expect(result.textLength).toBeGreaterThan(0);
+    expect(result.textLength).toBeLessThan(100);
   });
 
   it("does not flag content above threshold", async () => {
@@ -233,6 +235,7 @@ describe("thin-content probe", () => {
     });
     const result = await runThinContentCheck(site, "https://acme.co.za/good", 100);
     expect(result.findings).toEqual([]);
+    expect(result.textLength).toBeGreaterThanOrEqual(100);
   });
 });
 
@@ -258,12 +261,49 @@ describe("byline probe", () => {
     expect(result.findings).toEqual([]);
   });
 
-  it("detects articles by path /blog/", async () => {
+  it("detects articles by path /blog/slug", async () => {
     const blogPost = `<html><body><p>Content for blog post</p></body></html>`;
     const site = fakeSite({
-      "https://acme.co.za/blog/post": { status: 200, body: blogPost },
+      "https://acme.co.za/blog/my-post": { status: 200, body: blogPost },
     });
-    const result = await runBylineCheck(site, "https://acme.co.za/blog/post");
+    const result = await runBylineCheck(site, "https://acme.co.za/blog/my-post");
     expect(result.isArticle).toBe(true);
+  });
+
+  it("does not treat /blog/ index as article", async () => {
+    const blogIndex = `<html><body><h1>Blog</h1><ul><li><a href="/blog/post1">Post 1</a></li></ul></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/blog/": { status: 200, body: blogIndex },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/blog/");
+    expect(result.isArticle).toBe(false);
+  });
+
+  it("requires visible author text, not just JSON-LD", async () => {
+    const noVisibleAuthor = `<html><head><meta property="og:type" content="article"><script type="application/ld+json">{"@type":"Article","author":"Jane Doe"}</script></head><body><article><p>Content</p></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: noVisibleAuthor },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.isArticle).toBe(true);
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(true);
+  });
+
+  it("flags prose like 'made by hand' that matches the pattern but is not a byline", async () => {
+    const misleadingByline = `<html><head><meta property="og:type" content="article"></head><body><article><h1>Article</h1><p>All glassware is made by hand.</p><time>Jan 1, 2024</time></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: misleadingByline },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(true);
+  });
+
+  it("detects structured author markers like rel=author", async () => {
+    const structuredAuthor = `<html><head><meta property="og:type" content="article"><link rel="author" href="/about/john"></head><body><article><h1>Article</h1><p>Content</p><time>Jan 1, 2024</time></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: structuredAuthor },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(false);
   });
 });

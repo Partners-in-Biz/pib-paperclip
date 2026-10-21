@@ -6,6 +6,7 @@
  */
 import type { SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
 import {
+  bodyText,
   canonicalCheck,
   comparableUrl,
   crawlerView,
@@ -336,7 +337,7 @@ export async function runSoft404Check(fetcher: SiteFetcher, siteUrl: string): Pr
   const res = await fetcher(url);
   const findings: CheckFinding[] = [];
   if (res.status === 200) {
-    findings.push({ category: "soft-404", severity: "high", url: url, finding: "Returns HTTP 200 for nonexistent path (app shell returning 200)" });
+    findings.push({ category: "soft-404", severity: "high", url, finding: "Returns HTTP 200 for nonexistent path (app shell returning 200)" });
   }
   return { url, status: res.status, findings };
 }
@@ -361,25 +362,26 @@ export async function runBylineCheck(fetcher: SiteFetcher, url: string): Promise
   const meta = extractMeta(page.text);
   const path = new URL(page.url).pathname.toLowerCase();
   const isArticle = /^article$/.test((meta.ogType ?? "").toLowerCase()) ||
-    /\/blog\//.test(path) ||
+    /\/blog\/[^/]+/.test(path) ||
     /<article\b/.test(page.text);
 
   if (isArticle && page.status < 400) {
-    // Check for byline/author
-    const hasAuthor = /\bby\s+\w/i.test(page.text) ||
-      /rel\s*=\s*["\']author/.test(page.text) ||
-      /itemprop\s*=\s*["\']author/.test(page.text) ||
-      /\bauthor\b|byline/.test(page.text);
+    // Check for byline/author: visible text patterns or structured markers
+    const visibleText = bodyText(page.text);
+    const hasAuthorInVisibleText = /\b[Bb]y\s+[A-Z]/.test(visibleText) || /written by|author:/i.test(visibleText);
+    const hasStructuredAuthor = /rel\s*=\s*["']author|itemprop\s*=\s*["']author|class\s*=\s*["'][^"']*(?:author|byline)/i.test(page.text);
+    const hasAuthor = hasAuthorInVisibleText || hasStructuredAuthor;
 
-    // Check for date
-    const hasDate = /<time\b/.test(page.text) ||
-      /datePublished|dateModified|article:published_time|article:modified_time/.test(page.text);
+    // Check for date: visible text or time element (JSON-LD alone is not sufficient)
+    const hasDateElement = /<time\b/.test(page.text);
+    const hasDateInVisibleText = /\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4}/i.test(visibleText);
+    const hasDate = hasDateElement || hasDateInVisibleText;
 
     if (!hasAuthor) {
       findings.push({ category: "byline", severity: "medium", url: page.url, finding: "No visible author/byline detected" });
     }
     if (!hasDate) {
-      findings.push({ category: "byline", severity: "medium", url: page.url, finding: "No publication or update date detected" });
+      findings.push({ category: "byline", severity: "medium", url: page.url, finding: "No visible publication or update date detected" });
     }
   }
 
@@ -401,6 +403,7 @@ export interface ThinContentResult {
 export async function runThinContentCheck(fetcher: SiteFetcher, url: string, minChars: number = 200): Promise<ThinContentResult> {
   const page = await fetcher(url, { headers: { "User-Agent": GOOGLEBOT_UA, Accept: "text/html,application/xhtml+xml" } });
   const findings: CheckFinding[] = [];
+  let textLength = 0;
 
   if (page.status < 400) {
     const crawler = crawlerView({
@@ -413,15 +416,16 @@ export async function runThinContentCheck(fetcher: SiteFetcher, url: string, min
       robots: null,
     });
 
-    if (crawler.bodyTextLength < minChars) {
+    textLength = crawler.bodyTextLength;
+    if (textLength < minChars) {
       findings.push({
         category: "thin-content",
         severity: "high",
         url: page.url,
-        finding: `Only ${crawler.bodyTextLength} characters of text (below threshold of ${minChars})`,
+        finding: `Only ${textLength} characters of text (below threshold of ${minChars})`,
       });
     }
   }
 
-  return { url, finalUrl: page.url, status: page.status, textLength: 0, findings };
+  return { url, finalUrl: page.url, status: page.status, textLength, findings };
 }
