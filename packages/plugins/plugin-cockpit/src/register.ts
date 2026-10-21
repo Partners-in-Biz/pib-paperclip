@@ -30,6 +30,7 @@ import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
+import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
 import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
 import { ensureSetupIssue } from "./bootstrap.js";
 import { forgetChecks } from "./checks.js";
@@ -152,15 +153,15 @@ function idList(value: unknown): string[] | null {
 }
 
 /** Iterates all companies: reads config, calls governCompany for trigger + pause path. */
-export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; already_paused: number; paused: number; errors: number; failed: number }> {
-  const results = { tried: 0, disabled: 0, idle: 0, already_paused: 0, paused: 0, errors: 0, failed: 0 };
+export async function governorTick(env: Env): Promise<{ tried: number; disabled: number; idle: number; paused: number; errors: number; failed: number; waiting: number; canary_started: number; resumed: number; cleared: number; stuck: number }> {
+  const results = { tried: 0, disabled: 0, idle: 0, paused: 0, errors: 0, failed: 0, waiting: 0, canary_started: 0, resumed: 0, cleared: 0, stuck: 0 };
   for (const row of await listRoles(env.ctx)) {
     results.tried += 1;
     try {
       const config = (await env.ctx.config.get(row.companyId)) as Record<string, unknown> | undefined;
       const governorConfig = config?.governor as GovernorConfig | undefined;
       const result = await governCompany(env, row.companyId, governorConfig);
-      // `paused` counts agents paused this tick; an already-paused company adds none.
+      // `paused` counts agents paused this tick.
       if (result.outcome === "paused") results.paused += result.paused;
       else results[result.outcome] += 1;
       results.errors += result.errors;
@@ -587,13 +588,15 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
         ? await runMemoryTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
-          : OPS_TOOL_SET.has(tool.name)
-            ? await runOpsTool(env, tool.name, params, run)
-            : ACCEPTANCE_TOOL_SET.has(tool.name)
-              ? await runAcceptanceTool(env, tool.name, params, run)
-              : EVAL_TOOL_SET.has(tool.name)
-                ? await runEvalTool(env, tool.name, params, run)
-                : await runTool(env, tool.name, params, run);
+          : AGENT_READ_TOOL_NAMES.has(tool.name)
+            ? await runAgentReadTool(env, tool.name, params, run)
+            : OPS_TOOL_SET.has(tool.name)
+              ? await runOpsTool(env, tool.name, params, run)
+              : ACCEPTANCE_TOOL_SET.has(tool.name)
+                ? await runAcceptanceTool(env, tool.name, params, run)
+                : EVAL_TOOL_SET.has(tool.name)
+                  ? await runEvalTool(env, tool.name, params, run)
+                  : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

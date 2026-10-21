@@ -39,7 +39,7 @@ describe.skipIf(!available)("schema", () => {
 
   it("creates every table the plugin reads and writes", async () => {
     const rows = (await pg.client.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = '${NAMESPACE}' ORDER BY 1`)).rows as Array<{ table_name: string }>;
-    expect(rows.map((r) => r.table_name)).toEqual(["ad_accounts", "ad_daily", "ads", "alerts", "approvals", "audit", "budget_overrides", "campaigns", "connections", "crm_companies", "crm_contacts", "daily", "oauth_sessions", "proposals", "scopes", "spend_ledger", "variants"]);
+    expect(rows.map((r) => r.table_name)).toEqual(["ad_accounts", "ad_daily", "ads", "alerts", "approvals", "audit", "budget_overrides", "campaigns", "connections", "crm_companies", "crm_contacts", "daily", "growth_experiment_items", "growth_experiments", "growth_playbook_changes", "growth_playbook_versions", "growth_programs", "oauth_sessions", "proposals", "scopes", "spend_ledger", "variants"]);
   });
 
   it("only a person's yes can be stored as an approval", async () => {

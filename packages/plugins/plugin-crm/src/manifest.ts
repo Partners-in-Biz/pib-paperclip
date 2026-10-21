@@ -72,6 +72,24 @@ const instanceConfigSchema: JsonSchema = {
       default: "https://partnersinbiz.online",
     },
     driveBrokerToken: secretField("Drive broker token", "Bearer token for the partnersinbiz-web Drive broker (admin role). The token must be bound to the correct organization because the broker infers the organization ID from the token's user when none is explicitly sent.") as unknown as JsonSchema,
+    drive: {
+      type: "object",
+      title: "Drive settings",
+      properties: {
+        sharedDriveId: {
+          type: "string",
+          title: "Shared Drive ID",
+          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. This is separate from the broker token and must be set for planning to work.",
+          default: "",
+        },
+      },
+    } as unknown as JsonSchema,
+    emitClientProjects: {
+      type: "boolean",
+      title: "Emit client projects",
+      description: "Send each client's linked projects to the other plugins so they route work to the right project. Leave off until the links are typed.",
+      default: false,
+    },
   },
 };
 
@@ -222,6 +240,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Sales: weekly pipeline summary and CRM hygiene",
       description: "Mondays 08:00 SAST: the weekly pipeline summary for the Sales Lead and the CRM hygiene report for the CRM Data Steward, for companies with CRM records.",
       schedule: "0 6 * * 1",
+    },
+    {
+      jobKey: "own-metrics",
+      displayName: "Own marketing metrics for the Cockpit",
+      description: "Daily 05:40 SAST: emits our own website conversion and revenue by source (last 30 days) as an event for the Cockpit. Our own scope only; no client data.",
+      schedule: "40 3 * * *",
     },
   ],
   skills: SKILLS,

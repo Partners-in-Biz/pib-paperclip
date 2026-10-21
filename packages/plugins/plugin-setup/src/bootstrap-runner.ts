@@ -20,7 +20,7 @@ import { MODULES, type ModuleKey, type SetupStatus } from "./kit-setup.js";
 import { WIKI_PLUGIN } from "./memory.js";
 import { SETUP_PLUGIN } from "./kit-setup.js";
 import { roleHealth, teamRolesFor, type HireOptionsLite, type TeamHire, type TeamRole, type TeamRoleKey, type TeamRoleState } from "./team.js";
-import { hireOrder, loadPack, templateByKey, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike } from "./templates.js";
+import { hireOrder, loadPack, offeredTemplates, templateByKey, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike } from "./templates.js";
 
 export const COCKPIT_KEY = "partnersinbiz.cockpit";
 
@@ -59,6 +59,8 @@ export interface RunnerEnv {
   statuses: Record<string, SetupStatus | null | undefined>;
   starter: StarterState;
   hires: TemplateHireLike[];
+  /** Whether this is Partners in Biz's own company, allowing pib-scope templates. */
+  ownerCompany?: boolean;
   // --- host and plugin calls (board session) ---
   getConfig(pluginIdOrKey: string, companyId: string): Promise<{ saved: boolean; config: Record<string, unknown> }>;
   saveConfig(pluginIdOrKey: string, companyId: string, config: Record<string, unknown>): Promise<void>;
@@ -221,12 +223,14 @@ export async function hiringFor(env: RunnerEnv): Promise<{ pick: HiringPick; age
 }
 
 /** Template keys the run opens hire tasks for: the options, else the pack's defaults, limited to templates whose modules are on. */
-export function selectedTemplates(options: BootstrapOptions, modules: Record<ModuleKey, boolean>): AgentTemplate[] {
+export function selectedTemplates(options: BootstrapOptions, modules: Record<ModuleKey, boolean>, ownerCompany = false): AgentTemplate[] {
   const pack = loadPack();
-  const keys = options.templates ?? pack.templates.filter((template) => template.defaultOn).map((template) => template.key);
+  const offered = offeredTemplates(pack.templates, ownerCompany);
+  const keys = options.templates ?? offered.filter((template) => template.defaultOn).map((template) => template.key);
   return keys
     .map((key) => templateByKey(key))
     .filter((template): template is AgentTemplate => !!template)
+    .filter((template) => offeredTemplates([template], ownerCompany).length > 0)
     .filter((template) => template.requires.modules.every((module) => modules[module as ModuleKey] !== false));
 }
 
@@ -237,7 +241,7 @@ export async function stepRoles(env: RunnerEnv): Promise<StepOutcome> {
   if (roles.length === 0) return { status: "skipped", detail: "No module that needs an agent is switched on.", items: [] };
   const { pick, assigneeAgentId, unreadable } = await hiringFor(env);
   // A role a selected template holds (the Growth Marketing Lead holds Social) is hired by the templates step.
-  const heldByTemplate = new Set(selectedTemplates(env.options, env.modules).flatMap((template) => (template.kitRole ? [template.kitRole] : [])));
+  const heldByTemplate = new Set(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false).flatMap((template) => (template.kitRole ? [template.kitRole] : [])));
   const states = await env.loadTeam(roles);
   const items: StepItem[] = [];
   for (const role of roles) {
@@ -268,7 +272,7 @@ export async function stepRoles(env: RunnerEnv): Promise<StepOutcome> {
 }
 
 export async function stepTemplates(env: RunnerEnv): Promise<StepOutcome> {
-  const selected = hireOrder(selectedTemplates(env.options, env.modules));
+  const selected = hireOrder(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false));
   if (selected.length === 0) return { status: "skipped", detail: "No template is selected.", items: [] };
   const { pick, agents, assigneeAgentId, unreadable } = await hiringFor(env);
   const list = pluginList(env);

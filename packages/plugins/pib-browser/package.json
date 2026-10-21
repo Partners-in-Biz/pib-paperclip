@@ -4,6 +4,9 @@
   "type": "commonjs",
   "description": "PIB browser policy and authorization engine",
   "main": "src/policy.cjs",
+  "bin": {
+    "pib-browser": "bin/pib-browser.cjs"
+  },
   "scripts": {
     "typecheck": "node scripts/check.cjs syntax",
     "test": "node --test test/*.test.cjs",

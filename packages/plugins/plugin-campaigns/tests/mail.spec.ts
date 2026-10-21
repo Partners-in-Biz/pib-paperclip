@@ -309,7 +309,8 @@ describe("campaign email delivery", () => {
     }];
     const { harness, emit } = await boot({ store });
     await harness.runJob("open-due-steps");
-    expect(emit).not.toHaveBeenCalled();
+    // The mail request is not re-emitted; only the Drive save (which is not awaited and happens in the background)
+    expect(emit.mock.calls.filter((call) => call[0] !== "drive.save-requested")).toEqual([]);
     expect(store.campaign_enrollments![0]).toMatchObject({ step_position: 2, sending_key: null, mail_thread_id: "th-9" });
     expect(store.campaign_step_events!.filter((row) => row.event_type === "sent")).toHaveLength(1);
   });
@@ -477,5 +478,24 @@ describe("A/B suggestion tools", () => {
     const { harness } = await boot({ store });
     const result = await harness.performAction<Record<string, any>>("campaigns.ab-suggestion", { campaignId: "camp-mail" }, { companyId: CO, actor: BOARD });
     expect(result).toMatchObject({ verdict: "inconclusive", suggestion: null, sends: { a: 1, b: 1 } });
+  });
+});
+
+describe("send result with hanging Drive save", () => {
+  it("applySendResult returns promptly even when Drive save never resolves", async () => {
+    stubJev();
+    const store = seed();
+    store.campaign_enrollments = [enrollment("e1", "camp-mail", "ada", { variant: "b", next_due_at: PAST })];
+    const { harness } = await boot({ store });
+    await harness.runJob("open-due-steps");
+    const result = { key: "campaigns:step:e1:1", status: "sent", messageId: "gm-1", threadId: "th-1", context: { plugin: "partnersinbiz.campaigns", kind: "campaign_step", id: "e1" } };
+    // This should resolve immediately even though saveSendRecord internally waits for Drive; Drive saves are not awaited in the job path.
+    const start = Date.now();
+    await harness.emit(`${MAILBOX}.mail.send.result` as `plugin.${string}`, result, { companyId: CO });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+    const sends = store.campaign_step_events!.filter((row) => row.event_type === "sent");
+    expect(sends).toHaveLength(1);
+    expect(store.campaign_enrollments![0]).toMatchObject({ step_position: 2, sending_key: null });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_PROJECT_EVENTS, clientProjectIds, registerClientProjectWatch, rememberClientProjects, resolveClientProjectId, type ClientProjectsEvent } from "../src/index.js";
+import { CLIENT_PROJECT_EVENTS, clientProjectIds, clientProjectLinks, registerClientProjectWatch, rememberClientProjects, resolveClientProjectId, type ClientProjectsEvent } from "../src/index.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
 const EVENT = `plugin.partnersinbiz.crm.${CLIENT_PROJECT_EVENTS.updated}`;
@@ -35,12 +35,12 @@ describe("resolveClientProjectId", () => {
   it("opens a client's work in the client's own project", async () => {
     const fake = fakeCtx({ projects: { "p-acme": {}, "social-managed": {} } });
     await rememberClientProjects(fake.ctx, "co-1", event());
-    expect(await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "social-managed" })).toEqual({ projectId: "p-acme", source: "client-link", linked: ["p-acme"] });
+    expect(await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "social-managed" })).toEqual({ projectId: "p-acme", source: "client-link", kind: null, linked: ["p-acme"] });
   });
 
   it("puts own work in the plugin's own project", async () => {
     const fake = fakeCtx();
-    expect(await resolveClientProjectId(fake.ctx, "co-1", null, { fallbackProjectId: "social-managed" })).toEqual({ projectId: "social-managed", source: "own", linked: [] });
+    expect(await resolveClientProjectId(fake.ctx, "co-1", null, { fallbackProjectId: "social-managed" })).toEqual({ projectId: "social-managed", source: "own", kind: null, linked: [] });
     expect((await resolveClientProjectId(fake.ctx, "co-1", null)).source).toBe("none");
   });
 
@@ -48,7 +48,7 @@ describe("resolveClientProjectId", () => {
     const fake = fakeCtx({ projects: { "p-acme": {} } });
     await rememberClientProjects(fake.ctx, "co-1", event());
     const other = await resolveClientProjectId(fake.ctx, "co-1", { kind: "company", id: "globex" }, { fallbackProjectId: "social-managed" });
-    expect(other).toEqual({ projectId: "social-managed", source: "fallback", linked: [] });
+    expect(other).toEqual({ projectId: "social-managed", source: "fallback", kind: null, linked: [] });
     expect((await resolveClientProjectId(fake.ctx, "co-1", { kind: "company", id: "globex" })).source).toBe("none");
   });
 
@@ -72,5 +72,302 @@ describe("resolveClientProjectId", () => {
     await rememberClientProjects(fake.ctx, "co-1", event({ projectIds: ["a", "b"] }));
     expect((await resolveClientProjectId(fake.ctx, "co-1", acme)).projectId).toBe("a");
     expect((await resolveClientProjectId(fake.ctx, "co-1", acme, { pick: (ids) => ids[ids.length - 1]! })).projectId).toBe("b");
+  });
+
+  describe("with kind resolution", () => {
+    // (a) kind wins over order
+    it("chooses a project by kind even if not the first", async () => {
+      const fake = fakeCtx({ projects: { "p-crm": {}, "p-web": {}, "p-seo": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-crm", kind: "crm" },
+          { projectId: "p-web", kind: "web" },
+          { projectId: "p-seo", kind: "seo" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { kind: "web" });
+      expect(result.projectId).toBe("p-web");
+      expect(result.kind).toBe("web");
+      expect(result.source).toBe("client-link");
+    });
+
+    // (b) no kind match -> platform
+    it("falls back to platform when requested kind has no match", async () => {
+      const fake = fakeCtx({ projects: { "p-crm": {}, "p-platform": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-crm", kind: "crm" },
+          { projectId: "p-platform", kind: "platform" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { kind: "web" });
+      expect(result.projectId).toBe("p-platform");
+      expect(result.kind).toBe("platform");
+    });
+
+    // (c) no match and no platform -> fallback, NOT first linked
+    it("uses fallback when no kind match and no platform, never first linked", async () => {
+      const fake = fakeCtx({ projects: { "p-crm": {}, "p-other": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-crm", kind: "crm" },
+          { projectId: "p-other", kind: "other" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "web" });
+      expect(result.projectId).toBe("fb");
+      expect(result.source).toBe("fallback");
+      expect(result.kind).toBe(null);
+    });
+
+    // (d) only NULL-kind links + kind asked -> linked project (Step 3)
+    it("chooses null-kind link (legacy) when kind is requested and no exact/platform match exists", async () => {
+      const fake = fakeCtx({ projects: { "p-1": {}, "p-2": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-1", kind: null },
+          { projectId: "p-2", kind: null },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "web" });
+      expect(result.projectId).toBe("p-1");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe(null);
+    });
+
+    // (e) archived kind match falls through to platform
+    it("skips archived projects even when they match the kind", async () => {
+      const fake = fakeCtx({
+        projects: {
+          "p-web-old": { archivedAt: "2026-09-30T00:00:00.000Z" },
+          "p-platform": {},
+        },
+      });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-web-old", kind: "web" },
+          { projectId: "p-platform", kind: "platform" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "web" });
+      expect(result.projectId).toBe("p-platform");
+      expect(result.kind).toBe("platform");
+    });
+
+    // (f) archived link plus a NULL-kind link, kind asked -> returns usable null-kind (Step 3)
+    it("uses null-kind link when exact match is archived and kind requested", async () => {
+      const fake = fakeCtx({
+        projects: {
+          "p-archived": { archivedAt: "2026-09-30T00:00:00.000Z" },
+          "p-null": {},
+        },
+      });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-archived", kind: "web" },
+          { projectId: "p-null", kind: null },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "web" });
+      expect(result.projectId).toBe("p-null");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe(null);
+    });
+
+    // (g) legacy projectIds payload stored, resolves without kind as before, with kind asked uses Step 3
+    it("treats legacy projectIds as null-kind links and chooses them via Step 3 when kind requested", async () => {
+      const fake = fakeCtx({ projects: { "p-acme": {}, "p-fb": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({ projectIds: ["p-acme"] }));
+      // Without kind, should get the link as before
+      const noKind = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "p-fb" });
+      expect(noKind.projectId).toBe("p-acme");
+      expect(noKind.kind).toBe(null);
+      // With kind, should use Step 3 and return the null-kind link (legacy)
+      const withKind = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "p-fb", kind: "web" });
+      expect(withKind.projectId).toBe("p-acme");
+      expect(withKind.source).toBe("client-link");
+      expect(withKind.kind).toBe(null);
+    });
+
+    // (h) new projects payload stores both projectIds and projects
+    it("stores both projectIds and projects when given the new format", async () => {
+      const fake = fakeCtx();
+      const projects = [
+        { projectId: "p-crm", kind: "crm" },
+        { projectId: "p-web", kind: "web" },
+      ];
+      await rememberClientProjects(fake.ctx, "co-1", event({ projects }));
+      const links = await clientProjectLinks(fake.ctx, "co-1", acme);
+      expect(links).toEqual(projects);
+      const ids = await clientProjectIds(fake.ctx, "co-1", acme);
+      expect(ids).toEqual(["p-crm", "p-web"]);
+    });
+
+    // (i) old stored state {projectIds, updatedAt} set directly reads as kinds unknown
+    it("reads old stored state without projects key as null-kind links", async () => {
+      const fake = fakeCtx();
+      // Simulate old stored state
+      const key = {
+        scopeKind: "company" as const,
+        scopeId: "co-1",
+        namespace: "pib-kit",
+        stateKey: "client-projects:company:acme",
+      };
+      await fake.ctx.state.set(key, {
+        projectIds: ["p-1", "p-2"],
+        updatedAt: "2026-10-01T10:00:00.000Z",
+      });
+      const links = await clientProjectLinks(fake.ctx, "co-1", acme);
+      expect(links).toEqual([
+        { projectId: "p-1", kind: null },
+        { projectId: "p-2", kind: null },
+      ]);
+      const choice = await resolveClientProjectId(fake.ctx, "co-1", acme);
+      expect(choice.kind).toBe(null);
+    });
+
+    // (j) no kind option gives the same result as before for a mixed-kind list, result kind is the link's kind
+    it("preserves old behavior when no kind option is given, includes link kind in result", async () => {
+      const fake = fakeCtx({ projects: { "p-crm": {}, "p-web": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-crm", kind: "crm" },
+          { projectId: "p-web", kind: "web" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme);
+      expect(result.projectId).toBe("p-crm");
+      expect(result.kind).toBe("crm");
+      expect(result.source).toBe("client-link");
+    });
+
+    // (k) link-then-unlink with SAME updatedAt: projects [a] then projects [] -> later arrival wins
+    it("allows later arrival with equal updatedAt to overwrite earlier state", async () => {
+      const fake = fakeCtx();
+      const ts = "2026-10-01T10:00:00.000Z";
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [{ projectId: "p-a", kind: "crm" }],
+        updatedAt: ts,
+      }));
+      let links = await clientProjectLinks(fake.ctx, "co-1", acme);
+      expect(links.map((l) => l.projectId)).toEqual(["p-a"]);
+
+      const stored = await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [],
+        updatedAt: ts,
+      }));
+      expect(stored).toBe(true);
+      links = await clientProjectLinks(fake.ctx, "co-1", acme);
+      expect(links).toEqual([]);
+
+      // Older updatedAt after a newer is rejected
+      const older = await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [{ projectId: "p-b", kind: "web" }],
+        updatedAt: "2026-09-30T10:00:00.000Z",
+      }));
+      expect(older).toBe(false);
+      links = await clientProjectLinks(fake.ctx, "co-1", acme);
+      expect(links).toEqual([]);
+    });
+
+    // (l) pick is applied among usable kind matches
+    it("respects the pick function among kind-matched usable projects", async () => {
+      const fake = fakeCtx({ projects: { "p-web-1": {}, "p-web-2": {}, "p-crm": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-web-1", kind: "web" },
+          { projectId: "p-web-2", kind: "web" },
+          { projectId: "p-crm", kind: "crm" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, {
+        kind: "web",
+        pick: (ids) => ids[ids.length - 1]!,
+      });
+      expect(result.projectId).toBe("p-web-2");
+      expect(result.kind).toBe("web");
+    });
+
+    // Step 3 tests: null-kind link behavior
+    it("chooses null-kind link when mixed with real kinds that don't match the requested kind", async () => {
+      const fake = fakeCtx({ projects: { "p-web": {}, "p-null": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-web", kind: "web" },
+          { projectId: "p-null", kind: null },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "social" });
+      expect(result.projectId).toBe("p-null");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe(null);
+    });
+
+    it("falls back when only real non-matching kinds exist (no null-kind)", async () => {
+      const fake = fakeCtx({ projects: { "p-web": {}, "p-crm": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-web", kind: "web" },
+          { projectId: "p-crm", kind: "crm" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "social" });
+      expect(result.projectId).toBe("fb");
+      expect(result.source).toBe("fallback");
+    });
+
+    it("prefers exact kind match over null-kind link in Step 3", async () => {
+      const fake = fakeCtx({ projects: { "p-social": {}, "p-null": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-null", kind: null },
+          { projectId: "p-social", kind: "social" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "social" });
+      expect(result.projectId).toBe("p-social");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe("social");
+    });
+
+    it("applies pick function among null-kind link candidates in Step 3", async () => {
+      const fake = fakeCtx({ projects: { "p-null-1": {}, "p-null-2": {}, "p-crm": {} } });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-null-1", kind: null },
+          { projectId: "p-null-2", kind: null },
+          { projectId: "p-crm", kind: "crm" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, {
+        fallbackProjectId: "fb",
+        kind: "social",
+        pick: (ids) => ids[ids.length - 1]!,
+      });
+      expect(result.projectId).toBe("p-null-2");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe(null);
+    });
+
+    it("skips archived null-kind link in Step 3", async () => {
+      const fake = fakeCtx({
+        projects: {
+          "p-null-archived": { archivedAt: "2026-09-30T00:00:00.000Z" },
+          "p-null-live": {},
+          "p-crm": {},
+        },
+      });
+      await rememberClientProjects(fake.ctx, "co-1", event({
+        projects: [
+          { projectId: "p-null-archived", kind: null },
+          { projectId: "p-null-live", kind: null },
+          { projectId: "p-crm", kind: "crm" },
+        ],
+      }));
+      const result = await resolveClientProjectId(fake.ctx, "co-1", acme, { fallbackProjectId: "fb", kind: "social" });
+      expect(result.projectId).toBe("p-null-live");
+      expect(result.source).toBe("client-link");
+      expect(result.kind).toBe(null);
+    });
   });
 });

@@ -244,15 +244,16 @@ export async function leadFormItems(ctx: PluginContext, companyId: string, setti
   }
   const ready = await turnstileReady(ctx, companyId).catch(() => false);
   const site = (await leadsConfig(ctx, companyId).catch(() => null))?.turnstileSiteKey ?? null;
+  const hasSiteKeyOnAnySource = site || sources.some((s) => s.turnstileSiteKey);
   items.push({
     key: "turnstile",
     title: "Spam protection for lead forms (optional)",
-    status: ready ? "done" : "optional",
+    status: ready ? "done" : hasSiteKeyOnAnySource ? "missing" : "optional",
     required: false,
     detail: ready
       ? "Cloudflare Turnstile is on for new and rotated lead forms."
-      : site
-        ? "The Turnstile site key is saved but the secret is not, so the check is off. Add the secret."
+      : hasSiteKeyOnAnySource
+        ? "The Turnstile site key is saved but the secret is not, so lead forms are temporarily unavailable. Add the secret."
         : "Lead forms already have a honeypot, rate limits, a throwaway-email block and one lead per email a day. Turnstile adds a bot check.",
     href: settingsHref,
     hrefLabel: "Open settings",

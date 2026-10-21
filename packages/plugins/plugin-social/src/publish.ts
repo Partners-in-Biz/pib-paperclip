@@ -22,6 +22,7 @@ import {
   refreshAccountToken,
   toProviderAccount,
 } from "./accounts.js";
+import { saveToDrive } from "./drive.js";
 import { inScope, scopeLabel, scopeOfRow } from "./clients.js";
 import { loadSocialConfig, type SocialConfig } from "./config.js";
 import {
@@ -155,6 +156,16 @@ async function publishDestination(
     const outcome = await provider.publish(env, current, request);
     if (!outcome.ok && outcome.tokenInvalid) {
       await markNeedsReconnect(ctx, companyId, account, outcome.error ?? "The platform rejected the token");
+    }
+    if (outcome.ok) {
+      // Not awaited: publish returns immediately; Drive save continues in the background.
+      void saveToDrive(ctx, {
+        companyId,
+        post: { id: post.id, body: post.body },
+        platform,
+        media: postMedia(post),
+        publishedAt: new Date(),
+      }).catch(() => undefined);
     }
     return { outcome, account };
   } catch (error) {

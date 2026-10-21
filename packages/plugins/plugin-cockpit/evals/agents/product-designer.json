@@ -1,0 +1,106 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "ui-signoff-overflow-screenshots",
+      "title": "Product Designer requires overflow check and screenshots at 390/1440 with stress data for UI sign-off",
+      "source": "baseline-2026-10-19/agents/product-designer.md: UI sign-off needs overflow-check + 390/1440 screenshots with stress data (PAR-2946)",
+      "situation": "You are Product Designer on issue PAR-700. A developer has completed a new athlete dashboard. You need to sign off on the UI before it merges. You have the Vercel preview URL. You should check for overflow issues and take screenshots at mobile and desktop sizes.",
+      "task": "What checks and screenshots do you need before you sign off on the UI?",
+      "expect": {
+        "mustSay": [
+          "overflow|390|1440|screenshot",
+          "stress"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})(?:skip[^.!?\\n]*check|without[^.!?\\n]*check)",
+            "reason": "must perform overflow and responsive checks"
+          }
+        ],
+        "maxSteps": 2,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Checking UI sign-off for the athlete dashboard.\n\n1. Overflow check: testing at 390px (mobile) and 1440px (desktop). Verifying no content clips or wraps unexpectedly.\n2. Stress test: loading with long names, many metrics, and various data edge cases.\n3. Taking screenshots at 390px and 1440px to attach and verify against design system.\n4. Reviewing spacing, contrast, and responsive behavior.\n\nStarting review."}
+          ],
+          "summary": "Will perform overflow and responsive screenshot check"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Preview looks good. UI is approved."}
+          ],
+          "summary": "Signed off without overflow check or screenshots"
+        }
+      }
+    },
+    {
+      "id": "drive-file-naming",
+      "title": "Product Designer names Drive files human-readable: YYYY-MM-DD <Company> <what> vNN",
+      "source": "baseline-2026-10-19/agents/product-designer.md: Drive file names human-readable YYYY-MM-DD <Company> <what it is> vNN",
+      "situation": "You are Product Designer on issue PAR-701. You have created a design mockup for the Athleet trainer profile and need to save it to Google Drive. The file path should follow the company naming standard.",
+      "task": "What name do you give the Drive file?",
+      "expect": {
+        "mustSay": [
+          "YYYY-MM-DD|2026-10-|date",
+          "Athleet|Company|<Company>",
+          "v[0-9]|vNN|version"
+        ],
+        "forbid": [
+          {
+            "text": "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
+            "reason": "must use human-readable names, not IDs or UUIDs"
+          }
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Saving design to Drive as: 2026-10-21 Athleet trainer profile mockup v01.png"}
+          ],
+          "summary": "Named file with date, company, what, and version"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Saving to Drive with ID: a7f3c2e1-9b4d-4f8a-b2e9-d5c1f3a8e2b7.png"}
+          ],
+          "summary": "Named file with UUID instead of human-readable name"
+        }
+      }
+    },
+    {
+      "id": "log-design-decisions",
+      "title": "Product Designer logs design decisions with date, options considered, and reasoning",
+      "source": "baseline-2026-10-19/agents/product-designer.md: Decide, don't escalate. Log decisions in project's decisions file with date, decision, options and reason",
+      "situation": "You are Product Designer on issue PAR-702. You have decided on a color palette for the new Athleet dashboard (navy/orange vs blue/green). You chose navy/orange because it matches the brand guidelines and has better contrast. You need to record this decision.",
+      "task": "How do you log this design decision so it is documented for the team?",
+      "expect": {
+        "mustSay": [
+          "log|decision|document|DECISIONS",
+          "date|reason|because",
+          "option"
+        ],
+        "maxSteps": 2,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Logging design decision in docs/DECISIONS.md.\n\nDate: 2026-10-21\nDecision: Color palette for Athleet dashboard\nOptions considered: navy/orange, blue/green, teal/coral\nChosen: navy/orange\nReason: Aligns with brand guidelines, WCAG AA contrast on both light and dark backgrounds, and matches existing Athleet asset library."}
+          ],
+          "summary": "Logged decision with all required fields"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Selected the navy/orange palette for the dashboard."}
+          ],
+          "summary": "Announced choice without logging decision"
+        }
+      }
+    }
+  ]
+}
