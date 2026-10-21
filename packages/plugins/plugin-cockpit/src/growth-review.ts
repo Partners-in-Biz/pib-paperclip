@@ -52,6 +52,9 @@ export interface ReviewScope {
 }
 
 const cell = (text: string): string => text.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+/** Not every channel has its experiment tools yet (SEO and Campaigns come later), so a missing tool is skipped, not guessed. */
+const MISSING_TOOL_RULE = "If a tool named here is not registered yet, say so in one line and skip it; do not guess another tool.";
+
 const pct = (v: number | null): string => (v === null ? "n/a" : `${v >= 0 ? "+" : ""}${Math.round(v * 1000) / 10}%`);
 const tool = (channel: string, name: string): string => `\`${channelPlugin(channel)}:${name}\``;
 
@@ -70,6 +73,8 @@ export function growthReviewContent(input: { weekLabel: string; scopes: ReviewSc
   const { scopes } = input;
   const lines: string[] = [
     `The weekly growth review for the week of ${input.weekLabel}. You own ${scopes.length} ${scopes.length === 1 ? "scope" : "scopes"}: ${scopes.map((s) => `\`${s.scopeKey}\``).join(", ")}. Each channel's agent got its own hand-off issue for the performance review and the new experiments; yours is to check the ledger and close the week out.`,
+    "",
+    MISSING_TOOL_RULE,
     "",
     "## 1. Reconcile the ledger",
     "Verdict events are best effort. For each channel and scope below, call the channel's `list-experiments`, and for every measured experiment that `partnersinbiz.cockpit:growth-ledger` does not show, call `partnersinbiz.cockpit:ledger-upsert` with the experiment's own `decidedAt` (a repeat is then a no-op).",
@@ -92,6 +97,7 @@ export function growthReviewContent(input: { weekLabel: string; scopes: ReviewSc
 export function growthHandoffContent(input: { weekLabel: string; channels: Array<{ channel: string; scopes: string[] }> }): { title: string; description: string } {
   const lines: string[] = [
     `Your part of the weekly growth review for the week of ${input.weekLabel}. For each channel and scope below, pass the scope to every tool.`,
+    MISSING_TOOL_RULE,
     "",
   ];
   for (const { channel, scopes } of input.channels) {

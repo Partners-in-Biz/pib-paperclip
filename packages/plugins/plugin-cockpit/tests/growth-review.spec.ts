@@ -58,6 +58,14 @@ describe("the channel hand-off", () => {
   });
 });
 
+describe("tools that are not registered yet", () => {
+  it("tells both the owner and the channel agent to skip a missing tool instead of guessing", () => {
+    const owner = growthReviewContent({ weekLabel: "2026-10-19", scopes: [], proposeGoals: false, cockpitHref: "/c" });
+    const handoff = growthHandoffContent({ weekLabel: "2026-10-19", channels: [{ channel: "seo", scopes: ["own"] }] });
+    for (const d of [owner.description, handoff.description]) expect(d).toContain("not registered yet, say so in one line and skip it; do not guess another tool");
+  });
+});
+
 describe("channels", () => {
   it("routes social and seo to their roles and the rest to the Revenue Lead; an unknown channel still gets a plugin", () => {
     expect(channelRole("social")).toBe("social");
