@@ -49,7 +49,7 @@
           "[Pp]lugin[- ]?ads|get[- ]?spend[- ]?ledger|get[- ]?budget"
         ],
         "mustNotSay": [
-          "Meta(?:'s)?\\s+(?:ads\\s+)?console|Ads\\s+Manager"
+          "(?<!\\b(?:not|never|instead of|rather than)\\s+(?:the\\s+)?(?:Meta\\s+)?)(?:Meta(?:'s)?\\s+(?:ads\\s+)?console|(?:Meta\\s+)?Ads\\s+Manager)"
         ],
         "maxSteps": 2
       },
@@ -59,6 +59,10 @@
             {
               "kind": "comment",
               "say": "Using plugin-ads tools (get-spend-ledger and get-budget-status) to check today's spend and budget pace on the Velox campaign."
+            },
+            {
+              "kind": "comment",
+              "say": "Spend comes from the plugin-ads get-spend-ledger and get-budget-status tools, not the Meta console and not Ads Manager."
             }
           ],
           "summary": "Used plugin-ads tools"

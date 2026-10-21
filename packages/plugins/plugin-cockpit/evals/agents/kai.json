@@ -58,7 +58,7 @@
           "[Dd]ecide|[Cc]ommit|[Ff]ix|budget"
         ],
         "mustNotSay": [
-          "(?<!(?:no need to|don't|never|not|n't)\\s)(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
+          "(?<!(?:[Nn]o need to|[Dd]on't need to|[Ww]on't need to|[Dd]on't|[Ww]on't|[Nn]ever|[Nn]ot|n't)\\s)(?:ask|request)\\s+(?:for\\s+)?(?:approval|permission)\\b"
         ],
         "maxSteps": 2
       },
