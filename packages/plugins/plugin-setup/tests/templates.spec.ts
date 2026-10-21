@@ -14,18 +14,20 @@ import {
   hireOrder,
   loadPack,
   matchTemplate,
+  offeredTemplates,
   parsePack,
   slugify,
   templateByKey,
   templateStaffing,
   templateVars,
   type AgentLike,
+  type AgentTemplate,
 } from "../src/templates.js";
 import { renderHash } from "../src/render-hash.js";
 import { pickAdapter, renderHire, renderInstructions, templateConfig } from "../src/templates-render.js";
 import { parseSubagents, subagentExtraArgs, subagentsText } from "../src/subagents.js";
 
-const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "summarizer", "wiki-maintainer"];
+const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "revenue-lead", "summarizer", "wiki-maintainer"];
 const DEV_CHAIN = ["delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder"];
 /** The ones that write, review, merge or plan code: the Plan Critic only reads a plan and the Mac Builder has its own rules. */
 const CODE_AGENTS = ["delivery-lead", "planner", "senior-developer", "developer", "code-reviewer"];
@@ -661,5 +663,15 @@ describe("render-hash and subagent integration", () => {
 describe("block expansion", () => {
   it("replaces include markers with the shared block", () => {
     expect(expandBlocks("A\n{{include:x}}\nB", { x: "BLOCK\n" })).toBe("A\nBLOCK\nB\n");
+  });
+});
+
+describe("template scope and filtering", () => {
+  it("offeredTemplates filters to generic only when not ownerCompany", () => {
+    const pack = loadPack();
+    const generic = offeredTemplates(pack.templates, false);
+    const all = offeredTemplates(pack.templates, true);
+    expect(generic.every((t: AgentTemplate) => t.scope !== "pib")).toBe(true);
+    expect(all.length >= generic.length).toBe(true);
   });
 });

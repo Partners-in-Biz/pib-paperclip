@@ -358,6 +358,7 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
       // Null when the list could not be read: the steps that need it then fail loudly instead of finding nothing to do.
       installed,
       options: { ...runOptions, ...(team.hiring?.agent ? { hiringAgentId: team.hiring.agent.id } : {}) },
+      ownerCompany: fresh.ownerCompany,
       requireApproval: info?.requireApproval ?? null,
       statuses,
       starter: { approved: fresh.starterPack.approved, importedAt: fresh.starterPack.importedAt },
