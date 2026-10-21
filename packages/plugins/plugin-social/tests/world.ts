@@ -1,8 +1,3 @@
-/**
- * An in-memory world for the approval tests: the posts, destinations, accounts, approval policies, review outcomes and client
- * approval links that approval-flow.ts and client-approval.ts read and write, behind the host SQL guard copy (`fakeCtx`),
- * plus host issues, the Cockpit roles and the CRM projection. Statements are recognised by their text, like the other specs.
- */
 import { vi } from "vitest";
 import type { AccountRow, PostRow } from "../src/db.js";
 import type { PostStatus } from "../src/platforms.js";
@@ -30,6 +25,12 @@ export interface WorldOptions {
   /** The Account Manager agent in the Cockpit team roles (who drafts the client's email). */
   accountManager?: string | null;
   config?: Record<string, unknown>;
+  /** Post destinations (leave unset for default with one LinkedIn destination). */
+  destinations?: Array<{ id: string; company_id: string; post_id: string; account_id: string; status: string; attempts: number }>;
+  /** Playbook text for the post's scope (including media-rule block if needed). */
+  playbookText?: string | null;
+  /** Experiment to seed in the growth store. */
+  experiment?: { id: string; programId: string; status: "proposed" | "running" | "measured" | "rejected" | "abandoned"; arms: Array<{ name: string; description: string }> } | null;
 }
 
 export function account(id: string, extra: Partial<AccountRow> = {}): AccountRow {
@@ -47,9 +48,9 @@ export function approvalWorld(opts: WorldOptions = {}) {
     id: "p1", company_id: "co", body: "Spring sale starts Friday. Come and see.", overrides: {}, media: [], status: "review", scheduled_at: opts.scheduledAt ?? null, scope: "org",
     owner_user_id: "owner-1", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null, first_comment: null, source: "agent",
     source_ref: null, failure_issue_id: null, published_at: null, error: null, created_by_agent_id: "ag-social", review_issue_id: opts.reviewIssue ?? null, review_returns: 0,
-    created_at: new Date(), updated_at: new Date(),
+    created_at: new Date(), updated_at: new Date(), experiment_id: null, experiment_arm: null,
   };
-  const dest = { id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 };
+  const destinations = opts.destinations ?? [{ id: "d1", company_id: "co", post_id: "p1", account_id: "a1", status: "pending", attempts: 0 }];
   const acct = account("a1", { client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null });
   let policy: Record<string, unknown> | null = opts.policy
     ? { scope_key: client ? `${client.kind}:${client.id}` : "own", require_reviewer: false, require_owner: true, require_client: false, link_expiry_days: 14, updated_by: "owner-1", updated_at: new Date(), ...opts.policy }
@@ -64,6 +65,25 @@ export function approvalWorld(opts: WorldOptions = {}) {
   const issueStatus: Record<string, string> = {};
   let reviewIssue = opts.reviewIssue ?? null;
   const socialAgent = opts.socialAgent === undefined ? "ag-social" : opts.socialAgent;
+
+  // Growth store data
+  const scopeKey = client ? `${client.kind}:${client.id}` : "own";
+  const program: Record<string, unknown> = {
+    id: "prog-1", company_id: "co", client_kind: client?.kind ?? null, client_ref: client?.id ?? null, client_name: client?.name ?? null,
+    channel: "social", objective: "Test objective", metric: "engagement_rate", constraints: {},
+    playbook: opts.playbookText ?? "# Default playbook", playbook_version: 1,
+    autopilot: "safe", scoreboard: {}, feature_questions: [], status: "active", owner_user_id: "owner-1",
+    approval_issue_id: null, approval_week: null, created_at: new Date(), updated_at: new Date(),
+  };
+  const experiment: Record<string, unknown> | null = opts.experiment ? {
+    id: opts.experiment.id, company_id: "co", program_id: opts.experiment.programId,
+    hypothesis: "Test hypothesis", hypothesis_type: "hook", variable: "media_requirements",
+    arms: opts.experiment.arms, metric: "engagement_rate", min_per_arm: 3, window_days: 7,
+    status: opts.experiment.status, proposed_by: "agent:a", approval_issue_id: null,
+    approved_at: null, approved_by: null, started_at: opts.experiment.status === "running" ? new Date().toISOString() : null,
+    measure_after: null, measured_at: null, verdict: null, outcome: null, playbook_diff: null, playbook_decision: null,
+    decision_note: null, created_at: new Date(), updated_at: new Date(),
+  } : null;
 
   const ctx = fakeCtx(
     {
@@ -118,7 +138,7 @@ export function approvalWorld(opts: WorldOptions = {}) {
         if (sql.startsWith("SELECT review_issue_id")) return [{ review_issue_id: reviewIssue }];
         if (sql.includes(`FROM ${T("posts")} WHERE id = $1`)) return [{ ...post, review_issue_id: reviewIssue }];
         if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = $2`)) return post.status === params[1] ? [{ ...post, review_issue_id: reviewIssue }] : [];
-        if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return [dest];
+        if (sql.includes(`FROM ${T("destinations")} WHERE post_id = $1`)) return destinations.filter((d) => d.post_id === params[0]);
         if (sql.includes(`FROM ${T("accounts")} WHERE company_id = $1 AND id = ANY`)) return [acct];
         if (sql.includes(`FROM ${T("accounts")} WHERE id = $1`)) return [acct];
         if (sql.includes(`FROM ${T("approval_policies")}`)) return policy && policy.scope_key === params[1] ? [policy] : [];
@@ -143,6 +163,34 @@ export function approvalWorld(opts: WorldOptions = {}) {
         }
         if (sql.includes(`FROM ${T("client_approvals")}`) && sql.includes("status = 'pending' AND expires_at < now()")) {
           return links.filter((l) => l.status === "pending" && Date.parse(String(l.expires_at)) < Date.now()).map((l) => ({ ...l }));
+        }
+        // Growth store queries
+        if (sql.includes(`FROM ${T("growth_programs")}`)) {
+          if (sql.includes("WHERE company_id = $1 AND channel = $2")) {
+            // findProgram query: matches on company_id, channel, and optionally client_ref/client_kind
+            const companyId = String(params[0]);
+            const channel = String(params[1]);
+            if (companyId !== "co" || channel !== "social") return [];
+            // Check if it's looking for a specific scope
+            if (sql.includes("AND client_ref IS NULL")) {
+              // Looking for org scope (no client)
+              return !client ? [program] : [];
+            } else if (sql.includes("client_ref = $3")) {
+              // Looking for a specific client scope
+              return client && client.id === String(params[2]) ? [program] : [];
+            }
+            return [program];
+          }
+          if (sql.includes("WHERE company_id = $1 AND id = $2")) {
+            // getProgram query
+            return String(params[0]) === "co" && String(params[1]) === "prog-1" ? [program] : [];
+          }
+        }
+        if (sql.includes(`FROM ${T("growth_experiments")}`)) {
+          if (sql.includes("WHERE company_id = $1 AND id = $2")) {
+            // getExperiment query
+            return String(params[0]) === "co" && experiment && String(params[1]) === experiment.id ? [experiment] : [];
+          }
         }
         return [];
       },
@@ -224,7 +272,7 @@ export function approvalWorld(opts: WorldOptions = {}) {
     l.answered_at = new Date().toISOString();
     l.notified_at = null;
   };
-  return { ctx, post, outcomes, links, created, updates, comments, wakeups, logs, answer, reviewIssueId: () => reviewIssue, policy: () => policy, setIssueStatus: (id: string, status: string) => void (issueStatus[id] = status), dest };
+  return { ctx, post, outcomes, links, created, updates, comments, wakeups, logs, answer, reviewIssueId: () => reviewIssue, policy: () => policy, setIssueStatus: (id: string, status: string) => void (issueStatus[id] = status), destinations };
 }
 
 export const PERSON = { companyId: "co", userId: "owner-1", agentId: null, runId: null, isAgent: false } as const;

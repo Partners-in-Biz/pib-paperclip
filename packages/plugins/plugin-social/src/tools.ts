@@ -55,16 +55,21 @@ const OWN = " Omit the client for PiB's own work; pass client for a client. Neve
 
 /** Growth Lab tag on a post. */
 const experimentTag: Record<string, JsonSchema> = {
-  experimentId: text("Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag."),
-  arm: choice(["control", "variant"], "Which arm of the experiment the post is: control (what we do now) or variant (the change)."),
+  experimentId: text("Growth Lab experiment id. Empty string clears the tag."),
+  arm: choice(["control", "variant"], "control (current) or variant (change)."),
 };
 
 const post: Record<string, JsonSchema> = {
-  accountIds: ids("Destination account ids of the post's scope (list-connected-accounts; status connected)"),
-  mediaAssetIds: ids("Media asset ids of the post's scope (list-media-assets or import-media-from-url); order = carousel order"),
-  firstComment: text("Posted as the first comment (X: a reply to the post) where the platform allows"),
-  scheduledAt: text(`Proposed publish time, ${ISO_TIME}. When a person approves the post it is scheduled for this time if it is still ahead.`),
+  accountIds: ids("Destination account ids (list-connected-accounts)."),
+  mediaAssetIds: ids("Media asset ids (list-media-assets). Order = carousel order."),
+  firstComment: text("Posted as first comment (or reply on X), where platform allows."),
+  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
   overrides: OVERRIDES,
+  tags: {
+    type: "array",
+    items: { type: "string" },
+    description: "Post tags (text-native exempts media). Max 10.",
+  },
 };
 
 /** Growth Lab experiment statuses (list-experiments filter). */
@@ -224,11 +229,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "record-review-verdict",
     displayName: "Record review verdict",
     description:
-      "Reviewer only. Record your verdict on a post in review: pass (it is ready for whoever approves) or changes (with notes: one line per problem). A pass is a check, not an approval. The plugin hands the review issue on: after a pass to the person or the Social agent the policy names; after changes back to the Social agent with the post returned to draft. Do not reassign the issue yourself.",
+      "Reviewer only. pass: ready to approve (media required if playbook enforces; returned refused with blockers if missing). changes: send it back to draft with notes. A pass is a check, not an approval. The plugin hands the review issue on.",
     parametersSchema: schema(["postId", "verdict"], {
       postId: POST_ID,
-      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft with your notes."),
-      notes: text("changes: what to fix, one line per problem. pass: optional remarks."),
+      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft."),
+      notes: text("changes: what to fix. pass: optional remarks."),
+      toneScore: { type: "number", minimum: 0, maximum: 20, description: "Tone score 0–20 (optional; requires toneReason)." },
+      toneReason: text("Why you gave this tone score (optional; required for score)."),
     }),
   },
   {
