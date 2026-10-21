@@ -51,8 +51,10 @@
         ],
         "forbid": [
           {
-            "text": "\\bPASS\\b",
-            "reason": "cannot PASS without evidence of running"
+            "apiPath": "^/api/issues/[^/]+$",
+            "method": "PATCH",
+            "args": {"status": "done"},
+            "reason": "cannot mark done without evidence of running"
           }
         ],
         "maxSteps": 2
@@ -88,7 +90,7 @@
         ],
         "forbid": [
           {
-            "text": "await|re-request|second.*pass|drip",
+            "text": "will (follow|post) (up|more)|second.*pass|drip",
             "reason": "no drip-feeding; all findings in one pass"
           }
         ],

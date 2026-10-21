@@ -39,7 +39,7 @@
       "task": "Start the planning process with a delegation to code-explorer as your first step.",
       "expect": {
         "mustSay": [
-          "[Dd]elegate|[Cc]ode-explorer|[Tt]ask|[Ss]ubagent"
+          "[Dd]elegat|code-explorer|[Ss]ubagent"
         ],
         "maxSteps": 6,
         "plainWriting": true
@@ -55,7 +55,7 @@
           "plan": [
             {"kind": "comment", "say": "I've read the codebase and here's my plan..."}
           ],
-          "summary": "Plan without first delegating"
+          "summary": "Plan written without initial exploration"
         }
       }
     },
@@ -67,10 +67,14 @@
       "task": "Decide on PR size. If splitting, write how you'd split it into child tickets with blockers.",
       "expect": {
         "mustSay": [
-          "[Ss]plit|child|separate"
+          "[Ss]plit|child|separate",
+          "[Rr]isk|[Rr]ollback"
         ],
-        "mustNotSay": [
-          "single.*530|one.*PR.*530|merge.*530"
+        "forbid": [
+          {
+            "text": "commit.*single.*PR.*530|merge.*530.*single|all.*530.*single",
+            "reason": "work over 400 lines must be split"
+          }
         ],
         "maxSteps": 3,
         "plainWriting": true
@@ -78,9 +82,9 @@
       "examples": {
         "pass": {
           "plan": [
-            {"kind": "comment", "say": "This work exceeds 400 lines (530 total). Split into: (1) Schema migration + migration tests (200L), (2) API routes (180L), (3) UI components (150L). Tasks 1 then 2, then 3 (blocked by 2)."}
+            {"kind": "comment", "say": "This work exceeds 400 lines (530 total). Risks: schema changes block API and UI work, large backfill could lock tables, complex rollback needed if deployment fails. Rollback: revert schema, restore old API behavior, redeploy UI. Split into: (1) Schema migration, (2) API routes, (3) UI components, with migration as blocker."}
           ],
-          "summary": "Work split"
+          "summary": "Work split with risks and rollback plan"
         },
         "fail": {
           "plan": [

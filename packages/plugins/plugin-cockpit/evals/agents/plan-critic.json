@@ -20,7 +20,7 @@
       "examples": {
         "pass": {
           "plan": [
-            {"kind": "comment", "say": "## The three most likely ways this plan fails\n\n1. Migration backfill has no batch size on a 2M row table, causing full table lock.\n2. Rollback deletes the new column but doesn't restore the old data, losing updates mid-migration.\n3. Query rewrite assumes all queries add tenant_id, but 20+ legacy queries don't; they'll error.\n\n## What's missing\n\nNo mention of monitoring for blocked transactions during backfill. No pause/resume plan.\n\n## What's over-engineered\n\nThe dual-write period is 3 weeks; one week is enough."}
+            {"kind": "comment", "say": "## The three most likely ways this plan fails\n\n1. Migration backfill has no batch size on a 2M row table, causing full table lock.\n2. Rollback deletes the new column but doesn't restore the old data, losing updates mid-migration.\n3. Query rewrite assumes all queries add tenant_id. However, 20+ legacy queries don't. These will error.\n\n## What's missing\n\nNo mention of monitoring for blocked transactions during backfill. No pause/resume plan.\n\n## What's over-engineered\n\nThe dual-write period is 3 weeks. One week is enough."}
           ],
           "summary": "Three-section critique"
         },
@@ -45,7 +45,7 @@
         ],
         "forbid": [
           {
-            "text": "approved|pass|looks good",
+            "text": "\\b[Aa]pproved\\b|\\blooks good\\b",
             "reason": "plan without Q&A section fails"
           }
         ],

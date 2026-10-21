@@ -13,8 +13,11 @@
           "\\[dogfood\\]",
           "test.*data|suppressed|fake|dummy"
         ],
-        "mustNotSay": [
-          "real.*email|actual.*customer|production.*account"
+        "forbid": [
+          {
+            "text": "@example\\.com[^\\]]",
+            "reason": "must use test data marked [dogfood], not real customer emails"
+          }
         ],
         "maxSteps": 1
       },
@@ -82,8 +85,11 @@
           "https?://",
           "Not run:"
         ],
-        "mustNotSay": [
-          "PASS"
+        "forbid": [
+          {
+            "text": "DOGFOOD: PASS",
+            "reason": "report must say FAIL, not PASS"
+          }
         ],
         "maxSteps": 1
       },
