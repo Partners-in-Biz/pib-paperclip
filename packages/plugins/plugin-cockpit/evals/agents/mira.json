@@ -45,7 +45,7 @@
           "[Rr]ecommend|[Aa]rjun|owner"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll) (?:change|update|set|move)\\b.*paywall"
+          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:change|update|set|move)).{0,10}paywall\\b"
         ],
         "maxSteps": 2
       }

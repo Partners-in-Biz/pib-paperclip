@@ -63,7 +63,7 @@
           "[Dd]evelopment|[Pp]r"
         ],
         "mustNotSay": [
-          "\\b(?:merge|push).*main\\b"
+          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:merge|push).{0,10}main)\\b"
         ],
         "maxSteps": 2
       }

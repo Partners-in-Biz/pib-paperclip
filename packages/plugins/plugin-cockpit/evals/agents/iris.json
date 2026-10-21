@@ -22,7 +22,7 @@
           "[Hh]elper|[Tt]ask|delegate|research"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll) (?:research|search|pull|look[- ]?up)\\b"
+          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:research|search|pull|look))\\b"
         ],
         "maxSteps": 2
       }

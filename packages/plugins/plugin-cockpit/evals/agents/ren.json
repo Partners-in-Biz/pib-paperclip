@@ -54,7 +54,7 @@
           "[Ss]teve|[Pp]repare|hand[- ]?off|sign[- ]?off"
         ],
         "mustNotSay": [
-          "\\bI(?: will|'ll) (?:submit|publish)\\b"
+          "(?<!never )(?<!not )(?<!n't )\\b(I(?:\\s+will|'ll|\\s+am going to)\\s+(?:submit|publish))\\b"
         ],
         "maxSteps": 2
       }
