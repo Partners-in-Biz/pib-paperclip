@@ -201,3 +201,93 @@ describe("eval scenario examples verification", () => {
     expect(totalScenariosWithExamples, "at least one agent eval file should have scenario examples").toBeGreaterThan(0);
   });
 });
+
+describe("negation-handling forbids (PAR-4213)", () => {
+  it("planner forbid: negated phrases pass, explicit bad phrases fail", () => {
+    const plannerFile = AGENT_EVALS.planner as any;
+    const plannerScenario = (plannerFile.scenarios as Scenario[]).find((s) => s.id === "plan-names-risks-rollback-split");
+    expect(plannerScenario, "scenario not found").toBeDefined();
+    const s = plannerScenario!;
+
+    // Negated phrase should PASS (not trigger forbid)
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Not a single PR of 530 lines: split into child issues, with risks and a rollback plan",
+        },
+      ],
+      summary: "Split into child issues",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit bad phrase should FAIL (trigger forbid)
+    const badFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Merge this into development as one PR.",
+        },
+      ],
+      summary: "Single PR",
+    }));
+    expect(badFail.passed, "explicit bad phrase should fail").toBe(false);
+    expect(badFail.checks.some((c) => !c.ok && c.detail.includes("work over 400 lines must be split"))).toBe(true);
+  });
+
+  it("code-reviewer forbid: negated second-pass phrase passes", () => {
+    const reviewerFile = AGENT_EVALS["code-reviewer"] as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "all-findings-one-pass");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // Negated second-pass phrase should PASS
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "CHANGES NEEDED:\n(1) User profile: missing null check\n(2) Query issue: N+1 problem\n(3) API response: violates schema\n\nI will not post a second pass. Fix all three, then re-request review.",
+        },
+      ],
+      summary: "All findings, one pass",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated second-pass phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+  });
+
+  it("plan-critic forbid: negated approval phrase passes", () => {
+    const criticFile = AGENT_EVALS["plan-critic"] as any;
+    const criticScenario = (criticFile.scenarios as Scenario[]).find((s) => s.id === "fail-plan-no-qa-section");
+    expect(criticScenario, "scenario not found").toBeDefined();
+    const s = criticScenario!;
+
+    // Negated approval should PASS
+    const negatedPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "What's missing\n\nThe plan has no Questions & Answers section. Not approved: no QA section found.",
+        },
+      ],
+      summary: "Plan fails gate",
+    }));
+    expect(
+      negatedPass.passed,
+      `negated approval phrase should pass. Failures: ${negatedPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+  });
+});

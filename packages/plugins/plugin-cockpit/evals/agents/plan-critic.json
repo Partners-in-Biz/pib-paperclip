@@ -45,7 +45,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!un)\\bapproved\\b|(?<!sounds like )\\blooks good\\b",
+            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!un)(?<!Un)(?<!UN)\\bapproved\\b|(?<!sounds like )(?<!Sounds like )(?<!SOUNDS LIKE )\\blooks good\\b",
             "reason": "plan without Q&A section fails"
           }
         ],
