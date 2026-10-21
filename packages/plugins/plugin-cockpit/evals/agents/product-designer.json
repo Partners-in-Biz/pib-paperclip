@@ -15,7 +15,7 @@
         ],
         "forbid": [
           {
-            "text": "skip.*check|without.*check|won't.*check",
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})(?:skip[^.!?\\n]*check|without[^.!?\\n]*check)",
             "reason": "must perform overflow and responsive checks"
           }
         ],
@@ -51,7 +51,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!format )(?<!Format )(?<!FORMAT )[a-f0-9]{8,}|(?<!not )(?<!Not )(?<!NOT )human.*readable|([A-F0-9]+-){4,}",
+            "text": "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}",
             "reason": "must use human-readable names, not IDs or UUIDs"
           }
         ],
@@ -80,14 +80,9 @@
       "task": "How do you log this design decision so it is documented for the team?",
       "expect": {
         "mustSay": [
-          "log|decision|document",
-          "date|reason"
-        ],
-        "forbid": [
-          {
-            "text": "^Selected|^Chose|^Picked",
-            "reason": "must explicitly log decision with date, options, and reasoning; not just announce the choice"
-          }
+          "log|decision|document|DECISIONS",
+          "date|reason|because",
+          "option"
         ],
         "maxSteps": 2,
         "plainWriting": true

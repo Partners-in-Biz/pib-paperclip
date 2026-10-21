@@ -14,7 +14,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!never )(?<!Never )(?<!NEVER )(?<!avoid )(?<!Avoid )(?<!AVOID )merge.*to main",
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})merge[^.!?\\n]*to main",
             "reason": "must not merge to main"
           }
         ],

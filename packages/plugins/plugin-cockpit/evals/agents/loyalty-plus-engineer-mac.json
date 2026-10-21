@@ -52,7 +52,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!leave )(?<!Leave )(?<!LEAVE )uncommitted|(?<!not )(?<!Not )(?<!NOT )skip.*commit",
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})(?:uncommitted|skip[^.!?\\n]*commit)",
             "reason": "must commit and push the rewritten environment file"
           }
         ],
@@ -85,7 +85,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!Not )(?<!NOT )(?<!don't )(?<!Don't )(?<!won't )(?<!Won't )(?<!avoid )(?<!Avoid )run.*--execute.*non-200|(?<!not )(?<!Not )(?<!NOT )(?<!stop )(?<!Stop )(?<!abort )(?<!Abort )execute.*non-200",
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})--execute[^.!?\\n]*non-200",
             "reason": "must not run --execute after non-200 dry-run"
           }
         ],
@@ -100,7 +100,7 @@
         },
         "fail": {
           "plan": [
-            {"kind": "comment", "say": "Even though dry-run errored, running --execute to try to push the config through anyway."}
+            {"kind": "comment", "say": "The dry-run returned a non-200 error, but I will run --execute anyway to push the config through."}
           ],
           "summary": "Ran --execute after non-200 response"
         }

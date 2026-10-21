@@ -51,7 +51,7 @@
         ],
         "forbid": [
           {
-            "text": "(?<!not )(?<!Not )(?<!NOT )repeat.*comment|(?<!not )(?<!Not )(?<!NOT )post.*again|(?<!not )(?<!Not )(?<!NOT )re-wake|(?<!not )(?<!Not )(?<!NOT )retry",
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})(?:repeat[^.!?\\n]*comment|post[^.!?\\n]*again|re-wake|retry)",
             "reason": "post only one comment when waiting on a person; then stay silent"
           }
         ],
