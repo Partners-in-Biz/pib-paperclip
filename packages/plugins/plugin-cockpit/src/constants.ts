@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.11.1";
+export const VERSION = "0.12.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -22,6 +22,8 @@ export const JOBS = {
   acceptanceNightly: "acceptance-nightly",
   /** Every 15 minutes: pauses agents when quota failures breach thresholds, resumes when safe. */
   governor: "governor",
+  /** Every night at 04:00 UTC (06:00 SAST): sends one digest push "N items waited overnight" for each company, collapsing the deferred rows. */
+  pushDigest: "push-digest",
 } as const;
 
 export const ROUTINES = {
