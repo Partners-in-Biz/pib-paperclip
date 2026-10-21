@@ -11,7 +11,7 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE, STALLS_REFERENCE } from "../src/skill-references.js";
 import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
@@ -164,8 +164,8 @@ describe("the Operator knows how to act on each watch problem", () => {
       "`blockedByIssueIds`",
       "`unblockDescriptor`",
       "PATCH /api/issues/{id}",
-      "set it `todo` and wake the assignee, or cancel it with a reason",
-      "assignee idle for 12 hours",
+      "ask-owner",
+      "idle in-progress",
     ]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
   });
 
@@ -215,6 +215,23 @@ describe("owner-checks reference", () => {
   });
 });
 
+describe("stalls reference", () => {
+  it("mentions watchdog-findings, chain_idle and orphan_blocker findings, and names only real tools", () => {
+    expect(STALLS_REFERENCE).toContain(`\`${PLUGIN_KEY}:watchdog-findings\``);
+    expect(STALLS_REFERENCE).toContain("chain_idle");
+    expect(STALLS_REFERENCE).toContain("orphan_blocker");
+    expect(STALLS_REFERENCE).toContain("blockedByIssueIds");
+    // All tool references must be real.
+    const toolMatches = [...STALLS_REFERENCE.matchAll(/partnersinbiz\.([a-z]+):([a-z0-9-]+)/g)];
+    const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
+    for (const [match, plugin, name] of toolMatches) {
+      if (plugin === "cockpit") {
+        expect(own.has(name), `partnersinbiz.${plugin}:${name}`).toBe(true);
+      }
+    }
+  });
+});
+
 describe("the Reviewer skill", () => {
   it("drops checks nobody can do and matches the modules' opt-out standard", () => {
     for (const gone of ["preview text", "Renders on mobile", "physical address", "company settings", "brand profile"]) expect(REVIEWER_SKILL_BODY, gone).not.toContain(gone);
@@ -251,7 +268,7 @@ describe("the Reviewer skill", () => {
 describe("the Operator's references (Wave 3)", () => {
   const operator = skill("pib-operator") as { markdown: string; files?: Array<{ path: string; content: string }> };
 
-  it("the skill ships eight reference files, and the body names every one of them", () => {
+  it("the skill ships nine reference files, and the body names every one of them", () => {
     expect(operator.files?.map((f) => f.path)).toEqual([
       "references/health-checks.md",
       "references/closeout-review.md",
@@ -260,6 +277,7 @@ describe("the Operator's references (Wave 3)", () => {
       "references/credentials-and-custody.md",
       "references/asking-with-an-effect.md",
       "references/quality-gates.md",
+      "references/stalls.md",
       "references/skill-coach.md",
     ]);
     for (const path of Object.values(OPERATOR_REFERENCE_PATHS)) {
