@@ -2,8 +2,7 @@
  * In-memory GrowthStore with the same semantics as sql.ts (scope filters,
  * guarded updates, upserts), for service-level tests.
  */
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import type { FeatureValue, ScoredPostRow } from "../src/growth/engine.js";
+import { sameClient, scopeOfRow, type ClientScope, type FeatureValue, type ScoredPostRow } from "@partnersinbiz/pib-plugin-kit";
 import type {
   Experiment,
   ExperimentItem,

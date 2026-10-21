@@ -3,9 +3,8 @@
  * and experiment tags on posts. Same host SQL guard rules as sql.ts.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { textArrayParam } from "@partnersinbiz/pib-plugin-kit";
+import { textArrayParam, type ScoredPostRow } from "@partnersinbiz/pib-plugin-kit";
 import { iso, postMedia, setPostExperiment, table } from "../db.js";
-import type { ScoredPostRow } from "./engine.js";
 import { json, num, scopeFilter, str, type Row } from "./sql-util.js";
 import type { ExistingScore, MetricRow, SocialFeaturesPort } from "./store.js";
 
