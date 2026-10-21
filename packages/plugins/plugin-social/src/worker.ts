@@ -108,6 +108,7 @@ import {
   requiredString,
   requireUser,
   retryPostRecord,
+  requestCreativeRecord,
   reviewOutcomesRecord,
   mediaComplianceRecord,
   schedulePost,
@@ -241,6 +242,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return requestClientApprovalRecord(ctx, viewer, p);
     case "record-review-verdict":
       return recordReviewVerdictRecord(ctx, viewer, p);
+    case "request-creative":
+      return requestCreativeRecord(ctx, viewer, p);
     case "review-outcomes":
       return reviewOutcomesRecord(ctx, viewer, p);
     case "media-compliance":

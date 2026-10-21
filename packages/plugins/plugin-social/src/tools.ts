@@ -239,6 +239,18 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "request-creative",
+    displayName: "Request creative",
+    description:
+      "Ask for an image or video for a draft post (or one in review). Opens ONE hand-off issue per post (origin creative:<postId>) for the Creative Producer, else the Social agent, the Account Manager, the Operator or the owner, with the brief, each destination's platform spec, the 30-second video cap, the alt-text requirement and the scope's Drive folder (02 Assets). Safe to call again: you get the same issue back (a finished one is reopened). Call it when the Reviewer sends the post back for missing or weak media.",
+    parametersSchema: schema(["postId"], {
+      postId: POST_ID,
+      brief: text("What the asset should show and say, in your words: hook, subject, mood, any text on it"),
+      format: choice(["image", "video"], "image (default) or video"),
+      durationS: int("Video length in seconds, 1-30 (default 30). Longer is refused."),
+    }),
+  },
+  {
     name: "review-outcomes",
     displayName: "Review outcomes",
     description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. These are inputs for a later autonomy policy: auto-approval is off and you never approve.${OWN}`,
