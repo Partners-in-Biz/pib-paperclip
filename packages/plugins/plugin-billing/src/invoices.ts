@@ -8,6 +8,7 @@ import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plu
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, iso, refreshInvoiceStatus } from "./balances.js";
 import { defaultTaxCode, emailEnabled, loadBilling, privateR2, type BillingSettings } from "./config.js";
+import { saveSentCopy } from "./sent-copy.js";
 import {
   asArray,
   asObject,
@@ -29,7 +30,7 @@ import {
   type QuoteRow,
 } from "./db.js";
 import { docFileName, renderDocument, type DocKind, type DocView } from "./documents.js";
-import { BillingError, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
+import { BillingError, buildInvoiceHtml, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
 import { nextDocumentNumber } from "./numbering.js";
@@ -777,7 +778,7 @@ async function storePdf(ctx: PluginContext, companyId: string, kind: DocKind, do
   await putObject(r2, key, bytes, "application/pdf");
   const tableName = kind === "invoice" ? "invoices" : kind === "quote" ? "quotes" : "credit_notes";
   await ctx.db.execute(`UPDATE ${table(ctx, tableName)} SET pdf_key = $2${kind === "invoice" ? ", pdf_at = now()" : ""} WHERE id = $1`, [docId, key]);
-  return { url: presignGet(r2, key, MAIL_LINK_SECONDS, filename), filename, bytes: bytes.byteLength };
+  return { url: presignGet(r2, key, MAIL_LINK_SECONDS, filename), filename, bytes: bytes.byteLength, data: bytes };
 }
 
 /** The invoice is out: status sent, journal posted, open item shared. Safe to call twice. */
@@ -855,6 +856,18 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
     `UPDATE ${table(ctx, "invoices")} SET delivery_key = $2, delivery_status = 'queued', delivery_error = NULL, mail_seq = $3, pending_action = NULL, updated_at = now() WHERE id = $1`,
     [invoice.id, key, seq],
   );
+  // Fire-and-forget: save to Drive after the send is queued, never fail the send on Drive errors
+  if (pdf?.data) {
+    void saveSentCopy(ctx, {
+      companyId: invoice.company_id,
+      kind: "invoice",
+      number: view.number,
+      seq,
+      bytes: pdf.data,
+      customerKind: invoice.customer_kind,
+      customerRef: invoice.customer_ref,
+    });
+  }
   return { mode: "queued", key, to, attached: Boolean(pdf), note: pdf ? undefined : "Add the private R2 bucket in Billing settings to attach PDFs." };
 }
 
@@ -866,7 +879,7 @@ async function queueDoc(
   seq: number,
   to: MailAddress[],
   content: EmailContent,
-  pdf: { url: string; filename: string; bytes: number } | null,
+  pdf: { url: string; filename: string; bytes: number; data?: Uint8Array } | null,
   settings: BillingSettings,
   doc: { customer_kind: string; customer_ref: string },
   createdBy: string | null,
@@ -912,6 +925,18 @@ export async function startQuoteSend(ctx: PluginContext, quoteId: string, create
     `UPDATE ${table(ctx, "quotes")} SET delivery_key = $2, delivery_status = 'queued', delivery_error = NULL, mail_seq = $3, pending_action = NULL, updated_at = now() WHERE id = $1`,
     [quote.id, key, seq],
   );
+  // Fire-and-forget: save to Drive after the send is queued, never fail the send on Drive errors
+  if (pdf?.data) {
+    void saveSentCopy(ctx, {
+      companyId: quote.company_id,
+      kind: "quote",
+      number: view.number,
+      seq,
+      bytes: pdf.data,
+      customerKind: quote.customer_kind,
+      customerRef: quote.customer_ref,
+    });
+  }
   return { mode: "queued", key, to, attached: Boolean(pdf) };
 }
 
@@ -947,6 +972,18 @@ export async function retrySend(ctx: PluginContext, context: PluginPerformAction
     const seq = Number(invoice.mail_seq ?? 0) + 1;
     const key = await queueDoc(ctx, companyId, "invoice", invoice.id, seq, to, invoiceEmail(view, { hasAttachment: Boolean(pdf), signature: settings.email?.signature }), pdf, settings, invoice, createdBy);
     await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET delivery_key = $2, delivery_status = 'queued', delivery_error = NULL, mail_seq = $3 WHERE id = $1`, [invoice.id, key, seq]);
+    // Fire-and-forget: save to Drive after the send is queued, never fail the send on Drive errors
+    if (pdf?.data) {
+      void saveSentCopy(ctx, {
+        companyId: invoice.company_id,
+        kind: "invoice",
+        number: view.number,
+        seq,
+        bytes: pdf.data,
+        customerKind: invoice.customer_kind,
+        customerRef: invoice.customer_ref,
+      });
+    }
     return { mode: "queued", key, to, attached: Boolean(pdf) };
   }
   if (kind === "quote") {
@@ -1081,3 +1118,26 @@ export function describePeriod(start: Date, period: string): string {
 }
 
 export { actorLabel, isOpenStatus };
+
+/** The printable HTML of an invoice (the `invoice-html` tool, and the copy a filing issue carries). */
+export async function invoiceHtmlOf(ctx: PluginContext, invoice: InvoiceRow, settings: BillingSettings): Promise<string> {
+  return invoiceHtmlFrom(invoice, await invoiceView(ctx, invoice, settings));
+}
+
+export function invoiceHtmlFrom(invoice: InvoiceRow, view: DocView): string {
+  return buildInvoiceHtml({
+    kind: "Invoice",
+    number: invoice.number,
+    status: invoice.status,
+    currency: invoice.currency,
+    sender: view.sender,
+    customer: view.customer,
+    lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
+    taxRate: view.legacy ? Number(invoice.tax_rate ?? 0) : 0,
+    totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
+    payment: view.payment ?? null,
+    notes: view.notes ?? null,
+    issuedAt: invoice.sent_at == null ? null : String(iso(invoice.sent_at)),
+    dueAt: iso(invoice.due_at),
+  });
+}

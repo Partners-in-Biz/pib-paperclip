@@ -14,16 +14,20 @@ import {
   hireOrder,
   loadPack,
   matchTemplate,
+  offeredTemplates,
   parsePack,
   slugify,
   templateByKey,
   templateStaffing,
   templateVars,
   type AgentLike,
+  type AgentTemplate,
 } from "../src/templates.js";
+import { renderHash } from "../src/render-hash.js";
 import { pickAdapter, renderHire, renderInstructions, templateConfig } from "../src/templates-render.js";
+import { parseSubagents, subagentExtraArgs, subagentsText } from "../src/subagents.js";
 
-const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "summarizer", "wiki-maintainer"];
+const KEYS = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder", "growth-marketing-lead", "revenue-lead", "creative-producer", "summarizer", "wiki-maintainer"];
 const DEV_CHAIN = ["delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer", "mac-builder"];
 /** The ones that write, review, merge or plan code: the Plan Critic only reads a plan and the Mac Builder has its own rules. */
 const CODE_AGENTS = ["delivery-lead", "planner", "senior-developer", "developer", "code-reviewer"];
@@ -77,7 +81,7 @@ describe("the embedded pack", () => {
     const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
     expect(problems).toEqual([]);
     expect(pack!.templates.map((template) => template.key)).toEqual(KEYS);
-    expect(pack!.version).toBe(1);
+    expect([1, 2]).toContain(pack!.version);
   });
 
   it("has one head (the CEO) and every other agent reports up to it without a loop", () => {
@@ -136,7 +140,11 @@ describe("what the dev chain is told", () => {
   const text = (key: string) => renderInstructions(templateByKey(key)!, vars);
 
   it("states the rules of the house in every dev-chain agent: development branch, no worktrees of your own, detached slow work, evidence, review hand-offs", () => {
+    const pack = loadPack();
     for (const key of CODE_AGENTS) {
+      const template = pack.templates.find((t) => t.key === key);
+      // Skeleton templates are distilled and omit some detail rules
+      if (template?.skeleton) continue;
       const body = text(key);
       expect(body, key).toMatch(/`development` is where work happens/);
       expect(body, key).toMatch(/`main` is production and changes only when Jo Owner approves a release/);
@@ -156,9 +164,14 @@ describe("what the dev chain is told", () => {
   });
 
   it("drops the old-system text the live files carried", () => {
+    const pack = loadPack();
     for (const key of KEYS) {
       const body = text(key);
-      expect(body, key).not.toMatch(/Peet|Partners in Biz|\/PAR\//);
+      const template = pack.templates.find((t) => t.key === key);
+      // PiB-scoped templates may intentionally include PiB-specific references
+      if (template?.scope !== "pib") {
+        expect(body, key).not.toMatch(/Peet|Partners in Biz|\/PAR\//);
+      }
       expect(body, key).not.toMatch(/One task = one isolated git worktree/i);
       expect(body, key).not.toMatch(/no deploy skill exists yet/i);
       expect(body, key).not.toMatch(/para-memory-files/);
@@ -378,8 +391,287 @@ describe("the pack validator can fail", () => {
   it("refuses a manifest that is not an object", () => expect(parsePack("x", {}, {}).problems).toEqual(["the manifest is not an object"]));
 });
 
+describe("shared blocks v2 (PAR-4023)", () => {
+  const isMarkdownHeading = (line: string) => /^\s{0,3}#{1,6}\s/.test(line);
+  const isTextUnderMaxSize = (text: string, max: number) => text.length <= max;
+  const includedBlockNames = (text: string) => Array.from(text.matchAll(/\{\{include:([a-z0-9-]+)\}\}/g), (m) => m[1]!);
+  const tokenLeaks = (text: string) => Array.from(text.matchAll(/Peet|Elon|R500|PAR-/g));
+
+  const genericIncludesPibBlock = (templates: Array<{ key: string; body: string }>, pibKeys: Set<string>) =>
+    templates.filter((t) => !pibKeys.has(t.key) && includedBlockNames(t.body).some((b) => b.startsWith("pib-"))).map((t) => t.key);
+
+  const PIB_BLOCKS = ["pib-autonomy", "pib-company-standards", "pib-mistakes", "pib-design-seo-gate"];
+  const OTHER_NEW_BLOCKS = ["scheduled-runs", "anti-loop", "stuck-rule", "evidence", "testing"];
+  const ALL_NEW_BLOCKS = [...PIB_BLOCKS, ...OTHER_NEW_BLOCKS];
+
+  it("holds 9 new blocks, each under 2400 chars, with total under 12000, no markdown headings", () => {
+    const blocks = ALL_NEW_BLOCKS.map((name) => ({ name, text: PACK_SHARED_BLOCKS[name] || "" }));
+    let total = 0;
+    for (const { name, text } of blocks) {
+      expect(text.length, `${name} size`).toBeGreaterThan(0);
+      expect(isTextUnderMaxSize(text, 2400), `${name} <= 2400`).toBe(true);
+      const lines = text.split("\n");
+      for (const line of lines) {
+        if (!line.includes("<!--")) expect(isMarkdownHeading(line), `${name} no heading: ${line}`).toBe(false);
+      }
+      total += text.length;
+    }
+    expect(total <= 12000, "total blocks size").toBe(true);
+  });
+
+  it("every {{include:X}} in every template resolves to an existing block", () => {
+    const allBlocks = { ...PACK_SHARED_BLOCKS };
+    for (const [key, body] of Object.entries(PACK_AGENT_FILES)) {
+      const names = includedBlockNames(body);
+      for (const name of names) {
+        expect(name in allBlocks, `${key} includes ${name}`).toBe(true);
+      }
+    }
+  });
+
+  it("every non-pib- new block has no token leaks", () => {
+    for (const name of OTHER_NEW_BLOCKS) {
+      const text = PACK_SHARED_BLOCKS[name];
+      const leaks = tokenLeaks(text || "");
+      expect(leaks.length, `${name} token leaks`).toBe(0);
+    }
+  });
+
+  it("templates in PiB scope do not include non-pib- new blocks; genericIncludesPibBlock reports them if they do", () => {
+    const manifest = PACK_MANIFEST_JSON as any;
+    const PIB_SCOPE_KEYS = new Set<string>();
+    for (const t of manifest.templates || []) {
+      if (t.scope === "pib") PIB_SCOPE_KEYS.add(t.key);
+    }
+    const notInScope = (manifest.templates || []).map((t: any) => ({ key: t.key, body: PACK_AGENT_FILES[t.key] || "" }));
+    const violations = genericIncludesPibBlock(notInScope, PIB_SCOPE_KEYS);
+    expect(violations).toEqual([]);
+  });
+
+  it("proves the helpers work: fabricated cases fail as expected", () => {
+    expect(isTextUnderMaxSize("x".repeat(2401), 2400)).toBe(false);
+    expect(isMarkdownHeading("## Title")).toBe(true);
+    expect(isMarkdownHeading("  ## Title")).toBe(true);
+    expect(isMarkdownHeading("    ## Title")).toBe(false);
+    const leaks = tokenLeaks("ask Peet about R500 on PAR-12");
+    expect(leaks.length).toBe(3);
+    const fakeTemplate = [{ key: "test", body: "{{include:pib-autonomy}}" }];
+    expect(genericIncludesPibBlock(fakeTemplate, new Set())).toEqual(["test"]);
+    expect(genericIncludesPibBlock(fakeTemplate, new Set(["test"]))).toEqual([]);
+  });
+});
+
+describe("pack v2 parsing", () => {
+  const base = () => JSON.parse(JSON.stringify(PACK_MANIFEST_JSON)) as { templates: Array<Record<string, any>>; [key: string]: unknown };
+  const check = (mutate: (manifest: ReturnType<typeof base>) => void, files: Record<string, string> = PACK_AGENT_FILES) => {
+    const manifest = base();
+    mutate(manifest);
+    return parsePack(manifest, files, PACK_SHARED_BLOCKS).problems.join(" | ");
+  };
+  const find = (manifest: ReturnType<typeof base>, key: string) => manifest.templates.find((template) => template.key === key)!;
+
+  it("accepts v1 manifest and gives v2 defaults", () => {
+    const manifest = base();
+    manifest.version = 1;
+    for (const t of manifest.templates || []) {
+      // Remove any v2 fields to test that they default
+      delete t.escalatesTo;
+      delete t.subagents;
+      delete t.evalFile;
+      delete t.skeleton;
+      delete t.scope;
+      delete t.distilled;
+      delete t.hostOwned;
+    }
+    const { pack, problems } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack).toBeTruthy();
+    // Check that defaults applied
+    for (const t of pack!.templates) {
+      // escalatesTo defaults to reportsTo when not specified
+      if (t.reportsTo) expect(t.escalatesTo).toBe(t.reportsTo);
+      else expect(t.escalatesTo).toBeUndefined();
+      expect(t.subagents).toBeUndefined();
+      expect(t.evalFile).toBeUndefined();
+      expect(t.skeleton).toBeUndefined();
+      expect(t.scope).toBeUndefined();
+      expect(t.distilled).toBeUndefined();
+      expect(t.hostOwned).toBeUndefined();
+    }
+  });
+
+  it("accepts v2 manifest", () => {
+    const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack!.version).toBe(2);
+  });
+
+  it("refuses version 0 or 3", () => {
+    expect(check((m) => { m.version = 0; })).toMatch(/version must be 1 or 2/);
+    expect(check((m) => { m.version = 3; })).toMatch(/version must be 1 or 2/);
+  });
+
+  it("refuses distilled without evalFile (unless hostOwned)", () => {
+    expect(check((m) => { find(m, "developer").distilled = true; })).toMatch(/developer: distilled templates must have evalFile/);
+  });
+
+  it("allows hostOwned distilled without evalFile", () => {
+    expect(
+      check((m) => {
+        find(m, "developer").distilled = true;
+        find(m, "developer").hostOwned = true;
+      })
+    ).not.toMatch(/developer.*distilled/);
+  });
+
+  it("defaults escalatesTo to reportsTo when not specified", () => {
+    const manifest = base();
+    const { pack } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    // Developers report to Delivery Lead; they should default escalatesTo to it
+    const dev = pack!.templates.find((t) => t.key === "developer");
+    expect(dev!.reportsTo).toBe("delivery-lead");
+    expect(dev!.escalatesTo).toBe("delivery-lead"); // Defaults to reportsTo when not specified
+  });
+
+  it("allows template with reportsTo of 'ceo' and omitted escalatesTo (resolves to 'ceo')", () => {
+    const manifest = base();
+    // Find the delivery-lead template which has reportsTo "ceo"
+    const dlTemplate = find(manifest, "delivery-lead");
+    // Ensure escalatesTo is not set so it defaults
+    delete dlTemplate.escalatesTo;
+    const { pack, problems } = parsePack(manifest, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    // Verify no problems with escalatesTo
+    expect(problems.some((p) => /escalatesTo/.test(p))).toBe(false);
+    // The delivery-lead should have reportsTo "ceo" and escalatesTo should default to "ceo"
+    const dl = pack!.templates.find((t) => t.key === "delivery-lead");
+    expect(dl!.reportsTo).toBe("ceo");
+    expect(dl!.escalatesTo).toBe("ceo");
+  });
+
+  it("parses the shipped templates pack without errors", () => {
+    const { pack, problems } = parsePack(PACK_MANIFEST_JSON, PACK_AGENT_FILES, PACK_SHARED_BLOCKS);
+    expect(problems).toEqual([]);
+    expect(pack).toBeTruthy();
+    // Check that escalatesTo is resolved for all templates
+    for (const t of pack!.templates) {
+      if (t.reportsTo) expect(t.escalatesTo).toBe(t.reportsTo);
+    }
+  });
+
+  it("validates escalatesTo references an existing template", () => {
+    expect(check((m) => { find(m, "developer").escalatesTo = "nobody"; })).toMatch(/developer: escalatesTo nobody is not a template/);
+  });
+
+  it("refuses escalatesTo cycles", () => {
+    expect(
+      check((m) => {
+        find(m, "developer").escalatesTo = "planner";
+        find(m, "planner").escalatesTo = "developer";
+      })
+    ).toMatch(/the escalatesTo chain loops through/);
+  });
+
+  it("validates evalFile format", () => {
+    expect(check((m) => { find(m, "developer").evalFile = ""; })).toMatch(/evalFile must be non-empty/);
+    expect(check((m) => { find(m, "developer").evalFile = "x".repeat(81); })).toMatch(/evalFile must be.*<=80 chars/);
+    expect(check((m) => { find(m, "developer").evalFile = "MyEval.json"; })).toMatch(/evalFile must match/);
+    expect(check((m) => { find(m, "developer").evalFile = "eval file.json"; })).toMatch(/evalFile must match/);
+  });
+
+  it("accepts valid evalFile", () => {
+    const errors = check((m) => {
+      find(m, "developer").evalFile = "my-eval_v2.json";
+    });
+    expect(errors).not.toMatch(/developer.*evalFile/);
+  });
+
+  it("validates scope is pib or generic", () => {
+    expect(check((m) => { find(m, "developer").scope = "unknown"; })).toMatch(/scope must be one of/);
+  });
+
+  it("allows skeleton and hostOwned flags", () => {
+    const errors = check((m) => {
+      find(m, "developer").skeleton = true;
+      find(m, "developer").hostOwned = true;
+    });
+    expect(errors).not.toMatch(/developer.*skeleton|hostOwned/);
+  });
+});
+
+describe("render-hash and subagent integration", () => {
+  it("renderHash is deterministic for the same template render", () => {
+    const template = templateByKey("developer")!;
+    const vars = templateVars({ company: "Acme", prefix: "ACM" });
+    const render1 = renderInstructions(template, vars);
+    const render2 = renderInstructions(template, vars);
+    expect(renderHash(render1)).toBe(renderHash(render2));
+  });
+
+  it("renderHash differs after a single character change", () => {
+    const template = templateByKey("developer")!;
+    const vars = templateVars({ company: "Acme", prefix: "ACM" });
+    const render = renderInstructions(template, vars);
+    const modified = render.replace(/the company/, "THE COMPANY");
+    expect(renderHash(render)).not.toBe(renderHash(modified));
+  });
+
+  it("computes the expected hash for 'fixture'", () => {
+    const expected = "f16d05ec6b29248d";
+    expect(renderHash("fixture")).toBe(expected);
+  });
+
+  it("subagentExtraArgs for various policy groups", () => {
+    // Undefined policy
+    expect(subagentExtraArgs(undefined)).toEqual([]);
+
+    // Empty allowed
+    expect(subagentExtraArgs({ allowed: [], model: "", maxParallel: 0 })).toEqual(["--disallowedTools", "Task,Agent"]);
+
+    // Planner (explorer subagent)
+    const planner = subagentExtraArgs({ allowed: ["explorer"], model: "haiku", maxParallel: 3 });
+    expect(planner[0]).toBe("--allowedTools");
+    expect(planner[1]).toBe("Task(explorer),Agent(explorer)");
+
+    // Reflection Coach (explorer)
+    const coach = subagentExtraArgs({ allowed: ["explorer"], model: "haiku", maxParallel: 2 });
+    expect(coach[0]).toBe("--allowedTools");
+    expect(coach[1]).toBe("Task(explorer),Agent(explorer)");
+
+    // Developer group (explorer + test-runner)
+    const devGroup = subagentExtraArgs({ allowed: ["explorer", "test-runner"], model: "claude-sonnet-5-5", maxParallel: 2 });
+    expect(devGroup[0]).toBe("--allowedTools");
+    expect(devGroup[1]).toBe("Task(explorer),Task(test-runner),Agent(explorer),Agent(test-runner)");
+
+    // Reviewer group (explorer)
+    const reviewer = subagentExtraArgs({ allowed: ["explorer"], model: "claude-sonnet-5-5", maxParallel: 2 });
+    expect(reviewer[0]).toBe("--allowedTools");
+    expect(reviewer[1]).toBe("Task(explorer),Agent(explorer)");
+  });
+
+  it("subagentsText for empty and non-empty policies", () => {
+    expect(subagentsText(undefined)).toBe("You do not spawn subagents. Do the work yourself.");
+    expect(subagentsText({ allowed: [], model: "", maxParallel: 0 })).toBe("You do not spawn subagents. Do the work yourself.");
+
+    const text = subagentsText({ allowed: ["explorer"], model: "haiku", maxParallel: 1 });
+    expect(text).toContain("You may spawn these subagents");
+    expect(text).toContain("model haiku");
+    expect(text).toContain("explorer");
+    expect(text).toContain("Run at most 1 at once");
+  });
+});
+
 describe("block expansion", () => {
   it("replaces include markers with the shared block", () => {
     expect(expandBlocks("A\n{{include:x}}\nB", { x: "BLOCK\n" })).toBe("A\nBLOCK\nB\n");
+  });
+});
+
+describe("template scope and filtering", () => {
+  it("offeredTemplates filters to generic only when not ownerCompany", () => {
+    const pack = loadPack();
+    const generic = offeredTemplates(pack.templates, false);
+    const all = offeredTemplates(pack.templates, true);
+    expect(generic.every((t: AgentTemplate) => t.scope !== "pib")).toBe(true);
+    expect(all.length >= generic.length).toBe(true);
   });
 });

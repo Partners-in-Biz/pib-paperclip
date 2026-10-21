@@ -36,6 +36,17 @@ export interface FakeAgent {
   adapterConfig?: Record<string, unknown>;
 }
 
+export interface AgentInvokeCall {
+  agentId: string;
+  companyId: string;
+  opts: { prompt: string; reason?: string };
+}
+
+export interface AgentResumeCall {
+  agentId: string;
+  companyId: string;
+}
+
 export interface FakeRoutine {
   key: string;
   companyId: string;
@@ -79,16 +90,23 @@ export function fakeCtx(options: {
   secrets?: Record<string, string>;
   /** `ctx.goals`: present when true (the capability granted). */
   goals?: boolean;
+  /** Agent ids whose pause should fail. */
+  pauseFails?: string[];
+  /** Agent ids whose resume should fail. */
+  resumeFails?: string[];
   /**
    * What `ctx.skills.managed.get` resolves, by skill key: the company's copy as the host stores it (see
    * helpers/host-skills.ts: `installedLikeHost` gives the host-shaped, unedited copy). The resolution carries the
    * host's own `defaultDrift` verdict, computed the way the host computes it. Not listed: "missing".
    */
   installedSkills?: Record<string, InstalledCopy>;
+  /** Mutable map of run id -> status for canary heartbeat_runs queries. */
+  runStatus?: Record<string, string>;
 } = {}) {
   const store: Store = { core_issues: options.coreIssues ?? [], core_runs: options.runs ?? [] };
   const OPEN = ["todo", "in_progress", "in_review", "blocked"];
   const PRIORITY: Record<string, number> = { critical: 0, high: 1, medium: 2 };
+  const runStatusMap = options.runStatus ?? {};
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
     coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"],
@@ -124,6 +142,12 @@ export function fakeCtx(options: {
         const rows = (s.core_runs ?? []).filter((row) => row.company_id === params[0]);
         // `listRuns`: counted per agent and status, windows given as parameters ($2 period, $3 week, $4 window, $5 day).
         if (/GROUP BY agent_id, status/i.test(sql)) return aggregateRuns(rows, params as string[]);
+        // Canary check: SELECT status FROM public.heartbeat_runs WHERE id = $1 AND company_id = $2
+        if (/WHERE id = \$1 AND company_id = \$2/i.test(sql)) {
+          const runId = String(params[0]);
+          const status = runStatusMap[runId];
+          return status ? [{ status }] : [];
+        }
         return rows;
       }],
     ],
@@ -141,6 +165,9 @@ export function fakeCtx(options: {
   const state = new Map<string, unknown>();
   const configs = options.savedConfigs ?? {};
   const agents = [...(options.agents ?? [])];
+  const paused: string[] = [];
+  const invokes: AgentInvokeCall[] = [];
+  const resumes: AgentResumeCall[] = [];
   const routines = new Map<string, FakeRoutine>();
   const grants = new Map<string, Array<{ permissionKey: string; scope: unknown }>>();
   const skillCalls: string[] = [];
@@ -148,6 +175,7 @@ export function fakeCtx(options: {
   const documents = new Map<string, string>();
   const hostGoals = new Map<string, { id: string; companyId: string; title: string; status: string; level?: string }>();
   let seq = 0;
+  let invokeSeq = 0;
   const stateKey = (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
   const routineRes = (key: string, companyId: string, status: string) => {
     const routine = routines.get(`${companyId}:${key}`) ?? null;
@@ -174,6 +202,9 @@ export function fakeCtx(options: {
       set: async (key: Parameters<typeof stateKey>[0], value: unknown) => {
         state.set(stateKey(key), value);
       },
+      delete: async (key: Parameters<typeof stateKey>[0]) => {
+        state.delete(stateKey(key));
+      },
     },
     companies: { get: async (companyId: string) => ({ id: companyId, name: `Company ${companyId}`, issuePrefix: options.prefixes?.[companyId] ?? null }) },
     agents: {
@@ -181,6 +212,28 @@ export function fakeCtx(options: {
       get: async (id: string, companyId: string) => {
         const agent = agents.find((a) => a.id === id && a.companyId === companyId);
         return agent ? { createdAt: "2026-01-01T00:00:00.000Z", ...agent } : null;
+      },
+      pause: async (agentId: string, companyId: string) => {
+        if ((options.pauseFails ?? []).includes(agentId)) throw new Error("pause refused");
+        const agent = agents.find((a) => a.id === agentId && a.companyId === companyId);
+        if (!agent) throw new Error("agent not found");
+        paused.push(agentId);
+        agent.status = "paused";
+        return { createdAt: "2026-01-01T00:00:00.000Z", ...agent };
+      },
+      invoke: async (agentId: string, companyId: string, opts: { prompt: string; reason?: string }) => {
+        invokeSeq += 1;
+        const runId = `run-${invokeSeq}`;
+        invokes.push({ agentId, companyId, opts });
+        return { runId };
+      },
+      resume: async (agentId: string, companyId: string) => {
+        if ((options.resumeFails ?? []).includes(agentId)) throw new Error("resume refused");
+        const agent = agents.find((a) => a.id === agentId && a.companyId === companyId);
+        if (!agent) throw new Error("agent not found");
+        resumes.push({ agentId, companyId });
+        agent.status = "idle";
+        return { createdAt: "2026-01-01T00:00:00.000Z", ...agent };
       },
     },
     approvals: { list: async ({ companyId }: { companyId: string }) => (options.approvals ?? []).filter((a) => a.companyId === companyId) },
@@ -304,6 +357,9 @@ export function fakeCtx(options: {
           return body === undefined ? null : { id: `doc-${issueId}-${key}`, key, body, title: key, format: "markdown" };
         },
       },
+      relations: {
+        get: async () => ({ blockedBy: [] }),
+      },
       requestWakeup: async (issueId: string, _companyId: string, options?: { reason?: string }) => {
         wakeups.push(issueId);
         wakeReasons.push({ issueId, reason: options?.reason });
@@ -324,7 +380,7 @@ export function fakeCtx(options: {
     return id;
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, routines, grants, skillCalls, documents, hostGoals, fire, userComment };
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, comments, wakeups, wakeReasons, updates, state, configs, agents, paused, invokes, resumes, routines, grants, skillCalls, documents, hostGoals, runStatusMap, fire, userComment };
 }
 
 export function fixedClock(iso: string) {

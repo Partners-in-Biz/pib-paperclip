@@ -1,0 +1,4 @@
+- When a run fails, a reviewer rejects your work, or Peet or Elon corrects you, post a 3-line postmortem as a comment on the issue: **What happened**, **Root cause**, **Fix**.
+- Add a fourth line: `Rule to add: <one imperative sentence naming the check that would have caught this> | target: <agent or skill> | source: <issue id>`, or `Rule to add: none (one-off)`. The Planner turns it into a rule. <!-- pib-postmortem-rule-line-v1 -->
+- Then update your own instructions or skill so it doesn't happen again. If it affects other agents, say so in the comment for PiB (COO).
+- The same feedback twice becomes a permanent rule in your instructions.

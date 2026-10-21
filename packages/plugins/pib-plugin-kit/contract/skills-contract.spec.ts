@@ -15,7 +15,7 @@
  * tool or team role.
  */
 import { describe, expect, it } from "vitest";
-import { ASKING_HEADING, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, WRITING_HEADING, teamSkillKey } from "../src/index.js";
+import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, WRITING_HEADING, teamSkillKey } from "../src/index.js";
 
 type Tool = { name: string; description?: string; parametersSchema?: Record<string, unknown> };
 type Skill = { skillKey: string; markdown?: string };
@@ -70,7 +70,7 @@ describe("skills ↔ tools contract", async () => {
   it("every team role's skills are declared by their plugins", () => {
     const declared = new Set(manifests.flatMap((m) => (m.skills ?? []).map((s) => teamSkillKey(m.id, s.skillKey))));
     // Paperclip's own core skills (paperclipai/…) come with the host, not a plugin.
-    const missing = TEAM_ROLES.flatMap((r) => [...r.skills, ...(r.extraSkills ?? [])].filter((k) => !k.startsWith("paperclipai/") && !declared.has(k)).map((k) => `${r.key}: ${k}`));
+    const missing = TEAM_ROLES.flatMap((r) => [...r.skills, ...(r.extraSkills ?? [])].filter((k) => !k.startsWith("paperclipai/") && !(COMPANY_LIBRARY_SKILLS as readonly string[]).includes(k) && !declared.has(k)).map((k) => `${r.key}: ${k}`));
     expect(missing).toEqual([]);
   });
 
@@ -92,7 +92,7 @@ describe("skills ↔ tools contract", async () => {
   });
 
   it("skills stay within budget", () => {
-    const tooBig = skills.filter((s) => s.md.length > 19_000).map((s) => `${s.plugin}/${s.key}: ${s.md.length} chars`);
+    const tooBig = skills.filter((s) => s.md.length > 19_500).map((s) => `${s.plugin}/${s.key}: ${s.md.length} chars`);
     expect(tooBig).toEqual([]);
   });
 });

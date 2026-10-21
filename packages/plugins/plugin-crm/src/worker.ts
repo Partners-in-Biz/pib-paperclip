@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
+import { emitAllOwnMetrics } from "./own-metrics.js";
 import {
   definePlugin,
   runWorker,
@@ -16,6 +17,7 @@ import {
   COCKPIT_ROUTE,
   createSkillSyncer,
   createWorkIssue,
+  DRIVE_EVENTS,
   isModuleEnabled,
   linkAgent,
   MAIL_EVENTS,
@@ -199,7 +201,11 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
+import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
+import { saveDriveFile } from "./drive/save.js";
+import { listDriveFiles } from "./drive/store.js";
+import { listClientFiles } from "./drive/files-list.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -238,6 +244,7 @@ import {
   setDelivery,
 } from "./mail.js";
 import { jevConfigFor } from "./jev.js";
+import { emitClientProjectsForCompany } from "./client-projects-emit.js";
 import {
   checkClientSite,
   clientSitesAndProjects,
@@ -483,6 +490,7 @@ const plugin = definePlugin({
         if (result.summaries || result.hygiene) ctx.logger.info("CRM sales weekly", result);
       });
     });
+    ctx.jobs.register("own-metrics", () => trackJob(ctx, "own-metrics", async () => void (await emitAllOwnMetrics(ctx))));
     ctx.jobs.register("setup-status", async () => {
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
@@ -525,6 +533,58 @@ const plugin = definePlugin({
     await syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
+    // Emit client projects for all companies at startup (never blocks start).
+    void startupClientProjectsEmit(ctx).catch((error) => ctx.logger.info("CRM client projects startup emit failed", { error: error instanceof Error ? error.message : String(error) }));
+
+    // Event handler for Drive save requests from other plugins (kit's driveSave)
+    // The kit emits this bare event; SDK types don't include it, so we cast the event name
+    // SDK event typing does not accept this bare kit event name
+    ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event: PluginEvent) => {
+      const { companyId } = event;
+      const payload = (event.payload as Record<string, unknown> | undefined) || {};
+      // Extract fields emitted by kit's driveSave: contentBase64 or publicUrl, optional sha256, subfolder, clientKind/clientRef
+      const { requestId, kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
+      if (!requestId) return;
+
+      try {
+        const input: Parameters<typeof saveDriveFile>[2] = {
+          companyId,
+          projectId: "root",
+          fileKind: (kind as string) || "ops",
+          name: (name as string) || "",
+          mimeType: (mimeType as string) || "",
+        };
+        if (contentBase64) input.contentBase64 = contentBase64 as string;
+        if (publicUrl) input.publicUrl = publicUrl as string;
+        if (sha256) input.sha256 = sha256 as string;
+        if (subfolder) input.subfolder = subfolder as string;
+
+        // Use a system viewer for internal CRM saves (no user context)
+        const viewer: Viewer = { companyId, userId: null, agentId: null, role: null };
+        const result = await saveDriveFile(ctx, viewer, input);
+
+        if (result.status === "saved") {
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.saved}`, companyId, { requestId, driveFileId: result.driveFileId, url: result.url });
+        } else {
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: result.status, hint: result.hint });
+        }
+      } catch (error) {
+        ctx.logger.info("Drive save event handler failed", { requestId, error: error instanceof Error ? error.message : String(error) });
+        await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      }
+    });
+
+    // Subscribe to Setup plugin's drive.binding.set event
+    ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
+      try {
+        // Validate event has companyId and payload object before processing
+        if (event.companyId && event.payload && typeof event.payload === "object") {
+          await onDriveBindingSetEvent(ctx, event as unknown as { companyId: string; payload: Record<string, unknown> });
+        }
+      } catch (error) {
+        ctx.logger.info("CRM drive.binding.set event handler failed", { error: String(error) });
+      }
+    });
 
     // Data handler for Drive folder registry lookup (read-only, never calls ensure)
     ctx.data.register("drive-folder", async (params) => {
@@ -540,6 +600,22 @@ const plugin = definePlugin({
         return { folder: { name, url: folder.folder_url } };
       } catch {
         return { folder: null };
+      }
+    });
+
+    // Data handler for Drive files list (read-only, grouped by folder)
+    ctx.data.register("drive-files", async (params) => {
+      const companyId = params.companyId as string | undefined;
+      const projectId = params.projectId as string | undefined;
+      if (!companyId || !projectId) return { groups: [] };
+      try {
+        const files = await listDriveFiles(ctx, companyId, { projectId });
+        const groups = listClientFiles(files);
+        return { groups };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.logger.error(`drive-files handler error for company ${companyId} project ${projectId}: ${message}`);
+        return { groups: [], error: "Could not load files." };
       }
     });
 
@@ -778,6 +854,18 @@ async function dispatch(
       return driveFolderResolve(ctx, viewer, body);
     case "drive_folder_ensure":
       return driveFolderEnsure(ctx, viewer, body);
+    case "drive_file_save":
+      return driveFileSave(ctx, viewer, body);
+    case "drive_project_kind_set":
+      return driveProjectKindSet(ctx, viewer, body);
+    case "drive_project_kind_list":
+      return driveProjectKindList(ctx, viewer, body);
+    case "drive_binding_discover":
+      return driveBindingDiscover(ctx, viewer, body);
+    case "drive_binding_set":
+      return driveBindingSet(ctx, viewer, body);
+    case "drive_binding_status":
+      return driveBindingStatus(ctx, viewer);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);
@@ -2001,6 +2089,7 @@ async function emitForAllCompanies(ctx: PluginContext, sinceSeconds: number | nu
       if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await emitChanges(ctx, companyId, sinceSeconds);
       await emitSites(ctx, companyId, sinceSeconds);
+      await emitClientProjectsForCompany(ctx, companyId);
       if (sinceSeconds == null) {
         await recordFullShare(ctx, companyId);
         // Which clients are sensitive, said again every night for whoever missed it.
@@ -2021,6 +2110,21 @@ async function syncKnownCompanies(ctx: PluginContext) {
     for (const companyId of await crmCompanyIds(ctx)) await skillSync?.ensure(companyId);
   } catch (error) {
     ctx.logger.info("CRM skill sync deferred", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** Emit client projects for all companies at startup. */
+async function startupClientProjectsEmit(ctx: PluginContext) {
+  for (const companyId of await crmCompanyIds(ctx)) {
+    try {
+      if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
+      await emitClientProjectsForCompany(ctx, companyId);
+    } catch (error) {
+      ctx.logger.info("CRM client projects startup emit skipped", {
+        companyId,
+        error: error instanceof Error ? error.constructor.name : "Unknown",
+      });
+    }
   }
 }
 

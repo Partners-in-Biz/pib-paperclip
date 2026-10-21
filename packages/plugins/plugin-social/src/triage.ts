@@ -25,6 +25,7 @@ import {
   SecretResolver,
   shouldAct,
   wakeIssue,
+  localDate,
   type DecisionClientConfig,
   type DecisionResult,
   type JevAnswer,
@@ -45,7 +46,6 @@ import {
   type InboxItemRow,
 } from "./db.js";
 import { clip, SocialError } from "./domain.js";
-import { localDate } from "./growth/engine.js";
 import { sendLead } from "./handoff.js";
 import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdForRow, scopeLine, SOCIAL_ORIGINS, socialAssignee } from "./issues.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";

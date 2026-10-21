@@ -14,7 +14,7 @@ import {
   robotsAllows,
   robotsFindings,
 } from "../src/checks/parse.js";
-import { mapLimit, runInternalLinkAudit, runSitemapCheck, type SiteFetcher } from "../src/checks/site.js";
+import { mapLimit, runInternalLinkAudit, runSitemapCheck, runSoft404Check, runBylineCheck, runThinContentCheck, type SiteFetcher } from "../src/checks/site.js";
 
 const PAGE = `<!doctype html><html lang="en"><head>
 <title>Acme Accounting | Bookkeeping &amp; Tax for Durban SMEs</title>
@@ -190,5 +190,120 @@ describe("bounded site checks", () => {
     const result = await mapLimit([5, 5, 200, 200], 2, Date.now() + 60, (ms) => slow(ms));
     expect(result.timedOut).toBe(true);
     expect(result.results.slice(0, 2)).toEqual([5, 5]);
+  });
+});
+
+describe("soft-404 probe", () => {
+  it("flags when nonexistent path returns 200", async () => {
+    const softFetcher = async (): Promise<SafeFetchResult> => {
+      return { status: 200, url: "https://acme.co.za/pib-soft404-xxx", redirects: [], headers: {}, text: "<p>App shell</p>", ms: 1 };
+    };
+    const result = await runSoft404Check(softFetcher, "https://acme.co.za");
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0]!.finding).toContain("app shell returning 200");
+    expect(result.findings[0]!.severity).toBe("high");
+  });
+
+  it("does not flag when nonexistent path returns 404", async () => {
+    const notFoundFetcher = async (): Promise<SafeFetchResult> => {
+      return { status: 404, url: "https://acme.co.za/pib-soft404-xxx", redirects: [], headers: {}, text: "", ms: 1 };
+    };
+    const result = await runSoft404Check(notFoundFetcher, "https://acme.co.za");
+    expect(result.findings).toEqual([]);
+    expect(result.status).toBe(404);
+  });
+});
+
+describe("thin-content probe", () => {
+  it("flags content below threshold", async () => {
+    const thinPage = `<html><head><title>Page</title></head><body><p>Short</p></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/thin": { status: 200, body: thinPage },
+    });
+    const result = await runThinContentCheck(site, "https://acme.co.za/thin", 100);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0]!.finding).toContain("below threshold");
+    expect(result.findings[0]!.severity).toBe("high");
+    expect(result.textLength).toBeGreaterThan(0);
+    expect(result.textLength).toBeLessThan(100);
+  });
+
+  it("does not flag content above threshold", async () => {
+    const goodPage = `<html><body><p>${"Content ".repeat(50)}</p></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/good": { status: 200, body: goodPage },
+    });
+    const result = await runThinContentCheck(site, "https://acme.co.za/good", 100);
+    expect(result.findings).toEqual([]);
+    expect(result.textLength).toBeGreaterThanOrEqual(100);
+  });
+});
+
+describe("byline probe", () => {
+  it("flags article pages missing byline and date", async () => {
+    const articlePage = `<html><head><meta property="og:type" content="article"></head><body><article><h1>Article</h1><p>Content here</p></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: articlePage },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.isArticle).toBe(true);
+    expect(result.findings.length).toBe(2);
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(true);
+    expect(result.findings.some((f) => f.finding.includes("date"))).toBe(true);
+  });
+
+  it("detects byline and date when present", async () => {
+    const fullArticle = `<html><head><meta property="og:type" content="article"><meta property="article:published_time" content="2024-01-01"></head><body><article><p>By John Doe</p><p>Content</p><time>Jan 1, 2024</time></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: fullArticle },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.findings).toEqual([]);
+  });
+
+  it("detects articles by path /blog/slug", async () => {
+    const blogPost = `<html><body><p>Content for blog post</p></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/blog/my-post": { status: 200, body: blogPost },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/blog/my-post");
+    expect(result.isArticle).toBe(true);
+  });
+
+  it("does not treat /blog/ index as article", async () => {
+    const blogIndex = `<html><body><h1>Blog</h1><ul><li><a href="/blog/post1">Post 1</a></li></ul></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/blog/": { status: 200, body: blogIndex },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/blog/");
+    expect(result.isArticle).toBe(false);
+  });
+
+  it("requires visible author text, not just JSON-LD", async () => {
+    const noVisibleAuthor = `<html><head><meta property="og:type" content="article"><script type="application/ld+json">{"@type":"Article","author":"Jane Doe"}</script></head><body><article><p>Content</p></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: noVisibleAuthor },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.isArticle).toBe(true);
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(true);
+  });
+
+  it("flags prose like 'made by hand' that matches the pattern but is not a byline", async () => {
+    const misleadingByline = `<html><head><meta property="og:type" content="article"></head><body><article><h1>Article</h1><p>All glassware is made by hand.</p><time>Jan 1, 2024</time></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: misleadingByline },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(true);
+  });
+
+  it("detects structured author markers like rel=author", async () => {
+    const structuredAuthor = `<html><head><meta property="og:type" content="article"><link rel="author" href="/about/john"></head><body><article><h1>Article</h1><p>Content</p><time>Jan 1, 2024</time></article></body></html>`;
+    const site = fakeSite({
+      "https://acme.co.za/article": { status: 200, body: structuredAuthor },
+    });
+    const result = await runBylineCheck(site, "https://acme.co.za/article");
+    expect(result.findings.some((f) => f.finding.includes("author"))).toBe(false);
   });
 });

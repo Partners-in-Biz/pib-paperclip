@@ -4,6 +4,7 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
 
@@ -95,6 +96,65 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "An AI service (Jev, from TypeSafe) picks which remembered facts each task needs, so agents get a short, relevant brief. Only the task's title and description and the candidate facts are sent. Without a key, briefs use keyword and recency matching (same size limit). Pick the same Paperclip secret you use in the other PiB plugins.",
     },
+    governor: {
+      type: "object",
+      title: "Agent governor (optional)",
+      description: "Pauses agents when quota failures exceed configured thresholds, and resumes them once the canary confirms recovery.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable agent governor",
+          description: "When enabled, the governor monitors quota failures and pauses agents to preserve service stability.",
+          default: true,
+        },
+        pauseOrder: {
+          type: "array",
+          items: { type: "string" },
+          title: "Pause order (optional)",
+          description: "Agent names in the order they should be paused. Names not matching any agent are skipped. Defaults to the built-in order that preserves canary integrity.",
+          default: [...DEFAULT_PAUSE_ORDER],
+        },
+        triggerFailures: {
+          type: "integer",
+          title: "Failure threshold",
+          description: "Number of total failures needed to trigger a pause (default 3).",
+          minimum: 1,
+          default: DEFAULT_TRIGGER_FAILURES,
+        },
+        triggerAgents: {
+          type: "integer",
+          title: "Agent count threshold",
+          description: "Number of distinct agents that must exceed the failure threshold to trigger a pause (default 2).",
+          minimum: 1,
+          default: DEFAULT_TRIGGER_AGENTS,
+        },
+      },
+    },
+    pushEnabled: {
+      type: "boolean",
+      title: "Push notifications enabled",
+      description: "Enable push notifications to subscribed devices. When disabled, push requests return immediately without network calls.",
+      default: false,
+    },
+    vapidSubject: {
+      type: "string",
+      title: "VAPID subject (optional)",
+      description: "The mailto or https URI for VAPID JWT signing. Defaults to mailto:cockpit@partnersinbiz.online.",
+      default: "mailto:cockpit@partnersinbiz.online",
+    },
+    edgeWatch: {
+      type: "object",
+      title: "Edge watch (optional)",
+      description: "Announces when new blocker edges (issue relations) are created, notifying both blocked and blocker issues.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable edge watch",
+          description: "When enabled, posts comments on issues when a new blocker edge is created.",
+          default: true,
+        },
+      },
+    },
   },
 };
 
@@ -116,8 +176,13 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.wakeup",
     "issue.comments.create",
     "issue.comments.read",
+    "issue.relations.read",
+    "issue.attachments.read",
     "approvals.read",
     "agents.read",
+    "agents.pause",
+    "agents.resume",
+    "agents.invoke",
     "routines.managed",
     "skills.managed",
     "authorization.grants.read",
@@ -196,11 +261,30 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Mondays before the Weekly retro: records each active goal's number and opens one business review issue for the Operator comparing the week's actuals to the targets.",
       schedule: "30 4 * * 1",
     },
+    {
+      jobKey: JOBS.governor,
+      displayName: "Agent governor",
+      description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
+      schedule: "*/15 * * * *",
+    },
+    {
+      jobKey: JOBS.pushDigest,
+      displayName: "Overnight push digest",
+      description: "Every night at 04:00 UTC (06:00 SAST): for each company, if any push_log rows with status 'deferred' exist created since 22:00 SAST, sends one digest push titled \"N items waited overnight\" with url /cockpit, then marks those rows 'collapsed'. Idempotent.",
+      schedule: "0 4 * * *",
+    },
   ],
   apiRoutes: [
     // Read by the Cockpit page itself and the Setup plugin (kit contracts).
     { ...COCKPIT_ROUTE },
     { ...SETUP_STATUS_ROUTE },
+    // Repairs: system actions taken to fix issues detected by the Cockpit's checks.
+    { routeKey: "repairs-create", method: "POST", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
+    { routeKey: "repairs-list", method: "GET", path: "/repairs", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
+    // Governor rehearse: safely tests the quota governor with synthetic failures.
+    { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
+    // Owner push: send critical push notifications from external systems to the owner.
+    { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
     {

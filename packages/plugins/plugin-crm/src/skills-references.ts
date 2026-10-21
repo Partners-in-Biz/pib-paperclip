@@ -99,3 +99,21 @@ One internal test client for proving lead, qualify, quote, invoice and payment p
 6. **Payment proof:** record the payment as a test payment in Billing; the CRM logs \`invoice.paid\` on the client.
 7. **Clean up:** \`cleanup-canary\` with \`confirm: true\`. It removes only the canary's own records (company, flagged contacts, deals, leads, forms, notes) and tells the other modules (\`company.deleted\`). Quotes and invoices other modules hold for it are theirs to remove. A record with the canary id that is not flagged is left alone.
 `;
+
+export const DRIVE_REFERENCE = `# Saving files to Drive
+
+Use these tools for every file that belongs on Google Drive. They find or make the right folder in the company's Shared Drive; you never choose a folder yourself.
+
+## Steps
+1. \`drive_folder_resolve\` with the project (\`entity_type: project\`, \`entity_id\`) or the CRM company. It returns the folder path and URL.
+2. On \`not_found\` only, call \`drive_folder_ensure\` for the same entity. It is safe to repeat. On \`needs_human_look\` stop and ask a person: do not retry or rename.
+3. Save with \`drive_file_save\`: \`projectId\`, \`fileKind\`, \`name\`, \`mimeType\`, and exactly one of \`contentBase64\` or \`path\` (max 5 MB; the tool takes no URL source, so download the file first and pass its path). Name it \`YYYY-MM-DD <what> v<n>.<ext>\`, for example \`2026-10-20 Athleet profile mock v01.png\`.
+4. Quote the returned URL in your issue comment. A \`duplicate: true\` result means the same file was already saved: quote its URL too.
+
+## Rules
+- Never pass or guess a Drive folder ID or a Shared Drive ID. The code takes the Shared Drive from the company's \`drive.sharedDriveId\` setting and the broker credential from the CRM secret \`driveBrokerToken\`.
+- \`drive_not_bound\` means this company has no Shared Drive set. Report it once on the issue and stop: do not retry, do not save somewhere else.
+- \`not_configured\` (no broker token) is reported the same way. Any other status (\`invalid_name\`, \`too_large\`, \`broker_error\`, and so on) comes with a hint: fix what it names once, then report.
+- No public links, no sharing changes. To share with a client, ask a person.
+- Never print or paste a token.
+`;

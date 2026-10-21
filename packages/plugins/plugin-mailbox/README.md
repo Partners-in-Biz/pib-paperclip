@@ -455,7 +455,7 @@ Rules for every event: it is **applied once** (the delivery id + type + recipien
 - **Per-recipient events.** SES's `Delivery` and `Bounce` events name the recipients (usually one per message).
 - **No tracking domains.** SES configuration sets have no tracking settings (only by a mail client turning it on in the SES console). Campaigns publishes to the same `mail.delivery` so the records are there.
 - **No daily cap.** SES publishes a 24-hour limit from the console, not a daily envelope the Mailbox controls. The quota check asks SES at the start, and every send checks it. Over quota the send is deferred.
-- **On rollback to 0.6.5** the `ses` endpoint disappears while SNS keeps posting to it (if the subscription is not switched off first). Switch off the SNS subscription before rolling back, or accept that bounce and complaint events stay unprocessed that window.
+- **On rollback to 0.6.6** the `ses` endpoint disappears while SNS keeps posting to it (if the subscription is not switched off first). Switch off the SNS subscription before rolling back, or accept that bounce and complaint events stay unprocessed that window.
 
 ### Migration 011
 

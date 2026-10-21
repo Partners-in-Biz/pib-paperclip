@@ -9,20 +9,22 @@
  */
 import {
   confidenceOf,
+  RISK_THRESHOLDS,
+  type JevAnswer,
+  type JevQuestion,
+  type JevQuestions,
+} from "../decisions.js";
+import {
   engagementRate,
   experimentVerdict,
   featureLifts,
   lift,
   median,
   rankHypothesisTypes,
-  RISK_THRESHOLDS,
-  type JevAnswer,
-  type JevQuestion,
-  type JevQuestions,
   type Scoreboard,
   type Verdict,
   type VerdictResult,
-} from "@partnersinbiz/pib-plugin-kit";
+} from "../experiments.js";
 
 export const GROWTH_CHANNEL = "social";
 export const DEFAULT_OBJECTIVE = "Raise engagement per person reached, 7 days after publishing, above each account's usual level.";
@@ -40,8 +42,8 @@ export const MEASURE_CUTOFF_DAYS = 21;
 export const FEATURE_PURPOSE = "growth-post-features";
 export const CAPTION_LIMIT = 1000;
 
-export type Autopilot = "off" | "safe" | "full";
-export const AUTOPILOT_MODES: Autopilot[] = ["off", "safe", "full"];
+export type Autopilot = "off" | "safe" | "reviewed" | "full";
+export const AUTOPILOT_MODES: Autopilot[] = ["off", "safe", "reviewed", "full"];
 
 export class GrowthError extends Error {
   constructor(message: string) {
@@ -56,7 +58,7 @@ const DAY_MS = 24 * 3600_000;
 
 export interface MetricInput {
   destinationId: string;
-  postId: string;
+  subjectId: string;
   accountId: string | null;
   platform: string | null;
   publishedAt: string | null;
@@ -72,7 +74,7 @@ export interface MetricInput {
 
 export interface DestinationScore {
   destinationId: string;
-  postId: string;
+  subjectId: string;
   accountId: string | null;
   platform: string | null;
   publishedAt: string;
@@ -122,12 +124,12 @@ export function scoreDestinations(rows: MetricInput[], options: { now?: Date; si
     if (x.at < since) continue;
     const peers = groups.get(`${x.row.accountId ?? ""}|${x.row.platform ?? ""}`) ?? [];
     const baseline = peers
-      .filter((p) => p.row.postId !== x.row.postId && p.at < x.at && p.at >= x.at - BASELINE_DAYS * DAY_MS)
+      .filter((p) => p.row.subjectId !== x.row.subjectId && p.at < x.at && p.at >= x.at - BASELINE_DAYS * DAY_MS)
       .map((p) => p.rate);
     const baselineMedian = baseline.length >= BASELINE_MIN ? median(baseline) : null;
     out.push({
       destinationId: x.row.destinationId,
-      postId: x.row.postId,
+      subjectId: x.row.subjectId,
       accountId: x.row.accountId,
       platform: x.row.platform,
       publishedAt: new Date(x.at).toISOString(),
@@ -498,7 +500,7 @@ export function proposalBlocker(input: { autopilot: Autopilot; running: number; 
 // ── Measuring ───────────────────────────────────────────────────────────────
 
 export interface ItemState {
-  postId: string;
+  subjectId: string;
   arm: string;
   published: boolean;
   value: number | null;
@@ -582,9 +584,25 @@ export function autoKeep(autopilot: Autopilot, verdict: Verdict): boolean {
   return autopilot === "full" && verdict === "win";
 }
 
-/** Agents approve experiments and decide playbook changes only on full autopilot. */
-export function agentMayDecide(autopilot: Autopilot): boolean {
-  return autopilot === "full";
+/** Agents approve experiments and decide playbook changes only on full autopilot. Backward-compatible: 1-arg calls stay safe. */
+export function agentMayDecide(autopilot: Autopilot, opts?: { isReviewer?: boolean }): boolean {
+  return autopilot === "full" || (autopilot === "reviewed" && opts?.isReviewer === true);
+}
+
+/** Whether an actor may decide (person always; agent only per autopilot and role). */
+export interface LifecycleActor {
+  isAgent: boolean;
+  isReviewer?: boolean;
+}
+
+export function mayDecide(autopilot: Autopilot, actor: LifecycleActor, what: "experiment" | "playbookChange" | "clientPost"): boolean {
+  if (!actor.isAgent) return true;
+  if (autopilot === "full") return true;
+  if (autopilot === "reviewed") {
+    if (what === "clientPost") return false;
+    return actor.isReviewer === true;
+  }
+  return false;
 }
 
 // ── Playbook edits ──────────────────────────────────────────────────────────
@@ -667,7 +685,7 @@ export function normalizeChange(input: Record<string, unknown>): ChangeSpec {
 // ── Review ──────────────────────────────────────────────────────────────────
 
 export interface ScoredPostRow {
-  postId: string;
+  subjectId: string;
   body: string;
   platform: string | null;
   accountId: string | null;
@@ -679,7 +697,7 @@ export interface ScoredPostRow {
 }
 
 export interface ReviewPost {
-  postId: string;
+  subjectId: string;
   caption: string;
   platforms: string[];
   publishedAt: string | null;
@@ -694,20 +712,20 @@ export interface ReviewPost {
 /** One row per post (median across its destinations), best first. */
 export function reviewPosts(rows: ScoredPostRow[], features: Map<string, Record<string, string>>): ReviewPost[] {
   const byPost = new Map<string, ScoredPostRow[]>();
-  for (const row of rows) byPost.set(row.postId, [...(byPost.get(row.postId) ?? []), row]);
+  for (const row of rows) byPost.set(row.subjectId, [...(byPost.get(row.subjectId) ?? []), row]);
   const out: ReviewPost[] = [];
-  for (const [postId, list] of byPost) {
+  for (const [subjectId, list] of byPost) {
     const first = list[0]!;
     const caption = Array.from(first.body.trim());
     out.push({
-      postId,
+      subjectId,
       caption: caption.length > 200 ? `${caption.slice(0, 200).join("")}…` : caption.join(""),
       platforms: Array.from(new Set(list.map((r) => r.platform).filter((p): p is string => Boolean(p)))),
       publishedAt: list.map((r) => r.publishedAt).filter(Boolean).sort()[0] ?? null,
       lift: postLift(list.map((r) => r.lift)),
       engagementRate: median(list.map((r) => r.engagementRate)),
       destinations: list.length,
-      features: features.get(postId) ?? {},
+      features: features.get(subjectId) ?? {},
       experimentId: first.experimentId,
       arm: first.experimentArm,
     });

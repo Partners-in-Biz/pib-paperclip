@@ -1,0 +1,168 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "parallel-code-tasks-first",
+      "title": "Hard ticket: spawn code-explorer and implementer tasks in parallel, not sequentially",
+      "source": "baseline-2026-10-19/agents/arjun.md: Split work into several Haiku tasks that run in parallel. Launch independent tasks in the same turn.",
+      "situation": "You are Arjun on a hard ticket: refactor payment flow to support PayPal webhooks with idempotency. Code-explorer must find webhook structure; implementer changes 3 files and writes tests.",
+      "task": "Spawn tasks in parallel, not sequentially.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"notEmpty": true},
+              "why": {"matches": "delegate|parallel|code-explorer|implementer"}
+            },
+            "optional": true
+          }
+        ],
+        "mustSay": [
+          "[Pp]arallel|spawn|[Gg]enerally",
+          "code-explorer|implementer",
+          "Task"
+        ],
+        "mustNotSay": [
+          "\\bI(?: will|'ll) (?:wait for|run (?!.*?(?:not |n't ))(?:\\w+ ){0,4}(?:one at a time|sequentially|in sequence|one after another))"
+        ],
+        "maxSteps": 4,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Spawning parallel tasks: code-explorer for webhook structure, implementer for idempotency schema and changes."
+            },
+            {
+              "kind": "escalate",
+              "say": "Task: code-explorer maps webhooks; implementer changes 3 files for idempotency. Both in parallel this turn."
+            }
+          ],
+          "summary": "Parallel delegation to code-explorer and implementer."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "escalate",
+              "say": "First, I need code-explorer to find the webhook code. Once that finishes, I will ask for implementer to make the changes."
+            }
+          ],
+          "summary": "Sequential: wrong, must run in parallel."
+        }
+      }
+    },
+    {
+      "id": "pr-over-400-lines-split",
+      "title": "Ticket over ~400 lines: split into child issues with isolated worktrees before coding",
+      "source": "baseline-2026-10-19/agents/arjun.md: About 400 changed lines per PR at most. If a ticket clearly needs more, split it before building: smaller child tickets, each with its own files, acceptance criteria and blockers, each in an isolated worktree.",
+      "situation": "Ticket PAR-2847: Refactor state Redux→Zustand, add caching, migrate 12 pages, write tests. Estimate: 1200 lines. Delivery Lead expects one PR.",
+      "task": "Proceed with one large PR or split first?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "ready to code|start implementing"}
+            },
+            "reason": "do not proceed with a large PR without splitting first; the rule requires splitting before coding"
+          }
+        ],
+        "mustSay": [
+          "[Ss]plit|[Cc]hild|[Pp]ar-|isolat",
+          "400|lines|reviewable"
+        ],
+        "mustNotSay": [
+          "\\bI(?: will|'ll| am going to|'m about to) (?:start (?:coding|work)|begin implement|proceed with)"
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "This ticket is over 400 changed lines. I need to split it into child issues before coding, so each PR is reviewable in one pass."
+            },
+            {
+              "kind": "escalate",
+              "say": "Recommend 3 child tickets: (1) Zustand core, (2) pages 1-6 migration, (3) pages 7-12 + caching. Each has isolated worktree."
+            }
+          ],
+          "summary": "Split before coding to keep PRs under 400 lines."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I understand the scope. This is a large refactor but I can manage it in one PR with careful organization."
+            },
+            {
+              "kind": "escalate",
+              "say": "Ready to code. I will refactor Redux to Zustand, migrate all 12 pages, add caching and tests. Beginning implementation."
+            }
+          ],
+          "summary": "Proceeding with one large PR: wrong, must split first."
+        }
+      }
+    },
+    {
+      "id": "six-direct-calls-limit",
+      "title": "Arjun keeps direct read/edit/grep calls to 6 or fewer per run; delegates over the limit",
+      "source": "baseline-2026-10-19/agents/arjun.md: At most 6 direct read/search/edit calls per run (Read, Edit, Terminal with grep, sed, cat, rg, ls, find, jest, tsc or eslint).",
+      "situation": "Working on feature ticket. Read 4 files so far. Need: state schema, test file, 2 large edits (>10 lines each). About to read files 5-6.",
+      "task": "Read files 5-6 yourself, or delegate?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "\\bI(?: will|'ll| am going to) (read|edit|write)\\b"}
+            },
+            "reason": "do not ask the owner for read/edit permissions; this is about staying under the 6-call limit, not a permission question"
+          }
+        ],
+        "mustSay": [
+          "[Dd]elegate|implementer|[Ll]imit|6",
+          "[Tt]ask.*implement|implement.*Task"
+        ],
+        "mustNotSay": [
+          "\\bI(?: will|'ll|'m going to| am going to) (?:read|edit|write)\\b"
+        ],
+        "maxSteps": 3,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I have 4 direct reads so far. Reading 2 more files would hit my 6-call limit. The component and test changes are large (>10 lines each), so they go to implementer anyway."
+            },
+            {
+              "kind": "escalate",
+              "say": "Reading files 5-6, then Task: implementer adds useState hook (lines 34-40) and tests. Stay under 6-call limit."
+            }
+          ],
+          "summary": "Delegation: 1 Task call, 2 direct read calls (staying under 6)."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I will now read the state schema, the test file, write the component changes, and write the test changes myself."
+            },
+            {
+              "kind": "escalate",
+              "say": "All 4 remaining tasks are hands-on work, so I will do them directly to keep things moving."
+            }
+          ],
+          "summary": "Direct work: 4 additional read/write calls. Wrong: over the 6-limit, should delegate."
+        }
+      }
+    }
+  ]
+}

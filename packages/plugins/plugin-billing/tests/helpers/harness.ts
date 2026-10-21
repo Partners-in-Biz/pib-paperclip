@@ -23,6 +23,7 @@ export interface Harness {
   ctx: PluginContext;
   client: PgClient;
   emitted: Array<{ name: string; companyId: string; payload: unknown }>;
+  documents: Map<string, { issueId: string; key: string; body: string; title?: string; format?: string }>;
   issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; identifier?: string; createdAt?: string }>;
   comments: Array<{ issueId: string; body: string }>;
   wakeups: string[];
@@ -81,6 +82,7 @@ export async function startHarness(): Promise<Harness> {
 
   const emitted: Harness["emitted"] = [];
   const issues: Harness["issues"] = new Map();
+  const documents: Harness["documents"] = new Map();
   const comments: Harness["comments"] = [];
   const wakeups: Harness["wakeups"] = [];
   const handlers: Harness["handlers"] = new Map();
@@ -128,6 +130,15 @@ export async function startHarness(): Promise<Harness> {
         return issue;
       },
       get: async (id: string) => issues.get(id) ?? null,
+      list: async (filter: { companyId: string; originId?: string; limit?: number }) =>
+        [...issues.values()].filter((issue) => issue.companyId === filter.companyId && (!filter.originId || issue.originId === filter.originId)).slice(0, filter.limit ?? 50),
+      documents: {
+        upsert: async (input: { issueId: string; key: string; body: string; title?: string; format?: string }) => {
+          if (!issues.has(input.issueId)) throw new Error("no issue");
+          documents.set(`${input.issueId}:${input.key}`, input);
+          return input;
+        },
+      },
       update: async (id: string, patch: { status?: string }) => {
         const issue = issues.get(id);
         if (!issue) throw new Error("no issue");
@@ -169,6 +180,7 @@ export async function startHarness(): Promise<Harness> {
     client,
     emitted,
     issues,
+    documents,
     comments,
     wakeups,
     handlers,
@@ -192,6 +204,7 @@ export async function startHarness(): Promise<Harness> {
       for (const name of TABLES_IN_ORDER) await client.query(`DELETE FROM ${NAMESPACE}.${name}`);
       emitted.length = 0;
       issues.clear();
+      documents.clear();
       comments.length = 0;
       wakeups.length = 0;
       config.clear();

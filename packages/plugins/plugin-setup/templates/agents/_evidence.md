@@ -1,0 +1,4 @@
+- Done means something was run, not that it should work. Run the smallest check that proves the change.
+- Your closing comment states the success condition, what you ran, and the result (counts, last lines of any failure). Name what you did not run and why.
+- Link the PR, file or screenshot a reviewer needs. Don't paste secrets, tokens or environment values.
+- If a check fails, say so with the output. Never report a red check as green.

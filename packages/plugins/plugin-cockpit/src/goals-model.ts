@@ -191,14 +191,30 @@ export interface ReviewGoalRow {
   note: string | null;
 }
 
+export interface GrowthLedgerRow {
+  channel: string;
+  scopeKey: string;
+  experimentId: string;
+  verdict: "win" | "loss" | "no_change" | "inconclusive" | null;
+  /** Relative change as a fraction: 0.12 = +12%, -0.052 = -5.2%. */
+  relativeChange: number | null;
+  items: number | null;
+  playbookDecision: "kept" | "discarded" | "pending" | null;
+  decidedAt: string;
+}
+
+/** Escape pipe characters in table cell text for markdown. */
+const escapePipe = (text: string): string => text.replace(/\|/g, "\\|");
+
 /** Title and description of the weekly business review issue. */
 export function businessReviewContent(input: {
   weekLabel: string;
   rows: ReviewGoalRow[];
   proposedWaiting: number;
   cockpitHref: string;
+  growthLedger?: GrowthLedgerRow[];
 }): { title: string; description: string } {
-  const { rows } = input;
+  const { rows, growthLedger = [] } = input;
   const reached = rows.filter((r) => r.progress.state === "reached").length;
   const behind = rows.filter((r) => r.progress.state === "behind");
   const noData = rows.filter((r) => r.progress.state === "no_data");
@@ -217,6 +233,39 @@ export function businessReviewContent(input: {
   }
   lines.push("");
   if (input.proposedWaiting > 0) lines.push(`${input.proposedWaiting} proposed ${input.proposedWaiting === 1 ? "goal waits" : "goals wait"} for the owner's yes (one question is already open; do not ask again).`, "");
+
+  // Growth Lab this week section
+  lines.push("## Growth Lab this week", "");
+  if (growthLedger.length === 0) {
+    lines.push("No experiments were decided this week.");
+  } else {
+    lines.push("| Channel | Scope | Experiment | Verdict | Change | Playbook |");
+    lines.push("|---|---|---|---|---|---|");
+    for (const row of growthLedger) {
+      const changeStr = row.relativeChange === null
+        ? "n/a"
+        : `${row.relativeChange >= 0 ? "+" : ""}${Math.round(row.relativeChange * 100 * 10) / 10}%`;
+      const verdictStr = row.verdict ?? "pending";
+      lines.push(
+        `| ${escapePipe(row.channel)} | ${escapePipe(row.scopeKey)} | ${escapePipe(row.experimentId)} | ${verdictStr} | ${changeStr} | ${row.playbookDecision ?? "–"} |`,
+      );
+    }
+    const wins = growthLedger.filter((r) => r.verdict === "win").length;
+    const losses = growthLedger.filter((r) => r.verdict === "loss").length;
+    const noChanges = growthLedger.filter((r) => r.verdict === "no_change").length;
+    const inconclusive = growthLedger.filter((r) => r.verdict === "inconclusive").length;
+    const summaryParts: string[] = [];
+    if (wins > 0) summaryParts.push(`${wins} win${wins === 1 ? "" : "s"}`);
+    if (losses > 0) summaryParts.push(`${losses} loss${losses === 1 ? "" : "es"}`);
+    if (noChanges > 0) summaryParts.push(`${noChanges} no change${noChanges === 1 ? "" : "s"}`);
+    if (inconclusive > 0) summaryParts.push(`${inconclusive} inconclusive`);
+    if (summaryParts.length > 0) {
+      const summary = summaryParts.join(", ");
+      lines.push(`Summary: ${summary}.`);
+    }
+  }
+  lines.push("");
+
   lines.push("## Checklist", "");
   for (const { goal, progress } of rows.filter((r) => r.progress.state === "behind" || r.progress.state === "no_data")) {
     if (progress.state === "behind") lines.push(`- [ ] **${goal.title}** is behind (${progress.progress === null ? "" : `${Math.round(progress.progress * 100)}% of the way`}): find the cause in the modules' numbers, name the change that moves it, hand it to the agent that owns it (a Hand-off issue), and say when you will look again.`);

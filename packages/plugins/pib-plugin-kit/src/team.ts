@@ -29,8 +29,10 @@ export type TeamRoleKey =
   | "inbound-qualifier"
   | "crm-data-steward"
   | "deal-desk"
+  | "revenue-lead"
   | "seo-specialist"
   | "social"
+  | "creative-producer"
   | "bookkeeper"
   | "payroll-clerk";
 
@@ -95,6 +97,9 @@ const pluginActions = (prefix: string, resync?: string, params?: Record<string, 
   unlink: `${prefix}.unlink-agent`,
   ...(resync ? { resync } : {}),
 });
+
+/** Skills that live in the company's skill library, not in a plugin (keys are bare slugs). */
+export const COMPANY_LIBRARY_SKILLS = ["higgsfield", "motion-design-principles", "gsap-core", "gsap-timeline"] as const;
 
 const crmSkill = (key: string) => teamSkillKey(PIB_PLUGINS.crm, key);
 
@@ -194,6 +199,20 @@ export const TEAM_ROLES: TeamRole[] = [
     [teamSkillKey(PIB_PLUGINS.billing, "invoice-draft")],
   ),
   {
+    key: "revenue-lead",
+    pluginKey: PIB_PLUGINS.crm,
+    module: "crm",
+    title: "Revenue Lead",
+    summary: "Owns revenue",
+    required: false,
+    coveredBy: "account-manager",
+    setupItemKey: "revenue-lead",
+    skills: withOs(crmSkill("crm-records"), crmSkill("sales-lead")),
+    actions: pluginActions("crm", "crm.resync-agent", { role: "revenue-lead" }),
+    pagePath: "/crm",
+    runProfile: RUN_PROFILES["revenue-lead"],
+  },
+  {
     key: "seo-specialist",
     pluginKey: PIB_PLUGINS.seo,
     module: "seo",
@@ -215,10 +234,25 @@ export const TEAM_ROLES: TeamRole[] = [
     summary: "Does the social work itself: plans, drafts, schedules and publishes approved posts, answers the social inbox and runs the Growth Lab. Carries out every social task and hand-off; never declines one.",
     required: true,
     setupItemKey: "agent",
-    skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-publish"), teamSkillKey(PIB_PLUGINS.social, "social-content")),
+    skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-publish"), teamSkillKey(PIB_PLUGINS.social, "social-content"), teamSkillKey(PIB_PLUGINS.social, "creative-studio")),
     actions: pluginActions("social", "social.activate-agent"),
     pagePath: "/social",
     runProfile: RUN_PROFILES["social"],
+  },
+  {
+    key: "creative-producer",
+    pluginKey: PIB_PLUGINS.social,
+    module: "social",
+    title: "Creative Producer",
+    summary: "Makes images, video and motion for posts and campaigns.",
+    required: false,
+    coveredBy: "social",
+    setupItemKey: "creative-producer",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.social, "social-content"), teamSkillKey(PIB_PLUGINS.social, "creative-studio")),
+    extraSkills: [...COMPANY_LIBRARY_SKILLS],
+    actions: pluginActions("social", "social.activate-agent", { role: "creative-producer" }),
+    pagePath: "/social",
+    runProfile: RUN_PROFILES["creative-producer"],
   },
   {
     key: "bookkeeper",

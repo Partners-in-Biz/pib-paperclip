@@ -19,6 +19,7 @@ import {
   parseClientParam,
   redeliver,
   registerCrmProjection,
+  registerDriveReplies,
   checkDoneOnUpdate,
   registerCompanyBootstrap,
   registerModuleWatch,
@@ -123,6 +124,7 @@ import {
   customerDetails,
   customerNameOf,
   documentPdf,
+  invoiceHtmlOf,
   invoiceView,
   markSentAction,
   publicInvoice,
@@ -374,6 +376,7 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
+    registerDriveReplies(ctx);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
@@ -861,25 +864,7 @@ async function invoiceHtml(ctx: PluginContext, context: PluginPerformActionConte
   const companyId = requiredCompany(context);
   const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   const { settings } = await loadBilling(ctx, companyId);
-  const view = await invoiceView(ctx, invoice, settings);
-  return {
-    invoiceId: invoice.id,
-    html: buildInvoiceHtml({
-      kind: "Invoice",
-      number: invoice.number,
-      status: invoice.status,
-      currency: invoice.currency,
-      sender: view.sender,
-      customer: view.customer,
-      lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
-      taxRate: view.legacy ? Number(invoice.tax_rate ?? 0) : 0,
-      totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
-      payment: view.payment ?? null,
-      notes: view.notes ?? null,
-      issuedAt: invoice.sent_at == null ? null : String(iso(invoice.sent_at)),
-      dueAt: iso(invoice.due_at),
-    }),
-  };
+  return { invoiceId: invoice.id, html: await invoiceHtmlOf(ctx, invoice, settings) };
 }
 
 async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {

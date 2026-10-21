@@ -267,4 +267,30 @@ d("improvements ledger (Postgres)", () => {
     expect(brief.items[0]).toMatchObject({ overdueDays: 8 });
     expect(brief.items[1]).not.toHaveProperty("overdueDays");
   });
+
+  describe("improvements.kind constraint (PAR-4025)", () => {
+    it("allows template as a valid kind, and rejects invalid kinds with check-constraint violation", async () => {
+      // Template kind should be accepted by the database constraint
+      await h.client.query(
+        `INSERT INTO ${NAMESPACE}.improvements (id, company_id, title, kind, metric_key, direction, recheck_at)
+         VALUES ($1, $2, 'Template improvement', 'template', 'manual', 'lower', $3)`,
+        [uuid(), COMPANY, day(7).toISOString()],
+      );
+      const template = await h.client.query(
+        `SELECT kind FROM ${NAMESPACE}.improvements WHERE kind = 'template' AND company_id = $1`,
+        [COMPANY],
+      );
+      expect(template.rows).toHaveLength(1);
+      expect((template.rows[0] as Record<string, unknown>).kind).toBe("template");
+
+      // Bogus kind should be rejected by the check constraint
+      await expect(
+        h.client.query(
+          `INSERT INTO ${NAMESPACE}.improvements (id, company_id, title, kind, metric_key, direction, recheck_at)
+           VALUES ($1, $2, 'Invalid kind', 'bogus', 'manual', 'lower', $3)`,
+          [uuid(), COMPANY, day(7).toISOString()],
+        ),
+      ).rejects.toThrow(/check constraint.*improvements_kind/i);
+    });
+  });
 });

@@ -1,0 +1,26 @@
+{
+  "name": "pib-browser",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "PIB browser policy and authorization engine",
+  "main": "src/policy.cjs",
+  "bin": {
+    "pib-browser": "bin/pib-browser.cjs",
+    "pib-evidence": "bin/pib-evidence.cjs"
+  },
+  "scripts": {
+    "typecheck": "node scripts/check.cjs syntax",
+    "test": "node --test test/*.test.cjs",
+    "build": "node scripts/check.cjs load"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1"
+  },
+  "keywords": [
+    "browser",
+    "policy",
+    "authorization"
+  ],
+  "author": "Partners in Biz",
+  "license": "MIT"
+}

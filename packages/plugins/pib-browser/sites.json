@@ -1,0 +1,199 @@
+{
+  "version": 1,
+  "sites": {
+    "meta": {
+      "label": "Meta Business",
+      "origins": [
+        "https://business.facebook.com",
+        "https://www.facebook.com",
+        "https://adsmanager.facebook.com"
+      ],
+      "loggedIn": {
+        "url": "https://business.facebook.com/latest/home",
+        "expect": "Home"
+      },
+      "confirm": [
+        {
+          "step": "campaign-published",
+          "expect": "Published"
+        },
+        {
+          "step": "post-scheduled",
+          "expect": "Scheduled"
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[aria-label*=Account i]"
+      ],
+      "destructive": {
+        "selectors": [
+          "[data-action=delete]",
+          "[data-action=publish]",
+          "[data-action=boost]",
+          "[aria-label=Delete]"
+        ],
+        "text": [
+          "delete",
+          "publish",
+          "boost",
+          "pay now",
+          "remove",
+          "spend",
+          "launch"
+        ]
+      }
+    },
+    "google-ads": {
+      "label": "Google Ads",
+      "origins": [
+        "https://ads.google.com"
+      ],
+      "loggedIn": {
+        "url": "https://ads.google.com/aw/overview",
+        "expect": "Overview"
+      },
+      "confirm": [
+        {
+          "step": "campaign-enabled",
+          "expect": "Enabled"
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[aria-label*=Customer ID i]"
+      ],
+      "destructive": {
+        "selectors": [
+          "[data-action=delete]",
+          "[data-action=publish]",
+          "[aria-label=Remove]"
+        ],
+        "text": [
+          "remove",
+          "pause all",
+          "publish",
+          "pay now",
+          "enable",
+          "budget",
+          "launch"
+        ]
+      }
+    },
+    "search-console": {
+      "label": "Google Search Console",
+      "origins": [
+        "https://search.google.com"
+      ],
+      "loggedIn": {
+        "url": "https://search.google.com/search-console",
+        "expect": "Overview"
+      },
+      "confirm": [
+        {
+          "step": "sitemap-submitted",
+          "expect": "Success"
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[aria-label*=Property i]"
+      ],
+      "destructive": {
+        "selectors": [
+          "[data-action=remove-property]",
+          "[data-action=delete]",
+          "[aria-label=Remove]"
+        ],
+        "text": [
+          "remove property",
+          "delete",
+          "remove",
+          "revoke",
+          "disavow"
+        ]
+      }
+    },
+    "linkedin": {
+      "label": "LinkedIn",
+      "origins": [
+        "https://www.linkedin.com"
+      ],
+      "loggedIn": {
+        "url": "https://www.linkedin.com/feed/",
+        "expect": "Start a post"
+      },
+      "confirm": [
+        {
+          "step": "post-published",
+          "expect": "Post successful"
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[name*=token i]"
+      ],
+      "destructive": {
+        "selectors": [
+          "[data-action=delete]",
+          "[data-action=post]",
+          "button.share-actions__primary-action"
+        ],
+        "text": [
+          "post",
+          "delete",
+          "send",
+          "publish",
+          "remove",
+          "connect"
+        ]
+      }
+    },
+    "wp": {
+      "label": "WordPress",
+      "origins": [],
+      "perIdentityOrigins": true,
+      "loggedIn": {
+        "url": "/wp-admin/",
+        "expect": "Dashboard"
+      },
+      "confirm": [
+        {
+          "step": "post-published",
+          "expect": "Post published."
+        },
+        {
+          "step": "saved",
+          "expect": "Updated."
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[name*=token i]",
+        "#user_email"
+      ],
+      "destructive": {
+        "selectors": [
+          "#publish",
+          "[data-action=delete]",
+          "button[type=submit][name=publish]",
+          "a.submitdelete"
+        ],
+        "text": [
+          "publish",
+          "delete",
+          "move to trash",
+          "update",
+          "go live",
+          "pay now",
+          "remove"
+        ]
+      }
+    }
+  }
+}

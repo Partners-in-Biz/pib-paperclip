@@ -14,6 +14,9 @@ import {
   runRobotsCheck,
   runSchemaCheck,
   runSitemapCheck,
+  runSoft404Check,
+  runBylineCheck,
+  runThinContentCheck,
 } from "../checks/site.js";
 import * as db from "../db.js";
 import { cwvFindings, runPagespeed, type PageHealthRecord, type Strategy } from "../integrations/pagespeed.js";
@@ -169,6 +172,28 @@ export async function internalLinkAuditTool(env: Env, companyId: string, params:
     stored,
     note: result.partial ? "Partial crawl (page cap or time limit): orphans are relative to the crawled pages and were not stored as findings." : undefined,
   };
+}
+
+export async function checkSoft404Tool(env: Env, companyId: string, params: Params) {
+  const { sprint, url } = await targetFor(env, companyId, params);
+  const result = await runSoft404Check(env.site, url);
+  const stored = await recordCheckFindings(env, sprint, "check-soft404", result.findings, [{ category: "soft-404", url: result.url }]);
+  return { ...result, stored };
+}
+
+export async function checkThinContentTool(env: Env, companyId: string, params: Params) {
+  const { sprint, url } = await targetFor(env, companyId, params);
+  const minChars = num(params, "minChars", { integer: true, min: 50, max: 1000 }) ?? 200;
+  const result = await runThinContentCheck(env.site, url, minChars);
+  const stored = await recordCheckFindings(env, sprint, "check-thin-content", result.findings, [{ category: "thin-content", url: result.finalUrl }]);
+  return { ...result, stored };
+}
+
+export async function checkBylineTool(env: Env, companyId: string, params: Params) {
+  const { sprint, url } = await targetFor(env, companyId, params);
+  const result = await runBylineCheck(env.site, url);
+  const stored = await recordCheckFindings(env, sprint, "check-byline", result.findings, [{ category: "byline", url: result.finalUrl }]);
+  return { ...result, stored };
 }
 
 // ---------------------------------------------------------------------------

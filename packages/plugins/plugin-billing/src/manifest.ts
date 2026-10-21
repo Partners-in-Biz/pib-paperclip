@@ -195,7 +195,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.8.0",
+  version: "0.9.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -216,6 +216,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     "issues.wakeup",
     "issue.comments.create",
+    // 0.9: the paid-invoice filing issue carries the invoice as an issue document. A new capability: a stop-first deploy.
+    "issue.documents.write",
     "plugin.state.read",
     "plugin.state.write",
     "secrets.read-ref",

@@ -2,8 +2,7 @@
  * In-memory GrowthStore with the same semantics as sql.ts (scope filters,
  * guarded updates, upserts), for service-level tests.
  */
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import type { FeatureValue, ScoredPostRow } from "../src/growth/engine.js";
+import { sameClient, scopeOfRow, type ClientScope, type FeatureValue, type ScoredPostRow } from "@partnersinbiz/pib-plugin-kit";
 import type {
   Experiment,
   ExperimentItem,
@@ -216,7 +215,7 @@ export function memoryStore() {
         .map((s) => {
           const post = db.posts.find((p) => p.id === s.postId)!;
           return {
-            postId: s.postId,
+            subjectId: s.postId,
             body: post.body,
             platform: s.platform,
             accountId: s.accountId,
@@ -227,6 +226,14 @@ export function memoryStore() {
             experimentArm: post.experimentArm,
           };
         });
+    },
+    async countArmPosts(companyId, experimentId, arm) {
+      const postIds = new Set(
+        db.posts
+          .filter((p) => p.companyId === companyId && p.experimentId === experimentId && p.experimentArm === arm)
+          .map((p) => p.id),
+      );
+      return postIds.size;
     },
   };
   return { store, db };

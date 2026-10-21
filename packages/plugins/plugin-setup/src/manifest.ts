@@ -1,7 +1,8 @@
 import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./namespace.js";
+import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.5.1";
+export const VERSION = "0.5.13";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -14,6 +15,12 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "The Setup page saves this for you the first time you choose modules. Saving is what lets the weekly job open and update the Finish setup issue for this company.",
   properties: {
+    ownerCompany: {
+      type: "boolean",
+      title: "This is Partners in Biz's own company (owner company only)",
+      description: "Tick this ONLY on Partners in Biz's own company. It allows PiB-only (scope pib) agent templates in the hire list. Leave it off for every client company.",
+      default: false,
+    },
     weeklyIssue: {
       type: "boolean",
       title: "Weekly Finish setup issue",
@@ -45,6 +52,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     // The hire tasks Setup opens for the CEO must wake it: a plugin-created issue wakes nobody by itself.
     "issues.wakeup",
+    "agents.read",
+    "agent.tools.register",
     "plugin.state.read",
     "plugin.state.write",
     "api.routes.register",
@@ -94,6 +103,7 @@ const manifest: PaperclipPluginManifestV1 = {
       companyResolution: { from: "query", key: "companyId" },
     },
   ],
+  tools: TEMPLATE_TOOLS,
   ui: {
     slots: [
       {

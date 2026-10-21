@@ -21,7 +21,7 @@ const agents: FakeAgent[] = [
 ];
 
 function setup() {
-  const fake = fakeCtx({ savedConfigs: { [A]: { healthIssue: true } }, prefixes: { [A]: "PIB" }, agents: agents.map((a) => ({ ...a })) });
+  const fake = fakeCtx({ savedConfigs: { [A]: { healthIssue: true, escalation: { enabled: false } } }, prefixes: { [A]: "PIB" }, agents: agents.map((a) => ({ ...a })) });
   const clock = fixedClock(NOW);
   const env = createEnv(fake.ctx, clock.now);
   registerCockpit(fake.ctx, env);

@@ -498,6 +498,7 @@ const SKILL_PURPOSE: Record<string, string> = {
   "seo-sprint": "SEO sprints",
   "social-publish": "publishing",
   "social-content": "writing posts",
+  "creative-studio": "creative work",
   bookkeeping: "bookkeeping",
   payroll: "payroll",
   "invoice-draft": "invoice drafting",

@@ -4,7 +4,7 @@ import { buildKeyring, open, openJson, seal, sealJson, sealedVersion, TokenKeyEr
 import { presignUrl, r2Upload, objectKeyFor } from "../src/r2.js";
 import { skillVersion, syncManagedSkills, withFrontmatter } from "../src/skills.js";
 import { SecretResolver } from "../src/config.js";
-import { safeFetch } from "../src/safe-fetch.js";
+import { safeFetch, safeFetchBytes } from "../src/safe-fetch.js";
 import { oauthCallbackUrl, parsePluginUiBase, requirePublicBaseUrl } from "../src/index.js";
 import { pluginUiBaseFromModule } from "../src/oauth-bridge/client.js";
 import { getCrmCompany, registerCrmProjection, type CrmCompanyBilling } from "../src/crm-projection.js";
@@ -169,6 +169,103 @@ describe("safeFetch", () => {
     expect(res.url).toBe("https://example.com/home");
     expect(res.redirects).toEqual(["https://example.com/"]);
     expect(res.text).toContain("ok");
+  });
+});
+
+describe("safeFetchBytes", () => {
+  it("returns binary bytes intact", async () => {
+    const binaryData = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG signature
+    const ctx = {
+      http: {
+        fetch: async () => new Response(binaryData.buffer, { status: 200, headers: { "content-type": "image/png" } }),
+      },
+    } as unknown as PluginContext;
+    const res = await safeFetchBytes(ctx, "https://example.com/image.png");
+    expect(res.status).toBe(200);
+    expect(res.url).toBe("https://example.com/image.png");
+    expect(res.contentType).toBe("image/png");
+    expect(res.bytes).toEqual(binaryData);
+  });
+
+  it("follows redirects and re-checks each hop", async () => {
+    const calls: string[] = [];
+    const binaryData = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); // JPEG signature
+    const ctx = {
+      http: {
+        fetch: async (url: string) => {
+          calls.push(url);
+          if (url === "https://example.com/") return new Response(null, { status: 301, headers: { location: "/final" } });
+          if (url === "https://example.com/final") return new Response(null, { status: 301, headers: { location: "https://blocked.local/" } });
+          // This should fail because blocked.local would be rejected by ctx.http.fetch (SSRF guard)
+          throw new Error("SSRF protection: blocked");
+        },
+      },
+    } as unknown as PluginContext;
+    await expect(safeFetchBytes(ctx, "example.com")).rejects.toThrow("SSRF protection");
+    expect(calls).toContain("https://example.com/");
+    expect(calls).toContain("https://example.com/final");
+  });
+
+  it("rejects when maxRedirects exceeded", async () => {
+    const ctx = {
+      http: {
+        fetch: async (url: string) => {
+          const count = parseInt(url.split("/").pop() || "0", 10);
+          if (count < 10) return new Response(null, { status: 301, headers: { location: `https://example.com/${count + 1}` } });
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        },
+      },
+    } as unknown as PluginContext;
+    await expect(safeFetchBytes(ctx, "https://example.com/0", { maxRedirects: 3 })).rejects.toThrow("Too many redirects");
+  });
+
+  it("rejects early when Content-Length exceeds maxBytes", async () => {
+    const ctx = {
+      http: {
+        fetch: async () =>
+          new Response(null, { status: 200, headers: { "content-length": "100000000" } }),
+      },
+    } as unknown as PluginContext;
+    await expect(safeFetchBytes(ctx, "https://example.com/large", { maxBytes: 1000 })).rejects.toThrow(
+      "Response exceeds maxBytes limit"
+    );
+  });
+
+  it("rejects when streamed response exceeds maxBytes", async () => {
+    const ctx = {
+      http: {
+        fetch: async () => {
+          const chunks = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])];
+          let index = 0;
+          const readable = new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (index < chunks.length) {
+                controller.enqueue(chunks[index++]);
+              } else {
+                controller.close();
+              }
+            },
+          });
+          return new Response(readable, { status: 200 });
+        },
+      },
+    } as unknown as PluginContext;
+    await expect(safeFetchBytes(ctx, "https://example.com/stream", { maxBytes: 5 })).rejects.toThrow(
+      "Response exceeds maxBytes limit"
+    );
+  });
+
+  it("rejects when arrayBuffer exceeds maxBytes", async () => {
+    const largeData = new Uint8Array(10000);
+    const ctx = {
+      http: {
+        fetch: async () =>
+          new Response(largeData.buffer, { status: 200 }),
+      },
+    } as unknown as PluginContext;
+    await expect(safeFetchBytes(ctx, "https://example.com/large", { maxBytes: 1000 })).rejects.toThrow(
+      "Response exceeds maxBytes limit"
+    );
   });
 });
 
