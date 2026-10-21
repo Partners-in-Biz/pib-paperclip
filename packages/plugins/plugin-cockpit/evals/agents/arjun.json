@@ -120,7 +120,7 @@
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "\\bI (will|'ll|am going to) (read|edit|write)\\b"}
+              "question": {"matches": "\\bI(?: will|'ll| am going to) (read|edit|write)\\b"}
             },
             "reason": "do not ask the owner for read/edit permissions; this is about staying under the 6-call limit, not a permission question"
           }
