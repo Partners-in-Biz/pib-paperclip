@@ -92,17 +92,25 @@ export async function recordRepair(
  * Lists repairs for a company, optionally filtered by kind and/or since timestamp.
  * Results are ordered by created_at DESC (newest first), then by id DESC.
  * Default limit is 100, clamped to 1..500.
+ * When filtering by many targetIds, the function fetches with a higher limit and filters in JavaScript
+ * to avoid missing records due to LIMIT applying before the filter.
  */
 export async function listRepairs(
   ctx: PluginContext,
   companyId: string,
   opts?: {
     kind?: string;
+    targetIds?: string[];
     since?: string;
     limit?: number;
   },
 ): Promise<RepairRow[]> {
-  const limit = Math.max(1, Math.min(500, opts?.limit ?? 100));
+  // When filtering by targetIds, use a much higher limit to ensure we don't miss records
+  // due to LIMIT applying before the JavaScript filter
+  const hasTargetIds = opts?.targetIds && opts.targetIds.length > 0;
+  const baseLimit = opts?.limit ?? 100;
+  // When filtering by targetIds, fetch all records up to the max limit (500) to ensure no truncation
+  const limit = Math.max(1, Math.min(500, hasTargetIds ? 500 : baseLimit));
 
   let query = `SELECT id, company_id, kind, target_kind, target_id, action, outcome, detail, actor, created_at FROM ${TABLE} WHERE company_id = $1`;
   const params: unknown[] = [companyId];
@@ -121,5 +129,13 @@ export async function listRepairs(
   params.push(limit);
 
   const rows = await ctx.db.query<Raw>(query, params);
-  return rows.map(rowFrom);
+  const allRows = rows.map(rowFrom);
+
+  // Filter by targetIds in JavaScript if provided
+  if (hasTargetIds) {
+    const targetIdSet = new Set(opts.targetIds!);
+    return allRows.filter((r) => targetIdSet.has(r.targetId));
+  }
+
+  return allRows;
 }

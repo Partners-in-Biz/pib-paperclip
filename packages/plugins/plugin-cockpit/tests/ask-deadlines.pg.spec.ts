@@ -303,5 +303,7 @@ d("ask deadline sweep (Postgres)", () => {
 
     const repairs = await listRepairs(w.env.ctx, A, { kind: "ask_deadline" });
     expect(repairs.filter((r) => r.action === "apply_default" && r.targetId === askId)).toHaveLength(1);
+    // When concurrent sweep succeeds on apply, no escalate_ask should be written for this ask
+    expect(repairs.filter((r) => r.action === "escalate_ask" && r.targetId === askId)).toHaveLength(0);
   });
 });

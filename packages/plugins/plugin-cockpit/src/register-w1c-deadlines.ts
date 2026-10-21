@@ -5,7 +5,7 @@
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { evaluate, type PolicyAsk, type PolicyClass, POLICY_CLASSES } from "./owner-defaults-model.js";
-import { answerAskByPolicy, type AskRow, listCompaniesWithDueAsks, listDueAsks } from "./asks.js";
+import { answerAskByPolicy, getAsk, type AskRow, listCompaniesWithDueAsks, listDueAsks } from "./asks.js";
 import { recordRepair, listRepairs } from "./repairs.js";
 import { getRoles } from "./db.js";
 import { listSubscriptionsForUser } from "./push/store.js";
@@ -90,6 +90,7 @@ export async function recordOwnerPush(
 /**
  * Send a push notification to the owner for an ask deadline.
  * If push is not enabled, post a comment on the health issue instead.
+ * Only records the push if something was actually delivered.
  * Dedupes on issue within 24h (via ownerPushedWithin).
  */
 async function pushOnce(
@@ -105,6 +106,8 @@ async function pushOnce(
       return; // Already pushed recently, skip
     }
 
+    let delivered = false;
+
     if (pushEnabled) {
       // Try to send push notification
       const roles = await getRoles(env.ctx, companyId);
@@ -112,39 +115,43 @@ async function pushOnce(
 
       if (!ownerUserId) {
         // No owner, try health issue fallback
-        await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
-        return;
+        delivered = await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
+        if (!delivered) return; // Nothing delivered, don't record push
+      } else {
+        const subs = await listSubscriptionsForUser(env.ctx, companyId, ownerUserId);
+        const okSubs = subs.filter((s) => s.state === "ok");
+
+        if (okSubs.length === 0) {
+          // No subscriptions, try health issue fallback
+          delivered = await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
+          if (!delivered) return; // Nothing delivered, don't record push
+        } else {
+          await sendPush(
+            env.ctx,
+            companyId,
+            okSubs,
+            {
+              title: "Ask deadline",
+              body: pushMessage,
+              url: `/issues/${ask.issueIdentifier ?? ask.issueId}`,
+              tag: ask.issueIdentifier ?? ask.issueId,
+              class: "needs_you",
+            },
+            { class: "needs_you" },
+          );
+          delivered = true;
+        }
       }
-
-      const subs = await listSubscriptionsForUser(env.ctx, companyId, ownerUserId);
-      const okSubs = subs.filter((s) => s.state === "ok");
-
-      if (okSubs.length === 0) {
-        // No subscriptions, try health issue fallback
-        await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
-        return;
-      }
-
-      await sendPush(
-        env.ctx,
-        companyId,
-        okSubs,
-        {
-          title: "Ask deadline",
-          body: pushMessage,
-          url: `/issues/${ask.issueIdentifier ?? ask.issueId}`,
-          tag: ask.issueIdentifier ?? ask.issueId,
-          class: "needs_you",
-        },
-        { class: "needs_you" },
-      );
     } else {
       // Push disabled, use health issue fallback
-      await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
+      delivered = await postHealthComment(env, companyId, `Ask deadline escalated: ${ask.issueIdentifier ?? ask.issueId}`);
+      if (!delivered) return; // Nothing delivered, don't record push
     }
 
-    // Record the push attempt
-    await recordOwnerPush(env.ctx, companyId, ask.issueId);
+    // Record the push only if something was delivered
+    if (delivered) {
+      await recordOwnerPush(env.ctx, companyId, ask.issueId);
+    }
   } catch (err) {
     env.ctx.logger.warn("Push failed for ask deadline", {
       companyId,
@@ -156,16 +163,19 @@ async function pushOnce(
 
 /**
  * Post a comment on the company's health issue instead of pushing.
+ * Returns true if the comment was posted, false otherwise.
  */
-async function postHealthComment(env: Env, companyId: string, text: string): Promise<void> {
+async function postHealthComment(env: Env, companyId: string, text: string): Promise<boolean> {
   try {
     const config = (await env.ctx.config.get(companyId)) as Record<string, unknown> | undefined;
     const healthIssueId = (config?.healthIssueId ?? config?.healthIssue) as string | undefined;
-    if (!healthIssueId) return;
+    if (!healthIssueId) return false;
 
-    await env.ctx.issues.createComment(healthIssueId, text, companyId).catch(() => undefined);
+    await env.ctx.issues.createComment(healthIssueId, text, companyId);
+    return true;
   } catch {
     // Silently ignore health comment failures
+    return false;
   }
 }
 
@@ -199,35 +209,32 @@ async function escalate(
 export async function sweepAskDeadlines(
   env: Env,
   now?: Date,
-): Promise<{ processed: number; applied: number; escalated: number; pushed: number; errors: number }> {
+): Promise<{ processed: number; applied: number; escalated: number; errors: number }> {
   const nowTime = now ?? env.now();
   const companies = await listCompaniesWithDueAsks(env, nowTime.toISOString());
 
   let processed = 0;
   let applied = 0;
   let escalated = 0;
-  let pushed = 0;
   let errors = 0;
 
   for (const companyId of companies) {
     try {
       // Get the real standing policy from the store
       const policy = await readOwnerDefaults(env.ctx, companyId);
-      const pushEnabled = (await env.ctx.config.get(companyId)) as Record<string, unknown> | undefined;
+      const pushConfig = (await env.ctx.config.get(companyId)) as Record<string, unknown> | undefined;
 
       // Find open asks with expired deadlines and no defaultAppliedAt
       const dueAsks = await listDueAsks(env, companyId, nowTime.toISOString());
 
-      // Load repairs for these asks to dedupe, filtering by ask IDs to avoid truncation
+      // Load repairs for these asks to dedupe, using targetIds to avoid truncation at LIMIT
       const askIds = dueAsks.map((a) => a.id);
-      const askIdSet = new Set(askIds);
       const handledKeys = new Set<string>();
       if (askIds.length > 0) {
-        const repairs = await listRepairs(env.ctx, companyId, { kind: "ask_deadline" });
+        const repairs = await listRepairs(env.ctx, companyId, { kind: "ask_deadline", targetIds: askIds });
         for (const repair of repairs) {
           if (
             repair.targetKind === "ask" &&
-            askIdSet.has(repair.targetId) &&
             (repair.action === "apply_default" || repair.action === "escalate_ask")
           ) {
             handledKeys.add(`${repair.targetId}:${repair.action}`);
@@ -246,7 +253,7 @@ export async function sweepAskDeadlines(
 
           // Case 1: Ask has an effect -> escalate only
           if (ask.effect) {
-            await escalate(env, companyId, ask, "Ask has effect, escalation only", pushEnabled?.pushEnabled === true);
+            await escalate(env, companyId, ask, "Ask has effect, escalation only", pushConfig?.pushEnabled === true);
             escalated += 1;
             continue;
           }
@@ -258,7 +265,7 @@ export async function sweepAskDeadlines(
           if (!isSafeKind || !isPolicyClassAllowed) {
             // Dangerous kind or disallowed class -> escalate
             const reason = !isSafeKind ? `kind=${ask.kind}` : `policyClass=${ask.defaultPolicy}`;
-            await escalate(env, companyId, ask, `Escalated: ${reason}`, pushEnabled?.pushEnabled === true);
+            await escalate(env, companyId, ask, `Escalated: ${reason}`, pushConfig?.pushEnabled === true);
             escalated += 1;
             continue;
           }
@@ -298,13 +305,19 @@ export async function sweepAskDeadlines(
             // Only post comment and record repair if actually changed from open to answered
             if (result) {
               // Post comment
-              await env.ctx.issues
-                .createComment(
+              try {
+                await env.ctx.issues.createComment(
                   ask.issueId,
                   `Applied by standing policy ${policy?.name ?? "Policy"} at ${nowTime.toISOString()}`,
                   companyId,
-                )
-                .catch(() => undefined);
+                );
+              } catch (err) {
+                env.ctx.logger.warn("Failed to post apply comment on ask deadline", {
+                  companyId,
+                  askId: ask.id,
+                  error: message(err),
+                });
+              }
 
               await recordRepair(env.ctx, companyId, {
                 kind: "ask_deadline",
@@ -322,15 +335,23 @@ export async function sweepAskDeadlines(
                 companyId,
                 ask,
                 `Applied ${ask.issueIdentifier ?? ask.issueId}: ${decision.answer}`,
-                pushEnabled?.pushEnabled === true,
+                pushConfig?.pushEnabled === true,
               );
               applied += 1;
               continue;
             }
+
+            // Case 3: apply returned null; ask may have been answered concurrently.
+            // Re-read to check if it's still open; if closed, skip it; if open, escalate.
+            const updatedAsk = await getAsk(env, companyId, ask.id);
+            if (!updatedAsk || updatedAsk.status !== "open") {
+              // Ask was closed by owner or another sweep; skip escalation
+              continue;
+            }
           }
 
-          // Case 3: Escalate (policy disabled, doesn't cover, or apply failed)
-          await escalate(env, companyId, ask, decision.reason ?? "Escalated due to deadline", pushEnabled?.pushEnabled === true);
+          // Case 4: Escalate (policy disabled, doesn't cover, or apply failed/ask still open)
+          await escalate(env, companyId, ask, decision.reason ?? "Escalated due to deadline", pushConfig?.pushEnabled === true);
           escalated += 1;
         } catch (err) {
           errors += 1;
@@ -350,5 +371,5 @@ export async function sweepAskDeadlines(
     }
   }
 
-  return { processed, applied, escalated, pushed, errors };
+  return { processed, applied, escalated, errors };
 }
