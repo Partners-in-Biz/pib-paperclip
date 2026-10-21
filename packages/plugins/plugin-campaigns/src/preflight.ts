@@ -22,7 +22,7 @@
  * - each channel is configured; who can actually receive each channel.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, PIB_PLUGINS, safeFetch } from "@partnersinbiz/pib-plugin-kit";
+import { CLAIM_TERMS, isModuleEnabled, PIB_PLUGINS, safeFetch, scoreCreative, CREATIVE_PASS_SCORE } from "@partnersinbiz/pib-plugin-kit";
 import { CHANNEL_LABELS, isMessagingChannel, smsLength, SMS_MAX_CHARS, SMS_SEGMENT_WARN, hasOptOutInstruction, withOptOutLine, WHATSAPP_SESSION_MAX, WHATSAPP_TEMPLATE_MAX, type Channel, type MessagingChannel } from "./channels.js";
 import { launchAudience, channelsUsed, type LaunchAudience } from "./audience.js";
 import { listSenderIdentityRows } from "./db.js";
@@ -75,6 +75,9 @@ export interface PreflightFacts {
   channels: Partial<Record<MessagingChannel, { ready: boolean; reason: string | null; sentFrom: string | null; senderError: string | null }>>;
   audience: Pick<LaunchAudience, "contacts" | "reach"> | null;
   liveLinks: LinkCheck[] | null;
+  /** The brand profile's banned words and the client's approved wordings, for the creative rubric. Missing means none. */
+  bannedWords?: string[];
+  approvedFacts?: string[];
 }
 
 const KNOWN_TOKENS = new Set(["first_name", "last_name", "name", "company", "email", "unsubscribe_url"]);
@@ -131,6 +134,11 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
       if (!text && !(step.htmlBody ?? "").trim()) add("error", "empty-body", `${where} has no text.`);
     } else {
       if (!text) add("error", "empty-body", `${where} (${CHANNEL_LABELS[channel]}) has no text.`);
+    }
+    if (channel === "email" && text) {
+      const rubric = scoreCreative({ platform: "email", text, bannedWords: facts.bannedWords, approvedFacts: facts.approvedFacts, claimTerms: CLAIM_TERMS });
+      for (const blocker of rubric.blockers) add("warning", `creative-${blocker.rule}`, `${where}: ${blocker.text}`);
+      if (rubric.score < CREATIVE_PASS_SCORE) add("warning", "creative-score", `${where} scores ${rubric.score} of 100 on the creative rubric (it passes at ${CREATIVE_PASS_SCORE}). ${rubric.notes.filter((n) => !n.startsWith("Tone is not scored")).slice(0, 3).join(" ")}`.trim());
     }
     for (const match of `${step.subject} ${step.body} ${step.htmlBody ?? ""}`.matchAll(/\{\{\s*([a-z_]+)\s*(?:\|[^}]*)?\}\}/gi)) {
       if (!KNOWN_TOKENS.has(match[1]!.toLowerCase())) add("warning", "unknown-token", `${where} uses {{${match[1]}}}, which is not filled in and goes out as typed. Known: first_name, last_name, name, company, email, unsubscribe_url.`);

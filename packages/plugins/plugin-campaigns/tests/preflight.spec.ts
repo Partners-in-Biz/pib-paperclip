@@ -11,7 +11,7 @@ afterEach(() => {
   setMessagingProvider(null);
 });
 
-const email = (over: Partial<CampaignStepDraft> = {}): CampaignStepDraft => ({ position: 1, delayDays: 0, subject: "Hello", body: "Hi {{first_name}}, your boiler is due.", htmlBody: null, variant: "a", channel: "email", ...over });
+const email = (over: Partial<CampaignStepDraft> = {}): CampaignStepDraft => ({ position: 1, delayDays: 0, subject: "Hello", body: "Boiler service due, {{first_name}}? Book a slot.", htmlBody: null, variant: "a", channel: "email", ...over });
 const text = (channel: "sms" | "whatsapp", over: Partial<CampaignStepDraft> = {}): CampaignStepDraft => ({ position: 1, delayDays: 0, subject: "", body: "Hi {{first_name}}, 10% off this week.", htmlBody: null, variant: "a", channel, ...over });
 
 const ownOk = { ok: true as const, senderKey: "own", identity: null, fromName: "Partners in Biz", replyTo: null };
@@ -99,7 +99,7 @@ describe("preflight rules", () => {
   it("warns on a client campaign with no reply-to and on tokens it does not fill", () => {
     const client = { name: "x", delivery: "email" as const, clientKind: "company" as const, clientRef: "acme", clientName: "Acme" };
     expect(codes(evaluatePreflight(facts({ campaign: client, email: { ...clientOk, replyTo: null } })))).toContain("no-reply-to");
-    const tokens = evaluatePreflight(facts({ steps: [email({ body: "Hi {{firstname}} and {{first_name|there}} {{ unsubscribe_url }}" })] }));
+    const tokens = evaluatePreflight(facts({ steps: [email({ body: "Why wait? Book a slot. Hi {{firstname}} and {{first_name|there}} {{ unsubscribe_url }}" })] }));
     expect(tokens.warnings).toEqual([expect.objectContaining({ code: "unknown-token", message: expect.stringContaining("{{firstname}}") })]);
   });
 
@@ -263,5 +263,24 @@ describe("the approval request runs the checks", () => {
     expect(issue!.description).toContain("**SMS** (after 0 days, 1 SMS part)");
     expect(issue!.description).toContain("Hi {{first_name}} Reply STOP to opt out.");
     expect(issue!.description).toMatch(/2 have no mobile number or no opt-in on record and are left out/);
+  });
+});
+
+describe("creative rubric in step review", () => {
+  it("warns with the score when an email step scores under the pass mark", () => {
+    const result = evaluatePreflight(facts({ steps: [email({ body: "We are pleased to announce our newest offering to all valued customers in the region today." })] }));
+    expect(result.warnings.map((w) => w.code)).toContain("creative-score");
+    expect(result.warnings.find((w) => w.code === "creative-score")?.message).toMatch(/scores \d+ of 100/);
+  });
+
+  it("flags a claim with no approved wording and a banned word, as warnings only", () => {
+    const result = evaluatePreflight(facts({ bannedWords: ["synergy"], steps: [email({ body: "Why wait? We guarantee synergy. Book a call today." })] }));
+    expect(codes(result)).toEqual(expect.arrayContaining(["creative-claim_unapproved", "creative-banned_word"]));
+    expect(result.errors.map((e) => e.code)).not.toContain("creative-claim_unapproved");
+  });
+
+  it("does not flag a claim written as the client's approved fact", () => {
+    const result = evaluatePreflight(facts({ approvedFacts: ["We guarantee a reply within a day"], steps: [email({ body: "We guarantee a reply within a day" })] }));
+    expect(codes(result)).not.toContain("creative-claim_unapproved");
   });
 });
