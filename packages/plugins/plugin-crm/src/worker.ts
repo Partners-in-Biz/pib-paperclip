@@ -203,6 +203,8 @@ import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
 import { saveDriveFile } from "./drive/save.js";
+import { listDriveFiles } from "./drive/store.js";
+import { listClientFiles } from "./drive/files-list.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -584,6 +586,22 @@ const plugin = definePlugin({
         return { folder: { name, url: folder.folder_url } };
       } catch {
         return { folder: null };
+      }
+    });
+
+    // Data handler for Drive files list (read-only, grouped by folder)
+    ctx.data.register("drive-files", async (params) => {
+      const companyId = params.companyId as string | undefined;
+      const projectId = params.projectId as string | undefined;
+      if (!companyId || !projectId) return { groups: [] };
+      try {
+        const files = await listDriveFiles(ctx, companyId, { projectId });
+        const groups = listClientFiles(files);
+        return { groups };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.logger.error(`drive-files handler error for company ${companyId} project ${projectId}: ${message}`);
+        return { groups: [], error: "Could not load files." };
       }
     });
 
