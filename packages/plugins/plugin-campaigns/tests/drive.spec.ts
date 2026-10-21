@@ -200,4 +200,36 @@ describe("saveSendRecord", () => {
     const warnMessages = (log.warns || []).map((w: any) => w.msg).join(",");
     expect(warnMessages).not.toContain("no_ack");
   });
+
+  it("does not hang the job when driveSave fails or times out", async () => {
+    const mockDriveSave = vi.fn(async () => ({
+      status: "no_ack" as const,
+      requestId: "req-hang",
+    } as DriveSaveResult));
+
+    const log: any = {};
+    const ctx = fakeCtx(log);
+
+    // Should complete without hanging despite driveSave timing out
+    await expect(
+      saveSendRecord(ctx, {
+        companyId: "co-1",
+        campaignId: "camp-hang",
+        enrollmentId: "enr-hang",
+        stepPosition: 1,
+        variant: "a",
+        subject: "Hang test",
+        messageId: "msg-789",
+        threadId: "thr-012",
+        sentAt: new Date(),
+        driveSave: mockDriveSave,
+      })
+    ).resolves.toBeUndefined();
+
+    // Should have called driveSave
+    expect(mockDriveSave).toHaveBeenCalled();
+    // Should not have any warning logs for no_ack (it is expected behavior)
+    const warnMessages = (log.warns || []).map((w: any) => w.msg).join(",");
+    expect(warnMessages).not.toContain("no_ack");
+  });
 });
