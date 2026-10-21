@@ -13,6 +13,8 @@ import summarizer from "../evals/agents/summarizer.json" with { type: "json" };
 import crmDataSteward from "../evals/agents/crm-data-steward.json" with { type: "json" };
 import developer from "../evals/agents/developer.json" with { type: "json" };
 import seniorDeveloper from "../evals/agents/senior-developer.json" with { type: "json" };
+import steve from "../evals/agents/steve.json" with { type: "json" };
+import revenueLead from "../evals/agents/revenue-lead.json" with { type: "json" };
 import planner from "../evals/agents/planner.json" with { type: "json" };
 import codeReviewer from "../evals/agents/code-reviewer.json" with { type: "json" };
 import planCritic from "../evals/agents/plan-critic.json" with { type: "json" };
@@ -38,6 +40,8 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "crm-data-steward": crmDataSteward,
   developer,
   "senior-developer": seniorDeveloper,
+  steve,
+  "revenue-lead": revenueLead,
   planner,
   "code-reviewer": codeReviewer,
   "plan-critic": planCritic,
