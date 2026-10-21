@@ -84,7 +84,7 @@ const bookkeeper = teamRole("bookkeeper");
 
 describe("team roles", () => {
   it("lists the roles of switched-on modules whose plugin is installed", () => {
-    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
+    expect(teamRolesFor({ modules: null, installed: null }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "bookkeeper", "payroll-clerk"]);
     const installed = {
       "partnersinbiz.cockpit": { status: "ready" },
       "partnersinbiz.seo": { status: "ready" },

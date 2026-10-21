@@ -22,6 +22,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { saveReportCopy } from "./report-copy.js";
 import { clientContacts, clientInfo, clientProjectOf, customerClients, hasActiveService, isInternalClient, logOnClient, pickRecipient, type ClientInfo } from "./care-clients.js";
 import {
   approvalsOfSubject,
@@ -54,6 +55,7 @@ import { brandName, companyPrefix, crmLink, refOf } from "./refs.js";
 import { currentPeriod, EMPTY_NARRATIVE, escapeHtml, formatExpiryDate, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type MissingModule, type ReportData, type ReportSection } from "./report-render.js";
 import { teamAssignee } from "./routing.js";
 import { SERVICES } from "./services.js";
+import { openReportFilingIssue } from "./filing.js";
 import { growthSection } from "./attribution.js";
 import { listEventKeys } from "./site-events-store.js";
 import { clientProjectIds, getClientProfile, listClientLeads } from "./store.js";
@@ -579,6 +581,20 @@ export const reportHooks: MailApprovalHooks = {
     await setReportStatus(ctx, approval.companyId, record.id, { status: info.dryRun ? "dry_run" : "sent", sentNow: true });
     await logOnClient(ctx, approval.companyId, record.client, "email_sent", `Monthly report for ${periodLabel(record.period)} sent to the client.${info.dryRun ? " (canary dry run: not really sent)" : ""}`, `care:report:${record.id}:sent`, record.issueId);
     await tellReportAgent(ctx, record, `The ${periodLabel(record.period)} report was approved and sent${info.dryRun ? " (canary dry run)" : ""}. Mark this issue done.`);
+    if (!info.dryRun) {
+      const sentRecord = (await getReportById(ctx, approval.companyId, record.id)) ?? record;
+      const name = (await clientInfo(ctx, approval.companyId, record.client))?.name ?? "the client";
+      await openReportFilingIssue(ctx, sentRecord, name).catch((error) => ctx.logger.warn("report filing issue failed", { reportId: record.id, error: String(error) }));
+      // Save report HTML to Drive (fire-and-forget: failures never affect the send)
+      void saveReportCopy(ctx, {
+        companyId: approval.companyId,
+        clientName: name,
+        period: sentRecord.period,
+        seq: 1,
+        html: sentRecord.html,
+        client: sentRecord.client,
+      });
+    }
   },
   async onRefused(ctx, approval, by) {
     const record = await getReportById(ctx, approval.companyId, approval.subjectId);
