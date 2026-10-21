@@ -10,7 +10,7 @@ import { agentFacingSummary, COMPANY_SKILL_DESCRIPTION, COMPANY_SKILL_KEY, COMPA
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
 import { ACCEPTANCE_DESCRIPTION, ACCEPTANCE_FILES, ACCEPTANCE_SKILL_BODY } from "./acceptance-skill.js";
-import { OPERATOR_FILES, OPERATOR_REFERENCE_PATHS } from "./skill-references.js";
+import { CREATIVE_BAR_PATH, CREATIVE_BAR_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
 import { SCREENSHOT_REFERENCE, SCREENSHOT_REFERENCE_PATH } from "./screenshots.js";
 import { TOOL_NAMES } from "./tools.js";
 
@@ -52,6 +52,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(TOOL_NAMES.postBrief)} | Post the daily brief on this week's "Daily brief" issue. |
 | ${T(TOOL_NAMES.askOwner)} | One question to the owner on the issue that waits for it; the reply comes back on that issue. |
 | ${T(TOOL_NAMES.profile)} / ${T(TOOL_NAMES.updateProfile)} | The company's own profile; fill empty fields from the website and past work. |
+| ${T(TOOL_NAMES.repairsList)}, ${T(TOOL_NAMES.governorState)}, ${T(TOOL_NAMES.watchdogFindings)} | Repairs, pauses, findings. |
 | ${T(OPS_TOOL_NAMES.measure)} | What the work cost and how it went: notional spend, tokens, run time, retries, failures, plan limits, review coverage. \`parts: ["clients"]\` adds each customer's effort against what they paid. |
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
@@ -200,6 +201,7 @@ When "Review outward-facing work before I approve" is on, every outward-facing a
 - Timing, when it has a time: sensible for the audience and not clashing with another scheduled post.
 - No personal data (private people's names, numbers or addresses) unless they agreed.
 - Spelling and grammar in the client's language (en-ZA unless the brand says otherwise).
+- The creative bar: score it as \`${CREATIVE_BAR_PATH}\` says (hook, clarity, brand, CTA, format; pass is 80 or more and no blocker) and put the score and every blocker in your comment.
 
 ### Campaign email
 - Audience: matches the brief. "No tags" means every contact: flag it unless the issue says a person agreed.
@@ -209,6 +211,7 @@ When "Review outward-facing work before I approve" is on, every outward-facing a
 - Every link works; no test or staging addresses.
 - Opt-out and POPIA: it says who we are and how to stop (reply STOP, or the unsubscribe link the Mailbox adds as the List-Unsubscribe header); no claims we cannot back up.
 - Tokens read well when filled in, with fallbacks (\`{{first_name|there}}\`); nothing left raw.
+- The creative bar: score it as \`${CREATIVE_BAR_PATH}\` says (subject line as the hook; pass is 80 or more and no blocker) and put the score and every blocker in your comment.
 
 ### Invoice or quote email
 - Right client, contact and email address.
@@ -268,6 +271,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: SKILL_SLUGS.reviewer,
     description: REVIEWER_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.reviewer, description: REVIEWER_DESCRIPTION }, REVIEWER_SKILL_BODY),
+    files: [{ path: CREATIVE_BAR_PATH, content: CREATIVE_BAR_REFERENCE }],
   },
   {
     skillKey: COMPANY_SKILL_KEY,
@@ -275,7 +279,10 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: COMPANY_SKILL_SLUG,
     description: COMPANY_SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: COMPANY_SKILL_SLUG, description: COMPANY_SKILL_DESCRIPTION }, companySkillBody()),
-    files: [{ path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE }],
+    files: [
+      { path: SCREENSHOT_REFERENCE_PATH, content: SCREENSHOT_REFERENCE },
+      { path: OWNER_CHECKS_REFERENCE_PATH, content: OWNER_CHECKS_REFERENCE },
+    ],
   },
   {
     skillKey: SKILL_KEYS.acceptance,

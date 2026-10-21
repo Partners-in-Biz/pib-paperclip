@@ -11,8 +11,8 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, RETRO_REFERENCE } from "../src/skill-references.js";
-import { skillVersion } from "@partnersinbiz/pib-plugin-kit";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
+import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
 import { routineFailedCheck } from "@partnersinbiz/pib-plugin-kit";
@@ -75,6 +75,9 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain("writes the client's report as a `client_report` case");
     // A block without a way out is flagged after a day (the Cockpit's blocked check).
     expect(body).toContain("`blocked` with an `unblockDescriptor` (who must do what; a block with none is flagged after a day)");
+    // Owner checks: the manual mentions the rule and its reference.
+    expect(body).toContain("WAITING-ON-OWNER");
+    expect(body).toContain("`references/owner-checks.md`");
   });
 });
 
@@ -185,11 +188,30 @@ describe("the Operator knows how to act on each watch problem", () => {
 
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
-    expect(operator.markdown!.length).toBeLessThan(18_950);
+    expect(operator.markdown!.length).toBeLessThan(19_050);
     // The references are read on demand, each on its own: none is a wall of text.
     for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
     expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_000);
     expect(companySkillBody().length).toBeLessThan(16_000);
+  });
+});
+
+describe("owner-checks reference", () => {
+  it("exists, mentions WAITING-ON-OWNER status, blockedByIssueIds, Delivery Lead and Planner, and names only real tools", () => {
+    expect(OWNER_CHECKS_REFERENCE).toContain("WAITING-ON-OWNER");
+    expect(OWNER_CHECKS_REFERENCE).toContain("blockedByIssueIds");
+    expect(OWNER_CHECKS_REFERENCE).toContain("Delivery Lead");
+    expect(OWNER_CHECKS_REFERENCE).toContain("Planner");
+    // The reference should mention the ask-owner tool by name.
+    expect(OWNER_CHECKS_REFERENCE).toContain(`\`${PLUGIN_KEY}:ask-owner\``);
+    // All tool references in the owner-checks file must be real.
+    const toolMatches = [...OWNER_CHECKS_REFERENCE.matchAll(/partnersinbiz\.([a-z]+):([a-z0-9-]+)/g)];
+    const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
+    for (const [match, plugin, name] of toolMatches) {
+      if (plugin === "cockpit") {
+        expect(own.has(name), `partnersinbiz.${plugin}:${name}`).toBe(true);
+      }
+    }
   });
 });
 
@@ -241,10 +263,11 @@ describe("the Operator's references (Wave 3)", () => {
       expect(operator.files!.some((f) => f.path === path), path).toBe(true);
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
-    // The Reviewer stays one file; the manual carries one reference (how to look at a page) for every role, and the Acceptance skill its own two.
+    // The Reviewer stays one file; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
     expect(skill("pib-reviewer")).not.toHaveProperty("files");
-    expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md"]);
+    expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
+    expect(companySkillBody()).toContain("`references/owner-checks.md`");
   });
 
   it("a re-run of acceptance is asked for through an issue to the Acceptance agent: the Cockpit has no Run button to point at", () => {
@@ -253,6 +276,25 @@ describe("the Operator's references (Wave 3)", () => {
     expect(gates).toContain("open an issue for the Acceptance agent");
     expect(gates).toContain("The Cockpit has no Run button");
   });
+
+  it("the Reviewer's creative-bar file and the quality-gates reference carry the weights the kit scores by", () => {
+    const reviewer = skill("pib-reviewer") as { markdown: string; files: Array<{ path: string; content: string }> };
+    const bar = reviewer.files.find((f) => f.path === "references/creative-bar.md")!.content;
+    expect(reviewer.markdown).toContain("`references/creative-bar.md`");
+    const gates = operator.files!.find((f) => f.path === "references/quality-gates.md")!.content;
+    expect(gates).toContain("## The creative bar");
+    expect(bar).toContain("no media at all");
+    for (const doc of [bar, gates]) checkBar(doc);
+  });
+
+  function checkBar(gates: string) {
+    for (const [part, points] of Object.entries(CREATIVE_RUBRIC_WEIGHTS)) {
+      expect(gates, part).toMatch(new RegExp(`\\| ${part} \\| ${points} \\|`, "i"));
+    }
+    expect(gates).toContain(`${Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0)} points at most`);
+    expect(gates).toContain(`passes at ${CREATIVE_PASS_SCORE} or more`);
+    for (const rule of ["bans", "approved wording", "media rule", "alt text"]) expect(gates, rule).toContain(rule);
+  }
 
   it("a change to a reference changes the skill's version, so every company's copy is brought up to date", () => {
     const base = skillVersion(operator as never);

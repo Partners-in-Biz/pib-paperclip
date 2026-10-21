@@ -51,6 +51,9 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 \`drive_folder_ensure\` creates (once) the standard Drive folder tree for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
 \`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
 
+## Binding a company's Shared Drive
+\`drive_binding_discover\`, \`drive_binding_set\`, \`drive_binding_status\`: bind the company's Shared Drive. Discover lists it from the read-only Drive connection; it auto-binds on exact match or returns candidates. Set with the ID. Status checks binding and access.
+
 ## Project Drive folder kinds
 \`drive_project_kind_set\` and \`drive_project_kind_list\` organize projects by folder branch type (client, product, book, marketing, company). \`set\` works for any project, including own projects with no client link; pass projectId, kind, and optional scopeRef (e.g., for marketing campaigns). \`list\` (read-only) returns kinds for specified projects or all in the company; a client-linked project with no explicit kind defaults to "client".
 

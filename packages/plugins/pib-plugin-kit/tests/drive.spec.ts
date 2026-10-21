@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
-import { driveSave, registerDriveReplies, DRIVE_EVENTS } from "../src/drive.js";
+import { driveSave, registerDriveReplies, DRIVE_EVENTS, DRIVE_SUBFOLDERS } from "../src/drive.js";
 import { CRM_PLUGIN_ID } from "../src/crm-projection.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
@@ -119,6 +119,28 @@ describe("drive save", () => {
     const requestId = emitted.requestId;
     await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId, driveFileId: "file-789", url: "https://drive.example.com/file-789" });
     const result = await promise;
+    expect(result.status).toBe("saved");
+  });
+
+  it("(8) subfolder: emits subfolder when set, omits when not", async () => {
+    // Test with subfolder
+    const promise1 = driveSave(fake.ctx, { companyId: "co-1", kind: "asset", name: "image.jpg", mimeType: "image/jpeg", bytes: Buffer.from("img"), subfolder: "02 Assets" });
+    await tick();
+    let emitted = fake.emitted[0]!.payload;
+    expect(emitted.subfolder).toBe("02 Assets");
+    const requestId1 = emitted.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: requestId1, driveFileId: "file-1", url: "https://drive.example.com/file-1" });
+    let result = await promise1;
+    expect(result.status).toBe("saved");
+
+    // Test without subfolder
+    const promise2 = driveSave(fake.ctx, { companyId: "co-1", kind: "asset", name: "image2.jpg", mimeType: "image/jpeg", bytes: Buffer.from("img2") });
+    await tick();
+    emitted = fake.emitted[1]!.payload;
+    expect(emitted.subfolder).toBeUndefined();
+    const requestId2 = emitted.requestId as string;
+    await fake.deliver(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, "co-1", { requestId: requestId2, driveFileId: "file-2", url: "https://drive.example.com/file-2" });
+    result = await promise2;
     expect(result.status).toBe("saved");
   });
 });

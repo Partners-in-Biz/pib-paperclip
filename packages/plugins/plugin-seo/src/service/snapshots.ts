@@ -12,6 +12,7 @@ import { companyInfo, num, reqStr, str, type CompanyInfo, type Env, type Params 
 import { ga4ForSnapshot } from "./analytics.js";
 import { clockFor, requireSprint } from "./context.js";
 import { geoForSnapshot } from "./geo.js";
+import { exportToDrive } from "./drive-export.js";
 
 export async function captureSnapshot(
   env: Env,
@@ -59,6 +60,24 @@ export async function captureSnapshot(
     analytics,
     notes: input.notes ?? null,
   });
+  // Save audit snapshot to Drive (non-blocking, errors only log warnings)
+  if (created && input.kind === "scheduled") {
+    const snapshotBody = { ...body, geo, analytics, notes: input.notes };
+    const snapshotJson = JSON.stringify(snapshotBody, null, 2);
+    const siteSlug = comparableUrl(sprint.siteUrl)?.replace(/[/\\:*?"<>|]/g, "").slice(0, 60) || "site";
+    const driveName = `${info.today} SEO audit ${siteSlug} v01.json`;
+    void exportToDrive(env.ctx, {
+      companyId: sprint.companyId,
+      kind: "seo",
+      name: driveName,
+      mimeType: "application/json",
+      bytes: Buffer.from(snapshotJson),
+      subfolder: "04 Reports",
+      timeoutMs: 5000,
+    }).catch(() => {
+      // Suppress errors; exportToDrive never throws but we catch any unexpected issue
+    });
+  }
   return { snapshotId: id, created, source: body.source };
 }
 

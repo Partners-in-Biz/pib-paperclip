@@ -156,7 +156,7 @@ describe("the guidance for documents to sign, attribution and site counters", ()
     for (const tool of [...ESIGN_TOOLS, ...GROWTH_TOOLS]) expect(text, tool.name).toContain(`\`${tool.name}\``);
     for (const file of GROWTH_REFERENCE_FILES) expect(records.markdown, file.path).toContain(file.path);
     expect(GROWTH_SECTION.length).toBeLessThan(3_500);
-    expect(records.markdown!.length).toBeLessThan(17_000);
+    expect(records.markdown!.length).toBeLessThan(17_500);
   });
 
   it("says the same numbers as the code, so the guide cannot drift from the limits", () => {
