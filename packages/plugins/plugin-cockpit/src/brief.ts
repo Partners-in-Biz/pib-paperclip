@@ -204,13 +204,15 @@ export interface CompanyData {
   asks: AskView[];
   /** Open issues nobody is assigned to (older than a day). */
   unassigned: { count: number; items: UnassignedIssue[] };
+  /** Repair rows for escalation tracking. */
+  repairs: RepairRow[];
 }
 
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24): Promise<CompanyData> {
   const roles = await getRoles(env.ctx, companyId);
   const stored = await storedSnapshots(env, companyId);
   const own = await ownSnapshot(env, companyId);
-  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned] = await Promise.all([
+  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
     listAgents(env, companyId),
     listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
     listApprovals(env.ctx, companyId),
@@ -221,6 +223,10 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
       return [] as AskView[];
     }),
     listUnassigned(env.ctx, companyId),
+    listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }).catch((error) => {
+      env.ctx.logger.info("Cockpit repairs read failed", { companyId, error: message(error) });
+      return [] as RepairRow[];
+    }),
   ]);
   const enabled = await enabledModules(env, companyId, Object.keys(statuses));
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
@@ -239,13 +245,22 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     listeningSince: roles?.createdAt ?? null,
     asks,
     unassigned,
+    repairs,
   };
 }
 
 /** Everything waiting: questions for the owner first, then each plugin's items, unassigned work and the host's approvals and issues; each issue once. */
-export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId">>): WaitingEntry[] {
+export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs">>): WaitingEntry[] {
+  // Build a map of ask id -> escalation time for asks with escalate_ask repairs
+  const escalatedAsks = new Map<string, string>();
+  for (const repair of data.repairs ?? []) {
+    if (repair.targetKind === "ask" && repair.action === "escalate_ask") {
+      escalatedAsks.set(repair.targetId, repair.createdAt);
+    }
+  }
+
   const own = [
-    { source: "asks", sourceTitle: "Asked by agents", items: (data.asks ?? []).map(askWaitingItem) },
+    { source: "asks", sourceTitle: "Asked by agents", items: (data.asks ?? []).map((ask) => askWaitingItem(ask, escalatedAsks.get(ask.id))) },
     ...data.snapshots.map((snapshot) => ({ source: snapshot.plugin, sourceTitle: snapshot.title, items: snapshot.waiting })),
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };

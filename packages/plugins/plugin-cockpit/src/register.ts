@@ -73,6 +73,7 @@ import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
+import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -543,6 +544,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.pushDigest, async () => {
     ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
+  });
+
+  ctx.jobs.register(JOBS.askDeadlines, async () => {
+    ctx.logger.info(
+      "Ask deadline sweep",
+      await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),
+    );
   });
 
   registerMemoryActions(env);

@@ -224,6 +224,7 @@ export interface WaitingAskInfo {
   askedAt: string;
   dueBy: string | null;
   clientName: string | null;
+  escalatedAt?: string;
 }
 
 /** A waiting item as a source gives it: plain, a question for the owner, or a count with a few examples. */
@@ -254,9 +255,10 @@ function sinceMs(item: WaitingItem): number {
 
 /**
  * All waiting items, deduped and ordered: questions agents asked the owner
- * first, then money and legal, grants, judgement, reviews; oldest first
- * within a kind. Duplicates (same key, or the same issue) keep the first
- * source given, so pass asks, then plugins, then the host.
+ * first (escalated asks first within asks), then money and legal, grants,
+ * judgement, reviews; oldest first within a kind. Duplicates (same key, or
+ * the same issue) keep the first source given, so pass asks, then plugins,
+ * then the host.
  */
 export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: string; items: WaitingInput[] }>): WaitingEntry[] {
   const seenKeys = new Set<string>();
@@ -271,7 +273,35 @@ export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: stri
       out.push({ ...item, source, sourceTitle: sourceTitle ?? pluginTitle(source) });
     }
   }
-  return out.sort((a, b) => (a.ask ? 0 : 1) - (b.ask ? 0 : 1) || KIND_RANK[a.kind] - KIND_RANK[b.kind] || sinceMs(a) - sinceMs(b) || a.title.localeCompare(b.title));
+  return out.sort((a, b) => {
+    // Asks come first
+    const aIsAsk = a.ask ? 0 : 1;
+    const bIsAsk = b.ask ? 0 : 1;
+    if (aIsAsk !== bIsAsk) return aIsAsk - bIsAsk;
+
+    // Within asks, escalated comes first (if both have ask property)
+    const aEscalated = a.ask?.escalatedAt ? 0 : 1;
+    const bEscalated = b.ask?.escalatedAt ? 0 : 1;
+    if (aEscalated !== bEscalated) return aEscalated - bEscalated;
+
+    // Within escalated asks, sort by escalation time (oldest first)
+    if (a.ask?.escalatedAt && b.ask?.escalatedAt) {
+      const aEscTime = Date.parse(a.ask.escalatedAt);
+      const bEscTime = Date.parse(b.ask.escalatedAt);
+      if (aEscTime !== bEscTime) return aEscTime - bEscTime;
+    }
+
+    // Then by kind
+    if (KIND_RANK[a.kind] !== KIND_RANK[b.kind]) return KIND_RANK[a.kind] - KIND_RANK[b.kind];
+
+    // Then by date (oldest first)
+    const aSince = sinceMs(a);
+    const bSince = sinceMs(b);
+    if (aSince !== bSince) return aSince - bSince;
+
+    // Finally by title
+    return a.title.localeCompare(b.title);
+  });
 }
 
 /**
