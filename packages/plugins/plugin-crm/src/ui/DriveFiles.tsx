@@ -44,6 +44,7 @@ function FileRow({ file }: { file: ClientFile }) {
           overflow: "hidden",
           textOverflow: "ellipsis",
           wordBreak: "break-word",
+          overflowWrap: "anywhere",
         }}
       >
         {file.name}
@@ -54,11 +55,16 @@ function FileRow({ file }: { file: ClientFile }) {
           gap: "12px",
           color: tokens.muted,
           fontSize: "12px",
-          whiteSpace: "nowrap",
+          minWidth: 0,
+          overflowWrap: "anywhere",
         }}
       >
         <span>{formatDate(file.createdAt)}</span>
-        {file.sourcePlugin && <span>{file.sourcePlugin}</span>}
+        {file.sourcePlugin && (
+          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+            {file.sourcePlugin}
+          </span>
+        )}
       </div>
     </div>
   );
