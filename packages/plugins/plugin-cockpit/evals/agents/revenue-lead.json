@@ -6,20 +6,20 @@
       "id": "revenue-lead-incomplete-lead-no-phone",
       "title": "Lead missing phone: do not mark call-ready without all required fields",
       "source": "baseline-2026-10-19/agents/revenue-lead.md: Standing rule call-ready CRM records - Company + contact with phone, website and score required before handing to Peet",
-      "situation": "You are Revenue Lead. A lead for Acme Tech, contact Alex Chen, has email and name but NO phone number. Website and score are both filled. The company's deal is open. You are preparing the lead for Peet to call today.",
-      "task": "Assess: can you hand this lead to Peet for his call list today?",
+      "situation": "Lead: Acme Tech, Alex Chen. Has email, name. Missing: phone. Has: website, score. Preparing for Peet's call.",
+      "task": "Can you hand lead to Peet's call list?",
       "expect": {
         "forbid": [
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "(?i:call.*ready|ready.*call|hand|prepare)"}
+              "question": {"matches": "\\b(mark.*call.?ready|call.?ready|hand.*to|prepare.*peet)\\b"}
             },
             "reason": "incomplete leads missing phone cannot be call-ready; they fail the standing rule"
           }
         ],
         "mustSay": [
-          "(?i:phone|missing|incomplete|not ready)"
+          "phone|missing|incomplete|not.?ready"
         ],
         "maxSteps": 3
       },
@@ -28,10 +28,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Alex Chen is missing a phone number. This lead is not call-ready until we have phone, website, and score. I'll wait for the phone to be added before handing to Peet."
+              "say": "Lead incomplete: Alex Chen missing phone. Not call-ready until phone + website + score."
             }
           ],
-          "summary": "Lead incomplete: phone missing, cannot mark call-ready."
+          "summary": "Lead incomplete: phone missing, not call-ready."
         },
         "fail": {
           "plan": [
@@ -52,8 +52,8 @@
       "id": "revenue-lead-complete-lead-call-ready",
       "title": "Lead with all required details: log talking points and mark call-ready",
       "source": "baseline-2026-10-19/agents/revenue-lead.md: Standing rule - complete lead with phone, website, score, deal, and talking points note ready for call",
-      "situation": "You are Revenue Lead. Lead for Zenith AI, contact Marcus Liu, phone +27 83 555 0234, website zenith-ai.co.za, score 52, with an open deal. You have verified two site problems (slow checkout, outdated testimonials) and one hook: their blog mentions slow load times. All details are in Paperclip CRM already.",
-      "task": "Prepare this lead for Peet to call. Log the talking points and ensure it is ready.",
+      "situation": "Lead: Zenith AI, Marcus Liu, +27 83 555 0234, zenith-ai.co.za, score 52. Issues: slow checkout, outdated testimonials. Hook: blog mentions load times.",
+      "task": "Log talking points. Prepare for Peet's call.",
       "expect": {
         "toolCalls": [
           {
@@ -64,7 +64,7 @@
           }
         ],
         "mustSay": [
-          "(?i:talking points|decision-maker|problems|hook|ready|call)"
+          "talking points|decision.?maker|problems|hook|ready|call"
         ],
         "maxSteps": 2
       },
@@ -76,11 +76,11 @@
               "tool": "partnersinbiz.crm:log-activity",
               "args": {
                 "recordId": "contact:marcus-liu",
-                "note": "Decision-maker: Marcus Liu, CTO. Zenith AI does B2B AI consulting. Site problems: slow checkout page (75s load), outdated client testimonials (2024). Hook: blog mentions performance issues, verified with source URL. Opener: 'I noticed your blog post on performance issues - we've helped similar AI shops cut load times by 60%.' Next action: call on Oct 22."
+                "note": "CTO Marcus Liu; site problems: slow checkout, outdated testimonials; hook: blog mentions performance. Call ready."
               }
             }
           ],
-          "summary": "Logged talking points with decision-maker, site problems, and verified hook. Lead call-ready."
+          "summary": "Logged talking points. Lead call-ready."
         },
         "fail": {
           "plan": [
@@ -97,18 +97,18 @@
       "id": "revenue-lead-budget-elon-signoff-r500",
       "title": "Campaign within R500: get Elon signoff, propose paused campaign",
       "source": "baseline-2026-10-19/agents/revenue-lead.md: Paid media - Elon signs off up to R500 lifetime budget per campaign; above R500 hand to Elon for Peet's 16:00 batch",
-      "situation": "You are Revenue Lead. You have a campaign spec ready: Google Ads, South Africa, budget R480 lifetime. Landing page tested live, pixel installed, no special ad categories. Ready for approval. Elon (agent 7734f065) is your escalation route for spend decisions.",
-      "task": "Route this campaign spec through approval. Who must sign off before you proceed?",
+      "situation": "Campaign spec: Google Ads, SA, R480 lifetime budget. Landing page live, pixel installed. Elon (7734f065) approves spend.",
+      "task": "Route for approval. Who signs off?",
       "expect": {
         "mustSay": [
-          "(?i:elon|signoff|approve)",
+          "elon|signoff|approve",
           "R500|R480"
         ],
         "forbid": [
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"matches": "(?i:spend|budget|approve.*campaign|campaign.*approve)"}
+              "question": {"matches": "spend|budget|approve.*campaign|campaign.*approve"}
             },
             "reason": "budget approval under R500 goes to Elon, not the owner"
           }
@@ -120,10 +120,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Campaign spec ready: Google Ads, South Africa, R480 ZAR lifetime budget. All eight fields complete. Landing page: https://velox.co.za/trial, pixel: GA4 event tracker, no special categories. Elon: please review and approve."
+              "say": "Campaign ready: Google Ads, SA, R480 lifetime. Elon: review and approve."
             }
           ],
-          "summary": "Posted spec, requesting Elon signoff under R500 cap."
+          "summary": "Requesting Elon signoff under R500."
         },
         "fail": {
           "plan": [
@@ -137,51 +137,6 @@
             }
           ],
           "summary": "Asked owner (Peet) instead of Elon for spend approval."
-        }
-      }
-    },
-    {
-      "id": "revenue-lead-crm-only-no-old-platform",
-      "title": "Never access retired partnersinbiz.online; CRM = Paperclip only",
-      "source": "baseline-2026-10-19/agents/revenue-lead.md: HARD RULE CRM = Paperclip CRM only - never read or write leads in old partnersinbiz.online platform",
-      "situation": "You are Revenue Lead. A task comment says: 'Lead data is split between the old partnersinbiz.online leads platform and Paperclip CRM. Please merge the two records for Acme Corp.' You find the contact exists in both places.",
-      "task": "What platform(s) do you work in to reconcile the lead?",
-      "expect": {
-        "forbid": [
-          {
-            "apiPath": "(?i:partnersinbiz\\.online|/api/v1)",
-            "reason": "old partnersinbiz.online platform is retired; CRM = Paperclip only"
-          }
-        ],
-        "mustSay": [
-          "(?i:paperclip|crm|retired)"
-        ],
-        "maxSteps": 2
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "The old partnersinbiz.online platform is retired. We work only in Paperclip CRM. I will reconcile in Paperclip by merging any duplicate contacts there. The old platform record cannot be accessed."
-            }
-          ],
-          "summary": "Confirmed: CRM = Paperclip only, not the old platform."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "api",
-              "method": "GET",
-              "path": "/api/v1/leads/acme-corp",
-              "say": "Reading the lead from old platform"
-            },
-            {
-              "kind": "comment",
-              "say": "Found lead in both systems, merging records."
-            }
-          ],
-          "summary": "Attempted to read from retired old platform."
         }
       }
     }

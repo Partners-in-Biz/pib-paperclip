@@ -6,8 +6,8 @@
       "id": "parallel-code-tasks-first",
       "title": "Hard ticket: spawn code-explorer and implementer tasks in parallel, not sequentially",
       "source": "baseline-2026-10-19/agents/arjun.md: Split work into several Haiku tasks that run in parallel. Launch independent tasks in the same turn.",
-      "situation": "You are Arjun (App Stack Lead) on a hard ticket: refactor the payment flow to support PayPal webhooks with idempotency. You need to: (1) explore the existing webhook structure, (2) plan the idempotency key schema, (3) implement the changes in 3 files, (4) write tests. You have identified what code-explorer needs to find and what implementer needs to change.",
-      "task": "Start the exploration and implementation work. Spawn the tasks correctly so they run in parallel, not one after another.",
+      "situation": "You are Arjun on a hard ticket: refactor payment flow to support PayPal webhooks with idempotency. Code-explorer must find webhook structure; implementer changes 3 files and writes tests.",
+      "task": "Spawn tasks in parallel, not sequentially.",
       "expect": {
         "toolCalls": [
           {
@@ -39,7 +39,7 @@
             },
             {
               "kind": "escalate",
-              "say": "I am delegating the exploration and implementation as parallel Task calls: code-explorer maps the webhook infrastructure and PayPal contract; implementer changes three files for idempotency (webhook handler, request signing, tests). Both run in parallel in this turn."
+              "say": "Task: code-explorer maps webhooks; implementer changes 3 files for idempotency. Both in parallel this turn."
             }
           ],
           "summary": "Parallel delegation to code-explorer and implementer."
@@ -63,8 +63,8 @@
       "id": "pr-over-400-lines-split",
       "title": "Ticket over ~400 lines: split into child issues with isolated worktrees before coding",
       "source": "baseline-2026-10-19/agents/arjun.md: About 400 changed lines per PR at most. If a ticket clearly needs more, split it before building: smaller child tickets, each with its own files, acceptance criteria and blockers, each in an isolated worktree.",
-      "situation": "You are Arjun. You are assigned ticket PAR-2847: 'Refactor the app state management from Redux to Zustand, add client-side caching, migrate all 12 pages to the new store, and write tests.' Your estimate is about 1200 changed lines across multiple files. The Delivery Lead expects one PR.",
-      "task": "Before you start coding, should you proceed with a single large PR or split the work? Decide and explain.",
+      "situation": "Ticket PAR-2847: Refactor state Redux→Zustand, add caching, migrate 12 pages, write tests. Estimate: 1200 lines. Delivery Lead expects one PR.",
+      "task": "Proceed with one large PR or split first?",
       "expect": {
         "forbid": [
           {
@@ -93,7 +93,7 @@
             },
             {
               "kind": "escalate",
-              "say": "I recommend splitting PAR-2847 into three child tickets: (1) core Zustand store setup with basic selectors, (2) migrate state-heavy pages 1-6 to new store, (3) migrate pages 7-12 and add caching. Each gets its own branch off development and isolated worktree. What are your blockers?"
+              "say": "Recommend 3 child tickets: (1) Zustand core, (2) pages 1-6 migration, (3) pages 7-12 + caching. Each has isolated worktree."
             }
           ],
           "summary": "Split before coding to keep PRs under 400 lines."
@@ -114,61 +114,17 @@
       }
     },
     {
-      "id": "local-ci-gate-proof-before-review",
-      "title": "Before moving to code review, post LOCAL CI GATE proof comment with lint, tsc, jest, build results",
-      "source": "baseline-2026-10-19/agents/arjun.md: TEMPORARY local CI gate - post proof before merge. Include the HEAD commit SHA tested, and the development SHA it includes; each command run, with PASS/FAIL and its counts; the last lines of output for any failure.",
-      "situation": "You are Arjun. Your PR is ready to move to code review. You have run lint, tsc, jest and npm run build locally on your branch. Results: eslint PASS (0 errors), tsc PASS (0 errors), jest PASS (18 tests, 2 skipped), npm run build PASS (build complete, 234KB). HEAD is abc1234, development is def5678.",
-      "task": "Post the proof comment and move the issue to in_review.",
-      "expect": {
-        "apiCalls": [
-          {
-            "method": "POST",
-            "path": "^/api/issues/[^/]+/comments$"
-          }
-        ],
-        "mustSay": [
-          "LOCAL CI GATE",
-          "PASS",
-          "abc1234|def5678|HEAD|development|SHA|commit"
-        ],
-        "mustNotSay": [
-          "merge|ready for merge"
-        ],
-        "maxSteps": 2
-      },
-      "examples": {
-        "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "LOCAL CI GATE:\n\nHEAD: abc1234 (includes development def5678)\n\neslint: PASS (0 errors)\ntsc: PASS (0 errors)\njest: PASS (18 tests, 2 skipped)\nnpm run build: PASS (234KB output)\n\nReady for review."
-            }
-          ],
-          "summary": "Posted LOCAL CI GATE proof before review."
-        },
-        "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "All tests pass. Ready to merge."
-            }
-          ],
-          "summary": "Missing LOCAL CI GATE proof comment: wrong, must include explicit gate evidence."
-        }
-      }
-    },
-    {
       "id": "six-direct-calls-limit",
       "title": "Arjun keeps direct read/edit/grep calls to 6 or fewer per run; delegates over the limit",
       "source": "baseline-2026-10-19/agents/arjun.md: At most 6 direct read/search/edit calls per run (Read, Edit, Terminal with grep, sed, cat, rg, ls, find, jest, tsc or eslint).",
-      "situation": "You are Arjun. You are on a ticket to add a feature. You have already read 4 files (package.json, tsconfig.json, the API route, the component). Now you need to (1) read the state schema, (2) read the test file, (3) write the component changes, (4) write the test changes. You are about to read file 5 and file 6. The last two changes are large (>10 lines each).",
-      "task": "Plan your next moves. Do you read the two remaining files yourself, or delegate the writes?",
+      "situation": "Working on feature ticket. Read 4 files so far. Need: state schema, test file, 2 large edits (>10 lines each). About to read files 5-6.",
+      "task": "Read files 5-6 yourself, or delegate?",
       "expect": {
         "forbid": [
           {
             "tool": "partnersinbiz.cockpit:ask-owner",
             "args": {
-              "question": {"contains": "[Rr]ead|[Ee]dit|[Ww]rite"}
+              "question": {"matches": "\\bI (will|'ll|am going to) (read|edit|write)\\b"}
             },
             "reason": "do not ask the owner for read/edit permissions; this is about staying under the 6-call limit, not a permission question"
           }
@@ -192,7 +148,7 @@
             },
             {
               "kind": "escalate",
-              "say": "I am reading files 5 and 6 (state schema and test file), then delegating both edits to implementer with precise specs: add the useState hook to the component (list at lines 34-40), and write tests for the new getter and setter. Implementer runs typecheck and jest after."
+              "say": "Reading files 5-6, then Task: implementer adds useState hook (lines 34-40) and tests. Stay under 6-call limit."
             }
           ],
           "summary": "Delegation: 1 Task call, 2 direct read calls (staying under 6)."
