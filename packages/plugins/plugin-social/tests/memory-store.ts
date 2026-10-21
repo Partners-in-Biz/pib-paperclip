@@ -216,7 +216,7 @@ export function memoryStore() {
         .map((s) => {
           const post = db.posts.find((p) => p.id === s.postId)!;
           return {
-            postId: s.postId,
+            subjectId: s.postId,
             body: post.body,
             platform: s.platform,
             accountId: s.accountId,
