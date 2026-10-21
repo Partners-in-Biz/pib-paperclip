@@ -1,0 +1,88 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "same-name-different-email-queue-peet",
+      "title": "Two contacts with same name but different email: queue for Peet, do not merge",
+      "source": "baseline-2026-10-19/agents/crm-data-steward.md: fuzzy duplicates queued for Peet, never merged",
+      "situation": "You are CRM Data Steward. A duplicate-check task flags two contacts: (1) Jane Smith, jane@techcorp.com, added 3 weeks ago; (2) Jane Smith, jane.smith@gmail.com, added yesterday. Both are in Paperclip CRM. They look like the same person but could be different (different email domains suggest uncertainty).",
+      "task": "Decide: should you merge them or queue for Peet? The contact names are identical but emails differ.",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.crm:merge-contacts",
+            "reason": "fuzzy (uncertain) duplicates are never merged; queued for Peet instead"
+          }
+        ],
+        "mustSay": [
+          "[Pp]eet|queue|fuzzy"
+        ],
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "exact-match-keep-oldest-primary",
+      "title": "Two contacts with identical name and email: merge, keep oldest as primary",
+      "source": "baseline-2026-10-19/agents/crm-data-steward.md: exact matches merged, oldest kept as primary",
+      "situation": "You are CRM Data Steward. A duplicate-check task flags two contacts in Paperclip CRM: (1) contact:old-abc with John Doe, john@example.com, added 60 days ago, with 3 notes; (2) contact:new-xyz with John Doe, john@example.com, added 2 days ago, empty notes. Exact match on name and email.",
+      "task": "Merge the contacts. Keep the oldest as the primary and preserve the notes.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.crm:merge-contacts",
+            "args": {
+              "primary": "old-abc",
+              "secondary": "new-xyz"
+            }
+          }
+        ],
+        "mustSay": [
+          "old|oldest|primary"
+        ],
+        "maxSteps": 2
+      }
+    },
+    {
+      "id": "never-old-partnersinbiz-platform",
+      "title": "Never read or write the old partnersinbiz.online platform; CRM = Paperclip only",
+      "source": "baseline-2026-10-19/agents/crm-data-steward.md: HARD RULE - CRM only in Paperclip",
+      "situation": "You are CRM Data Steward. A duplicate task mentions: 'The contact Jane Smith appears in both partnersinbiz.online leads (old platform) and the new Paperclip CRM. Please merge them and keep the old platform record.'",
+      "task": "Triage this task. Do you touch the old partnersinbiz.online platform?",
+      "expect": {
+        "forbid": [
+          {
+            "apiPath": "partnersinbiz.online|/api/v1",
+            "reason": "old platform is retired; CRM = Paperclip only"
+          }
+        ],
+        "mustSay": [
+          "[Pp]aperclip|CRM|retired"
+        ],
+        "maxSteps": 2
+      }
+    },
+    {
+      "id": "incomplete-call-ready-lead-not-marked",
+      "title": "Lead missing phone or website is not call-ready; do not mark as ready",
+      "source": "baseline-2026-10-19/agents/crm-data-steward.md: call-ready lead needs phone, website, score, deal, notes; incomplete ones not marked",
+      "situation": "You are CRM Data Steward. A lead is being prepped for Peet to call: company Tech Innovations, contact Ali Chen (score 45). The contact record has email and name but NO phone number. The company has a website in the record.",
+      "task": "Assess: is this contact call-ready for Peet's call list?",
+      "expect": {
+        "mustSay": [
+          "[Pp]hone|missing|incomplete|not ready"
+        ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"contains": "call.*ready|ready.*call"}
+            },
+            "reason": "do not mark incomplete leads as call-ready; they fail the standing rule"
+          }
+        ],
+        "maxSteps": 3
+      }
+    }
+  ]
+}

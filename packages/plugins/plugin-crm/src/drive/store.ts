@@ -13,6 +13,7 @@ export interface DriveFile {
   driveFileId: string;
   webUrl: string;
   sourcePlugin: string | null;
+  subfolder: string | null;
   createdAt: string;
 }
 
@@ -36,6 +37,7 @@ interface DriveFileRow {
   drive_file_id: string;
   web_url: string;
   source_plugin: string | null;
+  subfolder: string | null;
   created_at: unknown;
 }
 
@@ -48,7 +50,7 @@ interface KindRow {
   updated_at: unknown;
 }
 
-const FILE_COLS = "id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin, created_at";
+const FILE_COLS = "id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin, subfolder, created_at";
 
 function asIso(v: unknown): string {
   if (v == null) return "";
@@ -68,6 +70,7 @@ function mapFile(r: DriveFileRow): DriveFile {
     driveFileId: r.drive_file_id,
     webUrl: r.web_url,
     sourcePlugin: r.source_plugin,
+    subfolder: r.subfolder ?? null,
     createdAt: asIso(r.created_at),
   };
 }
@@ -96,9 +99,9 @@ export async function upsertDriveFile(ctx: PluginContext, input: Omit<DriveFile,
   if (!input.name || !input.folderId || !input.driveFileId || !input.webUrl) throw new Error("Required fields missing");
   const sha256 = input.sha256.toLowerCase(), id = randomUUID();
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "drive_files")} (id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (company_id, folder_id, name, sha256) DO NOTHING`,
-    [id, input.companyId, input.projectId ?? null, input.kind, input.folderId, input.name, sha256, input.driveFileId, input.webUrl, input.sourcePlugin ?? null],
+    `INSERT INTO ${table(ctx, "drive_files")} (id, company_id, project_id, kind, folder_id, name, sha256, drive_file_id, web_url, source_plugin, subfolder)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (company_id, folder_id, name, sha256) DO NOTHING`,
+    [id, input.companyId, input.projectId ?? null, input.kind, input.folderId, input.name, sha256, input.driveFileId, input.webUrl, input.sourcePlugin ?? null, input.subfolder ?? null],
   );
   const r = await getDriveFileByKey(ctx, input.companyId, input.folderId, input.name, sha256);
   if (!r) throw new Error("Failed to insert");
@@ -119,7 +122,7 @@ export async function findDriveFile(ctx: PluginContext, companyId: string, { fol
   return r ? mapFile(r) : null;
 }
 
-export async function listDriveFiles(ctx: PluginContext, companyId: string, opts?: { projectId?: string; folderId?: string; limit?: number }): Promise<DriveFile[]> {
+export async function listDriveFiles(ctx: PluginContext, companyId: string, opts?: { projectId?: string; folderId?: string; subfolder?: string | null; limit?: number }): Promise<DriveFile[]> {
   const limit = Math.max(1, Math.min(opts?.limit ?? 100, 500));
   let sql = `SELECT ${FILE_COLS} FROM ${table(ctx, "drive_files")} WHERE company_id = $1`;
   const params: unknown[] = [companyId];
@@ -130,6 +133,14 @@ export async function listDriveFiles(ctx: PluginContext, companyId: string, opts
   if (opts?.folderId) {
     sql += ` AND folder_id = $${params.length + 1}`;
     params.push(opts.folderId);
+  }
+  if (opts?.subfolder !== undefined) {
+    if (opts.subfolder === null) {
+      sql += ` AND subfolder IS NULL`;
+    } else {
+      sql += ` AND subfolder = $${params.length + 1}`;
+      params.push(opts.subfolder);
+    }
   }
   sql += ` ORDER BY created_at DESC, id LIMIT $${params.length + 1}`;
   params.push(limit);
