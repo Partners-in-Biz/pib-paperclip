@@ -1,4 +1,5 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 
 function schema(required: string[], properties: Record<string, JsonSchema>): JsonSchema {
   return { type: "object", required, properties, additionalProperties: false };
@@ -52,10 +53,20 @@ const campaignFields: Record<string, JsonSchema> = {
   ...clientParams,
   startAt: str("ISO date or time. The first step is not due before it; empty starts on approval."),
   endAt: str("ISO date or time the campaign is meant to end. For reporting only."),
+  experimentId: str("Growth Lab experiment this campaign tests (from propose-experiment, same client). The daily measure-experiments job judges its A/B steps. Omit when it tests nothing."),
 };
 
 const stepBody = str("Plain-text body. Merge tokens: {{first_name}}, {{last_name}}, {{name}}, {{company}}, {{email}}, {{unsubscribe_url}}; add a fallback as {{first_name|there}}. Say who we are and why they get it. A footer with the sender and how to opt out (an unsubscribe link and reply STOP) is added to every email by the plugin (with delivery issue it is already at the end of the step issue: send it whole); an SMS gets 'Reply STOP to opt out.' unless the text already tells the reader to reply STOP.");
 const stepSubject = str("Email subject. The same merge tokens work here. Not used for SMS and WhatsApp steps.");
+
+/** Growth Lab tools come from the kit; Campaigns runs own and client scopes only (015 limits client_kind to company and contact). */
+export const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = {
+  kinds: ["own", "client"],
+  descriptions: {
+    "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for PiB's own work. Never mix scopes.",
+    "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for PiB's own work. Never mix scopes.",
+  },
+};
 
 export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
@@ -339,4 +350,5 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       "Compare reply rates of variants a and b from emails the Mailbox sent. Needs 20 sends per variant, else inconclusive. It only suggests: ask a person, then declare-ab-winner.",
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
+  ...growthToolDeclarations(GROWTH_TOOL_OPTIONS),
 ];

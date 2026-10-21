@@ -24,7 +24,7 @@ import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, is
 import { currentSignoffs, outcomesForPost, recordOutcome, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
 import { validatePostRow } from "./validate.js";
-import { growthEnv } from "./growth/host.js";
+import { growthEnv, type GrowthEnv } from "./growth/host.js";
 import { effectiveMediaRule } from "./growth/service.js";
 import type { Experiment } from "./growth/store.js";
 import type { MediaExperiment } from "@partnersinbiz/pib-plugin-kit";
@@ -197,6 +197,33 @@ export interface VerdictInput {
 }
 
 /** The Reviewer's verdict on a post in review. Only the company's Reviewer may record it. */
+/**
+ * Media experiment context for a tagged post, in the shape the kit's `noMediaExempt` expects.
+ * `hypothesisType` is cut to "media" and the stored arms control/variant become no_media/media.
+ * `noMediaPosts` counts the experiment's control-arm posts in this company. The reviewed post is
+ * already stored with its tag, so it is part of the count. A load failure skips the exemption.
+ */
+export async function mediaExperimentForPost(
+  env: GrowthEnv,
+  companyId: string,
+  post: { experiment_id?: string | null; experiment_arm?: string | null },
+): Promise<{ experiment: MediaExperiment | null; arm: string | null }> {
+  const storedArm = post.experiment_arm ?? null;
+  if (!post.experiment_id) return { experiment: null, arm: storedArm };
+  try {
+    const exp = await env.store.getExperiment(companyId, post.experiment_id);
+    if (!exp || !exp.hypothesisType.startsWith("media:")) return { experiment: null, arm: storedArm };
+    const noMediaPosts = await env.store.countArmPosts(companyId, exp.id, "control");
+    const arm = storedArm === "control" ? "no_media" : storedArm === "variant" ? "media" : storedArm;
+    return {
+      experiment: { id: exp.id, status: exp.status, hypothesisType: "media", minPerArm: exp.minPerArm, noMediaPosts },
+      arm,
+    };
+  } catch {
+    return { experiment: null, arm: storedArm };
+  }
+}
+
 export async function recordReviewerVerdict(ctx: PluginContext, companyId: string, post: PostRow, input: VerdictInput): Promise<{ recorded: boolean; verdict: string; next: string; refused?: boolean; blockers?: string[]; score?: number; warnings?: string[] }> {
   const reviewer = await reviewerAgentId(ctx, companyId);
   if (!reviewer) throw new SocialError("This company has no Reviewer set (Setup → Team), so there is nobody to record a review verdict.");
@@ -249,25 +276,7 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
     const textNative = Array.isArray(postTags) && postTags.includes("text-native");
 
     // Load experiment if tagged (for control arm exemption)
-    let mediaExperiment: MediaExperiment | null = null;
-    if (post.experiment_id) {
-      try {
-        const exp = await env.store.getExperiment(companyId, post.experiment_id);
-        if (exp) {
-          // Map the full Experiment to MediaExperiment (only include needed fields)
-          mediaExperiment = {
-            id: exp.id,
-            status: exp.status,
-            hypothesisType: exp.hypothesisType,
-            minPerArm: exp.minPerArm,
-            noMediaPosts: 0, // Will be calculated by scoreCreative if needed
-          };
-        }
-      } catch {
-        // Experiment load failure is not fatal; just skip the exemption
-        mediaExperiment = null;
-      }
-    }
+    const { experiment: mediaExperiment, arm: experimentArmName } = await mediaExperimentForPost(env, companyId, post);
 
     // Score the post for each platform and aggregate all blockers
     let minScore = 100;
@@ -283,7 +292,7 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
         mediaRule,
         textNative,
         experimentId: post.experiment_id ?? null,
-        arm: post.experiment_arm ?? null,
+        arm: experimentArmName ?? null,
         experiment: mediaExperiment,
         tone: input.toneScore != null && input.toneReason?.trim() ? { score: input.toneScore, source: "reviewer", reason: input.toneReason } : (input.toneScore != null ? { score: input.toneScore, source: "reviewer" } : null),
       });

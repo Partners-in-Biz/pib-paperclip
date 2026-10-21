@@ -26,6 +26,7 @@ export const OPERATOR_REFERENCE_PATHS = {
   credentials: "references/credentials-and-custody.md",
   asking: "references/asking-with-an-effect.md",
   quality: "references/quality-gates.md",
+  stalls: "references/stalls.md",
   coach: "references/skill-coach.md",
 } as const;
 
@@ -223,6 +224,26 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 `;
 
 // ---------------------------------------------------------------------------
+// Stalls: chain_idle and orphan_blocker findings
+// ---------------------------------------------------------------------------
+
+export const STALLS_REFERENCE = `# Acting on stalls and stuck blockers
+
+A **chain_idle** finding marks task work that is not done or cancelled: the thread is inactive and the issue is not moving. An **orphan_blocker** finding marks work blocked by an issue that no longer matters (done, cancelled, or blocked itself with no way out). Handle either within the same run.
+
+## Steps
+
+1. **List findings:** ${T(TOOL_NAMES.watchdogFindings)} (optional \`limit\`).
+2. **Read the issue.** \`GET /api/issues/{id}\` (Paperclip API) and the comments to understand what is blocking it and why.
+3. **Name the real blocker.** A chain_idle issue is inactive; is an agent ready but not running, a person must act, or the issue should not exist? An orphan_blocker issue points to a blocker that changed: is it done, cancelled, or no longer a valid reason to wait?
+4. **Decide and act.** Never patch another agent's issue fields directly; comment instead so the agent makes the change. For chain_idle and orphan_blocker findings:
+   - **Over-strict owner edge:** The blocked issue waits on an owner-only check that should not block (the owner-checks rule says so). Comment the issue's assignee with the exact fix: name the blocker issue (for example "Drop PAR-nnn from your blockedByIssueIds, since owner approvals do not block your work"). Their comment is the wake.
+   - **Agent is ready but not running:** Comment what to do next to wake it.
+   - **Person must act:** Call ${T(TOOL_NAMES.askOwner)} on the blocked issue. Set \`kind\` to \`decision\` or \`grant\`, set \`dueBy\` to a deadline, and list your recommended option first in \`options\`. If a yes can be carried out by the system, add \`effect\` with \`key\` and \`params\` so the answer does it. Include \`links\` and \`steps\`. Put it on the brief.
+5. **Record what was fixed:** Comment on the blocked issue with what you did to fix it (cleared the blocker, contacted the agent, asked the owner). No tool records the repair for chain_idle and orphan_blocker findings; your comment is the record.
+`;
+
+// ---------------------------------------------------------------------------
 // Asking with an effect
 // ---------------------------------------------------------------------------
 
@@ -395,5 +416,6 @@ export const OPERATOR_FILES: Array<{ path: string; content: string }> = [
   { path: OPERATOR_REFERENCE_PATHS.credentials, content: CREDENTIALS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.asking, content: ASKING_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.quality, content: QUALITY_REFERENCE },
+  { path: OPERATOR_REFERENCE_PATHS.stalls, content: STALLS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.coach, content: COACH_REFERENCE },
 ];

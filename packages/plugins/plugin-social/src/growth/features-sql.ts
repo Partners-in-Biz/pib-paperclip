@@ -6,9 +6,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { textArrayParam, type ScoredPostRow } from "@partnersinbiz/pib-plugin-kit";
 import { iso, postMedia, setPostExperiment, table } from "../db.js";
 import { json, num, scopeFilter, str, type Row } from "./sql-util.js";
-import type { ExistingScore, MetricRow, SocialFeaturesPort } from "./store.js";
+import type { ArmPostCountPort, ExistingScore, MetricRow, SocialFeaturesPort } from "./store.js";
 
-export function sqlFeatures(ctx: PluginContext): SocialFeaturesPort {
+export function sqlFeatures(ctx: PluginContext): SocialFeaturesPort & ArmPostCountPort {
   const T = (name: string) => table(ctx, name);
   return {
     async experimentPosts(companyId, experimentId, window) {
@@ -172,6 +172,15 @@ export function sqlFeatures(ctx: PluginContext): SocialFeaturesPort {
         experimentId: str(r.experiment_id),
         experimentArm: str(r.experiment_arm),
       }));
+    },
+    async countArmPosts(companyId, experimentId, arm) {
+      const rows = await ctx.db.query<{ count: string }>(
+        `SELECT COUNT(DISTINCT p.id)::text AS count
+           FROM ${T("posts")} p
+          WHERE p.company_id = $1 AND p.experiment_id = $2 AND p.experiment_arm = $3`,
+        [companyId, experimentId, arm],
+      );
+      return Number(rows[0]?.count ?? 0);
     },
   };
 }
