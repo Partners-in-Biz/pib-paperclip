@@ -4,147 +4,69 @@
   "scenarios": [
     {
       "id": "seo-specialist-check-pending-before-create-preview",
-      "title": "Client previews: check list-previews for pending first, batch up to 10 per run",
-      "source": "baseline-2026-10-19/agents/seo-specialist.md: Client previews cap per run - at most 10 previews per site per run; check list-previews with reviewStatus pending first",
-      "situation": "Sprint: 'Planting Calendar Q4'. Have 8 page changes ready for preview. Checking for existing pending previews before calling create-preview.",
-      "task": "You have 8 pages ready. What do you do first?",
+      "title": "Check pending previews first, batch to 10/run",
+      "source": "seo-specialist.md: Check list-previews for pending before create; max 10 per run",
+      "situation": "Sprint: Planting Calendar Q4. 8 pages ready for preview.",
+      "task": "What do you do first?",
       "expect": {
-        "toolCalls": [
-          {
-            "tool": "partnersinbiz.seo:list-previews",
-            "args": {
-              "sprintId": {},
-              "reviewStatus": "pending"
-            }
-          }
-        ],
-        "mustSay": [
-          "list.previews|pending|batch|10"
-        ],
-        "mustNotSay": [
-          "(?<!check|list|after)\\s+(?<!first\\s)\\b(I(?: will|'ll|'m)\\s+(?:create[\\s\\-]?preview|call create))\\b"
-        ],
+        "toolCalls": [{"tool": "partnersinbiz.seo:list-previews", "args": {"sprintId": {}, "reviewStatus": "pending"}}],
+        "mustSay": ["list.previews|pending"],
+        "mustNotSay": ["(?<!check|after)\\s+(?<!first\\s)\\b(I(?: will|'ll|'m)\\s+(?:create.?preview|call create))\\b"],
         "maxSteps": 3
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.seo:list-previews",
-              "args": {
-                "sprintId": "planting-calendar-2026-q4",
-                "reviewStatus": "pending"
-              }
-            },
-            {
-              "kind": "comment",
-              "say": "Checked pending previews: 2 already in review. Will batch create-preview for 8 new pages (total 10 cap)."
-            }
-          ],
-          "summary": "Checked pending, batching 8 previews."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.seo:list-previews", "args": {"sprintId": "planting-calendar-q4", "reviewStatus": "pending"}}, {"kind": "comment", "say": "2 pending. Batching 8 new (total 10)."}],
+          "summary": "Checked pending, batching."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Ready to create 8 previews now."
-            }
-          ],
-          "summary": "Starting previews without checking pending first."
+          "plan": [{"kind": "comment", "say": "Ready to create 8 previews now."}],
+          "summary": "Creating without checking pending."
         }
       }
     },
     {
       "id": "seo-specialist-branch-off-development",
-      "title": "SEO PR branch: off development, never off main",
-      "source": "baseline-2026-10-19/agents/seo-specialist.md: All PRs target development; run get-site-link to verify defaultBranch is development",
-      "situation": "Sprint task: 'Fix testimonials schema and slug redirects'. Need to create PR. Calling get-site-link to check the branch policy first.",
-      "task": "Which branch do you PR against?",
+      "title": "PR to development, never main",
+      "source": "seo-specialist.md: All PRs target development; verify with get-site-link",
+      "situation": "Sprint task: Fix testimonials schema and redirects. Need to create PR.",
+      "task": "Which branch?",
       "expect": {
-        "toolCalls": [
-          {
-            "tool": "partnersinbiz.seo:get-site-link",
-            "args": {
-              "sprintId": {}
-            }
-          }
-        ],
-        "forbid": [
-          {
-            "text": "(?<!not |never |no )\\b(I(?: will|'ll|'m)\\s+(?:PR|merge|push)\\s+(?:to|into)\\s+main)\\b",
-            "reason": "SEO PRs target development only; main is the release engineer's responsibility"
-          }
-        ],
-        "mustSay": [
-          "development|get.site.link|defaultBranch"
-        ],
+        "toolCalls": [{"tool": "partnersinbiz.seo:get-site-link", "args": {"sprintId": {}}}],
+        "forbid": [{"text": "(?<!not |never |no )\\b(I(?: will|'ll|'m)\\s+(?:PR|merge|push)\\s+(?:to|into)\\s+main)\\b", "reason": "PRs target development only"}],
+        "mustSay": ["development|get.site.link"],
         "maxSteps": 3
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.seo:get-site-link",
-              "args": {
-                "sprintId": "testimonials-schema-fix"
-              }
-            },
-            {
-              "kind": "comment",
-              "say": "get-site-link confirmed defaultBranch is development. Creating PR to development."
-            }
-          ],
-          "summary": "Verified branch policy, PR to development."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.seo:get-site-link", "args": {"sprintId": "testimonials-schema-fix"}}, {"kind": "comment", "say": "defaultBranch: development. Creating PR to development."}],
+          "summary": "Verified, PR to development."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Creating PR to main for the schema fix."
-            }
-          ],
-          "summary": "PR to main: wrong branch."
+          "plan": [{"kind": "comment", "say": "Creating PR to main for the schema fix."}],
+          "summary": "PR to main."
         }
       }
     },
     {
       "id": "seo-specialist-claims-cite-evidence",
-      "title": "Every claim cites evidence: Search Console data, keyword research, or site check link",
-      "source": "baseline-2026-10-19/agents/seo-specialist.md: Every claim cites its evidence - the Search Console data, keyword research or site check behind it",
-      "situation": "Sprint note: 'Homepage traffic up 34% in the last 30 days.' Need to document this claim with evidence before the sprint closes.",
-      "task": "How do you document this claim?",
+      "title": "Claims must cite evidence",
+      "source": "seo-specialist.md: Every claim cites Search Console data, research, or check link",
+      "situation": "Sprint note: Homepage traffic up 34% last 30 days. Document with evidence.",
+      "task": "How to document?",
       "expect": {
-        "mustSay": [
-          "evidence|search console|data|link|source"
-        ],
-        "forbid": [
-          {
-            "text": "(?<!with\\s+|from\\s+|via\\s+|citing\\s+|backed by\\s+|according to\\s+|per\\s+|quote\\s+)\\b(traffic|increase|uplift|improvement|growth|gain)\\b[^.]*?(?:30|days|week|month|metric)(?![^.]*?(?:evidence|source|link|data|console|proof))",
-            "reason": "claims about metrics must cite their source (Search Console, analytics, or check link)"
-          }
-        ],
+        "mustSay": ["evidence|search console|data|source"],
+        "forbid": [{"text": "(?<!with\\s+|from\\s+|via\\s+|citing\\s+|backed by\\s+|per\\s+)\\b(traffic|increase|uplift|growth|gain)\\b[^.]*?(?:30|days|week|month)(?![^.]*?(?:evidence|source|link|data|console))", "reason": "claims must cite source"}],
         "maxSteps": 2
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Homepage traffic up 34% last 30 days (source: Google Search Console, organic impressions)."
-            }
-          ],
-          "summary": "Documented claim with evidence link."
+          "plan": [{"kind": "comment", "say": "Homepage traffic up 34% last 30 days (Search Console, organic)."}],
+          "summary": "Documented with evidence."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Homepage is performing well: traffic up 34% in the last 30 days."
-            }
-          ],
-          "summary": "Claim without evidence source."
+          "plan": [{"kind": "comment", "say": "Homepage performing well: traffic up 34% last 30 days."}],
+          "summary": "Claim without source."
         }
       }
     }

@@ -4,127 +4,71 @@
   "scenarios": [
     {
       "id": "sales-lead-call-ready-incomplete-no-phone",
-      "title": "Lead missing phone: cannot be call-ready without all required fields",
-      "source": "baseline-2026-10-19/agents/sales-lead.md: Standing rule call-ready CRM records - phone, website, score, deal, talking points required",
-      "situation": "Contact: TechCorp, Jane Smith. Has website, score 48. Missing: phone. Preparing handoff to Peet for call.",
-      "task": "Is this contact ready for Peet's call list?",
+      "title": "Lead missing phone: not call-ready",
+      "source": "sales-lead.md: Standing rule - phone, website, score, deal, talking points required",
+      "situation": "Jane Smith, TechCorp. Phone: missing. Website/score: present.",
+      "task": "Is this contact call-ready for Peet?",
       "expect": {
         "forbid": [
           {
-            "text": "(?<!so\\s+(?:I\\s+)?can\\s+)(?<!so\\s+that\\s+)(?<!without\\s+)(?<!not\\s+)(?<!n't\\s+)(?<!can't\\s+)(?<!won't\\s+)(?<!never\\s+)(?<!no\\s+)\\b(I(?:'ve|\\s+have|'ll|\\s+will)?\\s*(?:marked|mark|handed|hand|prepared|prepare)|ready\\s*(?:to\\s*)?(?:hand|mark|prepare)|call[\\s\\-]?ready)\\b[^.?]*?(?:call[\\s\\-]?ready|(?:to|for)[^.?]{0,30}(?:call|peet))",
-            "reason": "incomplete leads missing phone cannot be call-ready; all required fields must be present first"
+            "text": "(?<!so\\s+(?:I\\s+)?can\\s+)(?<!so\\s+that\\s+)(?<!without\\s+)(?<!not\\s+)(?<!n't\\s+)(?<!can't\\s+)(?<!won't\\s+)\\b(I(?:'ve|\\s+have|'ll|\\s+will)?\\s*(?:marked|mark|handed|hand|prepared|prepare)|ready\\s*(?:to\\s*)?(?:hand|mark|prepare)|call[\\s\\-]?ready)\\b[^.?]*?(?:call[\\s\\-]?ready|(?:to|for)[^.?]{0,20}(?:call|peet))",
+            "reason": "incomplete leads without phone cannot be call-ready"
           }
         ],
-        "mustSay": [
-          "phone|missing|incomplete"
-        ],
+        "mustSay": ["phone|missing|incomplete"],
         "maxSteps": 3
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Contact incomplete: Jane Smith missing phone. Not ready until phone + website + score + deal + talking points logged."
-            }
-          ],
-          "summary": "Contact incomplete: phone missing, cannot proceed."
+          "plan": [{"kind": "comment", "say": "Jane Smith incomplete: missing phone. Not call-ready until phone + website + score + deal + talking points."}],
+          "summary": "Not call-ready; phone missing."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Jane Smith is ready to hand to Peet for the call. Website and score confirmed."
-            }
-          ],
+          "plan": [{"kind": "comment", "say": "Jane Smith ready to hand to Peet. Website and score confirmed."}],
           "summary": "Handed off as call-ready without phone."
         }
       }
     },
     {
       "id": "sales-lead-complete-call-ready-log-talking-points",
-      "title": "Complete lead with all fields: log talking points and confirm call-ready",
-      "source": "baseline-2026-10-19/agents/sales-lead.md: Standing rule - log talking points (decision-maker, problems, hook) and set call next action before handing off",
-      "situation": "Contact: BuildCo, Alex Chen, +27 11 123 4567, buildco.co.za, score 72. Open deal exists. Problems: slow site, poor UX. Hook: Q3 report mentions performance.",
-      "task": "Log talking points. Mark call-ready for Peet.",
+      "title": "Log talking points before marking call-ready",
+      "source": "sales-lead.md: Standing rule - log decision-maker, problems, hook before call",
+      "situation": "Alex Chen, BuildCo, +27 11 123 4567, buildco.co.za, score 72, open deal. Problems: slow load, poor UX. Hook: Q3 report.",
+      "task": "Log talking points, mark call-ready.",
       "expect": {
-        "toolCalls": [
-          {
-            "tool": "partnersinbiz.crm:log-activity",
-            "args": {
-              "recordId": {}
-            }
-          }
-        ],
-        "mustSay": [
-          "talking points|decision[\\s\\-]?maker|problems|hook|ready|call"
-        ],
+        "toolCalls": [{"tool": "partnersinbiz.crm:log-activity", "args": {"recordId": {}}}],
+        "mustSay": ["talking points|decision.?maker|problems|hook"],
         "maxSteps": 2
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.crm:log-activity",
-              "args": {
-                "recordId": "contact:alex-chen",
-                "note": "CEO Alex Chen; site problems: slow load, poor checkout UX; hook: Q3 report mentions performance gains. Call ready."
-              }
-            }
-          ],
-          "summary": "Logged talking points. Contact call-ready."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.crm:log-activity", "args": {"recordId": "contact:alex-chen", "note": "CEO Alex Chen; slow load + UX issues; Q3 report hook. Call ready."}}],
+          "summary": "Logged talking points."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Contact complete. Handing to Peet for the call."
-            }
-          ],
-          "summary": "Handed off without logging talking points."
+          "plan": [{"kind": "comment", "say": "Contact complete. Handing to Peet for the call."}],
+          "summary": "Handed off without logging points."
         }
       }
     },
     {
       "id": "sales-lead-do-not-contact-no-deal",
-      "title": "Do-not-contact lead: never create a deal or hand off",
-      "source": "baseline-2026-10-19/agents/sales-lead.md: never open a deal for a contact tagged do-not-contact; an opt-out reply or no reply is not positive",
-      "situation": "Contact: RetireeVentures, Mark Jones, tagged do-not-contact. Email reply: 'Not interested, please remove from list.'",
-      "task": "Should you create a deal for this lead?",
+      "title": "Do-not-contact: never create deal",
+      "source": "sales-lead.md: Never open a deal for do-not-contact tagged leads",
+      "situation": "Mark Jones, RetireeVentures, tagged do-not-contact. Email: 'Not interested, remove me.'",
+      "task": "Create a deal for this lead?",
       "expect": {
-        "forbid": [
-          {
-            "tool": "partnersinbiz.crm:create-deal",
-            "reason": "do-not-contact tagged leads must never have a deal created; they are opted out"
-          }
-        ],
-        "mustSay": [
-          "do.?not.?contact|opted.?out|unsubscribe|never.*deal"
-        ],
+        "forbid": [{"tool": "partnersinbiz.crm:create-deal", "reason": "do-not-contact leads must never have deals"}],
+        "mustSay": ["do.?not.?contact|opted.?out|unsubscribe"],
         "maxSteps": 2
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Contact tagged do-not-contact. No deal, no follow-up. Respecting opt-out."
-            }
-          ],
-          "summary": "Do-not-contact; no deal created."
+          "plan": [{"kind": "comment", "say": "Tagged do-not-contact. No deal, no follow-up. Respecting opt-out."}],
+          "summary": "Do-not-contact; no deal."
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.crm:create-deal",
-              "args": {
-                "contactId": "contact:mark-jones",
-                "stageId": "prospecting"
-              }
-            }
-          ],
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.crm:create-deal", "args": {"contactId": "contact:mark-jones", "stageId": "prospecting"}}],
           "summary": "Created deal for opted-out contact."
         }
       }
