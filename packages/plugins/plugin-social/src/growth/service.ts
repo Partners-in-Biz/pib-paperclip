@@ -449,8 +449,9 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
   const toOut = ({ subjectId, ...rest }: ReviewPost) => ({ ...rest, postId: subjectId });
   const { top, bottom } = topAndBottom(enginePosts, 5);
   const lifts = liftsByFeature(enginePosts, 3);
-  const [open, pending] = await Promise.all([
+  const [open, allExperiments, pending] = await Promise.all([
     env.store.listExperiments(companyId, program.id, OPEN_EXPERIMENTS),
+    env.store.listExperiments(companyId, program.id),
     env.store.listChanges(companyId, program.id, "pending"),
   ]);
   const experiments = [];
@@ -459,6 +460,20 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
   const notes: string[] = [];
   if (rows.length === 0) notes.push("No 7-day scores yet. Posts are scored once they are 7 days old on platforms that report reach, impressions or views.");
   else if (withLift.length < rows.length / 2) notes.push(`Only ${withLift.length} of ${enginePosts.length} posts have a lift: an account needs ${BASELINE_MIN}+ earlier scored posts in 30 days for a baseline.`);
+
+  // Media hypothesis injection: inject only if no media experiment exists (finished or open).
+  let rankedHypothesisTypes = rankedHypotheses({ ...programCtx(program), scoreboard: program.scoreboard }, { running: open.map((e) => e.hypothesisType), lifts }, 12);
+  const hasMediaExperiment = allExperiments.some(
+    (e) => e.hypothesisType.startsWith("media:") && ["measured", "rejected", "abandoned", "running", "proposed"].includes(e.status)
+  );
+  if (!hasMediaExperiment) {
+    // Remove any existing media entry to avoid duplication
+    rankedHypothesisTypes = rankedHypothesisTypes.filter((r) => !r.type.startsWith("media:"));
+    // Prepend the media hypothesis with high priority (untried, not running yet)
+    const mediaCandidate = { type: "media:with_media", tries: 0, score: null as number | null, untried: true, running: false, observedLift: null, observedPosts: 0 };
+    rankedHypothesisTypes = [mediaCandidate, ...rankedHypothesisTypes].slice(0, 12);
+  }
+
   return {
     program: programOut(program),
     periodDays,
@@ -473,7 +488,7 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
     runningExperiments: experiments.filter((e) => e.status === "running"),
     proposedExperiments: experiments.filter((e) => e.status === "proposed"),
     pendingChanges: pending.map(changeOut),
-    rankedHypothesisTypes: rankedHypotheses({ ...programCtx(program), scoreboard: program.scoreboard }, { running: open.map((e) => e.hypothesisType), lifts }, 12),
+    rankedHypothesisTypes,
     featureQuestions: {
       builtIn: [...CODE_FEATURES, ...jevFeatureKeys({ topics: programCtx(program).topics, featureQuestions: [] })],
       custom: activeQuestions(program.featureQuestions),

@@ -25,6 +25,22 @@ const socialMetricSource: MetricSource = {
 };
 
 /**
+ * Social hypothesis candidates: always prepend media hypothesis first,
+ * removing any other media: entry to avoid duplication. The kit's
+ * growth/service.ts (lines 464-475) owns suppression: it skips injection
+ * when a media experiment exists in measured/rejected/abandoned/running/proposed.
+ * The media hypothesis uses arms keyed "media" (variant) and "no_media" (control),
+ * matching the names in noMediaExempt's post.arm check (kit/src/media-rule.ts).
+ */
+export function socialHypothesisCandidates(program: ProgramFeatureContext): string[] {
+  const candidates = kitHypothesisCandidates(program as any);
+  // Remove any existing media entry to avoid duplication
+  const filtered = candidates.filter((c) => !c.startsWith("media:"));
+  // Prepend the media hypothesis
+  return ["media:with_media", ...filtered];
+}
+
+/**
  * Social Growth Lab adapter: channel defaults and hypothesis generation.
  * Experiment defaults (minPerArm: 3, windowDays: 7) come from normalizeProposal.
  */
@@ -36,6 +52,6 @@ export const socialAdapter: ChannelAdapter = {
   minPerArm: 3,
   windowDays: 7,
   hypothesisCandidates: (program: ProgramFeatureContext) =>
-    kitHypothesisCandidates({ scoreboard: {}, ...program }),
+    socialHypothesisCandidates(program),
   source: socialMetricSource,
 };

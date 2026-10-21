@@ -242,4 +242,9 @@ export interface CoreGrowthTypes {
 
 export type CoreGrowthStore = KitGrowthStore<CoreGrowthTypes>;
 
-export type GrowthStore = CoreGrowthStore & SocialFeaturesPort;
+/** Count posts on a specific arm of an experiment (scoped by company and experiment id). */
+export interface ArmPostCountPort {
+  countArmPosts(companyId: string, experimentId: string, arm: string): Promise<number>;
+}
+
+export type GrowthStore = CoreGrowthStore & SocialFeaturesPort & ArmPostCountPort;

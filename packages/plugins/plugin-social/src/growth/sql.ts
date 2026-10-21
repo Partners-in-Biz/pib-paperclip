@@ -27,5 +27,7 @@ export function sqlCoreStore(ctx: PluginContext): CoreGrowthStore {
 
 /** Core store plus the Social-only features port, as the service sees it. */
 export function sqlGrowthStore(ctx: PluginContext): GrowthStore {
-  return { ...sqlCoreStore(ctx), ...sqlFeatures(ctx) };
+  const core = sqlCoreStore(ctx);
+  const features = sqlFeatures(ctx);
+  return { ...core, ...features } as GrowthStore;
 }
