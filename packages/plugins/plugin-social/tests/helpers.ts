@@ -208,6 +208,7 @@ export function fakeCtx(overrides: Partial<Record<string, unknown>> = {}, db: Pa
     executeResult: db.executeResult ?? (() => 1),
   };
   const ctx = {
+    manifest: { id: "partnersinbiz.social" },
     db: {
       namespace: NAMESPACE,
       query: async (sql: string, params: unknown[] = []) => {
