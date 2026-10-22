@@ -239,8 +239,13 @@ export function spikeResult(input: {
     missing.push(`No evidence yet: no comment starting with \`**Evidence:**\` (or attachment) posted after ${thresholdLabel}.`);
   }
   missing.push(SPIKE_HINT);
-  if (input.deployedAt.every((d) => !d.at)) {
+  // An empty list is "no name matched". A named plugin with no seen_at is a missing
+  // record, not a missed name — saying "Name the plugin" here sent a false fix.
+  if (input.deployedAt.length === 0) {
     missing.push("The deploy time of the plugin is not known here, so this was checked against the start and merge times only. Name the plugin in the title or description (e.g. `plugin-crm`) so the check can use its deploy time.");
+  } else if (input.deployedAt.every((d) => !d.at)) {
+    const keys = input.deployedAt.map((d) => d.plugin).join(", ");
+    missing.push(`The deploy time of ${keys} is not recorded, so this was checked against the start and merge times only.`);
   }
   return { done: false, missing };
 }

@@ -237,6 +237,14 @@ describe("spike done-check (pure)", () => {
 
     const plugins4 = spikePlugins("no known plugins");
     expect(plugins4).toHaveLength(0);
+
+    // plugin-setup is a real prefix match. Bare "setup" is not. A single \b in
+    // the template literal would be a backspace and fail these.
+    expect(spikePlugins("plugin-setup")).toContain("partnersinbiz.setup");
+    expect(spikePlugins("partnersinbiz.setup")).toContain("partnersinbiz.setup");
+    expect(spikePlugins("Test spike for plugin-setup: close without live evidence must fail")).toContain("partnersinbiz.setup");
+    expect(spikePlugins("setup")).not.toContain("partnersinbiz.setup");
+    expect(spikePlugins("setup")).toHaveLength(0);
   });
 
   it("marks done when evidence exists after the threshold", () => {
@@ -299,6 +307,18 @@ describe("spike done-check (pure)", () => {
     });
     expect(result.done).toBe(false);
     expect(result.missing?.some((m) => m.includes("Name the plugin"))).toBe(true);
+  });
+
+  it("does not ask for a plugin name when the name matched but deploy time is not recorded", () => {
+    const result = spikeResult({
+      startedAt: "2026-10-20T10:00:00Z",
+      comments: [],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.setup", at: null }],
+    });
+    expect(result.done).toBe(false);
+    expect(result.missing?.some((m) => m.includes("Name the plugin"))).toBe(false);
+    expect(result.missing?.some((m) => m.includes("partnersinbiz.setup") && m.includes("not recorded"))).toBe(true);
   });
 
   it("rejects evidence posted before startedAt", () => {
