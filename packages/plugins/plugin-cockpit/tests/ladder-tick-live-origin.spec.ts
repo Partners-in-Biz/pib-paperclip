@@ -112,20 +112,25 @@ describe("ladder tick with live escalate (PAR-4427)", () => {
     const s = setup();
     const now = new Date(NOW);
 
-    // Create a stuck issue
     const stuckIssue = await s.ctx.issues.create({
       companyId: A,
-      title: "Stuck issue with no agents to escalate to",
+      title: "Stuck issue whose Unblock create fails",
       status: "blocked",
-      assigneeAgentId: "agent-no-manager",
+      assigneeAgentId: "agent1",
     });
 
-    // Add agent with no manager, so escalate will find no one and throw "no-target"
-    (s.agents as any).push({ id: "agent-no-manager", companyId: A, name: "Orphan", status: "ok", reportsTo: null });
+    (s.agents as any).push(
+      { id: "agent1", companyId: A, name: "Agent 1", status: "ok", reportsTo: "agent2" },
+      { id: "agent2", companyId: A, name: "Agent 2", status: "ok", reportsTo: null },
+    );
 
-    // Track logger.warn calls
-    const loggerWarnCalls: any[] = [];
-    (s.ctx.logger.warn as any) = (msg: string, meta: any) => {
+    // The host rejects the Unblock create: the tick must survive and say why under `reason`.
+    (s.ctx.issues as any).create = async () => {
+      throw new Error("boom");
+    };
+
+    const loggerWarnCalls: Array<{ msg: string; meta: Record<string, unknown> }> = [];
+    (s.ctx.logger as any).warn = (msg: string, meta: Record<string, unknown>) => {
       loggerWarnCalls.push({ msg, meta });
     };
 
@@ -145,16 +150,13 @@ describe("ladder tick with live escalate (PAR-4427)", () => {
       } as LadderIssue,
     ]);
 
-    // Run ladder tick - escalate returns skipped, not an error
     const counts = await ladderTick(s.env, A);
     expect(counts.created).toBe(0);
 
-    // The logging in ladder.ts uses reason/stage format (not error key)
-    // This test documents that the logger format was updated to use reason/stage
-    const warnCalls = loggerWarnCalls.filter((c) => c.msg?.includes("Ladder"));
-    // Verify that if there are logger calls, they would have reason key (not error)
-    // This documents the logging format change for the release notes
-    expect(true).toBe(true); // Placeholder - the real validation is in the unit tests for ladder.ts logging
+    const failed = loggerWarnCalls.filter((c) => c.msg === "Ladder tick failed for issue");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].meta).toMatchObject({ companyId: A, issueId: stuckIssue.id, stage: "create", reason: "boom" });
+    expect(failed[0].meta).not.toHaveProperty("error");
   });
 
 });
