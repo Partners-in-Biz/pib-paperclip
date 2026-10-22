@@ -53,7 +53,7 @@ async function repair(ctx: PluginContext, companyId: string, input: Parameters<t
   try {
     await deps.recordRepair(ctx, companyId, input);
   } catch (e) {
-    ctx.logger.warn("Failed to record repair", { action: input.action, error: message(e) });
+    ctx.logger.warn("Failed to record repair", { action: input.action, stage: "repair", reason: message(e) });
   }
 }
 
@@ -292,7 +292,7 @@ export async function governCompany(env: Env, companyId: string, config: Governo
           actor: "governor",
         });
       } catch (e) {
-        env.ctx.logger.warn("Failed to record governor pause repair", { agentId: agent.id, error: message(e) });
+        env.ctx.logger.warn("Failed to record governor pause repair", { agentId: agent.id, stage: "pause", reason: message(e) });
       }
     } catch (e) {
       errors += 1;
@@ -307,7 +307,7 @@ export async function governCompany(env: Env, companyId: string, config: Governo
           actor: "governor",
         });
       } catch (repairError) {
-        env.ctx.logger.warn("Failed to record governor pause error repair", { agentId: agent.id, error: message(repairError) });
+        env.ctx.logger.warn("Failed to record governor pause error repair", { agentId: agent.id, stage: "pause", reason: message(repairError) });
       }
     }
   }

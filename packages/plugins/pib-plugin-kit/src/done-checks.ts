@@ -219,7 +219,7 @@ export async function checkDoneOnUpdate(ctx: PluginContext, rules: DoneCheckRule
   try {
     await runDoneCheck(ctx, rules, event);
   } catch (error) {
-    ctx.logger.info("Done check failed", { issueId: event.entityId, error: message(error) });
+    ctx.logger.info("Done check failed", { issueId: event.entityId, stage: "check", reason: message(error) });
   }
 }
 

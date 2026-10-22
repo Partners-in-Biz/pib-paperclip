@@ -152,6 +152,14 @@ export function fakeCtx(options: FakeOptions = {}) {
         const companyId = String(input.companyId);
         guard(companyId, "issues.create");
         if (typeof input.assigneeUserId === "string" && options.refusedUsers?.includes(input.assigneeUserId)) throw new Error("Assignee user not found");
+        // Validate originKind like the host does: must be "plugin:<this plugin's id>" or start with "plugin:<id>:"
+        if (typeof input.originKind === "string") {
+          const manifestId = (ctx.manifest as { id?: string })?.id;
+          const expectedPrefix = `plugin:${manifestId}`;
+          if (!input.originKind.startsWith(expectedPrefix) || (input.originKind.length > expectedPrefix.length && input.originKind[expectedPrefix.length] !== ':')) {
+            throw new Error(`Plugin may only use originKind values under plugin:${manifestId}`);
+          }
+        }
         counter += 1;
         const stamp = new Date((options.now ?? Date.now)()).toISOString();
         const issue = { id: `issue-${counter}`, identifier: `TST-${counter}`, createdAt: stamp, updatedAt: stamp, assigneeAgentId: null, assigneeUserId: null, status: "todo", ...input } as FakeIssue;

@@ -71,6 +71,7 @@ function world(input: { task?: Row; issue?: Row; sprint?: Row; facts?: Row; runs
   const state = new Map<string, unknown>([["pib-hire:role:seo-specialist", { agentId: "agent-1" }]]);
   const handlers: Array<{ name: string; fn: (event: PluginEvent) => Promise<void> }> = [];
   const ctx = {
+    manifest: { id: "partnersinbiz.seo" },
     db: {
       namespace: NAMESPACE,
       async query(sql: string, params: unknown[] = []) {

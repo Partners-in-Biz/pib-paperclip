@@ -187,6 +187,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
   const blockedTotal = ladderIssues.length;
 
   for (const issue of ladderIssues) {
+    let stage = "none";
     try {
       const action = nextAction(issue.stuck, issue.unblocks, now);
 
@@ -194,6 +195,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         // Track the reason for skipping
         noneReasons.set(action.reason, (noneReasons.get(action.reason) ?? 0) + 1);
       } else if (action.type === "resolved") {
+        stage = "resolved";
         // Only if stuck has marker children
         const hasMarkers = issue.unblocks.some((u) => markerIds.has(u.id));
         if (hasMarkers) {
@@ -211,6 +213,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
           }
         }
       } else if (action.type === "create") {
+        stage = "create";
         const reason = `Blocked over ${BLOCKED_ESCALATE_HOURS} hours with no open blocker.`;
         const startLevel = action.level === 4 ? "owner" : action.level;
 
@@ -240,6 +243,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
           counts.skipped += 1;
         }
       } else if (action.type === "advance") {
+        stage = "advance";
         const startLevel = action.level === 4 ? "owner" : action.level;
 
         // Escalate to the new level
@@ -279,7 +283,8 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
               env.ctx.logger.info("Failed to cancel unblock", {
                 companyId,
                 issueId: cancelId,
-                error: message(error),
+                stage,
+                reason: message(error),
               });
             }
           }
@@ -310,7 +315,8 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
               env.ctx.logger.warn("Failed to update blocker edges", {
                 companyId,
                 issueId: issue.stuck.id,
-                error: message(error),
+                stage,
+                reason: message(error),
               });
             }
           }
@@ -322,6 +328,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
           counts.skipped += 1;
         }
       } else if (action.type === "cancel_lower") {
+        stage = "cancel";
         // Determine highest remaining level for comment
         const highest = highestOpenLevel(issue.unblocks);
 
@@ -340,7 +347,8 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
             env.ctx.logger.info("Failed to cancel unblock", {
               companyId,
               issueId: cancelId,
-              error: message(error),
+              stage,
+              reason: message(error),
             });
           }
         }
@@ -349,7 +357,8 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
       env.ctx.logger.warn("Ladder tick failed for issue", {
         companyId,
         issueId: issue.stuck.id,
-        error: message(error),
+        stage,
+        reason: message(error),
       });
     }
   }
@@ -379,7 +388,8 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
       env.ctx.logger.warn("Storm escalation failed", {
         companyId,
         issueId: storm.issueId,
-        error: message(error),
+        stage: "storm",
+        reason: message(error),
       });
     }
   }
