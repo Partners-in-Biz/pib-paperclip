@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const PLUGIN_ID = "partnersinbiz.crm-telephony";
-export const PLUGIN_VERSION = "0.3.5";
+export const PLUGIN_VERSION = "0.3.6";
 export const NAMESPACE_SLUG = "crm_telephony";
 
 export function pluginNamespace(pluginId = PLUGIN_ID, slug = NAMESPACE_SLUG): string {
