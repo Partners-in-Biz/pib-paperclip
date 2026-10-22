@@ -7,6 +7,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
 import { isCanaryRef } from "./canary.js";
 import { table } from "./db.js";
+import { deleteInvoiceDependents, deleteQuoteDependents } from "./draft-delete.js";
 import { syncDraftsDigest } from "./followups.js";
 
 const CRM_PLUGIN = PIB_PLUGINS.crm;
@@ -49,7 +50,7 @@ export function registerCanaryCleanup(ctx: PluginContext): void {
     const quoteIds = quotes.map((r) => r.id);
     const allDocIds = [...invoiceIds, ...quoteIds];
 
-    // Delete invoice/quote children and related documents (in dependency order)
+    // Delete invoice-specific records (payment-related are canary-only cleanup, not in draft-delete)
     if (invoiceIds.length) {
       await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_refunds")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
       await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_links")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
@@ -58,19 +59,24 @@ export function registerCanaryCleanup(ctx: PluginContext): void {
       await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_notes")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
       await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_applications")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
       await ctx.db.execute(`DELETE FROM ${table(ctx, "payments")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_grants")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_lines")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
+
+      // Use helper for common invoice dependents (including work_issues)
+      await deleteInvoiceDependents(ctx, invoiceIds);
+
+      // Delete invoices themselves
       await ctx.db.execute(`DELETE FROM ${table(ctx, "invoices")} WHERE id IN ${ids(1)}`, [asJson(invoiceIds)]);
     }
 
     if (quoteIds.length) {
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "quote_lines")} WHERE quote_id IN ${ids(1)}`, [asJson(quoteIds)]);
+      // Use helper for quote dependents (including work_issues)
+      await deleteQuoteDependents(ctx, quoteIds);
+
+      // Delete quotes themselves
       await ctx.db.execute(`DELETE FROM ${table(ctx, "quotes")} WHERE id IN ${ids(1)}`, [asJson(quoteIds)]);
     }
 
+    // Delete delivery records that reference any of the deleted documents
     if (allDocIds.length) {
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "follow_ups")} WHERE company_id = $1 AND subject_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND subject_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
       await ctx.db.execute(`DELETE FROM ${table(ctx, "deliveries")} WHERE company_id = $1 AND doc_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
     }
 
