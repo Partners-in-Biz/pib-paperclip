@@ -195,7 +195,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.9.1",
+  version: "0.9.2",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -240,7 +240,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       endpointKey: "payfast",
       displayName: "PayFast payment notifications (ITN)",
-      description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Needs the host to pass form-encoded bodies (see the Setup item).",
+      description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Host accepts form-urlencoded bodies.",
     },
   ],
   jobs: [
