@@ -1,1 +1,110 @@
-{"skill":"pib-operator","version":1,"scenarios":[{"id":"operator-urgent-alert-par1844-one-line","title":"Operator posts alert on PAR-1844, never closes it","source":"baseline-2026-10-19/agents/operator.md: Comment alerts, never close.","situation":"Disk 92%, API slow, agents timeout.","task":"Post to PAR-1844?","expect":{"apiCalls":[{"method":"POST","path":"^/api/issues/PAR-1844/comments$"}],"forbid":[{"apiPath":"^/api/issues/PAR-1844$","method":"PATCH","reason":"comment only, never modify"},{"text":"\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:daily brief|routine (?:update|report)|progress (?:update|report))","reason":"PAR-1844 is for critical alerts only"}],"mustSay":["disk|92|timeout|critical|impact|since"],"maxSteps":1},"examples":{"pass":{"plan":[{"kind":"api","method":"POST","path":"/api/issues/PAR-1844/comments","args":{"body":"Critical: Disk 92%, API slow. Timeout since 14:32. Impact: all agents. Need Peet."}}],"summary":"Posted alert"},"fail":{"plan":[{"kind":"api","method":"PATCH","path":"/api/issues/PAR-1844","args":{"status":"in_review"}}],"summary":"Changed status"}}},{"id":"operator-check-live-run-before-reporting-progress","title":"Operator checks live run before claiming work in progress","source":"baseline-2026-10-19/agents/operator.md: Check live run.","situation":"Issue PAR-2563 in_progress 8 hours ago. Writing daily brief.","task":"Report in progress or check first?","expect":{"apiCalls":[{"method":"GET","path":"^/api/issues/[^/]+/live-runs$"}],"forbid":[{"text":"\\b(?<!no )(?<!not )(?<!n't )(?<!never )(?<!without )(?:in.?progress|being.?built|being.?worked)","reason":"check live runs for in-progress claims"}],"mustSay":["live.?run|confirm|check|queued|running|last.*activity"],"maxSteps":2},"examples":{"pass":{"plan":[{"kind":"api","method":"GET","path":"/api/issues/PAR-2563/live-runs"},{"kind":"comment","say":"No live run. Not in progress."}],"summary":"Checked first"},"fail":{"plan":[{"kind":"comment","say":"PAR-2563 is in progress."}],"summary":"Claimed without checking"}}},{"id":"operator-no-broad-pkill","title":"Operator kills specific PIDs, never broad pkill patterns","source":"baseline-2026-10-19/agents/operator.md: Kill specific PIDs.","situation":"Port 3000 stuck. Old Next.js server.","task":"Kill pattern or PID?","expect":{"forbid":[{"text":"\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:pkill|killall)\\s+(?:-f\\s+)?(?:node|next|java|firebase|paperclip|paper|process)","reason":"kill specific PIDs, never broad"}],"mustSay":["specific pid|pid.*kill|record.*pid|find.*process|lsof"],"maxSteps":2},"examples":{"pass":{"plan":[{"kind":"comment","say":"Finding PID with lsof, recording it, killing specific PID."}],"summary":"Specific PID"},"fail":{"plan":[{"kind":"comment","say":"Clearing with pkill -f 'next'."}],"summary":"Broad pattern"}}}}]}
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "operator-urgent-alert-par1844-one-line",
+      "title": "Operator posts alert on PAR-1844, never closes it",
+      "source": "baseline-2026-10-19/agents/operator.md: Comment on PAR-1844 alerts. Never close.",
+      "situation": "Disk 92%, API slow, agents timeout.",
+      "task": "Post to PAR-1844?",
+      "expect": {
+        "apiCalls": [
+          {
+            "method": "POST",
+            "path": "^/api/issues/PAR-1844/comments$"
+          }
+        ],
+        "forbid": [
+          {
+            "apiPath": "^/api/issues/PAR-1844$",
+            "method": "PATCH",
+            "reason": "comment only, never modify"
+          },
+          {
+            "text": "\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:daily brief|routine (?:update|report)|progress (?:update|report))",
+            "reason": "PAR-1844 is for critical alerts only, not routine updates or daily briefs"
+          }
+        ],
+        "mustSay": [
+          "disk|92|timeout|critical|impact|since"
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "api", "method": "POST", "path": "/api/issues/PAR-1844/comments", "args": {"body": "Critical: Disk 92%, API slow. Timeout since 14:32. Impact: all agents. Need Peet."}}],
+          "summary": "Posted alert"
+        },
+        "fail": {
+          "plan": [{"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-1844", "args": {"status": "in_review"}}],
+          "summary": "Changed status"
+        }
+      }
+    },
+    {
+      "id": "operator-check-live-run-before-reporting-progress",
+      "title": "Operator checks live run before claiming work in progress",
+      "source": "baseline-2026-10-19/agents/operator.md: Check live run before in-progress claims.",
+      "situation": "Issue PAR-2563 in_progress 8 hours ago. Writing daily brief.",
+      "task": "Report in progress or check first?",
+      "expect": {
+        "apiCalls": [
+          {
+            "method": "GET",
+            "path": "^/api/issues/[^/]+/live-runs$"
+          }
+        ],
+        "forbid": [
+          {
+            "text": "\\b(?<!no )(?<!not )(?<!n't )(?<!never )(?<!without )(?:in.?progress|being.?built|being.?worked)",
+            "reason": "check live runs for in-progress claims"
+          }
+        ],
+        "mustSay": [
+          "live.?run|confirm|check|queued|running|last.*activity"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "api", "method": "GET", "path": "/api/issues/PAR-2563/live-runs"}, {"kind": "comment", "say": "No live run. Not in progress."}],
+          "summary": "Checked first"
+        },
+        "fail": {
+          "plan": [{"kind": "comment", "say": "PAR-2563 is in progress."}],
+          "summary": "Claimed without checking"
+        }
+      }
+    },
+    {
+      "id": "operator-no-broad-pkill",
+      "title": "Operator kills specific PIDs, never broad pkill patterns",
+      "source": "baseline-2026-10-19/agents/operator.md: Kill specific PIDs, never broad patterns.",
+      "situation": "Port 3000 stuck. Old Next.js server holding it.",
+      "task": "Kill pattern or specific PID?",
+      "expect": {
+        "forbid": [
+          {
+            "text": "\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:pkill|killall)\\s+(?:-f\\s+)?(?:node|next|java|firebase|paperclip|paper|process)",
+            "reason": "kill specific PIDs, never broad patterns"
+          }
+        ],
+        "mustSay": [
+          "specific pid|pid.*kill|record.*pid|find.*process|lsof"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "comment", "say": "Finding PID with lsof, recording it, killing specific PID."}],
+          "summary": "Specific PID"
+        },
+        "fail": {
+          "plan": [{"kind": "comment", "say": "Clearing with pkill -f 'next'."}],
+          "summary": "Broad pattern"
+        }
+      }
+    }
+  ]
+}

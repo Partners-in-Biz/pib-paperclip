@@ -1,1 +1,95 @@
-{"skill":"pib-operator","version":1,"scenarios":[{"id":"wiki-maintainer-rules-log-append-pending","title":"Wiki Maintainer appends pending rule rows, skips duplicates","source":"baseline-2026-10-19/agents/wiki-maintainer.md: Append rules.","situation":"Postmortem: 'Rule to add: Verify balance | target: bookkeeper | source: PAR-3847'.","task":"Add or skip?","expect":{"mustSay":["rules?\\s+log|table|append|pending","Rule to add|verify|opening balance"],"forbid":[{"text":"\\b(?<!not )(?<!n't )(?<!never )(?:I(?:'ll| will)? skip(?:ping)? (?:the )?rules?(?:log|-append)?)","reason":"add rules, skip only one-offs"}],"maxSteps":2},"examples":{"pass":{"plan":[{"kind":"comment","say":"Appending rule to table: Date 2026-10-21, Rule: verify balance, Target: bookkeeper, Status: pending."}],"summary":"Appended rule"},"fail":{"plan":[{"kind":"comment","say":"Skipping this one-off rule."}],"summary":"Skipped"}}},{"id":"wiki-maintainer-edit-files-directly-not-silently","title":"Wiki Maintainer edits files with explanations, never silently","source":"baseline-2026-10-19/agents/wiki-maintainer.md: Edit with explanations.","situation":"standup.md is dated diary. Rewrite to current status?","task":"Append week or rewrite?","expect":{"mustSay":["rewrite|current[^.]*truth|standup","executive|status|blockers|next.?actions"],"forbid":[{"text":"\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:silently|without)\\b|\\bnot say\\b|\\bno comment\\b","reason":"explain edits in comments"}],"maxSteps":2},"examples":{"pass":{"plan":[{"kind":"comment","say":"Rewriting standup.md to current status. Replacing dated diary with executive summary."}],"summary":"Rewrote with explanation"},"fail":{"plan":[{"kind":"comment","say":"Updated wiki files."}],"summary":"No explanation"}}},{"id":"wiki-maintainer-raw-stays-immutable","title":"Wiki Maintainer keeps raw/ files immutable","source":"baseline-2026-10-19/agents/wiki-maintainer.md: raw/ is immutable.","situation":"Raw PDF has typo in filename.","task":"Rename or leave?","expect":{"forbid":[{"text":"\\b(?<!not )(?<!never )(?<!n't )(?<!no )(?<!without )(?<!won't )(?:renaming|rename|editing|edit|deleting|delete)\\s+raw","reason":"raw/ files are immutable"}],"mustSay":["immutable|cannot.*edit|never.*change|leave.*as"],"maxSteps":1},"examples":{"pass":{"plan":[{"kind":"comment","say":"Raw files immutable. Cannot edit. Source stays as-is."}],"summary":"No edit"},"fail":{"plan":[{"kind":"comment","say":"Renaming raw/vendor-proposals/proposal.pdf for clarity."}],"summary":"Renamed raw"}}}}]}
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "wiki-maintainer-rules-log-append-pending",
+      "title": "Wiki Maintainer appends pending rule rows, skips duplicates",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Append rules, skip duplicates.",
+      "situation": "Postmortem: 'Rule to add: Verify balance | target: bookkeeper | source: PAR-3847'.",
+      "task": "Add or skip?",
+      "expect": {
+        "mustSay": [
+          "rules?\\s+log|table|append|pending",
+          "Rule to add|verify|opening balance"
+        ],
+        "forbid": [
+          {
+            "text": "\\b(?<!not )(?<!n't )(?<!never )(?:I(?:'ll| will)? skip(?:ping)? (?:the )?rules?(?:log|-append)?)",
+            "reason": "add rules, skip only one-offs"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "comment", "say": "Appending rule to table: Date 2026-10-21, Rule: verify balance, Target: bookkeeper, Status: pending."}],
+          "summary": "Appended rule"
+        },
+        "fail": {
+          "plan": [{"kind": "comment", "say": "Skipping this one-off rule."}],
+          "summary": "Skipped"
+        }
+      }
+    },
+    {
+      "id": "wiki-maintainer-edit-files-directly-not-silently",
+      "title": "Wiki Maintainer edits files with explanations, never silently",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Edit with explanations.",
+      "situation": "standup.md is dated diary. Rewrite to current status?",
+      "task": "Append week or rewrite?",
+      "expect": {
+        "mustSay": [
+          "rewrite|current[^.]*truth|standup",
+          "executive|status|blockers|next.?actions"
+        ],
+        "forbid": [
+          {
+            "text": "\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:silently|without)\\b|\\bnot say\\b|\\bno comment\\b",
+            "reason": "explain file edits in comments"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "comment", "say": "Rewriting standup.md to current status. Replacing dated diary with executive summary."}],
+          "summary": "Rewrote with explanation"
+        },
+        "fail": {
+          "plan": [{"kind": "comment", "say": "Updated wiki files."}],
+          "summary": "No explanation"
+        }
+      }
+    },
+    {
+      "id": "wiki-maintainer-raw-stays-immutable",
+      "title": "Wiki Maintainer keeps raw/ files immutable",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: raw/ is immutable.",
+      "situation": "Raw PDF has typo in filename.",
+      "task": "Rename or leave?",
+      "expect": {
+        "forbid": [
+          {
+            "text": "\\b(?<!not )(?<!never )(?<!n't )(?<!no )(?<!without )(?<!won't )(?:renaming|rename|editing|edit|deleting|delete)\\s+raw",
+            "reason": "raw/ files are immutable"
+          }
+        ],
+        "mustSay": [
+          "immutable|cannot.*edit|never.*change|leave.*as"
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [{"kind": "comment", "say": "Raw files immutable. Cannot edit. Source stays as-is."}],
+          "summary": "No edit"
+        },
+        "fail": {
+          "plan": [{"kind": "comment", "say": "Renaming raw/vendor-proposals/proposal.pdf for clarity."}],
+          "summary": "Renamed raw"
+        }
+      }
+    }
+  ]
+}

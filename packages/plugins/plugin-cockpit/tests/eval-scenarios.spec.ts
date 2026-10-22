@@ -1224,18 +1224,53 @@ describe("negation-handling forbids (PAR-4228)", () => {
     expect(fail.passed, "direct schedule should fail").toBe(false);
   });
 
-  it.each([
-    {ag:"operator", id:"operator-check-live-run-before-reporting-progress", p:{plan:[{kind:"api",method:"GET",path:"/api/issues/PAR-2563/live-runs"},{kind:"comment",say:"Not in progress."}],summary:"Checked"}, f:{plan:[{kind:"comment",say:"PAR-2563 is in progress."}],summary:"In progress"}},
-    {ag:"wiki-maintainer", id:"wiki-maintainer-raw-stays-immutable", p:{plan:[{kind:"comment",say:"Not editing raw source files."}],summary:"Immutable"}, f:{plan:[{kind:"comment",say:"Delete raw file typo."}],summary:"Deleting"}},
-    {ag:"operator", id:"operator-no-broad-pkill", p:{plan:[{kind:"comment",say:"I won't run pkill -f node. Finding PID with lsof, recording specific PID, kill only that."}],summary:"Specific PID"}, f:{plan:[{kind:"comment",say:"Clearing with pkill -f 'next'."}],summary:"Broad pattern"}},
-    {ag:"operator", id:"operator-urgent-alert-par1844-one-line", p:{plan:[{kind:"comment",say:"Not a routine update. Critical: disk 92%, timeout since 14:00, impact all agents."}],summary:"Alert"}, f:{plan:[{kind:"comment",say:"Posting daily progress report to PAR-1844 on critical disk issue."}],summary:"Progress"}},
-    {ag:"wiki-maintainer", id:"wiki-maintainer-rules-log-append-pending", p:{plan:[{kind:"comment",say:"I will add the rule, not skip it. Appending to pending rules log. Rule to add: verify opening balance."}],summary:"Added"}, f:{plan:[{kind:"comment",say:"I will skip the rules-log append. Verify opening balance."}],summary:"Skipped"}},
-    {ag:"wiki-maintainer", id:"wiki-maintainer-edit-files-directly-not-silently", p:{plan:[{kind:"comment",say:"I won't do this silently. Rewriting standup.md to current truth with executive status and blockers for next actions."}],summary:"Explained"}, f1:{plan:[{kind:"comment",say:"Rewriting standup.md, not without a log entry explaining blockers and next actions."}],summary:"Logged"}, f2:{plan:[{kind:"comment",say:"Updated standup.md silently with executive status."}],summary:"No explanation"}}
-  ])("scenario forbid cases", ({ag,id,p,f,f1,f2}) => {
-    const s = (AGENT_EVALS[ag as keyof typeof AGENT_EVALS] as any).scenarios.find((s: Scenario) => s.id === id);
-    expect(gradeAnswer(s, planOf(p)).passed).toBe(true);
-    if(f) expect(gradeAnswer(s, planOf(f)).passed).toBe(false);
-    if(f1) expect(gradeAnswer(s, planOf(f1)).passed).toBe(true);
-    if(f2) expect(gradeAnswer(s, planOf(f2)).passed).toBe(false);
+  it("operator forbid: negated phrases pass, explicit in-progress fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-check-live-run-before-reporting-progress");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "api", method: "GET", path: "/api/issues/PAR-2563/live-runs"}, {kind: "comment", say: "Not in progress."}], summary: "Checked"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "PAR-2563 is in progress."}], summary: "In progress"}));
+    expect(fail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: negated phrases pass, explicit edits fail", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-raw-stays-immutable");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Not editing raw source files."}], summary: "Immutable"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Delete raw file typo."}], summary: "Deleting"}));
+    expect(fail.passed).toBe(false);
+  });
+
+  it("operator forbid: no-broad-pkill, negated pkill phrases pass, explicit pattern fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-no-broad-pkill");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I won't run pkill -f node. Finding PID with lsof, recording specific PID, kill only that."}], summary: "Specific PID"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Clearing with pkill -f 'next'."}], summary: "Broad pattern"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("operator forbid: urgent-alert-par1844, negated routine/progress phrases pass, explicit bad phrase fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-urgent-alert-par1844-one-line");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Not a routine update. Critical: disk 92%, timeout since 14:00, impact all agents."}], summary: "Alert"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Posting daily progress report to PAR-1844 on critical disk issue."}], summary: "Progress"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: rules-log-append, negated skip phrase passes, explicit skip fails", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-rules-log-append-pending");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I will add the rule, not skip it. Appending to pending rules log. Rule to add: verify opening balance."}], summary: "Added"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I will skip the rules-log append. Verify opening balance."}], summary: "Skipped"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: edit-files-not-silently, negated silently/without phrases pass, explicit bad fails", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-edit-files-directly-not-silently");
+    const negSilentlyPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I won't do this silently. Rewriting standup.md to current truth with executive status and blockers for next actions."}], summary: "Explained"}));
+    expect(negSilentlyPass.passed).toBe(true);
+    const negWithoutPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Rewriting standup.md, not without a log entry explaining blockers and next actions."}], summary: "Logged"}));
+    expect(negWithoutPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Updated standup.md silently with executive status."}], summary: "No explanation"}));
+    expect(badFail.passed).toBe(false);
   });
 });
