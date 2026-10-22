@@ -75,6 +75,12 @@ export async function escalate(
 ): Promise<EscalateResult> {
   const now = opts.now ?? new Date();
 
+  // Derive the plugin's own origin kind from manifest id
+  if (!ctx.manifest?.id) {
+    throw new Error("escalate: ctx.manifest.id missing");
+  }
+  const pluginOriginKind = `plugin:${ctx.manifest.id}` as const;
+
   // Check if escalation is enabled
   let escalationEnabled = true;
   try {
@@ -221,7 +227,7 @@ export async function escalate(
         title: unblockInput.title,
         description: unblockInput.description,
         assigneeAgentId: level.target.agentId,
-        originKind: "plugin:pib-escalation",
+        originKind: pluginOriginKind,
         originId: unblockInput.originId,
         wake: true,
         wakeReason: "Escalation: issue is blocked",
@@ -237,7 +243,7 @@ export async function escalate(
         title: unblockInput.title,
         description: unblockInput.description,
         assigneeUserId: owner.userId,
-        originKind: "plugin:pib-escalation",
+        originKind: pluginOriginKind,
         originId: unblockInput.originId,
         wake: false,
         wakeReason: undefined,
