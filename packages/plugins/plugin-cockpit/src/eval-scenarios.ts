@@ -37,6 +37,10 @@ import salesLead from "../evals/agents/sales-lead.json" with { type: "json" };
 import dealDesk from "../evals/agents/deal-desk.json" with { type: "json" };
 import seoSpecialist from "../evals/agents/seo-specialist.json" with { type: "json" };
 import outboundSocial from "../evals/agents/outbound-social-specialist.json" with { type: "json" };
+import bookkeeper from "../evals/agents/bookkeeper.json" with { type: "json" };
+import inboundQualifier from "../evals/agents/inbound-qualifier.json" with { type: "json" };
+import wikiMaintainer from "../evals/agents/wiki-maintainer.json" with { type: "json" };
+import operatorAgent from "../evals/agents/operator.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -78,6 +82,10 @@ export const AGENT_EVALS: Record<string, unknown> = {
   theo: theoAgent,
   reviewer: reviewerAgent,
   acceptance: acceptanceAgent,
+  bookkeeper,
+  "inbound-qualifier": inboundQualifier,
+  "wiki-maintainer": wikiMaintainer,
+  operator: operatorAgent,
 };
 
 /** Every tool this plugin registers, as agents name it. */
