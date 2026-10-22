@@ -9,6 +9,7 @@ import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
 import { notifyOwner, type NotifyOwnerDeps, type NotifyOutcome } from "./push/notify.js";
+import { sendPush } from "./push/send.js";
 import { resolveOwner } from "./push/triggers-critical.js";
 
 const T = `${NAMESPACE}.issue_evidence`;
@@ -122,6 +123,20 @@ export async function recordEvidence(
   // 8. Insert or do nothing (identical retry handling)
   const now = env.now().toISOString();
   const evidenceId = newId();
+  const originalFilename = attachment.filename || trimmedAttachmentId;
+
+  // Helper: Call confirmEvidencePush with constructed args
+  const pushConfirmation = async (): Promise<ConfirmOutcome> => {
+    return confirmEvidencePush(env, {
+      companyId,
+      issue: { id: issue.id, identifier: issue.identifier ?? null, title: issue.title ?? null },
+      step: trimmedStep,
+      summary: trimmedSummary,
+      evidenceId,
+      filename: originalFilename,
+      deliver: opts?.deliver,
+    });
+  };
 
   try {
     const result = await env.ctx.db.execute(
@@ -146,14 +161,18 @@ export async function recordEvidence(
 
     // If nothing returned, this is an identical retry
     if (result.rowCount === 0) {
-      return ok("Evidence already recorded for this step and attachment", {
+      const data: Record<string, unknown> = {
         recorded: false,
         reason: "identical retry",
-      });
+      };
+      if (opts?.notify === true) {
+        const outcome = await pushConfirmation();
+        data.notify = outcome;
+      }
+      return ok("Evidence already recorded for this step and attachment", data);
     }
 
     // 9. Post comment
-    const originalFilename = attachment.filename || trimmedAttachmentId;
     const commentBody = `**Evidence:** ${originalFilename}${trimmedSummary ? ` - ${trimmedSummary}` : ""}`;
 
     try {
@@ -174,15 +193,7 @@ export async function recordEvidence(
       attachmentId: trimmedAttachmentId,
     };
     if (opts?.notify === true) {
-      const outcome = await confirmEvidencePush(env, {
-        companyId,
-        issue: { id: issue.id, identifier: issue.identifier ?? null, title: issue.title ?? null },
-        step: trimmedStep,
-        summary: trimmedSummary,
-        evidenceId,
-        filename: originalFilename,
-        deliver: opts.deliver,
-      });
+      const outcome = await pushConfirmation();
       data.notify = outcome;
     }
 
@@ -214,6 +225,7 @@ export async function confirmEvidencePush(
   const now = env.now();
   const nowIso = now.toISOString();
   let claimed = false;
+  let deliveryAttempted = false;
 
   // Helper: Release an atomic claim by setting inbox_posted_at to NULL
   const releaseClaim = async (): Promise<void> => {
@@ -241,9 +253,9 @@ export async function confirmEvidencePush(
   };
 
   try {
-    // CLAIM: atomic UPDATE to mark inbox_posted_at for one canonical row per (issue, step)
-    // ORDER BY (inbox_posted_at IS NULL) sorts claimed rows first (0 for false), then unclaimed rows (1 for true)
-    // This ensures we always try to claim an unclaimed row; if all are claimed, the UPDATE WHERE clause fails
+    // CLAIM: Atomically mark one row per (issue, step) as posted. ORDER BY sorts claimed rows first,
+    // so if any row is claimed, we pick it. WHERE inbox_posted_at IS NULL then fails (rowCount=0)
+    // and we return already_notified—preventing duplicate notifications.
     const claimResult = await env.ctx.db.execute(
       `UPDATE ${T} SET inbox_posted_at = $1 WHERE id = (SELECT id FROM ${T} WHERE company_id = $2 AND issue_id = $3 AND step = $4 ORDER BY (inbox_posted_at IS NULL), created_at, id LIMIT 1) AND inbox_posted_at IS NULL`,
       [nowIso, args.companyId, args.issue.id, args.step],
@@ -258,7 +270,8 @@ export async function confirmEvidencePush(
 
     // Construct identifier and title
     const identifier = args.issue.identifier ?? args.issue.id;
-    const title = `Confirmation: ${identifier} ${args.step}: ${args.summary ?? "evidence recorded"}`.slice(0, 120);
+    const titleStr = `Confirmation: ${identifier} ${args.step}: ${args.summary ?? "evidence recorded"}`;
+    const title = Array.from(titleStr).slice(0, 120).join("");
 
     // Get the public base URL and build the issue link
     let publicBaseUrl = "https://paperclip.partnersinbiz.online";
@@ -292,6 +305,13 @@ export async function confirmEvidencePush(
       return "no_subscription";
     }
 
+    // Wrap deliver to track if delivery was attempted
+    const innerDeliver = args.deliver ?? ((ctx, companyId, subs, payload) => sendPush(ctx, companyId, subs, payload, { class: payload.class }));
+    const wrappedDeliver: NotifyOwnerDeps["deliver"] = async (...a) => {
+      deliveryAttempted = true;
+      return innerDeliver(...a);
+    };
+
     // Call notifyOwner
     const result = await notifyOwner(
       env.ctx,
@@ -304,13 +324,13 @@ export async function confirmEvidencePush(
         ownerUserId,
         url,
       },
-      { now: () => now, deliver: args.deliver },
+      { now: () => now, deliver: wrappedDeliver },
     );
 
     const outcome = result.outcome;
 
-    if (outcome === "sent" || outcome === "deferred") {
-      // Keep the claim
+    // Keep claim for: sent, deferred, collapsed
+    if (outcome === "sent" || outcome === "deferred" || outcome === "collapsed") {
       return outcome;
     }
 
@@ -334,8 +354,8 @@ export async function confirmEvidencePush(
     // Unknown outcome: keep the claim and return it
     return outcome;
   } catch (error) {
-    // Release claim if held
-    if (claimed) {
+    // After an attempt some subscriptions may have been reached, so keep the claim rather than risk a double push
+    if (claimed && !deliveryAttempted) {
       await releaseClaim();
     }
     env.ctx.logger.warn("confirmEvidencePush failed", { message: message(error) });
