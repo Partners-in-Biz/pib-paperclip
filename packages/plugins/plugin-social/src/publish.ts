@@ -57,7 +57,7 @@ import { moduleGate } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS, PLATFORM_LIMITS, type SocialPlatform } from "./platforms.js";
 
 /** The request a destination publishes: the post plus that platform's override. */
-export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "overrides" | "first_comment">, platform: SocialPlatform): PublishRequest {
+export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "overrides" | "first_comment" | "reply_to_url" | "quote_url">, platform: SocialPlatform): PublishRequest {
   const override = postOverrides(post)[platform] ?? {};
   const pick = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
   return {
@@ -68,6 +68,8 @@ export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "over
     subreddit: pick(override.subreddit),
     boardId: pick(override.boardId),
     firstComment: pick(post.first_comment),
+    replyToUrl: pick(post.reply_to_url),
+    quoteUrl: pick(post.quote_url),
     media: postMedia(post),
   };
 }
@@ -77,6 +79,10 @@ export function validateDestination(platform: SocialPlatform, request: PublishRe
   const label = PLATFORM_LABELS[platform];
   const limits = PLATFORM_LIMITS[platform];
   const problems: string[] = [];
+  // Only X publishes a reply or quote target. Elsewhere the post would go out as a plain post, so refuse it.
+  if (platform !== "x" && (request.replyToUrl || request.quoteUrl)) {
+    problems.push(`${label} cannot reply to or quote an X post yet; remove this destination or the ${request.replyToUrl ? "replyToUrl" : "quoteUrl"}`);
+  }
   const imgs = request.media.filter((m) => m.kind === "image").length;
   const vids = request.media.filter((m) => m.kind === "video").length;
   if (limits.needsMedia === "any" && request.media.length === 0) problems.push(`${label} needs an image or a video`);

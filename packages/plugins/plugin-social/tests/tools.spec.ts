@@ -57,9 +57,9 @@ describe("tool surface", () => {
     // One entry schema for every platform instead of twelve copies.
     expect((OVERRIDES as Schema).properties).toBeUndefined();
     expect(typeof (OVERRIDES as Schema).additionalProperties).toBe("object");
-    // Well under the ~1.1k tokens each used to cost (about 4 characters a token).
-    expect(JSON.stringify(tool("create-post").parametersSchema).length).toBeLessThan(3200);
-    expect(JSON.stringify(tool("update-post").parametersSchema).length).toBeLessThan(3200);
+    // Well under the ~1.1k tokens each used to cost (about 4 characters a token). 3450 = 3200 + replyToUrl, quoteUrl, note (PAR-4452).
+    expect(JSON.stringify(tool("create-post").parametersSchema).length).toBeLessThan(3450);
+    expect(JSON.stringify(tool("update-post").parametersSchema).length).toBeLessThan(3450);
   });
 
   it("create-post takes client and visibility; the confusing scope param is gone", () => {

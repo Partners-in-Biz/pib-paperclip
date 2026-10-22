@@ -63,6 +63,9 @@ const post: Record<string, JsonSchema> = {
   accountIds: ids("Destination account ids (list-connected-accounts)."),
   mediaAssetIds: ids("Media asset ids (list-media-assets). Order = carousel order."),
   firstComment: text("Posted as first comment (or reply on X), where platform allows."),
+  replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>). X only. \"\" clears."),
+  quoteUrl: text("X post link to quote. X only; not with replyToUrl. \"\" clears."),
+  note: text("Internal note, e.g. \"HOLD until PAR-1\"; never published. Max 500. \"\" clears."),
   scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
   overrides: OVERRIDES,
   tags: {
@@ -125,7 +128,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
+      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
     parametersSchema: schema(["body"], {
       body: text("Main post text (used by every platform without a text override)"),
       ...scope,
@@ -139,12 +142,15 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-personal-draft",
     displayName: "Create personal draft",
     description:
-      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, and per-platform overrides.",
+      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note (for example \"HOLD until PAR-1234\"), and per-platform overrides.",
     parametersSchema: schema(["targetUserId", "body"], {
       targetUserId: text("User id whose My Social queue gets the draft"),
       body: text("Main post text"),
       mediaAssetIds: ids("Media asset ids (personal accounts of the target user)"),
       firstComment: text("Posted as the first comment where the platform allows"),
+      replyToUrl: post.replyToUrl!,
+      quoteUrl: post.quoteUrl!,
+      note: post.note!,
       overrides: OVERRIDES,
     }),
   },
@@ -152,7 +158,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "update-post",
     displayName: "Update post",
     description:
-      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, scheduledAt (\"\" clears it), overrides (replaces them). Leave the client out to keep the post's client; moving it to another client (client \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag the Growth Lab arm (experimentId \"\" clears it).",
+      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, replyToUrl, quoteUrl, note (\"\" clears each), scheduledAt (\"\" clears it), overrides (replaces them). Leave the client out to keep the post's client; moving it to another client (client \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag the Growth Lab arm (experimentId \"\" clears it).",
     parametersSchema: schema(["postId"], {
       postId: POST_ID,
       body: text("New main post text"),
