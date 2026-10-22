@@ -1,5 +1,6 @@
 /**
- * Speed-to-lead (PAR-2262 / PAR-4757): draft-only first reply when a lead with email is stored.
+ * Speed-to-lead (PAR-2262 / PAR-4754 / PAR-4757): draft-only first reply when a lead with email is stored.
+ * Triggers: handleLead / lead.captured, Jagter sequence replies, client_leads channel stores.
  * Consent + spam gates → short EN/AF draft → Peet care approval → `mail.draft.requested` → CEO ping.
  * Send only via care-approvals person-done path. This module never enqueues a send.
  * Metrics: t_arrival / t_draft_ready here; t_approved / t_sent in speedToLeadHooks.
@@ -7,12 +8,13 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { enqueue, MAIL_EVENTS, readConfig, roleAgentUsable, type MailDraftRequested } from "@partnersinbiz/pib-plugin-kit";
 import { approvalsForClient } from "./care-store.js";
-import { getContact, insertActivityOnce, saveContact } from "./db.js";
+import { contactsByEmail, getContact, insertActivityOnce, saveContact } from "./db.js";
 import { textToHtml } from "./domain.js";
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { originFor } from "./origins.js";
 import { approvalLink, requestApproval, type MailApprovalHooks, type MailDraft } from "./outbound.js";
+import type { ClientKind } from "./refs.js";
 
 const AF_MARKERS =
   /\b(asseblief|baie\s+dankie|dankie|goeie\s+dag|goeiemôre|goeiemore|ek\s+wil|ek\s+soek|hoeveel|pryslys|kwotasie|besigheids|webwerf)\b/i;
@@ -55,6 +57,21 @@ export type SpeedToLeadLang = "en" | "af";
 export interface SpeedToLeadInput {
   companyId: string;
   contactId: string;
+  leadKey: string;
+  source: string;
+  text: string;
+  name: string | null;
+  email: string;
+  langHint?: string | null;
+  arrivedAt?: string | null;
+  /** Gmail thread to keep a sequence reply in the same conversation. */
+  threadId?: string | null;
+}
+
+/** Client-channel lead (POPIA: no new CRM contact). Reuses the same draft-only path. */
+export interface ClientLeadSpeedToLeadInput {
+  companyId: string;
+  client: { kind: ClientKind; id: string };
   leadKey: string;
   source: string;
   text: string;
@@ -119,7 +136,7 @@ export function composeSpeedToLeadDraft(input: {
   email: string;
   text: string;
   langHint?: string | null;
-  contactId: string;
+  contactId?: string | null;
   threadId?: string | null;
 }): { lang: SpeedToLeadLang; draft: MailDraft } {
   const lang = detectSpeedToLeadLang(input.text, input.langHint);
@@ -132,7 +149,7 @@ export function composeSpeedToLeadDraft(input: {
   const subject = lang === "af" ? "Jou navraag — kort skakel?" : "Your enquiry — quick call?";
   return {
     lang,
-    draft: { to: [{ email: input.email, name: input.name }], subject, text, html: textToHtml(text), contactId: input.contactId, threadId: input.threadId ?? null },
+    draft: { to: [{ email: input.email, name: input.name }], subject, text, html: textToHtml(text), contactId: input.contactId ?? null, threadId: input.threadId ?? null },
   };
 }
 
@@ -324,6 +341,7 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     text: input.text,
     langHint: langFromContact(contact, input.langHint),
     contactId: input.contactId,
+    threadId: input.threadId,
   });
   const metrics: SpeedToLeadMetrics = { t_arrival: tArrival, t_draft_ready: new Date().toISOString() };
   const who = firstName(input.name ?? contact.name) || email;
@@ -381,10 +399,137 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
   return { skipped: false, approvalId: opened.approvalId };
 }
 
-/** Stamp t_approved / t_sent on a contact note when the person-done path sends. */
+/**
+ * Client-channel lead stored in `client_leads` (no handleLead). If that email
+ * already has a CRM contact, reuse `onLeadStoredForSpeedToLead`. Otherwise open
+ * the same draft-only care approval keyed to the client (POPIA: no new contact).
+ */
+export async function onClientLeadStoredForSpeedToLead(
+  ctx: PluginContext,
+  input: ClientLeadSpeedToLeadInput,
+): Promise<{ skipped: boolean; reason?: string; approvalId?: string }> {
+  const email = input.email.trim().toLowerCase();
+  if (!email.includes("@")) {
+    ctx.logger.info("CRM speed-to-lead skipped: no email", { leadKey: input.leadKey, client: input.client });
+    return { skipped: true, reason: "no_email" };
+  }
+
+  const matches = await contactsByEmail(ctx, input.companyId, email);
+  if (matches[0]) {
+    return onLeadStoredForSpeedToLead(ctx, {
+      companyId: input.companyId,
+      contactId: matches[0].id,
+      leadKey: input.leadKey,
+      source: input.source,
+      text: input.text,
+      name: input.name ?? matches[0].name,
+      email,
+      langHint: input.langHint ?? langFromContact(matches[0], null),
+      arrivedAt: input.arrivedAt,
+    });
+  }
+
+  if (hasOptOutText(input.text)) {
+    ctx.logger.info("CRM speed-to-lead skipped: opt-out text", { leadKey: input.leadKey });
+    return { skipped: true, reason: "opted_out" };
+  }
+
+  const spamReason = classifyNotALead({ email, text: input.text });
+  if (spamReason) {
+    ctx.logger.info("CRM speed-to-lead skipped: not a lead", { leadKey: input.leadKey, spamReason });
+    return { skipped: true, reason: "not_a_lead" };
+  }
+
+  const tArrival = input.arrivedAt && Number.isFinite(Date.parse(input.arrivedAt)) ? new Date(input.arrivedAt).toISOString() : new Date().toISOString();
+  const arrivalMs = Date.parse(tArrival);
+  if (Number.isFinite(arrivalMs) && Date.now() - arrivalMs > STALE_LEAD_MS) {
+    ctx.logger.info("CRM speed-to-lead skipped: stale lead", { leadKey: input.leadKey, arrivedAt: tArrival });
+    return { skipped: true, reason: "stale_lead" };
+  }
+
+  const existing = await approvalsForClient(ctx, input.companyId, "speed_to_lead", input.client, ["open", "approved"], 1);
+  if (existing.length > 0) {
+    ctx.logger.info("CRM speed-to-lead skipped: open approval exists", { leadKey: input.leadKey, approvalId: existing[0]!.id, client: input.client });
+    return { skipped: true, reason: "open_approval_exists" };
+  }
+
+  const { lang, draft } = composeSpeedToLeadDraft({
+    name: input.name,
+    email,
+    text: input.text,
+    langHint: input.langHint,
+    contactId: null,
+  });
+  const metrics: SpeedToLeadMetrics = { t_arrival: tArrival, t_draft_ready: new Date().toISOString() };
+  const who = firstName(input.name) || email;
+  const opened = await requestApproval(ctx, {
+    companyId: input.companyId,
+    kind: "speed_to_lead",
+    client: input.client,
+    subjectId: input.leadKey,
+    title: `Approve speed-to-lead reply to ${who}`.slice(0, 200),
+    intro: [
+      `A client-channel lead (${input.source}) arrived with an email. Draft first reply for review (Reviewer, then Peet approval).`,
+      "Mark **done** to send from the Mailbox. Nothing is sent until then.",
+      `Language: ${lang === "af" ? "Afrikaans" : "English"}.`,
+      "No CRM contact was created (client-channel / POPIA).",
+    ],
+    draft,
+    payload: { meta: { kind: "speed_to_lead" }, leadKey: input.leadKey, source: input.source, lang, metrics, clientChannel: true },
+    checks: ["Warm and brief; no prices.", "Call CTA asks for a day and time (no slot placeholders).", "Recipient is not unsubscribed or bounced."],
+    outward: true,
+    wakeReason: "A speed-to-lead draft needs Peet's approval",
+  });
+
+  const config = await readConfig(ctx, input.companyId).catch(() => ({} as Record<string, unknown>));
+  const mailDraft: MailDraftRequested = {
+    key: `crm:stl-draft:${opened.approvalId}`,
+    from: typeof config.mailFrom === "string" && config.mailFrom.includes("@") ? config.mailFrom.trim() : null,
+    to: draft.to.map((a) => ({ email: a.email, name: a.name ?? null })),
+    subject: draft.subject,
+    text: draft.text,
+    html: draft.html ?? textToHtml(draft.text),
+    context: { plugin: PLUGIN_ID, kind: "speed_to_lead", id: opened.approvalId, clientKind: input.client.kind, clientRef: input.client.id },
+  };
+  await enqueue(ctx, input.companyId, MAIL_EVENTS.draftRequested, mailDraft as unknown as { key: string } & Record<string, unknown>);
+
+  await insertActivityOnce(ctx, {
+    companyId: input.companyId,
+    recordType: input.client.kind === "contact" ? "contact" : "company",
+    recordId: input.client.id,
+    kind: "speed_to_lead_draft",
+    body: `Speed-to-lead draft ready (${lang}) for client-channel lead; waiting for review and approval before any send.`,
+    meta: { leadKey: input.leadKey, approvalId: opened.approvalId, metrics, lang, clientChannel: true },
+    sourceKey: `stl:${input.leadKey}`,
+    issueId: opened.issueId,
+  }).catch(() => undefined);
+
+  await pingCeoSpeedToLead(ctx, {
+    companyId: input.companyId,
+    approvalId: opened.approvalId,
+    issueId: opened.issueId,
+    who,
+    source: input.source,
+    email,
+    lang,
+  });
+
+  return { skipped: false, approvalId: opened.approvalId };
+}
+
+function activityRecord(approval: { client?: { kind: string; id: string } | null }): { recordType: "contact" | "company"; recordId: string } | null {
+  if (!approval.client) return null;
+  if (approval.client.kind === "contact" || approval.client.kind === "company") {
+    return { recordType: approval.client.kind, recordId: approval.client.id };
+  }
+  return null;
+}
+
+/** Stamp t_approved / t_sent when the person-done path sends (contact or client-channel company). */
 export const speedToLeadHooks: MailApprovalHooks = {
   async onSent(ctx, approval, info) {
-    if (approval.client?.kind !== "contact") return;
+    const record = activityRecord(approval);
+    if (!record) return;
     const prev = (approval.payload.metrics as SpeedToLeadMetrics | undefined) ?? ({} as SpeedToLeadMetrics);
     const now = new Date().toISOString();
     const metrics: SpeedToLeadMetrics = {
@@ -396,8 +541,8 @@ export const speedToLeadHooks: MailApprovalHooks = {
     };
     await insertActivityOnce(ctx, {
       companyId: approval.companyId,
-      recordType: "contact",
-      recordId: approval.client.id,
+      recordType: record.recordType,
+      recordId: record.recordId,
       kind: "speed_to_lead_sent",
       body: info.dryRun ? "Speed-to-lead reply approved (canary dry run)." : "Speed-to-lead reply sent after Peet approved.",
       meta: { approvalId: approval.id, metrics, dryRun: info.dryRun },
@@ -406,11 +551,12 @@ export const speedToLeadHooks: MailApprovalHooks = {
     }).catch(() => undefined);
   },
   async onRefused(ctx, approval, by) {
-    if (approval.client?.kind !== "contact") return;
+    const record = activityRecord(approval);
+    if (!record) return;
     await insertActivityOnce(ctx, {
       companyId: approval.companyId,
-      recordType: "contact",
-      recordId: approval.client.id,
+      recordType: record.recordType,
+      recordId: record.recordId,
       kind: "speed_to_lead_discarded",
       body: "Speed-to-lead reply was discarded before send.",
       meta: { approvalId: approval.id, by },
@@ -419,11 +565,12 @@ export const speedToLeadHooks: MailApprovalHooks = {
     }).catch(() => undefined);
   },
   async onFailed(ctx, approval, error) {
-    if (approval.client?.kind !== "contact") return;
+    const record = activityRecord(approval);
+    if (!record) return;
     await insertActivityOnce(ctx, {
       companyId: approval.companyId,
-      recordType: "contact",
-      recordId: approval.client.id,
+      recordType: record.recordType,
+      recordId: record.recordId,
       kind: "speed_to_lead_refused",
       body: `Speed-to-lead reply was not sent: ${error}`.slice(0, 1000),
       meta: { approvalId: approval.id, reason: error },
