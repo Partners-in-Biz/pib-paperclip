@@ -242,7 +242,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "delete-draft-quote",
     displayName: "Delete draft quote",
-    description: "Delete a draft quote that was never sent or accepted (drafts only; no undo).",
+    description: "Delete a draft quote that was never sent or accepted (drafts only; hard-delete; no undo). Quote numbers are not a statutory gap-free sequence, so voiding is not required.",
     parametersSchema: schema(["quoteId"], { quoteId }),
   },
 

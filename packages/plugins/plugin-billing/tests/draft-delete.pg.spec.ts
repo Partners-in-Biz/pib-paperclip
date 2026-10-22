@@ -75,6 +75,31 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
       expect(rows.rows).toHaveLength(0);
     });
 
+    it("hard-deletes a numbered draft invoice on a .invalid email contact", async () => {
+      // Create a contact with .invalid email (treated as canary)
+      const invalidEmailContact = "ct-invalid";
+      await h.client.query(
+        `INSERT INTO ${NAMESPACE}.clients (id, company_id, kind, ref, name, email) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [invalidEmailContact, COMPANY, "contact", invalidEmailContact, "Invalid Email", "test@example.invalid"],
+      );
+
+      // Create a numbered draft invoice on this contact
+      const inv = await draft(invalidEmailContact);
+      await h.call("billing.add-line", { invoiceId: inv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+
+      // Verify it's numbered
+      expect(inv.number).toMatch(/^[A-Z]+-/);
+
+      // Delete the draft (should hard-delete because email is .invalid, not void despite having a number)
+      const result = await tool<{ deleted: boolean; voided?: boolean }>("delete-draft-invoice", { invoiceId: inv.id });
+      expect(result.deleted).toBe(true);
+      expect(result.voided).not.toBe(true);
+
+      // Verify deletion
+      const rows = await h.client.query(`SELECT id FROM ${NAMESPACE}.invoices WHERE id = $1`, [inv.id]);
+      expect(rows.rows).toHaveLength(0);
+    });
+
     it("hard-deletes a regular draft invoice without a number", async () => {
       // Create an invoice without letting it get a number by updating the draft status artificially
       const inv = await h.call<{ id: string; number: string }>("billing.create-invoice", {
@@ -282,6 +307,24 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
       // Try to delete (accepted quotes are no longer draft)
       const error = await tool("delete-draft-quote", { quoteId: q.id }).catch((e) => e.message);
       expect(error).toContain("draft");
+    });
+
+    it("refuses to delete another company's draft invoice", async () => {
+      const inv = await draft("ct-lumen", 100_000, "ZAR", COMPANY);
+      await h.call("billing.add-line", { invoiceId: inv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+
+      // Try to delete from other company
+      const error = await callWithCompany("delete-draft-invoice", { invoiceId: inv.id }, OTHER_COMPANY).catch((e) => e.message);
+      expect(error).toContain("Not found");
+    });
+
+    it("refuses to delete another company's draft quote", async () => {
+      const q = await quote("deal-1", "ct-lumen", COMPANY);
+      await h.call("billing.add-quote-line", { quoteId: q.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+
+      // Try to delete from other company
+      const error = await callWithCompany("delete-draft-quote", { quoteId: q.id }, OTHER_COMPANY).catch((e) => e.message);
+      expect(error).toContain("Not found");
     });
   });
 });

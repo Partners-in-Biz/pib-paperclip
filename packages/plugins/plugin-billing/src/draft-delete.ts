@@ -4,7 +4,7 @@
  * Refuse when sent, paid, or linked to a recurring/subscription.
  */
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { isCanaryRef } from "./canary.js";
+import { isCanaryCustomer } from "./canary.js";
 import { getInvoice, getQuote, linesFor, quoteLinesFor, table, type InvoiceRow, type QuoteRow } from "./db.js";
 import { BillingError } from "./domain.js";
 import { syncDraftsDigest } from "./followups.js";
@@ -43,7 +43,7 @@ export async function deleteDraftInvoice(ctx: PluginContext, context: PluginPerf
   }
 
   // Decide: void or hard-delete
-  const isCanary = isCanaryRef(invoice.customer_ref);
+  const isCanary = isCanaryCustomer(invoice);
   const shouldVoid = !isCanary && invoice.number;
 
   // If this invoice was converted from a quote, reset the quote (before deletion)
@@ -102,7 +102,10 @@ export async function deleteDraftInvoice(ctx: PluginContext, context: PluginPerf
   }
 }
 
-/** Delete a draft quote (hard-delete). */
+/**
+ * Delete a draft quote (hard-delete only). Unlike invoices, quotes have no statutory gap-free number sequence,
+ * so numbering gaps are acceptable and voiding is not necessary.
+ */
 export async function deleteDraftQuote(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
   const quote = await requireQuote(ctx, companyId, requiredString(params, "quoteId"));
