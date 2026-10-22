@@ -8,6 +8,12 @@ import { decide, type PolicyClass } from "./policy.js";
 import { appendPushLog, listRecentPushLog, listSubscriptionsForUser, type PushSubscription } from "./store.js";
 import { sendPush, type SendDeps } from "./send.js";
 
+export type NotifyOutcome = "sent" | "deferred" | "capped" | "duplicate" | "no_subscription";
+
+export interface NotifyResult {
+  outcome: NotifyOutcome;
+}
+
 export interface NotifyOwnerDeps {
   /** Send notifications to subscriptions (default: use sendPush). */
   deliver?: (ctx: PluginContext, companyId: string, subs: PushSubscription[], payload: { title: string; body: string; url: string; tag: string; class: PolicyClass }, opts?: SendDeps) => Promise<void>;
@@ -21,6 +27,8 @@ export interface NotifyOwnerDeps {
  * - Applies policy (critical/quiet/duplicate/cap/window).
  * - Delivers to owner's subscriptions or logs the decision.
  * - Appends push log entry.
+ * Returns the outcome: "sent" if delivered, "no_subscription" if no subscriptions,
+ * "deferred" during quiet hours, "duplicate" within 6h, or "capped" by daily limit.
  */
 export async function notifyOwner(
   ctx: PluginContext,
@@ -34,7 +42,7 @@ export async function notifyOwner(
     url: string;
   },
   deps?: NotifyOwnerDeps,
-): Promise<void> {
+): Promise<NotifyResult> {
   const now = (deps?.now ?? (() => new Date()))();
   const deliver = deps?.deliver ?? defaultDeliver;
 
@@ -68,6 +76,9 @@ export async function notifyOwner(
         tag: opts.issueRef,
         class: opts.class,
       });
+      return { outcome: "sent" };
+    } else {
+      return { outcome: "no_subscription" };
     }
   } else if (decision.action === "defer") {
     await appendPushLog(ctx, {
@@ -78,6 +89,7 @@ export async function notifyOwner(
       status: "deferred",
       createdAt: now,
     });
+    return { outcome: "deferred" };
   } else if (decision.action === "drop") {
     const reason = decision.reason === "duplicate" ? "dropped" : "capped";
     await appendPushLog(ctx, {
@@ -88,7 +100,8 @@ export async function notifyOwner(
       status: reason,
       createdAt: now,
     });
-  } else if (decision.action === "collapse") {
+    return { outcome: decision.reason === "duplicate" ? "duplicate" : "capped" };
+  } else {
     const status = decision.notify ? "collapsed" : "collapsed";
     await appendPushLog(ctx, {
       companyId: opts.companyId,
@@ -104,8 +117,6 @@ export async function notifyOwner(
       const okSubs = subs.filter((s) => s.state === "ok");
       if (okSubs.length > 0) {
         // Deliver collapse notification.
-        // Note: the deliver function (default sendPush) handles its own logging of "sent" for the collapse notification.
-        // Do not log here to avoid double-logging.
         await deliver(ctx, opts.companyId, okSubs, {
           title: opts.title,
           body: `${opts.body} (+ ${decision.n - 1} more)`,
@@ -115,6 +126,7 @@ export async function notifyOwner(
         });
       }
     }
+    return { outcome: "capped" };
   }
 }
 
