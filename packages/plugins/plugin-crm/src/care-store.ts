@@ -274,7 +274,7 @@ export async function setReportStatus(ctx: PluginContext, companyId: string, id:
 // Approvals (what waits for a person before it happens)
 // ---------------------------------------------------------------------------
 
-export const APPROVAL_KINDS = ["client_action", "client_reminder", "client_report", "feedback_request", "erasure", "esign_request", "esign_reminder", "esign_copy"] as const;
+export const APPROVAL_KINDS = ["client_action", "client_reminder", "client_report", "feedback_request", "erasure", "esign_request", "esign_reminder", "esign_copy", "speed_to_lead"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export const APPROVAL_STATUSES = ["open", "approved", "refused", "sent", "failed", "dry_run", "erased"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
