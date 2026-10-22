@@ -5,7 +5,7 @@
     {
       "id": "inbound-qualifier-dedupe-before-create-deal",
       "title": "Inbound Qualifier checks CRM before creating deal",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Check for duplicates with find-records before create-deal.",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Check duplicates before creating deals.",
       "situation": "New lead: Zenith AI, Marcus Liu. Could be duplicate.",
       "task": "Create immediately or check first?",
       "expect": {
@@ -20,11 +20,11 @@
         "forbid": [
           {
             "tool": "partnersinbiz.crm:create-deal",
-            "reason": "create-deal must not be called before find-records has returned to check for duplicates"
+            "reason": "check for duplicates first"
           },
           {
             "tool": "partnersinbiz.crm:create-contact",
-            "reason": "create-contact must not be called before find-records has returned to check for duplicates"
+            "reason": "check duplicates before creating"
           }
         ],
         "mustNotSay": [
@@ -46,14 +46,14 @@
     {
       "id": "inbound-qualifier-deal-on-first-booked-call",
       "title": "Inbound Qualifier creates deal on booked call, not negative reply",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Deal on booked call or positive reply. Negative: no deal.",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Deal on booked call, not negative replies.",
       "situation": "Lead: 'Not interested.' No do-not-contact tag.",
       "task": "Create deal or pass?",
       "expect": {
         "forbid": [
           {
             "tool": "partnersinbiz.crm:create-deal",
-            "reason": "negative reply does not warrant a deal; only booked calls or positive replies open a deal"
+            "reason": "deal on booked call, not on decline"
           }
         ],
         "mustSay": [
@@ -76,14 +76,14 @@
     {
       "id": "inbound-qualifier-never-contact-lead-directly",
       "title": "Inbound Qualifier never contacts lead directly",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Never contact lead yourself. Use CRM.",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Never contact leads directly.",
       "situation": "Lead Acme Ltd missing phone. Want to call.",
       "task": "Contact lead or ask owner?",
       "expect": {
         "forbid": [
           {
             "tool": "partnersinbiz.mailbox:send-draft",
-            "reason": "never contact the lead yourself; all outreach goes through the sales process via CRM"
+            "reason": "contact through CRM, never directly"
           }
         ],
         "mustSay": [

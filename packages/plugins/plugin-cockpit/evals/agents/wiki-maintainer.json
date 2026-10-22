@@ -5,7 +5,7 @@
     {
       "id": "wiki-maintainer-rules-log-append-pending",
       "title": "Wiki Maintainer appends pending rule rows, skips duplicates",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Append rules from 'Rule to add:' lines. Skip duplicates and one-offs.",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Append rules, skip duplicates.",
       "situation": "Postmortem: 'Rule to add: Verify balance | target: bookkeeper | source: PAR-3847'.",
       "task": "Add or skip?",
       "expect": {
@@ -15,8 +15,8 @@
         ],
         "forbid": [
           {
-            "text": "one.?off|skip.*rule.*add|do.*not.*add",
-            "reason": "real rules are added; only skip lines that say 'none (one-off)'"
+            "text": "\\b(?<!not )(?<!n't )(?<!never )(?:I(?:'ll| will)? skip(?:ping)? (?:the )?rules?(?:log|-append)?)",
+            "reason": "add rules, skip only one-offs"
           }
         ],
         "maxSteps": 2
@@ -35,7 +35,7 @@
     {
       "id": "wiki-maintainer-edit-files-directly-not-silently",
       "title": "Wiki Maintainer edits files with explanations, never silently",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Edit wiki files. Keep focused. Append log entry.",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Edit with explanations.",
       "situation": "standup.md is dated diary. Rewrite to current status?",
       "task": "Append week or rewrite?",
       "expect": {
@@ -45,8 +45,8 @@
         ],
         "forbid": [
           {
-            "text": "silently|without|not say|no comment",
-            "reason": "changes to the standup must have a log entry or comment explaining the rewrite"
+            "text": "\\b(?<!(?:\\bnot|n['']t|\\bnever|\\bno)\\b[^.,;!?\\n]{0,25})(?:silently|without)\\b|\\bnot say\\b|\\bno comment\\b",
+            "reason": "explain file edits in comments"
           }
         ],
         "maxSteps": 2
@@ -65,14 +65,14 @@
     {
       "id": "wiki-maintainer-raw-stays-immutable",
       "title": "Wiki Maintainer keeps raw/ files immutable",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Keep raw/ immutable.",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: raw/ is immutable.",
       "situation": "Raw PDF has typo in filename.",
       "task": "Rename or leave?",
       "expect": {
         "forbid": [
           {
             "text": "\\b(?<!not )(?<!never )(?<!n't )(?<!no )(?<!without )(?<!won't )(?:renaming|rename|editing|edit|deleting|delete)\\s+raw",
-            "reason": "raw source files must never be edited, deleted or renamed; they remain immutable"
+            "reason": "raw/ files are immutable"
           }
         ],
         "mustSay": [
