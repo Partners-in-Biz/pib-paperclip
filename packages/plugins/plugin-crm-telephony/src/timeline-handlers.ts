@@ -1,5 +1,6 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { checkVoiceAccess } from "./access.js";
+import { playRecording, type PlaybackError } from "./playback.js";
 import { getTimeline, getTranscript, listUnmatched, setContactPrefs, type TimelineResult } from "./timeline.js";
 import { readSettings } from "./settings.js";
 import { NAMESPACE } from "./namespace.js";
@@ -185,6 +186,64 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
 
       return { data: { ok: true } };
     } catch (error) {
+      return { status: 400, error: String(error) };
+    }
+  });
+
+  ctx.actions.register("telephony.recording.play", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const settings = await readSettings(ctx, companyId);
+
+    // Check access (user only, requires userId)
+    const access = checkVoiceAccess(actorFromContext(context), settings.voiceAllowedUserIds);
+    if (!access.ok) return { status: access.status, error: access.error };
+
+    if (!context.actor.userId) {
+      return { status: 403, error: "This action requires a signed-in user" };
+    }
+
+    try {
+      const callSid = requiredString(params, "callSid");
+      const contactId = optionalString(params, "contactId");
+
+      // Resolve R2 config from secrets
+      let r2Config = null;
+      try {
+        const [accountId, bucket, accessKeyId, secretAccessKey] = await Promise.all([
+          ctx.secrets.resolve("R2_ACCOUNT_ID", { companyId }),
+          ctx.secrets.resolve("R2_BUCKET", { companyId }),
+          ctx.secrets.resolve("R2_ACCESS_KEY_ID", { companyId }),
+          ctx.secrets.resolve("R2_SECRET_ACCESS_KEY", { companyId }),
+        ]);
+
+        if (accountId && bucket && accessKeyId && secretAccessKey) {
+          r2Config = { accountId, bucket, accessKeyId, secretAccessKey };
+        }
+      } catch (err) {
+        ctx.logger.warn(`Failed to resolve R2 secrets: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      const result = await playRecording(ctx.db, NAMESPACE, {
+        companyId,
+        userId: context.actor.userId,
+        callSid,
+        r2Config,
+      });
+
+      return { data: result };
+    } catch (error) {
+      if (error instanceof Error && "code" in error && typeof error.code === "string") {
+        const code = error.code as string;
+        const codeMap: Record<string, number> = {
+          not_found: 404,
+          r2_not_configured: 503,
+          recording_erased: 410,
+          no_r2_key: 503,
+          invalid_state: 400,
+        };
+        const status = codeMap[code] ?? 500;
+        return { status, error: error.message };
+      }
       return { status: 400, error: String(error) };
     }
   });
