@@ -1,6 +1,6 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { checkVoiceAccess } from "./access.js";
-import { getTimeline, getTranscript, type TimelineResult } from "./timeline.js";
+import { getTimeline, getTranscript, listUnmatched, setContactPrefs, type TimelineResult } from "./timeline.js";
 import { readSettings } from "./settings.js";
 import { NAMESPACE } from "./namespace.js";
 
@@ -65,6 +65,25 @@ function optionalInt(obj: unknown, key: string, min: number, max: number): numbe
   return n;
 }
 
+function optionalEnum<T extends string | boolean>(obj: unknown, key: string, values: readonly T[]): T | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  const val = (obj as Record<string, unknown>)[key];
+  if (val == null) return undefined;
+  if (typeof val !== "string" && typeof val !== "boolean") throw new Error(`${key} must be a string or boolean`);
+  const enumVal = val as T;
+  if (!values.includes(enumVal)) {
+    throw new Error(`${key} must be one of: ${values.join(", ")}`);
+  }
+  return enumVal;
+}
+
+function optionalBoolean(obj: unknown, key: string): boolean | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  const val = (obj as Record<string, unknown>)[key];
+  if (val == null) return undefined;
+  if (typeof val !== "boolean") throw new Error(`${key} must be a boolean`);
+  return val;
+}
 
 export async function registerTimelineHandlers(ctx: PluginContext): Promise<void> {
   ctx.actions.register("telephony.timeline", async (params, context) => {
@@ -112,6 +131,59 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
       if (!transcript) return { status: 404, error: "Transcript not found" };
 
       return { data: transcript };
+    } catch (error) {
+      return { status: 400, error: String(error) };
+    }
+  });
+
+  ctx.actions.register("telephony.unmatched", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const settings = await readSettings(ctx, companyId);
+
+    // Check access
+    const access = checkVoiceAccess(actorFromContext(context), settings.voiceAllowedUserIds);
+    if (!access.ok) return { status: access.status, error: access.error };
+
+    try {
+      const limit = optionalInt(params, "limit", 1, 100) ?? 50;
+
+      const items = await listUnmatched(ctx.db, NAMESPACE, {
+        companyId,
+        limit,
+      });
+
+      return { data: items };
+    } catch (error) {
+      return { status: 400, error: String(error) };
+    }
+  });
+
+  ctx.actions.register("telephony.contact-prefs.set", async (params, context) => {
+    const companyId = requiredCompany(context);
+    const settings = await readSettings(ctx, companyId);
+
+    // Check access (user only, requires userId)
+    const access = checkVoiceAccess(actorFromContext(context), settings.voiceAllowedUserIds);
+    if (!access.ok) return { status: access.status, error: access.error };
+
+    if (!context.actor.userId) {
+      return { status: 403, error: "This action requires a signed-in user" };
+    }
+
+    try {
+      const contactId = requiredString(params, "contactId");
+      const doNotRecord = optionalBoolean(params, "doNotRecord");
+      const language = optionalEnum(params, "language", ["af", "en"] as const);
+
+      await setContactPrefs(ctx.db, NAMESPACE, {
+        companyId,
+        contactId,
+        userId: context.actor.userId,
+        doNotRecord,
+        language,
+      });
+
+      return { data: { ok: true } };
     } catch (error) {
       return { status: 400, error: String(error) };
     }
