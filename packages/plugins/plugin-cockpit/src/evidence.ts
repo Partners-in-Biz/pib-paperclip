@@ -306,10 +306,12 @@ export async function confirmEvidencePush(
     }
 
     // Wrap deliver to track if delivery was attempted
-    const innerDeliver = args.deliver ?? ((ctx, companyId, subs, payload) => sendPush(ctx, companyId, subs, payload, { class: payload.class }));
+    const innerDeliver = args.deliver ?? (async (ctx, companyId, subs, payload) => {
+      await sendPush(ctx, companyId, subs, payload, { class: payload.class });
+    });
     const wrappedDeliver: NotifyOwnerDeps["deliver"] = async (...a) => {
       deliveryAttempted = true;
-      return innerDeliver(...a);
+      await innerDeliver(...a);
     };
 
     // Call notifyOwner
