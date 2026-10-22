@@ -5,11 +5,58 @@
  */
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { isCanaryCustomer } from "./canary.js";
-import { getInvoice, getQuote, linesFor, quoteLinesFor, table, type InvoiceRow, type QuoteRow } from "./db.js";
+import { getInvoice, getQuote, table, type InvoiceRow, type QuoteRow } from "./db.js";
 import { BillingError } from "./domain.js";
 import { syncDraftsDigest } from "./followups.js";
 import { publicInvoice, publicQuote, requireOwnInvoice, requireQuote } from "./invoices.js";
 import { requiredCompany, requiredString } from "./util.js";
+
+/**
+ * Delete all child records of invoices, including work_issues.
+ * Does NOT delete the invoices themselves; caller handles that after cleanup.
+ */
+export async function deleteInvoiceDependents(ctx: PluginContext, invoiceIds: string[]): Promise<void> {
+  if (invoiceIds.length === 0) return;
+
+  const invoiceIdsList = `(${invoiceIds.map((_, i) => `$${i + 1}`).join(",")})`;
+
+  // Delete invoice-specific children
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_lines")} WHERE invoice_id IN ${invoiceIdsList}`, invoiceIds);
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_grants")} WHERE invoice_id IN ${invoiceIdsList}`, invoiceIds);
+
+  // Delete follow-ups and work issues that reference these invoices
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "follow_ups")} WHERE subject_kind = 'invoice' AND subject_id IN ${invoiceIdsList}`,
+    invoiceIds,
+  );
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "work_issues")} WHERE kind = 'invoice' AND subject_id IN ${invoiceIdsList}`,
+    invoiceIds,
+  );
+}
+
+/**
+ * Delete all child records of quotes, including work_issues.
+ * Does NOT delete the quotes themselves; caller handles that after cleanup.
+ */
+export async function deleteQuoteDependents(ctx: PluginContext, quoteIds: string[]): Promise<void> {
+  if (quoteIds.length === 0) return;
+
+  const quoteIdsList = `(${quoteIds.map((_, i) => `$${i + 1}`).join(",")})`;
+
+  // Delete quote-specific children
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "quote_lines")} WHERE quote_id IN ${quoteIdsList}`, quoteIds);
+
+  // Delete follow-ups and work issues that reference these quotes
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "follow_ups")} WHERE subject_kind = 'quote' AND subject_id IN ${quoteIdsList}`,
+    quoteIds,
+  );
+  await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "work_issues")} WHERE kind = 'quote' AND subject_id IN ${quoteIdsList}`,
+    quoteIds,
+  );
+}
 
 /** Delete a draft invoice (hard-delete for canary/numberless, void otherwise). */
 export async function deleteDraftInvoice(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -65,24 +112,7 @@ export async function deleteDraftInvoice(ctx: PluginContext, context: PluginPerf
     );
   } else {
     // Hard-delete: remove in transaction order (children first)
-    const lines = await linesFor(ctx, invoice.id);
-    if (lines.length > 0) {
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_lines")} WHERE invoice_id = $1`, [invoice.id]);
-    }
-
-    await ctx.db.execute(`DELETE FROM ${table(ctx, "invoice_grants")} WHERE invoice_id = $1`, [invoice.id]);
-
-    // Delete follow-ups that reference this invoice
-    await ctx.db.execute(
-      `DELETE FROM ${table(ctx, "follow_ups")} WHERE subject_kind = 'invoice' AND subject_id = $1`,
-      [invoice.id],
-    );
-
-    // Delete work issues that reference this invoice
-    await ctx.db.execute(
-      `DELETE FROM ${table(ctx, "work_issues")} WHERE kind = 'invoice' AND subject_id = $1`,
-      [invoice.id],
-    );
+    await deleteInvoiceDependents(ctx, [invoice.id]);
 
     // Finally, delete the invoice
     await ctx.db.execute(`DELETE FROM ${table(ctx, "invoices")} WHERE id = $1`, [invoice.id]);
@@ -118,23 +148,8 @@ export async function deleteDraftQuote(ctx: PluginContext, context: PluginPerfor
     throw new BillingError("This quote was converted to an invoice; delete the invoice instead");
   }
 
-  // Hard-delete: remove lines first
-  const lines = await quoteLinesFor(ctx, quote.id);
-  if (lines.length > 0) {
-    await ctx.db.execute(`DELETE FROM ${table(ctx, "quote_lines")} WHERE quote_id = $1`, [quote.id]);
-  }
-
-  // Delete follow-ups that reference this quote
-  await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "follow_ups")} WHERE subject_kind = 'quote' AND subject_id = $1`,
-    [quote.id],
-  );
-
-  // Delete work issues that reference this quote
-  await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "work_issues")} WHERE kind = 'quote' AND subject_id = $1`,
-    [quote.id],
-  );
+  // Hard-delete: remove dependents first
+  await deleteQuoteDependents(ctx, [quote.id]);
 
   // Delete the quote
   await ctx.db.execute(`DELETE FROM ${table(ctx, "quotes")} WHERE id = $1`, [quote.id]);
