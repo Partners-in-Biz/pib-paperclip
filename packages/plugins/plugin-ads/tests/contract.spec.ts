@@ -168,9 +168,9 @@ describe("rules every PiB plugin keeps", () => {
     }
   });
 
-  it("the only code that can change an ad platform is the guarded execute path", () => {
+  it("only execute and the sweeper can change an ad platform: execute for guarded changes, sweeper for safety pause", () => {
     const callers = files(join(ROOT, "src")).filter((f) => /\.(createCampaign|setCampaignStatus|setCampaignBudget)\(/.test(code(readFileSync(f, "utf8"))));
-    expect(callers.map((f) => f.slice(ROOT.length))).toEqual(["src/execute.ts"]);
+    expect(callers.map((f) => f.slice(ROOT.length))).toEqual(["src/execute.ts", "src/sweeper.ts"]);
   });
 
   it("the only code that records an approval is called from a person's action or an issue a person closed", () => {

@@ -66,6 +66,7 @@ import {
 } from "./records.js";
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
+import { sweepCaps } from "./sweeper.js";
 import { syncCompany } from "./sync.js";
 import { SKILLS } from "./skills.js";
 import { ADS_TOOLS } from "./tools.js";
@@ -515,6 +516,11 @@ const plugin = definePlugin({
       });
       await deleteExpiredOauthSessions(ctx).catch(() => undefined);
       return { companies: runs.length, runs };
+    });
+    // Hourly: auto-pause campaigns at/over lifetime or scope monthly cap using fresh insights.
+    registerJob(ctx, "sweep-caps", async () => {
+      const runs = await forEachCompany(ctx, (rt) => sweepCaps(rt));
+      return { companies: runs.length, failed: runs.filter((r) => r.error).length, runs };
     });
     // Hourly: expire proposals nobody decided, tell the Setup plugin and the Cockpit, and bring every company's skills up to date.
     registerJob(ctx, "setup-status", async () => {

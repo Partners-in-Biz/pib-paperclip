@@ -61,6 +61,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "37 * * * *",
     },
     {
+      jobKey: "sweep-caps",
+      displayName: "Pause ads at their cap",
+      description: "Hourly: checks every ACTIVE campaign against its lifetime budget and the scope's monthly cap using fresh provider insights, pauses those that have reached or exceeded their cap (safety guardrail, not automatic spend control), and checks for disapproved ads. Raises alerts for the ads agent to see.",
+      schedule: "5 * * * *",
+    },
+    {
       jobKey: "setup-status",
       displayName: "Report setup status",
       description: "Tells the Setup plugin what Paid ads still needs and sends the Cockpit snapshot for each company; expires proposals nobody decided in 7 days; brings the ads skill up to date for every company.",

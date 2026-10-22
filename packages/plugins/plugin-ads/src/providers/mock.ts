@@ -65,6 +65,8 @@ export class MockAdsProvider implements AdsProvider {
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
+  /** Oldest `since` (in days back) that insights accepts; undefined means no limit. */
+  maxInsightsWindowDays?: number;
   private seq = 100;
 
   constructor(readonly platform: StoredPlatform = "meta", options: { demo?: boolean } = {}) {
@@ -120,6 +122,11 @@ export class MockAdsProvider implements AdsProvider {
   async insights(_env: unknown, _token: TokenBundle, account: AccountRef, range: { since: string; until: string }) {
     this.reads.push(`insights:${account.externalId}:${range.since}:${range.until}`);
     this.maybeFail("insights");
+    // Meta rejects a start date more than ~37 months back; `maxInsightsWindowDays` models that limit.
+    if (this.maxInsightsWindowDays !== undefined) {
+      const ageDays = (this.clock().getTime() - Date.parse(`${range.since}T00:00:00Z`)) / 86_400_000;
+      if (ageDays > this.maxInsightsWindowDays) throw new ProviderError(`since=${range.since} is older than ${this.maxInsightsWindowDays} days`);
+    }
     const fixed = this.insightRows[account.externalId];
     if (fixed) return fixed.filter((r) => r.day >= range.since && r.day <= range.until);
     const out: InsightRow[] = [];
