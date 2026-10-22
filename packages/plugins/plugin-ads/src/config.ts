@@ -302,6 +302,24 @@ export function webBrokerUrlOf(raw: Record<string, unknown>): string {
   return text(raw.webBrokerUrl) ?? DEFAULT_WEB_BROKER_URL;
 }
 
+/**
+ * Validate the broker base URL before any secret is sent.
+ * https only; http is allowed for localhost / 127.0.0.1 (same rule as requirePublicBaseUrl).
+ */
+export function requireWebBrokerUrl(raw: Record<string, unknown>): string {
+  const rawUrl = webBrokerUrlOf(raw);
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Ad connections broker URL is not a valid URL.");
+  }
+  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+    throw new Error("Ad connections broker URL must use https (http is only allowed for localhost).");
+  }
+  return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
+}
+
 export function webOrgIdOf(raw: Record<string, unknown>): string | null {
   return text(raw.webOrgId);
 }

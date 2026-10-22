@@ -375,7 +375,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "ads.sync-skills": async (_ctx, _rt, v) => ({ results: await skillSync!.force(v.companyId) }),
   "ads.web-connections.load": async (ctx, rt) => {
     const raw = rt.config.raw;
-    const meta = await loadWebConnectionsMeta(ctx, rt.companyId, raw);
+    const meta = await loadWebConnectionsMeta(raw);
     if (!meta.configured) {
       return { ...meta, google: false, meta: false, googleConnectionId: null as string | null };
     }
@@ -396,8 +396,9 @@ const ACTIONS: Record<string, ActionHandler> = {
     const broker = await webBrokerFor(ctx, rt.companyId, raw);
     const returnPath = await webConnectionsReturnPath(ctx, rt.companyId, raw.publicBaseUrl);
     try {
-      if (platform === "google") return startGoogleAuthorize(broker, { returnPath });
-      return startMetaAuthorize(broker, { returnPath });
+      // await is required so a rejected broker promise hits this catch (BrokerError → AdsError).
+      if (platform === "google") return await startGoogleAuthorize(broker, { returnPath });
+      return await startMetaAuthorize(broker, { returnPath });
     } catch (error) {
       if (error instanceof BrokerError) throw new AdsError(error.message);
       throw error;
