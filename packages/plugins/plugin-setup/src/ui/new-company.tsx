@@ -268,7 +268,7 @@ export function StarterPackCard({ pack, selected, onSelect, onApprove, busy, can
         {pack.importedAt ? <Pill size="sm" tone="ok">Seeded {pack.importedAt.slice(0, 10)}</Pill> : null}
       </div>
       <p style={muted}>
-        {pack.facts.length} company-wide lessons about how the platform and its tools behave, taken from the live company's memory with every client, price, person and issue number left out. A new company's memory starts empty; this pack is off until the owner reads it and approves this exact version.
+        {pack.facts.length} company-wide lessons about how the platform and its tools behave, taken from the live company's memory with every client, price, person and issue number left out. It is on for every new company, but only an exact version the owner approved is seeded; a changed pack waits for a new approval.
       </p>
       <details>
         <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Read the {pack.facts.length} facts</summary>
@@ -417,7 +417,7 @@ export function NewCompanyView(props: NewCompanyViewProps) {
         />
       </SectionCard>
 
-      {state ? <StarterPackCard pack={state.starterPack} selected={options.starterPack === true} onSelect={(on) => props.onOptions({ ...options, starterPack: on })} onApprove={props.onApprove} busy={props.approving} canApprove={props.canApprove} /> : null}
+      {state ? <StarterPackCard pack={state.starterPack} selected={options.starterPack !== false} onSelect={(on) => props.onOptions({ ...options, starterPack: on })} onApprove={props.onApprove} busy={props.approving} canApprove={props.canApprove} /> : null}
     </div>
   );
 }
