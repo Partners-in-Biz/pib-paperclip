@@ -30,6 +30,15 @@ describe("the canary id rule", () => {
     expect(sql).toContain("%.invalid");
     expect(isCanarySql("q")).toMatch(/^[\(\)].*ILIKE.*\.invalid.*[\(\)]$/);
   });
+
+  it("wraps both operands with COALESCE to ensure NULL-safe evaluation", () => {
+    const sql = isCanarySql("i");
+    // Verify both operands are wrapped with COALESCE
+    expect(sql).toContain("COALESCE(i.customer_ref LIKE 'canary-%', false)");
+    expect(sql).toContain("COALESCE((i.customer->>'email')::text ILIKE '%@%.invalid', false)");
+    // Verify the whole expression is wrapped in parentheses for proper precedence
+    expect(sql).toMatch(/^\(.*\)$/);
+  });
 });
 
 describe("the reminder plan", () => {
