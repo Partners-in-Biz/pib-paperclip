@@ -146,6 +146,7 @@ import {
   updateQuote,
   updateQuoteLine,
 } from "./invoices.js";
+import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
@@ -434,6 +435,8 @@ const plugin = definePlugin({
     // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.
     registerCompanyBootstrap(ctx, { syncer: skillSync });
     registerBillingErasure(ctx);
+    // CRM cleanup-canary emits company.deleted. Remove that canary client's invoices and quotes.
+    registerCanaryCleanup(ctx);
     // Every company's skills, not only the one a call comes from (Q7-2).
     registerSkillSyncJob(ctx, skillSync, { companyIds: () => billingCompanyIds(ctx), isEnabled: (companyId) => billingOn(ctx, companyId), plugin: PLUGIN_ID });
     ctx.jobs.register("privacy-retention", () => trackJob(ctx, "privacy-retention", () => privacyRetentionJob(ctx)));

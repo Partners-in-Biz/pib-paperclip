@@ -35,9 +35,11 @@ export function isCanaryCustomer(doc: { customer_ref?: string | null; customer?:
 }
 
 /**
- * SQL that is true for a row of the canary client (`customer_ref` starts with the prefix), for queries that must leave it out
+ * SQL that is true for a row of the canary client (`customer_ref` starts with the prefix, or customer.email ends in .invalid), for queries that must leave it out
  * (`AND NOT (${isCanarySql("i")})`). `alias` is the table's alias in that query. Constant text: nothing here is a parameter.
+ * Both operands are wrapped with COALESCE to ensure NULL-safe evaluation: if customer_ref is NULL or customer.email is missing,
+ * the predicate still yields false (not NULL), so real invoices/quotes with missing customer data are not dropped.
  */
 export function isCanarySql(alias: string): string {
-  return `${alias}.customer_ref LIKE '${CANARY_PREFIX}%'`;
+  return `(COALESCE(${alias}.customer_ref LIKE '${CANARY_PREFIX}%', false) OR COALESCE((${alias}.customer->>'email')::text ILIKE '%@%.invalid', false))`;
 }
