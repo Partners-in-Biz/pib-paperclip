@@ -238,7 +238,19 @@ describe("what the dev chain is told", () => {
   });
 
   it("keeps each file a sane size", () => {
-    for (const key of KEYS) expect(text(key).length, key).toBeLessThan(14_000);
+    for (const key of KEYS) {
+      const limit = key === "delivery-lead" ? 14_500 : 14_000; // Spike rules (item 7) bump skeleton template
+      expect(text(key).length, key).toBeLessThan(limit);
+    }
+  });
+
+  it("includes spike rules with blockedByIssueIds in planner and 01:00-04:00 UTC and Evidence: in delivery-lead", () => {
+    const planner = text("planner");
+    expect(planner).toContain("blockedByIssueIds");
+    expect(planner).toContain("pib:spike");
+    const lead = text("delivery-lead");
+    expect(lead).toContain("01:00-04:00 UTC");
+    expect(lead).toContain("**Evidence:**");
   });
 });
 

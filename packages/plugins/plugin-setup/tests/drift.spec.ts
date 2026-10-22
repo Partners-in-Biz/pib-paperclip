@@ -207,8 +207,8 @@ describe("computeDrift", () => {
       chars: number;
       budget: number;
     };
-    expect(reason?.chars).toBeGreaterThan(14000);
-    expect(reason?.budget).toBe(14000);
+    expect(reason?.chars).toBeGreaterThan(14500);
+    expect(reason?.budget).toBe(14500);
   });
 
   it("mid-run alone: midRun=true, drifted=false", () => {
