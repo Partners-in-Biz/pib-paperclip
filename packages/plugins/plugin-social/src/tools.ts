@@ -253,7 +253,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "review-outcomes",
     displayName: "Review outcomes",
-    description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. These are inputs for a later autonomy policy: auto-approval is off and you never approve.${OWN}`,
+    description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. The autonomy block lists which post types qualify for the low-risk auto-approval ladder (streak of 5); you never approve.${OWN}`,
     parametersSchema: schema([], { ...scope, days: int("Days to look back, 7-365 (default 90)") }),
   },
   {

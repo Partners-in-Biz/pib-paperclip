@@ -21,7 +21,8 @@ import { destinationsForPost, getAccountsByIds, getPost, setPostStatus, table, t
 import { SocialError } from "./domain.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
-import { currentSignoffs, outcomesForPost, recordOutcome, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
+import { AUTO_APPROVE_STREAK, autoApprovalDecision, ownerStreak } from "./autonomy.js";
+import { currentSignoffs, humanRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
 import { validatePostRow } from "./validate.js";
 import { growthEnv, type GrowthEnv } from "./growth/host.js";
@@ -80,7 +81,7 @@ export async function recordSignoff(
   hash: string,
   stage: Stage,
   outcome: "approved" | "changes",
-  via: "tool" | "ui" | "link" | "recorded",
+  via: "tool" | "ui" | "link" | "recorded" | "auto",
   actor: OutcomeActor,
   note?: string | null,
 ): Promise<void> {
@@ -134,9 +135,39 @@ export async function completeApproval(ctx: PluginContext, actor: ReviewActor, p
   return { completed: true, pending: [], message: approval.message, approval };
 }
 
+/**
+ * The autonomy ladder: a low-risk post whose only missing sign-off is the team member's click, and whose owner streak for its
+ * type in this scope is at least AUTO_APPROVE_STREAK, is approved here (rule in autonomy.ts). Returns null when the post is not
+ * eligible or anything fails: a person approves it as before. A Reviewer's pass the policy asks for must already be in.
+ */
+export async function tryAutoApprove(ctx: PluginContext, actor: ReviewActor, post: PostRow, known?: SignoffState): Promise<ApprovalProgress | null> {
+  try {
+    if (post.status !== "review" || post.scope === "personal") return null;
+    const companyId = actor.companyId;
+    const state = known ?? (await signoffState(ctx, companyId, post));
+    if (!state.policy.requireOwner || !state.missing.includes("owner")) return null;
+    const type = postTypeOf(post);
+    // Cheap checks first: the validation and the stats are only read for a post that could qualify.
+    const quick = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: true, streak: AUTO_APPROVE_STREAK });
+    if (!quick.eligible) return null;
+    const check = await validatePostRow(ctx, companyId, post);
+    const streak = ownerStreak(summariseOutcomes(humanRows(await statRows(ctx, companyId, scopeOfRow(post), 90))), type.type);
+    const decision = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: check.ok, streak });
+    if (!decision.eligible) return null;
+    const note = `Auto-approved: low-risk ${type.type} post, ${streak} team approvals in a row for this type in this scope.`;
+    await recordSignoff(ctx, companyId, post, state.hash, "owner", "approved", "auto", { name: "Autonomy ladder" }, note);
+    return await completeApproval(ctx, actor, post, "The autonomy ladder", note);
+  } catch (error) {
+    ctx.logger.info("Social auto-approval skipped", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
 /** What is left to do after a sign-off: complete the approval, or hand the issue to whoever has to act next. */
 export async function afterSignoff(ctx: PluginContext, actor: ReviewActor, post: PostRow, state: SignoffState, who: string, note?: string, lead?: string): Promise<ApprovalProgress> {
   if (state.missing.length === 0) return completeApproval(ctx, actor, post, who, note);
+  const auto = await tryAutoApprove(ctx, actor, post, state);
+  if (auto) return auto;
   const companyId = actor.companyId;
   const waiting = stageList(state.missing);
   const targets = await handoffTargets(ctx, companyId, post);

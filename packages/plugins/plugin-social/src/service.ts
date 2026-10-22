@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
@@ -591,7 +591,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
   if (to === "review") {
     await routePostReview(ctx, viewer, post);
-    return getPostDetail(ctx, viewer, post.id);
+    // No Reviewer asked for: a low-risk post with a clean owner streak needs no click (autonomy ladder).
+    const inReview = await getPost(ctx, viewer.companyId, post.id);
+    const auto = inReview ? await tryAutoApprove(ctx, viewer, inReview) : null;
+    return { ...(await getPostDetail(ctx, viewer, post.id)), ...(auto ? { signoff: { completed: true, pending: [], message: auto.message } } : {}) };
   }
   // Back to draft: a link the client holds would only let them answer for a post that is no longer waiting.
   if (to === "draft" && post.status === "review") await supersedePendingLinks(ctx, viewer.companyId, post.id);

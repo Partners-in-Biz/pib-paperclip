@@ -106,7 +106,7 @@ describe("autonomy inputs", () => {
     ]);
   });
 
-  it("says plainly that auto-approval is off, and reads one scope only", async () => {
+  it("reports the ladder with nothing enabled when there is no streak, and reads one scope only", async () => {
     const w = approvalWorld();
     const stats = await reviewStats(w.ctx, "co", { kind: "company", id: "c1" }, 30);
     expect(stats).toMatchObject({ days: 30, scope: "company:c1", types: [], autonomy: { enabled: false } });
