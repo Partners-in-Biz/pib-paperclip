@@ -76,7 +76,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
     });
 
     it("hard-deletes a numbered draft invoice on a .invalid email contact", async () => {
-      // Create a contact with .invalid email (treated as canary)
+      // Create a contact with .invalid email (treated as canary) using seedClient
       const invalidEmailContact = "ct-invalid";
       await seedClient(h, { id: invalidEmailContact, name: "Invalid Email", email: "test@example.invalid" });
 
