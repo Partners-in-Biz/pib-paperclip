@@ -50,10 +50,17 @@ describe("speed-to-lead consent", () => {
     expect(isOptedOut("bounced")).toBe(true);
   });
 
-  it("detects opt-out wording and the do-not-contact tag", () => {
+  it("detects explicit opt-out phrases and the do-not-contact tag", () => {
+    expect(hasOptOutText("stop")).toBe(true);
     expect(hasOptOutText("Please STOP emailing me")).toBe(true);
-    expect(hasOptOutText("unsubscribe from your list")).toBe(true);
-    expect(hasOptOutText("remove me from this")).toBe(true);
+    expect(hasOptOutText("unsubscribe me from your list")).toBe(true);
+    expect(hasOptOutText("remove me from your list")).toBe(true);
+    expect(hasOptOutText("do not contact me")).toBe(true);
+    // Real-lead negatives: bare words must not tag do-not-contact
+    expect(hasOptOutText("We need to stop losing leads")).toBe(false);
+    expect(hasOptOutText("can you stop by")).toBe(false);
+    expect(hasOptOutText("non-stop support please")).toBe(false);
+    expect(hasOptOutText("unsubscribe from my current host")).toBe(false);
     expect(hasOptOutText("We need a website")).toBe(false);
     expect(hasDoNotContactTag(["lead", "Do-Not-Contact"])).toBe(true);
     expect(hasDoNotContactTag(["lead"])).toBe(false);
@@ -84,11 +91,33 @@ describe("speed-to-lead consent", () => {
 
   it("skips when inbound text asks to stop and tags do-not-contact", async () => {
     const { harness, store, emit } = await bootCare();
-    const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:stop-text", text: "Please stop — remove me from your list" }));
+    const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:stop-text", text: "Please stop emailing me — remove me from your list" }));
     expect(result).toEqual({ skipped: true, reason: "opted_out" });
     expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
     expect(store.contacts!.find((c) => c.id === "ada")!.tags.map(String)).toContain("do-not-contact");
     expect((store.activities ?? []).some((a) => a.kind === "speed_to_lead_skipped" && String(a.body).includes("opted out"))).toBe(true);
+  });
+
+  it("tags do-not-contact for unsubscribe-me-from-newsletter before the spam gate", async () => {
+    const { harness, store, emit } = await bootCare();
+    const result = await onLeadStoredForSpeedToLead(
+      harness.ctx,
+      stlInput({ leadKey: "form:unsub-newsletter", text: "unsubscribe me from your newsletter" }),
+    );
+    expect(result).toEqual({ skipped: true, reason: "opted_out" });
+    expect(store.contacts!.find((c) => c.id === "ada")!.tags.map(String)).toContain("do-not-contact");
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+  });
+
+  it("does not tag when a newsletter footer only has bare unsubscribe", async () => {
+    const { harness, store, emit } = await bootCare();
+    const result = await onLeadStoredForSpeedToLead(
+      harness.ctx,
+      stlInput({ leadKey: "form:newsletter-footer", text: "Here is our weekly newsletter digest. Click unsubscribe below." }),
+    );
+    expect(result).toEqual({ skipped: true, reason: "not_a_lead" });
+    expect(store.contacts!.find((c) => c.id === "ada")!.tags.map(String)).not.toContain("do-not-contact");
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
   });
 
   it("skips when the contact already has tag do-not-contact", async () => {
@@ -107,11 +136,26 @@ describe("speed-to-lead consent", () => {
 });
 
 describe("speed-to-lead spam gate", () => {
-  it("classifies newsletter, no-reply, receipt and SEO-pitch fixtures", () => {
+  it("classifies newsletter, no-reply, receipt and SEO-pitch fixtures (positive)", () => {
     expect(classifyNotALead({ email: "ada@acme.co.za", text: "Here is our weekly newsletter digest" })).toBe("newsletter");
     expect(classifyNotALead({ email: "noreply@vendor.test", text: "Hello" })).toBe("no_reply_sender");
+    expect(classifyNotALead({ email: "do-not-reply@vendor.test", text: "Hello" })).toBe("no_reply_sender");
+    expect(classifyNotALead({ email: "mailer-daemon@vendor.test", text: "Hello" })).toBe("no_reply_sender");
     expect(classifyNotALead({ email: "ada@acme.co.za", text: "Your receipt for order #123" })).toBe("receipt");
-    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We offer guest post and link-building packages" })).toBe("seo_pitch");
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We can rank your site — buy backlinks today" })).toBe("seo_pitch");
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We offer guest post packages for agencies" })).toBe("seo_pitch");
+  });
+
+  it("does not classify real-lead negatives for each kept spam row", () => {
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "Sign me up for the newsletter" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "Please send me a tax invoice for the deposit" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "I need SEO services for my shop" })).toBeNull();
+    expect(classifyNotALead({ email: "notifications@acme.co.za", text: "We need a website" })).toBeNull();
+    expect(classifyNotALead({ email: "newsletter@acme.co.za", text: "We need a website" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We accept crypto payments" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "I want an auto-reply for after hours" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "I am away from the office next week" })).toBeNull();
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "Is there a limited time offer on the package?" })).toBeNull();
     expect(classifyNotALead({ email: "ada@acme.co.za", text: "We need a website for our shop" })).toBeNull();
   });
 
@@ -131,9 +175,22 @@ describe("speed-to-lead spam gate", () => {
     const { harness, emit } = await bootCare();
     const noreply = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:noreply", email: "no-reply@spam.test", text: "Need help" }));
     expect(noreply).toEqual({ skipped: true, reason: "not_a_lead" });
-    const seo = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:seo", text: "Buy backlinks to rank on Google" }));
+    const seo = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:seo", text: "Buy backlinks to grow your rankings" }));
     expect(seo).toEqual({ skipped: true, reason: "not_a_lead" });
     expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+  });
+
+  it("still drafts a real SEO prospect enquiry", async () => {
+    const { harness, emit } = await bootCare();
+    harness.seed({
+      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+    });
+    const result = await onLeadStoredForSpeedToLead(
+      harness.ctx,
+      stlInput({ leadKey: "form:seo-lead", text: "I need SEO services for my shop" }),
+    );
+    expect(result.skipped).toBe(false);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
   });
 });
 

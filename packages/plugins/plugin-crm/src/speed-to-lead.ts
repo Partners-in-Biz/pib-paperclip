@@ -19,22 +19,36 @@ const AF_MARKERS =
 
 const STALE_LEAD_MS = 24 * 60 * 60 * 1000;
 
-/** Inbound wording that means do not contact (spec §2 step 1). */
-const OPT_OUT_TEXT =
-  /\b(stop|unsubscribe|remove\s+me|opt[\s-]?out|no\s+thanks[,\s]+don'?t\s+email|don'?t\s+email\s+me|do\s+not\s+(?:email|contact)\s+me)\b/i;
+/**
+ * Opt-out only when the whole trimmed message is the opt-out, or an explicit phrase.
+ * Bare "stop" / "unsubscribe" inside real lead sentences must not tag do-not-contact.
+ */
+const OPT_OUT_WHOLE = /^(stop|unsubscribe|remove\s+me|opt[\s-]?out)[.!\s]*$/i;
+const OPT_OUT_PHRASE =
+  /\b(stop\s+emailing\s+me|unsubscribe\s+me(?:\s+from\s+(?:your|the)\s+(?:list|newsletter|emails?))?|remove\s+me\s+from\s+(?:your|the)\s+(?:list|mailing\s+list|emails?)|do\s+not\s+contact\s+me|don'?t\s+(?:email|contact)\s+me|opt[\s-]?out\s+of\s+(?:your|these|all)\s+emails?)\b/i;
 
-/** Spec §3: not a lead — no draft. */
+/**
+ * Spec §3 / §8 fixtures only: newsletter, receipt, SEO inbound pitch.
+ * no-reply is the local-part check below. Weak rows (crypto/ooo/vendor) dropped
+ * so real leads are not silently skipped.
+ */
 const SPAM_PATTERNS: Array<{ reason: string; re: RegExp }> = [
-  { reason: "newsletter", re: /\b(newsletter|unsubscribe\s+from\s+this\s+list|view\s+in\s+browser|email\s+preferences)\b/i },
-  { reason: "receipt", re: /\b(your\s+receipt|order\s+(?:confirmation|receipt)|payment\s+received|invoice\s+#|tax\s+invoice)\b/i },
-  { reason: "notification", re: /\b(password\s+reset|verify\s+your\s+(?:email|account)|security\s+alert|login\s+attempt)\b/i },
-  { reason: "ooo", re: /\b(out\s+of\s+office|automatic\s+reply|auto[\s-]?reply|i\s+am\s+away\s+from)\b/i },
-  { reason: "seo_pitch", re: /\b(guest\s+post|link[\s-]?building|backlinks?|buy\s+backlinks?|seo\s+(?:services?|package|audit\s+for\s+free)|rank\s+on\s+google)\b/i },
-  { reason: "vendor", re: /\b(cold\s+outreach|we\s+help\s+agencies|book\s+a\s+demo\s+of\s+our|limited[\s-]?time\s+offer)\b/i },
-  { reason: "phishing", re: /\b(crypto|nft\s+drop|adult\s+content|click\s+(?:here|below)\s+to\s+verify|verify\s+this\s+link)\b/i },
+  {
+    reason: "newsletter",
+    re: /\b((?:weekly|monthly)\s+newsletter|newsletter\s+(?:digest|blast)|unsubscribe\s+from\s+this\s+list|view\s+in\s+browser|manage\s+(?:your\s+)?email\s+preferences)\b/i,
+  },
+  {
+    reason: "receipt",
+    re: /\b(your\s+receipt|order\s+(?:confirmation|receipt)|payment\s+received|your\s+invoice(?:\s+is|\s+for|\s+#)|invoice\s+attached)\b/i,
+  },
+  {
+    reason: "seo_pitch",
+    re: /\b(we\s+can\s+rank\s+your\s+site|guest\s+post|buy\s+backlinks?|link[\s-]?building\s+services\s+we\s+offer|we\s+offer\s+(?:guest\s+post|link[\s-]?building))\b/i,
+  },
 ];
 
-const NOREPLY_LOCAL = /^(no-?reply|do-?not-?reply|mailer-daemon|notifications?|bounce[s]?|newsletter)\b/i;
+/** Automated senders only — not notifications@ / newsletter@ shared inboxes. */
+const NOREPLY_LOCAL = /^(no-?reply|do-?not-?reply|mailer-daemon)\b/i;
 
 export type SpeedToLeadLang = "en" | "af";
 
@@ -68,7 +82,9 @@ export function hasDoNotContactTag(tags: readonly string[] | null | undefined): 
 
 /** Opt-out wording in the inbound itself (spec §2 step 1). */
 export function hasOptOutText(text: string): boolean {
-  return OPT_OUT_TEXT.test(text);
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return OPT_OUT_WHOLE.test(trimmed) || OPT_OUT_PHRASE.test(trimmed);
 }
 
 /**
@@ -166,13 +182,14 @@ async function pingCeoSpeedToLead(
   let assigneeAgentId: string | null = null;
   try {
     const agents = await ctx.agents.list({ companyId: input.companyId, limit: 200 });
-    const elon = agents.find((agent) => {
+    const usable = agents.filter((agent) => roleAgentUsable(String(agent.status ?? "")));
+    const byRole = usable.find((agent) => String((agent as { role?: string }).role ?? "").trim().toLowerCase() === "ceo");
+    const byName = usable.find((agent) => {
       const name = String(agent.name ?? "").trim();
-      const role = String((agent as { role?: string }).role ?? "").trim().toLowerCase();
       const urlKey = String((agent as { urlKey?: string }).urlKey ?? "").trim().toLowerCase();
-      if (!roleAgentUsable(String(agent.status ?? ""))) return false;
-      return role === "ceo" || /^elon$/i.test(name) || urlKey === "elon" || urlKey === "pib";
+      return /^elon$/i.test(name) || urlKey === "elon" || urlKey === "pib";
     });
+    const elon = byRole ?? byName;
     assigneeAgentId = elon ? String(elon.id) : null;
   } catch {
     assigneeAgentId = null;
@@ -227,8 +244,22 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     return { skipped: true, reason: "no_contact" };
   }
 
-  // Spam / not-a-lead before opt-out text so a newsletter footer with "unsubscribe"
-  // does not tag a real contact do-not-contact.
+  // Explicit opt-out phrase before spam so "unsubscribe me from your newsletter"
+  // tags do-not-contact. Bare "unsubscribe" in a newsletter footer is not an
+  // explicit phrase, so the spam gate below skips without tagging.
+  if (hasOptOutText(input.text)) {
+    await tagDoNotContact(ctx, contact);
+    ctx.logger.info("CRM speed-to-lead skipped: opt-out text", { contactId: input.contactId, leadKey: input.leadKey });
+    await logSpeedToLeadSkipped(ctx, {
+      companyId: input.companyId,
+      contactId: input.contactId,
+      leadKey: input.leadKey,
+      reason: "opted_out",
+      body: "Speed-to-lead skipped: opted out (inbound asked to stop).",
+    });
+    return { skipped: true, reason: "opted_out" };
+  }
+
   const spamReason = classifyNotALead({ email, text: input.text });
   if (spamReason) {
     ctx.logger.info("CRM speed-to-lead skipped: not a lead", { contactId: input.contactId, leadKey: input.leadKey, spamReason });
@@ -243,25 +274,10 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     return { skipped: true, reason: "not_a_lead" };
   }
 
-  if (hasOptOutText(input.text)) {
-    await tagDoNotContact(ctx, contact);
-    ctx.logger.info("CRM speed-to-lead skipped: opt-out text", { contactId: input.contactId, leadKey: input.leadKey });
-    await logSpeedToLeadSkipped(ctx, {
-      companyId: input.companyId,
-      contactId: input.contactId,
-      leadKey: input.leadKey,
-      reason: "opted_out",
-      body: "Speed-to-lead skipped: opted out (inbound asked to stop).",
-    });
-    return { skipped: true, reason: "opted_out" };
-  }
-
-  if (hasDoNotContactTag(contact.tags) || isOptedOut(contact.emailStatus) || contact.lifecycle === "churned") {
+  if (hasDoNotContactTag(contact.tags) || isOptedOut(contact.emailStatus)) {
     const reasonDetail = hasDoNotContactTag(contact.tags)
       ? "tag do-not-contact"
-      : isOptedOut(contact.emailStatus)
-        ? `email status ${contact.emailStatus ?? "unknown"}`
-        : "lifecycle churned";
+      : `email status ${contact.emailStatus ?? "unknown"}`;
     ctx.logger.info("CRM speed-to-lead skipped: opted out", { contactId: input.contactId, emailStatus: contact.emailStatus, leadKey: input.leadKey });
     await logSpeedToLeadSkipped(ctx, {
       companyId: input.companyId,
