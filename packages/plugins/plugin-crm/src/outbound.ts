@@ -214,7 +214,9 @@ export async function checkRecipients(ctx: PluginContext, companyId: string, kin
     if (!to.email.includes("@")) throw new RecipientRefused(`"${to.email}" is not an email address.`);
     for (const contact of await contactsByEmail(ctx, companyId, to.email)) {
       if (contact.emailStatus === "bounced") throw new RecipientRefused(`${to.email} bounced before, so the Mailbox would not deliver it. Fix the address on the contact first.`);
-      if (contact.emailStatus === "unsubscribed" && kind === "feedback_request") throw new RecipientRefused(`${to.email} opted out of email, so no feedback request goes to them.`);
+      if (contact.emailStatus === "unsubscribed" && (kind === "feedback_request" || kind === "speed_to_lead")) {
+        throw new RecipientRefused(`${to.email} opted out of email, so no ${kind === "speed_to_lead" ? "speed-to-lead reply" : "feedback request"} goes to them.`);
+      }
     }
   }
 }
@@ -235,6 +237,9 @@ export async function sendApproved(ctx: PluginContext, approval: ApprovalRecord,
   const draft = options.draft ?? (approval.payload.draft as MailDraft | undefined);
   if (!draft) throw new Error("This approval has no email to send.");
   await checkRecipients(ctx, approval.companyId, approval.kind, draft);
+  if (approval.kind === "speed_to_lead" && draft.text.includes("[Slot")) {
+    throw new RecipientRefused("The speed-to-lead draft still has slot placeholders; edit the approval email before sending.");
+  }
   if (draft.to.every((to) => isCanaryEmail(to.email))) {
     await updateApproval(ctx, approval.companyId, approval.id, { status: "dry_run", decidedBy, error: null });
     return { status: "dry_run", key: null };

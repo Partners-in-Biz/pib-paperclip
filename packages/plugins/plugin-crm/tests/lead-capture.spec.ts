@@ -43,7 +43,7 @@ describe("a lead from our own form", () => {
     expect(activity.body).toMatch(/^New lead from a form \(Contact form\): I need a quote for SEO/);
     expect(activity.meta).toMatchObject({ source: "form", form: "Contact form", formId: source.id, consent: true, attribution: { utmSource: "google" } });
 
-    const issues = await crmIssues(booted.harness);
+    const issues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"));
     expect(issues).toHaveLength(1);
     expect(issues[0]!.originId).toMatch(/^crm:lead-followup:form:/);
     expect(issues[0]!.description).toContain("Phone: +27 82 123 4567");
@@ -82,7 +82,8 @@ describe("a lead from our own form", () => {
     const { source } = await makeSource(booted, {});
     expect(await post(booted, lead(source.key))).toMatchObject({ status: "stored" });
     expect(await post(booted, lead(source.key, { email: "JANE@smith-plumbing.test", name: "Jane" }), { "x-real-ip": ip(10) })).toMatchObject({ status: "duplicate" });
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    const followUps = async () => (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"));
+    expect(await followUps()).toHaveLength(1);
     expect(booted.store.lead_sources[0]).toMatchObject({ accepted_count: 1 });
     expect(booted.store.lead_hits.map((row) => row.outcome)).toEqual(["stored", "duplicate"]);
 
@@ -91,7 +92,7 @@ describe("a lead from our own form", () => {
     expect(booted.store.contacts.filter((row) => row.emails.includes("jane@smith-plumbing.test"))).toHaveLength(1);
     expect(booted.store.contacts.find((row) => row.emails.includes("jane@smith-plumbing.test"))!.phones).toEqual(["082 555 1212"]);
     expect(booted.store.activities.filter((row) => row.kind === "lead_captured")).toHaveLength(2);
-    expect(await crmIssues(booted.harness)).toHaveLength(2);
+    expect(await followUps()).toHaveLength(2);
   });
 
   it("a person who did not tick the marketing box and ticks it when they send again the same day has agreed: the repeat adds the consent, not a second lead", async () => {
@@ -102,7 +103,7 @@ describe("a lead from our own form", () => {
     expect(await post(booted, lead(source.key, { consent: true, consentText: "Yes email me" }), { "x-real-ip": ip(12) })).toMatchObject({ status: "duplicate" });
     expect(booted.store.consent_records).toHaveLength(1);
     expect(booted.store.consent_records[0]).toMatchObject({ granted: true, wording: "Yes email me", contact_id: booted.store.contacts.find((row) => row.emails.includes("jane@smith-plumbing.test"))!.id });
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    expect((await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"))).toHaveLength(1);
     // A repeat that ticks again changes nothing: the record is already there.
     await post(booted, lead(source.key, { consent: true, consentText: "Yes email me" }), { "x-real-ip": ip(13) });
     expect(booted.store.consent_records).toHaveLength(1);
