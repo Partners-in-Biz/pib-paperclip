@@ -167,7 +167,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       attachmentId: { type: "string", description: "The id of the image attachment on this issue." },
       sha256: { type: "string", description: "The SHA256 hash of the attachment (hex, case-insensitive)." },
       summary: { type: "string", maxLength: 300, description: "What the evidence shows (optional, max 300 chars, newlines collapsed to spaces)." },
-      notify: { type: "boolean", description: "For future use (accepted and stored nowhere yet; comment: wired in B3)." },
+      notify: { type: "boolean", description: "Set true to also push a confirmation to the owner's phone, once per issue and step. Quiet hours defer it, and the daily push cap applies." },
     }),
   },
   {
