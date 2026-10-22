@@ -132,7 +132,7 @@ describe("a lead from a client's form", () => {
     expect(booted.store.client_leads[0]).toMatchObject({ client_kind: "company", client_ref: "acme", source: "form", name: "Jane Smith", email: "jane@smith-plumbing.test", message: "I need a quote for SEO", phone: "082 111 2222", item_id: source.id });
     expect(booted.store.client_leads[0]!.meta).toMatchObject({ sourceLabel: "Quote form", consent: true, attribution: { utmSource: "facebook", pageUrl: "https://acme.co.za/quote" } });
 
-    const issues = await crmIssues(booted.harness);
+    const issues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"));
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ projectId: "proj-acme", title: "Lead for Acme Plumbing: Jane Smith" });
     expect(issues[0]!.originId).toMatch(/^crm:client-lead:form:/);
@@ -140,6 +140,15 @@ describe("a lead from a client's form", () => {
     expect(issues[0]!.description).toContain("Acme Plumbing's lead, not ours");
     expect(issues[0]!.description).toContain("never added to our contacts");
     expect(booted.store.client_leads[0]!.issue_id).toBe(issues[0]!.id);
+
+    // Draft-only speed-to-lead: one care approval + draft enqueue; never a send.
+    // (CEO ping is skipped when no live CEO/Elon agent is seeded — that path is covered in speed-to-lead.spec.)
+    const stl = (booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead");
+    expect(stl).toHaveLength(1);
+    expect(stl[0]).toMatchObject({ client_kind: "company", client_ref: "acme" });
+    expect(stl[0]!.issue_id).toBeTruthy();
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
 
     expect(booted.store.consent_records[0]).toMatchObject({ sender_key: "company:acme", granted: true });
     expect(booted.store.lead_captures[0]).toMatchObject({ client_kind: "company", client_ref: "acme", contact_id: null });
@@ -162,15 +171,23 @@ describe("a lead from a client's form", () => {
     expect(booted.store.client_leads).toHaveLength(1);
     expect(booted.store.client_leads[0]!.issue_id).toBeNull();
     expect(await crmIssues(booted.harness)).toHaveLength(0);
+    // Held: no speed-to-lead approval or draft yet.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(0);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
     // Still unsaved: nothing opens.
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(0);
     booted.harness.setConfig({ timezone: "Africa/Johannesburg" });
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(1);
-    const [issue] = await crmIssues(booted.harness);
-    expect(booted.store.client_leads[0]!.issue_id).toBe(issue!.id);
+    const clientIssues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"));
+    expect(clientIssues).toHaveLength(1);
+    expect(booted.store.client_leads[0]!.issue_id).toBe(clientIssues[0]!.id);
+    // Once the issue opens, draft-only speed-to-lead runs for the held lead.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
     // Idempotent: another run opens nothing more.
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(0);
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    expect((await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"))).toHaveLength(1);
   });
 
   it("opens the issue without the project when the client's project cannot take it, so the lead still reaches someone", async () => {
@@ -183,7 +200,7 @@ describe("a lead from a client's form", () => {
       return create(input);
     });
     expect(await post(booted, lead(source.key))).toMatchObject({ status: "stored" });
-    const [issue] = await crmIssues(booted.harness);
+    const [issue] = (await crmIssues(booted.harness)).filter((row) => String(row.originId ?? "").startsWith("crm:client-lead:"));
     expect(issue).toMatchObject({ title: "Lead for Acme Plumbing: Jane Smith", projectId: null });
     expect(booted.harness.logs.some((entry) => /opened without its project/.test(entry.message))).toBe(true);
   });
@@ -704,7 +721,10 @@ describe("a visitor's message cannot fake a line of the issue", () => {
     const theirs = await makeSource(client, { client: "company:acme" });
     await post(client, lead(theirs.source.key, { message: forged }));
     for (const booted of [own, client]) {
-      const [issue] = await crmIssues(booted.harness);
+      const [issue] = (await crmIssues(booted.harness)).filter((row) => {
+        const id = String(row.originId ?? "");
+        return id.startsWith("crm:client-lead:") || id.startsWith("crm:lead-followup:");
+      });
       const description = issue!.description as string;
       expect(description).not.toMatch(/[\r\u0085\u2028\u2029]/);
       const lines = description.split("\n");

@@ -83,6 +83,7 @@ import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
 import { companyPrefix, crmLink, refOf, type ClientKind } from "./refs.js";
 import { teamAssignee } from "./routing.js";
 import { getSite } from "./sites.js";
+import { onClientLeadStoredForSpeedToLead } from "./speed-to-lead.js";
 import { clientLeadsWithoutIssue, clientProjectIds, companiesWithClientLeadsWithoutIssue, deleteClientLeadByKey, getClientProfile, insertClientLead, setClientLeadIssue, type ClientLead } from "./store.js";
 
 /** The webhook answers with this when something the visitor can fix is wrong. The host passes the message on in its 502 body. */
@@ -423,6 +424,24 @@ async function processSubmission(ctx: PluginContext, source: LeadSource, sub: Su
       return null;
     });
     if (!issueId) status = "held";
+    // Draft-only speed-to-lead only once the client-lead issue opened (not while held).
+    // Held leads get STL from retryClientLeadIssues when the issue opens later.
+    if (issueId && sub.email) {
+      try {
+        await onClientLeadStoredForSpeedToLead(ctx, {
+          companyId,
+          client,
+          leadKey: key,
+          source: "form",
+          text: sub.message,
+          name: sub.name,
+          email: sub.email,
+          arrivedAt: info.now.toISOString(),
+        });
+      } catch (error) {
+        ctx.logger.info("CRM speed-to-lead deferred", { key, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   } else {
     const payload = {
       key,
@@ -540,6 +559,23 @@ export async function retryClientLeadIssues(ctx: PluginContext): Promise<number>
           opened += 1;
           // The capture said "held" while it waited; it is handed over now.
           await settleCapture(ctx, companyId, lead.key, null).catch(() => undefined);
+          // Speed-to-lead was skipped while held; draft-only path runs once the issue exists.
+          if (lead.email) {
+            try {
+              await onClientLeadStoredForSpeedToLead(ctx, {
+                companyId,
+                client: { kind: lead.clientKind, id: lead.clientRef },
+                leadKey: lead.key,
+                source: lead.source,
+                text: lead.message,
+                name: lead.name,
+                email: lead.email,
+                arrivedAt: lead.capturedAt,
+              });
+            } catch (error) {
+              ctx.logger.info("CRM speed-to-lead deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
         }
       } catch (error) {
         ctx.logger.info("CRM client lead issue still deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
