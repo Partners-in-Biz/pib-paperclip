@@ -4,10 +4,10 @@
   "scenarios": [
     {
       "id": "wiki-maintainer-rules-log-append-pending",
-      "title": "Wiki Maintainer appends pending rule rows, skips duplicates and one-offs",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Append one row with status pending for each issue comment with 'Rule to add:' line. Skip the row when the same source issue and rule text are already in the table, and skip lines that read 'none (one-off)'. Rows with status added, duplicate or dismissed belong to the Planner.",
-      "situation": "Distilling a closed issue with postmortem comment: 'Rule to add: Verify opening balance against prior month closing before reconciliation | target: bookkeeper | source: PAR-3847'. The rule table exists but does not have this source issue yet.",
-      "task": "Add to the rules log or skip?",
+      "title": "Wiki Maintainer appends pending rule rows, skips duplicates",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Append rules from 'Rule to add:' lines. Skip duplicates and one-offs.",
+      "situation": "Postmortem: 'Rule to add: Verify balance | target: bookkeeper | source: PAR-3847'.",
+      "task": "Add or skip?",
       "expect": {
         "mustSay": [
           "rules?\\s+log|table|append|pending",
@@ -23,31 +23,21 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Appending to wiki/concepts/review-failure-feedback-loop.md rules table: Date: 2026-10-21, Source: PAR-3847, Rule: Verify opening balance against prior month closing before reconciliation, Target: bookkeeper, Status: pending."
-            }
-          ],
-          "summary": "Added pending rule from postmortem to the feedback loop table."
+          "plan": [{"kind": "comment", "say": "Appending rule to table: Date 2026-10-21, Rule: verify balance, Target: bookkeeper, Status: pending."}],
+          "summary": "Appended rule"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Skipping the rule to add because the feedback loop is only for the Planner."
-            }
-          ],
-          "summary": "Did not add rule because thought it was Planner-only."
+          "plan": [{"kind": "comment", "say": "Skipping this one-off rule."}],
+          "summary": "Skipped"
         }
       }
     },
     {
       "id": "wiki-maintainer-edit-files-directly-not-silently",
-      "title": "Wiki Maintainer edits wiki files directly and commits; never silently overwrites without saying why",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Edit the wiki page files directly (you have the wiki root folder) and commit them. Keep changes focused and append a concise log entry for durable updates.",
-      "situation": "Wiki page wiki/projects/slimwerk/standup.md exists. Current content is a dated diary (week of Oct 10, week of Oct 17). You need to rewrite it to current status instead of appending another week.",
-      "task": "Append a new week section or rewrite?",
+      "title": "Wiki Maintainer edits files with explanations, never silently",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Edit wiki files. Keep focused. Append log entry.",
+      "situation": "standup.md is dated diary. Rewrite to current status?",
+      "task": "Append week or rewrite?",
       "expect": {
         "mustSay": [
           "rewrite|current[^.]*truth|standup",
@@ -63,35 +53,25 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Rewriting standup.md to current status: blockers cleared, funding committed, team hired. Replacing dated diary with executive summary of now."
-            }
-          ],
-          "summary": "Rewrote standup to current truth with comment in log."
+          "plan": [{"kind": "comment", "say": "Rewriting standup.md to current status. Replacing dated diary with executive summary."}],
+          "summary": "Rewrote with explanation"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Updating wiki files."
-            }
-          ],
-          "summary": "Updated without explaining the rewrite or changes made."
+          "plan": [{"kind": "comment", "say": "Updated wiki files."}],
+          "summary": "No explanation"
         }
       }
     },
     {
       "id": "wiki-maintainer-raw-stays-immutable",
-      "title": "Wiki Maintainer keeps raw/ files immutable; never edits or deletes sources",
-      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: You keep raw source material in raw/ immutable.",
-      "situation": "A raw source PDF in raw/vendor-proposals/ has a typo in the filename. You have the original file and could rename it to be correct.",
-      "task": "Rename the raw file to fix the typo or leave it?",
+      "title": "Wiki Maintainer keeps raw/ files immutable",
+      "source": "baseline-2026-10-19/agents/wiki-maintainer.md: Keep raw/ immutable.",
+      "situation": "Raw PDF has typo in filename.",
+      "task": "Rename or leave?",
       "expect": {
         "forbid": [
           {
-            "text": "\\b(renaming|rename|editing|edit|deleting|delete)\\s+raw",
+            "text": "\\b(?<!not )(?<!never )(?<!n't )(?<!no )(?<!without )(?<!won't )(?:renaming|rename|editing|edit|deleting|delete)\\s+raw",
             "reason": "raw source files must never be edited, deleted or renamed; they remain immutable"
           }
         ],
@@ -102,22 +82,12 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Raw files are immutable. The source stays as-is even with the typo. The derived wiki pages cite it correctly."
-            }
-          ],
-          "summary": "Raw files immutable: no rename."
+          "plan": [{"kind": "comment", "say": "Raw files immutable. Cannot edit. Source stays as-is."}],
+          "summary": "No edit"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Renaming raw/vendor-proposals/proposal_2026_10_19.pdf to proposal-2026-10-19.pdf for clarity."
-            }
-          ],
-          "summary": "Renamed raw file: wrong, must stay immutable."
+          "plan": [{"kind": "comment", "say": "Renaming raw/vendor-proposals/proposal.pdf for clarity."}],
+          "summary": "Renamed raw"
         }
       }
     }

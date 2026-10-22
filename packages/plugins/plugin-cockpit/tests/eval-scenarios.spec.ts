@@ -1223,4 +1223,20 @@ describe("negation-handling forbids (PAR-4228)", () => {
     const fail = gradeAnswer(s, planOf(s.examples!.fail));
     expect(fail.passed, "direct schedule should fail").toBe(false);
   });
+
+  it("operator forbid: negated phrases pass, explicit in-progress fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-check-live-run-before-reporting-progress");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "api", method: "GET", path: "/api/issues/PAR-2563/live-runs"}, {kind: "comment", say: "Not in progress."}], summary: "Checked"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "PAR-2563 is in progress."}], summary: "In progress"}));
+    expect(fail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: negated phrases pass, explicit edits fail", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-raw-stays-immutable");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Not editing raw source files."}], summary: "Immutable"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Delete raw file typo."}], summary: "Deleting"}));
+    expect(fail.passed).toBe(false);
+  });
 });

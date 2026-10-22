@@ -4,10 +4,10 @@
   "scenarios": [
     {
       "id": "inbound-qualifier-dedupe-before-create-deal",
-      "title": "Inbound Qualifier checks CRM with find-records before creating a new deal",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: You do not create CRM records without the match check. find-records covers the normal case. A CRM deal is opened at the first booked call or the first positive reply, whichever comes first. Use create-deal after find-records shows no open deal for that contact.",
-      "situation": "New inbound lead: Zenith AI, Marcus Liu, marcus@zenith-ai.co.za. Could be a duplicate of an earlier contact or existing deal. You have company name and email.",
-      "task": "Create the deal immediately or check first?",
+      "title": "Inbound Qualifier checks CRM before creating deal",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Check for duplicates with find-records before create-deal.",
+      "situation": "New lead: Zenith AI, Marcus Liu. Could be duplicate.",
+      "task": "Create immediately or check first?",
       "expect": {
         "toolCalls": [
           {
@@ -34,44 +34,21 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.crm:find-records",
-              "args": {
-                "kind": "contact",
-                "query": "Marcus Liu OR zenith-ai.co.za"
-              }
-            },
-            {
-              "kind": "comment",
-              "say": "Checked for duplicates. No existing record. Ready to qualify and create deal."
-            }
-          ],
-          "summary": "Deduplicated before creating deal."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.crm:find-records", "args": {"kind": "contact", "query": "Marcus Liu"}}],
+          "summary": "Deduplicated first"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.crm:create-deal",
-              "args": {
-                "companyName": "Zenith AI",
-                "contactName": "Marcus Liu",
-                "email": "marcus@zenith-ai.co.za"
-              }
-            }
-          ],
-          "summary": "Created deal without checking for duplicates."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.crm:create-deal", "args": {"companyName": "Zenith AI", "contactName": "Marcus Liu"}}],
+          "summary": "Created without checking"
         }
       }
     },
     {
       "id": "inbound-qualifier-deal-on-first-booked-call",
-      "title": "Inbound Qualifier creates a deal on the first booked call, not on opt-out or negative reply",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: A CRM deal is opened at the first booked call or the first positive reply, whichever comes first. A reply that opts out or says no is not positive: no deal. Never open a deal for a contact tagged do-not-contact.",
-      "situation": "Lead reply: 'Thanks, but we're not interested in this type of service right now.' Contact has no do-not-contact tag.",
-      "task": "Create the deal or pass?",
+      "title": "Inbound Qualifier creates deal on booked call, not negative reply",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Deal on booked call or positive reply. Negative: no deal.",
+      "situation": "Lead: 'Not interested.' No do-not-contact tag.",
+      "task": "Create deal or pass?",
       "expect": {
         "forbid": [
           {
@@ -87,35 +64,21 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Lead replied: not interested. No deal created. No booked call or positive reply, so no deal warranted. Mark lifecycle as churned."
-            }
-          ],
-          "summary": "Negative reply: no deal, lifecycle churned."
+          "plan": [{"kind": "comment", "say": "Not interested. No booked call, so no deal."}],
+          "summary": "Declined"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.crm:create-deal",
-              "args": {
-                "contactId": "contact-123",
-                "stageName": "first-contact"
-              }
-            }
-          ],
-          "summary": "Created deal from negative reply: wrong."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.crm:create-deal", "args": {"contactId": "contact-123", "stageName": "first-contact"}}],
+          "summary": "Deal from decline"
         }
       }
     },
     {
       "id": "inbound-qualifier-never-contact-lead-directly",
-      "title": "Inbound Qualifier never contacts the lead directly; reply only through CRM",
-      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Never invent emails or phones. Never contact the lead yourself. Standing rule call-ready CRM records - Never contact the lead yourself.",
-      "situation": "New lead: Acme Ltd. Phone number is missing. You want to call or email to ask for contact details.",
-      "task": "Call or email the lead, or ask the owner?",
+      "title": "Inbound Qualifier never contacts lead directly",
+      "source": "baseline-2026-10-19/agents/inbound-qualifier.md: Never contact lead yourself. Use CRM.",
+      "situation": "Lead Acme Ltd missing phone. Want to call.",
+      "task": "Contact lead or ask owner?",
       "expect": {
         "forbid": [
           {
@@ -131,27 +94,12 @@
       },
       "examples": {
         "pass": {
-          "plan": [
-            {
-              "kind": "comment",
-              "say": "Lead Acme Ltd missing phone. Cannot qualify without contact. Never contact the lead directly; all outreach goes through CRM and the sales process. Asking owner how to proceed."
-            }
-          ],
-          "summary": "Asked owner instead of contacting lead directly."
+          "plan": [{"kind": "comment", "say": "Missing phone. Ask owner. Outreach goes through CRM sales process."}],
+          "summary": "Asked owner"
         },
         "fail": {
-          "plan": [
-            {
-              "kind": "tool",
-              "tool": "partnersinbiz.mailbox:send-draft",
-              "args": {
-                "to": "acme@unknown-email.com",
-                "subject": "Your Partners in Biz Inquiry - Contact Details",
-                "body": "Hi Acme, we received your inquiry. Can you provide a phone number?"
-              }
-            }
-          ],
-          "summary": "Contacted lead directly: never do this."
+          "plan": [{"kind": "tool", "tool": "partnersinbiz.mailbox:send-draft", "args": {"to": "acme@unknown.com", "subject": "Request contact info", "body": "Can you provide a phone?"}}],
+          "summary": "Emailed lead"
         }
       }
     }
