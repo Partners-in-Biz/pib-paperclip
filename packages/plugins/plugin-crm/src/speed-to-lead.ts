@@ -1,21 +1,54 @@
 /**
- * Speed-to-lead (PAR-2262): draft-only first reply when a lead with email is stored.
- * Consent gate → short EN/AF draft → Peet care approval → `mail.draft.requested`.
+ * Speed-to-lead (PAR-2262 / PAR-4757): draft-only first reply when a lead with email is stored.
+ * Consent + spam gates → short EN/AF draft → Peet care approval → `mail.draft.requested` → CEO ping.
  * Send only via care-approvals person-done path. This module never enqueues a send.
  * Metrics: t_arrival / t_draft_ready here; t_approved / t_sent in speedToLeadHooks.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { enqueue, MAIL_EVENTS, readConfig, type MailDraftRequested } from "@partnersinbiz/pib-plugin-kit";
+import { enqueue, MAIL_EVENTS, readConfig, roleAgentUsable, type MailDraftRequested } from "@partnersinbiz/pib-plugin-kit";
 import { approvalsForClient } from "./care-store.js";
-import { getContact, insertActivityOnce } from "./db.js";
+import { getContact, insertActivityOnce, saveContact } from "./db.js";
 import { textToHtml } from "./domain.js";
+import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { requestApproval, type MailApprovalHooks, type MailDraft } from "./outbound.js";
+import { originFor } from "./origins.js";
+import { approvalLink, requestApproval, type MailApprovalHooks, type MailDraft } from "./outbound.js";
 
 const AF_MARKERS =
   /\b(asseblief|baie\s+dankie|dankie|goeie\s+dag|goeiemôre|goeiemore|ek\s+wil|ek\s+soek|hoeveel|pryslys|kwotasie|besigheids|webwerf)\b/i;
 
 const STALE_LEAD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Opt-out only when the whole trimmed message is the opt-out, or an explicit phrase.
+ * Bare "stop" / "unsubscribe" inside real lead sentences must not tag do-not-contact.
+ */
+const OPT_OUT_WHOLE = /^(stop|unsubscribe|remove\s+me|opt[\s-]?out)[.!\s]*$/i;
+const OPT_OUT_PHRASE =
+  /\b(stop\s+emailing\s+me|unsubscribe\s+me(?:\s+from\s+(?:your|the)\s+(?:list|newsletter|emails?))?|remove\s+me\s+from\s+(?:your|the)\s+(?:list|mailing\s+list|emails?)|do\s+not\s+contact\s+me|don'?t\s+(?:email|contact)\s+me|opt[\s-]?out\s+of\s+(?:your|these|all)\s+emails?)\b/i;
+
+/**
+ * Spec §3 / §8 fixtures only: newsletter, receipt, SEO inbound pitch.
+ * no-reply is the local-part check below. Weak rows (crypto/ooo/vendor) dropped
+ * so real leads are not silently skipped.
+ */
+const SPAM_PATTERNS: Array<{ reason: string; re: RegExp }> = [
+  {
+    reason: "newsletter",
+    re: /\b((?:weekly|monthly)\s+newsletter|newsletter\s+(?:digest|blast)|unsubscribe\s+from\s+this\s+list|view\s+in\s+browser|manage\s+(?:your\s+)?email\s+preferences)\b/i,
+  },
+  {
+    reason: "receipt",
+    re: /\b(your\s+receipt|order\s+(?:confirmation|receipt)|payment\s+received|your\s+invoice(?:\s+is|\s+for|\s+#)|invoice\s+attached)\b/i,
+  },
+  {
+    reason: "seo_pitch",
+    re: /\b(we\s+can\s+rank\s+your\s+site|guest\s+post|buy\s+backlinks?|link[\s-]?building\s+services\s+we\s+offer|we\s+offer\s+(?:guest\s+post|link[\s-]?building))\b/i,
+  },
+];
+
+/** Automated senders only — not notifications@ / newsletter@ shared inboxes. */
+const NOREPLY_LOCAL = /^(no-?reply|do-?not-?reply|mailer-daemon)\b/i;
 
 export type SpeedToLeadLang = "en" | "af";
 
@@ -40,6 +73,31 @@ export interface SpeedToLeadMetrics {
 
 export function isOptedOut(emailStatus: string | null | undefined): boolean {
   return emailStatus === "unsubscribed" || emailStatus === "bounced";
+}
+
+/** True when the contact carries the do-not-contact tag (any casing). */
+export function hasDoNotContactTag(tags: readonly string[] | null | undefined): boolean {
+  return (tags ?? []).some((tag) => tag.trim().toLowerCase() === "do-not-contact");
+}
+
+/** Opt-out wording in the inbound itself (spec §2 step 1). */
+export function hasOptOutText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return OPT_OUT_WHOLE.test(trimmed) || OPT_OUT_PHRASE.test(trimmed);
+}
+
+/**
+ * Spec §3 spam / not-a-lead gate. Returns a short reason when no draft should be made.
+ * Pure: email local-part + lead text only (headers are not on the lead-stored path).
+ */
+export function classifyNotALead(input: { email: string; text: string }): string | null {
+  const local = input.email.trim().toLowerCase().split("@")[0] ?? "";
+  if (NOREPLY_LOCAL.test(local)) return "no_reply_sender";
+  for (const row of SPAM_PATTERNS) {
+    if (row.re.test(input.text)) return row.reason;
+  }
+  return null;
 }
 
 /** AF when lead text has common AF markers or lang hint says af; else EN. */
@@ -102,6 +160,67 @@ async function logSpeedToLeadSkipped(
   }).catch(() => undefined);
 }
 
+async function tagDoNotContact(ctx: PluginContext, contact: Awaited<ReturnType<typeof getContact>>): Promise<void> {
+  if (!contact || hasDoNotContactTag(contact.tags)) return;
+  contact.tags = [...contact.tags, "do-not-contact"];
+  await saveContact(ctx, contact).catch(() => undefined);
+}
+
+/** Spec §2 step 6: 3-line summary + link to the approval card for Elon / CEO (Grok Bot). */
+async function pingCeoSpeedToLead(
+  ctx: PluginContext,
+  input: {
+    companyId: string;
+    approvalId: string;
+    issueId: string | null;
+    who: string;
+    source: string;
+    email: string;
+    lang: SpeedToLeadLang;
+  },
+): Promise<void> {
+  let assigneeAgentId: string | null = null;
+  try {
+    const agents = await ctx.agents.list({ companyId: input.companyId, limit: 200 });
+    const usable = agents.filter((agent) => roleAgentUsable(String(agent.status ?? "")));
+    const byRole = usable.find((agent) => String((agent as { role?: string }).role ?? "").trim().toLowerCase() === "ceo");
+    const byName = usable.find((agent) => {
+      const name = String(agent.name ?? "").trim();
+      const urlKey = String((agent as { urlKey?: string }).urlKey ?? "").trim().toLowerCase();
+      return /^elon$/i.test(name) || urlKey === "elon" || urlKey === "pib";
+    });
+    const elon = byRole ?? byName;
+    assigneeAgentId = elon ? String(elon.id) : null;
+  } catch {
+    assigneeAgentId = null;
+  }
+  if (!assigneeAgentId) {
+    ctx.logger.info("CRM speed-to-lead CEO ping skipped: no live CEO/Elon agent", { approvalId: input.approvalId });
+    return;
+  }
+
+  const card = (await approvalLink(ctx, input.companyId, input.issueId)) ?? (input.issueId ? `/issues/${input.issueId}` : `(approval ${input.approvalId})`);
+  const lines = [
+    `New speed-to-lead draft for ${input.who} <${input.email}>.`,
+    `Source ${input.source}; language ${input.lang === "af" ? "Afrikaans" : "English"}; waiting on Peet approve (draft only).`,
+    `Card: ${card}`,
+  ];
+  await openIssueOnce(ctx, {
+    companyId: input.companyId,
+    originId: originFor.stlPing(input.approvalId),
+    title: `Speed-to-lead ready: ${input.who}`.slice(0, 200),
+    description: lines.join("\n"),
+    assignee: { assigneeAgentId },
+    wakeReason: "Speed-to-lead draft needs a look",
+    priority: "high",
+  }).catch((error) => {
+    ctx.logger.info("CRM speed-to-lead CEO ping failed", {
+      approvalId: input.approvalId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
 /** After a lead is stored with an email: draft + Peet approval only; never queues a send. */
 export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: SpeedToLeadInput): Promise<{ skipped: boolean; reason?: string; approvalId?: string }> {
   const email = input.email.trim().toLowerCase();
@@ -124,14 +243,48 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     ctx.logger.info("CRM speed-to-lead skipped: contact missing", { contactId: input.contactId, leadKey: input.leadKey });
     return { skipped: true, reason: "no_contact" };
   }
-  if (isOptedOut(contact.emailStatus)) {
+
+  // Explicit opt-out phrase before spam so "unsubscribe me from your newsletter"
+  // tags do-not-contact. Bare "unsubscribe" in a newsletter footer is not an
+  // explicit phrase, so the spam gate below skips without tagging.
+  if (hasOptOutText(input.text)) {
+    await tagDoNotContact(ctx, contact);
+    ctx.logger.info("CRM speed-to-lead skipped: opt-out text", { contactId: input.contactId, leadKey: input.leadKey });
+    await logSpeedToLeadSkipped(ctx, {
+      companyId: input.companyId,
+      contactId: input.contactId,
+      leadKey: input.leadKey,
+      reason: "opted_out",
+      body: "Speed-to-lead skipped: opted out (inbound asked to stop).",
+    });
+    return { skipped: true, reason: "opted_out" };
+  }
+
+  const spamReason = classifyNotALead({ email, text: input.text });
+  if (spamReason) {
+    ctx.logger.info("CRM speed-to-lead skipped: not a lead", { contactId: input.contactId, leadKey: input.leadKey, spamReason });
+    await logSpeedToLeadSkipped(ctx, {
+      companyId: input.companyId,
+      contactId: input.contactId,
+      leadKey: input.leadKey,
+      reason: "not_a_lead",
+      body: `Speed-to-lead skipped: not a lead (${spamReason}).`,
+      sourceKey: `stl-skip-spam:${input.leadKey}:${spamReason}`,
+    });
+    return { skipped: true, reason: "not_a_lead" };
+  }
+
+  if (hasDoNotContactTag(contact.tags) || isOptedOut(contact.emailStatus)) {
+    const reasonDetail = hasDoNotContactTag(contact.tags)
+      ? "tag do-not-contact"
+      : `email status ${contact.emailStatus ?? "unknown"}`;
     ctx.logger.info("CRM speed-to-lead skipped: opted out", { contactId: input.contactId, emailStatus: contact.emailStatus, leadKey: input.leadKey });
     await logSpeedToLeadSkipped(ctx, {
       companyId: input.companyId,
       contactId: input.contactId,
       leadKey: input.leadKey,
       reason: "opted_out",
-      body: `Speed-to-lead skipped: contact email status is ${contact.emailStatus ?? "unknown"}.`,
+      body: `Speed-to-lead skipped: opted out (${reasonDetail}).`,
     });
     return { skipped: true, reason: "opted_out" };
   }
@@ -214,6 +367,16 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     sourceKey: `stl:${input.leadKey}`,
     issueId: opened.issueId,
   }).catch(() => undefined);
+
+  await pingCeoSpeedToLead(ctx, {
+    companyId: input.companyId,
+    approvalId: opened.approvalId,
+    issueId: opened.issueId,
+    who,
+    source: input.source,
+    email,
+    lang,
+  });
 
   return { skipped: false, approvalId: opened.approvalId };
 }
