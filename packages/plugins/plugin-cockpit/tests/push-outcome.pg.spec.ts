@@ -233,4 +233,129 @@ d("Push notification outcomes (Postgres)", () => {
     expect(result.outcome).toBe("sent");
     expect(deliverCalls).toHaveLength(1);
   });
+
+  it("g) collapse decision with notify true and a seeded ok subscription -> outcome collapsed, deliver called once with class collapse", async () => {
+    const now = new Date("2026-10-20T10:00:00Z"); // SAST 12:00
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+    };
+
+    // Seed 3 sent rows within 10min window to trigger collapse
+    for (let i = 0; i < 3; i++) {
+      const createdAt = new Date(now.getTime() - (i + 1) * 2 * 60 * 1000); // 2, 4, 6 minutes ago
+      await appendPushLog(pg.ctx, {
+        companyId: A,
+        class: "confirmation",
+        issueRef: `test-g-seed-${i}`,
+        title: `Seeded Push ${i}`,
+        status: "sent",
+        createdAt,
+      });
+    }
+
+    const result = await notifyOwner(
+      pg.ctx,
+      {
+        companyId: A,
+        class: "confirmation",
+        title: "Test Push Collapse",
+        body: "Test body collapse",
+        issueRef: "test-g-fresh",
+        ownerUserId: OWNER_ID,
+        url: "https://example.com/test",
+      },
+      { deliver: mockDeliver, now: () => now },
+    );
+
+    expect(result.outcome).toBe("collapsed");
+    expect(deliverCalls).toHaveLength(1);
+    expect(deliverCalls[0].payload.class).toBe("collapse");
+  });
+
+  it("h) collapse with notify true and no subscription -> outcome no_subscription, deliver not called", async () => {
+    const now = new Date("2026-10-20T10:00:00Z"); // SAST 12:00
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+    };
+
+    // Seed 3 sent rows within 10min window to trigger collapse
+    for (let i = 0; i < 3; i++) {
+      const createdAt = new Date(now.getTime() - (i + 1) * 2 * 60 * 1000);
+      await appendPushLog(pg.ctx, {
+        companyId: A,
+        class: "confirmation",
+        issueRef: `test-h-seed-${i}`,
+        title: `Seeded Push ${i}`,
+        status: "sent",
+        createdAt,
+      });
+    }
+
+    const result = await notifyOwner(
+      pg.ctx,
+      {
+        companyId: A,
+        class: "confirmation",
+        title: "Test Push Collapse No Sub",
+        body: "Test body collapse no sub",
+        issueRef: "test-h-fresh",
+        ownerUserId: "non-existent-user",
+        url: "https://example.com/test",
+      },
+      { deliver: mockDeliver, now: () => now },
+    );
+
+    expect(result.outcome).toBe("no_subscription");
+    expect(deliverCalls).toHaveLength(0);
+  });
+
+  it("i) silent collapse (notify false) -> outcome capped, deliver not called", async () => {
+    const now = new Date("2026-10-20T10:00:00Z"); // SAST 12:00
+    const deliverCalls: any[] = [];
+    const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
+      deliverCalls.push({ companyId, subs, payload });
+    };
+
+    // Seed 3 sent rows and 1 collapse notification within 10min window
+    // This makes notify=false because a collapse was already sent
+    for (let i = 0; i < 3; i++) {
+      const createdAt = new Date(now.getTime() - (i + 1) * 2 * 60 * 1000);
+      await appendPushLog(pg.ctx, {
+        companyId: A,
+        class: "confirmation",
+        issueRef: `test-i-seed-${i}`,
+        title: `Seeded Push ${i}`,
+        status: "sent",
+        createdAt,
+      });
+    }
+    // Seed a collapse notification to make notify=false
+    await appendPushLog(pg.ctx, {
+      companyId: A,
+      class: "collapse",
+      issueRef: "test-i-collapse",
+      title: "Collapse notification",
+      status: "sent",
+      createdAt: new Date(now.getTime() - 5 * 60 * 1000), // 5 minutes ago
+    });
+
+    const result = await notifyOwner(
+      pg.ctx,
+      {
+        companyId: A,
+        class: "confirmation",
+        title: "Test Push Silent Collapse",
+        body: "Test body silent collapse",
+        issueRef: "test-i-fresh",
+        ownerUserId: OWNER_ID,
+        url: "https://example.com/test",
+      },
+      { deliver: mockDeliver, now: () => now },
+    );
+
+    expect(result.outcome).toBe("capped");
+    expect(deliverCalls).toHaveLength(0);
+  });
 });
