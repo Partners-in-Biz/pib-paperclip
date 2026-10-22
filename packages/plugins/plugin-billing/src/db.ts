@@ -346,12 +346,13 @@ export interface ExpenseRow {
   created_by?: string | null;
 }
 
-export async function listQuotes(ctx: PluginContext, companyId: string, customer: ClientScope = null): Promise<QuoteRow[]> {
+export async function listQuotes(ctx: PluginContext, companyId: string, customer: ClientScope = null, options: { includeCanary?: boolean } = {}): Promise<QuoteRow[]> {
   const filter = customer ? customerWhere(customer, 2) : null;
+  const canaryFilter = !options.includeCanary ? "AND NOT (customer_ref LIKE 'canary-%' OR (customer->>'email')::text ILIKE '%@%.invalid')" : "";
   return ctx.db.query<QuoteRow>(
     `SELECT ${QUOTE_COLUMNS}
        FROM ${table(ctx, "quotes")}
-      WHERE company_id = $1${filter ? ` AND ${filter.sql}` : ""}
+      WHERE company_id = $1${filter ? ` AND ${filter.sql}` : ""} ${canaryFilter}
       ORDER BY created_at DESC`,
     [companyId, ...(filter?.params ?? [])],
   );

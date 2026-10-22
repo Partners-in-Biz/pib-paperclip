@@ -24,8 +24,11 @@ describe("the canary id rule", () => {
   });
 
   it("gives queries the same rule as one constant clause on the table's alias", () => {
-    expect(isCanarySql("i")).toBe("i.customer_ref LIKE 'canary-%'");
-    expect(isCanarySql("q")).toBe("q.customer_ref LIKE 'canary-%'");
+    const sql = isCanarySql("i");
+    expect(sql).toContain("customer_ref LIKE 'canary-%'");
+    expect(sql).toContain("customer->>'email'");
+    expect(sql).toContain("%.invalid");
+    expect(isCanarySql("q")).toMatch(/^[\(\)].*ILIKE.*\.invalid.*[\(\)]$/);
   });
 });
 

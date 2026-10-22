@@ -229,8 +229,10 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   await part("quotes", async () => {
     const rows = await ctx.db.query<{ currency: string; count: string; total: string }>(
-      `SELECT currency, count(*)::text AS count, COALESCE(sum(total_minor), 0)::text AS total FROM ${table(ctx, "quotes")}
-        WHERE company_id = $1 AND status IN ('draft', 'sent') AND (valid_until IS NULL OR valid_until >= now()) GROUP BY currency`,
+      `SELECT q.currency, count(*)::text AS count, COALESCE(sum(q.total_minor), 0)::text AS total FROM ${table(ctx, "quotes")} q
+        WHERE q.company_id = $1 AND q.status IN ('draft', 'sent') AND (q.valid_until IS NULL OR q.valid_until >= now())
+          AND NOT (${isCanarySql("q")})
+        GROUP BY q.currency`,
       [companyId],
     );
     const sums: Sums = new Map();
@@ -244,16 +246,18 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   await part("drafts", async () => {
     // Drafts nobody asked to send yet (the Account Manager's daily "Drafts to send" issue lists the ones over a day old).
-    // A canary draft is counted but is never "over a day old": the daily issue leaves it out, and the Operator wakes agents for what is stuck.
+    // Canary drafts are excluded entirely: the daily issue leaves it out, and the Operator never wakes agents for them.
     const rows = await ctx.db.query<{ kind: "invoice" | "quote"; currency: string; count: string; stale: string; total: string; oldest_stale: unknown }>(
-      `SELECT kind, currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day' AND NOT canary)::text AS stale,
-              COALESCE(sum(total_minor), 0)::text AS total, min(created_at) FILTER (WHERE created_at < now() - interval '1 day' AND NOT canary) AS oldest_stale FROM (
-         SELECT 'invoice' AS kind, i.currency, i.created_at, i.total_minor, ${isCanarySql("i")} AS canary FROM ${table(ctx, "invoices")} i
+      `SELECT kind, currency, count(*)::text AS count, count(*) FILTER (WHERE created_at < now() - interval '1 day')::text AS stale,
+              COALESCE(sum(total_minor), 0)::text AS total, min(created_at) FILTER (WHERE created_at < now() - interval '1 day') AS oldest_stale FROM (
+         SELECT 'invoice' AS kind, i.currency, i.created_at, i.total_minor FROM ${table(ctx, "invoices")} i
           WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
+            AND NOT (${isCanarySql("i")})
             AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "recurring_invoices")} r WHERE r.template_invoice_id = i.id AND r.is_active = true)
          UNION ALL
-         SELECT 'quote' AS kind, q.currency, q.created_at, q.total_minor, ${isCanarySql("q")} AS canary FROM ${table(ctx, "quotes")} q
+         SELECT 'quote' AS kind, q.currency, q.created_at, q.total_minor FROM ${table(ctx, "quotes")} q
           WHERE q.company_id = $1 AND q.status = 'draft' AND q.pending_action IS NULL AND COALESCE(q.delivery_status, '') <> 'queued'
+            AND NOT (${isCanarySql("q")})
        ) d GROUP BY kind, currency`,
       [companyId],
     );
@@ -298,6 +302,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
   await part("stages", async () => {
     // quote.approval / invoice.approval: a send approval is open (as in Waiting on you).
     // quote.sent: sent, not being re-sent and still valid (the Open quotes KPI without drafts); stuck = no answer after 14 days.
+    // Canary quotes are excluded entirely from sent quotes.
     const rows = await ctx.db.query<{ stage: string; currency: string; count: string; total: string; stuck: string; oldest: unknown }>(
       `SELECT stage, currency, count(*)::text AS count, COALESCE(sum(total_minor), 0)::text AS total,
               count(*) FILTER (WHERE stuck)::text AS stuck, min(since) FILTER (WHERE stuck) AS oldest FROM (
@@ -311,7 +316,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
                 (COALESCE(q.sent_at, q.updated_at) < now() - interval '14 days' AND NOT (${isCanarySql("q")})
                   AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "work_issues")} w WHERE w.company_id = q.company_id AND w.kind = 'quote_reply' AND w.subject_id = q.id)) AS stuck,
                 COALESCE(q.sent_at, q.updated_at) AS since FROM ${table(ctx, "quotes")} q
-          WHERE q.company_id = $1 AND q.status = 'sent' AND q.pending_action IS NULL AND (q.valid_until IS NULL OR q.valid_until >= now())
+          WHERE q.company_id = $1 AND q.status = 'sent' AND q.pending_action IS NULL AND (q.valid_until IS NULL OR q.valid_until >= now()) AND NOT (${isCanarySql("q")})
        ) s GROUP BY stage, currency`,
       [companyId],
     );

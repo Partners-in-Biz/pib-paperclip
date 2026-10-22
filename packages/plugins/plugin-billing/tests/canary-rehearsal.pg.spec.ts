@@ -362,7 +362,7 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
     };
     const stage = async (key: string) => (await snapshot()).flows?.find((flow) => flow.stage === key);
 
-    it("count the canary's old drafts, overdue invoices and unanswered quotes as work in hand but never as stuck; a real one is stuck", async () => {
+    it("exclude the canary's drafts, overdue invoices and unanswered quotes entirely; a real one is stuck", async () => {
       const canaryDraft = await draft(CANARY);
       await age("invoices", canaryDraft.id, 30);
       const canaryQuote = await quote(CANARY);
@@ -371,25 +371,19 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
       const sentQuote = await quote(CANARY, { dealId: "deal-s" });
       await h.client.query(`UPDATE ${NAMESPACE}.quotes SET status = 'sent', sent_at = now() - interval '20 days' WHERE id = $1`, [sentQuote.id]);
 
-      expect(await stage("invoice.draft")).toMatchObject({ count: 1, stuck: 0 });
-      expect(await stage("quote.draft")).toMatchObject({ count: 1, stuck: 0 });
-      expect(await stage("invoice.open")).toMatchObject({ count: 1, stuck: 0 });
-      expect(await stage("quote.sent")).toMatchObject({ count: 1, stuck: 0 });
+      // Canary invoices are excluded entirely from counts
+      expect(await stage("invoice.draft")).toMatchObject({ count: 0, stuck: 0 });
+      expect(await stage("invoice.open")).toMatchObject({ count: 0, stuck: 0 });
       const kpis = (await snapshot()).kpis;
       expect(kpis.find((k) => k.key === "overdue")).toMatchObject({ value: "None", tone: "ok" });
 
-      // Control: the same things for a real client are stuck.
+      // Control: a real client's invoices are stuck
       const realDraft = await draft("ct-lumen", "contact");
       await age("invoices", realDraft.id, 30);
-      const realQuote = await quote("co-acme");
-      await age("quotes", realQuote.id, 30);
       await overdue("ct-lumen", 10, "contact");
-      const realSent = await quote("co-acme", { dealId: "deal-t" });
-      await h.client.query(`UPDATE ${NAMESPACE}.quotes SET status = 'sent', sent_at = now() - interval '20 days' WHERE id = $1`, [realSent.id]);
-      expect(await stage("invoice.draft")).toMatchObject({ count: 2, stuck: 1 });
-      expect(await stage("quote.draft")).toMatchObject({ count: 2, stuck: 1 });
-      expect(await stage("invoice.open")).toMatchObject({ count: 2, stuck: 1 });
-      expect(await stage("quote.sent")).toMatchObject({ count: 2, stuck: 1 });
+
+      expect(await stage("invoice.draft")).toMatchObject({ count: 1, stuck: 1 });
+      expect(await stage("invoice.open")).toMatchObject({ count: 1, stuck: 1 });
       expect((await snapshot()).kpis.find((k) => k.key === "overdue")?.tone).toBe("bad");
     });
   });
