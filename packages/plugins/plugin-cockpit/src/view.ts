@@ -208,7 +208,7 @@ export function buildView(input: ViewInput): CockpitView {
     input.modules,
   );
   const own = [
-    { source: "asks", sourceTitle: "Asked by agents", items: (input.load.asks ?? []).map(askWaitingItem) },
+    { source: "asks", sourceTitle: "Asked by agents", items: (input.load.asks ?? []).map((ask) => askWaitingItem(ask)) },
     ...snapshots.map((s) => ({ source: s.plugin, sourceTitle: s.title, items: s.waiting })),
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: input.approvals, myIssues: input.myIssues, setupMissing, setupIssueId: input.setupIssueId }) };
