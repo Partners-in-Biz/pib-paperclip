@@ -43,6 +43,16 @@ import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
 import { ORIGIN_KIND, ensureAdsProject } from "./issues.js";
 import { adsOn, companyUsesAds, knownCompanies, MODULE_OFF_MESSAGE } from "./modules.js";
 import { OAuthFlowError, completeOAuth, connectMock, connectWithToken, startOAuth } from "./oauth.js";
+import {
+  listConnections as listWebConnections,
+  listGoogleCustomers,
+  setGoogleCustomer,
+  startGoogleAuthorize,
+  startMetaAuthorize,
+  webConnectionStatus,
+} from "./web/connections.js";
+import { webBrokerFor, webConnectionsReturnPath, loadWebConnectionsMeta } from "./web/runtime.js";
+import { BrokerError } from "./web/broker.js";
 import { OWN_SCOPE, PLUGIN_ID } from "./platforms.js";
 import { cancelProposal, createProposal, markDoneManually, onApprovalIssue, recordClientRequest, recordReview, recordSignoff, reviseProposal, sweepProposals } from "./proposals.js";
 import {
@@ -363,6 +373,61 @@ const ACTIONS: Record<string, ActionHandler> = {
   "ads.agent": (ctx, _rt, v) => agentSummary(ctx, v.companyId),
   // Called by the deploy script for every company after a release (the same action every PiB plugin has); it only brings the skill up to date.
   "ads.sync-skills": async (_ctx, _rt, v) => ({ results: await skillSync!.force(v.companyId) }),
+  "ads.web-connections.load": async (ctx, rt) => {
+    const raw = rt.config.raw;
+    const meta = await loadWebConnectionsMeta(ctx, rt.companyId, raw);
+    if (!meta.configured) {
+      return { ...meta, google: false, meta: false, googleConnectionId: null as string | null };
+    }
+    try {
+      const broker = await webBrokerFor(ctx, rt.companyId, raw);
+      const connections = await listWebConnections(broker);
+      return { ...meta, ...webConnectionStatus(connections) };
+    } catch (error) {
+      if (error instanceof BrokerError) throw new AdsError(error.message);
+      throw error;
+    }
+  },
+  "ads.web-oauth-start": async (ctx, rt, v, p) => {
+    requireUser(v, "connects an ad platform through the web broker");
+    const platform = requiredString(p, "platform");
+    if (platform !== "google" && platform !== "meta") throw new AdsError('Platform must be "google" or "meta".');
+    const raw = rt.config.raw;
+    const broker = await webBrokerFor(ctx, rt.companyId, raw);
+    const returnPath = await webConnectionsReturnPath(ctx, rt.companyId, raw.publicBaseUrl);
+    try {
+      if (platform === "google") return startGoogleAuthorize(broker, { returnPath });
+      return startMetaAuthorize(broker, { returnPath });
+    } catch (error) {
+      if (error instanceof BrokerError) throw new AdsError(error.message);
+      throw error;
+    }
+  },
+  "ads.web-google-customers": async (ctx, rt, v, p) => {
+    requireUser(v, "lists Google ad accounts from the web broker");
+    const broker = await webBrokerFor(ctx, rt.companyId, rt.config.raw);
+    try {
+      return { customers: await listGoogleCustomers(broker, requiredString(p, "connectionId")) };
+    } catch (error) {
+      if (error instanceof BrokerError) throw new AdsError(error.message);
+      throw error;
+    }
+  },
+  "ads.web-google-set-customer": async (ctx, rt, v, p) => {
+    requireUser(v, "chooses the Google ad account for the web connection");
+    const broker = await webBrokerFor(ctx, rt.companyId, rt.config.raw);
+    const loginCustomerId = optionalString(p, "loginCustomerId");
+    try {
+      await setGoogleCustomer(broker, requiredString(p, "connectionId"), {
+        customerId: requiredString(p, "customerId"),
+        ...(loginCustomerId ? { loginCustomerId } : {}),
+      });
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof BrokerError) throw new AdsError(error.message);
+      throw error;
+    }
+  },
 };
 
 // ── API routes ──────────────────────────────────────────────────────────────

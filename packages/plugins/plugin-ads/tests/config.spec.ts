@@ -88,7 +88,7 @@ describe("settings", () => {
       for (const [k, v] of Object.entries(node.properties ?? {})) walk(v, `${path}.${k}`);
     };
     walk(schema, "");
-    expect(secrets.sort()).toEqual([".encryptionKey", ".platforms.google.clientSecret", ".platforms.google.developerToken", ".platforms.meta.appSecret", ".platforms.meta.systemUserToken", ".previousEncryptionKey"]);
+    expect(secrets.sort()).toEqual([".encryptionKey", ".platforms.google.clientSecret", ".platforms.google.developerToken", ".platforms.meta.appSecret", ".platforms.meta.systemUserToken", ".previousEncryptionKey", ".webBrokerToken"]);
     for (const p of ["meta", "google", "mock"]) expect(schema.properties.platforms.properties[p].properties.enabled.default).toBe(false);
     expect(schema.properties.writes.properties.enabled.default).toBe(false);
   });
