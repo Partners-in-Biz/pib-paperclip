@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { hmacHex, md5Hex, phpUrlencode, remoteIpFrom, safeEqual } from "../src/pay/crypto.js";
 import { ITN_VIA_HOST, PayFastProvider, itnParamString, itnSignature, parseForm, payfastCheckoutSignature, payfastReadiness, signItn } from "../src/pay/payfast.js";
+import { PAYPAL_SANDBOX, PaypalProvider, paypalReadiness } from "../src/pay/paypal.js";
 import { providerState, providerStates, enabledProviderKeys, webhookUrl, clearingAccountCode } from "../src/pay/settings.js";
 import { PaymentProviderError, StripeProvider, checkStripeSignatureShape, parseStripeSignature, signStripeBody, stripeForm, verifyStripeSignature } from "../src/pay/stripe.js";
 import { decimalFromMinor, minorFromDecimal, WebhookRejected, type WebhookInput } from "../src/pay/types.js";
@@ -335,19 +336,243 @@ describe("PayFast ITN", () => {
   });
 });
 
+describe("PaypalProvider", () => {
+  function fakePaypal(responses: Array<{ ok?: boolean; status?: number; body: unknown }>) {
+    const calls: Array<{ url: string; method: string; headers: Record<string, string>; body: string | undefined }> = [];
+    const fetchImpl = (async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+      calls.push({ url, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body });
+      const next = responses.shift()!;
+      return { ok: next.ok ?? true, status: next.status ?? 200, json: async () => next.body } as Response;
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  const config = { clientId: "client-id", clientSecret: "client-secret", webhookId: "WH-1", sandbox: true };
+  const request = { linkId: "6f1e", invoiceNumber: "LUM-001", amountMinor: 100, currency: "USD", description: "Invoice LUM-001" };
+  const approveUrl = "https://www.sandbox.paypal.com/checkoutnow?token=ORDER1";
+  const tokenBody = { access_token: "A1", expires_in: 32_400 };
+  const orderBody = { id: "ORDER1", links: [{ rel: "approve", href: approveUrl }, { rel: "self", href: "https://api-m.sandbox.paypal.com/v2/checkout/orders/ORDER1" }] };
+  const link = { id: "6f1e", amountMinor: 100, currency: "USD" };
+  const captureEvent = {
+    id: "WH-EVT-1",
+    event_type: "PAYMENT.CAPTURE.COMPLETED",
+    create_time: "2026-10-03T10:00:00Z",
+    resource: { id: "CAP-1", status: "COMPLETED", custom_id: "6f1e", amount: { currency_code: "USD", value: "1.00" }, create_time: "2026-10-03T10:00:00Z" },
+  };
+  const transmissionHeaders = {
+    "paypal-transmission-id": "tx-1",
+    "paypal-transmission-time": "2026-10-03T10:00:00Z",
+    "paypal-transmission-sig": "sig",
+    "paypal-cert-url": "https://api.paypal.com/cert",
+    "paypal-auth-algo": "SHA256withRSA",
+  };
+  const deliver = (event: Record<string, unknown>, headers: Record<string, string> = transmissionHeaders): WebhookInput => ({
+    rawBody: JSON.stringify(event),
+    headers,
+    now: NOW,
+  });
+
+  it("creates a CAPTURE order, returns the approve URL, and sends only the invoice reference (no PII)", async () => {
+    const { calls, fetchImpl } = fakePaypal([{ body: tokenBody }, { body: orderBody }]);
+    const created = await new PaypalProvider({ ...config, fetchImpl }).createLink(request);
+    expect(created).toEqual({ url: approveUrl, providerRef: "ORDER1" });
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ["POST", `${PAYPAL_SANDBOX}/v1/oauth2/token`],
+      ["POST", `${PAYPAL_SANDBOX}/v2/checkout/orders`],
+    ]);
+    expect(calls[0]!.body).toBe("grant_type=client_credentials");
+    expect(calls[0]!.headers["content-type"]).toBe("application/x-www-form-urlencoded");
+    const order = JSON.parse(calls[1]!.body!) as { intent: string; purchase_units: Array<Record<string, unknown>> };
+    expect(order.intent).toBe("CAPTURE");
+    expect(order.purchase_units).toHaveLength(1);
+    expect(order.purchase_units[0]).toEqual({
+      custom_id: "6f1e",
+      invoice_id: "LUM-001",
+      amount: { currency_code: "USD", value: "1.00" },
+      description: "Invoice LUM-001",
+    });
+    const unitKeys = Object.keys(order.purchase_units[0]!).sort();
+    expect(unitKeys).toEqual(["amount", "custom_id", "description", "invoice_id"]);
+    expect(JSON.stringify(order)).not.toMatch(/email|phone|name_first|payer|shipping/i);
+  });
+
+  it("refuses ZAR and other unsupported currencies", async () => {
+    const { calls, fetchImpl } = fakePaypal([]);
+    const provider = new PaypalProvider({ ...config, fetchImpl });
+    await expect(provider.createLink({ ...request, currency: "ZAR" })).rejects.toThrow(/not offered in ZAR/);
+    await expect(provider.createLink({ ...request, currency: "CAD" })).rejects.toThrow(/USD, EUR or GBP only/);
+    expect(calls).toEqual([]);
+  });
+
+  it("turns a verified CAPTURE.COMPLETED into payment_confirmed with the paid amount", async () => {
+    const { calls, fetchImpl } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "SUCCESS" } }]);
+    const events = await new PaypalProvider({ ...config, fetchImpl }).verify(deliver(captureEvent), link, null);
+    expect(events).toEqual([{
+      kind: "payment_confirmed",
+      eventId: "WH-EVT-1",
+      linkId: "6f1e",
+      providerPaymentId: "CAP-1",
+      amountMinor: 100,
+      currency: "USD",
+      feeMinor: null,
+      paidAt: "2026-10-03T10:00:00Z",
+      reference: "CAP-1",
+      status: "COMPLETED",
+    }]);
+    expect(calls[1]!.url).toBe(`${PAYPAL_SANDBOX}/v1/notifications/verify-webhook-signature`);
+    const verifyBody = JSON.parse(calls[1]!.body!) as { verification_status?: string; webhook_id: string; webhook_event: { id: string } };
+    expect(verifyBody.webhook_id).toBe("WH-1");
+    expect(verifyBody.webhook_event.id).toBe("WH-EVT-1");
+  });
+
+  it("rejects when verification_status is FAILURE so the host does not mark handled", async () => {
+    const { fetchImpl } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "FAILURE" } }]);
+    await expect(new PaypalProvider({ ...config, fetchImpl }).verify(deliver(captureEvent), link, null)).rejects.toMatchObject({
+      name: "WebhookRejected",
+      code: "bad_signature",
+    });
+  });
+
+  it("captures on ORDER.APPROVED and emits payment_confirmed from the capture result", async () => {
+    const approvedEvent = {
+      id: "WH-EVT-APPROVED",
+      event_type: "CHECKOUT.ORDER.APPROVED",
+      create_time: "2026-10-03T10:00:00Z",
+      resource: {
+        id: "ORDER1",
+        status: "APPROVED",
+        purchase_units: [{ custom_id: "6f1e", amount: { currency_code: "USD", value: "1.00" } }],
+        create_time: "2026-10-03T10:00:00Z",
+      },
+    };
+    const captureResponse = {
+      id: "ORDER1",
+      status: "COMPLETED",
+      purchase_units: [
+        {
+          custom_id: "6f1e",
+          payments: {
+            captures: [
+              {
+                id: "CAP-1",
+                status: "COMPLETED",
+                amount: { currency_code: "USD", value: "1.00" },
+                create_time: "2026-10-03T10:00:01Z",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const { calls, fetchImpl } = fakePaypal([
+      { body: tokenBody },
+      { body: { verification_status: "SUCCESS" } },
+      { body: captureResponse },
+    ]);
+    const events = await new PaypalProvider({ ...config, fetchImpl }).verify(deliver(approvedEvent), link, null);
+    expect(events).toEqual([
+      {
+        kind: "payment_confirmed",
+        eventId: "WH-EVT-APPROVED",
+        linkId: "6f1e",
+        providerPaymentId: "CAP-1",
+        amountMinor: 100,
+        currency: "USD",
+        feeMinor: null,
+        paidAt: "2026-10-03T10:00:01Z",
+        reference: "CAP-1",
+        status: "COMPLETED",
+      },
+    ]);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ["POST", `${PAYPAL_SANDBOX}/v1/oauth2/token`],
+      ["POST", `${PAYPAL_SANDBOX}/v1/notifications/verify-webhook-signature`],
+      ["POST", `${PAYPAL_SANDBOX}/v2/checkout/orders/ORDER1/capture`],
+    ]);
+  });
+
+  it("finds our link from custom_id on the capture resource", () => {
+    const provider = new PaypalProvider(config);
+    expect(provider.locate(deliver(captureEvent))).toEqual({ linkId: "6f1e", providerPaymentId: "CAP-1" });
+    expect(
+      provider.locate(
+        deliver({
+          id: "e",
+          event_type: "CHECKOUT.ORDER.APPROVED",
+          resource: { id: "ORDER1", purchase_units: [{ custom_id: "6f1e" }] },
+        }),
+      ),
+    ).toEqual({ linkId: "6f1e", providerPaymentId: "ORDER1" });
+    expect(provider.locate(deliver({ id: "e", event_type: "CUSTOMER.DISPUTE.CREATED", resource: { custom_id: "6f1e" } }))).toBeNull();
+    expect(provider.locate({ rawBody: "not json", headers: {}, now: NOW })).toBeNull();
+  });
+
+  it("paypalReadiness: off until switched on, missing secrets, or complete", () => {
+    expect(paypalReadiness(false, true, true, true, "https://paperclip.example")).toMatchObject({ ready: false, code: "off" });
+    expect(paypalReadiness(undefined, true, true, true, "https://paperclip.example").code).toBe("off");
+    expect(paypalReadiness(true, true, false, true, "https://paperclip.example")).toMatchObject({
+      ready: false,
+      code: "missing",
+      blocker: expect.stringMatching(/client secret/),
+    });
+    expect(paypalReadiness(true, true, true, true, null)).toMatchObject({ ready: false, code: "missing", blocker: expect.stringMatching(/public address/) });
+    expect(paypalReadiness(true, true, true, true, "https://paperclip.example")).toEqual({ ready: true, blocker: null, code: "ok" });
+  });
+});
+
+const paypalSandboxConfigured = Boolean(process.env.PAYPAL_CLIENT_ID_SANDBOX && process.env.PAYPAL_CLIENT_SECRET_SANDBOX);
+
+describe.skipIf(!paypalSandboxConfigured)("Paypal sandbox smoke", () => {
+  it("gets a token and creates a $1.00 USD order with an approve link (no capture)", async () => {
+    const provider = new PaypalProvider({
+      clientId: process.env.PAYPAL_CLIENT_ID_SANDBOX!,
+      clientSecret: process.env.PAYPAL_CLIENT_SECRET_SANDBOX!,
+      webhookId: "smoke-unused",
+      sandbox: true,
+    });
+    const created = await provider.createLink({
+      linkId: "test-link",
+      invoiceNumber: "SMOKE-001",
+      amountMinor: 100,
+      currency: "USD",
+      description: "Sandbox smoke",
+    });
+    expect(created.providerRef).toMatch(/\w+/);
+    expect(created.url).toMatch(/^https:\/\/www\.sandbox\.paypal\.com\//);
+  }, 30_000);
+});
+
 describe("what is on", () => {
-  const stripeOn = { payments: { stripe: { enabled: true, secretKey: { type: "secret_ref", secretId: "a" }, webhookSecret: { type: "secret_ref", secretId: "b" } } } };
+  const paypalOn = {
+    payments: {
+      publicBaseUrl: "https://paperclip.example",
+      paypal: {
+        enabled: true,
+        clientId: { type: "secret_ref", secretId: "a" },
+        clientSecret: { type: "secret_ref", secretId: "b" },
+        webhookId: { type: "secret_ref", secretId: "c" },
+      },
+    },
+  };
 
   it("everything is off by default, EFT is the way to pay", () => {
     expect(enabledProviderKeys({})).toEqual([]);
-    expect(providerStates({}).map((s) => [s.key, s.enabled, s.code])).toEqual([["stripe", false, "off"], ["payfast", false, "off"], ["mock", false, "off"]]);
+    expect(providerStates({}).map((s) => [s.key, s.enabled, s.code])).toEqual([["payfast", false, "off"], ["paypal", false, "off"], ["mock", false, "off"]]);
   });
 
   it("a provider needs its switch AND every secret: switched on with a secret missing is not on", () => {
-    expect(providerState(stripeOn, "stripe")).toMatchObject({ enabled: true, switchedOn: true, blocker: null });
-    expect(providerState({ payments: { stripe: { ...stripeOn.payments.stripe, webhookSecret: undefined } } }, "stripe")).toMatchObject({ enabled: false, switchedOn: true, code: "missing", blocker: "Missing: webhook signing secret." });
-    expect(providerState({ payments: { stripe: { secretKey: stripeOn.payments.stripe.secretKey, webhookSecret: stripeOn.payments.stripe.webhookSecret } } }, "stripe")).toMatchObject({ enabled: false, code: "off" });
-    expect(enabledProviderKeys({ ...stripeOn, payments: { ...stripeOn.payments, mock: { enabled: true } } })).toEqual(["stripe", "mock"]);
+    expect(providerState(paypalOn, "paypal")).toMatchObject({ enabled: true, switchedOn: true, blocker: null });
+    expect(providerState({ payments: { ...paypalOn.payments, paypal: { ...paypalOn.payments.paypal, webhookId: undefined } } }, "paypal")).toMatchObject({
+      enabled: false,
+      switchedOn: true,
+      code: "missing",
+      blocker: "Missing: webhook id.",
+    });
+    expect(providerState({ payments: { paypal: { clientId: paypalOn.payments.paypal.clientId, clientSecret: paypalOn.payments.paypal.clientSecret, webhookId: paypalOn.payments.paypal.webhookId } } }, "paypal")).toMatchObject({
+      enabled: false,
+      code: "off",
+    });
+    expect(enabledProviderKeys({ ...paypalOn, payments: { ...paypalOn.payments, mock: { enabled: true } } })).toEqual(["paypal", "mock"]);
   });
 
   it("PayFast is ready when credentials are complete and ITN via host is on", () => {
@@ -362,8 +587,8 @@ describe("what is on", () => {
   });
 
   it("builds the webhook address from the public address, https only, and defaults the clearing account", () => {
-    expect(webhookUrl({ payments: { publicBaseUrl: "https://paperclip.example/" } }, "stripe")).toBe("https://paperclip.example/api/plugins/partnersinbiz.billing/webhooks/stripe");
-    expect(webhookUrl({ payments: { publicBaseUrl: "http://paperclip.example" } }, "stripe")).toBeNull();
+    expect(webhookUrl({ payments: { publicBaseUrl: "https://paperclip.example/" } }, "paypal")).toBe("https://paperclip.example/api/plugins/partnersinbiz.billing/webhooks/paypal");
+    expect(webhookUrl({ payments: { publicBaseUrl: "http://paperclip.example" } }, "paypal")).toBeNull();
     expect(webhookUrl({}, "payfast")).toBeNull();
     expect(clearingAccountCode({})).toBe("1020");
     expect(clearingAccountCode({ payments: { clearingAccountCode: "1030" } })).toBe("1030");

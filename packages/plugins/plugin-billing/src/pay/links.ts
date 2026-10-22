@@ -161,7 +161,8 @@ export async function housekeepPaymentLinks(ctx: PluginContext, companyId: strin
   let switchedOff = 0;
   const resolver = new SecretResolver(ctx, companyId, settings as Record<string, unknown>);
   for (const link of await linksForCompany(ctx, companyId, ["cancelled"], 30)) {
-    if (link.provider === "payfast" || !link.provider_ref || link.remote_off_at) continue;
+    // PayFast and PayPal have no reliable remote deactivate (ITN / order void); skip so we do not retry forever.
+    if (link.provider === "payfast" || link.provider === "paypal" || !link.provider_ref || link.remote_off_at) continue;
     if (await deactivateRemote(ctx, link, settings, resolver)) switchedOff += 1;
   }
   return { switchedOff };

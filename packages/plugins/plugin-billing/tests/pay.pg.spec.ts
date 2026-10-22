@@ -1,8 +1,8 @@
 /**
  * Money in (audit Q10-6) end to end on a real Postgres with the host's SQL rules: a payment link, the signed
  * webhook, matching the payment to its invoice, the journals (clearing account, fee, refund), refunds, and
- * every way a delivery can be wrong. Stripe is exercised with real signatures and a fake Stripe API; PayFast's
- * protocol is in pay-providers.spec.ts. Nothing here talks to a real provider.
+ * every way a delivery can be wrong. PayPal is the real online provider under test (Stripe left REAL_PROVIDERS);
+ * a fake PayPal API answers fetch. PayFast's protocol is in pay-providers.spec.ts. Nothing here talks to a real provider.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { isBalanced, type LedgerPostRequested } from "@partnersinbiz/pib-plugin-kit";
@@ -22,23 +22,48 @@ import { handleBillingWebhook } from "../src/pay/webhook.js";
 import { ONLINE_PAYMENTS_REFERENCE } from "../src/skills.js";
 import { applyProviderEvent } from "../src/pay/confirm.js";
 import { getLink } from "../src/pay/store.js";
+import { decimalFromMinor } from "../src/pay/types.js";
 import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const WEBHOOK_SECRET = "secret-wh"; // the harness resolves a secret ref to `secret-<id>`
 
-const STRIPE_SETTINGS = {
+const PAYPAL_SETTINGS = {
   ...SETTINGS,
   payments: {
     publicBaseUrl: "https://paperclip.test",
-    stripe: { enabled: true, secretKey: { type: "secret_ref", secretId: "sk" }, webhookSecret: { type: "secret_ref", secretId: "wh" } },
+    paypal: {
+      enabled: true,
+      sandbox: true,
+      clientId: { type: "secret_ref", secretId: "cid" },
+      clientSecret: { type: "secret_ref", secretId: "csec" },
+      webhookId: { type: "secret_ref", secretId: "wh" },
+    },
   },
+};
+
+/** Stripe verifier-only settings (in-flight links / webhook shape checks). Not used for createLink. */
+const STRIPE_WEBHOOK_SETTINGS = {
+  ...SETTINGS,
+  payments: {
+    publicBaseUrl: "https://paperclip.test",
+    stripe: { enabled: false, secretKey: { type: "secret_ref", secretId: "sk" }, webhookSecret: { type: "secret_ref", secretId: "wh" } },
+  },
+};
+
+const PAYPAL_TRANSMISSION = {
+  "paypal-transmission-id": "tx-1",
+  "paypal-transmission-time": "2026-10-03T10:00:00Z",
+  "paypal-transmission-sig": "sig",
+  "paypal-cert-url": "https://api.paypal.com/cert",
+  "paypal-auth-algo": "SHA256withRSA",
 };
 
 describe.skipIf(!available)("online payments (postgres)", () => {
   let h: Harness;
-  let stripeCalls: Array<{ url: string; method: string; body: string; headers: Record<string, string> }>;
+  let providerCalls: Array<{ url: string; method: string; body: string | undefined; headers: Record<string, string> }>;
   let planted = 0;
+  let verifyStatus: "SUCCESS" | "FAILURE" = "SUCCESS";
 
   beforeAll(async () => {
     h = await startHarness();
@@ -52,16 +77,35 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   beforeEach(async () => {
     await h.reset();
     forgetWebhookSecrets();
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS });
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS });
     await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
-    stripeCalls = [];
+    providerCalls = [];
     planted = 0;
-    // A fake Stripe: every POST is recorded and answered with the objects Stripe would return.
-    vi.stubGlobal("fetch", async (url: string, init: { method: string; body: string; headers: Record<string, string> }) => {
-      stripeCalls.push({ url, method: init.method, body: init.body, headers: init.headers });
-      planted += 1;
-      const body = url.endsWith("/v1/prices") ? { id: `price_${planted}` } : url.endsWith("/v1/payment_links") ? { id: `plink_${planted}`, url: `https://buy.stripe.com/test_${planted}` } : {};
-      return { ok: true, status: 200, json: async () => body } as Response;
+    verifyStatus = "SUCCESS";
+    // A fake PayPal: token, create order, and webhook signature verification.
+    vi.stubGlobal("fetch", async (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => {
+      const method = init?.method ?? "GET";
+      const body = init?.body;
+      const headers = init?.headers ?? {};
+      providerCalls.push({ url, method, body, headers });
+      if (url.includes("/v1/oauth2/token")) {
+        return { ok: true, status: 200, json: async () => ({ access_token: "tok", expires_in: 32_400 }) } as Response;
+      }
+      if (url.includes("/v2/checkout/orders") && method === "POST") {
+        planted += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: `ORDER${planted}`,
+            links: [{ rel: "approve", href: `https://www.sandbox.paypal.com/checkoutnow?token=ORDER${planted}` }],
+          }),
+        } as Response;
+      }
+      if (url.includes("/v1/notifications/verify-webhook-signature")) {
+        return { ok: true, status: 200, json: async () => ({ verification_status: verifyStatus }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
     });
   });
 
@@ -76,7 +120,8 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   const journals = async () => (await outbox("ledger.post.requested")).map((r) => r.payload as unknown as LedgerPostRequested);
 
   async function sentInvoice(customerRef = "ct-lumen", unitAmountMinor = 100_000) {
-    const invoice = await h.call<{ id: string; number: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef });
+    // PayPal takes USD/EUR/GBP only (not ZAR).
+    const invoice = await h.call<{ id: string; number: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "SEO sprint", quantity: 1, unitAmountMinor });
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
     return invoice;
@@ -89,17 +134,27 @@ describe.skipIf(!available)("online payments (postgres)", () => {
 
   const row = async (sql: string, params: unknown[] = []) => (await h.client.query(sql, params)).rows as Array<Record<string, any>>;
   const invoiceRow = async (id: string) => (await h.call<{ invoice: { status: string; outstandingMinor: number; paidMinor: number } }>("billing.invoice-detail", { invoiceId: id })).invoice;
+  const orderCalls = () => providerCalls.filter((c) => c.url.includes("/v2/checkout/orders"));
 
-  /** Deliver a Stripe event the way the host does: raw body, headers, parsed body. */
-  async function deliver(event: Record<string, unknown>, options: { secret?: string; timestamp?: number; signature?: string | null } = {}) {
+  /** Deliver a PayPal event the way the host does: raw body, transmission headers, parsed body. */
+  async function deliver(event: Record<string, unknown>, options: { headers?: Record<string, string> | null } = {}) {
     const rawBody = JSON.stringify(event);
-    const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
-    const signature = options.signature === undefined ? signStripeBody(options.secret ?? WEBHOOK_SECRET, rawBody, timestamp) : options.signature;
-    return plugin.definition.onWebhook!({ endpointKey: "stripe", headers: signature ? { "stripe-signature": signature } : {}, rawBody, parsedBody: event, requestId: `req-${Math.random()}` });
+    const headers = options.headers === null ? {} : { ...PAYPAL_TRANSMISSION, ...(options.headers ?? {}) };
+    return plugin.definition.onWebhook!({ endpointKey: "paypal", headers, rawBody, parsedBody: event, requestId: `req-${Math.random()}` });
   }
-  const paidSession = (linkId: string, over: Record<string, unknown> = {}, eventId = "evt_paid_1") => ({
-    id: eventId, type: "checkout.session.completed", created: Math.floor(Date.now() / 1000),
-    data: { object: { id: "cs_1", client_reference_id: linkId, payment_intent: "pi_1", payment_status: "paid", amount_total: 115_000, currency: "zar", ...over } },
+
+  const paidCapture = (linkId: string, over: Record<string, unknown> = {}, eventId = "WH-EVT-1") => ({
+    id: eventId,
+    event_type: "PAYMENT.CAPTURE.COMPLETED",
+    create_time: new Date().toISOString(),
+    resource: {
+      id: "CAP-1",
+      status: "COMPLETED",
+      custom_id: linkId,
+      amount: { currency_code: "USD", value: "1150.00" },
+      create_time: new Date().toISOString(),
+      ...over,
+    },
   });
 
   it("is off by default: no link, no provider call, the invoice email is EFT only", async () => {
@@ -107,7 +162,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await sentInvoice();
     const result = (await h.tools.get("create-payment-link")!({ invoiceId: invoice.id }, { agentId: "a", runId: "r", companyId: COMPANY, projectId: "p" })) as { data: { ok: boolean; error: string } };
     expect(result.data.error).toMatch(/No online payment provider is switched on, so the way to pay is EFT/);
-    expect(stripeCalls).toEqual([]);
+    expect(orderCalls()).toEqual([]);
     const row0 = (await getInvoice(h.ctx, invoice.id))!;
     const view = await invoiceView(h.ctx, row0, await billingSettings(h.ctx, COMPANY));
     expect(view.paymentLinks).toEqual([]);
@@ -118,90 +173,99 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   });
 
   it("switched on with a secret missing is still off", async () => {
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS, payments: { stripe: { enabled: true, secretKey: { type: "secret_ref", secretId: "sk" } } } });
+    h.config.set(COMPANY, {
+      ...PAYPAL_SETTINGS,
+      payments: {
+        publicBaseUrl: "https://paperclip.test",
+        paypal: {
+          enabled: true,
+          sandbox: true,
+          clientId: { type: "secret_ref", secretId: "cid" },
+          clientSecret: { type: "secret_ref", secretId: "csec" },
+        },
+      },
+    });
     const invoice = await sentInvoice();
     const result = (await h.tools.get("create-payment-link")!({ invoiceId: invoice.id }, { agentId: "a", runId: "r", companyId: COMPANY, projectId: "p" })) as { data: { error: string } };
-    expect(result.data.error).toMatch(/Card \(Stripe\): Missing: webhook signing secret/);
+    expect(result.data.error).toMatch(/PayPal: Missing: webhook id/);
   });
 
   it("makes one link for what the invoice owes and shows it on the email and the PDF beside the EFT details", async () => {
     const invoice = await sentInvoice();
     const made = await makeLink(invoice.id);
     expect(made.links).toHaveLength(1);
-    expect(made.links[0]).toMatchObject({ provider: "stripe", url: expect.stringMatching(/^https:\/\/buy\.stripe\.com\/test_\d+\?client_reference_id=/) });
+    expect(made.links[0]).toMatchObject({ provider: "paypal", url: expect.stringMatching(/^https:\/\/www\.sandbox\.paypal\.com\/checkoutnow\?token=ORDER\d+$/) });
     const stored = (await row(`SELECT * FROM ${NAMESPACE}.payment_links`))[0]!;
-    expect(stored).toMatchObject({ invoice_id: invoice.id, provider: "stripe", status: "active", amount_minor: "115000", currency: "ZAR", provider_ref: expect.stringMatching(/^plink_/) });
-    expect(made.links[0]!.url).toContain(stored.id);
-    // A second ask returns the same link and calls Stripe no more.
-    const calls = stripeCalls.length;
+    expect(stored).toMatchObject({ invoice_id: invoice.id, provider: "paypal", status: "active", amount_minor: "115000", currency: "USD", provider_ref: expect.stringMatching(/^ORDER\d+$/) });
+    // A second ask returns the same link and creates no further order.
+    const orders = orderCalls().length;
     expect((await makeLink(invoice.id)).links[0]!.id).toBe(stored.id);
-    expect(stripeCalls).toHaveLength(calls);
-    expect(stripeCalls.map((c) => c.headers["idempotency-key"])).toEqual([`${stored.id}:price`, `${stored.id}:link`]);
+    expect(orderCalls()).toHaveLength(orders);
 
     const view = await invoiceView(h.ctx, (await getInvoice(h.ctx, invoice.id))!, await billingSettings(h.ctx, COMPANY));
     const email = invoiceEmail(view, { hasAttachment: true });
-    expect(email.text).toContain(`Pay R 1,150.00 online (Card (Stripe)): ${made.links[0]!.url}`);
+    expect(email.text).toContain(`Pay $1,150.00 online (PayPal): ${made.links[0]!.url}`);
     expect(email.html).toContain(`href="${made.links[0]!.url.replace(/&/g, "&amp;")}"`);
     expect(email.text).toContain("EFT payment details");
     expect(email.text).toMatch(/pay online with the link below, or by EFT/);
     const sections = documentPdfSpec(view).sections!;
     expect(sections.map((s) => s.heading)).toEqual(["Pay online", "Payment details (EFT)", "Proof of payment"]);
-    expect(sections[0]!.lines[0]).toContain("Card (Stripe): https://buy.stripe.com/");
+    expect(sections[0]!.lines[0]).toContain("PayPal: https://www.sandbox.paypal.com/");
   });
 
   it("making the link is part of sending: the email that goes out carries it", async () => {
-    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" });
+    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     const outcome = await startInvoiceSend(h.ctx, invoice.id, "user:u1");
     expect(outcome.mode).toBe("queued");
     const mail = (await outbox("mail.send.requested"))[0]!.payload as { html: string; text: string };
-    expect(mail.text).toMatch(/Pay R 1,150\.00 online \(Card \(Stripe\)\): https:\/\/buy\.stripe\.com\/test_\d+/);
-    expect(mail.html).toContain("buy.stripe.com");
+    expect(mail.text).toMatch(/Pay \$1,150\.00 online \(PayPal\): https:\/\/www\.sandbox\.paypal\.com\/checkoutnow\?token=ORDER\d+/);
+    expect(mail.html).toContain("sandbox.paypal.com");
     const links = await row(`SELECT amount_minor, status FROM ${NAMESPACE}.payment_links WHERE invoice_id = $1`, [invoice.id]);
     expect(links).toEqual([{ amount_minor: "115000", status: "active" }]);
   });
 
   it("the first send says what the invoice owes, never R 0.00 (the email and the PDF are made while the row is still a draft)", async () => {
-    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" });
+    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     const draft = (await getInvoice(h.ctx, invoice.id))!;
     expect(draft.status).toBe("draft");
     // The send freezes the row as "sent" in memory before the database says so.
     const view = await invoiceView(h.ctx, { ...draft, status: "sent" }, await billingSettings(h.ctx, COMPANY));
     expect(view.outstandingMinor).toBe(115_000);
-    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain(`invoice ${draft.number} for R 1,150.00`);
-    expect(documentPdfSpec(view).totals!.find((t) => t.label === "Balance due")).toMatchObject({ value: "R 1,150.00" });
+    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(documentPdfSpec(view).totals!.find((t) => t.label === "Balance due")).toMatchObject({ value: "$1,150.00" });
     // and the mail that really goes out says the same
     await startInvoiceSend(h.ctx, invoice.id, "user:u1");
     const mail = (await outbox("mail.send.requested"))[0]!.payload as { text: string };
-    expect(mail.text).toContain(`invoice ${draft.number} for R 1,150.00`);
-    expect(mail.text).not.toContain("R 0.00");
+    expect(mail.text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(mail.text).not.toContain("$0.00");
   });
 
-  it("a link Stripe refuses never blocks the invoice: it goes out with EFT only and the failure is shown", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 401, json: async () => ({ error: { message: "Invalid API Key provided: sk_****" } }) }) as Response);
-    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" });
+  it("a link PayPal refuses never blocks the invoice: it goes out with EFT only and the failure is shown", async () => {
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "Client Authentication failed" }) }) as Response);
+    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");
     const mail = (await outbox("mail.send.requested"))[0]!.payload as { text: string };
     expect(mail.text).not.toMatch(/online/);
     expect(mail.text).toContain("EFT payment details");
-    expect(await row(`SELECT status, last_error FROM ${NAMESPACE}.payment_links`)).toEqual([{ status: "failed", last_error: expect.stringContaining("Invalid API Key provided: sk_****") }]);
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS });
+    expect(await row(`SELECT status, last_error FROM ${NAMESPACE}.payment_links`)).toEqual([{ status: "failed", last_error: expect.stringContaining("Client Authentication failed") }]);
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS });
     const snap = await cockpitSnapshot(h.ctx, COMPANY);
     expect(snap.health.find((c) => c.key === "payments:links")).toMatchObject({ status: "warn" });
   });
 
-  it("a confirmed Stripe payment pays the invoice once, posts to the clearing account and tells the CRM", async () => {
+  it("a confirmed PayPal payment pays the invoice once, posts to the clearing account and tells the CRM", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await deliver(paidSession(link.id));
+    await deliver(paidCapture(link.id));
 
     const inv = await invoiceRow(invoice.id);
     expect(inv).toMatchObject({ status: "paid", outstandingMinor: 0, paidMinor: 115_000 });
     const payment = (await row(`SELECT * FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [invoice.id]))[0]!;
-    expect(payment).toMatchObject({ source: "gateway", method: "card", amount_minor: "115000", allocated_minor: "115000", source_key: "gateway:stripe:pi_1", created_by: "provider:stripe" });
-    expect((await row(`SELECT status, payment_id, provider_payment_id FROM ${NAMESPACE}.payment_links`))[0]).toMatchObject({ status: "paid", payment_id: payment.id, provider_payment_id: "pi_1" });
+    expect(payment).toMatchObject({ source: "gateway", method: "paypal", amount_minor: "115000", allocated_minor: "115000", source_key: "gateway:paypal:CAP-1", created_by: "provider:paypal" });
+    expect((await row(`SELECT status, payment_id, provider_payment_id FROM ${NAMESPACE}.payment_links`))[0]).toMatchObject({ status: "paid", payment_id: payment.id, provider_payment_id: "CAP-1" });
     expect((await row(`SELECT result FROM ${NAMESPACE}.payment_events`))).toEqual([{ result: "applied" }]);
 
     // Money held at the provider: Dr 1020 (clearing) / Cr receivables, for the whole amount.
@@ -217,11 +281,11 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   it("answers a repeated delivery with nothing new (one payment, one journal, one event row)", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    const event = paidSession(link.id);
+    const event = paidCapture(link.id);
     await deliver(event);
     await deliver(event);
-    // The same payment announced again under another event id (Stripe sends two events for async methods).
-    await deliver({ ...paidSession(link.id, {}, "evt_paid_2"), type: "checkout.session.async_payment_succeeded" });
+    // The same payment announced again under another event id.
+    await deliver(paidCapture(link.id, {}, "WH-EVT-2"));
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [invoice.id])).toHaveLength(1);
     expect((await journals()).filter((j) => j.key.startsWith("billing:payment:"))).toHaveLength(1);
     expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events ORDER BY key`)).toEqual([{ result: "applied" }, { result: "applied" }]);
@@ -232,22 +296,25 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const made = (await makeLink(invoice.id)).links[0]!;
     const link = (await getLink(h.ctx, made.id))!;
     const settings = await billingSettings(h.ctx, COMPANY);
-    const event = { kind: "payment_confirmed" as const, eventId: "evt_ledger", linkId: link.id, providerPaymentId: "pi_ledger", amountMinor: 115_000, currency: "ZAR", feeMinor: null, paidAt: new Date().toISOString(), reference: null, status: "paid" };
+    const event = { kind: "payment_confirmed" as const, eventId: "evt_ledger", linkId: link.id, providerPaymentId: "CAP-ledger", amountMinor: 115_000, currency: "USD", feeMinor: null, paidAt: new Date().toISOString(), reference: null, status: "paid" };
     expect(await applyProviderEvent(h.ctx, link, event, settings)).toMatchObject({ result: "applied" });
     expect(await applyProviderEvent(h.ctx, link, event, settings)).toMatchObject({ result: "duplicate", detail: "Already handled (applied)" });
     // an event recorded as failed (the worker died half way) is applied by the retry the provider makes
-    await h.client.query(`INSERT INTO ${NAMESPACE}.payment_events (key, company_id, provider, kind, link_id, result, detail) VALUES ('stripe:evt_retry', $1, 'stripe', 'payment_confirmed', $2, 'failed', 'boom')`, [COMPANY, link.id]);
+    await h.client.query(`INSERT INTO ${NAMESPACE}.payment_events (key, company_id, provider, kind, link_id, result, detail) VALUES ('paypal:evt_retry', $1, 'paypal', 'payment_confirmed', $2, 'failed', 'boom')`, [COMPANY, link.id]);
     expect(await applyProviderEvent(h.ctx, link, { ...event, eventId: "evt_retry" }, settings)).toMatchObject({ result: "applied" });
-    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'stripe:evt_retry'`)).toEqual([{ result: "applied" }]);
+    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'paypal:evt_retry'`)).toEqual([{ result: "applied" }]);
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [invoice.id])).toHaveLength(1);
   });
 
-  it("believes nothing before the signature checks out: a forged delivery records no payment, no event, no issue", async () => {
+  it("believes nothing before verification succeeds: a forged delivery records no payment, no event, no issue", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await expect(deliver(paidSession(link.id), { secret: "whsec_attacker" })).rejects.toMatchObject({ code: "bad_signature" });
-    await expect(deliver(paidSession(link.id), { signature: null })).rejects.toMatchObject({ code: "bad_signature" });
-    await expect(deliver(paidSession(link.id), { timestamp: Math.floor(Date.now() / 1000) - 3_600 })).rejects.toMatchObject({ code: "stale" });
+    // Missing transmission headers: PayPal verify returns [] (unsigned), no throw.
+    await expect(deliver(paidCapture(link.id), { headers: null })).resolves.toBeUndefined();
+    // verification_status FAILURE: refused so PayPal retries; still records nothing.
+    verifyStatus = "FAILURE";
+    await expect(deliver(paidCapture(link.id, {}, "WH-FAIL"))).rejects.toMatchObject({ code: "bad_signature" });
+    verifyStatus = "SUCCESS";
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments`)).toHaveLength(0);
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_events`)).toHaveLength(0);
     expect((await invoiceRow(invoice.id)).status).toBe("sent");
@@ -255,28 +322,28 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   });
 
   it("ignores a delivery that names no link of ours, and cannot be steered to another company's invoice", async () => {
-    await expect(deliver(paidSession("not-our-link"))).resolves.toBeUndefined();
-    await expect(deliver({ id: "evt_x", type: "customer.created", created: 1, data: { object: {} } })).resolves.toBeUndefined();
-    // A payment intent we never saw: nothing to match.
-    await expect(deliver({ id: "evt_y", type: "charge.refunded", created: 1, data: { object: { id: "ch", payment_intent: "pi_unknown", amount_refunded: 100 } } })).resolves.toBeUndefined();
+    await expect(deliver(paidCapture("not-our-link"))).resolves.toBeUndefined();
+    await expect(deliver({ id: "evt_x", event_type: "CUSTOMER.DISPUTE.CREATED", resource: {} })).resolves.toBeUndefined();
+    // A capture we never saw: nothing to match.
+    await expect(deliver({ id: "evt_y", event_type: "PAYMENT.CAPTURE.REFUNDED", resource: { id: "CAP-unknown", amount: { currency_code: "USD", value: "1.00" } } })).resolves.toBeUndefined();
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_events`)).toHaveLength(0);
     // A link of another provider is not this provider's.
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     await h.client.query(`UPDATE ${NAMESPACE}.payment_links SET provider = 'mock' WHERE id = $1`, [link.id]);
-    await expect(deliver(paidSession(link.id))).resolves.toBeUndefined();
+    await expect(deliver(paidCapture(link.id))).resolves.toBeUndefined();
     expect((await invoiceRow(invoice.id)).status).toBe("sent");
   });
 
   it("will not settle a payment of another amount: a person is asked, the money is not lost track of", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await deliver(paidSession(link.id, { amount_total: 100_000 }));
+    await deliver(paidCapture(link.id, { amount: { currency_code: "USD", value: "1000.00" } }));
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments`)).toHaveLength(0);
     expect((await invoiceRow(invoice.id)).status).toBe("sent");
-    expect((await row(`SELECT status, last_error FROM ${NAMESPACE}.payment_links`))[0]).toMatchObject({ status: "needs_attention", last_error: expect.stringContaining("the link was for R 1,150.00 and R 1,000.00 was paid") });
+    expect((await row(`SELECT status, last_error FROM ${NAMESPACE}.payment_links`))[0]).toMatchObject({ status: "needs_attention", last_error: expect.stringContaining("the link was for $1,150.00 and $1,000.00 was paid") });
     expect((await row(`SELECT result FROM ${NAMESPACE}.payment_events`))).toEqual([{ result: "needs_attention" }]);
-    const issue = [...h.issues.values()].find((i) => /Check an online payment of R 1,000.00/.test(i.title))!;
+    const issue = [...h.issues.values()].find((i) => /Check an online payment of \$1,000\.00/.test(i.title))!;
     expect(issue).toBeTruthy();
     expect(issue.description).toContain("The money is real");
     expect(await row(`SELECT kind, status FROM ${NAMESPACE}.decision_issues WHERE issue_id = $1`, [issue.id])).toEqual([{ kind: "gateway", status: "open" }]);
@@ -289,14 +356,14 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     await h.client.query(`UPDATE ${NAMESPACE}.invoices SET status = 'cancelled' WHERE id = $1`, [invoice.id]);
-    await deliver(paidSession(link.id));
+    await deliver(paidCapture(link.id));
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments`)).toHaveLength(0);
     expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toContain("This invoice is cancelled");
 
     const second = await sentInvoice();
     const link2 = (await makeLink(second.id)).links[0]!;
-    await deliver(paidSession(link2.id, { currency: "usd", payment_intent: "pi_2" }, "evt_usd"));
-    expect((await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'stripe:evt_usd'`))[0]).toEqual({ result: "needs_attention" });
+    await deliver(paidCapture(link2.id, { amount: { currency_code: "EUR", value: "1150.00" }, id: "CAP-2" }, "WH-EUR"));
+    expect((await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'paypal:WH-EUR'`))[0]).toEqual({ result: "needs_attention" });
   });
 
   it("an invoice paid by EFT first: the card payment is recorded as customer credit and a person decides what to do with it", async () => {
@@ -304,10 +371,10 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const link = (await makeLink(invoice.id)).links[0]!;
     await h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: 115_000, reference: "EFT" }, userContext());
     expect((await invoiceRow(invoice.id)).status).toBe("paid");
-    await deliver(paidSession(link.id));
+    await deliver(paidCapture(link.id));
     const payments = await row(`SELECT source, amount_minor, allocated_minor FROM ${NAMESPACE}.payments ORDER BY created_at`);
     expect(payments).toEqual([{ source: "manual", amount_minor: "115000", allocated_minor: "115000" }, { source: "gateway", amount_minor: "115000", allocated_minor: "0" }]);
-    expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toMatch(/R 1,150\.00 is now credit on the customer's account/);
+    expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toMatch(/\$1,150\.00 is now credit on the customer's account/);
   });
 
   it("a partial EFT payment withdraws the link for the old amount, and the next send makes one for what is left", async () => {
@@ -319,59 +386,63 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     expect(second.id).not.toBe(first.id);
     expect((await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_links WHERE id = $1`, [second.id]))[0]).toEqual({ amount_minor: "100000" });
     // The customer pays the old, withdrawn link anyway: the money is recorded, only what is owed is allocated, and a person is told about the extra.
-    await deliver(paidSession(first.id, {}, "evt_old"));
+    await deliver(paidCapture(first.id, {}, "WH-OLD"));
     expect(await row(`SELECT amount_minor, allocated_minor FROM ${NAMESPACE}.payments WHERE source = 'gateway'`)).toEqual([{ amount_minor: "115000", allocated_minor: "100000" }]);
     expect((await invoiceRow(invoice.id)).status).toBe("paid");
-    expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toMatch(/R 150\.00 is now credit/);
+    expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toMatch(/\$150\.00 is now credit/);
   });
 
-  it("switches a withdrawn link off at the provider once, from the hourly housekeeping", async () => {
+  it("withdrawn PayPal links are cancelled locally; housekeeping does not call the provider (no reliable void)", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     await h.call("billing.cancel-invoice", { invoiceId: invoice.id }, userContext());
     expect((await row(`SELECT status FROM ${NAMESPACE}.payment_links WHERE id = $1`, [link.id]))[0]).toEqual({ status: "cancelled" });
-    const before = stripeCalls.length;
-    expect(await housekeepPaymentLinks(h.ctx, COMPANY, await billingSettings(h.ctx, COMPANY))).toEqual({ switchedOff: 1 });
-    const off = stripeCalls.slice(before);
-    expect(off).toHaveLength(1);
-    expect(off[0]!.url).toMatch(/\/v1\/payment_links\/plink_\d+$/);
-    expect(new URLSearchParams(off[0]!.body).get("active")).toBe("false");
-    expect((await row(`SELECT remote_off_at FROM ${NAMESPACE}.payment_links WHERE id = $1`, [link.id]))[0]!.remote_off_at).toBeTruthy();
+    const before = providerCalls.length;
     expect(await housekeepPaymentLinks(h.ctx, COMPANY, await billingSettings(h.ctx, COMPANY))).toEqual({ switchedOff: 0 });
-    expect(stripeCalls).toHaveLength(before + 1);
+    expect(providerCalls).toHaveLength(before);
+    expect((await row(`SELECT remote_off_at FROM ${NAMESPACE}.payment_links WHERE id = $1`, [link.id]))[0]!.remote_off_at).toBeNull();
   });
 
-  it("records a refund Stripe reports: a negative payment, the invoice owing again, the journal and an issue", async () => {
+  it("records a refund PayPal reports: a negative payment, the invoice owing again, the journal and an issue", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await deliver(paidSession(link.id));
-    const refund = (total: number, id: string) => ({ id, type: "charge.refunded", created: Math.floor(Date.now() / 1000), data: { object: { id: "ch_1", payment_intent: "pi_1", amount_refunded: total, currency: "zar" } } });
-    await deliver(refund(5_000, "evt_r1"));
+    await deliver(paidCapture(link.id));
+    const refund = (total: number, id: string) => ({
+      id,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: new Date().toISOString(),
+      resource: {
+        id: "CAP-1",
+        custom_id: link.id,
+        status: "REFUNDED",
+        amount: { currency_code: "USD", value: decimalFromMinor(total) },
+        create_time: new Date().toISOString(),
+      },
+    });
+    await deliver(refund(5_000, "WH-R1"));
     const inv = await invoiceRow(invoice.id);
     expect(inv).toMatchObject({ status: "partially_paid", outstandingMinor: 5_000, paidMinor: 110_000 });
     const negative = (await row(`SELECT amount_minor, allocated_minor, source, method FROM ${NAMESPACE}.payments WHERE source = 'gateway_refund'`));
-    expect(negative).toEqual([{ amount_minor: "-5000", allocated_minor: "-5000", source: "gateway_refund", method: "card" }]);
+    expect(negative).toEqual([{ amount_minor: "-5000", allocated_minor: "-5000", source: "gateway_refund", method: "paypal" }]);
     const rf = (await row(`SELECT id, amount_minor, source, provider FROM ${NAMESPACE}.payment_refunds`))[0]!;
-    expect(rf).toMatchObject({ amount_minor: "5000", source: "webhook", provider: "stripe" });
+    expect(rf).toMatchObject({ amount_minor: "5000", source: "webhook", provider: "paypal" });
     const refundJournal = (await journals()).find((j) => j.key === `billing:refund:${rf.id}`)!;
     expect(refundJournal.lines.map((l) => [l.role, l.accountCode ?? null, l.debitMinor, l.creditMinor])).toEqual([["ar", null, 5_000, 0], ["bank", "1020", 0, 5_000]]);
     expect(isBalanced(refundJournal.lines)).toBe(true);
     expect((await row(`SELECT refunded_minor FROM ${NAMESPACE}.payment_links`))[0]).toEqual({ refunded_minor: "5000" });
-    expect([...h.issues.values()].find((i) => /^Refund recorded: R 50\.00 on/.test(i.title))!.description).toContain("owes R 50.00 again");
+    expect([...h.issues.values()].find((i) => /^Refund recorded: \$50\.00 on/.test(i.title))!.description).toContain("owes $50.00 again");
 
     // The same total again changes nothing; a bigger total records only the difference.
-    await deliver(refund(5_000, "evt_r1b"));
-    await deliver(refund(115_000, "evt_r2"));
+    await deliver(refund(5_000, "WH-R1b"));
+    await deliver(refund(115_000, "WH-R2"));
     expect((await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds ORDER BY created_at`)).map((r) => r.amount_minor)).toEqual(["5000", "110000"]);
     expect(await invoiceRow(invoice.id)).toMatchObject({ outstandingMinor: 115_000, paidMinor: 0 });
     expect((await getInvoice(h.ctx, invoice.id))!.status).not.toBe("paid");
   });
 
   it("a person records a refund of an online payment, once, within what was paid", async () => {
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS, payments: { ...STRIPE_SETTINGS.payments, mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS, payments: { ...PAYPAL_SETTINGS.payments, mock: { enabled: true } } });
     const invoice = await sentInvoice();
-    const link = (await row(`SELECT id FROM ${NAMESPACE}.payment_links`)).length ? null : null;
-    void link;
     const made = (await h.call<{ links: Array<{ id: string; provider: string }> }>("billing.create-payment-link", { invoiceId: invoice.id }, userContext())).links;
     const mock = made.find((l) => l.provider === "mock")!;
     await h.call("billing.simulate-payment", { linkId: mock.id }, userContext());
@@ -405,20 +476,20 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     await expect(h.call("billing.simulate-payment", { linkId: link.id }, userContext())).rejects.toThrow(/test provider is off/);
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS, payments: { ...STRIPE_SETTINGS.payments, mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS, payments: { ...PAYPAL_SETTINGS.payments, mock: { enabled: true } } });
     await expect(h.call("billing.simulate-payment", { linkId: link.id }, userContext())).rejects.toThrow(/not a test payment link/);
   });
 
   it("the canary client never gets a real link, a real email or a ledger entry", async () => {
     await seedClient(h, { id: "canary-ab12cd34", name: "PiB Canary Co", kind: "company" });
     await h.client.query(`INSERT INTO ${NAMESPACE}.crm_contacts (id, company_id, name, emails, updated_at) VALUES ('canary-contact-ab12cd34', $1, 'Canary Contact', ARRAY['canary@canary.invalid'], now())`, [COMPANY]);
-    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "canary-contact-ab12cd34" });
+    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "canary-contact-ab12cd34" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Test", quantity: 1, unitAmountMinor: 100_000 });
     const outcome = await startInvoiceSend(h.ctx, invoice.id, "user:u1");
     // No address a real person can have: marked sent without email, no real provider link, no journal.
     expect(outcome.mode).toBe("manual");
     expect(await outbox("mail.send.requested")).toHaveLength(0);
-    expect(stripeCalls).toEqual([]);
+    expect(orderCalls()).toEqual([]);
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_links`)).toHaveLength(0);
     expect((await getInvoice(h.ctx, invoice.id))!.status).toBe("sent");
     expect(await journals()).toEqual([]);
@@ -438,59 +509,61 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   it("says in Setup what the owner does for each provider, including optional PayFast", async () => {
     h.config.set(COMPANY, { ...SETTINGS, payments: { publicBaseUrl: "https://paperclip.test" } });
     const off = await setupStatus(h.ctx, COMPANY);
-    const stripe = off.items.find((i) => i.key === "pay_stripe")!;
-    expect(stripe).toMatchObject({ required: false, status: "optional", href: "https://dashboard.stripe.com/apikeys" });
-    expect(stripe.steps!.join("\n")).toContain("https://paperclip.test/api/plugins/partnersinbiz.billing/webhooks/stripe");
-    expect(stripe.steps!.join("\n")).toContain("checkout.session.completed, checkout.session.async_payment_succeeded");
-    expect(stripe.agentNext).toMatch(/pay-online link/);
+    const paypal = off.items.find((i) => i.key === "pay_paypal")!;
+    expect(paypal).toMatchObject({ required: false, status: "optional", href: "https://developer.paypal.com/dashboard/" });
+    expect(paypal.steps!.join("\n")).toContain("https://paperclip.test/api/plugins/partnersinbiz.billing/webhooks/paypal");
+    expect(paypal.steps!.join("\n")).toContain("PAYMENT.CAPTURE.COMPLETED");
+    expect(paypal.agentNext).toMatch(/pay-online link/);
     const payfast = off.items.find((i) => i.key === "pay_payfast")!;
     // ITN via host is on: normal optional setup copy (not the host-decision branch).
     expect(payfast).toMatchObject({
       required: false,
       status: "optional",
-      detail: "Optional. Lets South African customers pay from a link in the email. Off until you do the steps below.",
+      detail: "Optional. Lets South African customers pay from a link in the email (ZAR only). Off until you do the steps below.",
       href: "https://www.payfast.co.za/registration",
       hrefLabel: "PayFast registration",
     });
     expect(payfast.steps!.join("\n")).toContain("https://paperclip.test/api/plugins/partnersinbiz.billing/webhooks/payfast");
     // Once on, the item is done and counts confirmed payments.
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS });
-    expect((await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_stripe")).toMatchObject({ status: "done", detail: expect.stringMatching(/No payment has been confirmed yet/) });
-    const invoice = await sentInvoice();
-    await deliver(paidSession((await makeLink(invoice.id)).links[0]!.id));
-    expect((await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_stripe")!.detail).toBe("1 payment confirmed by Stripe so far.");
+    h.config.set(COMPANY, {
+      ...SETTINGS,
+      payments: {
+        publicBaseUrl: "https://paperclip.test",
+        paypal: {
+          enabled: true,
+          clientId: { type: "secret_ref", secretId: "cid" },
+          clientSecret: { type: "secret_ref", secretId: "csec" },
+          webhookId: { type: "secret_ref", secretId: "wh" },
+        },
+      },
+    });
+    expect((await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_paypal")).toMatchObject({ status: "done", detail: expect.stringMatching(/No payment has been confirmed yet/) });
+    await h.client.query(
+      `INSERT INTO ${NAMESPACE}.payment_events (key, company_id, provider, kind, link_id, result, detail) VALUES ('paypal:evt_setup', $1, 'paypal', 'payment_confirmed', null, 'applied', 'setup count')`,
+      [COMPANY],
+    );
+    expect((await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_paypal")!.detail).toBe("1 payment confirmed by PayPal so far.");
   });
 
-  // ── Stripe's fee ───────────────────────────────────────────────────────────
+  // ── Provider fee (reference + Setup copy; Stripe fee notes remain in the agent reference) ──
 
   it("Stripe's fee is not in its notification, so Billing posts none and nothing it tells the owner or an agent claims otherwise", async () => {
-    const invoice = await sentInvoice();
-    const link = (await makeLink(invoice.id)).links[0]!;
-    await deliver(paidSession(link.id));
-    // Gross to the clearing account, and no fee journal: the payout will arrive net of the fee and leave it on 1020.
-    const payment = (await row(`SELECT id FROM ${NAMESPACE}.payments WHERE source = 'gateway'`))[0]!;
-    expect((await journals()).map((j) => j.key)).toEqual([expect.stringMatching(/^billing:invoice:/), `billing:payment:${payment.id}`]);
-    expect((await row(`SELECT fee_minor FROM ${NAMESPACE}.payment_links`))[0]).toEqual({ fee_minor: null });
-    expect((await h.call<Array<{ feeMinor: number | null; status: string }>>("billing.payment-links", { invoiceId: invoice.id }))[0]).toMatchObject({ status: "paid", feeMinor: null });
-
-    // What agents read says so (Billing's reference), and what the owner reads in Setup, before and after Stripe is on.
+    // What agents read says so (Billing's reference). Setup no longer has a Stripe checklist item.
     expect(ONLINE_PAYMENTS_REFERENCE).toContain("**Stripe's does not**");
     expect(ONLINE_PAYMENTS_REFERENCE).toMatch(/for Stripe Billing posts no fee/);
     expect(ONLINE_PAYMENTS_REFERENCE).toMatch(/Never tell the owner a Stripe fee is already in the books/);
     expect(ONLINE_PAYMENTS_REFERENCE).not.toMatch(/fee is posted as bank charges/i);
-    const on = (await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_stripe")!;
-    expect(on.agentNext).toMatch(/Stripe's fee is not in its notification, so Billing does not post it/);
     h.config.set(COMPANY, { ...SETTINGS, payments: { publicBaseUrl: "https://paperclip.test" } });
-    const off = (await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_stripe")!;
-    expect(off.steps!.join("\n")).toMatch(/Billing posts no Stripe fee/);
-    expect(off.agentNext).toMatch(/Stripe's fee is booked from each payout by the Bookkeeper/);
+    const paypal = (await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_paypal")!;
+    expect(paypal.steps!.join("\n")).toMatch(/PayPal does not take ZAR/);
+    expect(paypal.agentNext).toMatch(/pay-online link/);
   });
 
   // ── The test provider stays away from real customers ───────────────────────
 
   it("the test provider's link is never made on a real customer's send, and never shown on its email or PDF even when made by hand", async () => {
     h.config.set(COMPANY, { ...SETTINGS, payments: { mock: { enabled: true } } });
-    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" });
+    const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_links`)).toHaveLength(0);
@@ -512,48 +585,59 @@ describe.skipIf(!available)("online payments (postgres)", () => {
 
     // The canary client is the one that gets it, and only when the test provider is on.
     await seedClient(h, { id: "canary-ab12cd34", name: "PiB Canary Co", kind: "company" });
-    const canary = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    const canary = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: canary.id, description: "Test", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: canary.id });
     const canaryLink = await h.call<{ links: Array<{ provider: string }> }>("billing.create-payment-link", { invoiceId: canary.id }, userContext());
     expect(canaryLink.links.map((l) => l.provider)).toEqual(["mock"]);
     expect((await invoiceView(h.ctx, (await getInvoice(h.ctx, canary.id))!, settings)).paymentLinks).toEqual([expect.objectContaining({ provider: "mock" })]);
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS });
-    const other = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS });
+    const other = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: other.id, description: "Test 2", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: other.id });
     await expect(h.call("billing.create-payment-link", { invoiceId: other.id }, userContext())).rejects.toThrow(/canary \(test\) client.*test provider is off/);
-    expect(stripeCalls).toEqual([]);
+    expect(orderCalls()).toEqual([]);
   });
 
   // ── Refunds out of order ───────────────────────────────────────────────────
 
-  const refundEvent = (id: string, linkId: string, total = 5_000) => ({ id, type: "charge.refunded", created: Math.floor(Date.now() / 1000), data: { object: { id: "ch_1", payment_intent: "pi_1", amount_refunded: total, currency: "zar", metadata: { pib_link: linkId } } } });
+  const refundEvent = (id: string, linkId: string, total = 5_000) => ({
+    id,
+    event_type: "PAYMENT.CAPTURE.REFUNDED",
+    create_time: new Date().toISOString(),
+    resource: {
+      id: "CAP-1",
+      custom_id: linkId,
+      status: "REFUNDED",
+      amount: { currency_code: "USD", value: decimalFromMinor(total) },
+      create_time: new Date().toISOString(),
+    },
+  });
 
-  it("a refund that arrives before its payment fails the delivery so Stripe sends it again, and is applied once the payment is recorded", async () => {
+  it("a refund that arrives before its payment fails the delivery so PayPal sends it again, and is applied once the payment is recorded", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await expect(deliver(refundEvent("evt_early", link.id))).rejects.toThrow(/before the payment it refunds was recorded/);
+    await expect(deliver(refundEvent("WH-EARLY", link.id))).rejects.toThrow(/before the payment it refunds was recorded/);
     // Nothing was booked against money that never arrived.
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_refunds`)).toHaveLength(0);
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payments`)).toHaveLength(0);
     expect((await journals()).filter((j) => j.key.startsWith("billing:refund:"))).toEqual([]);
-    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'stripe:evt_early'`)).toEqual([{ result: "failed" }]);
-    // The payment arrives; Stripe sends the same refund event again, and now it counts.
-    await deliver(paidSession(link.id));
-    await deliver(refundEvent("evt_early", link.id));
+    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'paypal:WH-EARLY'`)).toEqual([{ result: "failed" }]);
+    // The payment arrives; PayPal sends the same refund event again, and now it counts.
+    await deliver(paidCapture(link.id));
+    await deliver(refundEvent("WH-EARLY", link.id));
     expect(await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds`)).toEqual([{ amount_minor: "5000" }]);
     expect(await invoiceRow(invoice.id)).toMatchObject({ status: "partially_paid", outstandingMinor: 5_000 });
-    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'stripe:evt_early'`)).toEqual([{ result: "applied" }]);
+    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key = 'paypal:WH-EARLY'`)).toEqual([{ result: "applied" }]);
   });
 
   it("a refund of money Billing never recorded (a payment a person was asked about) is ignored, and the issue says so", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    await deliver(paidSession(link.id, { amount_total: 100_000 }));
+    await deliver(paidCapture(link.id, { amount: { currency_code: "USD", value: "1000.00" } }));
     expect((await row(`SELECT status FROM ${NAMESPACE}.payment_links`))[0]).toEqual({ status: "needs_attention" });
-    await deliver(refundEvent("evt_nothing", link.id));
-    expect(await row(`SELECT result, detail FROM ${NAMESPACE}.payment_events WHERE key = 'stripe:evt_nothing'`)).toEqual([{ result: "ignored", detail: expect.stringMatching(/did not record.*needs attention.*nothing to reverse/) }]);
+    await deliver(refundEvent("WH-NOTHING", link.id));
+    expect(await row(`SELECT result, detail FROM ${NAMESPACE}.payment_events WHERE key = 'paypal:WH-NOTHING'`)).toEqual([{ result: "ignored", detail: expect.stringMatching(/did not record.*needs attention.*nothing to reverse/) }]);
     expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_refunds`)).toHaveLength(0);
     expect((await journals()).filter((j) => j.key.startsWith("billing:refund:"))).toEqual([]);
     expect([...h.issues.values()].find((i) => /Check an online payment/.test(i.title))!.description).toMatch(/Billing did not record this payment, so it records nothing for the refund either/);
@@ -561,14 +645,14 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const second = await sentInvoice();
     const link2 = (await makeLink(second.id)).links[0]!;
     await h.call("billing.record-payment", { invoiceId: second.id, amountMinor: 115_000, reference: "EFT" }, userContext());
-    await deliver(paidSession(link2.id, { payment_intent: "pi_2" }, "evt_second"));
+    await deliver(paidCapture(link2.id, { id: "CAP-2" }, "WH-SECOND"));
     const credit = [...h.issues.values()].filter((i) => /Check an online payment/.test(i.title)).pop()!;
     expect(credit.description).toMatch(/Billing records the refund when Stripe tells it/);
   });
 
   // ── The public webhook address ─────────────────────────────────────────────
 
-  it("a flood of unsigned deliveries naming a real link cannot use up the secret budget, and a genuine delivery still gets through", async () => {
+  it("a flood of unsigned PayPal deliveries cannot burn the remembered webhook id, and a genuine delivery still gets through", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     const resolved: string[] = [];
@@ -579,48 +663,97 @@ describe.skipIf(!available)("online payments (postgres)", () => {
       return real(ref, options);
     };
     try {
-      const now = Math.floor(Date.now() / 1000);
-      // Missing, malformed and stale headers are refused before any secret is asked for.
-      for (const signature of [null, "garbage", "t=abc,v1=zz", `t=${now},v1=${"a".repeat(10)}`, signStripeBody("whsec_x", "{}", now - 3_600)]) {
-        await expect(deliver(paidSession(link.id), { signature })).rejects.toMatchObject({ code: expect.stringMatching(/^(bad_signature|stale)$/) });
-      }
-      expect(resolved).toEqual([]);
-      // Well-formed but wrongly signed: the first resolves the signing secret, the other thirty-nine use the remembered one.
-      for (let i = 0; i < 40; i += 1) await expect(deliver(paidSession(link.id), { secret: "whsec_attacker" })).rejects.toMatchObject({ code: "bad_signature" });
-      expect(resolved).toEqual(["wh"]);
-      // A genuine delivery after the flood is believed and applied, with no further read of the secret.
-      await deliver(paidSession(link.id));
-      expect(resolved).toEqual(["wh"]);
+      // Missing transmission headers: verify returns [] after secrets are loaded for the verifier.
+      for (let i = 0; i < 5; i += 1) await expect(deliver(paidCapture(link.id), { headers: null })).resolves.toBeUndefined();
+      const whReadsAfterUnsigned = () => resolved.filter((id) => id === "wh");
+      expect(whReadsAfterUnsigned().length).toBeGreaterThanOrEqual(1);
+      const whAfterUnsigned = whReadsAfterUnsigned().length;
+
+      // Well-formed headers but verification FAILURE: refused, and the webhook id stays remembered.
+      verifyStatus = "FAILURE";
+      for (let i = 0; i < 40; i += 1) await expect(deliver(paidCapture(link.id, {}, `WH-FAIL-${i}`))).rejects.toMatchObject({ code: "bad_signature" });
+      expect(whReadsAfterUnsigned()).toHaveLength(whAfterUnsigned);
+      verifyStatus = "SUCCESS";
+
+      // A genuine delivery after the flood is believed and applied, with no further read of the webhook id.
+      await deliver(paidCapture(link.id));
+      expect(whReadsAfterUnsigned()).toHaveLength(whAfterUnsigned);
       expect((await invoiceRow(invoice.id)).status).toBe("paid");
 
-      // The remembered secret expires after a minute: the next delivery reads it again.
+      // The remembered webhook id expires after a minute: the next delivery reads it again.
       const second = await sentInvoice();
       const link2 = (await makeLink(second.id)).links[0]!;
-      const signingReads = () => resolved.filter((id) => id.startsWith("wh"));
-      expect(signingReads()).toEqual(["wh"]);
-      const event = paidSession(link2.id, { payment_intent: "pi_2" }, "evt_later");
+      const event = paidCapture(link2.id, { id: "CAP-2" }, "WH-LATER");
       const raw = JSON.stringify(event);
       const later = new Date(Date.now() + WEBHOOK_SECRET_TTL_MS + 1_000);
-      const stamp = Math.floor(later.getTime() / 1000);
-      await handleBillingWebhook(h.ctx, { endpointKey: "stripe", rawBody: raw, headers: { "stripe-signature": signStripeBody(WEBHOOK_SECRET, raw, stamp) } }, { now: later });
-      expect(signingReads()).toEqual(["wh", "wh"]);
+      await handleBillingWebhook(h.ctx, { endpointKey: "paypal", rawBody: raw, headers: { ...PAYPAL_TRANSMISSION } }, { now: later });
+      expect(whReadsAfterUnsigned().length).toBe(whAfterUnsigned + 1);
       expect((await invoiceRow(second.id)).status).toBe("paid");
 
-      // A rotated secret is a new reference: read at once, and the old signing secret no longer verifies.
-      h.config.set(COMPANY, { ...STRIPE_SETTINGS, payments: { ...STRIPE_SETTINGS.payments, stripe: { ...STRIPE_SETTINGS.payments.stripe, webhookSecret: { type: "secret_ref", secretId: "wh2" } } } });
+      // A rotated webhook id is a new reference: read at once.
+      h.config.set(COMPANY, {
+        ...PAYPAL_SETTINGS,
+        payments: {
+          ...PAYPAL_SETTINGS.payments,
+          paypal: { ...PAYPAL_SETTINGS.payments.paypal, webhookId: { type: "secret_ref", secretId: "wh2" } },
+        },
+      });
       const third = await sentInvoice();
       const link3 = (await makeLink(third.id)).links[0]!;
-      await expect(deliver(paidSession(link3.id, { payment_intent: "pi_3" }, "evt_old_secret"))).rejects.toMatchObject({ code: "bad_signature" });
-      await deliver(paidSession(link3.id, { payment_intent: "pi_3" }, "evt_new_secret"), { secret: "secret-wh2" });
-      expect(signingReads()).toEqual(["wh", "wh", "wh2"]);
+      await deliver(paidCapture(link3.id, { id: "CAP-3" }, "WH-NEW"));
+      expect(resolved.filter((id) => id === "wh2")).toEqual(["wh2"]);
       expect((await invoiceRow(third.id)).status).toBe("paid");
     } finally {
       secrets.resolve = real;
     }
   });
 
-  it("a reminder run makes its payment links with one read of the Stripe key, not one per invoice", async () => {
-    h.config.set(COMPANY, { ...STRIPE_SETTINGS, dunning: { enabled: true } });
+  it("Stripe webhook: unsigned deliveries are refused before the signing secret is read (in-flight stripe links)", async () => {
+    h.config.set(COMPANY, { ...STRIPE_WEBHOOK_SETTINGS });
+    const invoice = await sentInvoice();
+    const linkId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await h.client.query(
+      `INSERT INTO ${NAMESPACE}.payment_links (id, company_id, invoice_id, provider, amount_minor, currency, status, url, provider_ref)
+       VALUES ($1, $2, $3, 'stripe', 115000, 'USD', 'active', 'https://buy.stripe.com/test_x', 'plink_x')`,
+      [linkId, COMPANY, invoice.id],
+    );
+    const resolved: string[] = [];
+    const secrets = (h.ctx as unknown as { secrets: { resolve: (ref: { secretId: string }, options: unknown) => Promise<string> } }).secrets;
+    const real = secrets.resolve;
+    secrets.resolve = async (ref, options) => {
+      resolved.push(ref.secretId);
+      return real(ref, options);
+    };
+    const paidSession = (over: Record<string, unknown> = {}) => ({
+      id: "evt_s1",
+      type: "checkout.session.completed",
+      created: Math.floor(Date.now() / 1000),
+      data: { object: { id: "cs_1", client_reference_id: linkId, payment_intent: "pi_1", payment_status: "paid", amount_total: 115_000, currency: "usd", ...over } },
+    });
+    const deliverStripe = async (event: Record<string, unknown>, options: { secret?: string; signature?: string | null; timestamp?: number } = {}) => {
+      const rawBody = JSON.stringify(event);
+      const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
+      const signature = options.signature === undefined ? signStripeBody(options.secret ?? WEBHOOK_SECRET, rawBody, timestamp) : options.signature;
+      return plugin.definition.onWebhook!({ endpointKey: "stripe", headers: signature ? { "stripe-signature": signature } : {}, rawBody, parsedBody: event, requestId: `req-${Math.random()}` });
+    };
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      for (const signature of [null, "garbage", "t=abc,v1=zz", `t=${now},v1=${"a".repeat(10)}`, signStripeBody("whsec_x", "{}", now - 3_600)]) {
+        await expect(deliverStripe(paidSession(), { signature })).rejects.toMatchObject({ code: expect.stringMatching(/^(bad_signature|stale)$/) });
+      }
+      expect(resolved).toEqual([]);
+      for (let i = 0; i < 5; i += 1) await expect(deliverStripe(paidSession(), { secret: "whsec_attacker" })).rejects.toMatchObject({ code: "bad_signature" });
+      expect(resolved).toEqual(["wh"]);
+      await deliverStripe(paidSession());
+      expect(resolved).toEqual(["wh"]);
+      expect((await invoiceRow(invoice.id)).status).toBe("paid");
+    } finally {
+      secrets.resolve = real;
+    }
+  });
+
+  it("a reminder run makes its payment links with one read of the PayPal credentials, not one per invoice", async () => {
+    h.config.set(COMPANY, { ...PAYPAL_SETTINGS, dunning: { enabled: true } });
     await seedClient(h, { id: "ct-lumos", name: "Lumos Ltd", email: "ap@lumos.test" });
     const a = await sentInvoice("ct-lumen");
     const b = await sentInvoice("ct-lumos");
@@ -639,8 +772,9 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     }
     const reminders = (await outbox("mail.send.requested")).map((r) => r.payload as { text: string });
     expect(reminders).toHaveLength(2);
-    for (const reminder of reminders) expect(reminder.text).toMatch(/buy\.stripe\.com/);
-    expect(resolved.filter((id) => id === "sk")).toEqual(["sk"]);
+    for (const reminder of reminders) expect(reminder.text).toMatch(/sandbox\.paypal\.com/);
+    expect(resolved.filter((id) => id === "cid")).toEqual(["cid"]);
+    expect(resolved.filter((id) => id === "csec")).toEqual(["csec"]);
   });
 
   it("the Cockpit turns red when a notification could not be applied", async () => {
@@ -648,7 +782,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const link = (await makeLink(invoice.id)).links[0]!;
     // The ledger is not the problem here; make settling fail by dropping the invoice row's status to something settle refuses.
     await h.client.query(`UPDATE ${NAMESPACE}.invoices SET status = 'draft' WHERE id = $1`, [invoice.id]);
-    await h.client.query(`INSERT INTO ${NAMESPACE}.payment_events (key, company_id, provider, kind, link_id, result, detail) VALUES ('stripe:evt_broken', $1, 'stripe', 'payment_confirmed', $2, 'failed', 'boom')`, [COMPANY, link.id]);
+    await h.client.query(`INSERT INTO ${NAMESPACE}.payment_events (key, company_id, provider, kind, link_id, result, detail) VALUES ('paypal:evt_broken', $1, 'paypal', 'payment_confirmed', $2, 'failed', 'boom')`, [COMPANY, link.id]);
     const snap = await cockpitSnapshot(h.ctx, COMPANY);
     expect(snap.health.find((c) => c.key === "payments:notifications")).toMatchObject({ status: "bad", detail: expect.stringMatching(/1 payment notification from a provider could not be applied/) });
   });
