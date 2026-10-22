@@ -53,16 +53,16 @@ describe.skipIf(!available)("page actions (postgres)", () => {
     const status = await h.call<{ providers: Array<{ key: string; enabled: boolean; blocker: string | null }>; attention: unknown[]; events: unknown[] }>("billing.payments", {});
     expect(Array.isArray(status.attention)).toBe(true);
     expect(Array.isArray(status.events)).toBe(true);
-    const stripe = status.providers.find((p) => p.key === "stripe");
-    expect(stripe).toMatchObject({ enabled: false });
-    expect(stripe!.blocker).toBeTruthy();
+    const paypal = status.providers.find((p) => p.key === "paypal");
+    expect(paypal).toMatchObject({ enabled: false });
+    expect(paypal!.blocker).toBeTruthy();
     expect(status.providers.some((p) => p.enabled)).toBe(false);
   });
 
   it("the snapshot carries the provider list for the invoice card, and no secret", async () => {
     const snapshot = await h.call<{ payments?: { providers: Array<Record<string, unknown>> } }>("billing.load", {});
     const providers = snapshot.payments?.providers ?? [];
-    expect(providers.map((p) => p.key)).toContain("stripe");
+    expect(providers.map((p) => p.key)).toContain("paypal");
     expect(providers.map((p) => p.key)).toContain("payfast");
     expect(JSON.stringify(providers)).not.toMatch(/whsec_|sk_(test|live)_|rk_(test|live)_/);
   });

@@ -17,12 +17,12 @@
  *   from the link it paid is never settled by itself: a person decides.
  */
 
-export type ProviderKey = "stripe" | "payfast" | "mock";
+export type ProviderKey = "stripe" | "payfast" | "paypal" | "mock";
 
 /** Providers a real customer can pay through. `mock` is for tests and the canary journey only. */
-export const REAL_PROVIDERS: ProviderKey[] = ["stripe", "payfast"];
+export const REAL_PROVIDERS: ProviderKey[] = ["payfast", "paypal"];
 
-export const PROVIDER_LABELS: Record<ProviderKey, string> = { stripe: "Card (Stripe)", payfast: "PayFast", mock: "Test provider" };
+export const PROVIDER_LABELS: Record<ProviderKey, string> = { stripe: "Card (Stripe)", payfast: "PayFast", paypal: "PayPal", mock: "Test provider" };
 
 export interface LinkRequest {
   /** Our payment link id (a UUID). It travels to the provider as the reference the payment comes back with. */
