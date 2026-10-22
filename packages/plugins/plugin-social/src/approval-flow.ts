@@ -155,8 +155,10 @@ export async function tryAutoApprove(ctx: PluginContext, actor: ReviewActor, pos
     const decision = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: check.ok, streak });
     if (!decision.eligible) return null;
     const note = `Auto-approved: low-risk ${type.type} post, ${streak} team approvals in a row for this type in this scope.`;
+    // Complete first: if it throws, no "auto" sign-off row is left behind for a post that stays in review.
+    const done = await completeApproval(ctx, actor, post, "The autonomy ladder", note);
     await recordSignoff(ctx, companyId, post, state.hash, "owner", "approved", "auto", { name: "Autonomy ladder" }, note);
-    return await completeApproval(ctx, actor, post, "The autonomy ladder", note);
+    return done;
   } catch (error) {
     ctx.logger.info("Social auto-approval skipped", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
     return null;

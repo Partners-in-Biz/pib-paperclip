@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, type ClientScope, formatOf } from "@partnersinbiz/pib-plugin-kit";
 import { scopeOfRow } from "./clients.js";
+import { getPolicy } from "./approval-policy.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision } from "./autonomy.js";
 import { postMedia, table, type PostRow } from "./db.js";
 
@@ -236,10 +237,11 @@ export function humanRows(rows: StatRow[]): StatRow[] {
 export async function reviewStats(ctx: PluginContext, companyId: string, scope: ClientScope, days = 90) {
   const rows = await statRows(ctx, companyId, scope, days);
   const stats = summariseOutcomes(rows);
+  const { requireClient } = await getPolicy(ctx, companyId, scope);
   const owner = summariseOutcomes(humanRows(rows)).filter((row) => row.stage === "owner");
   const ladder = owner.map((row) => {
     const [kind = "", format = ""] = row.postType.split(":");
-    const decision = autoApprovalDecision({ kind, format, requireClient: false, missing: ["owner"], validateOk: true, streak: row.streak });
+    const decision = autoApprovalDecision({ kind, format, requireClient, missing: ["owner"], validateOk: true, streak: row.streak });
     return { postType: row.postType, streak: row.streak, enabled: decision.eligible };
   });
   return {

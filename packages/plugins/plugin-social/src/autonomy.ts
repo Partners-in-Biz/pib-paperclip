@@ -4,7 +4,8 @@
  * any other outward send, and no post that is not low-risk. Pure; the caller supplies the facts.
  *
  * Low risk, all of: the format is text or a single image; the source is our own writing or a repurposed page
- * (never an RSS item or an inbox reply, which also keeps out complaint, legal, safety and PR replies);
+ * (never an RSS item or an inbox reply). The complaint, legal, safety and PR exclusion works by source only: an
+ * inbox reply is out, but an agent-written original on such a topic is eligible and nothing here reads its content;
  * the scope's policy does not ask for the client; `validate-post` passes. A Reviewer's pass the policy asks
  * for still has to be in. The streak is the owner stage's approvals in a row for that post type in that scope,
  * counting human verdicts only (an auto-approval never extends its own streak).

@@ -120,4 +120,26 @@ describe("the ladder in the approval flow", () => {
     expect(stats.autonomy.types.filter((t) => t.enabled).map((t) => t.postType)).toEqual(["original:text"]);
     expect(summariseOutcomes([]).length).toBe(0);
   });
+  it("review-outcomes keeps the ladder off in a scope where the client approves", async () => {
+    const w = approvalWorld({ policy: { require_owner: true, require_client: true } });
+    seedStreak(w, 5);
+    const stats = await reviewStats(w.ctx, "co", { kind: "company", id: "c1" });
+    expect(stats.autonomy.enabled).toBe(false);
+    expect(stats.autonomy.types.every((t) => !t.enabled)).toBe(true);
+  });
+
+  it("leaves no auto sign-off row when completing the approval fails", async () => {
+    const w = approvalWorld({ client: null, policy: null });
+    seedStreak(w, 5);
+    const seeded = w.outcomes.length;
+    w.post.status = "draft";
+    const execute = w.ctx.db.execute.bind(w.ctx.db);
+    w.ctx.db.execute = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes("status = ANY(") && params?.includes("approved")) throw new Error("boom");
+      return execute(sql, params);
+    }) as typeof w.ctx.db.execute;
+    await transitionPost(w.ctx, SOCIAL_AGENT, "p1", "review");
+    expect(w.post.status).toBe("review");
+    expect(w.outcomes.slice(seeded).filter((o) => o.via === "auto")).toEqual([]);
+  });
 });
