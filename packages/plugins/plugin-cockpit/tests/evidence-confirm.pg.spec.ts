@@ -60,49 +60,7 @@ d("Evidence confirmation (Postgres)", () => {
     await testFn(w);
   }
 
-  it("(a) sent: deliver called once, data.notify === sent, inbox_posted_at set", async () => {
-    await run(async (w) => {
-      await upsertSubscription(worlds.pg.ctx, {
-        companyId: A,
-        userId: OWNER_ID,
-        endpoint: "https://example.com/push/owner-1",
-        p256dh: "test-p256dh-1",
-        auth: "test-auth-1",
-        deviceLabel: "Test Device",
-      });
-
-      const now = new Date("2026-10-20T10:00:00Z");
-      (w.env.now as any) = () => now;
-      const deliverCalls: any[] = [];
-
-      const issue = await w.ctx.issues.create({
-        companyId: A,
-        title: "Test",
-        description: "Test",
-        status: "todo",
-      } as never);
-
-      const att = { id: "att-a", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att];
-
-      const result = await recordEvidence(w.env, A, issue.id, "att-a", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
-      expect((result as any).data?.notify).toBe("sent");
-      expect(deliverCalls).toHaveLength(1);
-    });
-  });
-
-  it("(b) notify unset: no deliver, no notify key in data", async () => {
-    await run(async (w) => {
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const att = { id: "att-b", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att];
-
-      const result = await recordEvidence(w.env, A, issue.id, "att-b", "abc", "step", "summary", { runId: null, agentId: AGENT });
-      expect((result as any).data?.notify).toBeUndefined();
-    });
-  });
-
-  it("(c) same (issue, step), different attachment -> second call already_notified", async () => {
+  it("(a) repeat call CHANGED summary for same (issue, step) -> both attachments, deliver once total", async () => {
     await run(async (w) => {
       await upsertSubscription(worlds.pg.ctx, {
         companyId: A,
@@ -118,31 +76,22 @@ d("Evidence confirmation (Postgres)", () => {
       const deliverCalls: any[] = [];
 
       const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const att1 = { id: "att-c1", issueId: issue.id, companyId: A, filename: "test1.png", contentType: "image/png", sha256: "abc1", createdByAgentId: AGENT };
-      const att2 = { id: "att-c2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
+      const att1 = { id: "att-a1", issueId: issue.id, companyId: A, filename: "test1.png", contentType: "image/png", sha256: "abc1", createdByAgentId: AGENT };
+      const att2 = { id: "att-a2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att1, att2];
 
-      const result1 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc1", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      // First: different attachment, different summary
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-a1", "abc1", "step-a", "summary1", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
       expect((result1 as any).data?.notify).toBe("sent");
 
-      const result2 = await recordEvidence(w.env, A, issue.id, "att-c2", "abc2", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      // Second: different attachment, CHANGED summary
+      const result2 = await recordEvidence(w.env, A, issue.id, "att-a2", "abc2", "step-a", "summary2", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
       expect((result2 as any).data?.notify).toBe("already_notified");
       expect(deliverCalls).toHaveLength(1);
     });
   });
 
-  it("(d) no subscription -> posts to issue (no PAR-1844 in test env)", async () => {
-    await run(async (w) => {
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const att = { id: "att-d", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att];
-
-      const result = await recordEvidence(w.env, A, issue.id, "att-d", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
-      expect((result as any).data?.notify).toBe("no_subscription");
-    });
-  });
-
-  it("(e) quiet hours -> deferred, claim set", async () => {
+  it("(b) policy suppression (quiet hours, cap): no comment on PAR-1844", async () => {
     await run(async (w) => {
       await upsertSubscription(worlds.pg.ctx, {
         companyId: A,
@@ -153,68 +102,215 @@ d("Evidence confirmation (Postgres)", () => {
         deviceLabel: "Test Device",
       });
 
-      const now = new Date("2026-10-20T20:30:00Z");
-      (w.env.now as any) = () => now;
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const att = { id: "att-e", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att];
+      // Test quiet hours (deferred) - no comment expected
+      const now1 = new Date("2026-10-20T20:30:00Z"); // Quiet hours
+      (w.env.now as any) = () => now1;
+      const issue1 = await w.ctx.issues.create({ companyId: A, title: "Test QH", description: "Test", status: "todo" } as never);
+      const att1 = { id: "att-b1", issueId: issue1.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att1];
 
-      const result = await recordEvidence(w.env, A, issue.id, "att-e", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
-      expect((result as any).data?.notify).toBe("deferred");
-    });
-  });
+      const result1 = await recordEvidence(w.env, A, issue1.id, "att-b1", "abc", "step-b", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result1 as any).data?.notify).toBe("deferred");
 
-  it("(f) duplicate push_log row -> duplicate, claim NULL", async () => {
-    await run(async (w) => {
-      await upsertSubscription(worlds.pg.ctx, {
-        companyId: A,
-        userId: OWNER_ID,
-        endpoint: "https://example.com/push/owner-1",
-        p256dh: "test-p256dh-1",
-        auth: "test-auth-1",
-        deviceLabel: "Test Device",
-      });
-
-      const now = new Date("2026-10-20T10:00:00Z");
-      (w.env.now as any) = () => now;
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const issueRef = `${issue.identifier}:step`;
-      await appendPushLog(worlds.pg.ctx, {
-        companyId: A,
-        class: "confirmation",
-        issueRef,
-        title: "Earlier",
-        status: "sent",
-        createdAt: new Date(now.getTime() - 2 * 60 * 60 * 1000),
-      });
-
-      const att = { id: "att-f", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att];
-
-      const result = await recordEvidence(w.env, A, issue.id, "att-f", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
-      expect((result as any).data?.notify).toBe("duplicate");
-    });
-  });
-
-  it("(g) capped (20 sent rows) -> capped, claim NULL", async () => {
-    await run(async (w) => {
-      await upsertSubscription(worlds.pg.ctx, {
-        companyId: A,
-        userId: OWNER_ID,
-        endpoint: "https://example.com/push/owner-1",
-        p256dh: "test-p256dh-1",
-        auth: "test-auth-1",
-        deviceLabel: "Test Device",
-      });
-
-      const now = new Date("2026-10-20T10:00:00Z");
-      (w.env.now as any) = () => now;
+      // Test cap (20 sent rows) - no comment expected
+      const now2 = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now2;
 
       for (let i = 0; i < 20; i++) {
         await appendPushLog(worlds.pg.ctx, {
           companyId: A,
           class: "confirmation",
-          issueRef: `test-${i}`,
+          issueRef: `cap-test-${i}`,
+          title: `Push ${i}`,
+          status: "sent",
+          createdAt: new Date(now2.getTime() - (i + 1) * 15 * 60 * 1000),
+        });
+      }
+
+      const issue2 = await w.ctx.issues.create({ companyId: A, title: "Test Cap", description: "Test", status: "todo" } as never);
+      const att2 = { id: "att-b2", issueId: issue2.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att2];
+
+      const result2 = await recordEvidence(w.env, A, issue2.id, "att-b2", "abc", "step-b", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result2 as any).data?.notify).toBe("capped");
+    });
+  });
+
+  it("(c) no subscription + PAR-1844 seeded: post to PAR-1844 once, later call already_notified", async () => {
+    await run(async (w) => {
+      // Create PAR-1844
+      const parIssue = await w.ctx.issues.create({ companyId: A, title: "Notifications", identifier: "PAR-1844", description: "Test", status: "todo" } as never);
+
+      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
+      const att = { id: "att-c1", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att];
+
+      const now = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now;
+
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result1 as any).data?.notify).toBe("no_subscription");
+
+      // Second call for same (issue, step)
+      const result2 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result2 as any).data?.notify).toBe("already_notified");
+    });
+  });
+
+  it("(d) after sent: inbox_posted_at set; after capped: NULL", async () => {
+    await run(async (w) => {
+      await upsertSubscription(worlds.pg.ctx, {
+        companyId: A,
+        userId: OWNER_ID,
+        endpoint: "https://example.com/push/owner-1",
+        p256dh: "test-p256dh-1",
+        auth: "test-auth-1",
+        deviceLabel: "Test Device",
+      });
+
+      const now = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now;
+
+      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
+      const att = { id: "att-d", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att];
+
+      // First call: sent, inbox_posted_at should be set
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-d", "abc", "step-d", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result1 as any).data?.notify).toBe("sent");
+
+      const evRow1 = await w.ctx.db.execute(
+        `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
+        [A, issue.id, "step-d"],
+      );
+      expect(evRow1.rows).toHaveLength(1);
+      expect((evRow1.rows[0] as any).inbox_posted_at).not.toBeNull();
+
+      // Now test capped: fill cap
+      for (let i = 0; i < 20; i++) {
+        await appendPushLog(worlds.pg.ctx, {
+          companyId: A,
+          class: "confirmation",
+          issueRef: `test-d-cap-${i}`,
+          title: `Push ${i}`,
+          status: "sent",
+          createdAt: new Date(now.getTime() - (i + 1) * 15 * 60 * 1000),
+        });
+      }
+
+      const issue2 = await w.ctx.issues.create({ companyId: A, title: "Test 2", description: "Test", status: "todo" } as never);
+      const att2 = { id: "att-d2", issueId: issue2.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att2];
+
+      const result2 = await recordEvidence(w.env, A, issue2.id, "att-d2", "abc2", "step-d2", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
+      expect((result2 as any).data?.notify).toBe("capped");
+
+      const evRow2 = await w.ctx.db.execute(
+        `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
+        [A, issue2.id, "step-d2"],
+      );
+      expect(evRow2.rows).toHaveLength(1);
+      expect((evRow2.rows[0] as any).inbox_posted_at).toBeNull();
+    });
+  });
+
+  it("(e) tie-break: same created_at for two rows, concurrent calls -> one sent, claim held", async () => {
+    await run(async (w) => {
+      await upsertSubscription(worlds.pg.ctx, {
+        companyId: A,
+        userId: OWNER_ID,
+        endpoint: "https://example.com/push/owner-1",
+        p256dh: "test-p256dh-1",
+        auth: "test-auth-1",
+        deviceLabel: "Test Device",
+      });
+
+      const now = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now;
+      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
+
+      const sameTime = "2026-10-20T09:00:00Z";
+      // Insert two rows directly with same created_at
+      await w.ctx.db.execute(
+        `INSERT INTO plugin_cockpit_b8a99e8b16.issue_evidence (id, company_id, issue_id, step, kind, attachment_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7), ($8, $2, $3, $4, $5, $9, $7)`,
+        ["evid-e1", A, issue.id, "step-e", "shot", "att-e1", sameTime, "evid-e2", "att-e2"],
+      );
+
+      const deliverCalls: any[] = [];
+      const result1 = recordEvidence(w.env, A, issue.id, "att-e1", "abc", "step-e", "s1", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      const result2 = recordEvidence(w.env, A, issue.id, "att-e2", "abc", "step-e", "s2", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+
+      const [r1, r2] = await Promise.all([result1, result2]);
+      const outcomes = [(r1 as any).data?.notify, (r2 as any).data?.notify].sort();
+      expect(outcomes).toContain("sent");
+      expect(outcomes).toContain("already_notified");
+      expect(deliverCalls).toHaveLength(1);
+    });
+  });
+
+  it("(f) collapse: delivered, claim retained, later call already_notified", async () => {
+    await run(async (w) => {
+      await upsertSubscription(worlds.pg.ctx, {
+        companyId: A,
+        userId: OWNER_ID,
+        endpoint: "https://example.com/push/owner-1",
+        p256dh: "test-p256dh-1",
+        auth: "test-auth-1",
+        deviceLabel: "Test Device",
+      });
+
+      const now = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now;
+
+      // Seed 3 sent rows within 10min window to trigger collapse
+      for (let i = 0; i < 3; i++) {
+        const createdAt = new Date(now.getTime() - (i + 1) * 2 * 60 * 1000);
+        await appendPushLog(worlds.pg.ctx, {
+          companyId: A,
+          class: "confirmation",
+          issueRef: `test-f-seed-${i}`,
+          title: `Seeded Push ${i}`,
+          status: "sent",
+          createdAt,
+        });
+      }
+
+      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
+      const att = { id: "att-f", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att];
+
+      const deliverCalls: any[] = [];
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-f", "abc", "step-f", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      expect((result1 as any).data?.notify).toBe("collapsed");
+      expect(deliverCalls).toHaveLength(1);
+
+      // Later call for same (issue, step): already_notified
+      const result2 = await recordEvidence(w.env, A, issue.id, "att-f", "abc", "step-f", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      expect((result2 as any).data?.notify).toBe("already_notified");
+      expect(deliverCalls).toHaveLength(1); // Still 1, no new deliver call
+    });
+  });
+
+  it("(g) identical retry after capped: cap lifted, same attachment -> sent, deliver once", async () => {
+    await run(async (w) => {
+      await upsertSubscription(worlds.pg.ctx, {
+        companyId: A,
+        userId: OWNER_ID,
+        endpoint: "https://example.com/push/owner-1",
+        p256dh: "test-p256dh-1",
+        auth: "test-auth-1",
+        deviceLabel: "Test Device",
+      });
+
+      const now = new Date("2026-10-20T10:00:00Z");
+      (w.env.now as any) = () => now;
+
+      // Fill cap (20 sent rows)
+      for (let i = 0; i < 20; i++) {
+        await appendPushLog(worlds.pg.ctx, {
+          companyId: A,
+          class: "confirmation",
+          issueRef: `test-g-cap-${i}`,
           title: `Push ${i}`,
           status: "sent",
           createdAt: new Date(now.getTime() - (i + 1) * 15 * 60 * 1000),
@@ -225,12 +321,24 @@ d("Evidence confirmation (Postgres)", () => {
       const att = { id: "att-g", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att];
 
-      const result = await recordEvidence(w.env, A, issue.id, "att-g", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
-      expect((result as any).data?.notify).toBe("capped");
+      const deliverCalls: any[] = [];
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-g", "abc", "step-g", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      expect((result1 as any).data?.notify).toBe("capped");
+
+      // Clear the cap
+      await worlds.pg.ctx.db.execute(
+        `DELETE FROM plugin_cockpit_b8a99e8b16.push_log WHERE company_id = $1`,
+        [A],
+      );
+
+      // Retry same attachment: should now succeed
+      const result2 = await recordEvidence(w.env, A, issue.id, "att-g", "abc", "step-g", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      expect((result2 as any).data?.notify).toBe("sent");
+      expect(deliverCalls).toHaveLength(1); // Deliver called once total
     });
   });
 
-  it("(h) deliver rejects -> data.recorded true, notify error", async () => {
+  it("(h) deliver error during attempt: claim retained (risk of partial send)", async () => {
     await run(async (w) => {
       await upsertSubscription(worlds.pg.ctx, {
         companyId: A,
@@ -247,40 +355,18 @@ d("Evidence confirmation (Postgres)", () => {
       const att = { id: "att-h", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att];
 
-      const result = await recordEvidence(w.env, A, issue.id, "att-h", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { throw new Error("Failed"); } });
+      const result = await recordEvidence(w.env, A, issue.id, "att-h", "abc", "step-h", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { throw new Error("Failed"); } });
       expect((result as any).data?.recorded).toBe(true);
       expect((result as any).data?.notify).toBe("error");
+
+      // Claim should be kept (inbox_posted_at set) despite error
+      const evRow = await w.ctx.db.execute(
+        `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
+        [A, issue.id, "step-h"],
+      );
+      expect(evRow.rows).toHaveLength(1);
+      expect((evRow.rows[0] as any).inbox_posted_at).not.toBeNull();
     });
   });
 
-  it("(i) concurrency: two calls, same (issue, step) -> deliver once", async () => {
-    await run(async (w) => {
-      await upsertSubscription(worlds.pg.ctx, {
-        companyId: A,
-        userId: OWNER_ID,
-        endpoint: "https://example.com/push/owner-1",
-        p256dh: "test-p256dh-1",
-        auth: "test-auth-1",
-        deviceLabel: "Test Device",
-      });
-
-      const now = new Date("2026-10-20T10:00:00Z");
-      (w.env.now as any) = () => now;
-      const deliverCalls: any[] = [];
-
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-      const att1 = { id: "att-i1", issueId: issue.id, companyId: A, filename: "test1.png", contentType: "image/png", sha256: "abc1", createdByAgentId: AGENT };
-      const att2 = { id: "att-i2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
-      (w.ctx.issues as any).listAttachments = async () => [att1, att2];
-
-      const result1 = recordEvidence(w.env, A, issue.id, "att-i1", "abc1", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
-      const result2 = recordEvidence(w.env, A, issue.id, "att-i2", "abc2", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
-
-      const [r1, r2] = await Promise.all([result1, result2]);
-      const outcomes = [(r1 as any).data?.notify, (r2 as any).data?.notify].sort();
-      expect(outcomes).toContain("sent");
-      expect(outcomes).toContain("already_notified");
-      expect(deliverCalls).toHaveLength(1);
-    });
-  });
 });
