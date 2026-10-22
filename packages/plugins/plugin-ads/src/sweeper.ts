@@ -53,12 +53,25 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
   result.accounts = activeAccounts.length;
   if (activeAccounts.length === 0) return result;
 
+  // Build provider contexts once, up front, for all active accounts
+  const ctxByAccountId = new Map<string, ProviderContext | null>();
+  for (const account of activeAccounts) {
+    if (!account.connection_id) {
+      ctxByAccountId.set(account.id, null);
+    } else {
+      try {
+        ctxByAccountId.set(account.id, await getProviderContext(rt, account.id, account.connection_id, account.platform));
+      } catch {
+        ctxByAccountId.set(account.id, null);
+      }
+    }
+  }
+
   const insightsByAccount: Record<string, { spend: Map<string, number>; lifetimeSpend: Map<string, number> | undefined; rows: Array<{ day: string; spendMinor: number }>; errors: string[]; lifetimeError: boolean }> = {};
   for (const account of activeAccounts) {
-    if (!account.connection_id) continue;
+    const ctx = ctxByAccountId.get(account.id);
+    if (!ctx) continue;
     try {
-      const ctx = await getProviderContext(rt, account.id, account.connection_id, account.platform);
-      if (!ctx) continue;
       const dailyRows = await rt.ctx.db.query<{ day: string }>(`SELECT MIN(day)::text AS day FROM ${table(rt.ctx, "daily")} WHERE account_id = $1`, [account.id]);
       const since = !dailyRows[0]?.day || dailyRows[0].day < monthStart_ ? dailyRows[0]?.day ?? monthStart_ : monthStart_;
       const insights = await ctx.provider.insights(ctx.env, ctx.token, ctx.ref, { since, until: today });
@@ -101,13 +114,18 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
     result.campaigns += Array.from(campaignsByAccount.values()).reduce((s, c) => s + c.length, 0);
 
     const paused = new Set<string>();
-    // Build provider contexts once per account for reuse
-    const ctxByAccountId = new Map<string, ProviderContext | null>();
+    const unreachable = new Set<string>();
     const insightFailuresAlerted = new Set<string>();
+
+    // Raise cannot-reach-account alerts for accounts with no usable connection
     for (const [accountId] of campaignsByAccount) {
       const account = activeAccounts.find((a) => a.id === accountId)!;
-      if (!account.connection_id) continue;
-      ctxByAccountId.set(accountId, await getProviderContext(rt, account.id, account.connection_id, account.platform));
+      const ctx = ctxByAccountId.get(accountId);
+      if (!ctx) {
+        await alertFor(rt, scope, "warn", `cannot-reach-account:${accountId}`, `${account.name}: account unreachable`, `Connection to account "${account.name}" is missing or revoked; its ${campaignsByAccount.get(accountId)?.length ?? 0} ACTIVE campaigns are NOT being capped.`, { accountId, campaigns: campaignsByAccount.get(accountId)?.length ?? 0 }, accountId, "");
+        unreachable.add(accountId);
+        result.errors++;
+      }
     }
 
     // Raise sweep-insights-failed alerts once per account at the top level
@@ -123,9 +141,10 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
     }
 
     for (const [accountId, campaigns] of campaignsByAccount) {
+      if (unreachable.has(accountId)) continue;
       const account = activeAccounts.find((a) => a.id === accountId)!;
       const insight = insightsByAccount[accountId];
-      if (!insight) continue;
+      if (unreachable.has(accountId) || !insight) continue;
       for (const camp of campaigns) {
         if (!paused.has(camp.id) && camp.lifetime_budget_minor !== null) {
           // Lifetime spend is the max of fresh window and full ledger (both are lower bounds, so the larger is safe).
@@ -136,10 +155,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
           lifetimeSpendMinor = Math.max(lifetimeSpendMinor, ledgerTotal);
           if (lifetimeSpendMinor >= camp.lifetime_budget_minor) {
             const ctx = ctxByAccountId.get(accountId);
-            if (!ctx) {
-              await alertFor(rt, scope, "warn", `cannot-reach-account:${accountId}`, `${account.name}: account unreachable`, `Cannot establish connection to account "${account.name}"; skipping pausing.`, { accountId }, accountId, "");
-              continue;
-            }
+            if (!ctx) continue;
             await pauseWithRetry(rt, account, camp, result, scope, accountId, paused, `lifetime budget ${camp.lifetime_budget_minor} minor units`, today, ctx);
           }
         }
@@ -159,6 +175,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
       }
       if (scopeSpend >= scope.monthly_cap_minor) {
         for (const [accountId, campaigns] of campaignsByAccount) {
+          if (unreachable.has(accountId)) continue;
           const account = activeAccounts.find((a) => a.id === accountId)!;
           const ctx = ctxByAccountId.get(accountId);
           if (!ctx) continue;
@@ -172,6 +189,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
     }
 
     for (const [accountId, campaigns] of campaignsByAccount) {
+      if (unreachable.has(accountId)) continue;
       const account = activeAccounts.find((a) => a.id === accountId)!;
       const ctx = ctxByAccountId.get(accountId);
       if (!ctx) continue;

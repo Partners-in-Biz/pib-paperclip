@@ -174,8 +174,42 @@ describe.skipIf(!available)("sweepCaps", () => {
     expect(failedAlerts[0]?.severity).toBe("warn");
   });
 
-  // (o) Skipped: unreachable account is impractical to test. Both the insights fetch and context building call getProviderContext,
-  // so they either both succeed or both fail. If the connection becomes unreachable after insights are fetched, the code would need
-  // to be structured differently (e.g., cache insights and defer context checks). The null guard is present in the code (line 138-142
-  // in sweeper.ts), so manual code review confirms the protection.
+  it("(o) revoked connection: warn alert, errors counted, no pause, no write", async () => {
+    const { accountId } = await seedCampaigns([{ id: "c1", status: "active", spend: 10_000, lifetime: 50_000 }], [{ id: "c1", spend: 55_000, day: "2026-10-15" }]);
+    const before = w.mock.writes.filter((x) => x.op === "status").length;
+    const acct = (await w.ctx.db.query(`SELECT connection_id FROM ${w.ctx.db.namespace}.ad_accounts WHERE id = $1`, [accountId]))[0] as Record<string, unknown>;
+    const connectionId = String(acct.connection_id);
+    // Revoke the connection by setting its status to a non-connected state
+    await w.ctx.db.execute(`UPDATE ${w.ctx.db.namespace}.connections SET status = $1 WHERE id = $2`, ["disabled", connectionId]);
+    const result = await sweepCaps(w.rt());
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(result.paused).toBe(0);
+    expect(w.mock.writes.filter((x) => x.op === "status").length - before).toBe(0);
+    const alerts = await listAlerts(w.ctx, COMPANY, { scopeKey: "own" });
+    const unreachableAlerts = alerts.filter((a) => a.dedupe_key.includes("cannot-reach-account"));
+    expect(unreachableAlerts.length).toBe(1);
+    expect(unreachableAlerts[0]?.severity).toBe("warn");
+    expect((await getCampaign(w.ctx, COMPANY, accountId, "c1"))?.status).toBe("active");
+    // Run sweepCaps again and assert dedupe: still exactly 1 such alert
+    await sweepCaps(w.rt());
+    const alertsAfter = await listAlerts(w.ctx, COMPANY, { scopeKey: "own" });
+    const unreachableAlertsAfter = alertsAfter.filter((a) => a.dedupe_key.includes("cannot-reach-account"));
+    expect(unreachableAlertsAfter.length).toBe(1);
+  });
+
+  it("(p) account without connection_id: same warn alert, no pause", async () => {
+    const { accountId } = await seedCampaigns([{ id: "c1", status: "active", spend: 10_000, lifetime: 50_000 }], [{ id: "c1", spend: 55_000, day: "2026-10-15" }]);
+    const before = w.mock.writes.filter((x) => x.op === "status").length;
+    // Clear the connection_id to simulate an account without a connection
+    await w.ctx.db.execute(`UPDATE ${w.ctx.db.namespace}.ad_accounts SET connection_id = NULL WHERE id = $1`, [accountId]);
+    const result = await sweepCaps(w.rt());
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(result.paused).toBe(0);
+    expect(w.mock.writes.filter((x) => x.op === "status").length - before).toBe(0);
+    const alerts = await listAlerts(w.ctx, COMPANY, { scopeKey: "own" });
+    const unreachableAlerts = alerts.filter((a) => a.dedupe_key.includes("cannot-reach-account"));
+    expect(unreachableAlerts.length).toBe(1);
+    expect(unreachableAlerts[0]?.severity).toBe("warn");
+    expect((await getCampaign(w.ctx, COMPANY, accountId, "c1"))?.status).toBe("active");
+  });
 });
