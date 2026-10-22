@@ -309,8 +309,8 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   it("believes nothing before verification succeeds: a forged delivery records no payment, no event, no issue", async () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
-    // Missing transmission headers: PayPal verify returns [] (unsigned), no throw.
-    await expect(deliver(paidCapture(link.id), { headers: null })).resolves.toBeUndefined();
+    // Missing transmission headers: PayPal verify throws so the host does not mark handled.
+    await expect(deliver(paidCapture(link.id), { headers: null })).rejects.toMatchObject({ code: "bad_signature" });
     // verification_status FAILURE: refused so PayPal retries; still records nothing.
     verifyStatus = "FAILURE";
     await expect(deliver(paidCapture(link.id, {}, "WH-FAIL"))).rejects.toMatchObject({ code: "bad_signature" });
@@ -407,19 +407,21 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await sentInvoice();
     const link = (await makeLink(invoice.id)).links[0]!;
     await deliver(paidCapture(link.id));
-    const refund = (total: number, id: string) => ({
+    // PayPal sends this refund's amount; the adapter adds link.refunded_minor for a cumulative total.
+    const refund = (thisRefund: number, id: string, refundId = id) => ({
       id,
       event_type: "PAYMENT.CAPTURE.REFUNDED",
       create_time: new Date().toISOString(),
       resource: {
-        id: "CAP-1",
+        id: refundId,
         custom_id: link.id,
         status: "REFUNDED",
-        amount: { currency_code: "USD", value: decimalFromMinor(total) },
+        amount: { currency_code: "USD", value: decimalFromMinor(thisRefund) },
+        supplementary_data: { related_ids: { capture_id: "CAP-1" } },
         create_time: new Date().toISOString(),
       },
     });
-    await deliver(refund(5_000, "WH-R1"));
+    await deliver(refund(5_000, "WH-R1", "REF-1"));
     const inv = await invoiceRow(invoice.id);
     expect(inv).toMatchObject({ status: "partially_paid", outstandingMinor: 5_000, paidMinor: 110_000 });
     const negative = (await row(`SELECT amount_minor, allocated_minor, source, method FROM ${NAMESPACE}.payments WHERE source = 'gateway_refund'`));
@@ -432,10 +434,10 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     expect((await row(`SELECT refunded_minor FROM ${NAMESPACE}.payment_links`))[0]).toEqual({ refunded_minor: "5000" });
     expect([...h.issues.values()].find((i) => /^Refund recorded: \$50\.00 on/.test(i.title))!.description).toContain("owes $50.00 again");
 
-    // The same total again changes nothing; a bigger total records only the difference.
-    await deliver(refund(5_000, "WH-R1b"));
-    await deliver(refund(115_000, "WH-R2"));
-    expect((await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds ORDER BY created_at`)).map((r) => r.amount_minor)).toEqual(["5000", "110000"]);
+    // Another this-refund of the same size (new event id) records again; then the remainder clears the payment.
+    await deliver(refund(5_000, "WH-R1b", "REF-1b"));
+    await deliver(refund(105_000, "WH-R2", "REF-2"));
+    expect((await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds ORDER BY created_at`)).map((r) => r.amount_minor)).toEqual(["5000", "5000", "105000"]);
     expect(await invoiceRow(invoice.id)).toMatchObject({ outstandingMinor: 115_000, paidMinor: 0 });
     expect((await getInvoice(h.ctx, invoice.id))!.status).not.toBe("paid");
   });
@@ -601,15 +603,16 @@ describe.skipIf(!available)("online payments (postgres)", () => {
 
   // ── Refunds out of order ───────────────────────────────────────────────────
 
-  const refundEvent = (id: string, linkId: string, total = 5_000) => ({
+  const refundEvent = (id: string, linkId: string, thisRefund = 5_000) => ({
     id,
     event_type: "PAYMENT.CAPTURE.REFUNDED",
     create_time: new Date().toISOString(),
     resource: {
-      id: "CAP-1",
+      id: `REF-${id}`,
       custom_id: linkId,
       status: "REFUNDED",
-      amount: { currency_code: "USD", value: decimalFromMinor(total) },
+      amount: { currency_code: "USD", value: decimalFromMinor(thisRefund) },
+      supplementary_data: { related_ids: { capture_id: "CAP-1" } },
       create_time: new Date().toISOString(),
     },
   });
@@ -663,8 +666,8 @@ describe.skipIf(!available)("online payments (postgres)", () => {
       return real(ref, options);
     };
     try {
-      // Missing transmission headers: verify returns [] after secrets are loaded for the verifier.
-      for (let i = 0; i < 5; i += 1) await expect(deliver(paidCapture(link.id), { headers: null })).resolves.toBeUndefined();
+      // Missing transmission headers: refused after secrets are loaded for the verifier.
+      for (let i = 0; i < 5; i += 1) await expect(deliver(paidCapture(link.id), { headers: null })).rejects.toMatchObject({ code: "bad_signature" });
       const whReadsAfterUnsigned = () => resolved.filter((id) => id === "wh");
       expect(whReadsAfterUnsigned().length).toBeGreaterThanOrEqual(1);
       const whAfterUnsigned = whReadsAfterUnsigned().length;
