@@ -104,7 +104,7 @@ describe("Stripe signature", () => {
 
 describe("Stripe events", () => {
   const provider = new StripeProvider({ secretKey: "sk_test_x", webhookSecret: SECRET });
-  const link = { id: "link-1", amountMinor: 115_000, currency: "ZAR" };
+  const link = { id: "link-1", amountMinor: 115_000, currency: "ZAR", refundedMinor: 0 };
   const deliver = (event: Record<string, unknown>) => {
     const raw = JSON.stringify(event);
     return stripeInput(raw, signStripeBody(SECRET, raw, t));
@@ -245,7 +245,7 @@ describe("PayFast ITN", () => {
     ["m_payment_id", "6f1e"], ["pf_payment_id", "1089250"], ["payment_status", "COMPLETE"], ["item_name", "Invoice LUM-001"], ["item_description", ""],
     ["amount_gross", "1150.00"], ["amount_fee", "-26.45"], ["amount_net", "1123.55"], ["custom_str1", ""], ["name_first", "Sipho"], ["email_address", "sipho@lumen.test"], ["merchant_id", "10000100"],
   ];
-  const link = { id: "6f1e", amountMinor: 115_000, currency: "ZAR" };
+  const link = { id: "6f1e", amountMinor: 115_000, currency: "ZAR", refundedMinor: 0 };
   const NOW2 = new Date("2026-10-03T10:00:00Z");
   function make(over: { fetch?: (body: string) => string | Response; entries?: Array<[string, string]>; passphrase?: string | null } = {}) {
     const posted: string[] = [];
@@ -352,7 +352,7 @@ describe("PaypalProvider", () => {
   const approveUrl = "https://www.sandbox.paypal.com/checkoutnow?token=ORDER1";
   const tokenBody = { access_token: "A1", expires_in: 32_400 };
   const orderBody = { id: "ORDER1", links: [{ rel: "approve", href: approveUrl }, { rel: "self", href: "https://api-m.sandbox.paypal.com/v2/checkout/orders/ORDER1" }] };
-  const link = { id: "6f1e", amountMinor: 100, currency: "USD" };
+  const link = { id: "6f1e", amountMinor: 100, currency: "USD", refundedMinor: 0 };
   const captureEvent = {
     id: "WH-EVT-1",
     event_type: "PAYMENT.CAPTURE.COMPLETED",
@@ -488,6 +488,181 @@ describe("PaypalProvider", () => {
       ["POST", `${PAYPAL_SANDBOX}/v1/oauth2/token`],
       ["POST", `${PAYPAL_SANDBOX}/v1/notifications/verify-webhook-signature`],
       ["POST", `${PAYPAL_SANDBOX}/v2/checkout/orders/ORDER1/capture`],
+    ]);
+    expect(calls[2]!.headers["PayPal-Request-Id"]).toBe("capture-ORDER1");
+  });
+
+  it("rejects when transmission signature headers are missing or partial", async () => {
+    const { fetchImpl } = fakePaypal([]);
+    const provider = new PaypalProvider({ ...config, fetchImpl });
+    await expect(provider.verify(deliver(captureEvent, {}), link, null)).rejects.toMatchObject({
+      name: "WebhookRejected",
+      code: "bad_signature",
+    });
+    await expect(
+      provider.verify(
+        deliver(captureEvent, {
+          "paypal-transmission-id": "tx-1",
+          "paypal-transmission-time": "2026-10-03T10:00:00Z",
+        }),
+        link,
+        null,
+      ),
+    ).rejects.toMatchObject({ code: "bad_signature" });
+  });
+
+  it("on ORDER.APPROVED when capture returns ORDER_ALREADY_CAPTURED, GETs the order and emits from the existing capture", async () => {
+    const approvedEvent = {
+      id: "WH-EVT-ALREADY",
+      event_type: "CHECKOUT.ORDER.APPROVED",
+      create_time: "2026-10-03T10:00:00Z",
+      resource: {
+        id: "ORDER1",
+        status: "APPROVED",
+        purchase_units: [{ custom_id: "6f1e", amount: { currency_code: "USD", value: "1.00" } }],
+        create_time: "2026-10-03T10:00:00Z",
+      },
+    };
+    const existingOrder = {
+      id: "ORDER1",
+      status: "COMPLETED",
+      purchase_units: [
+        {
+          custom_id: "6f1e",
+          payments: {
+            captures: [
+              {
+                id: "CAP-EXISTING",
+                status: "COMPLETED",
+                amount: { currency_code: "USD", value: "1.00" },
+                create_time: "2026-10-03T09:59:00Z",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const { calls, fetchImpl } = fakePaypal([
+      { body: tokenBody },
+      { body: { verification_status: "SUCCESS" } },
+      { ok: false, status: 422, body: { details: [{ issue: "ORDER_ALREADY_CAPTURED" }] } },
+      { body: existingOrder },
+    ]);
+    const events = await new PaypalProvider({ ...config, fetchImpl }).verify(deliver(approvedEvent), link, null);
+    expect(events).toEqual([
+      {
+        kind: "payment_confirmed",
+        eventId: "WH-EVT-ALREADY",
+        linkId: "6f1e",
+        providerPaymentId: "CAP-EXISTING",
+        amountMinor: 100,
+        currency: "USD",
+        feeMinor: null,
+        paidAt: "2026-10-03T09:59:00Z",
+        reference: "CAP-EXISTING",
+        status: "COMPLETED",
+      },
+    ]);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ["POST", `${PAYPAL_SANDBOX}/v1/oauth2/token`],
+      ["POST", `${PAYPAL_SANDBOX}/v1/notifications/verify-webhook-signature`],
+      ["POST", `${PAYPAL_SANDBOX}/v2/checkout/orders/ORDER1/capture`],
+      ["GET", `${PAYPAL_SANDBOX}/v2/checkout/orders/ORDER1`],
+    ]);
+    expect(calls[2]!.headers["PayPal-Request-Id"]).toBe("capture-ORDER1");
+
+    // A second APPROVED delivery with the same already-captured flow still works.
+    const { calls: calls2, fetchImpl: fetchImpl2 } = fakePaypal([
+      { body: tokenBody },
+      { body: { verification_status: "SUCCESS" } },
+      { ok: false, status: 422, body: { details: [{ issue: "ORDER_ALREADY_CAPTURED" }] } },
+      { body: existingOrder },
+    ]);
+    const again = await new PaypalProvider({ ...config, fetchImpl: fetchImpl2 }).verify(
+      deliver({ ...approvedEvent, id: "WH-EVT-ALREADY-2" }),
+      link,
+      null,
+    );
+    expect(again[0]).toMatchObject({ kind: "payment_confirmed", providerPaymentId: "CAP-EXISTING", eventId: "WH-EVT-ALREADY-2" });
+    expect(calls2[2]!.headers["PayPal-Request-Id"]).toBe("capture-ORDER1");
+  });
+
+  it("reports two partial refunds as cumulative totals keyed by capture id, not refund id", async () => {
+    const refundResource = (refundId: string, value: string, captureVia: "related" | "up") => ({
+      id: refundId,
+      custom_id: "6f1e",
+      status: "COMPLETED",
+      amount: { currency_code: "USD", value },
+      create_time: "2026-10-03T10:00:00Z",
+      ...(captureVia === "related"
+        ? { supplementary_data: { related_ids: { capture_id: "CAP-1" } } }
+        : { links: [{ rel: "up", href: "https://api-m.sandbox.paypal.com/v2/payments/captures/CAP-1" }] }),
+    });
+    const refundEvent = (id: string, resource: Record<string, unknown>) => ({
+      id,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: "2026-10-03T10:00:00Z",
+      resource,
+    });
+
+    const { fetchImpl } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "SUCCESS" } }]);
+    const first = await new PaypalProvider({ ...config, fetchImpl }).verify(
+      deliver(refundEvent("WH-REF-1", refundResource("REF-1", "10.00", "related"))),
+      { ...link, refundedMinor: 0 },
+      null,
+    );
+    expect(first).toEqual([
+      expect.objectContaining({
+        kind: "refund",
+        eventId: "WH-REF-1",
+        providerPaymentId: "CAP-1",
+        amountMinor: 1_000,
+        reference: "CAP-1",
+      }),
+    ]);
+    expect(first[0]!.providerPaymentId).not.toBe("REF-1");
+
+    const { fetchImpl: fetchImpl2 } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "SUCCESS" } }]);
+    const second = await new PaypalProvider({ ...config, fetchImpl: fetchImpl2 }).verify(
+      deliver(refundEvent("WH-REF-2", refundResource("REF-2", "5.00", "up"))),
+      { ...link, refundedMinor: 1_000 },
+      null,
+    );
+    expect(second).toEqual([
+      expect.objectContaining({
+        kind: "refund",
+        eventId: "WH-REF-2",
+        providerPaymentId: "CAP-1",
+        amountMinor: 1_500,
+      }),
+    ]);
+  });
+
+  it("locates and verifies a refund with no custom_id when capture id is in related_ids", async () => {
+    const event = {
+      id: "WH-REF-NO-CUSTOM",
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: "2026-10-03T10:00:00Z",
+      resource: {
+        id: "REF-X",
+        status: "COMPLETED",
+        amount: { currency_code: "USD", value: "1.00" },
+        create_time: "2026-10-03T10:00:00Z",
+        supplementary_data: { related_ids: { capture_id: "CAP-1" } },
+      },
+    };
+    const provider = new PaypalProvider(config);
+    expect(provider.locate(deliver(event))).toEqual({ linkId: null, providerPaymentId: "CAP-1" });
+
+    const { fetchImpl } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "SUCCESS" } }]);
+    const events = await new PaypalProvider({ ...config, fetchImpl }).verify(deliver(event), link, null);
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: "refund",
+        linkId: "6f1e",
+        providerPaymentId: "CAP-1",
+        amountMinor: 100,
+      }),
     ]);
   });
 

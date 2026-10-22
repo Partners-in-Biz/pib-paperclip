@@ -88,6 +88,8 @@ export interface LinkForVerify {
   id: string;
   amountMinor: number;
   currency: string;
+  /** Cumulative refunded so far on this link (minor units); used when a provider reports a single refund increment. */
+  refundedMinor: number;
 }
 
 export interface PaymentProvider {

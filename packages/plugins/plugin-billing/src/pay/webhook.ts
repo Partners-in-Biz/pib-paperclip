@@ -95,7 +95,11 @@ export async function handleBillingWebhook(ctx: PluginContext, input: Pick<Plugi
   if (!verifier) throw new WebhookRejected(`${key} is not set up for this company (secrets missing)`, "not_configured");
   let events;
   try {
-    events = await verifier.verify(delivery, { id: link.id, amountMinor: Number(link.amount_minor), currency: link.currency }, remoteIpFrom(delivery.headers));
+    events = await verifier.verify(
+      delivery,
+      { id: link.id, amountMinor: Number(link.amount_minor), currency: link.currency, refundedMinor: Number(link.refunded_minor) },
+      remoteIpFrom(delivery.headers),
+    );
   } catch (error) {
     if (error instanceof WebhookRejected) ctx.logger.warn("Payment webhook refused", { provider: key, code: error.code });
     throw error;

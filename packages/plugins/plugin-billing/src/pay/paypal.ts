@@ -30,6 +30,11 @@ const HANDLED = new Set([
   "PAYMENT.CAPTURE.REFUNDED",
 ]);
 
+/** Whether Billing can create a PayPal checkout link in this currency. */
+export function paypalSupportsCurrency(currency: string): boolean {
+  return SUPPORTED_CURRENCIES.has(currency.toUpperCase());
+}
+
 export interface PaypalConfig {
   clientId: string;
   clientSecret: string;
@@ -86,7 +91,23 @@ function customIdFromResource(resource: Obj): string | null {
   return null;
 }
 
-function providerPaymentIdFromResource(resource: Obj): string | null {
+/** Capture id for a PAYMENT.CAPTURE.REFUNDED resource (resource.id is the refund id only). */
+function captureIdFromRefundResource(resource: Obj): string | null {
+  const fromRelated = text(obj(obj(resource.supplementary_data).related_ids).capture_id);
+  if (fromRelated) return fromRelated;
+  for (const entry of Array.isArray(resource.links) ? resource.links : []) {
+    const link = obj(entry);
+    if (text(link.rel) !== "up") continue;
+    const href = text(link.href);
+    if (!href) continue;
+    const segment = href.replace(/\/+$/, "").split("/").pop();
+    if (segment) return segment;
+  }
+  return null;
+}
+
+function providerPaymentIdFromResource(resource: Obj, eventType?: string): string | null {
+  if (eventType === "PAYMENT.CAPTURE.REFUNDED") return captureIdFromRefundResource(resource);
   const captureId = text(resource.id);
   if (captureId) return captureId;
   return text(obj(obj(resource.supplementary_data).related_ids).order_id);
@@ -108,6 +129,16 @@ function firstCaptureFromOrder(order: Obj): Obj | null {
     if (text(capture.id)) return capture;
   }
   return null;
+}
+
+function paypalIssueCodes(parsed: Obj): string[] {
+  const details = Array.isArray(parsed.details) ? parsed.details : [];
+  const codes: string[] = [];
+  for (const detail of details) {
+    const issue = text(obj(detail).issue);
+    if (issue) codes.push(issue);
+  }
+  return codes;
 }
 
 function eventFrom(
@@ -167,29 +198,52 @@ export class PaypalProvider implements PaymentProvider {
     return access;
   }
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private throwPaypalRefusal(parsed: Obj, status: number): never {
+    const details = Array.isArray(parsed.details) ? parsed.details : [];
+    const detail = details.length ? text(obj(details[0]).description) : null;
+    throw new PaymentProviderError(
+      `PayPal refused the request: ${detail ?? text(parsed.message) ?? text(parsed.error_description) ?? `HTTP ${status}`}`,
+      status,
+    );
+  }
+
+  private async request(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; body: Obj }> {
     const token = await this.accessToken();
     const response = await this.doFetch(`${this.base()}${path}`, {
       method,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extraHeaders },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     const parsed = (await response.json().catch(() => ({}))) as Obj;
-    if (!response.ok) {
-      const details = Array.isArray(parsed.details) ? parsed.details : [];
-      const detail = details.length ? text(obj(details[0]).description) : null;
-      throw new PaymentProviderError(`PayPal refused the request: ${detail ?? text(parsed.message) ?? text(parsed.error_description) ?? `HTTP ${response.status}`}`, response.status);
-    }
+    return { ok: response.ok, status: response.status, body: parsed };
+  }
+
+  private async call<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+    const { ok, status, body: parsed } = await this.request(method, path, body, extraHeaders);
+    if (!ok) this.throwPaypalRefusal(parsed, status);
     return parsed as T;
   }
 
   private async captureOrder(orderId: string): Promise<Obj> {
-    return this.call<Obj>("POST", `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {});
+    const path = `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`;
+    const { ok, status, body: parsed } = await this.request("POST", path, {}, { "PayPal-Request-Id": `capture-${orderId}` });
+    if (!ok) {
+      if (paypalIssueCodes(parsed).includes("ORDER_ALREADY_CAPTURED")) {
+        return this.call<Obj>("GET", `/v2/checkout/orders/${encodeURIComponent(orderId)}`);
+      }
+      this.throwPaypalRefusal(parsed, status);
+    }
+    return parsed;
   }
 
   async createLink(request: LinkRequest): Promise<CreatedLink> {
     const currency = request.currency.toUpperCase();
-    if (!SUPPORTED_CURRENCIES.has(currency)) {
+    if (!paypalSupportsCurrency(currency)) {
       throw new PaymentProviderError(
         currency === "ZAR"
           ? "PayPal links are not offered in ZAR. Ask for PayFast or EFT instead."
@@ -239,7 +293,7 @@ export class PaypalProvider implements PaymentProvider {
     if (eventType && !HANDLED.has(eventType)) return null;
     const resource = obj(event.resource);
     const linkId = customIdFromResource(resource);
-    const providerPaymentId = providerPaymentIdFromResource(resource);
+    const providerPaymentId = providerPaymentIdFromResource(resource, eventType || undefined);
     return linkId || providerPaymentId ? { linkId, providerPaymentId } : null;
   }
 
@@ -254,7 +308,9 @@ export class PaypalProvider implements PaymentProvider {
     const transmissionSig = text(input.headers["paypal-transmission-sig"]);
     const certUrl = text(input.headers["paypal-cert-url"]);
     const authAlgo = text(input.headers["paypal-auth-algo"]);
-    if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) return [];
+    if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) {
+      throw new WebhookRejected("missing PayPal transmission signature headers", "bad_signature");
+    }
     if (!this.config.webhookId) throw new WebhookRejected("The PayPal webhook id is not set", "not_configured");
 
     let verificationStatus: string | null = null;
@@ -301,8 +357,23 @@ export class PaypalProvider implements PaymentProvider {
       case "PAYMENT.CAPTURE.DENIED":
         return [eventFrom("payment_failed", event.id, linkId, resource, createTime, event.event_type)];
       case "PAYMENT.CAPTURE.REFUNDED": {
-        const ev = eventFrom("refund", event.id, linkId, resource, createTime, event.event_type);
-        return ev.amountMinor > 0 && ev.providerPaymentId ? [ev] : [];
+        const thisRefund = amountFromResource(resource);
+        const captureId = captureIdFromRefundResource(resource);
+        if (!(thisRefund.amountMinor > 0 && captureId)) return [];
+        return [
+          {
+            kind: "refund",
+            eventId: event.id,
+            linkId,
+            providerPaymentId: captureId,
+            amountMinor: link.refundedMinor + thisRefund.amountMinor,
+            currency: thisRefund.currency,
+            feeMinor: null,
+            paidAt: createTime,
+            reference: captureId,
+            status: String(resource.status ?? event.event_type),
+          },
+        ];
       }
       default:
         return [];
