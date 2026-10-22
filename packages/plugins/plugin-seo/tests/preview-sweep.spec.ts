@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { chromiumEnv, domArgs, makeProfile, PROFILE_NAME, removeProfile, SHOT_MAX_AGE_MS, SHOT_NAME, shotArgs, sweepProfiles, sweepShots } from "../ops/preview-server/sweep.mjs";
+import { chromiumEnv, domArgs, findChrome, makeProfile, PROFILE_NAME, removeProfile, SHOT_MAX_AGE_MS, SHOT_NAME, shotArgs, sweepProfiles, sweepShots } from "../ops/preview-server/sweep.mjs";
 
 const roots: string[] = [];
 function scratch(): string {
@@ -168,5 +168,40 @@ describe("server.mjs", () => {
   it("never serves a cached screenshot in the last minutes before the sweep takes it", () => {
     expect(source).toContain("SHOT_MAX_AGE_MS - 300_000");
     expect(source).toMatch(/Date\.now\(\) - st\.mtimeMs < SHOT_REUSE_MS/);
+  });
+});
+
+describe("findChrome (PAR-4798: a removed Chromium build made every /shot answer 502)", () => {
+  const install = (root: string, build: string, withBinary = true) => {
+    const dir = join(root, build, "chrome-linux64");
+    mkdirSync(dir, { recursive: true });
+    if (withBinary) writeFileSync(join(dir, "chrome"), "");
+    return join(dir, "chrome");
+  };
+
+  it("uses the newest build that has a binary, comparing build numbers as numbers", async () => {
+    const root = scratch();
+    install(root, "chromium-999");
+    const newest = install(root, "chromium-1248");
+    install(root, "chromium_headless_shell-1300");
+    install(root, "chromium-1300", false);
+    expect(await findChrome(root)).toBe(newest);
+  });
+
+  it("follows a browser update without a restart", async () => {
+    const root = scratch();
+    install(root, "chromium-1243");
+    expect(await findChrome(root)).toContain("chromium-1243");
+    const { rm } = await import("node:fs/promises");
+    await rm(join(root, "chromium-1243"), { recursive: true });
+    install(root, "chromium-1248");
+    expect(await findChrome(root)).toContain("chromium-1248");
+  });
+
+  it("returns an explicit CHROME_PATH untouched and names the folder when nothing is installed", async () => {
+    const root = scratch();
+    expect(await findChrome(root, "/opt/chrome")).toBe("/opt/chrome");
+    await expect(findChrome(root)).rejects.toThrow(`no Chromium build under ${root}`);
+    await expect(findChrome(join(root, "missing"))).rejects.toThrow("no Chromium build under");
   });
 });
