@@ -66,3 +66,5 @@ export function DialerPage({ context }: PluginPageProps) {
     </PageFrame>
   );
 }
+
+export { TelephonySettingsPage } from "./settings-page.js";
