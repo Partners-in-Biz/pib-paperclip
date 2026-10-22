@@ -195,6 +195,12 @@ export const candidateSlugFor = (slug: string, hash: string): string => `${slug}
 /** The name a template's test copy goes by: never the real skill's, and tied to the template hash. */
 export const templateSlugFor = (slug: string, hash: string): string => `${slug}-template-${hash.slice(0, 6)}`;
 
+/** An agent template names tools of any PiB plugin (the CRM's merge-contacts), not only the Cockpit's; tests check each one against every plugin's manifest (eval-scenarios.spec.ts). */
+const knownTemplateTool = (name: string): boolean => cockpitToolNames().has(name) || /^partnersinbiz\.[a-z0-9-]+:[a-z0-9-]+$/.test(name);
+
+/** The skill_slug value under which template results are stored in eval_results. */
+export const templateResultSlug = (key: string): string => `template:${key}`;
+
 /** The candidate's install text: the same skill, with its name and slug changed so it never collides with the real one. */
 export function candidateInstallText(markdown: string, slug: string, hash: string): { slug: string; text: string } {
   const candidateSlug = candidateSlugFor(slug, hash);
@@ -216,15 +222,16 @@ export interface PlanInput {
 
 export async function planEval(env: Env, companyId: string, input: PlanInput, agentEvals?: Record<string, unknown>): Promise<Record<string, unknown>> {
   const info = skillBySlug(input.skill);
-  const all = scenariosFor(info.slug);
+  // A template's scenarios are its own (evals/agents/<key>.json), not the skill's: only live and candidate pick from the skill's.
+  const all = input.mode === "template" ? [] : scenariosFor(info.slug);
   const picked = input.scenarioIds?.length ? all.filter((s) => input.scenarioIds!.includes(s.id)) : all;
-  if (picked.length === 0) throw new EvalError(input.scenarioIds?.length ? `None of ${input.scenarioIds.join(", ")} is a scenario of ${info.slug} (${all.map((s) => s.id).join(", ")}).` : `${info.slug} has no scenarios.`);
+  if (input.mode !== "template" && picked.length === 0) throw new EvalError(input.scenarioIds?.length ? `None of ${input.scenarioIds.join(", ")} is a scenario of ${info.slug} (${all.map((s) => s.id).join(", ")}).` : `${info.slug} has no scenarios.`);
+  const requests = (list: Scenario[], skillId: string): HarnessRequest[] =>
+    list.map((s) => ({ scenarioId: s.id, method: "POST", path: `/api/companies/${companyId}/skills/${skillId}/test-runs`, body: { agentId: input.agentId, content: evalPrompt(info.slug, s) } }));
   const agent = await env.ctx.agents.get(input.agentId, companyId).catch(() => null);
   if (!agent) throw new EvalError("That agent was not found in this company: pass agentId, an active agent (not paused) that has the skill attached.");
   const notes: string[] = [];
   if (String(agent.status) === "paused") notes.push(`${agent.name} is paused: the host refuses test runs for a paused agent. Pick another agent or resume it.`);
-  const requests = (skillId: string): HarnessRequest[] =>
-    picked.map((s) => ({ scenarioId: s.id, method: "POST", path: `/api/companies/${companyId}/skills/${skillId}/test-runs`, body: { agentId: input.agentId, content: evalPrompt(info.slug, s) } }));
   const rules = [
     "Make each request with the Paperclip API (your agent key), then wait until the harness task is done: GET /api/issues/<issueId from the response>. A run takes minutes.",
     `Then call skill-eval record with mode ${input.mode} and an item {scenarioId, issueId} for each finished task. The Cockpit reads the output itself.`,
@@ -235,7 +242,7 @@ export async function planEval(env: Env, companyId: string, input: PlanInput, ag
     const { resolved, drift } = await companyCopy(env, companyId, info);
     if (!resolved?.skillId) throw new EvalError(`${info.slug} is not installed in this company yet: open the Cockpit once (it syncs its skills), then plan again.`);
     if (drift.drifted) notes.push(`The company's copy of this skill differs from what the plugin ships${driftFiles(drift)} (it is behind, or was edited). Sync first (cockpit.load, or the plugin's sync-skills), then plan again: results would be filed under text agents are not reading.`);
-    return { skill: info.slug, mode: "live", hash: info.hash, skillId: resolved.skillId, drift: drift.drifted, changedFiles: drift.changedFiles, scenarios: picked.map((s) => ({ id: s.id, title: s.title })), requests: requests(resolved.skillId), notes, rules };
+    return { skill: info.slug, mode: "live", hash: info.hash, skillId: resolved.skillId, drift: drift.drifted, changedFiles: drift.changedFiles, scenarios: picked.map((s) => ({ id: s.id, title: s.title })), requests: requests(picked, resolved.skillId), notes, rules };
   }
   if (input.mode === "template") {
     const templateKey = input.templateKey?.trim();
@@ -253,7 +260,7 @@ export async function planEval(env: Env, companyId: string, input: PlanInput, ag
       );
     }
     // Load the template scenario to validate it exists and is valid
-    const templateScenario = loadEvalTemplate(templateKey, agentEvals ?? AGENT_EVALS, SKILLS.map((s) => s.slug!), (name: string) => cockpitToolNames().has(name));
+    const templateScenario = loadEvalTemplate(templateKey, agentEvals ?? AGENT_EVALS, SKILLS.map((s) => s.slug!), knownTemplateTool);
     if (templateScenario.skill !== info.slug) {
       throw new EvalError(
         `Template "${templateKey}" is for skill "${templateScenario.skill}", but you asked for skill "${info.slug}". ` +
@@ -283,10 +290,10 @@ export async function planEval(env: Env, companyId: string, input: PlanInput, ag
           body: { name: `${info.slug}-template-${providedHash.slice(0, 6)}`, slug: `${info.slug}-template-${providedHash.slice(0, 6)}`, markdown: templateText },
         },
       ],
-      requests: requests("<templateSkillId>"),
+      requests: requests(usedScenarios, "<templateSkillId>"),
       cleanup: { step: "When every run is recorded, remove the test copy.", method: "DELETE", path: `/api/companies/${companyId}/skills/<templateSkillId>` },
       notes,
-      rules: [...rules, `Record with templateHash ${providedHash}.`],
+      rules: [...rules, `Record with templateKey ${templateKey} and templateHash ${providedHash}; baseline the same two to mark the original text as the one to beat.`],
     };
   }
   const markdown = input.candidateMarkdown?.trim();
@@ -304,7 +311,7 @@ export async function planEval(env: Env, companyId: string, input: PlanInput, ag
       { step: "Install the candidate as a test copy (the skill policy lets only the Operator do this).", method: "POST", path: `/api/companies/${companyId}/skills`, body: { name: install.slug, slug: install.slug, markdown: install.text } },
       ...files.map((f) => ({ step: `Add its file ${f.path} (use the skill id the first call returned).`, method: "PATCH", path: `/api/companies/${companyId}/skills/<candidateSkillId>/files`, body: { path: f.path, content: f.content } })),
     ],
-    requests: requests("<candidateSkillId>"),
+    requests: requests(picked, "<candidateSkillId>"),
     cleanup: { step: "When every run is recorded, remove the test copy.", method: "DELETE", path: `/api/companies/${companyId}/skills/<candidateSkillId>` },
     notes,
     rules: [...rules, `Record with candidateHash ${hash}.`],
@@ -333,8 +340,9 @@ const newId = (): string => `ev${randomBytes(6).toString("hex")}`;
 
 export async function recordEval(env: Env, companyId: string, input: { skill: string; mode: "live" | "candidate" | "template"; candidateHash?: string; templateKey?: string; templateHash?: string; items: RecordItem[] }): Promise<{ recorded: Recorded[]; state: SkillState; hash: string; entry: ReturnType<typeof resultsEntry> | null }> {
   const info = skillBySlug(input.skill);
-  const scenarios = scenariosFor(info.slug);
+  let scenarios = scenariosFor(info.slug);
   let hash = info.hash;
+  let storeSlug = info.slug;
   if (input.mode === "template") {
     const templateKey = input.templateKey?.trim();
     const templateHash = input.templateHash?.trim();
@@ -347,10 +355,13 @@ export async function recordEval(env: Env, companyId: string, input: { skill: st
     hash = templateHash;
     // Validate template exists and matches the skill: loadEvalTemplate will throw if key is unknown.
     try {
-      const templateScenario = loadEvalTemplate(templateKey, AGENT_EVALS, SKILLS.map((s) => s.slug!), (name: string) => cockpitToolNames().has(name));
+      const templateScenario = loadEvalTemplate(templateKey, AGENT_EVALS, SKILLS.map((s) => s.slug!), knownTemplateTool);
       if (templateScenario.skill !== info.slug) {
         throw new EvalError(`Template "${templateKey}" is for skill "${templateScenario.skill}", but you asked for skill "${info.slug}".`);
       }
+      // The template's own scenarios are graded, and kept apart from the skill's own results (and its baseline) under template:<key>.
+      scenarios = templateScenario.scenarios;
+      storeSlug = templateResultSlug(templateKey);
     } catch (error) {
       if (error instanceof EvalError) throw error;
       throw new EvalError(`Template "${templateKey}" could not be loaded: ${message(error)}`);
@@ -367,10 +378,10 @@ export async function recordEval(env: Env, companyId: string, input: { skill: st
   for (const item of input.items.slice(0, 30)) {
     const scenario = scenarios.find((s) => s.id === item.scenarioId);
     if (!scenario) {
-      recorded.push({ scenarioId: item.scenarioId, issueId: item.issueId, state: "refused", detail: `${item.scenarioId} is not a scenario of ${info.slug}.` });
+      recorded.push({ scenarioId: item.scenarioId, issueId: item.issueId, state: "refused", detail: input.mode === "template" ? `${item.scenarioId} is not a scenario of template ${input.templateKey} (${scenarios.map((s) => s.id).join(", ")}).` : `${item.scenarioId} is not a scenario of ${info.slug}.` });
       continue;
     }
-    recorded.push(await recordOne(env, companyId, { info, scenario, mode: input.mode, hash, issueRef: item.issueId }));
+    recorded.push(await recordOne(env, companyId, { info, scenario, mode: input.mode, hash, issueRef: item.issueId, storeSlug }));
   }
   // Template mode: reject if no item came back graded or not-done (all refused or empty)
   if (input.mode === "template" && input.items.length > 0) {
@@ -379,7 +390,7 @@ export async function recordEval(env: Env, companyId: string, input: { skill: st
       throw new EvalError(`Unknown template hash ${hash}: none of these runs tested a template test copy for it (${templateSlugFor(info.slug, hash)}). Use the hash skill-eval plan gave for this template text, run the scenarios on its test copy and record those.`);
     }
   }
-  const rows = await listResults(env.ctx, companyId, info.slug);
+  const rows = await listResults(env.ctx, companyId, storeSlug);
   const state = skillState(scenarios, hash, rows);
   const full = state.missing.length === 0;
   return { recorded, state, hash, entry: full ? resultsEntry(state, env.now().toISOString(), rows.filter((r) => r.skillHash === hash).map((r) => r.harnessRunId ?? r.harnessIssueId)) : null };
@@ -401,7 +412,7 @@ export function ranMismatch(ran: string | null, mode: "live" | "candidate" | "te
   return name.includes(copy.toLowerCase()) ? null : `That harness run tested "${ran}", not the ${label} ${copy}: it was not run on this text. Install the test copy as the plan says, run the scenarios on it and record those.`;
 }
 
-async function recordOne(env: Env, companyId: string, input: { info: SkillInfo; scenario: Scenario; mode: "live" | "candidate" | "template"; hash: string; issueRef: string }): Promise<Recorded> {
+async function recordOne(env: Env, companyId: string, input: { info: SkillInfo; scenario: Scenario; mode: "live" | "candidate" | "template"; hash: string; issueRef: string; storeSlug?: string }): Promise<Recorded> {
   const { scenario, info } = input;
   const base = { scenarioId: scenario.id, issueId: input.issueRef };
   const issue = await env.ctx.issues.get(input.issueRef, companyId).catch(() => null);
@@ -429,7 +440,8 @@ async function recordOne(env: Env, companyId: string, input: { info: SkillInfo; 
   const excerpt = (first >= 0 ? output.slice(first) : output).replace(/\s+/g, " ").slice(0, 600);
   await env.ctx.db.execute(
     `INSERT INTO ${T} (id, company_id, skill_slug, skill_hash, scenario_id, scenario_hash, mode, harness_issue_id, harness_run_id, agent_id, passed, checks, plan_excerpt, graded_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14) ON CONFLICT (company_id, harness_issue_id) DO NOTHING`,
-    [newId(), companyId, info.slug, input.hash, scenario.id, scenarioHash(scenario), input.mode, record.id, record.originId ?? null, record.assigneeAgentId ?? null, graded.passed, JSON.stringify(graded.checks), excerpt, env.now().toISOString()],
+    // eval_results.mode only allows live and candidate (migration 007, and a new migration would make this release stop-first): a template run is stored as candidate, told apart by its template:<key> slug.
+    [newId(), companyId, input.storeSlug ?? info.slug, input.hash, scenario.id, scenarioHash(scenario), input.mode === "template" ? "candidate" : input.mode, record.id, record.originId ?? null, record.assigneeAgentId ?? null, graded.passed, JSON.stringify(graded.checks), excerpt, env.now().toISOString()],
   );
   return { ...base, state: "graded", passed: graded.passed, checks: graded.checks };
 }
@@ -486,16 +498,43 @@ export async function reportEval(env: Env, companyId: string, skills?: string): 
  * changes nothing when this text has no live results (the old baseline must never be dropped for
  * nothing). Returns how many rows were touched; 0 means nothing changed.
  */
-export async function markBaseline(ctx: PluginContext, companyId: string, skillSlug: string, hash: string): Promise<number> {
+export async function markBaseline(ctx: PluginContext, companyId: string, skillSlug: string, hash: string, mode: "live" | "candidate" = "live"): Promise<number> {
   const done = await ctx.db.execute(
-    `UPDATE ${T} SET baseline = (skill_hash = $3 AND mode = 'live') WHERE company_id = $1 AND skill_slug = $2 AND (baseline = true OR (skill_hash = $3 AND mode = 'live')) AND EXISTS (SELECT 1 FROM ${T} AS target WHERE target.company_id = $1 AND target.skill_slug = $2 AND target.skill_hash = $3 AND target.mode = 'live')`,
-    [companyId, skillSlug, hash],
+    `UPDATE ${T} SET baseline = (skill_hash = $3 AND mode = $4) WHERE company_id = $1 AND skill_slug = $2 AND (baseline = true OR (skill_hash = $3 AND mode = $4)) AND EXISTS (SELECT 1 FROM ${T} AS target WHERE target.company_id = $1 AND target.skill_slug = $2 AND target.skill_hash = $3 AND target.mode = $4)`,
+    [companyId, skillSlug, hash, mode],
   );
   return done.rowCount ?? 0;
 }
 
-export async function baselineEval(env: Env, companyId: string, skill: string): Promise<{ hash: string; entry: ReturnType<typeof resultsEntry>; commit: string[]; warnings: string[] }> {
+export interface BaselineResult { hash: string; entry: ReturnType<typeof resultsEntry>; commit: string[]; warnings: string[] }
+
+/** The original text of an agent template as the one to beat. Its results sit under template:<key>, so the skill's own (live) baseline is never touched. */
+async function baselineTemplate(env: Env, companyId: string, info: SkillInfo, templateKey: string | undefined, templateHash: string | undefined): Promise<BaselineResult> {
+  const key = templateKey?.trim();
+  const hash = templateHash?.trim();
+  if (!key) throw new EvalError("baseline mode template needs templateKey: the identifier for the scenario template.");
+  if (!hash || !/^[0-9a-f]{16}$/.test(hash)) throw new EvalError(`baseline mode template needs templateHash: the 16-hex hash skill-eval plan gave (got "${hash ?? ""}").`);
+  const template = loadEvalTemplate(key, AGENT_EVALS, SKILLS.map((s) => s.slug!), knownTemplateTool);
+  if (template.skill !== info.slug) throw new EvalError(`Template "${key}" is for skill "${template.skill}", but you asked for skill "${info.slug}".`);
+  const slug = templateResultSlug(key);
+  const rows = (await listResults(env.ctx, companyId, slug)).filter((r) => r.mode === "candidate");
+  const state = skillState(template.scenarios, hash, rows);
+  if (state.missing.length) throw new EvalError(`Run every scenario of template ${key} on its test copy first (${state.missing.length} are missing: ${state.missing.join(", ")}): skill-eval plan mode template, make the runs, record them.`);
+  if ((await markBaseline(env.ctx, companyId, slug, hash, "candidate")) === 0) throw new EvalError("No template results were found to mark as the baseline, so the existing one was left as it is.");
+  const entry = resultsEntry(state, env.now().toISOString(), rows.filter((r) => r.skillHash === hash).map((r) => r.harnessRunId ?? r.harnessIssueId));
+  const warnings: string[] = [];
+  if ((state.passRate ?? 0) < RESULTS_FILE.minPassRate) warnings.push(`Only ${state.passed} of ${state.total} scenarios pass on the original text of ${key}. The baseline records that truth: the minimum is ${Math.round(RESULTS_FILE.minPassRate * 100)}%.`);
+  return {
+    hash,
+    entry,
+    warnings,
+    commit: [`In packages/plugins/plugin-cockpit/evals/agents/results.json put this under skills.${key}.baseline:`, JSON.stringify(entry)],
+  };
+}
+
+export async function baselineEval(env: Env, companyId: string, skill: string, template?: { mode?: string; templateKey?: string; templateHash?: string }): Promise<BaselineResult> {
   const info = skillBySlug(skill);
+  if (template?.mode === "template") return baselineTemplate(env, companyId, info, template.templateKey, template.templateHash);
   const scenarios = scenariosFor(info.slug);
   if (scenarios.length === 0) throw new EvalError(`${info.slug} has no scenarios to baseline.`);
   const rows = await listResults(env.ctx, companyId, info.slug);
