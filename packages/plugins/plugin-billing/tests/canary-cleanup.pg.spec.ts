@@ -3,7 +3,6 @@
  * for a canary company (PAR-4450).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { registerCanaryCleanup } from "../src/canary-cleanup.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
 import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
@@ -17,7 +16,7 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
   beforeAll(async () => {
     h = await startHarness();
     await plugin.definition.setup(h.ctx);
-    registerCanaryCleanup(h.ctx);
+    // registerCanaryCleanup is already registered in plugin.definition.setup()
   }, 60_000);
 
   afterAll(async () => {
@@ -114,6 +113,41 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
     expect(realQuotes).toHaveLength(1);
     expect(realInvoiceLines).toHaveLength(1);
     expect(realQuoteLines).toHaveLength(1);
+  });
+
+  it("removes work_issues created for canary invoices when company.deleted is emitted", async () => {
+    // Create canary invoice
+    const canaryInv = await tool("create-invoice", {
+      currency: "ZAR",
+      customerKind: "company",
+      customerRef: "canary-ab12cd34",
+      customerName: "PiB Canary Co",
+    });
+    const canaryInvId = (canaryInv.data as any).id;
+    await tool("add-line", { invoiceId: canaryInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+
+    // Manually create a work_issue for the canary invoice (simulating what might be created during processing)
+    await h.client.query(
+      `INSERT INTO ${NAMESPACE}.work_issues (id, company_id, kind, subject_id, title, actor_id, actor_kind, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+      ["wi-canary-1", COMPANY, "invoice", canaryInvId, "Test Work Issue", "actor-1", "agent"],
+    );
+
+    // Verify work_issue exists
+    let workIssues = await q(`SELECT id FROM ${NAMESPACE}.work_issues WHERE kind = 'invoice' AND subject_id = $1`, [canaryInvId]);
+    expect(workIssues).toHaveLength(1);
+
+    // Emit company.deleted for canary
+    await h.deliver(COMPANY_DELETED_EVENT, COMPANY, {
+      key: "company:canary-ab12cd34:deleted",
+      id: "canary-ab12cd34",
+      name: "PiB Canary Co",
+      deletedAt: new Date().toISOString(),
+    });
+
+    // Verify work_issue is deleted
+    workIssues = await q(`SELECT id FROM ${NAMESPACE}.work_issues WHERE kind = 'invoice' AND subject_id = $1`, [canaryInvId]);
+    expect(workIssues).toHaveLength(0);
   });
 
   it("does not delete non-canary documents when company.deleted is emitted for a non-canary id", async () => {

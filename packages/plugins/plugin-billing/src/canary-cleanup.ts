@@ -70,6 +70,7 @@ export function registerCanaryCleanup(ctx: PluginContext): void {
 
     if (allDocIds.length) {
       await ctx.db.execute(`DELETE FROM ${table(ctx, "follow_ups")} WHERE company_id = $1 AND subject_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "work_issues")} WHERE company_id = $1 AND subject_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
       await ctx.db.execute(`DELETE FROM ${table(ctx, "deliveries")} WHERE company_id = $1 AND doc_id IN ${ids(2)}`, [companyId, asJson(allDocIds)]);
     }
 
