@@ -32,7 +32,7 @@ import { closePopIssues, recordDecisionIssue } from "../pop.js";
 import { billingPath, companyPrefix } from "../routing.js";
 import { paymentById, settle } from "../settle.js";
 import { clearingAccountCode } from "./settings.js";
-import { eventResult, finishEvent, insertRefund, markLinkPaid, recordEvent, setLinkRefunded, setLinkStatus, type PaymentLinkRow } from "./store.js";
+import { eventResult, finishEvent, getLink, insertRefund, markLinkPaid, recordEvent, setLinkRefunded, setLinkStatus, type PaymentLinkRow } from "./store.js";
 import { PROVIDER_LABELS, type ProviderEvent } from "./types.js";
 
 export interface ApplyOutcome {
@@ -171,7 +171,7 @@ export async function recordRefund(ctx: PluginContext, input: RefundInput, setti
   const refreshed = await refreshInvoiceStatus(ctx, invoice.id);
   await emitInvoiceItem(ctx, invoice.id);
   await postRefund(ctx, invoice, { id: refundId, amountMinor: input.amountMinor, date: input.at, reason: input.reason, provider: PROVIDER_LABELS[input.provider] }, clearingAccountCode(settings), settings);
-  if (input.link) await setLinkRefunded(ctx, input.link.id, Number(input.link.refunded_minor) + input.amountMinor);
+  if (input.link) await setLinkRefunded(ctx, input.link.id, input.amountMinor);
   const money = formatMoneyMinor(input.amountMinor, invoice.currency);
   const prefix = await companyPrefix(ctx, invoice.company_id);
   const issue = await openBillingApproval(ctx, settings, {
@@ -195,19 +195,28 @@ export async function recordRefund(ctx: PluginContext, input: RefundInput, setti
 }
 
 async function applyRefundEvent(ctx: PluginContext, link: PaymentLinkRow, event: ProviderEvent, settings: BillingSettings): Promise<ApplyOutcome> {
-  const invoice = await getInvoice(ctx, link.invoice_id);
-  if (!invoice || invoice.company_id !== link.company_id) return { result: "ignored", detail: "Refund for an invoice that is not in Billing" };
+  // Re-read before delta: concurrent refunds must not both compute from a stale refunded_minor.
+  const fresh = (await getLink(ctx, link.id)) ?? link;
+  const invoice = await getInvoice(ctx, fresh.invoice_id);
+  if (!invoice || invoice.company_id !== fresh.company_id) return { result: "ignored", detail: "Refund for an invoice that is not in Billing" };
   // A refund reverses a payment Billing recorded. Providers do not promise to deliver events in order, so a refund can arrive first:
   // an active link has not taken the money yet (as far as Billing knows), so fail the delivery and the provider sends it again later.
   // Any other link without a recorded payment (a payment a person was asked about, a failed or withdrawn link) has nothing to reverse.
-  if (!link.payment_id) {
-    if (link.status === "active") throw new Error("A refund arrived before the payment it refunds was recorded. It will be applied when the provider sends it again.");
-    return { result: "ignored", detail: `Refund for a payment Billing did not record (the link is ${link.status.replace(/_/g, " ")}), so there is nothing to reverse`, invoiceId: invoice.id };
+  if (!fresh.payment_id) {
+    if (fresh.status === "active") throw new Error("A refund arrived before the payment it refunds was recorded. It will be applied when the provider sends it again.");
+    return { result: "ignored", detail: `Refund for a payment Billing did not record (the link is ${fresh.status.replace(/_/g, " ")}), so there is nothing to reverse`, invoiceId: invoice.id };
   }
-  // The provider reports the total refunded so far; only the part not recorded yet is new.
-  const delta = event.amountMinor - Number(link.refunded_minor);
+  // PayPal sends each refund's own amount (`refundIncrementMinor`); Stripe/PayFast send a cumulative total.
+  const already = Number(fresh.refunded_minor);
+  const amountMinor =
+    event.refundIncrementMinor != null && event.refundIncrementMinor > 0
+      ? already + event.refundIncrementMinor
+      : event.amountMinor;
+  const delta = amountMinor - already;
   if (delta <= 0) return { result: "ignored", detail: "That refund is already recorded", invoiceId: invoice.id };
-  const outcome = await recordRefund(ctx, { invoice, link, provider: link.provider, amountMinor: delta, source: "webhook", sourceKey: `${event.providerPaymentId ?? link.id}:${event.amountMinor}`, reason: null, at: event.paidAt, recordedBy: `provider:${link.provider}` }, settings);
+  const sourceKey = event.providerRefundId ?? `${event.providerPaymentId ?? fresh.id}:${amountMinor}`;
+  const outcome = await recordRefund(ctx, { invoice, link: fresh, provider: fresh.provider, amountMinor: delta, source: "webhook", sourceKey, reason: null, at: event.paidAt, recordedBy: `provider:${fresh.provider}` }, settings);
+  if (!outcome.recorded) return { result: "ignored", detail: "That refund is already recorded", invoiceId: invoice.id };
   return { result: "applied", detail: `Recorded a refund of ${formatMoneyMinor(delta, invoice.currency)}; the invoice is ${outcome.invoiceStatus.replace(/_/g, " ")}`, invoiceId: invoice.id };
 }
 

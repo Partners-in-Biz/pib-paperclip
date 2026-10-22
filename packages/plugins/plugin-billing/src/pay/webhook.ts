@@ -104,6 +104,25 @@ export async function handleBillingWebhook(ctx: PluginContext, input: Pick<Plugi
     if (error instanceof WebhookRejected) ctx.logger.warn("Payment webhook refused", { provider: key, code: error.code });
     throw error;
   }
+  if (key === "paypal" && events.length === 0) {
+    let eventType: string | null = null;
+    let eventId: string | null = null;
+    try {
+      const parsed = JSON.parse(delivery.rawBody) as { event_type?: unknown; id?: unknown };
+      eventType = typeof parsed.event_type === "string" ? parsed.event_type : null;
+      eventId = typeof parsed.id === "string" ? parsed.id : null;
+    } catch {
+      // Body already passed locate; ignore parse failure for the warn.
+    }
+    if (eventType === "PAYMENT.CAPTURE.REFUNDED") {
+      ctx.logger.warn("PayPal refund webhook matched no capture or amount", {
+        provider: key,
+        eventId,
+        transmissionId: delivery.headers["paypal-transmission-id"] ?? null,
+      });
+      return { handled: false, outcomes: [], reason: "unmatched refund" };
+    }
+  }
   const outcomes: ApplyOutcome[] = [];
   for (const event of events) {
     // Each event sees the link as the one before left it (a refund after a payment).
