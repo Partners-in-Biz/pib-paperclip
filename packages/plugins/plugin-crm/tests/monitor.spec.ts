@@ -303,6 +303,96 @@ describe("the monitor run", () => {
     expect(update).toHaveBeenCalledWith(outage!.id, { status: "done" }, CO);
   });
 
+  describe("a recorded outside fetch pass (PAR-4812)", () => {
+    const at = (minutes: number) => new Date(T0.getTime() + minutes * MIN);
+    const record = (harness: Booted["harness"], minutes: number, extra: Record<string, unknown> = {}) =>
+      tool<Record<string, any>>(harness, "set-site-monitoring", { siteId: "site-1", outsideUrl: "https://acme.co.za/", outsideCheckedAt: at(minutes).toISOString(), outsideVerdict: "up", ...extra });
+    const fiveHundred: PageResult = { ok: false, status: 503, ms: 400, error: "The site answered with an error (503)." };
+    const drop: PageResult = { ok: false, status: null, ms: 900, error: "fetch failed: read ECONNRESET" };
+
+    it("records the pass on the site and reads it back from site-monitoring", async () => {
+      const { harness } = await bootSites();
+      await runSiteMonitor(harness.ctx, CO, { io: io({ page: vi.fn(async () => down) }), now: () => T0 });
+      const set = await record(harness, 3);
+      expect(set.outsideCheck).toMatchObject({ url: "https://acme.co.za/", checkedAt: at(3).toISOString(), verdict: "up", holdsBackOutage: false });
+      const read = await tool<Record<string, any>>(harness, "site-monitoring", { client: "company:acme" });
+      expect(read.sites[0].outsideCheck).toMatchObject({ url: "https://acme.co.za/", verdict: "up", checkedAt: at(3).toISOString() });
+      expect(read.sites[0].lastError).toBe("The request timed out");
+    });
+
+    it("refuses an outside fetch of another site, a half-filled one, and one dated in the future", async () => {
+      const { harness } = await bootSites();
+      expect((await toolRaw(harness, "set-site-monitoring", { siteId: "site-1", outsideUrl: "https://other.example/", outsideCheckedAt: T0.toISOString(), outsideVerdict: "up" })).error).toMatch(/own address/);
+      expect((await toolRaw(harness, "set-site-monitoring", { siteId: "site-1", outsideVerdict: "up" })).error).toMatch(/outsideUrl and outsideCheckedAt/);
+      expect((await toolRaw(harness, "set-site-monitoring", { siteId: "site-1", outsideUrl: "https://acme.co.za/", outsideCheckedAt: T0.toISOString(), outsideVerdict: "maybe" })).error).toMatch(/"up" or "down"/);
+      expect((await toolRaw(harness, "set-site-monitoring", { siteId: "site-1", outsideUrl: "https://acme.co.za/", outsideCheckedAt: new Date(Date.now() + 3_600_000).toISOString(), outsideVerdict: "up" })).error).toMatch(/future/);
+    });
+
+    it("a timeout or dropped connection from our server alone, with a recorded pass: no site-down issue, however long it lasts", async () => {
+      for (const failure of [down, drop]) {
+        const { harness } = await bootSites();
+        const mocks = io({ page: vi.fn(async () => failure) });
+        await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+        await record(harness, 3);
+        for (const minutes of [5, 10, 60]) expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => at(minutes) })).issues).toBe(0);
+        expect(await issuesWith(harness, "crm:site-down:")).toHaveLength(0);
+        const health = (await siteMonitorHealth(harness.ctx, CO, at(60).getTime())).find((c) => c.key === "sites:uptime")!;
+        expect(health.status).toBe("ok");
+        expect(health.detail).toMatch(/unreachable from our server only/);
+      }
+    });
+
+    it("the same timeout with no recorded pass, or a pass older than 24 hours or from before the outage, still opens the issue", async () => {
+      for (const minutes of [null, -30, 25 * 60]) {
+        const { harness } = await bootSites();
+        const mocks = io({ page: vi.fn(async () => down) });
+        await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+        if (minutes !== null) await record(harness, minutes === 25 * 60 ? 3 : minutes);
+        const later = at(minutes === 25 * 60 ? 25 * 60 + 10 : 5);
+        expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => later })).issues, String(minutes)).toBe(1);
+        expect(await issuesWith(harness, "crm:site-down:")).toHaveLength(1);
+      }
+    });
+
+    it("an HTTP 5xx from the origin, an outside 'down', or a live outside check that fails still opens the issue", async () => {
+      const cases: Array<{ page: PageResult; verdict?: string; outside?: "down" }> = [
+        { page: fiveHundred },
+        { page: down, verdict: "down" },
+        { page: down, outside: "down" },
+      ];
+      for (const c of cases) {
+        const { harness } = await bootSites();
+        const mocks = io({ page: vi.fn(async () => c.page), ...(c.outside ? { outside: vi.fn(async () => ({ verdict: "down" as const, detail: "all 3 outside nodes failed" })) } : {}) });
+        await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+        await record(harness, 3, c.verdict ? { outsideVerdict: c.verdict } : {});
+        expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => at(5) })).issues, JSON.stringify(c)).toBe(1);
+        expect(await issuesWith(harness, "crm:site-down:")).toHaveLength(1);
+      }
+    });
+
+    it("the done-check: a recorded pass lets the open site-down issue close; without it, a 5xx, or a live outside 'down', it does not", async () => {
+      const { harness } = await bootSites();
+      const mocks = io({ page: vi.fn(async () => down) });
+      await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+      await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => at(5) });
+      const [outage] = await issuesWith(harness, "crm:site-down:");
+      const origin = outage!.originId!;
+      // The reopen loop from PAR-4800: the VPS fetch fails, so the close is refused.
+      expect(await siteIssueResolved(harness.ctx, CO, origin, mocks, at(30))).toMatchObject({ done: false });
+      await record(harness, 20);
+      expect(await siteIssueResolved(harness.ctx, CO, origin, mocks, at(40))).toEqual({ done: true });
+      // A live outside check that now finds it down keeps the issue open.
+      const outsideDown = io({ page: vi.fn(async () => down), outside: vi.fn(async () => ({ verdict: "down" as const, detail: "all 3 outside nodes failed" })) });
+      expect(await siteIssueResolved(harness.ctx, CO, origin, outsideDown, at(60))).toMatchObject({ done: false });
+      // The origin answers 5xx: not covered.
+      const broken = io({ page: vi.fn(async () => fiveHundred) });
+      expect(await siteIssueResolved(harness.ctx, CO, origin, broken, at(80))).toMatchObject({ done: false });
+      // A recorded outside "down" replaces the pass.
+      await record(harness, 85, { outsideVerdict: "down" });
+      expect(await siteIssueResolved(harness.ctx, CO, origin, mocks, at(100))).toMatchObject({ done: false });
+    });
+  });
+
   it("reads a check-host result: any answer is up, all failed is down, pending is unknown", () => {
     expect(outsideVerdict({ a: [[1, 2.1, "OK", "200", "1.2.3.4"]], b: null }).verdict).toBe("up");
     expect(outsideVerdict({ a: [[0, 30, "Connection timed out", null, null]], b: [[0, 30, "timeout", null, null]] }).verdict).toBe("down");

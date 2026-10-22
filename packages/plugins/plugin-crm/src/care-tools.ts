@@ -246,11 +246,14 @@ export const CARE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "set-site-monitoring",
     displayName: "Set site monitoring",
-    description: "Pause or resume monitoring of one website, or set its domain expiry by hand when the registry lookup does not know the domain (it has no data for .co.za, so set the date for every .co.za site; an empty domainExpiresAt goes back to the lookup).",
+    description: "Pause or resume monitoring of one website, set its domain expiry by hand when the registry lookup does not know the domain (it has no data for .co.za, so set the date for every .co.za site; an empty domainExpiresAt goes back to the lookup), or record an outside fetch of the site (outsideUrl, outsideCheckedAt, outsideVerdict together) when you looked at it from outside our network. An outside \"up\" taken after the outage began stops a timeout or dropped connection from our server alone from opening or holding a site-down issue for 24 hours; a 5xx from the site, or an outside \"down\", still does. Read it back from site-monitoring (outsideCheck).",
     parametersSchema: schema(["siteId"], {
       siteId: text("The site's id (from list-client-sites)."),
       enabled: bool("false pauses monitoring, true resumes it."),
       domainExpiresAt: text("The domain's expiry date from the registrar, e.g. 2027-03-31. Empty to use the registry lookup."),
+      outsideUrl: text("An outside fetch: the address you fetched. It must be this site's own host (www or not), e.g. https://example.co.za."),
+      outsideCheckedAt: text("An outside fetch: when you fetched it, a date and time such as 2026-10-22T23:12:00Z."),
+      outsideVerdict: oneOf(["up", "down"], "An outside fetch: up when the real page answered from outside our network, down when it did not."),
     }),
   },
 

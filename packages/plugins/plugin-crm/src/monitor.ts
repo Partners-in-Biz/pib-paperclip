@@ -72,6 +72,10 @@ export interface MonitorRow {
   domainCheckedAt: string | null;
   domainError: string | null;
   domainManual: boolean;
+  /** The latest outside fetch an agent recorded (PAR-4812): where, when, and whether the page answered. */
+  outsideUrl: string | null;
+  outsideVerdict: "up" | "down" | null;
+  outsideCheckedAt: string | null;
 }
 
 interface MonitorDbRow {
@@ -94,10 +98,14 @@ interface MonitorDbRow {
   domain_checked_at: unknown;
   domain_error: string | null;
   domain_manual: boolean;
+  outside_url: string | null;
+  outside_verdict: string | null;
+  outside_checked_at: unknown;
 }
 
 const MONITOR_COLUMNS = `site_id, company_id, enabled, status, http_status, response_ms, last_error, last_checked_at, last_ok_at, down_since, failures,
-  tls_expires_at, tls_error, tls_checked_at, domain, domain_expires_at, domain_checked_at, domain_error, domain_manual`;
+  tls_expires_at, tls_error, tls_checked_at, domain, domain_expires_at, domain_checked_at, domain_error, domain_manual,
+  outside_url, outside_verdict, outside_checked_at`;
 
 function mapMonitor(row: MonitorDbRow): MonitorRow {
   return {
@@ -120,6 +128,9 @@ function mapMonitor(row: MonitorDbRow): MonitorRow {
     domainCheckedAt: iso(row.domain_checked_at),
     domainError: row.domain_error ?? null,
     domainManual: row.domain_manual === true,
+    outsideUrl: row.outside_url ?? null,
+    outsideVerdict: row.outside_verdict === "up" || row.outside_verdict === "down" ? row.outside_verdict : null,
+    outsideCheckedAt: iso(row.outside_checked_at),
   };
 }
 
@@ -127,6 +138,7 @@ export function emptyMonitor(siteId: string, companyId: string): MonitorRow {
   return {
     siteId, companyId, enabled: true, status: "unknown", httpStatus: null, responseMs: null, lastError: null, lastCheckedAt: null, lastOkAt: null, downSince: null, failures: 0,
     tlsExpiresAt: null, tlsError: null, tlsCheckedAt: null, domain: null, domainExpiresAt: null, domainCheckedAt: null, domainError: null, domainManual: false,
+    outsideUrl: null, outsideVerdict: null, outsideCheckedAt: null,
   };
 }
 
@@ -144,15 +156,15 @@ export async function saveMonitor(ctx: PluginContext, m: MonitorRow): Promise<vo
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "site_monitor")}
       (site_id, company_id, enabled, status, http_status, response_ms, last_error, last_checked_at, last_ok_at, down_since, failures,
-       tls_expires_at, tls_error, tls_checked_at, domain, domain_expires_at, domain_checked_at, domain_error, domain_manual, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+       tls_expires_at, tls_error, tls_checked_at, domain, domain_expires_at, domain_checked_at, domain_error, domain_manual, outside_url, outside_verdict, outside_checked_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, now())
      ON CONFLICT (site_id) DO UPDATE SET
        enabled = EXCLUDED.enabled, status = EXCLUDED.status, http_status = EXCLUDED.http_status, response_ms = EXCLUDED.response_ms, last_error = EXCLUDED.last_error,
        last_checked_at = EXCLUDED.last_checked_at, last_ok_at = EXCLUDED.last_ok_at, down_since = EXCLUDED.down_since, failures = EXCLUDED.failures,
        tls_expires_at = EXCLUDED.tls_expires_at, tls_error = EXCLUDED.tls_error, tls_checked_at = EXCLUDED.tls_checked_at, domain = EXCLUDED.domain,
        domain_expires_at = EXCLUDED.domain_expires_at, domain_checked_at = EXCLUDED.domain_checked_at, domain_error = EXCLUDED.domain_error,
-       domain_manual = EXCLUDED.domain_manual, updated_at = EXCLUDED.updated_at`,
-    [m.siteId, m.companyId, m.enabled, m.status, m.httpStatus, m.responseMs, m.lastError, m.lastCheckedAt, m.lastOkAt, m.downSince, m.failures, m.tlsExpiresAt, m.tlsError, m.tlsCheckedAt, m.domain, m.domainExpiresAt, m.domainCheckedAt, m.domainError, m.domainManual],
+       domain_manual = EXCLUDED.domain_manual, outside_url = EXCLUDED.outside_url, outside_verdict = EXCLUDED.outside_verdict, outside_checked_at = EXCLUDED.outside_checked_at, updated_at = EXCLUDED.updated_at`,
+    [m.siteId, m.companyId, m.enabled, m.status, m.httpStatus, m.responseMs, m.lastError, m.lastCheckedAt, m.lastOkAt, m.downSince, m.failures, m.tlsExpiresAt, m.tlsError, m.tlsCheckedAt, m.domain, m.domainExpiresAt, m.domainCheckedAt, m.domainError, m.domainManual, m.outsideUrl, m.outsideVerdict, m.outsideCheckedAt],
   );
 }
 
@@ -322,6 +334,28 @@ export function downMinutes(m: Pick<MonitorRow, "status" | "downSince">, now: nu
   return Math.max(0, Math.floor((now - Date.parse(m.downSince)) / MINUTE_MS));
 }
 
+/** How long a recorded outside pass keeps a VPS-only timeout from raising or holding an outage. After this an agent has to look again and record it again. */
+export const OUTSIDE_PASS_TTL_HOURS = 24;
+const OUTSIDE_PASS_SKEW_MS = 5 * MINUTE_MS;
+/** What our own fetch says when nothing came back at all: a timeout or a dropped connection (not a 5xx, not a name that does not resolve). */
+const NO_ANSWER_ERROR = /timed? ?out|timeout|etimedout|econnreset|econnaborted|epipe|socket hang up|connection (?:was )?(?:reset|closed|dropped|terminated)|connect(?:ion)? aborted|operation was aborted|fetch failed/i;
+
+/** True when this machine got no answer (timeout or dropped connection) rather than a server error or a DNS failure. */
+export function isNoAnswerError(m: Pick<MonitorRow, "httpStatus" | "lastError">): boolean {
+  return m.httpStatus === null && Boolean(m.lastError) && NO_ANSWER_ERROR.test(m.lastError!);
+}
+
+/**
+ * True when the site is down only from our server: the monitor got no answer (a timeout or a dropped connection, not an HTTP 5xx from the origin),
+ * and the latest outside fetch an agent recorded found the page up, was taken after the outage began and is not older than OUTSIDE_PASS_TTL_HOURS.
+ */
+export function outsidePassCovers(m: MonitorRow, now: number): boolean {
+  if (m.status !== "down" || !m.downSince || m.outsideVerdict !== "up" || !m.outsideCheckedAt) return false;
+  const at = Date.parse(m.outsideCheckedAt);
+  if (!Number.isFinite(at) || at < Date.parse(m.downSince) || at > now + OUTSIDE_PASS_SKEW_MS || now - at > OUTSIDE_PASS_TTL_HOURS * HOUR_MS) return false;
+  return isNoAnswerError(m);
+}
+
 const dueAfter = (checkedAt: string | null, hours: number, now: number) => !checkedAt || now - Date.parse(checkedAt) >= hours * HOUR_MS;
 
 // ---------------------------------------------------------------------------
@@ -479,9 +513,12 @@ async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorR
   if (state.status === "down" && state.downSince && downMinutes(state, now.getTime()) >= DOWN_AFTER_MINUTES) {
     const before = (await ctx.issues.list({ companyId: site.companyId, originKind: "plugin:partnersinbiz.crm", originId: originFor.siteDown(site.id, compact(state.downSince)), limit: 1 }).catch(() => []))[0];
     // Before a new issue: is it down for everyone, or only unreachable from our server (a host firewall blocking our IP)?
-    const outside = !before && io?.outside ? await io.outside(site.url) : null;
-    if (outside?.verdict === "up") {
-      ctx.logger.warn("CRM site monitor: only our server cannot reach this site; no issue opened", { siteId: site.id, url: site.url, downSince: state.downSince, lastError: state.lastError, outside: outside.detail });
+    // A recorded outside pass (an agent's own fetch) says the same; a live outside check that finds it down still wins.
+    const recorded = outsidePassCovers(state, now.getTime());
+    const outside = (!before || recorded) && io?.outside ? await io.outside(site.url) : null;
+    const vpsOnly = outside?.verdict === "up" || (recorded && outside?.verdict !== "down");
+    if (vpsOnly) {
+      ctx.logger.warn("CRM site monitor: only our server cannot reach this site; no issue opened", { siteId: site.id, url: site.url, downSince: state.downSince, lastError: state.lastError, outside: outside?.detail ?? null, recordedOutsidePassAt: recorded ? state.outsideCheckedAt : null });
     } else await openIssueOnce(ctx, {
       ...common,
       originId: originFor.siteDown(site.id, compact(state.downSince)),
@@ -498,7 +535,7 @@ async function raiseAlarms(ctx: PluginContext, site: MonitorSite, prev: MonitorR
       ].join("\n"),
       wakeReason: "A client's website is down",
     });
-    if (!before && outside?.verdict !== "up") opened += 1;
+    if (!before && !vpsOnly) opened += 1;
   }
   // Back up: say so on the outage's issue.
   if (prev.status === "down" && state.status === "up" && prev.downSince) {
@@ -581,6 +618,11 @@ export async function siteIssueResolved(ctx: PluginContext, companyId: string, o
       state = afterPageCheck(state, await checkPage(io, site.url), now);
       await saveMonitor(ctx, state);
     }
+    if (state.status === "down" && outsidePassCovers(state, now.getTime())) {
+      // Only our server cannot reach it and an agent's outside fetch found it up: not an outage, unless a live outside check now says it is down.
+      const outside = io.outside ? await io.outside(site.url) : null;
+      if (outside?.verdict !== "down") return { done: true };
+    }
     return state.status === "down" ? { done: false, missing: [`${site.url} still does not answer (${state.lastError ?? "no answer"}): fix it, or say in a comment why it cannot be fixed and block the issue.`] } : { done: true };
   }
   const host = hostOf(site.url);
@@ -619,7 +661,10 @@ export async function siteMonitorHealth(ctx: PluginContext, companyId: string, n
   const name = (site: MonitorSite) => siteName(site);
   const checks: HealthCheck[] = [];
 
-  const down = watched.filter((site) => downMinutes(byId.get(site.id) ?? emptyMonitor(site.id, companyId), now) >= DOWN_AFTER_MINUTES);
+  const downAll = watched.filter((site) => downMinutes(byId.get(site.id) ?? emptyMonitor(site.id, companyId), now) >= DOWN_AFTER_MINUTES);
+  // Down only from our server, with a recorded outside pass: not a client outage.
+  const vpsOnly = downAll.filter((site) => outsidePassCovers(byId.get(site.id)!, now));
+  const down = downAll.filter((site) => !vpsOnly.includes(site));
   checks.push(down.length > 0
     ? {
       key: "sites:uptime", title: "Client websites up", status: "bad",
@@ -627,7 +672,7 @@ export async function siteMonitorHealth(ctx: PluginContext, companyId: string, n
       href: "/crm", fix: "The Delivery Lead has an issue for each outage. Check the host, DNS and the last deploy.",
       since: down.map((site) => byId.get(site.id)?.downSince).filter((at): at is string => Boolean(at)).sort()[0] ?? null,
     }
-    : { key: "sites:uptime", title: "Client websites up", status: "ok", detail: `${watched.length} monitored, none down.` });
+    : { key: "sites:uptime", title: "Client websites up", status: "ok", detail: `${watched.length} monitored, none down.${vpsOnly.length ? ` ${vpsOnly.length} unreachable from our server only (an outside check found ${vpsOnly.length === 1 ? "it" : "them"} up): ${vpsOnly.slice(0, 3).map(name).join(", ")}.` : ""}` });
 
   const certs = watched.map((site) => ({ site, days: daysUntil(byId.get(site.id)?.tlsExpiresAt ?? null, now), untrusted: Boolean(byId.get(site.id)?.tlsError?.startsWith("The certificate is not trusted")) }));
   const certBad = certs.filter((c) => (c.days !== null && c.days < 3) || c.untrusted);
@@ -655,7 +700,21 @@ export async function siteMonitorHealth(ctx: PluginContext, companyId: string, n
 // The tool and the client page
 // ---------------------------------------------------------------------------
 
-/** Pause or resume monitoring of a site, or set its domain expiry by hand (when the registry lookup does not know the domain). */
+/** Reads the three outside-check fields of set-site-monitoring: the address checked (the site's own host, with or without www), when, and whether it answered. */
+function recordOutsideCheck(site: MonitorSite, state: MonitorRow, params: Record<string, unknown>, now: number): MonitorRow {
+  const verdict = params.outsideVerdict;
+  if (verdict !== "up" && verdict !== "down") throw new CrmError("outsideVerdict must be \"up\" or \"down\" (record an outside fetch with outsideUrl, outsideCheckedAt and outsideVerdict together)");
+  const url = typeof params.outsideUrl === "string" ? params.outsideUrl.trim() : "";
+  const checkedAt = Date.parse(String(params.outsideCheckedAt ?? ""));
+  if (!url || !Number.isFinite(checkedAt)) throw new CrmError("outsideUrl and outsideCheckedAt (a date and time, e.g. 2026-10-22T23:12:00Z) are required with outsideVerdict");
+  const bare = (host: string | null) => host?.replace(/^www\./, "") ?? null;
+  const host = bare(hostOf(url));
+  if (!host || host !== bare(hostOf(site.url))) throw new CrmError(`outsideUrl must be this site's own address (${site.url}), not ${url}`);
+  if (checkedAt > now + MINUTE_MS * 5) throw new CrmError("outsideCheckedAt is in the future");
+  return { ...state, outsideUrl: url.slice(0, 500), outsideVerdict: verdict, outsideCheckedAt: new Date(checkedAt).toISOString() };
+}
+
+/** Pause or resume monitoring of a site, set its domain expiry by hand (when the registry lookup does not know the domain), or record an outside fetch of it. */
 export async function setSiteMonitoringTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const siteId = typeof params.siteId === "string" ? params.siteId.trim() : "";
   if (!siteId) throw new CrmError("siteId is required (list-client-sites shows them)");
@@ -672,6 +731,9 @@ export async function setSiteMonitoringTool(ctx: PluginContext, viewer: Viewer, 
       if (!Number.isFinite(at)) throw new CrmError("domainExpiresAt must be a date, e.g. 2027-03-31 (an empty value goes back to the registry lookup)");
       state = { ...state, domainManual: true, domainExpiresAt: new Date(at).toISOString(), domainError: null, domainCheckedAt: new Date().toISOString(), domain: registrableDomain(hostOf(site.url) ?? "") ?? state.domain };
     }
+  }
+  if (params.outsideVerdict !== undefined || params.outsideUrl !== undefined || params.outsideCheckedAt !== undefined) {
+    state = recordOutsideCheck(site, state, params, Date.now());
   }
   await saveMonitor(ctx, state);
   return monitorView(site, state, Date.now());
@@ -690,6 +752,8 @@ export function monitorView(site: MonitorSite, state: MonitorRow | null, now: nu
     lastCheckedAt: m.lastCheckedAt,
     certificate: { expiresAt: m.tlsExpiresAt, daysLeft: daysUntil(m.tlsExpiresAt, now), problem: m.tlsError },
     domain: { name: m.domain, expiresAt: m.domainExpiresAt, daysLeft: daysUntil(m.domainExpiresAt, now), manual: m.domainManual, problem: m.domainExpiresAt ? null : m.domainError },
+    lastError: m.lastError,
+    outsideCheck: m.outsideCheckedAt ? { url: m.outsideUrl, checkedAt: m.outsideCheckedAt, verdict: m.outsideVerdict, holdsBackOutage: outsidePassCovers(m, now) } : null,
   };
 }
 
