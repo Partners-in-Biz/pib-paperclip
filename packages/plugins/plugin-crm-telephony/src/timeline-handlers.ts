@@ -219,15 +219,14 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
         if (accountId && bucket && accessKeyId && secretAccessKey) {
           r2Config = { accountId, bucket, accessKeyId, secretAccessKey };
         }
-      } catch {
-        // Secrets not configured
+      } catch (err) {
+        ctx.logger.warn(`Failed to resolve R2 secrets: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       const result = await playRecording(ctx.db, NAMESPACE, {
         companyId,
         userId: context.actor.userId,
         callSid,
-        contactId,
         r2Config,
       });
 

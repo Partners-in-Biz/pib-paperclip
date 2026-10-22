@@ -57,7 +57,6 @@ describe("playRecording", () => {
         companyId: companyId1,
         userId,
         callSid,
-        contactId,
         r2Config,
         now,
       });
@@ -95,7 +94,6 @@ describe("playRecording", () => {
         companyId: companyId1,
         userId,
         callSid,
-        contactId,
         r2Config,
       });
 
@@ -131,7 +129,6 @@ describe("playRecording", () => {
         companyId: companyId1,
         userId,
         callSid,
-        contactId,
         r2Config,
       });
 
@@ -155,7 +152,6 @@ describe("playRecording", () => {
           companyId: companyId1,
           userId,
           callSid: "nonexistent_call",
-          contactId,
           r2Config,
         });
         expect.fail("Should have thrown");
@@ -187,7 +183,6 @@ describe("playRecording", () => {
           companyId: companyId1,
           userId,
           callSid,
-          contactId,
           r2Config,
         });
         expect.fail("Should have thrown");
@@ -222,7 +217,6 @@ describe("playRecording", () => {
             companyId: companyId1,
             userId,
             callSid,
-            contactId,
             r2Config,
           });
           expect.fail(`Should have thrown for state=${state}`);
@@ -255,7 +249,6 @@ describe("playRecording", () => {
           companyId: companyId1,
           userId,
           callSid,
-          contactId,
           r2Config,
         });
         expect.fail("Should have thrown");
@@ -287,7 +280,6 @@ describe("playRecording", () => {
           companyId: companyId1,
           userId,
           callSid,
-          contactId,
           r2Config: null,
         });
         expect.fail("Should have thrown");
@@ -322,7 +314,6 @@ describe("playRecording", () => {
         companyId: companyId1,
         userId,
         callSid,
-        contactId,
         r2Config,
       });
 
@@ -355,7 +346,6 @@ describe("playRecording", () => {
           companyId: companyId2,
           userId,
           callSid,
-          contactId,
           r2Config,
         });
         expect.fail("Should have thrown");
@@ -399,7 +389,6 @@ describe("playRecording", () => {
         companyId: companyId1,
         userId,
         callSid,
-        contactId,
         r2Config,
       });
 

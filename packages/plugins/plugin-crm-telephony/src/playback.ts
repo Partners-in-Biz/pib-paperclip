@@ -35,14 +35,12 @@ export async function playRecording(
     companyId,
     userId,
     callSid,
-    contactId,
     r2Config,
     now = new Date(),
   }: {
     companyId: string;
     userId: string;
     callSid: string;
-    contactId?: string | null;
     r2Config: R2Config | null;
     now?: Date;
   },
