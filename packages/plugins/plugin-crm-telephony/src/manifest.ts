@@ -24,6 +24,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "database.namespace.migrate",
     "ui.page.register",
+    "plugin.state.read",
+    "plugin.state.write",
   ],
   tools: TELEPHONY_TOOLS,
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
