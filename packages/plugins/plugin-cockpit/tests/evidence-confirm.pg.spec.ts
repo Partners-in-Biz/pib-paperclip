@@ -22,16 +22,6 @@ d("Evidence confirmation (Postgres)", () => {
 
   beforeAll(async () => {
     worlds = await startWorlds();
-    await saveRoles(worlds.pg.ctx, {
-      companyId: A,
-      operatorAgentId: null,
-      reviewerAgentId: null,
-      ownerUserId: OWNER_ID,
-      reviewOutward: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      updatedBy: null,
-    } as RolesRow);
   }, 120_000);
 
   beforeEach(async () => {
@@ -57,6 +47,16 @@ d("Evidence confirmation (Postgres)", () => {
     const w = await worlds.make({
       agents: [{ id: AGENT, companyId: A, name: "Alice", status: "active", role: "general" }],
     });
+    await saveRoles(w.ctx, {
+      companyId: A,
+      operatorAgentId: null,
+      reviewerAgentId: null,
+      ownerUserId: OWNER_ID,
+      reviewOutward: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: null,
+    } as RolesRow);
     await testFn(w);
   }
 
@@ -85,7 +85,7 @@ d("Evidence confirmation (Postgres)", () => {
       const att = { id: "att-a", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att];
 
-      const result = await recordEvidence(w.env, A, issue.id, "att-a", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => deliverCalls.push({}) });
+      const result = await recordEvidence(w.env, A, issue.id, "att-a", "abc", "step", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
       expect((result as any).data?.notify).toBe("sent");
       expect(deliverCalls).toHaveLength(1);
     });
@@ -122,10 +122,10 @@ d("Evidence confirmation (Postgres)", () => {
       const att2 = { id: "att-c2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att1, att2];
 
-      const result1 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc1", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => deliverCalls.push({}) });
+      const result1 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc1", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
       expect((result1 as any).data?.notify).toBe("sent");
 
-      const result2 = await recordEvidence(w.env, A, issue.id, "att-c2", "abc2", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => deliverCalls.push({}) });
+      const result2 = await recordEvidence(w.env, A, issue.id, "att-c2", "abc2", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
       expect((result2 as any).data?.notify).toBe("already_notified");
       expect(deliverCalls).toHaveLength(1);
     });
@@ -273,8 +273,8 @@ d("Evidence confirmation (Postgres)", () => {
       const att2 = { id: "att-i2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att1, att2];
 
-      const result1 = recordEvidence(w.env, A, issue.id, "att-i1", "abc1", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => deliverCalls.push({}) });
-      const result2 = recordEvidence(w.env, A, issue.id, "att-i2", "abc2", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => deliverCalls.push({}) });
+      const result1 = recordEvidence(w.env, A, issue.id, "att-i1", "abc1", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      const result2 = recordEvidence(w.env, A, issue.id, "att-i2", "abc2", "step-i", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
 
       const [r1, r2] = await Promise.all([result1, result2]);
       const outcomes = [(r1 as any).data?.notify, (r2 as any).data?.notify].sort();

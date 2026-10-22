@@ -215,10 +215,37 @@ export async function confirmEvidencePush(
   const nowIso = now.toISOString();
   let claimed = false;
 
+  // Helper: Release an atomic claim by setting inbox_posted_at to NULL
+  const releaseClaim = async (): Promise<void> => {
+    await env.ctx.db.execute(
+      `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
+      [args.companyId, args.issue.id, args.step],
+    ).catch(() => undefined);
+  };
+
+  // Helper: Post a no-subscription comment to PAR-1844 if it exists
+  const postNoSubscriptionComment = async (): Promise<boolean> => {
+    const commentText = `No push subscription for the owner, confirmation not delivered: ${args.issue.identifier ?? args.issue.id} ${args.step}${args.summary ? " - " + args.summary : ""}. Evidence: ${args.filename}`;
+    try {
+      const parIssue = await env.ctx.issues.get("PAR-1844", args.companyId).catch(() => null);
+      if (!parIssue) {
+        // PAR-1844 not found; treat as failure
+        return false;
+      }
+      await env.ctx.issues.createComment(parIssue.id, commentText, args.companyId);
+      return true;
+    } catch {
+      // If comment fails, return false
+      return false;
+    }
+  };
+
   try {
     // CLAIM: atomic UPDATE to mark inbox_posted_at for one canonical row per (issue, step)
+    // ORDER BY (inbox_posted_at IS NULL) sorts claimed rows first (0 for false), then unclaimed rows (1 for true)
+    // This ensures we always try to claim an unclaimed row; if all are claimed, the UPDATE WHERE clause fails
     const claimResult = await env.ctx.db.execute(
-      `UPDATE ${T} SET inbox_posted_at = $1 WHERE id = (SELECT id FROM ${T} WHERE company_id = $2 AND issue_id = $3 AND step = $4 ORDER BY created_at, id LIMIT 1) AND inbox_posted_at IS NULL`,
+      `UPDATE ${T} SET inbox_posted_at = $1 WHERE id = (SELECT id FROM ${T} WHERE company_id = $2 AND issue_id = $3 AND step = $4 ORDER BY (inbox_posted_at IS NULL), created_at, id LIMIT 1) AND inbox_posted_at IS NULL`,
       [nowIso, args.companyId, args.issue.id, args.step],
     );
 
@@ -253,24 +280,15 @@ export async function confirmEvidencePush(
     // Resolve owner
     const ownerUserId = await resolveOwner(env.ctx, args.companyId);
     if (!ownerUserId) {
-      // No subscription - post to PAR-1844
-      const commentText = `No push subscription for the owner, confirmation not delivered: ${identifier} ${args.step}${args.summary ? " - " + args.summary : ""}. Evidence: ${args.filename}`;
-      try {
-        const parIssue = await env.ctx.issues.get("PAR-1844", args.companyId).catch(() => null);
-        if (parIssue) {
-          await env.ctx.issues.createComment(parIssue.id, commentText, args.companyId);
-          // Keep claim
-          return "no_subscription";
-        }
-      } catch {
-        // If comment fails, release the claim
-        await env.ctx.db.execute(
-          `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
-          [args.companyId, args.issue.id, args.step],
-        ).catch(() => undefined);
+      // No owner role found - try to post to PAR-1844
+      const posted = await postNoSubscriptionComment();
+      if (!posted) {
+        // PAR-1844 not found or comment failed; release the claim
+        await releaseClaim();
         env.ctx.logger.warn("Failed to post no_subscription comment to PAR-1844", { issueId: args.issue.id, step: args.step });
-        return "error";
+        return "no_subscription";
       }
+      // Keep claim
       return "no_subscription";
     }
 
@@ -289,7 +307,7 @@ export async function confirmEvidencePush(
       { now: () => now, deliver: args.deliver },
     );
 
-    const outcome: ConfirmOutcome = result.outcome as ConfirmOutcome;
+    const outcome = result.outcome;
 
     if (outcome === "sent" || outcome === "deferred") {
       // Keep the claim
@@ -298,44 +316,27 @@ export async function confirmEvidencePush(
 
     if (outcome === "no_subscription") {
       // Post to PAR-1844 if possible
-      const commentText = `No push subscription for the owner, confirmation not delivered: ${identifier} ${args.step}${args.summary ? " - " + args.summary : ""}. Evidence: ${args.filename}`;
-      try {
-        const parIssue = await env.ctx.issues.get("PAR-1844", args.companyId).catch(() => null);
-        if (parIssue) {
-          await env.ctx.issues.createComment(parIssue.id, commentText, args.companyId);
-          // Keep claim
-          return "no_subscription";
-        }
-      } catch {
-        // If comment fails, release the claim
-        await env.ctx.db.execute(
-          `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
-          [args.companyId, args.issue.id, args.step],
-        ).catch(() => undefined);
+      const posted = await postNoSubscriptionComment();
+      if (!posted) {
+        // PAR-1844 not found or comment failed; release the claim
+        await releaseClaim();
         env.ctx.logger.warn("Failed to post no_subscription comment to PAR-1844", { issueId: args.issue.id, step: args.step });
-        return "error";
       }
       return "no_subscription";
     }
 
     // capped, duplicate: release the claim
     if (outcome === "capped" || outcome === "duplicate") {
-      await env.ctx.db.execute(
-        `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
-        [args.companyId, args.issue.id, args.step],
-      ).catch(() => undefined);
+      await releaseClaim();
       return outcome;
     }
 
-    // Fallback
+    // Unknown outcome: keep the claim and return it
     return outcome;
   } catch (error) {
     // Release claim if held
     if (claimed) {
-      await env.ctx.db.execute(
-        `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
-        [args.companyId, args.issue.id, args.step],
-      ).catch(() => undefined);
+      await releaseClaim();
     }
     env.ctx.logger.warn("confirmEvidencePush failed", { message: message(error) });
     return "error";
