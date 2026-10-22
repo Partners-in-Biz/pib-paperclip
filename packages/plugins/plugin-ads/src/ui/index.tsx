@@ -67,14 +67,28 @@ const ACTION_KEYS = [
   "ads.mark-done",
   "ads.execute",
   "ads.ack-alert",
+  "ads.web-connections.load",
+  "ads.web-oauth-start",
+  "ads.web-google-customers",
+  "ads.web-google-set-customer",
 ] as const;
 type ActionKey = (typeof ACTION_KEYS)[number];
 type Run = (key: ActionKey, params?: Record<string, unknown>, success?: string) => Promise<any>;
 
 /** Calls that do not change anything: no reload afterwards. */
-const READ_ONLY = new Set<ActionKey>(["ads.load", "ads.oauth-start", "ads.discover-accounts", "ads.performance", "ads.proposals", "ads.proposal"]);
+const READ_ONLY = new Set<ActionKey>([
+  "ads.load",
+  "ads.oauth-start",
+  "ads.discover-accounts",
+  "ads.performance",
+  "ads.proposals",
+  "ads.proposal",
+  "ads.web-connections.load",
+  "ads.web-oauth-start",
+  "ads.web-google-customers",
+]);
 
-const TAB_IDS = ["overview", "performance", "changes", "budgets", "accounts"] as const;
+const TAB_IDS = ["overview", "performance", "changes", "budgets", "accounts", "web-connections"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 const PERIODS: Array<[string, string]> = [["last_7d", "Last 7 days"], ["last_30d", "Last 30 days"], ["this_month", "This month"], ["last_month", "Last month"]];
@@ -182,6 +196,7 @@ export function AdsPage({ context }: PluginPageProps) {
           { id: "changes", label: "Changes", icon: CircleAlert, count: waiting || null, countTone: "warn" },
           { id: "budgets", label: "Budgets" },
           { id: "accounts", label: "Accounts" },
+          { id: "web-connections", label: "Ad connections" },
         ]}
         active={tab}
         onChange={(id) => setTab(id as TabId)}
@@ -193,6 +208,7 @@ export function AdsPage({ context }: PluginPageProps) {
       {data && tab === "changes" ? <ChangesTab data={data} run={run} narrow={narrow} openProposal={setOpenProposal} /> : null}
       {data && tab === "budgets" ? <BudgetsTab data={data} run={run} busy={busy} /> : null}
       {data && tab === "accounts" ? <AccountsTab data={data} run={run} busy={busy} companyId={context.companyId ?? ""} /> : null}
+      {tab === "web-connections" ? <WebConnectionsTab run={run} busy={busy} locationSearch={location.search} notify={notify} navigation={navigation} /> : null}
       <ProposalModal id={openProposal} data={data} run={run} busy={busy} onClose={() => setOpenProposal(null)} />
     </Page>
   );
@@ -615,6 +631,174 @@ function BudgetCard({ b, data, run, busy }: { b: BudgetInfo; data: Overview; run
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+// ── Web ad connections (partnersinbiz.online broker) ─────────────────────────
+
+type WebConnectionsLoad = {
+  configured: boolean;
+  brokerReady: boolean;
+  webOrgSlug: string;
+  secrets: {
+    webBrokerToken: { configured: boolean };
+    webOrgId: { configured: boolean; value: string | null };
+    webBrokerUrl: { configured: boolean; value: string };
+  };
+  google: boolean;
+  meta: boolean;
+  googleConnectionId: string | null;
+};
+
+function WebConnectionsTab({
+  run,
+  busy,
+  locationSearch,
+  notify,
+  navigation,
+}: {
+  run: Run;
+  busy: boolean;
+  locationSearch: string;
+  notify: (title: string, tone: "success" | "error" | "info", body?: string) => void;
+  navigation: ReturnType<typeof useHostNavigation>;
+}) {
+  const [load, setLoad] = useState<WebConnectionsLoad | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [pickerId, setPickerId] = useState<string | null>(null);
+  const oauthHandled = useRef(false);
+
+  const refreshWeb = useCallback(async () => {
+    const next = (await run("ads.web-connections.load")) as WebConnectionsLoad;
+    setLoad(next);
+    setLoadError("");
+    return next;
+  }, [run]);
+
+  useEffect(() => {
+    refreshWeb().catch((e: unknown) => setLoadError(errorText(e)));
+  }, [refreshWeb]);
+
+  useEffect(() => {
+    if (oauthHandled.current) return;
+    const q = new URLSearchParams(locationSearch);
+    const status = q.get("status");
+    if (!status && !q.get("message")) return;
+    oauthHandled.current = true;
+    const provider = q.get("provider") ?? "ad platform";
+    const message = q.get("message");
+    if (status === "success" || status === "connected") notify("Connected", "success", message ?? `${provider} is connected.`);
+    else if (status === "error" || status === "failed") notify("Connection failed", "error", message ?? "Try again from this tab.");
+    else if (message) notify("Ad connections", "info", message);
+    if (q.get("needsAccountSelection") === "true" || q.get("needsAccountSelection") === "1") {
+      const connectionId = q.get("connectionId");
+      if (connectionId) setPickerId(connectionId);
+    }
+    const clean = new URLSearchParams(locationSearch);
+    ["status", "provider", "message", "needsAccountSelection", "connectionId"].forEach((k) => clean.delete(k));
+    clean.set("tab", "web-connections");
+    navigation.navigate(clean.toString() ? `/ads?${clean.toString()}` : "/ads?tab=web-connections", { replace: true });
+    void refreshWeb();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationSearch]);
+
+  const connect = async (platform: "google" | "meta") => {
+    const res = (await run("ads.web-oauth-start", { platform })) as { authorizeUrl?: string };
+    if (!res?.authorizeUrl) throw new Error("The connection could not start");
+    window.location.assign(res.authorizeUrl);
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      {loadError ? <Muted>{loadError}</Muted> : null}
+      {!load && !loadError ? <Muted>Loading ad connections…</Muted> : null}
+      {load ? (
+        <>
+          <SectionCard title="Google & Meta (web broker)" subtitle="Connect through partnersinbiz.online without opening /admin. Org slug is fixed to partners-in-biz.">
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                <div><strong style={{ fontSize: 13 }}>Google Ads</strong><div style={{ fontSize: 12.5, color: tokens.muted }}>{load.google ? "Connected" : "Not connected"}</div></div>
+                <Button type="button" disabled={busy || !load.configured} onClick={() => void connect("google").catch(() => undefined)}>{load.google ? "Reconnect Google" : "Connect Google"}</Button>
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                <div><strong style={{ fontSize: 13 }}>Meta Ads</strong><div style={{ fontSize: 12.5, color: tokens.muted }}>{load.meta ? "Connected" : "Not connected"}</div></div>
+                <Button type="button" disabled={busy || !load.configured} onClick={() => void connect("meta").catch(() => undefined)}>{load.meta ? "Reconnect Meta" : "Connect Meta"}</Button>
+              </div>
+              {!load.configured ? <Muted>Save the web broker token and organization ID in the Paid ads plugin settings to enable connections.</Muted> : null}
+            </div>
+          </SectionCard>
+          <SectionCard title="Broker settings (names only)" subtitle="Secret values are never shown on this page.">
+            <Facts rows={[
+              ["Org slug", load.webOrgSlug],
+              ["webBrokerUrl", load.secrets.webBrokerUrl.value],
+              ["webBrokerUrl saved", load.secrets.webBrokerUrl.configured ? "Yes" : "No"],
+              ["webOrgId", load.secrets.webOrgId.configured ? (load.secrets.webOrgId.value ?? "—") : "Not set"],
+              ["webBrokerToken", load.secrets.webBrokerToken.configured ? "Configured" : "Not configured"],
+            ]} />
+          </SectionCard>
+        </>
+      ) : null}
+      <GoogleWebPicker connectionId={pickerId ?? load?.googleConnectionId ?? null} run={run} busy={busy} onClose={() => setPickerId(null)} onSaved={() => void refreshWeb()} />
+    </div>
+  );
+}
+
+function GoogleWebPicker({
+  connectionId,
+  run,
+  busy,
+  onClose,
+  onSaved,
+}: {
+  connectionId: string | null;
+  run: Run;
+  busy: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [rows, setRows] = useState<Array<{ customerId: string; descriptiveName?: string }> | null>(null);
+  const [error, setError] = useState("");
+  const [customerId, setCustomerId] = useState("758-529-6111");
+  const [loginCustomerId, setLoginCustomerId] = useState("281-429-3621");
+  useEffect(() => {
+    setRows(null);
+    setError("");
+    if (!connectionId) return;
+    run("ads.web-google-customers", { connectionId })
+      .then((r: { customers: Array<{ customerId: string; descriptiveName?: string }> }) => setRows(r.customers))
+      .catch((e: unknown) => setError(errorText(e)));
+  }, [connectionId, run]);
+  if (!connectionId) return null;
+  return (
+    <Modal open title="Choose Google ad account" description="Preset IDs are normalized to digits when saved." onClose={onClose}>
+      {error ? <Muted>{error}</Muted> : null}
+      <div style={{ display: "grid", gap: 12 }}>
+        <Field label="Customer ID"><Input value={customerId} onChange={(e) => setCustomerId(e.target.value)} /></Field>
+        <Field label="Login customer ID (MCC, optional)"><Input value={loginCustomerId} onChange={(e) => setLoginCustomerId(e.target.value)} /></Field>
+        {!rows ? <Muted>Loading accounts from Google…</Muted> : rows.length === 0 ? <Muted>No accounts returned — use the preset IDs or type one.</Muted> : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {rows.map((r) => (
+              <Button key={r.customerId} type="button" variant="secondary" disabled={busy} onClick={() => { setCustomerId(r.customerId); }}>{r.descriptiveName ? `${r.descriptiveName} (${r.customerId})` : r.customerId}</Button>
+            ))}
+          </div>
+        )}
+        <Button
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            void run(
+              "ads.web-google-set-customer",
+              { connectionId, customerId, loginCustomerId: loginCustomerId.trim() || undefined },
+              "Google account saved",
+            )
+              .then(() => { onSaved(); onClose(); })
+              .catch(() => undefined)
+          }
+        >
+          Save account
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
