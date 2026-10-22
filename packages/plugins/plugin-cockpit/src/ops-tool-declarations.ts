@@ -167,7 +167,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       attachmentId: { type: "string", description: "The id of the image attachment on this issue." },
       sha256: { type: "string", description: "The SHA256 hash of the attachment (hex, case-insensitive)." },
       summary: { type: "string", maxLength: 300, description: "What the evidence shows (optional, max 300 chars, newlines collapsed to spaces)." },
-      notify: { type: "boolean", description: "Set true to also push a confirmation to the owner's phone, once per issue and step. Quiet hours defer it, and the daily push cap applies." },
+      notify: { type: "boolean", description: "Set true to also push a confirmation to the owner's phone, once per issue and step. Quiet hours defer it, and the daily push cap applies. Once a push is sent, deferred or collapsed, later calls for the same issue and step do nothing; if the cap or the duplicate check stops it, or the owner has no push subscription, a later call may try again (an identical retry of the same attachment too). The result is in data.notify." },
     }),
   },
   {
