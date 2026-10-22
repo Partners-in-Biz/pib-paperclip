@@ -19,6 +19,11 @@
  * - Close-out review (`cockpit:closeout:`) and weekly business review
  *   (`cockpit:business-review:`): the same checklist rule as onboarding.
  *
+ * - Spike (any issue with `spike` in the title or `pib:spike` in the description):
+ *   needs an `**Evidence:**` comment (or attachment) posted after the plugin deploy
+ *   time (plugin_versions.seen_at) and after the issue started and after the latest
+ *   merged-PR comment.
+ *
  * Issues opened before 0.4.0 carry the same kinds without the plugin part
  * (`onboarding:…`, `health:…`) and are checked the same way.
  */
@@ -29,6 +34,7 @@ import type { Env } from "./env.js";
 import { collectProblems } from "./health.js";
 import type { HealthEntry } from "./merge.js";
 import { refreshKitRoles } from "./roles.js";
+import { pluginSeenAt } from "./acceptance.js";
 
 // ---------------------------------------------------------------------------
 // The onboarding checklist (pure)
@@ -142,6 +148,142 @@ export function healthResult(entries: Array<Pick<HealthEntry, "status" | "title"
 }
 
 // ---------------------------------------------------------------------------
+// Spikes (pure)
+// ---------------------------------------------------------------------------
+
+export const SPIKE_HINT = "Post a comment that starts with `**Evidence:**` with the live check (tool output or a screenshot from the live host), made after the plugin was deployed. Then close the issue again.";
+
+/** True if the issue is marked as a spike. */
+export function isSpike(issue: { title?: string | null; description?: string | null }): boolean {
+  const text = `${issue.title ?? ""}\n${issue.description ?? ""}`.toLowerCase();
+  return /\bspike\b/.test(text) || /pib:spike\b/.test(text);
+}
+
+const SPIKE_PLUGINS = ["crm", "social", "billing", "mailbox", "seo", "partners", "campaigns", "accounting", "payroll", "cockpit", "setup", "ads"];
+
+/** Plugin keys found in text that are known spike plugins, deduplicated. */
+export function spikePlugins(text: string): string[] {
+  const found = new Set<string>();
+  for (const plugin of SPIKE_PLUGINS) {
+    if (new RegExp(`\\b(?:plugin-|partnersinbiz\\.)${plugin}\\b`, "i").test(text)) {
+      found.add(`partnersinbiz.${plugin}`);
+    }
+  }
+  return Array.from(found);
+}
+
+/** The result of a spike done-check. */
+export function spikeResult(input: {
+  startedAt: string | null;
+  comments: Array<{ body?: unknown; deletedAt?: unknown; createdAt?: unknown }>;
+  attachments: Array<{ createdAt?: unknown }>;
+  deployedAt: Array<{ plugin: string; at: string | null }>;
+}): DoneCheckResult {
+  const parse = (value: unknown): number | null => {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "string") {
+      const t = Date.parse(value);
+      return Number.isFinite(t) ? t : null;
+    }
+    return null;
+  };
+
+  const startedMs = parse(input.startedAt);
+  const timestamps: Array<{ ms: number; label: string }> = [];
+
+  if (startedMs) timestamps.push({ ms: startedMs, label: `the issue started at ${new Date(startedMs).toISOString()}` });
+
+  // Find the latest merged-PR comment that does not contain **Evidence:**
+  const mergedPrComment = input.comments
+    .filter((c) => !c.deletedAt && typeof c.body === "string")
+    .reverse()
+    .find((c) => {
+      const body = c.body as string;
+      return /\bmerged\b/i.test(body) && (/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+|PR\s*#?\d+|pull request/i.test(body)) && !/\*\*Evidence:\*\*/i.test(body);
+    });
+
+  if (mergedPrComment && mergedPrComment.createdAt) {
+    const ms = parse(mergedPrComment.createdAt);
+    if (ms) timestamps.push({ ms, label: `the latest merged-PR comment (${new Date(ms).toISOString()})` });
+  }
+
+  for (const deployed of input.deployedAt) {
+    if (deployed.at) {
+      const ms = parse(deployed.at);
+      if (ms) timestamps.push({ ms, label: `${deployed.plugin.replace("partnersinbiz.", "")} was deployed (${new Date(ms).toISOString()})` });
+    }
+  }
+
+  const threshold = timestamps.length > 0 ? Math.max(...timestamps.map((t) => t.ms)) : null;
+  const thresholdLabel = threshold !== null ? timestamps.find((t) => t.ms === threshold)?.label ?? "" : "";
+
+  // Check for evidence (comment starting with **Evidence:** or any attachment) after the threshold
+  const hasEvidence = input.comments.some((c) => {
+    if (c.deletedAt || typeof c.body !== "string") return false;
+    if (!/\*\*Evidence:\*\*/i.test(c.body as string)) return false;
+    const ms = parse(c.createdAt);
+    if (!ms) return false;
+    return threshold === null || ms > threshold;
+  }) || input.attachments.some((a) => {
+    const ms = parse(a.createdAt);
+    if (!ms) return false;
+    return threshold === null || ms > threshold;
+  });
+
+  if (hasEvidence) return { done: true };
+
+  const missing: string[] = [];
+  if (threshold === null) {
+    missing.push("No evidence yet: no comment starting with `**Evidence:**` (or attachment).");
+  } else {
+    missing.push(`No evidence yet: no comment starting with \`**Evidence:**\` (or attachment) posted after ${thresholdLabel}.`);
+  }
+  missing.push(SPIKE_HINT);
+  if (input.deployedAt.every((d) => !d.at)) {
+    missing.push("The deploy time of the plugin is not known here, so this was checked against the start and merge times only. Name the plugin in the title or description (e.g. `plugin-crm`) so the check can use its deploy time.");
+  }
+  return { done: false, missing };
+}
+
+/** Checks if a spike issue has evidence, via issue comments and attachments, after the plugin was deployed. */
+export async function spikeCheck(env: Env, issue: Pick<DoneCheckIssue, "id" | "companyId">, ctx: PluginContext): Promise<DoneCheckResult> {
+  const full = await ctx.issues.get(issue.id, issue.companyId);
+  if (!full) return { done: false, missing: ["Issue not found"] };
+
+  const title = full.title ?? "";
+  const description = (full as { description?: string | null }).description ?? null;
+  const comments = await ctx.issues.listComments(issue.id, issue.companyId);
+
+  let attachments: Array<{ createdAt?: unknown }> = [];
+  try {
+    const listed = await ctx.issues.listAttachments?.(issue.id, issue.companyId);
+    attachments = listed ?? [];
+  } catch {
+    // Guard against optional capability or test context lacking it
+  }
+
+  const pluginNames = spikePlugins(`${title}\n${description}`);
+  const deployedAt = await Promise.all(
+    pluginNames.map(async (pluginKey) => ({ plugin: pluginKey, at: await pluginSeenAt(env, issue.companyId, pluginKey).catch(() => null) })),
+  );
+
+  // Use startedAt if available (the time the issue moved to in_progress), else fall back to createdAt
+  const startAtValue = (full as { startedAt?: unknown }).startedAt ?? full.createdAt;
+  const startedAt = startAtValue ? (typeof startAtValue === "string" ? startAtValue : new Date(startAtValue as unknown as Date).toISOString()) : null;
+
+  if (deployedAt.length === 0 || deployedAt.some((d) => d.at === null)) {
+    ctx.logger.info("Spike done-check: deploy time unknown, used start and merge times", { issueId: issue.id });
+  }
+
+  return spikeResult({
+    startedAt,
+    comments: comments as Array<{ body?: unknown; deletedAt?: unknown; createdAt?: unknown }>,
+    attachments,
+    deployedAt,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // The rules
 // ---------------------------------------------------------------------------
 
@@ -173,6 +315,7 @@ export function cockpitDoneRules(env: Env): DoneCheckRule[] {
     { originPrefix: ORIGIN_ID.health, label: "System health", check: health },
     { originPrefix: LEGACY_ORIGIN_ID.onboarding, label: "Client onboarding", check: onboarding },
     { originPrefix: LEGACY_ORIGIN_ID.health, label: "System health", check: health },
+    { originPrefix: "", label: "Spike", match: (issue) => isSpike(issue), check: guarded((issue, ctx) => spikeCheck(env, issue, ctx)) },
   ];
 }
 

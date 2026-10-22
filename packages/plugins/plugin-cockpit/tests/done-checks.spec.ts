@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { companyRoles, DONE_CHECK_MAX_REOPENS, PIB_PLUGINS, routeWork, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN } from "../src/constants.js";
-import { checklistItems, checklistResult, healthResult, plainWords, reasonWords, settledIn, SKIP_HINT } from "../src/done-checks.js";
+import { checklistItems, checklistResult, healthResult, plainWords, reasonWords, settledIn, SKIP_HINT, isSpike, spikePlugins, spikeResult, SPIKE_HINT } from "../src/done-checks.js";
 import { refreshHealthIssue } from "../src/health.js";
 import { onboardingContent, onDealWon } from "../src/onboarding.js";
 import { createEnv, registerCockpit } from "../src/register.js";
@@ -210,5 +210,185 @@ describe("closing the Cockpit's issues", () => {
     onboarding.status = "in_review";
     await s.fire("issue.updated", { entityId: onboarding.id, entityType: "issue", companyId: A, actorType: "agent", actorId: "op" });
     expect(onboarding.status).toBe("in_review");
+  });
+});
+
+describe("spike done-check (pure)", () => {
+  it("recognizes spikes by title or description marker", () => {
+    expect(isSpike({ title: "Spike: prove tool X works" })).toBe(true);
+    expect(isSpike({ title: "Check something important", description: "pib:spike" })).toBe(true);
+    expect(isSpike({ title: null, description: "SPIKE in production" })).toBe(true);
+    expect(isSpike({ title: "Work on the spike", description: null })).toBe(true);
+    expect(isSpike({ title: "Regular issue", description: "Normal work" })).toBe(false);
+  });
+
+  it("extracts plugin names from text with required prefix", () => {
+    const plugins1 = spikePlugins("Check plugin-crm and partnersinbiz.social");
+    expect(plugins1).toContain("partnersinbiz.crm");
+    expect(plugins1).toContain("partnersinbiz.social");
+    expect(plugins1).toHaveLength(2);
+
+    const plugins2 = spikePlugins("Spike plugin-billing and partnersinbiz.seo");
+    expect(plugins2).toEqual(["partnersinbiz.billing", "partnersinbiz.seo"]);
+
+    // Bare words without prefix should NOT match (regression test)
+    const plugins3 = spikePlugins("Spike: setup of the ads seo partners");
+    expect(plugins3).toHaveLength(0);
+
+    const plugins4 = spikePlugins("no known plugins");
+    expect(plugins4).toHaveLength(0);
+  });
+
+  it("marks done when evidence exists after the threshold", () => {
+    const now = new Date("2026-10-20T12:00:00Z");
+    const before = new Date("2026-10-20T10:00:00Z");
+    const after = new Date("2026-10-20T14:00:00Z");
+
+    const result = spikeResult({
+      startedAt: before.toISOString(),
+      comments: [{ body: "**Evidence:** Tool output confirmed working", createdAt: after }],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: before.toISOString() }],
+    });
+    expect(result.done).toBe(true);
+  });
+
+  it("marks not done without evidence or with evidence before the threshold", () => {
+    const startTime = "2026-10-20T10:00:00Z";
+    const deployTime = "2026-10-20T12:00:00Z";
+    const beforeDeploy = "2026-10-20T11:00:00Z";
+
+    const result1 = spikeResult({
+      startedAt: startTime,
+      comments: [],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: deployTime }],
+    });
+    expect(result1.done).toBe(false);
+    expect(result1.missing).toContain(SPIKE_HINT);
+    expect(result1.missing?.[0]).toContain("No evidence yet");
+
+    const result2 = spikeResult({
+      startedAt: startTime,
+      comments: [{ body: "**Evidence:** early check", createdAt: beforeDeploy }],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: deployTime }],
+    });
+    expect(result2.done).toBe(false);
+  });
+
+  it("ignores deleted evidence comments and uses attachments", () => {
+    const threshold = "2026-10-20T12:00:00Z";
+    const after = "2026-10-20T14:00:00Z";
+
+    const result = spikeResult({
+      startedAt: threshold,
+      comments: [{ body: "**Evidence:** deleted check", createdAt: after, deletedAt: threshold }],
+      attachments: [{ createdAt: after }],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: threshold }],
+    });
+    expect(result.done).toBe(true);
+  });
+
+  it("mentions deploy time unknown when no plugin is found", () => {
+    const result = spikeResult({
+      startedAt: "2026-10-20T10:00:00Z",
+      comments: [],
+      attachments: [],
+      deployedAt: [],
+    });
+    expect(result.done).toBe(false);
+    expect(result.missing?.some((m) => m.includes("Name the plugin"))).toBe(true);
+  });
+
+  it("rejects evidence posted before startedAt", () => {
+    const startedAt = "2026-10-20T12:00:00Z";
+    const beforeStarted = "2026-10-20T10:00:00Z";
+    const deployTime = "2026-10-20T11:00:00Z";
+
+    const result = spikeResult({
+      startedAt,
+      comments: [{ body: "**Evidence:** early check", createdAt: beforeStarted }],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: deployTime }],
+    });
+    expect(result.done).toBe(false);
+    expect(result.missing?.[0]).toContain("No evidence yet");
+  });
+
+  it("rejects evidence when deploy time is later than evidence", () => {
+    const startedAt = "2026-10-20T10:00:00Z";
+    const deployTime = "2026-10-20T14:00:00Z";
+    const evidence = "2026-10-20T12:00:00Z";
+
+    const result = spikeResult({
+      startedAt,
+      comments: [{ body: "**Evidence:** check output", createdAt: evidence }],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: deployTime }],
+    });
+    expect(result.done).toBe(false);
+    expect(result.missing?.[0]).toContain("No evidence yet");
+  });
+
+  it("accepts evidence when deploy time is earlier than evidence", () => {
+    const startedAt = "2026-10-20T10:00:00Z";
+    const deployTime = "2026-10-20T12:00:00Z";
+    const evidence = "2026-10-20T14:00:00Z";
+
+    const result = spikeResult({
+      startedAt,
+      comments: [{ body: "**Evidence:** check output", createdAt: evidence }],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: deployTime }],
+    });
+    expect(result.done).toBe(true);
+  });
+});
+
+describe("spike done-check (end-to-end)", () => {
+  it("reopens a spike issue without evidence", async () => {
+    const s = setup();
+    await saveTeam(s.env, A, { operatorAgentId: "op" }, "user-1");
+
+    // Create a plain agent issue titled "Spike: ..."
+    const created = await s.ctx.issues.create({
+      companyId: A,
+      title: "Spike: prove plugin-crm tool X on live",
+      description: "Test if the CRM tool works in production.",
+      status: "todo",
+      assigneeAgentId: "am",
+      originKind: undefined,
+      originId: null,
+    } as never);
+    const issue = s.issues.get(created.id)!;
+
+    // Agent closes it without evidence
+    await close(s, issue);
+    expect(issue.status).toBe("todo");
+    const reopenComment = s.comments.filter((c) => c.issueId === issue.id).at(-1)!.body;
+    expect(reopenComment).toContain("**Not done yet** (Spike)");
+    expect(reopenComment).toContain(SPIKE_HINT);
+  });
+
+  it("ignores regular issues without 'spike'", async () => {
+    const s = setup();
+    await saveTeam(s.env, A, { operatorAgentId: "op" }, "user-1");
+
+    const created = await s.ctx.issues.create({
+      companyId: A,
+      title: "Regular work: fix something",
+      description: "Just normal work.",
+      status: "todo",
+      assigneeAgentId: "am",
+      originKind: undefined,
+      originId: null,
+    } as never);
+    const issue = s.issues.get(created.id)!;
+
+    const before = s.comments.length;
+    await close(s, issue);
+    expect(issue.status).toBe("done");
+    expect(s.comments.length).toBe(before);
   });
 });

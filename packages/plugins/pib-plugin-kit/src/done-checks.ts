@@ -40,6 +40,8 @@ export interface DoneCheckRule {
   originPrefix: string;
   /** The kind of work, e.g. "Drafts to send". */
   label: string;
+  /** Matches any issue by its content instead of its origin id (`originPrefix` is then ignored, use ""). Runs on every agent close in the company, so keep it cheap and synchronous. */
+  match?: (issue: { title: string; description?: string | null; originKind?: string | null; originId: string | null }) => boolean;
   check: (issue: DoneCheckIssue, ctx: PluginContext) => Promise<DoneCheckResult>;
 }
 
@@ -74,9 +76,15 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
   // plugins may use the same origin id prefix (the hire flow's "hire:" is shared).
   const originKind = (raw as { originKind?: string | null }).originKind;
   const own = ownOriginKind(ctx);
-  if (originKind && own && originKind !== own && !originKind.startsWith(`${own}:`)) return "skipped";
   const originId = (raw as { originId?: string | null }).originId ?? null;
-  const rule = rules.find((r) => originId?.startsWith(r.originPrefix));
+  // For match rules, compute foreign only when needed (origin rules only).
+  // Match rules run even on foreign plugin origins.
+  const rule = rules.find((r) => {
+    if (r.match) return r.match({ title: raw.title, description: (raw as { description?: string | null }).description ?? null, originKind: originKind ?? null, originId });
+    // Origin rule: skip foreign origins (not opened by this plugin)
+    if (originKind && own && originKind !== own && !originKind.startsWith(`${own}:`)) return false;
+    return originId?.startsWith(r.originPrefix);
+  });
   if (!rule) return "skipped";
   const issue: DoneCheckIssue = {
     id: raw.id,

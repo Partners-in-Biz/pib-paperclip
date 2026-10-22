@@ -102,8 +102,8 @@ const PROVISIONING: readonly string[] = ["hire", "host", "plugin"];
 const EFFORTS: readonly string[] = ["low", "medium", "high"];
 const EVAL_FILE_RE = /^[a-z0-9][a-z0-9._-]*\.json$/;
 const SCOPES: readonly string[] = ["pib", "generic"];
-/** One rendered AGENTS.md stays under this (the host prints it into a hire task and a payload). */
-export const MAX_INSTRUCTION_CHARS = 14_000;
+/** One rendered AGENTS.md stays under this (the host prints it into a hire task and a payload). Raised to 14_500 for Spike rules (item 7 in delivery-lead procedure). */
+export const MAX_INSTRUCTION_CHARS = 14_500;
 
 function profileProblems(key: string, profile: RunProfile): string[] {
   const problems: string[] = [];

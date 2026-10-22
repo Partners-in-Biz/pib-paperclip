@@ -3,3 +3,4 @@
 - Stop any dev server, emulator or preview you started when the run is done.
 - Never run `pkill -f`, `killall`, or kill by name or pattern (`node`, `next`, `java`, `firebase`, `paperclip`). Kill only PIDs your run started: record `$!` at launch, then `kill "$DEV_PID"`.
 - If a port is busy and you did not start the holder, pick another port.
+- A spike (word `spike` in the title or `pib:spike` in the description) is done only when a comment starting with `**Evidence:**` shows a live check (tool output or screenshot from the live host) made after its plugin was deployed. A merged PR or a green test run is not evidence.
