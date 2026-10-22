@@ -8,7 +8,7 @@ import { decide, type PolicyClass } from "./policy.js";
 import { appendPushLog, listRecentPushLog, listSubscriptionsForUser, type PushSubscription } from "./store.js";
 import { sendPush, type SendDeps } from "./send.js";
 
-export type NotifyOutcome = "sent" | "deferred" | "capped" | "duplicate" | "no_subscription";
+export type NotifyOutcome = "sent" | "deferred" | "capped" | "duplicate" | "no_subscription" | "collapsed";
 
 export interface NotifyResult {
   outcome: NotifyOutcome;
@@ -28,7 +28,8 @@ export interface NotifyOwnerDeps {
  * - Delivers to owner's subscriptions or logs the decision.
  * - Appends push log entry.
  * Returns the outcome: "sent" if delivered, "no_subscription" if no subscriptions,
- * "deferred" during quiet hours, "duplicate" within 6h, or "capped" by daily limit.
+ * "deferred" during quiet hours, "duplicate" within 6h, "capped" by daily limit,
+ * or "collapsed" when multiple notifications are grouped with a collapse summary.
  */
 export async function notifyOwner(
   ctx: PluginContext,
@@ -102,16 +103,16 @@ export async function notifyOwner(
     });
     return { outcome: decision.reason === "duplicate" ? "duplicate" : "capped" };
   } else {
-    const status = decision.notify ? "collapsed" : "collapsed";
+    // Collapse: log with status "collapsed"
     await appendPushLog(ctx, {
       companyId: opts.companyId,
       class: opts.class,
       issueRef: opts.issueRef,
       title: opts.title,
-      status: status,
+      status: "collapsed",
       createdAt: now,
     });
-    // If notify is true, also send the collapse notification
+    // If notify is true, deliver the collapse notification
     if (decision.notify) {
       const subs = await listSubscriptionsForUser(ctx, opts.companyId, opts.ownerUserId);
       const okSubs = subs.filter((s) => s.state === "ok");
@@ -124,6 +125,9 @@ export async function notifyOwner(
           tag: opts.issueRef,
           class: "collapse",
         });
+        return { outcome: "collapsed" };
+      } else {
+        return { outcome: "no_subscription" };
       }
     }
     return { outcome: "capped" };
