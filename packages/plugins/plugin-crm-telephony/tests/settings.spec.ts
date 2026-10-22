@@ -172,4 +172,14 @@ describe("Telephony Settings", () => {
     const r4 = await readSettings(mockCtx(many), "c1");
     expect(r4.smsHolidays.length).toBeLessThanOrEqual(40);
   });
+
+  it("whatsappFrom: accepts E.164 and whatsapp:E.164, rejects invalid", async () => {
+    expect((await readSettings(mockCtx({}), "c1")).whatsappFrom).toBeNull();
+    const r1 = await readSettings(mockCtx({ whatsappFrom: "+27123456789" }), "c1");
+    expect(r1.whatsappFrom).toBe("+27123456789");
+    const r2 = await readSettings(mockCtx({ whatsappFrom: "whatsapp:+27123456789" }), "c1");
+    expect(r2.whatsappFrom).toBe("+27123456789");
+    const r3 = await readSettings(mockCtx({ whatsappFrom: "invalid" }), "c1");
+    expect(r3.whatsappFrom).toBeNull();
+  });
 });

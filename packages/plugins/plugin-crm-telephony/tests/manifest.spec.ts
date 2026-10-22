@@ -7,6 +7,7 @@ const VALID_CAPS = new Set([
   "database.namespace.read", "database.namespace.write", "database.namespace.migrate",
   "events.emit", "events.subscribe", "http.outbound", "issues.create", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
   "agent.tools.register", "companies.read", "ui.page.register",
+  "plugin.state.read", "plugin.state.write",
 ]);
 
 describe("CRM Telephony manifest", () => {
@@ -41,12 +42,10 @@ describe("CRM Telephony manifest", () => {
     expect(caps).not.toContain("ui.appShellOverlay.register");
   });
 
-  it("has only one UI slot (dialer-page)", () => {
+  it("has one UI slot (dialer-page)", () => {
     const slots = manifest.ui?.slots ?? [];
     expect(slots).toHaveLength(1);
-    expect(slots[0].id).toBe("dialer-page");
-    expect(slots[0].exportName).toBe("DialerPage");
-    expect(slots[0].type).toBe("page");
+    expect(slots[0]).toMatchObject({ id: "dialer-page", exportName: "DialerPage", type: "page" });
   });
 
   it("has telephony-status tool", () => {
