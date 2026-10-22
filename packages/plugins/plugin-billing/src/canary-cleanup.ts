@@ -51,28 +51,29 @@ export function registerCanaryCleanup(ctx: PluginContext): void {
     const allDocIds = [...invoiceIds, ...quoteIds];
 
     // Delete invoice-specific records (payment-related are canary-only cleanup, not in draft-delete)
+    // Defence in depth: add company_id to WHERE clauses even though we already filtered by company_id above
     if (invoiceIds.length) {
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_refunds")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_links")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "reminders")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "pops")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_notes")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_applications")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "payments")} WHERE invoice_id IN ${ids(1)}`, [asJson(invoiceIds)]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_refunds")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "payment_links")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "reminders")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "pops")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_notes")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "credit_applications")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "payments")} WHERE invoice_id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
 
       // Use helper for common invoice dependents (including work_issues)
       await deleteInvoiceDependents(ctx, invoiceIds);
 
-      // Delete invoices themselves
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "invoices")} WHERE id IN ${ids(1)}`, [asJson(invoiceIds)]);
+      // Delete invoices themselves (with company_id for defence in depth)
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "invoices")} WHERE id IN ${ids(1)} AND company_id = $2`, [asJson(invoiceIds), companyId]);
     }
 
     if (quoteIds.length) {
       // Use helper for quote dependents (including work_issues)
       await deleteQuoteDependents(ctx, quoteIds);
 
-      // Delete quotes themselves
-      await ctx.db.execute(`DELETE FROM ${table(ctx, "quotes")} WHERE id IN ${ids(1)}`, [asJson(quoteIds)]);
+      // Delete quotes themselves (with company_id for defence in depth)
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "quotes")} WHERE id IN ${ids(1)} AND company_id = $2`, [asJson(quoteIds), companyId]);
     }
 
     // Delete delivery records that reference any of the deleted documents

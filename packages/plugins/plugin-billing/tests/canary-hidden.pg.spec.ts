@@ -179,4 +179,44 @@ describe.skipIf(!available)("canary invoices and quotes are hidden from lists an
       expect(invoices.map((i) => i.id)).not.toContain(inv.id);
     });
   });
+
+  describe("NULL-safe canary detection", () => {
+    it("includes real invoices/quotes whose customer has no email key and no canary ref", async () => {
+      // Seed a contact without email
+      const contactId = "ct-no-email";
+      await seedClient(h, { id: contactId, name: "No Email Contact" });
+
+      // Create a real (non-canary) invoice for this contact
+      const realInv = await h.call<{ id: string; number: string }>("billing.create-invoice", {
+        currency: "ZAR",
+        customerKind: "contact",
+        customerRef: contactId,
+      });
+      await h.call("billing.add-line", { invoiceId: realInv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+      await h.call("billing.mark-sent", { invoiceId: realInv.id });
+
+      // Create a real (non-canary) quote for this contact
+      const realQuote = await h.call<{ id: string; number: string }>("billing.create-quote", {
+        currency: "ZAR",
+        customerKind: "contact",
+        customerRef: contactId,
+        dealId: "deal-no-email",
+      });
+      await h.call("billing.add-quote-line", { quoteId: realQuote.id, description: "Audit", quantity: 1, unitAmountMinor: 100_000 });
+
+      // Create a canary quote (should be hidden)
+      const canaryQuote = await draftQuote(CANARY);
+
+      // Verify the real invoice is in list-open-invoices
+      const invoiceResult = await tool("list-open-invoices", {}) as any;
+      const invoices = invoiceResult.data.items as Array<{ id: string }>;
+      expect(invoices.map((i) => i.id)).toContain(realInv.id);
+
+      // Verify the real quote is in list-quotes
+      const quoteResult = await tool("list-quotes", {}) as any;
+      const quotes = quoteResult.data.items as Array<{ id: string }>;
+      expect(quotes.map((q) => q.id)).toContain(realQuote.id);
+      expect(quotes.map((q) => q.id)).not.toContain(canaryQuote.id);
+    });
+  });
 });

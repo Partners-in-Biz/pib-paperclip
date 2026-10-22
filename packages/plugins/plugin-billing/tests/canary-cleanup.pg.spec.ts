@@ -31,50 +31,46 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
   });
 
   const q = async (sql: string, params: unknown[] = []) => (await h.client.query(sql, params)).rows as Record<string, unknown>[];
-  const AGENT = { agentId: "agent-1", runId: "run-1", companyId: COMPANY, projectId: "p" };
-
-  const tool = async (name: string, params: Record<string, unknown>) =>
-    (await h.tools.get(name)!(params, AGENT)) as { data?: Record<string, unknown>; error?: string };
 
   it("removes canary invoices, quotes and their related records when company.deleted is emitted", async () => {
     // Create canary invoices and quotes with lines
-    const canaryInv1 = await tool("create-invoice", {
+    const canaryInv1 = await h.call<{ id: string }>("billing.create-invoice", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "canary-ab12cd34",
       customerName: "PiB Canary Co",
     });
-    const canaryInvId = (canaryInv1.data as any).id;
-    await tool("add-line", { invoiceId: canaryInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
-    await tool("add-line", { invoiceId: canaryInvId, description: "More", quantity: 2, unitAmountMinor: 50_000 });
+    const canaryInvId = (canaryInv1 as any).id;
+    await h.call("billing.add-line", { invoiceId: canaryInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+    await h.call("billing.add-line", { invoiceId: canaryInvId, description: "More", quantity: 2, unitAmountMinor: 50_000 });
 
-    const canaryQuote1 = await tool("create-quote", {
+    const canaryQuote1 = await h.call("billing.create-quote", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "canary-ab12cd34",
       customerName: "PiB Canary Co",
     });
-    const canaryQuoteId = (canaryQuote1.data as any).id;
-    await tool("add-quote-line", { quoteId: canaryQuoteId, description: "Service", quantity: 1, unitAmountMinor: 200_000 });
+    const canaryQuoteId = (canaryQuote1 as any).id;
+    await h.call("billing.add-quote-line", { quoteId: canaryQuoteId, description: "Service", quantity: 1, unitAmountMinor: 200_000 });
 
     // Create non-canary documents (control)
-    const realInv = await tool("create-invoice", {
+    const realInv = await h.call("billing.create-invoice", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "co-acme",
       customerName: "Acme Holdings",
     });
-    const realInvId = (realInv.data as any).id;
-    await tool("add-line", { invoiceId: realInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+    const realInvId = (realInv as any).id;
+    await h.call("billing.add-line", { invoiceId: realInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
 
-    const realQuote = await tool("create-quote", {
+    const realQuote = await h.call("billing.create-quote", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "co-acme",
       customerName: "Acme Holdings",
     });
-    const realQuoteId = (realQuote.data as any).id;
-    await tool("add-quote-line", { quoteId: realQuoteId, description: "Service", quantity: 1, unitAmountMinor: 200_000 });
+    const realQuoteId = (realQuote as any).id;
+    await h.call("billing.add-quote-line", { quoteId: realQuoteId, description: "Service", quantity: 1, unitAmountMinor: 200_000 });
 
     // Verify setup
     let canaryInvoices = await q(`SELECT id FROM ${NAMESPACE}.invoices WHERE customer_ref = 'canary-ab12cd34'`);
@@ -117,21 +113,21 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
 
   it("does not delete non-canary documents when company.deleted is emitted for a non-canary id", async () => {
     // Create a canary and a real document
-    const canaryInv = await tool("create-invoice", {
+    const canaryInv = await h.call("billing.create-invoice", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "canary-ab12cd34",
       customerName: "PiB Canary Co",
     });
-    const canaryInvId = (canaryInv.data as any).id;
+    const canaryInvId = (canaryInv as any).id;
 
-    const realInv = await tool("create-invoice", {
+    const realInv = await h.call("billing.create-invoice", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "co-acme",
       customerName: "Acme Holdings",
     });
-    const realInvId = (realInv.data as any).id;
+    const realInvId = (realInv as any).id;
 
     // Emit company.deleted for a non-canary id
     await h.deliver(COMPANY_DELETED_EVENT, COMPANY, {
@@ -149,13 +145,13 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
   });
 
   it("ignores empty or missing payload", async () => {
-    const canaryInv = await tool("create-invoice", {
+    const canaryInv = await h.call("billing.create-invoice", {
       currency: "ZAR",
       customerKind: "company",
       customerRef: "canary-ab12cd34",
       customerName: "PiB Canary Co",
     });
-    const canaryInvId = (canaryInv.data as any).id;
+    const canaryInvId = (canaryInv as any).id;
 
     // Emit with empty payload
     await h.deliver(COMPANY_DELETED_EVENT, COMPANY, {});
@@ -163,5 +159,71 @@ describe.skipIf(!available)("canary cleanup (postgres)", () => {
     // Verify nothing deleted
     const canaryInvoices = await q(`SELECT id FROM ${NAMESPACE}.invoices WHERE customer_ref = 'canary-ab12cd34'`);
     expect(canaryInvoices).toHaveLength(1);
+  });
+
+  it("removes SENT canary invoices with payments (not just drafts)", async () => {
+    // Create a SENT canary invoice with a payment
+    const canaryInv = await h.call("billing.create-invoice", {
+      currency: "ZAR",
+      customerKind: "company",
+      customerRef: "canary-ab12cd34",
+      customerName: "PiB Canary Co",
+    });
+    const canaryInvId = (canaryInv as any).id;
+    await h.call("billing.add-line", { invoiceId: canaryInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+
+    // Mark as sent
+    await h.call("billing.mark-sent", { invoiceId: canaryInvId });
+
+    // Record a payment on the sent canary invoice
+    await h.client.query(
+      `INSERT INTO ${NAMESPACE}.payments (id, invoice_id, company_id, amount_minor, currency, source_key) VALUES ($1, $2, $3, $4, $5, $6)`,
+      ["pay-canary-1", canaryInvId, COMPANY, 100_000, "ZAR", "manual:canary-sent-test"],
+    );
+
+    // Create a non-canary sent invoice for another customer (control)
+    const realInv = await h.call("billing.create-invoice", {
+      currency: "ZAR",
+      customerKind: "company",
+      customerRef: "co-acme",
+      customerName: "Acme Holdings",
+    });
+    const realInvId = (realInv as any).id;
+    await h.call("billing.add-line", { invoiceId: realInvId, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+    await h.call("billing.mark-sent", { invoiceId: realInvId });
+
+    // Record a payment on the real invoice
+    await h.client.query(
+      `INSERT INTO ${NAMESPACE}.payments (id, invoice_id, company_id, amount_minor, currency, source_key) VALUES ($1, $2, $3, $4, $5, $6)`,
+      ["pay-real-1", realInvId, COMPANY, 100_000, "ZAR", "manual:real-sent-test"],
+    );
+
+    // Verify setup: both invoices and payments exist
+    let canaryInvoices = await q(`SELECT id, status FROM ${NAMESPACE}.invoices WHERE id = $1`, [canaryInvId]);
+    let canaryPayments = await q(`SELECT id FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [canaryInvId]);
+    expect(canaryInvoices).toHaveLength(1);
+    expect((canaryInvoices[0] as any).status).toBe("sent");
+    expect(canaryPayments).toHaveLength(1);
+
+    // Emit company.deleted for canary
+    await h.deliver(COMPANY_DELETED_EVENT, COMPANY, {
+      key: "company:canary-ab12cd34:deleted",
+      id: "canary-ab12cd34",
+      name: "PiB Canary Co",
+      deletedAt: new Date().toISOString(),
+    });
+
+    // Verify canary invoice and its payment are deleted (regardless of sent status)
+    canaryInvoices = await q(`SELECT id FROM ${NAMESPACE}.invoices WHERE id = $1`, [canaryInvId]);
+    canaryPayments = await q(`SELECT id FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [canaryInvId]);
+    expect(canaryInvoices).toHaveLength(0);
+    expect(canaryPayments).toHaveLength(0);
+
+    // Verify non-canary invoice and its payment remain untouched
+    const realInvoices = await q(`SELECT id, status FROM ${NAMESPACE}.invoices WHERE id = $1`, [realInvId]);
+    const realPayments = await q(`SELECT id FROM ${NAMESPACE}.payments WHERE invoice_id = $1`, [realInvId]);
+    expect(realInvoices).toHaveLength(1);
+    expect((realInvoices[0] as any).status).toBe("sent");
+    expect(realPayments).toHaveLength(1);
   });
 });
