@@ -163,6 +163,23 @@ export async function latestRuns(ctx: PluginContext, companyId: string): Promise
   return rows.map(rowFrom);
 }
 
+/** When a plugin was first seen by the Cockpit (its deploy time, from plugin_versions.seen_at), or null if never recorded. */
+export async function pluginSeenAt(env: Env, companyId: string, pluginKey: string): Promise<string | null> {
+  try {
+    const rows = await env.ctx.db.query<Raw>(`SELECT seen_at FROM ${VERSIONS} WHERE company_id = $1 AND plugin_key = $2`, [companyId, pluginKey]);
+    if (!rows[0]) return null;
+    const seen = rows[0].seen_at;
+    if (seen instanceof Date) return seen.toISOString();
+    if (typeof seen === "string") {
+      const parsed = new Date(seen);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function saveRun(env: Env, run: RunRow, patch: { state: RunState; status?: RunStatus; summary?: string | null; report?: string | null; reportIssueId?: string | null; children?: Record<string, string>; finished?: boolean; agentId?: string | null }): Promise<RunRow> {
   const now = env.now().toISOString();
   await env.ctx.db.execute(
