@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { AS_AT_CUTOFF_SQL, INVOICE_COLUMNS, table, type CreditNoteRow, type InvoiceRow } from "./db.js";
 import { balanceOutstanding, deriveInvoiceStatus, OPEN_STATUSES, type BalanceState, type InvoiceStatusValue } from "./domain.js";
+import { isCanarySql } from "./canary.js";
 import { withdrawPaidDecisions } from "./closeouts.js";
 import { iso } from "./dates.js";
 import { openInvoiceFilingIssue } from "./filing.js";
@@ -133,7 +134,7 @@ export async function invoiceBalances(
   }
   // Finance lists and client-scoped lists hide canary. Pass includeCanary for a lookup that must see the test client.
   if (!filter.includeCanary) {
-    where.push(`NOT (i.customer_ref LIKE 'canary-%' OR (i.customer->>'email')::text ILIKE '%@%.invalid')`);
+    where.push(`NOT (${isCanarySql("i")})`);
   }
   const rows = await ctx.db.query<InvoiceBalanceRow>(`${balanceSelect(ctx)} WHERE ${where.join(" AND ")} ORDER BY i.created_at DESC`, params);
   return rows.map((row) => toBalance(row));

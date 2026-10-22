@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { textArrayParam, type ClientRef, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { isCanarySql } from "./canary.js";
 
 export function table(ctx: PluginContext, name: string): string {
   if (!/^plugin_[a-z0-9_]+$/.test(ctx.db.namespace) || !/^[a-z_]+$/.test(name)) throw new Error("Unsafe identifier");
@@ -348,12 +349,12 @@ export interface ExpenseRow {
 
 export async function listQuotes(ctx: PluginContext, companyId: string, customer: ClientScope = null, options: { includeCanary?: boolean } = {}): Promise<QuoteRow[]> {
   const filter = customer ? customerWhere(customer, 2) : null;
-  const canaryFilter = !options.includeCanary ? "AND NOT (customer_ref LIKE 'canary-%' OR (customer->>'email')::text ILIKE '%@%.invalid')" : "";
+  const canaryFilter = !options.includeCanary ? `AND NOT (${isCanarySql("q")})` : "";
   return ctx.db.query<QuoteRow>(
     `SELECT ${QUOTE_COLUMNS}
-       FROM ${table(ctx, "quotes")}
-      WHERE company_id = $1${filter ? ` AND ${filter.sql}` : ""} ${canaryFilter}
-      ORDER BY created_at DESC`,
+       FROM ${table(ctx, "quotes")} q
+      WHERE q.company_id = $1${filter ? ` AND ${filter.sql}` : ""} ${canaryFilter}
+      ORDER BY q.created_at DESC`,
     [companyId, ...(filter?.params ?? [])],
   );
 }
