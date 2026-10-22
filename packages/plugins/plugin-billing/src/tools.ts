@@ -148,6 +148,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     description: "The payments recorded on an invoice (amount, method, reference, date, source).",
     parametersSchema: schema(["invoiceId"], { invoiceId }),
   },
+  {
+    name: "delete-draft-invoice",
+    displayName: "Delete draft invoice",
+    description: "Delete a draft invoice that was never sent or paid (drafts only; dangerous: no undo). For non-canary invoices with a number, void instead to keep the sequence gap-free.",
+    parametersSchema: schema(["invoiceId"], { invoiceId }),
+  },
 
   // ── Quotes ───────────────────────────────────────────────────────────────
   {
@@ -231,6 +237,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "quote-html",
     displayName: "Quote HTML",
     description: "A printable HTML copy of a quote (large). Use quote-detail to read it.",
+    parametersSchema: schema(["quoteId"], { quoteId }),
+  },
+  {
+    name: "delete-draft-quote",
+    displayName: "Delete draft quote",
+    description: "Delete a draft quote that was never sent or accepted (drafts only; hard-delete; no undo). Quote numbers are not a statutory gap-free sequence, so voiding is not required.",
     parametersSchema: schema(["quoteId"], { quoteId }),
   },
 

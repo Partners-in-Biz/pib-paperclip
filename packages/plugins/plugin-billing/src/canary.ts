@@ -27,8 +27,11 @@ export function isCanaryEmail(email: string | null | undefined): boolean {
   return domain === "canary.invalid" || domain.endsWith(".invalid");
 }
 
-export function isCanaryCustomer(doc: { customer_ref?: string | null }): boolean {
-  return isCanaryRef(doc.customer_ref);
+export function isCanaryCustomer(doc: { customer_ref?: string | null; customer?: unknown }): boolean {
+  if (isCanaryRef(doc.customer_ref)) return true;
+  const customer = doc.customer && typeof doc.customer === "object" ? (doc.customer as Record<string, unknown>) : null;
+  if (customer?.email && typeof customer.email === "string") return isCanaryEmail(customer.email);
+  return false;
 }
 
 /**
