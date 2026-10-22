@@ -85,6 +85,8 @@ import { toMailAddress } from "./gmail/headers.js";
 import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
 import { handleDraftRequested } from "./gmail/draft.js";
+import { deleteMail, replyMode, startReply } from "./mail-actions.js";
+import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
@@ -236,7 +238,26 @@ const plugin = definePlugin({
     user("mailbox.retry-send", (companyId, _userId, params) => retrySend(requireEnv(), companyId, requiredString(params, "key")));
     user("mailbox.correct-triage", (companyId, userId, params) => correctTriageFor(companyId, requiredString(params, "messageId"), params, userId, null));
     user("mailbox.triage-stats", (companyId, _userId, params) => triageStats(ctx, companyId, params));
+    // A person works on a draft: change it, ask its agent for a new version, or delete it (with the reason the agent learns from).
+    user("mailbox.update-draft", (companyId, userId, params) => editDraft(requireEnv(), companyId, params, { kind: "user", id: userId }));
+    user("mailbox.delete-draft", (companyId, _userId, params) => deleteDraftWithReason(requireEnv(), companyId, params));
+    user("mailbox.request-rewrite", (companyId, userId, params) => requestRewrite(requireEnv(), companyId, params, userId));
+    user("mailbox.contact-search", async (companyId, _userId, params) => ({ contacts: await contactSearch(companyId, optionalString(params, "q") ?? "") }));
+    user("mailbox.gmail-signature", async (companyId, _userId, params) => {
+      const account = await requireStore().getAccount(companyId, requiredString(params, "accountId"));
+      if (!account) throw new MailboxError("Mailbox not found");
+      return mailboxSignature(requireEnv(), companyId, account);
+    });
     user("mailbox.send-draft", (companyId, _userId, params) => sendDraft(companyId, null, requiredString(params, "messageId")));
+    user("mailbox.delete-mail", (companyId, _userId, params) =>
+      deleteMail(requireEnv(), companyId, Array.isArray(params.messageIds) ? params.messageIds.map(String) : [requiredString(params, "messageId")]),
+    );
+    user("mailbox.start-reply", (companyId, userId, params) =>
+      startReply(requireEnv(), companyId, userId, requiredString(params, "messageId"), replyMode(params.mode), {
+        isPrivate: (row) => isPrivateMessage(companyId, row),
+        insertDraft: (row) => requireStore().insertDraft(row as Parameters<ReturnType<typeof requireStore>["insertDraft"]>[0]),
+      }),
+    );
     user("mailbox.get-message", (companyId, _userId, params) => getMessage(companyId, requiredString(params, "messageId"), params, null));
 
     ctx.jobs.register(SYNC_JOB_KEY, async () => {
@@ -357,6 +378,12 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
     const body = objectParams(params);
     if (name === "create-draft") {
       return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null) };
+    }
+    if (name === "update-draft") {
+      if (!run.agentId) throw new MailboxError("Only an agent can use this tool");
+      const agentId = run.agentId;
+      const result = await editDraft(requireEnv(), run.companyId, body, { kind: "agent", id: agentId }, async (accountId) => assertMayDraft(await delegationFor(accountId, agentId)));
+      return { content: "Draft updated", data: result };
     }
     if (name === "send-draft") {
       const result = await sendDraft(run.companyId, run.agentId, requiredString(body, "messageId"));
@@ -594,6 +621,9 @@ export function draftView(row: RecentMessageRow) {
     drafted_by: draft.by && typeof draft.by.id === "string" ? draft.by : null,
     is_reply: Boolean(draft.replyToMessageId),
     has_html: Boolean(draft.html),
+    use_signature: draft.useSignature === true,
+    files: draft.fileList ?? [],
+    rewrite_requested: draft.rewrite ? { note: draft.rewrite.note, requested_at: draft.rewrite.requestedAt } : null,
   };
 }
 
@@ -1098,10 +1128,22 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     ...(row.draft?.replyTo ? { replyTo: row.draft.replyTo } : {}),
   };
   if (!request.text && !request.html) throw new MailboxError("This draft has no body");
+  const extraAttachments = draftAttachments(row.draft);
+  if (extraAttachments.length && !gmailReady) throw new MailboxError("Files can only be sent through Gmail. Remove them, or connect Gmail for this mailbox.");
+  if (row.draft?.useSignature) {
+    if (!gmailReady) throw new MailboxError("The Gmail signature needs a connected Gmail mailbox. Untick it, or connect Gmail first.");
+    let signature;
+    try {
+      signature = await mailboxSignature(requireEnv(), companyId, account!);
+    } catch (error) {
+      throw new MailboxError(`Not sent: the Gmail signature could not be read (${errorMessage(error)}). Untick it to send without.`);
+    }
+    Object.assign(request, withSignature({ text: request.text ?? null, html: request.html ?? null }, signature));
+  }
   await s.setDraftStatus(companyId, row.id, "queued", null);
   let result;
   try {
-    result = await performSend(requireEnv(), companyId, request, { sourcePlugin: PLUGIN_ID, force: true, draftRowId: row.id });
+    result = await performSend(requireEnv(), companyId, request, { sourcePlugin: PLUGIN_ID, force: true, draftRowId: row.id, ...(extraAttachments.length ? { extraAttachments } : {}) });
   } catch (error) {
     await s.setDraftStatus(companyId, row.id, "draft", errorMessage(error));
     throw new MailboxError(`Not sent yet: ${errorMessage(error)}`);
@@ -1111,6 +1153,13 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
   return { id: row.id, status: "sent" as const, gmailMessageId: result.messageId, threadId: result.threadId, sentAt: result.sentAt };
+}
+
+/** CRM contacts for the recipient picker: two letters or more, a handful of hits. */
+async function contactSearch(companyId: string, q: string) {
+  const text = q.trim();
+  if (text.length < 2) return [];
+  return requireStore().searchContacts(companyId, text.slice(0, 80), 8);
 }
 
 async function findMessage(companyId: string, id: string): Promise<MessageRow | null> {

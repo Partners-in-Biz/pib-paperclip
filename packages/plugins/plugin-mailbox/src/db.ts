@@ -53,6 +53,13 @@ export interface RecentMessageRow {
   created_at: unknown;
 }
 
+/** A CRM contact for the recipient picker. */
+export interface ContactHit {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface DbClient {
   namespace: string;
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
@@ -750,7 +757,7 @@ export class SqlStore implements GmailStore {
   }
 
   async listInbox(companyId: string, filter: InboxFilter): Promise<MessageRow[]> {
-    const where = ["company_id = $1", "direction = 'inbound'"];
+    const where = ["company_id = $1", "direction = 'inbound'", `NOT (labels @> '["TRASH"]'::jsonb)`];
     const params: unknown[] = [companyId];
     if (filter.accountId) {
       params.push(filter.accountId);
@@ -1662,11 +1669,49 @@ export class SqlStore implements GmailStore {
   /** Drafts and other unsent mail for the page, with what the draft preview shows (body capped at 20,000 characters). */
   async recentMessages(companyId: string, limit: number) {
     return this.db.query<RecentMessageRow>(
-      `SELECT id, account_id, subject, left(body, 20000) AS body, status, direction, read_at IS NOT NULL AS is_read, to_addrs, cc_addrs, bcc_addrs, draft, send_error, created_at
+      // The files a person added stay out of the list (they can be megabytes): only their names and sizes go to the page.
+      `SELECT id, account_id, subject, left(body, 20000) AS body, status, direction, read_at IS NOT NULL AS is_read, to_addrs, cc_addrs, bcc_addrs,
+              CASE WHEN draft IS NULL THEN NULL ELSE (draft - 'files') || jsonb_build_object('fileList', coalesce((SELECT jsonb_agg(jsonb_build_object('id', f ->> 'id', 'name', f ->> 'name', 'mime', f ->> 'mime', 'bytes', f -> 'bytes')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(draft -> 'files') = 'array' THEN draft -> 'files' ELSE '[]'::jsonb END) AS f), '[]'::jsonb)) END AS draft,
+              send_error, created_at
          FROM ${this.t("messages")} WHERE company_id = $1 AND ((direction = 'outbound' AND status <> 'sent') OR gmail_message_id IS NULL)
         ORDER BY created_at DESC LIMIT $2`,
       [companyId, limit],
     );
+  }
+
+  /** Changes what a person edited on a draft. Only a draft that has not been sent; false when there is none. */
+  async updateDraft(companyId: string, id: string, row: { subject: string; body: string; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; draft: DraftExtras }): Promise<boolean> {
+    const done = await this.db.execute(
+      `UPDATE ${this.t("messages")} SET subject = $3, body = $4, to_addrs = $5::jsonb, cc_addrs = $6::jsonb, bcc_addrs = $7::jsonb, draft = $8::jsonb, send_error = NULL, updated_at = now()
+        WHERE company_id = $1 AND id = $2 AND direction = 'outbound' AND status = 'draft'`,
+      [companyId, id, row.subject, row.body, json(row.to), json(row.cc), json(row.bcc), json(row.draft)],
+    );
+    return done.rowCount > 0;
+  }
+
+  /** Removes a draft that has not been sent. */
+  async deleteDraft(companyId: string, id: string): Promise<boolean> {
+    const done = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND id = $2 AND direction = 'outbound' AND status = 'draft'`, [companyId, id]);
+    return done.rowCount > 0;
+  }
+
+  /** CRM contacts whose name or address contains the text, one hit per address. */
+  async searchContacts(companyId: string, text: string, limit: number): Promise<ContactHit[]> {
+    const like = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const rows = await this.db.query<CrmContactDb>(
+      `SELECT id, name, emails, account_ids FROM ${this.t("crm_contacts")}
+        WHERE company_id = $1 AND deleted = false AND (name ILIKE $2 OR EXISTS (SELECT 1 FROM unnest(emails) AS e WHERE e ILIKE $2))
+        ORDER BY lower(name) LIMIT $3`,
+      [companyId, like, limit],
+    );
+    const needle = text.trim().toLowerCase();
+    const hits: ContactHit[] = [];
+    for (const row of rows) {
+      const emails = (row.emails ?? []).filter(Boolean);
+      const matching = emails.filter((e) => e.toLowerCase().includes(needle) || row.name.toLowerCase().includes(needle));
+      for (const email of matching.length ? matching : emails) hits.push({ id: row.id, name: row.name, email });
+    }
+    return hits.slice(0, limit);
   }
 
   async unreadCount(companyId: string): Promise<number> {

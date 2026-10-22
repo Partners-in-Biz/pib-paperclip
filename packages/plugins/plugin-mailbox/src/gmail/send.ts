@@ -33,7 +33,7 @@ import { getMessageMetadata, getThreadMetadata, GmailApiError, listMessages, mod
 import { errorMessage, type Env } from "./env.js";
 import { headerMap, parseMessageIds, toMailAddress } from "./headers.js";
 import { ensureLabelIds } from "./labels.js";
-import { buildMime, htmlToText, messageIdFor } from "./mime.js";
+import { buildMime, htmlToText, messageIdFor, type MimeAttachment } from "./mime.js";
 import { messageRowId } from "./sync.js";
 import { withGmail } from "./tokens.js";
 import { checkSuppression, listUnsubscribeHeader } from "../suppression.js";
@@ -276,7 +276,7 @@ export async function performSend(env: Env, companyId: string, request: MailSend
       const found = await withGmail(env, loaded, sender, (token) => listMessages(env.fetch, token, `rfc822msgid:${rfcMessageId}`, { maxResults: 1 }));
       if (found.messages[0]) sent = { id: found.messages[0].id, threadId: found.messages[0].threadId, labelIds: [] };
     }
-    if (!sent) sent = await sendNow(env, loaded, sender, outgoing, rfcMessageId, senderKey);
+    if (!sent) sent = await sendNow(env, loaded, sender, outgoing, rfcMessageId, senderKey, options.extraAttachments);
   } catch (error) {
     const message = errorMessage(error);
     if ((error instanceof AttachmentError && error.permanent) || isPermanentGmail(error)) {
@@ -291,8 +291,8 @@ export async function performSend(env: Env, companyId: string, request: MailSend
   return finishSent(env, loaded, sender, outgoing, options, sent, rfcMessageId, skipped, [...(await domainWarnings(env, sender, outgoing)), ...senderScopeWarnings(sender, outgoing)]);
 }
 
-async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string, senderKey: string = OWN_SENDER) {
-  const attachments = await downloadAttachments(env.fetch, request.attachments ?? []);
+async function sendNow(env: Env, loaded: LoadedConfig, sender: AccountRow, request: MailSendRequested, rfcMessageId: string, senderKey: string = OWN_SENDER, extraAttachments: MimeAttachment[] = []) {
+  const attachments = [...(await downloadAttachments(env.fetch, request.attachments ?? [])), ...extraAttachments];
   const thread = await threadingFor(env, loaded, sender, request);
   // Marketing mail: an https one-click address (the caller's, else the Mailbox's own once its proxy rule is proved) next to the mailto form.
   const unsubscribe = request.marketing

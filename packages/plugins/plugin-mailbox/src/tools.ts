@@ -39,6 +39,21 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "update-draft",
+    displayName: "Update mailbox draft",
+    description:
+      "Save a new version over a draft you wrote (for example after a person asked for a rewrite). Send only what changes; the rest stays. It does not send and does not create a second draft.",
+    parametersSchema: schema(["messageId"], {
+      messageId: str("The draft's id from create-draft."),
+      subject: str("New subject line."),
+      body: str("New plain-text body."),
+      html: str("New HTML body; leave out to drop the designed version."),
+      to: addresses("Recipients"),
+      cc: addresses("Copy"),
+      bcc: addresses("Blind copy"),
+    }),
+  },
+  {
     name: "send-draft",
     displayName: "Send mailbox draft",
     description:
