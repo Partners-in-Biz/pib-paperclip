@@ -9,7 +9,7 @@ import {
   subscriptionToPayload,
   urlBase64ToUint8Array,
   waitForActivated,
-  PUSH_SW_URL,
+  resolvePushSwUrl,
 } from "./push-register.js";
 import type { DeviceInfo } from "../push/actions.js";
 
@@ -87,7 +87,8 @@ export function NotificationsPage() {
         setErr("Service Workers not available");
         return;
       }
-      const registration = await registerPushServiceWorker(navigator.serviceWorker, PUSH_SW_URL);
+      const swUrl = await resolvePushSwUrl(import.meta.url);
+      const registration = await registerPushServiceWorker(navigator.serviceWorker, swUrl);
       await waitForActivated(registration);
 
       // Subscribe to push
