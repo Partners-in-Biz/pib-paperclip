@@ -653,6 +653,106 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     expect(credit.description).toMatch(/Billing records the refund when Stripe tells it/);
   });
 
+  it("two concurrent-style refunds with the same stale amountMinor still both record via refundIncrementMinor", async () => {
+    const invoice = await sentInvoice();
+    const made = (await makeLink(invoice.id)).links[0]!;
+    await deliver(paidCapture(made.id));
+    const link = (await getLink(h.ctx, made.id))!;
+    const settings = await billingSettings(h.ctx, COMPANY);
+    // Both deliveries "saw" refunded_minor=0 and would have built the same cumulative 5000 for equal-sized refunds.
+    const stale = { ...link, refunded_minor: 0 };
+    const base = {
+      kind: "refund" as const,
+      linkId: link.id,
+      providerPaymentId: "CAP-1",
+      amountMinor: 5_000,
+      refundIncrementMinor: 5_000,
+      currency: "USD",
+      feeMinor: null,
+      paidAt: new Date().toISOString(),
+      reference: "CAP-1",
+      status: "REFUNDED",
+    };
+    expect(await applyProviderEvent(h.ctx, stale, { ...base, eventId: "WH-CONC-1", providerRefundId: "REF-CONC-1" }, settings)).toMatchObject({ result: "applied" });
+    expect(await applyProviderEvent(h.ctx, stale, { ...base, eventId: "WH-CONC-2", providerRefundId: "REF-CONC-2" }, settings)).toMatchObject({ result: "applied" });
+    expect((await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds ORDER BY created_at`)).map((r) => r.amount_minor)).toEqual(["5000", "5000"]);
+    expect((await row(`SELECT refunded_minor FROM ${NAMESPACE}.payment_links WHERE id = $1`, [link.id]))[0]).toEqual({ refunded_minor: "10000" });
+  });
+
+  it("the same PayPal refund id under two event ids records once (dedupe on providerRefundId)", async () => {
+    const invoice = await sentInvoice();
+    const made = (await makeLink(invoice.id)).links[0]!;
+    await deliver(paidCapture(made.id));
+    const link = (await getLink(h.ctx, made.id))!;
+    const settings = await billingSettings(h.ctx, COMPANY);
+    const event = {
+      kind: "refund" as const,
+      eventId: "WH-DEDUP-1",
+      linkId: link.id,
+      providerPaymentId: "CAP-1",
+      providerRefundId: "REF-SAME",
+      amountMinor: 5_000,
+      refundIncrementMinor: 5_000,
+      currency: "USD",
+      feeMinor: null,
+      paidAt: new Date().toISOString(),
+      reference: "CAP-1",
+      status: "REFUNDED",
+    };
+    expect(await applyProviderEvent(h.ctx, link, event, settings)).toMatchObject({ result: "applied" });
+    expect(await applyProviderEvent(h.ctx, link, { ...event, eventId: "WH-DEDUP-2" }, settings)).toMatchObject({
+      result: "ignored",
+      detail: "That refund is already recorded",
+    });
+    expect(await row(`SELECT amount_minor FROM ${NAMESPACE}.payment_refunds`)).toEqual([{ amount_minor: "5000" }]);
+    expect(await row(`SELECT result FROM ${NAMESPACE}.payment_events WHERE key IN ('paypal:WH-DEDUP-1', 'paypal:WH-DEDUP-2') ORDER BY key`)).toEqual([
+      { result: "applied" },
+      { result: "ignored" },
+    ]);
+  });
+
+  it("an unmatched PayPal refund (no capture id) warns with event id only and is not handled", async () => {
+    const invoice = await sentInvoice();
+    const link = (await makeLink(invoice.id)).links[0]!;
+    const warns: Array<{ message: string; meta: Record<string, unknown> }> = [];
+    const logger = h.ctx.logger as { warn: (message: string, meta?: Record<string, unknown>) => void };
+    const realWarn = logger.warn;
+    logger.warn = (message, meta) => {
+      warns.push({ message, meta: meta ?? {} });
+    };
+    try {
+      const event = {
+        id: "WH-UNMATCHED",
+        event_type: "PAYMENT.CAPTURE.REFUNDED",
+        create_time: new Date().toISOString(),
+        resource: {
+          id: "REF-ORPHAN",
+          custom_id: link.id,
+          status: "REFUNDED",
+          amount: { currency_code: "USD", value: "10.00" },
+          create_time: new Date().toISOString(),
+        },
+      };
+      const result = await handleBillingWebhook(h.ctx, {
+        endpointKey: "paypal",
+        rawBody: JSON.stringify(event),
+        headers: { ...PAYPAL_TRANSMISSION },
+      });
+      expect(result).toMatchObject({ handled: false, outcomes: [], reason: "unmatched refund" });
+      expect(warns).toEqual([
+        expect.objectContaining({
+          message: "PayPal refund webhook matched no capture or amount",
+          meta: expect.objectContaining({ provider: "paypal", eventId: "WH-UNMATCHED", transmissionId: "tx-1" }),
+        }),
+      ]);
+      expect(JSON.stringify(warns)).not.toMatch(/ap@lumen|Lumen|customer/i);
+      expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_events`)).toHaveLength(0);
+      expect(await row(`SELECT 1 FROM ${NAMESPACE}.payment_refunds`)).toHaveLength(0);
+    } finally {
+      logger.warn = realWarn;
+    }
+  });
+
   // ── The public webhook address ─────────────────────────────────────────────
 
   it("a flood of unsigned PayPal deliveries cannot burn the remembered webhook id, and a genuine delivery still gets through", async () => {

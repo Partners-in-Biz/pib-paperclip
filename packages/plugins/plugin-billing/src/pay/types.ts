@@ -63,8 +63,22 @@ export interface ProviderEvent {
   eventId: string;
   linkId: string | null;
   providerPaymentId: string | null;
-  /** Payment: the amount paid. Refund: the total refunded so far on that payment (the provider reports it cumulatively). */
+  /**
+   * Payment: the amount paid.
+   * Refund (Stripe/PayFast): the total refunded so far on that payment (cumulative).
+   * Refund (PayPal): may still carry a cumulative estimate for logs; prefer `refundIncrementMinor` when set.
+   */
   amountMinor: number;
+  /**
+   * When set (PayPal), this delivery's refund amount alone. Apply adds it to the fresh row's
+   * `refunded_minor` so concurrent deliveries do not both compute the same cumulative and drop.
+   */
+  refundIncrementMinor?: number;
+  /**
+   * When set (PayPal refund id), used as the refund `sourceKey` so a redelivery under a new
+   * webhook event id still dedupes.
+   */
+  providerRefundId?: string;
   currency: string | null;
   /** The provider's fee, when the delivery carries it. */
   feeMinor: number | null;

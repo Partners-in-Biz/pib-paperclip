@@ -359,6 +359,7 @@ export class PaypalProvider implements PaymentProvider {
       case "PAYMENT.CAPTURE.REFUNDED": {
         const thisRefund = amountFromResource(resource);
         const captureId = captureIdFromRefundResource(resource);
+        const refundId = text(resource.id);
         if (!(thisRefund.amountMinor > 0 && captureId)) return [];
         return [
           {
@@ -366,7 +367,10 @@ export class PaypalProvider implements PaymentProvider {
             eventId: event.id,
             linkId,
             providerPaymentId: captureId,
+            // Cumulative estimate for logs; apply prefers refundIncrementMinor + a fresh row read.
             amountMinor: link.refundedMinor + thisRefund.amountMinor,
+            refundIncrementMinor: thisRefund.amountMinor,
+            ...(refundId ? { providerRefundId: refundId } : {}),
             currency: thisRefund.currency,
             feeMinor: null,
             paidAt: createTime,

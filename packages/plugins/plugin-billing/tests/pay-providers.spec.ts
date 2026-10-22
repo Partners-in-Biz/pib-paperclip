@@ -587,7 +587,7 @@ describe("PaypalProvider", () => {
     expect(calls2[2]!.headers["PayPal-Request-Id"]).toBe("capture-ORDER1");
   });
 
-  it("reports two partial refunds as cumulative totals keyed by capture id, not refund id", async () => {
+  it("reports two partial refunds with increment + refund id; cumulative amountMinor is for logs only", async () => {
     const refundResource = (refundId: string, value: string, captureVia: "related" | "up") => ({
       id: refundId,
       custom_id: "6f1e",
@@ -616,6 +616,8 @@ describe("PaypalProvider", () => {
         kind: "refund",
         eventId: "WH-REF-1",
         providerPaymentId: "CAP-1",
+        providerRefundId: "REF-1",
+        refundIncrementMinor: 1_000,
         amountMinor: 1_000,
         reference: "CAP-1",
       }),
@@ -633,9 +635,29 @@ describe("PaypalProvider", () => {
         kind: "refund",
         eventId: "WH-REF-2",
         providerPaymentId: "CAP-1",
+        providerRefundId: "REF-2",
+        refundIncrementMinor: 500,
         amountMinor: 1_500,
       }),
     ]);
+  });
+
+  it("returns no events for a refund with no capture id (unmatched)", async () => {
+    const event = {
+      id: "WH-REF-NO-CAP",
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: "2026-10-03T10:00:00Z",
+      resource: {
+        id: "REF-ORPHAN",
+        custom_id: "6f1e",
+        status: "COMPLETED",
+        amount: { currency_code: "USD", value: "1.00" },
+        create_time: "2026-10-03T10:00:00Z",
+      },
+    };
+    const { fetchImpl } = fakePaypal([{ body: tokenBody }, { body: { verification_status: "SUCCESS" } }]);
+    const events = await new PaypalProvider({ ...config, fetchImpl }).verify(deliver(event), link, null);
+    expect(events).toEqual([]);
   });
 
   it("locates and verifies a refund with no custom_id when capture id is in related_ids", async () => {
@@ -661,6 +683,8 @@ describe("PaypalProvider", () => {
         kind: "refund",
         linkId: "6f1e",
         providerPaymentId: "CAP-1",
+        providerRefundId: "REF-X",
+        refundIncrementMinor: 100,
         amountMinor: 100,
       }),
     ]);
