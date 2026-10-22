@@ -350,13 +350,13 @@ describe("what is on", () => {
     expect(enabledProviderKeys({ ...stripeOn, payments: { ...stripeOn.payments, mock: { enabled: true } } })).toEqual(["stripe", "mock"]);
   });
 
-  it("PayFast stays off while the host cannot receive its notifications, however complete it is", () => {
+  it("PayFast is ready when credentials are complete and ITN via host is on", () => {
     const complete = { payments: { publicBaseUrl: "https://paperclip.example", payfast: { enabled: true, merchantId: "10000100", merchantKey: { type: "secret_ref", secretId: "k" } } } };
-    expect(ITN_VIA_HOST).toBe(false);
-    expect(providerState(complete, "payfast")).toMatchObject({ enabled: false, switchedOn: true, code: "host_limit", blocker: expect.stringMatching(/cannot receive PayFast notifications/) });
-    // The rule itself, for the day the host passes forms on:
+    expect(ITN_VIA_HOST).toBe(true);
+    expect(providerState(complete, "payfast")).toMatchObject({ enabled: true, switchedOn: true, code: "ok", blocker: null });
     const settings = { enabled: true, merchantId: "1", merchantKey: true };
     expect(payfastReadiness(settings, "https://paperclip.example", true)).toEqual({ ready: true, blocker: null, code: "ok" });
+    expect(payfastReadiness(settings, "https://paperclip.example", false)).toMatchObject({ ready: false, code: "host_limit", blocker: expect.stringMatching(/cannot receive PayFast notifications/) });
     expect(payfastReadiness(settings, null, true)).toMatchObject({ ready: false, code: "missing", blocker: expect.stringMatching(/public address/) });
     expect(payfastReadiness({ ...settings, enabled: false }, "https://x", true).code).toBe("off");
   });

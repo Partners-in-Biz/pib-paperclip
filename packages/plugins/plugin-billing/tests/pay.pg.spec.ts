@@ -435,7 +435,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     await expect(plugin.definition.onWebhook!({ endpointKey: "nope", headers: {}, rawBody: "{}", parsedBody: {}, requestId: "r" })).rejects.toThrow(/Unknown webhook endpoint/);
   });
 
-  it("says in Setup what the owner does for each provider, and that PayFast waits on a host decision", async () => {
+  it("says in Setup what the owner does for each provider, including optional PayFast", async () => {
     h.config.set(COMPANY, { ...SETTINGS, payments: { publicBaseUrl: "https://paperclip.test" } });
     const off = await setupStatus(h.ctx, COMPANY);
     const stripe = off.items.find((i) => i.key === "pay_stripe")!;
@@ -444,10 +444,15 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     expect(stripe.steps!.join("\n")).toContain("checkout.session.completed, checkout.session.async_payment_succeeded");
     expect(stripe.agentNext).toMatch(/pay-online link/);
     const payfast = off.items.find((i) => i.key === "pay_payfast")!;
-    // Not "waiting on another step": it waits on the owner's decision, and the item says so.
-    expect(payfast).toMatchObject({ required: false, status: "optional", detail: expect.stringMatching(/^Needs your decision/) });
-    expect(payfast.detail).toMatch(/accepts only JSON on plugin webhook addresses/);
-    expect(payfast.detail).toMatch(/Yoco and Paystack/);
+    // ITN via host is on: normal optional setup copy (not the host-decision branch).
+    expect(payfast).toMatchObject({
+      required: false,
+      status: "optional",
+      detail: "Optional. Lets South African customers pay from a link in the email. Off until you do the steps below.",
+      href: "https://www.payfast.co.za/registration",
+      hrefLabel: "PayFast registration",
+    });
+    expect(payfast.steps!.join("\n")).toContain("https://paperclip.test/api/plugins/partnersinbiz.billing/webhooks/payfast");
     // Once on, the item is done and counts confirmed payments.
     h.config.set(COMPANY, { ...STRIPE_SETTINGS });
     expect((await setupStatus(h.ctx, COMPANY)).items.find((i) => i.key === "pay_stripe")).toMatchObject({ status: "done", detail: expect.stringMatching(/No payment has been confirmed yet/) });
