@@ -35,10 +35,9 @@ export function isCanaryCustomer(doc: { customer_ref?: string | null; customer?:
 }
 
 /**
- * SQL that is true for a row of the canary client (`customer_ref` starts with the prefix OR email is .invalid),
- * for queries that must leave it out (`AND NOT (${isCanarySql("i")})`). `alias` is the table's alias in that query.
- * Constant text: nothing here is a parameter.
+ * SQL that is true for a row of the canary client (`customer_ref` starts with the prefix), for queries that must leave it out
+ * (`AND NOT (${isCanarySql("i")})`). `alias` is the table's alias in that query. Constant text: nothing here is a parameter.
  */
 export function isCanarySql(alias: string): string {
-  return `(${alias}.customer_ref LIKE '${CANARY_PREFIX}%' OR ${alias}.customer LIKE '%".invalid"%')`;
+  return `${alias}.customer_ref LIKE '${CANARY_PREFIX}%'`;
 }

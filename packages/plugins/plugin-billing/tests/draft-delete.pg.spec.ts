@@ -78,10 +78,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
     it("hard-deletes a numbered draft invoice on a .invalid email contact", async () => {
       // Create a contact with .invalid email (treated as canary)
       const invalidEmailContact = "ct-invalid";
-      await h.client.query(
-        `INSERT INTO ${NAMESPACE}.clients (id, company_id, kind, ref, name, email) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [invalidEmailContact, COMPANY, "contact", invalidEmailContact, "Invalid Email", "test@example.invalid"],
-      );
+      await seedClient(h, { id: invalidEmailContact, name: "Invalid Email", email: "test@example.invalid" });
 
       // Create a numbered draft invoice on this contact
       const inv = await draft(invalidEmailContact);
@@ -315,7 +312,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
 
       // Try to delete from other company
       const error = await callWithCompany("delete-draft-invoice", { invoiceId: inv.id }, OTHER_COMPANY).catch((e) => e.message);
-      expect(error).toContain("Not found");
+      expect(error).toContain("is not visible");
     });
 
     it("refuses to delete another company's draft quote", async () => {
@@ -324,7 +321,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
 
       // Try to delete from other company
       const error = await callWithCompany("delete-draft-quote", { quoteId: q.id }, OTHER_COMPANY).catch((e) => e.message);
-      expect(error).toContain("Not found");
+      expect(error).toContain("is not visible");
     });
   });
 });
