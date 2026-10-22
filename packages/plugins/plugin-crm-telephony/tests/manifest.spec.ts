@@ -42,10 +42,11 @@ describe("CRM Telephony manifest", () => {
     expect(caps).not.toContain("ui.appShellOverlay.register");
   });
 
-  it("has one UI slot (dialer-page)", () => {
+  it("has two UI slots (dialer-page and telephony-settings)", () => {
     const slots = manifest.ui?.slots ?? [];
-    expect(slots).toHaveLength(1);
+    expect(slots).toHaveLength(2);
     expect(slots[0]).toMatchObject({ id: "dialer-page", exportName: "DialerPage", type: "page" });
+    expect(slots[1]).toMatchObject({ id: "telephony-settings", exportName: "TelephonySettingsPage", type: "page" });
   });
 
   it("has telephony-status tool", () => {
