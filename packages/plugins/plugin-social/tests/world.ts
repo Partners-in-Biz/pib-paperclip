@@ -163,6 +163,7 @@ export function approvalWorld(opts: WorldOptions = {}) {
           const rounds = outcomes.filter((o) => o.post_id === params[0] && o.stage === params[2]).map((o) => Number(o.round));
           return [{ n: rounds.length ? Math.max(...rounds) : 0 }];
         }
+        if (sql.includes("post_type, stage, outcome, round, post_id, created_at, via FROM")) return outcomes;
         if (sql.includes(`FROM ${T("review_outcomes")}`) && sql.includes("WHERE post_id = $1")) {
           return outcomes.filter((o) => o.post_id === params[0]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || Number(b.round) - Number(a.round));
         }

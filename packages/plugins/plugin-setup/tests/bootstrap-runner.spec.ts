@@ -146,7 +146,7 @@ describe("a fresh company with a CEO", () => {
 
     // The wiki is set up, the starter pack stays off.
     expect(f.wiki.n).toBe(1);
-    expect(statusOf(f, "starter-pack")).toMatchObject({ status: "skipped" });
+    expect(statusOf(f, "starter-pack")).toMatchObject({ status: "needs_owner" });
     expect(f.imports.n).toBe(0);
 
     // The one list of grants, recorded with the step.
@@ -521,8 +521,9 @@ describe("the company wiki and the starter pack", () => {
     expect(missing.wiki.n).toBe(0);
   });
 
-  it("is off unless chosen, and needs the owner's OK when chosen but not approved", async () => {
-    expect((await stepStarterPack(fake().env)).status).toBe("skipped");
+  it("is on unless switched off, and needs the owner's OK when the version is not approved", async () => {
+    expect((await stepStarterPack(fake({ options: { starterPack: false } }).env)).status).toBe("skipped");
+    expect((await stepStarterPack(fake().env)).status).toBe("needs_owner");
     const unapproved = fake({ options: { starterPack: true } });
     const outcome = await stepStarterPack(unapproved.env);
     expect(outcome.status).toBe("needs_owner");

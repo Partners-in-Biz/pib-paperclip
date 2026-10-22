@@ -54,7 +54,7 @@ export const BOOTSTRAP_STEPS: readonly StepDef[] = [
   { id: "roles", title: "Open a hire task for every team role", where: "page", summary: "One prefilled task per missing role of a switched-on module, assigned to the agent that does the hiring." },
   { id: "templates", title: "Open hire tasks for the dev team and the other template agents", where: "page", summary: "From the team template pack: the CEO, the dev team and the support agents you selected." },
   { id: "company-wiki", title: "Set up the company wiki", where: "page", summary: "Creates the wiki folder, the Wiki Maintainer and its routines (LLM Wiki)." },
-  { id: "starter-pack", title: "Seed company memory with the starter pack", where: "page", summary: "A small pack of company-wide lessons. Off until the owner approves this version." },
+  { id: "starter-pack", title: "Seed company memory with the starter pack", where: "page", summary: "A small pack of company-wide lessons. On for every new company; only a version the owner approved is seeded." },
   { id: "finish-issue", title: "Open the Finish setup issue", where: "worker", summary: "One issue for the owner that lists what is still missing and this list of grants." },
   { id: "owner-list", title: "What only you can do", where: "owner", summary: "One batched list of one-time grants, each with a link and exact steps." },
 ];
@@ -92,7 +92,7 @@ export interface BootstrapOptions {
   templates?: string[];
   /** The agent that does the hiring (the page picks it with `pickHiringAgent`). */
   hiringAgentId?: string | null;
-  /** Seed memory with the starter pack when the owner approved it. */
+  /** Seed memory with the starter pack (default on; only an approved version is seeded). */
   starterPack?: boolean;
 }
 

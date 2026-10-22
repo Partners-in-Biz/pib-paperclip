@@ -346,7 +346,7 @@ export async function stepCompanyWiki(env: RunnerEnv): Promise<StepOutcome> {
 }
 
 export async function stepStarterPack(env: RunnerEnv): Promise<StepOutcome> {
-  if (!env.options.starterPack) return { status: "skipped", detail: "Not selected. The starter pack is off unless you choose it and approve it.", items: [] };
+  if (env.options.starterPack === false) return { status: "skipped", detail: "Switched off for this company.", items: [] };
   if (!env.starter.approved) return { status: "needs_owner", detail: "Needs the owner's OK: read the pack in the Memory starter pack card and approve this version.", items: [] };
   if (env.starter.importedAt) return { status: "done", detail: `Already seeded on ${env.starter.importedAt.slice(0, 10)}.`, items: [] };
   const pack = await env.starterPackImport();

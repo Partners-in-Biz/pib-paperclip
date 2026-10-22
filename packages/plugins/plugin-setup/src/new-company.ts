@@ -47,6 +47,7 @@ import {
 } from "./db.js";
 import { SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { standingApproval } from "./standing-approval.js";
 import { loadStarterPack, parseImportResult, starterPackExport, type StarterPack } from "./starter-pack.js";
 import { loadPack, matchTemplate, offeredTemplates, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
 import { pickAdapter, renderHire, templateConfig } from "./templates-render.js";
@@ -124,7 +125,8 @@ export function sanitizeOptions(raw: unknown): BootstrapOptions {
   if (typeof row.includeOptionalRoles === "boolean") out.includeOptionalRoles = row.includeOptionalRoles;
   if (Array.isArray(row.templates)) out.templates = row.templates.filter((key): key is string => typeof key === "string" && !!templateByKey(key)).slice(0, 20);
   if (typeof row.hiringAgentId === "string" && /^[0-9a-f-]{8,64}$/i.test(row.hiringAgentId)) out.hiringAgentId = row.hiringAgentId;
-  if (typeof row.starterPack === "boolean") out.starterPack = row.starterPack;
+  // On unless the caller says false: the owner's standing yes (PAR-4701). Only an approved pack version is ever seeded.
+  out.starterPack = typeof row.starterPack === "boolean" ? row.starterPack : true;
   return out;
 }
 
@@ -138,12 +140,17 @@ export function starterPackHash(pack: StarterPack): string {
   return createHash("sha256").update(JSON.stringify({ version: pack.version, facts: content })).digest("hex");
 }
 
+/** A person's approval row, else the standing approval for exactly this content hash. */
+async function approvalFor(ctx: PluginContext, version: number, hash: string) {
+  return (await getStarterApproval(ctx, version, hash).catch(() => null)) ?? standingApproval(version, hash);
+}
+
 export async function starterPackView(ctx: PluginContext, companyId?: string, options: { includeFacts?: boolean } = {}) {
   const pack = loadStarterPack();
   // The facts and the review notes are for a person to read before approving; an agent reading the state gets the counts only.
   const includeFacts = options.includeFacts !== false;
   const hash = starterPackHash(pack);
-  const approval = await getStarterApproval(ctx, pack.version, hash).catch(() => null);
+  const approval = await approvalFor(ctx, pack.version, hash);
   const imported = companyId ? await getStarterImport(ctx, companyId, pack.version, hash).catch(() => null) : null;
   return {
     name: pack.name,
@@ -180,7 +187,7 @@ export async function approveStarterPack(ctx: PluginContext, input: { userId: st
 export async function starterPackForImport(ctx: PluginContext, clock: Clock = systemClock) {
   const pack = loadStarterPack();
   const hash = starterPackHash(pack);
-  if (!(await getStarterApproval(ctx, pack.version, hash))) throw new SetupError("The starter pack needs the owner's OK first: open Setup -> New company -> Memory starter pack and approve this version.");
+  if (!(await approvalFor(ctx, pack.version, hash))) throw new SetupError("The starter pack needs the owner's OK first: open Setup -> New company -> Memory starter pack and approve this version.");
   return { version: pack.version, hash, data: starterPackExport(pack, clock.now().toISOString()) };
 }
 

@@ -51,7 +51,7 @@ A person's My Social space holds personal profile drafts: posts only they can se
 - **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
 - **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
 - **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; a repeat call returns it. Attach the asset, then \`request-review\`.
-- \`review-outcomes\` gives first-pass rates per post type. They are inputs for a later autonomy policy; auto-approval is off.
+- \`review-outcomes\` gives first-pass rates and streaks per post type. Only a low-risk post with a team streak of 5 skips the team click.
 Full flow, statuses and edge cases: \`references/approvals.md\`.
 
 ## After scheduling
@@ -274,7 +274,7 @@ No policy set = a team member approves, as before. At least one of team member o
 \`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the company's Reviewer can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
-Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off, and turning it on is the owner's decision.
+Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.
 
 ## If something is off
 - "The client approval page is not reachable": a one-time setup for the owner (Setup → Social → Client approval page). Do not send the client anything; ask once with \`${ASK_OWNER_TOOL}\`.
