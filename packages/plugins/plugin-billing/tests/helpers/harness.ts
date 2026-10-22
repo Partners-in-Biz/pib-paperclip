@@ -101,6 +101,7 @@ export async function startHarness(): Promise<Harness> {
   };
 
   const ctx = {
+    manifest: { id: "partnersinbiz.billing" },
     db: {
       namespace: NAMESPACE,
       query: async (sql: string, params: unknown[] = []) => {
