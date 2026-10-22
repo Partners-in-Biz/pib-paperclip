@@ -383,6 +383,34 @@ export async function approvalsOfSubject(ctx: PluginContext, companyId: string, 
   return rows.map(mapApproval);
 }
 
+/** Approvals for one client and kind; optional status filter (json array of status strings). */
+export async function approvalsForClient(
+  ctx: PluginContext,
+  companyId: string,
+  kind: ApprovalKind,
+  client: ClientKey,
+  statuses?: ApprovalStatus[],
+  limit = 50,
+): Promise<ApprovalRecord[]> {
+  const cap = Math.max(1, Math.min(limit, 100));
+  const statusJson = statuses?.length ? JSON.stringify(statuses) : null;
+  const rows = statusJson
+    ? await ctx.db.query<ApprovalRow>(
+      `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")}
+       WHERE company_id = $1 AND kind = $2 AND client_kind = $3 AND client_ref = $4
+         AND status = ANY(ARRAY(SELECT jsonb_array_elements_text($5::jsonb)))
+       ORDER BY created_at DESC LIMIT ${cap}`,
+      [companyId, kind, client.kind, client.id, statusJson],
+    )
+    : await ctx.db.query<ApprovalRow>(
+      `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")}
+       WHERE company_id = $1 AND kind = $2 AND client_kind = $3 AND client_ref = $4
+       ORDER BY created_at DESC LIMIT ${cap}`,
+      [companyId, kind, client.kind, client.id],
+    );
+  return rows.map(mapApproval);
+}
+
 export async function approvalsByStatus(ctx: PluginContext, companyId: string, status: ApprovalStatus, limit = 200): Promise<ApprovalRecord[]> {
   const rows = await ctx.db.query<ApprovalRow>(
     `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")} WHERE company_id = $1 AND status = $2 ORDER BY created_at LIMIT ${Math.max(1, Math.min(limit, 500))}`,

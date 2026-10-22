@@ -1,4 +1,4 @@
--- CRM: widen care_approvals kind for speed-to-lead (PAR-2262). Additive constraint only.
+-- CRM: speed-to-lead (PAR-2262). Stop-first: replaces care_approvals_kind CHECK to include speed_to_lead.
 
 ALTER TABLE plugin_crm_832258244c.care_approvals DROP CONSTRAINT care_approvals_kind;
 

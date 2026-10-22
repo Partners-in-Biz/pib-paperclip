@@ -237,6 +237,9 @@ export async function sendApproved(ctx: PluginContext, approval: ApprovalRecord,
   const draft = options.draft ?? (approval.payload.draft as MailDraft | undefined);
   if (!draft) throw new Error("This approval has no email to send.");
   await checkRecipients(ctx, approval.companyId, approval.kind, draft);
+  if (approval.kind === "speed_to_lead" && draft.text.includes("[Slot")) {
+    throw new RecipientRefused("The speed-to-lead draft still has slot placeholders; edit the approval email before sending.");
+  }
   if (draft.to.every((to) => isCanaryEmail(to.email))) {
     await updateApproval(ctx, approval.companyId, approval.id, { status: "dry_run", decidedBy, error: null });
     return { status: "dry_run", key: null };
