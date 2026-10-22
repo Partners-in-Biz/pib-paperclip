@@ -375,6 +375,62 @@ d("Push page actions (Postgres)", () => {
     it("rejects test with unknown device id", async () => {
       await expect(test(pg.ctx, COMPANY_A, USER_A, { id: "unknown" })).rejects.toMatchObject({ code: "not_found" });
     });
+
+    it("targets every registered device, including an Apple endpoint, when no id is passed", async () => {
+      const iphone = createRealSubscriptionKeyPair();
+      const desktop = createRealSubscriptionKeyPair();
+      await subscribe(pg.ctx, COMPANY_A, USER_A, {
+        endpoint: "https://web.push.apple.com/3d/iphone-on",
+        p256dh: iphone.p256dh,
+        auth: iphone.auth,
+        label: "iPhone",
+      });
+      await subscribe(pg.ctx, COMPANY_A, USER_A, {
+        endpoint: "https://fcm.googleapis.com/fcm/send/desktop-on",
+        p256dh: desktop.p256dh,
+        auth: desktop.auth,
+        label: "Desktop",
+      });
+
+      const seen: string[] = [];
+      const result = await test(pg.ctx, COMPANY_A, USER_A, {}, {
+        deps: {
+          postPush: async (url) => {
+            seen.push(url);
+            return { status: 201, headers: {}, body: "", bodyTruncated: false };
+          },
+        },
+      });
+
+      expect(result.disabled).toBe(false);
+      expect(result.capped).toBe(false);
+      expect(result.deviceCount).toBe(2);
+      expect(result.results.map((row) => row.outcome).sort()).toEqual(["sent", "sent"]);
+      expect(result.results.map((row) => row.label).sort()).toEqual(["Desktop", "iPhone"]);
+      expect(seen).toHaveLength(2);
+      expect(seen.some((url) => url.includes("push.apple.com"))).toBe(true);
+    });
+
+    it("reports push disabled without pretending the device list is empty", async () => {
+      pg.config.set(COMPANY_A, { pushEnabled: false });
+      const keys = createRealSubscriptionKeyPair();
+      await subscribe(pg.ctx, COMPANY_A, USER_A, {
+        endpoint: "https://web.push.apple.com/3d/iphone-disabled",
+        p256dh: keys.p256dh,
+        auth: keys.auth,
+        label: "iPhone",
+      });
+
+      const result = await test(pg.ctx, COMPANY_A, USER_A, {});
+
+      expect(result.disabled).toBe(true);
+      expect(result.capped).toBe(false);
+      expect(result.deviceCount).toBe(1);
+      expect(result.results).toEqual([]);
+      const listed = await devices(pg.ctx, COMPANY_A, USER_A);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]!.state).toBe("ok");
+    });
   });
 
   describe("company scoping", () => {
