@@ -38,6 +38,13 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "DialerPage",
         routePath: "dialer",
       },
+      {
+        type: "page",
+        id: "telephony-settings",
+        displayName: "Telephony settings",
+        exportName: "TelephonySettingsPage",
+        routePath: "telephony-settings",
+      },
     ],
   },
   database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
