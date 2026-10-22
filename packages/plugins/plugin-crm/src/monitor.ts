@@ -308,7 +308,10 @@ export async function checkPage(io: MonitorIo, url: string, retryAfterMs = 2_000
   if (first.ok) return first;
   await io.sleep(retryAfterMs);
   const second = await io.page(url);
-  return second.ok ? second : { ...second, error: second.error ?? first.error };
+  if (second.ok) return second;
+  // An origin 5xx on the first try stays the result when the retry only timed out: it must not be read as a VPS-only timeout.
+  if (first.status !== null && first.status >= 500 && second.status === null) return first;
+  return { ...second, error: second.error ?? first.error };
 }
 
 /** The state after one page check. Down stays down since the first failure; up clears everything. */
@@ -338,11 +341,13 @@ export function downMinutes(m: Pick<MonitorRow, "status" | "downSince">, now: nu
 export const OUTSIDE_PASS_TTL_HOURS = 24;
 const OUTSIDE_PASS_SKEW_MS = 5 * MINUTE_MS;
 /** What our own fetch says when nothing came back at all: a timeout or a dropped connection (not a 5xx, not a name that does not resolve). */
-const NO_ANSWER_ERROR = /timed? ?out|timeout|etimedout|econnreset|econnaborted|epipe|socket hang up|connection (?:was )?(?:reset|closed|dropped|terminated)|connect(?:ion)? aborted|operation was aborted|fetch failed/i;
+const NO_ANSWER_ERROR = /timed? ?out|timeout|etimedout|econnreset|econnaborted|epipe|socket hang up|connection (?:was )?(?:reset|closed|dropped|terminated)|connect(?:ion)? aborted|operation was aborted/i;
+/** Host errors that echo the hostname or come from name resolution: never read as "no answer", whatever the hostname contains. A resolver timeout from this server counts as a DNS problem, not a drop. */
+const NOT_A_DROP = /^(?:DNS |Invalid URL|All resolved IPs|Only http)/i;
 
 /** True when this machine got no answer (timeout or dropped connection) rather than a server error or a DNS failure. */
 export function isNoAnswerError(m: Pick<MonitorRow, "httpStatus" | "lastError">): boolean {
-  return m.httpStatus === null && Boolean(m.lastError) && NO_ANSWER_ERROR.test(m.lastError!);
+  return m.httpStatus === null && Boolean(m.lastError) && !NOT_A_DROP.test(m.lastError!) && NO_ANSWER_ERROR.test(m.lastError!);
 }
 
 /**

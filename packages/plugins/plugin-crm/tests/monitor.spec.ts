@@ -370,6 +370,28 @@ describe("the monitor run", () => {
       }
     });
 
+    it("a first-try 503 whose retry only times out stays an origin error: a recorded pass does not hide it", async () => {
+      const { harness } = await bootSites();
+      const pages = [fiveHundred, down];
+      let n = 0;
+      const mocks = io({ page: vi.fn(async () => (n++ % 2 === 0 ? pages[0]! : pages[1]!)) });
+      await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+      await record(harness, 3);
+      expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => at(5) })).issues).toBe(1);
+      const [outage] = await issuesWith(harness, "crm:site-down:");
+      expect(await siteIssueResolved(harness.ctx, CO, outage!.originId!, mocks, at(30))).toMatchObject({ done: false });
+    });
+
+    it("name-resolution and bad-address errors are never read as a drop, even when the hostname says timeout", async () => {
+      for (const error of ["DNS resolution failed for timeout-shop.example: getaddrinfo ENOTFOUND timeout-shop.example", "DNS lookup timed out after 5000ms for acme.co.za", "Invalid URL: https://timed-out.example", "All resolved IPs for timeout.example are in private/reserved ranges"]) {
+        const { harness } = await bootSites();
+        const mocks = io({ page: vi.fn(async () => ({ ok: false, status: null, ms: 10, error }) as PageResult) });
+        await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => T0 });
+        await record(harness, 3);
+        expect((await runSiteMonitor(harness.ctx, CO, { io: mocks, now: () => at(5) })).issues, error).toBe(1);
+      }
+    });
+
     it("the done-check: a recorded pass lets the open site-down issue close; without it, a 5xx, or a live outside 'down', it does not", async () => {
       const { harness } = await bootSites();
       const mocks = io({ page: vi.fn(async () => down) });
