@@ -141,7 +141,7 @@ const instanceConfigSchema: JsonSchema = {
         payfast: {
           type: "object",
           title: "PayFast (South Africa)",
-          description: "PayFast sends its payment notifications as web forms, which this Paperclip version cannot receive yet (the Setup item explains and says what to decide). Until it can, switching PayFast on has no effect.",
+          description: "PayFast ITN is received as form posts on the plugin webhook route. Enable only after merchant credentials are set (Merchant ID, Merchant Key, and passphrase when used).",
           properties: {
             enabled: { type: "boolean", title: "Accept payments through PayFast", default: false },
             sandbox: { type: "boolean", title: "Use the PayFast sandbox (test mode)", default: false },

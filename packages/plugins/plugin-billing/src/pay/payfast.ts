@@ -17,20 +17,18 @@
  *     settles a different amount by itself: it asks a person);
  *  4. a server-side confirmation: the same fields posted to `/eng/query/validate`, which answers VALID.
  *
- * HOST LIMIT (checked 2026-10-03 in server/src/app.ts and the live runtime). PayFast posts the ITN as
- * `application/x-www-form-urlencoded`. The host's plugin webhook route sits behind `express.json()`
- * only, so a form post arrives at the plugin with an EMPTY body and nothing to verify. Until the host
- * accepts form bodies for plugin webhooks (a small host change, which needs the owner's approval under
- * rule 7) PayFast cannot confirm a payment, so it is never offered: `payfastReadiness` says why, and
- * the Setup checklist item says what the owner decides. Flip `ITN_VIA_HOST` when that lands.
+ * HOST (form-urlencoded ITN). PayFast posts the ITN as `application/x-www-form-urlencoded`. The host
+ * webhook middleware now accepts form-encoded plugin webhook bodies, so ITN posts reach the plugin with
+ * a body to verify. `ITN_VIA_HOST` is on; `payfastReadiness` still accepts an explicit `hostPassesForms`
+ * override for tests. Empty deliveries are refused and never believed.
  */
 import { lookup } from "node:dns/promises";
 import { md5Hex, phpUrlencode, safeEqual } from "./crypto.js";
 import { PaymentProviderError } from "./stripe.js";
 import { decimalFromMinor, minorFromDecimal, WebhookRejected, type CreatedLink, type LinkForVerify, type LinkRequest, type LocatedLink, type PaymentProvider, type ProviderEvent, type WebhookInput } from "./types.js";
 
-/** True once the host passes form-encoded plugin webhook bodies through. See the module header. */
-export const ITN_VIA_HOST = false;
+/** True: the host passes form-encoded plugin webhook bodies through. See the module header. */
+export const ITN_VIA_HOST = true;
 
 export const PAYFAST_HOSTS = ["www.payfast.co.za", "sandbox.payfast.co.za", "w1w.payfast.co.za", "w2w.payfast.co.za"];
 export const PAYFAST_LIVE = "https://www.payfast.co.za";
