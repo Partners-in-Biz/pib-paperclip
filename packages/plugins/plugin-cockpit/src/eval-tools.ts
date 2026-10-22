@@ -11,7 +11,7 @@ import { EVAL_TOOL_NAMES } from "./eval-tool-declarations.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { operatorAgentId } from "./roles.js";
-import { proposeSkillChange } from "./skill-change.js";
+import { proposeSkillChange, type ChangeInput } from "./skill-change.js";
 import { SkillChangeError } from "./skill-change-model.js";
 
 export { EVAL_TOOL_SET } from "./eval-tool-declarations.js";
@@ -93,31 +93,43 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
     }
     if (name === EVAL_TOOL_NAMES.change) {
       const skill = text(p.skill, 60);
+      const kind = text(p.kind, 20) ?? "skill";
       const diff = typeof p.diff === "string" ? p.diff : "";
       const reason = text(p.reason, 600);
       const metricKey = text(p.metricKey, 120);
-      if (!skill || !diff.trim() || !reason || !metricKey) return fail("propose-skill-change needs skill, diff, reason and metricKey (the number the change should move).");
-      const done = await proposeSkillChange(
-        env,
-        companyId,
-        {
-          skill,
-          diff,
-          file: text(p.file, 200) ?? "SKILL.md",
-          reason,
-          evidence: Array.isArray(p.evidence) ? p.evidence.filter((e): e is string => typeof e === "string").map((e) => e.slice(0, 200)).slice(0, 10) : [],
-          sourceIssueId: text(p.sourceIssueId, 100) ?? null,
-          metricKey,
-          direction: p.direction === "lower" || p.direction === "higher" ? p.direction : undefined,
-          baselineValue: typeof p.baselineValue === "number" ? p.baselineValue : undefined,
-          targetValue: typeof p.targetValue === "number" ? p.targetValue : undefined,
-          recheckInDays: typeof p.recheckInDays === "number" ? Math.round(p.recheckInDays) : 28,
-          kind: text(p.kind, 20) ?? "skill",
-        },
-        { agentId: run.agentId ?? null },
-      );
+      if (!diff.trim() || !reason || !metricKey) return fail("propose-skill-change needs skill, diff, reason and metricKey (the number the change should move).");
+
+      const evidence = Array.isArray(p.evidence) ? p.evidence.filter((e): e is string => typeof e === "string").map((e) => e.slice(0, 200)).slice(0, 10) : [];
+      const input: ChangeInput = {
+        skill: kind === "template" ? "" : skill ?? "",
+        diff,
+        file: kind === "template" ? "template" : text(p.file, 200) ?? "SKILL.md",
+        reason,
+        evidence,
+        sourceIssueId: text(p.sourceIssueId, 100) ?? null,
+        metricKey,
+        direction: p.direction === "lower" || p.direction === "higher" ? p.direction : undefined,
+        baselineValue: typeof p.baselineValue === "number" ? p.baselineValue : undefined,
+        targetValue: typeof p.targetValue === "number" ? p.targetValue : undefined,
+        recheckInDays: typeof p.recheckInDays === "number" ? Math.round(p.recheckInDays) : 28,
+        kind,
+        ...(kind === "template" ? {
+          templateKey: text(p.templateKey, 100),
+          candidateText: typeof p.candidateText === "string" ? p.candidateText : "",
+          candidateHash: text(p.candidateHash, 80),
+        } : {}),
+      };
+
+      if (kind === "template") {
+        if (!input.templateKey || !input.candidateText || !input.candidateHash) return fail("propose-skill-change with kind template needs templateKey, candidateText, and candidateHash.");
+      } else {
+        if (!skill) return fail("propose-skill-change needs skill, diff, reason and metricKey (the number the change should move).");
+      }
+
+      const done = await proposeSkillChange(env, companyId, input, { agentId: run.agentId ?? null });
+      const reviewMsg = done.review ? `The diff applies (${done.review.added} lines added, ${done.review.removed} removed; ${done.review.after} of ${done.review.budget} characters).` : kind === "template" ? "The candidate text matches its hash." : "Not checked against the text.";
       return ok(
-        `Prepared the pull request: branch ${done.package.branch} into ${done.package.base}. ${done.review ? `The diff applies (${done.review.added} lines added, ${done.review.removed} removed; ${done.review.after} of ${done.review.budget} characters).` : "Not checked against the text."} Ledger entry ${done.improvement.id} measures ${done.improvement.metricKey} again on ${done.improvement.recheckAt.slice(0, 10)}.${done.review?.needsOwner ? " It drops a never-rule: ask the owner first." : ""}`,
+        `Prepared the pull request: branch ${done.package.branch} into ${done.package.base}. ${reviewMsg} Ledger entry ${done.improvement.id} measures ${done.improvement.metricKey} again on ${done.improvement.recheckAt.slice(0, 10)}.${done.review?.needsOwner ? " It drops a never-rule: ask the owner first." : ""}`,
         done,
       );
     }

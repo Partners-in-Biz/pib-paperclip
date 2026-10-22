@@ -52,9 +52,9 @@ export const EVAL_TOOLS: PluginToolDeclaration[] = [
     name: EVAL_TOOL_NAMES.change,
     displayName: "Propose a skill change",
     description:
-      "Turn a reviewed proposal to change a plugin-managed skill (from the host's Reflection Coach, a close-out review or the retro) into a pull-request package: the Cockpit applies your unified diff to the skill's current text and refuses what does not apply, is over the size budget, drops a \"never\" rule or carries a secret; names the source files to edit; lists the eval commands that must pass before merge; writes the branch name, PR title and PR body (the evidence, the diff, the gate, the rollback); and records an improvement in the ledger with the number the change should move, so it is measured again after it ships. Skills live in plugin source and the plugin overwrites in-company edits at every sync, so a change reaches agents only through a merged and deployed pull request: you or a Developer opens it (into development, never main) with the GitHub tools you already have. Never apply a coach's proposal to the company's skill copy: it is overwritten and nothing is measured.",
-    parametersSchema: schema(["skill", "diff", "reason", "metricKey"], {
-      skill: { type: "string", description: "The skill: pib-operator, pib-reviewer, pib-company-os or pib-acceptance for a full check; another PiB skill's slug (for example pib-crm-records) gets a package without the apply check." },
+      "Turn a reviewed proposal to change a plugin-managed skill (from the host's Reflection Coach, a close-out review or the retro) into a pull-request package: the Cockpit applies your unified diff to the skill's current text and refuses what does not apply, is over the size budget, drops a \"never\" rule or carries a secret; names the source files to edit; lists the eval commands that must pass before merge; writes the branch name, PR title and PR body (the evidence, the diff, the gate, the rollback); and records an improvement in the ledger with the number the change should move, so it is measured again after it ships. Skills live in plugin source and the plugin overwrites in-company edits at every sync, so a change reaches agents only through a merged and deployed pull request: you or a Developer opens it (into development, never main) with the GitHub tools you already have. Accepts kind template to propose a change to an agent template (templateKey, candidateText, candidateHash; records a ledger entry with a 30-day rollout-pending recheck). Never apply a coach's proposal to the company's skill copy: it is overwritten and nothing is measured.",
+    parametersSchema: schema(["diff", "reason", "metricKey"], {
+      skill: { type: "string", description: "The skill: pib-operator, pib-reviewer, pib-company-os or pib-acceptance for a full check; another PiB skill's slug (for example pib-crm-records) gets a package without the apply check. Not used for kind template." },
       diff: { type: "string", maxLength: 40000, description: "The change as a unified diff against the skill's current text (the coach's proposal document has it), one or more hunks." },
       file: { type: "string", maxLength: 200, description: "Which file of the skill the diff is for: SKILL.md (the default) or a reference path such as references/health-checks.md." },
       reason: { type: "string", maxLength: 600, description: "Why: the pattern, in a sentence or two." },
@@ -65,7 +65,10 @@ export const EVAL_TOOLS: PluginToolDeclaration[] = [
       baselineValue: { type: "number", description: "Where the number stands now, for a metric the Cockpit cannot read itself." },
       targetValue: { type: "number", description: "The number to reach." },
       recheckInDays: { type: "integer", minimum: 7, maximum: 120, description: "Days until it is measured again, counted from now: allow for review and deploy (default 28)." },
-      kind: { type: "string", enum: [...IMPROVEMENT_KINDS], description: "What the change is (default skill)." },
+      kind: { type: "string", enum: [...IMPROVEMENT_KINDS], description: "What the change is (default skill). Kind template proposes a change to an agent template." },
+      templateKey: { type: "string", maxLength: 100, description: "Kind template only: the template key (e.g. \"developer\")." },
+      candidateText: { type: "string", maxLength: 40000, description: "Kind template only: the full rendered template text." },
+      candidateHash: { type: "string", maxLength: 64, description: "Kind template only: the 16-hex render hash from Setup template-preview (e.g., 1a2b3c4d5e6f7890)." },
     }),
   },
 ];
