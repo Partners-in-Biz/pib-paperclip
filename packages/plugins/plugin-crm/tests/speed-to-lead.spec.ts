@@ -2,7 +2,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getApproval } from "../src/care-store.js";
 import { RecipientRefused, sendApproved } from "../src/outbound.js";
-import { composeSpeedToLeadDraft, detectSpeedToLeadLang, isOptedOut, onLeadStoredForSpeedToLead, type SpeedToLeadInput } from "../src/speed-to-lead.js";
+import {
+  classifyNotALead,
+  composeSpeedToLeadDraft,
+  detectSpeedToLeadLang,
+  hasDoNotContactTag,
+  hasOptOutText,
+  isOptedOut,
+  onLeadStoredForSpeedToLead,
+  type SpeedToLeadInput,
+} from "../src/speed-to-lead.js";
 import { answerSend, bootCare, careSeed, CO, contact, decide, sentMail } from "./helpers/care.js";
 
 const SOURCE = readFileSync(new URL("../src/speed-to-lead.ts", import.meta.url), "utf8");
@@ -23,6 +32,9 @@ function stlInput(overrides: Partial<SpeedToLeadInput> = {}): SpeedToLeadInput {
 
 async function openSpeedToLeadApproval(overrides: Partial<SpeedToLeadInput> = {}) {
   const booted = await bootCare();
+  booted.harness.seed({
+    agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+  });
   const result = await onLeadStoredForSpeedToLead(booted.harness.ctx, stlInput(overrides));
   expect(result.skipped).toBe(false);
   const row = booted.store.care_approvals!.find((a) => a.id === result.approvalId)!;
@@ -36,6 +48,15 @@ describe("speed-to-lead consent", () => {
     expect(isOptedOut("ok")).toBe(false);
     expect(isOptedOut("unsubscribed")).toBe(true);
     expect(isOptedOut("bounced")).toBe(true);
+  });
+
+  it("detects opt-out wording and the do-not-contact tag", () => {
+    expect(hasOptOutText("Please STOP emailing me")).toBe(true);
+    expect(hasOptOutText("unsubscribe from your list")).toBe(true);
+    expect(hasOptOutText("remove me from this")).toBe(true);
+    expect(hasOptOutText("We need a website")).toBe(false);
+    expect(hasDoNotContactTag(["lead", "Do-Not-Contact"])).toBe(true);
+    expect(hasDoNotContactTag(["lead"])).toBe(false);
   });
 
   it("skips draft and approval when the contact is opted out", async () => {
@@ -58,6 +79,60 @@ describe("speed-to-lead consent", () => {
     });
     expect(result).toEqual({ skipped: true, reason: "opted_out" });
     expect(store.care_approvals?.length ?? 0).toBe(before);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+  });
+
+  it("skips when inbound text asks to stop and tags do-not-contact", async () => {
+    const { harness, store, emit } = await bootCare();
+    const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:stop-text", text: "Please stop — remove me from your list" }));
+    expect(result).toEqual({ skipped: true, reason: "opted_out" });
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+    expect(store.contacts!.find((c) => c.id === "ada")!.tags.map(String)).toContain("do-not-contact");
+    expect((store.activities ?? []).some((a) => a.kind === "speed_to_lead_skipped" && String(a.body).includes("opted out"))).toBe(true);
+  });
+
+  it("skips when the contact already has tag do-not-contact", async () => {
+    const base = careSeed();
+    const { harness, store, emit } = await bootCare({
+      store: {
+        ...base,
+        contacts: [contact("ada", "Ada Lovelace", { emails: ["ada@acme.co.za"], tags: ["do-not-contact"] }), ...(base.contacts ?? []).filter((row) => row.id !== "ada")],
+      },
+    });
+    const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:dnc-tag", text: "Need a quote" }));
+    expect(result).toEqual({ skipped: true, reason: "opted_out" });
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+    expect((store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead")).toHaveLength(0);
+  });
+});
+
+describe("speed-to-lead spam gate", () => {
+  it("classifies newsletter, no-reply, receipt and SEO-pitch fixtures", () => {
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "Here is our weekly newsletter digest" })).toBe("newsletter");
+    expect(classifyNotALead({ email: "noreply@vendor.test", text: "Hello" })).toBe("no_reply_sender");
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "Your receipt for order #123" })).toBe("receipt");
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We offer guest post and link-building packages" })).toBe("seo_pitch");
+    expect(classifyNotALead({ email: "ada@acme.co.za", text: "We need a website for our shop" })).toBeNull();
+  });
+
+  it("produces no draft for a newsletter fixture (spec §8)", async () => {
+    const { harness, store, emit } = await bootCare();
+    const result = await onLeadStoredForSpeedToLead(
+      harness.ctx,
+      stlInput({ leadKey: "form:newsletter", text: "Hi — here is our weekly newsletter with this month's tips" }),
+    );
+    expect(result).toEqual({ skipped: true, reason: "not_a_lead" });
+    expect((store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead")).toHaveLength(0);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+    expect((store.activities ?? []).some((a) => a.kind === "speed_to_lead_skipped" && String(a.body).includes("newsletter"))).toBe(true);
+  });
+
+  it("produces no draft for no-reply and SEO-pitch fixtures", async () => {
+    const { harness, emit } = await bootCare();
+    const noreply = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:noreply", email: "no-reply@spam.test", text: "Need help" }));
+    expect(noreply).toEqual({ skipped: true, reason: "not_a_lead" });
+    const seo = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:seo", text: "Buy backlinks to rank on Google" }));
+    expect(seo).toEqual({ skipped: true, reason: "not_a_lead" });
     expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
   });
 });
@@ -87,6 +162,9 @@ describe("speed-to-lead draft-only", () => {
 
   it("creates approval + mail.draft.requested, never a send", async () => {
     const { harness, store, emit } = await bootCare();
+    harness.seed({
+      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+    });
     const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:stl-1" }));
     expect(result.skipped).toBe(false);
     const row = store.care_approvals!.find((a) => a.id === result.approvalId)!;
@@ -94,6 +172,20 @@ describe("speed-to-lead draft-only", () => {
     expect(row.payload.metrics.t_arrival).toBe("2026-10-22T09:00:00.000Z");
     expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
     expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
+  });
+});
+
+describe("speed-to-lead CEO ping", () => {
+  it("opens a 3-line ping issue for Elon with a link to the approval card", async () => {
+    const { harness, result, row } = await openSpeedToLeadApproval({ leadKey: "form:stl-ping" });
+    const ping = (await harness.ctx.issues.list({ companyId: CO, originKind: "plugin:partnersinbiz.crm", originId: `crm:stl-ping:${result.approvalId}`, limit: 1 }))[0];
+    expect(ping).toBeTruthy();
+    expect(ping!.assigneeAgentId).toBe("elon-1");
+    const body = String(ping!.description ?? "");
+    const lines = body.trim().split("\n").filter(Boolean);
+    expect(lines).toHaveLength(3);
+    expect(body).toMatch(/speed-to-lead/i);
+    expect(body).toContain(row.issue_id!);
   });
 });
 

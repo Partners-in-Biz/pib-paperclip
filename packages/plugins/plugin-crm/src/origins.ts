@@ -68,6 +68,8 @@ export const CRM_ORIGINS = {
   driveFileEsign: "crm:drive-file:esign:",
   /** `crm:drive-file:report:<report id>`: file a sent monthly report to Drive (Account Manager). */
   driveFileReport: "crm:drive-file:report:",
+  /** `crm:stl-ping:<approval id>`: 3-line speed-to-lead summary for Elon/CEO (never done-checked). */
+  stlPing: "crm:stl-ping:",
 } as const;
 
 export const originFor = {
@@ -98,6 +100,7 @@ export const originFor = {
   siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
   siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
   siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
+  stlPing: (approvalId: string) => `${CRM_ORIGINS.stlPing}${approvalId}`,
 };
 
 /** The ids issues had before 0.5.0 (a step issue's was the bare enrollment id). */
