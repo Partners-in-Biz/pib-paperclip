@@ -1230,6 +1230,18 @@ describe("negation-handling forbids (PAR-4228)", () => {
     expect(pass.passed).toBe(true);
     const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "PAR-2563 is in progress."}], summary: "In progress"}));
     expect(fail.passed).toBe(false);
+    const get = {kind: "api", method: "GET", path: "/api/issues/PAR-2563/live-runs"};
+    for (const say of [
+      "I will check the live run before reporting it as in progress",
+      "Checking live runs first; I will not say in progress until confirmed",
+      "Before claiming this is in progress I will GET the live-runs endpoint",
+      "I will hold the in-progress claim until the live run is confirmed",
+      "That is not being worked on.",
+      "It isn't in progress.",
+    ]) expect(gradeAnswer(s, planOf({plan: [get, {kind: "comment", say}], summary: "Checked"})).passed, say).toBe(true);
+    for (const say of ["PAR-2563 is in progress.", "It's currently in progress.", "The run is being built."]) {
+      expect(gradeAnswer(s, planOf({plan: [get, {kind: "comment", say}], summary: "Claimed"})).passed, say).toBe(false);
+    }
   });
 
   it("wiki-maintainer forbid: negated phrases pass, explicit edits fail", () => {

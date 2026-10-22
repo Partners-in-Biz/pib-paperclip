@@ -57,7 +57,7 @@
         ],
         "forbid": [
           {
-            "text": "\\b(?<!no )(?<!not )(?<!n't )(?<!never )(?<!without )(?:in.?progress|being.?built|being.?worked)",
+            "text": "(?:^|[.!?\\n]\\s*)(?:[\\w-]+\\s+){0,2}(?<!no )(?<!not )(?<!n't )(?<!never )(?:is|are|was|it's)\\s+(?:currently\\s+|still\\s+)?(?:in.?progress|being\\s+(?:built|worked))",
             "reason": "check live runs for in-progress claims"
           }
         ],
