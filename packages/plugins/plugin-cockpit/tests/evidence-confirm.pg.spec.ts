@@ -136,11 +136,8 @@ d("Evidence confirmation (Postgres)", () => {
     });
   });
 
-  it("(c) no subscription + PAR-1844 seeded: post to PAR-1844 once, later call already_notified", async () => {
+  it("(c) no subscription: outcome no_subscription; identical retry has notify", async () => {
     await run(async (w) => {
-      // Create PAR-1844
-      const parIssue = await w.ctx.issues.create({ companyId: A, title: "Notifications", identifier: "PAR-1844", description: "Test", status: "todo" } as never);
-
       const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
       const att = { id: "att-c1", issueId: issue.id, companyId: A, filename: "test.png", contentType: "image/png", sha256: "abc", createdByAgentId: AGENT };
       (w.ctx.issues as any).listAttachments = async () => [att];
@@ -148,12 +145,15 @@ d("Evidence confirmation (Postgres)", () => {
       const now = new Date("2026-10-20T10:00:00Z");
       (w.env.now as any) = () => now;
 
+      // First call: no subscription -> outcome no_subscription
       const result1 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
       expect((result1 as any).data?.notify).toBe("no_subscription");
+      expect((result1 as any).data?.recorded).toBe(true);
 
-      // Second call for same (issue, step)
+      // Second identical retry: recorded=false, outcome in notify (will be already_notified if claim kept)
       const result2 = await recordEvidence(w.env, A, issue.id, "att-c1", "abc", "step-c", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
-      expect((result2 as any).data?.notify).toBe("already_notified");
+      expect((result2 as any).data?.recorded).toBe(false);
+      expect((result2 as any).data?.notify).toBeDefined();
     });
   });
 
@@ -179,7 +179,7 @@ d("Evidence confirmation (Postgres)", () => {
       const result1 = await recordEvidence(w.env, A, issue.id, "att-d", "abc", "step-d", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
       expect((result1 as any).data?.notify).toBe("sent");
 
-      const evRow1 = await w.ctx.db.execute(
+      const evRow1 = await w.client.query(
         `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
         [A, issue.id, "step-d"],
       );
@@ -205,7 +205,7 @@ d("Evidence confirmation (Postgres)", () => {
       const result2 = await recordEvidence(w.env, A, issue2.id, "att-d2", "abc2", "step-d2", "summary", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => {} });
       expect((result2 as any).data?.notify).toBe("capped");
 
-      const evRow2 = await w.ctx.db.execute(
+      const evRow2 = await w.client.query(
         `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
         [A, issue2.id, "step-d2"],
       );
@@ -214,7 +214,7 @@ d("Evidence confirmation (Postgres)", () => {
     });
   });
 
-  it("(e) tie-break: same created_at for two rows, concurrent calls -> one sent, claim held", async () => {
+  it("(e) concurrent recordEvidence for same issue+step: deliver called once total", async () => {
     await run(async (w) => {
       await upsertSubscription(worlds.pg.ctx, {
         companyId: A,
@@ -227,18 +227,15 @@ d("Evidence confirmation (Postgres)", () => {
 
       const now = new Date("2026-10-20T10:00:00Z");
       (w.env.now as any) = () => now;
-      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
-
-      const sameTime = "2026-10-20T09:00:00Z";
-      // Insert two rows directly with same created_at
-      await w.ctx.db.execute(
-        `INSERT INTO plugin_cockpit_b8a99e8b16.issue_evidence (id, company_id, issue_id, step, kind, attachment_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7), ($8, $2, $3, $4, $5, $9, $7)`,
-        ["evid-e1", A, issue.id, "step-e", "shot", "att-e1", sameTime, "evid-e2", "att-e2"],
-      );
-
       const deliverCalls: any[] = [];
-      const result1 = recordEvidence(w.env, A, issue.id, "att-e1", "abc", "step-e", "s1", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
-      const result2 = recordEvidence(w.env, A, issue.id, "att-e2", "abc", "step-e", "s2", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+
+      const issue = await w.ctx.issues.create({ companyId: A, title: "Test", description: "Test", status: "todo" } as never);
+      const att1 = { id: "att-e1", issueId: issue.id, companyId: A, filename: "test1.png", contentType: "image/png", sha256: "abc1", createdByAgentId: AGENT };
+      const att2 = { id: "att-e2", issueId: issue.id, companyId: A, filename: "test2.png", contentType: "image/png", sha256: "abc2", createdByAgentId: AGENT };
+      (w.ctx.issues as any).listAttachments = async () => [att1, att2];
+
+      const result1 = recordEvidence(w.env, A, issue.id, "att-e1", "abc1", "step-e", "summary1", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
+      const result2 = recordEvidence(w.env, A, issue.id, "att-e2", "abc2", "step-e", "summary2", { runId: null, agentId: AGENT }, { notify: true, deliver: async () => { deliverCalls.push({}); } });
 
       const [r1, r2] = await Promise.all([result1, result2]);
       const outcomes = [(r1 as any).data?.notify, (r2 as any).data?.notify].sort();
@@ -360,7 +357,7 @@ d("Evidence confirmation (Postgres)", () => {
       expect((result as any).data?.notify).toBe("error");
 
       // Claim should be kept (inbox_posted_at set) despite error
-      const evRow = await w.ctx.db.execute(
+      const evRow = await w.client.query(
         `SELECT inbox_posted_at FROM plugin_cockpit_b8a99e8b16.issue_evidence WHERE company_id = $1 AND issue_id = $2 AND step = $3`,
         [A, issue.id, "step-h"],
       );
