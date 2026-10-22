@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getApproval } from "../src/care-store.js";
+import { intakeLead } from "../src/leads.js";
 import { RecipientRefused, sendApproved } from "../src/outbound.js";
 import {
   classifyNotALead,
@@ -398,6 +399,39 @@ describe("speed-to-lead client-channel (no handleLead)", () => {
     expect(row.client_ref).toBe("acme");
     expect(row.payload.clientChannel).toBe(true);
     expect((row.payload.draft as { contactId?: string | null }).contactId).toBeNull();
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
+  });
+
+  it("intakeLead client-channel path (no CRM contact) requests one speed_to_lead approval and drafts only", async () => {
+    const { harness, store, emit } = await bootCare();
+    harness.seed({
+      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+    });
+    const beforeContacts = (store.contacts ?? []).length;
+    const result = await intakeLead(harness.ctx, CO, "plugin.partnersinbiz.social.lead.captured", {
+      key: "social:inbox:stl-intake-1",
+      source: "social",
+      name: "Pat New",
+      handle: "@Pat.New",
+      platform: "instagram",
+      email: "pat.new@visitor.test",
+      text: "Can you help with Instagram ads?",
+      url: "https://instagram.com/p/stl",
+      clientKind: "company",
+      clientRef: "acme",
+      confidence: 0.9,
+      capturedAt: "2026-10-22T13:00:00.000Z",
+    });
+    expect(result).toMatchObject({ status: "stored", contactId: null });
+    expect((store.contacts ?? []).length).toBe(beforeContacts);
+    expect(store.client_leads).toEqual([
+      expect.objectContaining({ key: "social:inbox:stl-intake-1", client_kind: "company", client_ref: "acme", email: "pat.new@visitor.test" }),
+    ]);
+    const stl = (store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead");
+    expect(stl).toHaveLength(1);
+    expect(stl[0]).toMatchObject({ client_kind: "company", client_ref: "acme", kind: "speed_to_lead" });
+    expect(stl[0]!.payload.clientChannel).toBe(true);
     expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
     expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
   });

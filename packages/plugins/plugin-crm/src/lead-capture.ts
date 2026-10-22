@@ -424,8 +424,9 @@ async function processSubmission(ctx: PluginContext, source: LeadSource, sub: Su
       return null;
     });
     if (!issueId) status = "held";
-    // Draft-only speed-to-lead (skips handleLead). Never creates a CRM contact.
-    if (sub.email) {
+    // Draft-only speed-to-lead only once the client-lead issue opened (not while held).
+    // Held leads get STL from retryClientLeadIssues when the issue opens later.
+    if (issueId && sub.email) {
       try {
         await onClientLeadStoredForSpeedToLead(ctx, {
           companyId,
@@ -558,6 +559,23 @@ export async function retryClientLeadIssues(ctx: PluginContext): Promise<number>
           opened += 1;
           // The capture said "held" while it waited; it is handed over now.
           await settleCapture(ctx, companyId, lead.key, null).catch(() => undefined);
+          // Speed-to-lead was skipped while held; draft-only path runs once the issue exists.
+          if (lead.email) {
+            try {
+              await onClientLeadStoredForSpeedToLead(ctx, {
+                companyId,
+                client: { kind: lead.clientKind, id: lead.clientRef },
+                leadKey: lead.key,
+                source: lead.source,
+                text: lead.message,
+                name: lead.name,
+                email: lead.email,
+                arrivedAt: lead.capturedAt,
+              });
+            } catch (error) {
+              ctx.logger.info("CRM speed-to-lead deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
         }
       } catch (error) {
         ctx.logger.info("CRM client lead issue still deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
