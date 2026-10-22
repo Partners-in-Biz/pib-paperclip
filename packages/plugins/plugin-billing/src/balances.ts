@@ -117,7 +117,7 @@ export async function invoiceBalance(ctx: PluginContext, invoiceId: string): Pro
 export async function invoiceBalances(
   ctx: PluginContext,
   companyId: string,
-  filter: { customerKind?: string; customerRef?: string; openOnly?: boolean; ids?: string[] } = {},
+  filter: { customerKind?: string; customerRef?: string; openOnly?: boolean; ids?: string[]; includeCanary?: boolean } = {},
 ): Promise<InvoiceBalance[]> {
   const where = ["i.company_id = $1"];
   const params: unknown[] = [companyId];
@@ -130,6 +130,10 @@ export async function invoiceBalances(
   if (filter.ids) {
     params.push(JSON.stringify(filter.ids));
     where.push(`i.id IN (SELECT jsonb_array_elements_text($${params.length}::jsonb))`);
+  }
+  // Finance lists and client-scoped lists hide canary. Pass includeCanary for a lookup that must see the test client.
+  if (!filter.includeCanary) {
+    where.push(`NOT (i.customer_ref LIKE 'canary-%' OR (i.customer->>'email')::text ILIKE '%@%.invalid')`);
   }
   const rows = await ctx.db.query<InvoiceBalanceRow>(`${balanceSelect(ctx)} WHERE ${where.join(" AND ")} ORDER BY i.created_at DESC`, params);
   return rows.map((row) => toBalance(row));

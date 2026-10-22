@@ -25,6 +25,10 @@ Every rule below was checked on 2026-10-06. If the code disagrees, trust the cod
 - pnpm comes through corepack (`corepack pnpm ...`, version pinned in the root `package.json`). Run it from inside the checkout.
 - Before you call work done, in each package you changed: `cd packages/plugins/<pkg> && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build`. A change to `pib-plugin-kit` or `pib-plugin-ui` needs the same in every plugin that uses it. The kit's `test` also runs the contract tests that check skill text against the registered tools of every plugin.
 - CI (`PiB plugins CI`) runs the same three steps for every package on each PR. A red check blocks the merge.
+
+### Test and acceptance runs clean up after themselves
+
+Any run (unit/integration/acceptance/canary/manual QA) that creates data in a shared or real environment (canary clients, invoices, quotes, contacts, deals, issues, files) must delete it again before it ends, on pass and on fail. Acceptance journeys end with `cleanup-canary`, and Billing removes the canary client's invoices/quotes when the CRM emits `company.deleted`. Test data must never show up in Drafts to send, finance or client views. If you leave data behind (e.g. run aborted), delete it with the cleanup tools (`cleanup-canary`, `delete-draft-invoice`, `delete-draft-quote`) in the same run and say so in the ticket comment.
 - Commit per plugin with `fix(<plugin>):`, `feat(<plugin>):`, `chore(<plugin>):` or `docs:` prefixes.
 
 ## What a release needs
