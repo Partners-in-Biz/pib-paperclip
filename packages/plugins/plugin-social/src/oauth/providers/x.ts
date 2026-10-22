@@ -131,6 +131,7 @@ async function postTweet(token: string, body: Record<string, unknown>, label: st
 /** `reply.in_reply_to_tweet_id` or `quote_tweet_id` for a reply / quote draft. A target that is not an X link is refused, never posted plain. */
 export function xTargetFields(req: Pick<PublishRequest, "replyToUrl" | "quoteUrl">): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
+  if (req.replyToUrl && req.quoteUrl) throw new PublishRejected("A post is either a reply or a quote, not both; not published");
   if (req.replyToUrl) {
     const ref = parseTweetUrl(req.replyToUrl);
     if (!ref) throw new PublishRejected(`replyToUrl is not an X post link: ${req.replyToUrl}`);

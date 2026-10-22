@@ -63,7 +63,7 @@ const post: Record<string, JsonSchema> = {
   accountIds: ids("Destination account ids (list-connected-accounts)."),
   mediaAssetIds: ids("Media asset ids (list-media-assets). Order = carousel order."),
   firstComment: text("Posted as first comment (or reply on X), where platform allows."),
-  replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>). X only. \"\" clears."),
+  replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>; not m.twitter.com). X only. \"\" clears."),
   quoteUrl: text("X post link to quote. X only; not with replyToUrl. \"\" clears."),
   note: text("Internal note, e.g. \"HOLD until PAR-1\"; never published. Max 500. \"\" clears."),
   scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),

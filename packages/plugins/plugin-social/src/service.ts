@@ -437,7 +437,7 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
 }
 
 /** Reply / quote / note changes of an update. Setting one of reply and quote clears the other, so a post never keeps both. */
-function changedTarget(params: Record<string, unknown>) {
+export function changedTarget(params: Record<string, unknown>) {
   const fields = targetFromParams(params);
   if (fields.replyToUrl && fields.quoteUrl === undefined) fields.quoteUrl = null;
   if (fields.quoteUrl && fields.replyToUrl === undefined) fields.replyToUrl = null;

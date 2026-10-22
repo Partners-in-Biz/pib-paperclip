@@ -250,7 +250,7 @@ async function postsMentioning(ctx: PluginContext, companyId: string, keys: Retu
     let total = 0;
     if (keys.email) {
       const rows = await ctx.db.query<{ n: string }>(
-        `SELECT count(*)::text AS n FROM ${table(ctx, "posts")} WHERE company_id = $1 AND (position($2 in lower(body)) > 0 OR position($2 in lower(COALESCE(first_comment, ''))) > 0 OR position($2 in lower(overrides::text)) > 0)`,
+        `SELECT count(*)::text AS n FROM ${table(ctx, "posts")} WHERE company_id = $1 AND (position($2 in lower(body)) > 0 OR position($2 in lower(COALESCE(first_comment, ''))) > 0 OR position($2 in lower(overrides::text)) > 0 OR position($2 in lower(COALESCE(note, ''))) > 0)`,
         [companyId, keys.email],
       );
       total += Number(rows[0]?.n ?? 0);

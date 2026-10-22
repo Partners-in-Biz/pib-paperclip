@@ -15,7 +15,7 @@ export function PostTarget({ post, compact = false }: { post: Pick<Post, "replyT
           {compact ? null : <a href={target.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: tokens.primary, overflowWrap: "anywhere" }}>{target.url}</a>}
         </>
       ) : null}
-      {post.note ? <Pill size="sm" variant="outline" tone="warn" title={post.note}>{compact && post.note.length > 40 ? `${post.note.slice(0, 40)}…` : post.note}</Pill> : null}
+      {post.note ? <Pill size="sm" variant="outline" tone="warn" title={post.note}>{post.note.length > (compact ? 40 : 80) ? `${post.note.slice(0, compact ? 40 : 80)}…` : post.note}</Pill> : null}
       {compact && target ? <Muted>X</Muted> : null}
     </Row>
   );

@@ -38,6 +38,24 @@ export function parseTweetUrl(raw: string): TweetRef | null {
   return { id: match[2]!, handle, url: `https://x.com/${handle ?? "i/web"}/status/${match[2]}` };
 }
 
+export interface TargetSummary {
+  kind: "reply" | "quote";
+  /** "Replying to @handle" / "Quoting @handle" ("an X post" when the link carries no handle). */
+  label: string;
+  url: string;
+}
+
+/** What a reader (client, Reviewer) must see about a draft's reply or quote target. Never includes the internal note. Pure. */
+export function summarizeTarget(post: { reply_to_url?: string | null; quote_url?: string | null }): TargetSummary | null {
+  const pick = (raw: string | null | undefined, kind: "reply" | "quote", verb: string): TargetSummary | null => {
+    if (!raw) return null;
+    const ref = parseTweetUrl(raw);
+    const who = ref?.handle ? `@${ref.handle}` : "an X post";
+    return { kind, label: `${verb} ${who}`, url: ref?.url ?? raw };
+  };
+  return pick(post.reply_to_url, "reply", "Replying to") ?? pick(post.quote_url, "quote", "Quoting");
+}
+
 export const MAX_NOTE_LENGTH = 500;
 
 export interface TargetFields {
