@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getApproval } from "../src/care-store.js";
 import { intakeLead } from "../src/leads.js";
 import { RecipientRefused, sendApproved } from "../src/outbound.js";
@@ -45,6 +45,16 @@ async function openSpeedToLeadApproval(overrides: Partial<SpeedToLeadInput> = {}
   expect(row.issue_id).toBeTruthy();
   return { ...booted, result, row };
 }
+
+// The fixtures arrive on 2026-10-22 and the code skips a lead older than 24 hours, so the real clock made every test
+// fail from 2026-10-23 09:00 UTC. Only Date is frozen (to the day the fixtures were written); timers stay real.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-22T14:00:00.000Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("speed-to-lead consent", () => {
   it("treats unsubscribed and bounced as opted out", () => {

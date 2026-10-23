@@ -4,7 +4,7 @@ import { planFolders, type DriveFacts, DRIVE_SUBFOLDERS } from "../src/drive/con
 import { DriveNotBoundError } from "../src/drive/broker.js";
 import { createGoogleDriveBroker } from "../src/drive/google-broker.js";
 import { clearServiceAccountTokenCache, parseServiceAccountKey } from "../src/drive/google-sa.js";
-import { DRIVE_ID, KEY_JSON, fakeGoogle, folderPaths, isFolder, type FakeFile } from "./support/fake-google-drive.js";
+import { DRIVE_ID, KEY_JSON, LAYOUT, anchorPaths, fakeGoogle, isAnchor, isFolder, rootFolderNames, userFolderPaths, type FakeFile } from "./support/fake-google-drive.js";
 
 const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
 
@@ -334,10 +334,15 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
       await broker1.ensure({ entity_type: "project", entity_id: "p1", name: "P1" });
       await broker2.ensure({ entity_type: "project", entity_id: "p2", name: "P2" });
 
-      expect(g1.files).toHaveLength(1);
-      expect(g1.files[0]).toMatchObject({ name: "P1", parents: ["drive-A"] });
-      expect(g2.files).toHaveLength(1);
-      expect(g2.files[0]).toMatchObject({ name: "P2", parents: ["drive-B"] });
+      // Each drive gets its own 02 Partners in Biz > Own projects > project chain, and nothing at its root but 02 Partners in Biz.
+      for (const [g, driveId, name] of [[g1, "drive-A", "P1"], [g2, "drive-B", "P2"]] as const) {
+        expect(g.files).toHaveLength(3);
+        expect(g.files.find((f) => f.name === name)).toMatchObject({ parents: [g.files.find((f) => f.name === "Own projects")!.id], description: `${LAYOUT.ownProjects}/${name}` });
+        expect(g.files.find((f) => f.name === LAYOUT.pib)).toMatchObject({ parents: [driveId] });
+        expect(rootFolderNames(g.files, driveId)).toEqual([LAYOUT.pib]);
+      }
+      expect(userFolderPaths(g1.files, "drive-A")).toEqual([`${LAYOUT.ownProjects}/P1`]);
+      expect(userFolderPaths(g2.files, "drive-B")).toEqual([`${LAYOUT.ownProjects}/P2`]);
     });
   });
 
@@ -367,9 +372,13 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
       b.harness.seed({ projects: [{ id: "p2", companyId: CO, name: "ProjectB" } as never] });
       await toolRaw(b.harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p2" });
 
-      expect(folderOf(googleA.files, "crm_company", "co-a")).toMatchObject({ name: "Company A (Primary Contact)", parents: ["drive-A"] });
+      const clientsA = googleA.files.find((f) => f.name === "Clients")!;
+      expect(folderOf(googleA.files, "crm_company", "co-a")).toMatchObject({ name: "Company A (Primary Contact)", parents: [clientsA.id] });
+      expect(clientsA.parents).toEqual([googleA.files.find((f) => f.name === LAYOUT.pib)!.id]);
       expect(folderOf(googleA.files, "project", "p1")?.name).toBe("ProjectA");
-      expect(folderOf(googleB.files, "project", "p2")).toMatchObject({ name: "ProjectB", parents: ["drive-B"] });
+      expect(folderOf(googleB.files, "project", "p2")).toMatchObject({ name: "ProjectB", parents: [googleB.files.find((f) => f.name === "Own projects")!.id] });
+      expect(rootFolderNames(googleA.files, "drive-A")).toEqual([LAYOUT.pib]);
+      expect(rootFolderNames(googleB.files, "drive-B")).toEqual([LAYOUT.pib]);
       expect(googleA.calls.some((c) => c.includes("drive-B"))).toBe(false);
       expect(googleB.calls.some((c) => c.includes("drive-A"))).toBe(false);
     });
@@ -383,14 +392,35 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
 
       expect(r.data?.status).toBe("created");
-      expect(r.data?.path).toBe("Acme Ltd (Primary Contact)/ClientProject");
-      // Company first (at the root), then the project inside it; the registry is each folder's appProperties
+      const company = `${LAYOUT.clients}/Acme Ltd (Primary Contact)`;
+      expect(r.data?.path).toBe(`${company}/ClientProject`);
+      // Company first (in Clients, never at the root), then the project inside it; the registry is each folder's appProperties
       const companyFolder = folderOf(google.files, "crm_company", "co-c");
       const projectFolder = folderOf(google.files, "project", "p1");
-      expect(companyFolder).toMatchObject({ name: "Acme Ltd (Primary Contact)", parents: [DRIVE_ID] });
+      const clients = google.files.find((f) => f.name === "Clients")!;
+      expect(companyFolder).toMatchObject({ name: "Acme Ltd (Primary Contact)", parents: [clients.id] });
       expect(projectFolder).toMatchObject({ name: "ClientProject", parents: [companyFolder!.id] });
       expect(google.files.indexOf(companyFolder!)).toBeLessThan(google.files.indexOf(projectFolder!));
-      expect(folderPaths(google.files)).toEqual(["Acme Ltd (Primary Contact)", "Acme Ltd (Primary Contact)/ClientProject", ...SUB_PATHS("Acme Ltd (Primary Contact)/ClientProject")].sort());
+      expect(anchorPaths(google.files)).toEqual([LAYOUT.pib, LAYOUT.clients]);
+      expect(userFolderPaths(google.files)).toEqual([company, `${company}/ClientProject`, ...SUB_PATHS(`${company}/ClientProject`)].sort());
+      expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
+    });
+
+    it("(21b) a company ensured on its own lands in Clients as 'Company (Contact)'; its project is built inside it later", async () => {
+      const st = seed();
+      linked(st, "co-x", "Acme Ltd");
+      const { harness, google } = await setup(NATIVE, st);
+      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Site" } as never] });
+
+      const c = await toolRaw(harness, "drive_folder_ensure", { entity_type: "crm_company", entity_id: "co-x" });
+
+      expect(c.data?.status).toBe("created");
+      expect(c.data?.path).toBe(`${LAYOUT.clients}/Acme Ltd (Primary Contact)`);
+      expect(userFolderPaths(google.files)).toEqual([`${LAYOUT.clients}/Acme Ltd (Primary Contact)`]);
+      const p = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+      expect(p.data?.path).toBe(`${LAYOUT.clients}/Acme Ltd (Primary Contact)/Site`);
+      expect(folderOf(google.files, "project", "p1")!.parents).toEqual([c.data?.folder_id]);
+      expect(google.files.filter((f) => f.name.startsWith("Acme Ltd"))).toHaveLength(1);
     });
 
     it("(22) project with product kind: produces the Products chain with the numbered sub-folders", async () => {
@@ -401,9 +431,16 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
 
       expect(r.data?.status).toBe("created");
-      expect(r.data?.path).toBe("Products/ProductProject");
-      expect(folderOf(google.files, "root", "root:products")).toMatchObject({ name: "Products", parents: [DRIVE_ID] });
-      expect(folderPaths(google.files)).toEqual(["Products", "Products/ProductProject", ...SUB_PATHS("Products/ProductProject")].sort());
+      expect(r.data?.path).toBe(`${LAYOUT.products}/ProductProject`);
+      // Products is the existing folder at its fixed path (an anchor), not a registered root folder of its own.
+      expect(folderOf(google.files, "root", "root:products")).toBeUndefined();
+      const products = google.files.find((f) => f.name === "Products")!;
+      expect(isAnchor(products)).toBe(true);
+      expect(products.parents).toEqual([google.files.find((f) => f.name === LAYOUT.pib)!.id]);
+      expect(folderOf(google.files, "project", "p1")!.parents).toEqual([products.id]);
+      expect(anchorPaths(google.files)).toEqual([LAYOUT.pib, LAYOUT.products]);
+      expect(userFolderPaths(google.files)).toEqual([`${LAYOUT.products}/ProductProject`, ...SUB_PATHS(`${LAYOUT.products}/ProductProject`)].sort());
+      expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
       expect(google.files.some((f) => f.appProperties?.pibEntityType === "crm_company")).toBe(false);
     });
 
@@ -436,15 +473,16 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
   });
 
   describe("tool-level: branch routing by the project's Drive kind", () => {
-    const cases: Array<[string, string | undefined, string]> = [
-      ["product", undefined, "Products/Widget"],
-      ["book", undefined, "Books/Widget"],
-      ["company", undefined, "Company/Widget"],
-      ["marketing", undefined, "Marketing/PiB/Widget"],
-      ["marketing", "Acme Launch", "Marketing/Acme Launch/Widget"],
+    // kind, scope, the leaf path, the top-level folder (the only thing made at the Shared Drive root) and the layout folders made on the way
+    const cases: Array<[string, string | undefined, string, string, string[]]> = [
+      ["product", undefined, `${LAYOUT.products}/Widget`, LAYOUT.pib, [LAYOUT.pib, LAYOUT.products]],
+      ["book", undefined, `${LAYOUT.books}/Widget`, LAYOUT.press, [LAYOUT.press, LAYOUT.books]],
+      ["company", undefined, `${LAYOUT.internal}/Widget`, LAYOUT.pib, [LAYOUT.pib, LAYOUT.internal]],
+      ["marketing", undefined, `${LAYOUT.marketing}/PiB/Widget`, LAYOUT.pib, [LAYOUT.pib, LAYOUT.marketing]],
+      ["marketing", "Acme Launch", `${LAYOUT.marketing}/Acme Launch/Widget`, LAYOUT.pib, [LAYOUT.pib, LAYOUT.marketing]],
     ];
 
-    it.each(cases)("(25) kind %s (scope %s) builds %s, with its root folders at the Shared Drive root and the numbered sub-folders", async (kind, scopeRef, leafPath) => {
+    it.each(cases)("(25) kind %s (scope %s) builds %s inside the existing layout folders, with the numbered sub-folders and only its top-level folder at the Shared Drive root", async (kind, scopeRef, leafPath, top, anchors) => {
       const { harness, google } = await setup();
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Widget" } as never] });
       expect((await toolRaw(harness, "drive_project_kind_set", { projectId: "p1", kind, ...(scopeRef ? { scopeRef } : {}) })).data?.status).toBe("set");
@@ -453,12 +491,12 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
 
       expect(r.data?.status).toBe("created");
       expect(r.data?.path).toBe(leafPath);
-      const paths = folderPaths(google.files);
+      const paths = userFolderPaths(google.files);
       expect(paths).toEqual(expect.arrayContaining([leafPath, ...SUB_PATHS(leafPath)]));
-      // Every folder is a plain chain from the root: the first segment of each path is one of the root folders
-      const top = leafPath.split("/")[0];
-      expect(paths.every((path) => path === top || path.startsWith(`${top}/`))).toBe(true);
-      expect(google.files.filter((f) => f.parents[0] === DRIVE_ID).map((f) => f.name)).toEqual([top]);
+      expect(anchorPaths(google.files)).toEqual([...anchors].sort());
+      // Every folder is a plain chain from the top-level folder: the first segment of each path is the one folder made at the root
+      expect(paths.every((path) => path.startsWith(`${top}/`))).toBe(true);
+      expect(rootFolderNames(google.files)).toEqual([top]);
       // Never under a company folder, whatever the project is linked to
       expect(google.files.some((f) => f.appProperties?.pibEntityType === "crm_company")).toBe(false);
     });
@@ -472,8 +510,9 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
 
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
 
-      expect(r.data?.path).toBe("Products/Widget");
+      expect(r.data?.path).toBe(`${LAYOUT.products}/Widget`);
       expect(google.files.some((f) => f.name.startsWith("Acme Ltd"))).toBe(false);
+      expect(google.files.some((f) => f.name === "Clients")).toBe(false);
     });
 
     it("(27) a repeat ensure on a non-client branch changes nothing in Drive", async () => {
