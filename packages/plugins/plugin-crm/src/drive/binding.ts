@@ -7,6 +7,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { readConfig, SecretResolver, PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
+import { BrokerError } from "./broker.js";
+import { createGoogleDriveBroker } from "./google-broker.js";
+import { parseServiceAccountKey } from "./google-sa.js";
 
 /** Drive binding event bare name (emitted as this, subscribers use pluginEvent to subscribe) */
 const DRIVE_BINDING_EVENT_BARE = "drive.binding";
@@ -318,8 +321,8 @@ export async function driveBindingStatus(
   const bound = !!binding;
   const sharedDriveId = binding?.sharedDriveId;
 
-  // Check if driveBrokerToken is set
-  const tokenSet = !!cfg.driveBrokerToken;
+  // A Drive service account key (native) or the legacy broker token counts as a credential
+  const tokenSet = !!(cfg.driveServiceAccountJson || cfg.driveBrokerToken);
 
   // Always return basic status; only fetch identity if token is set
   if (!tokenSet) {
@@ -343,6 +346,18 @@ export async function driveBindingStatus(
 
   try {
     const resolver = new SecretResolver(ctx, companyId, cfg);
+    const serviceAccountJson = await resolver.get("driveServiceAccountJson");
+    if (serviceAccountJson) {
+      // Native path: ask Google whether the service account can add files to the Shared Drive
+      const key = parseServiceAccountKey(serviceAccountJson);
+      serviceAccountEmail = key.clientEmail;
+      if (bound && sharedDriveId) {
+        const identity = await createGoogleDriveBroker(fetch, key, sharedDriveId).identity(sharedDriveId);
+        serviceAccountIsMember = identity.isMember === true;
+      }
+      await publishStatusEvent(ctx, companyId, { bound, sharedDriveId, serviceAccountEmail, serviceAccountIsMember });
+      return { bound, sharedDriveId, tokenSet, serviceAccountIsMember, serviceAccountEmail };
+    }
     const token = await resolver.get("driveBrokerToken");
     if (!token) {
       // No token available; return status without identity info
@@ -377,8 +392,10 @@ export async function driveBindingStatus(
     } else {
       identityError = `broker identity unavailable (status ${res.status})`;
     }
-  } catch {
-    identityError = "broker identity unavailable (network error)";
+  } catch (err) {
+    identityError = err instanceof BrokerError || (err instanceof Error && /service account key/i.test(err.message))
+      ? err.message
+      : "broker identity unavailable (network error)";
   }
 
   // Emit event with available info (excluding secrets) and stored candidates
