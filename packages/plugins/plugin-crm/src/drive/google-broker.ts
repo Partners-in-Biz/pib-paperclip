@@ -128,6 +128,8 @@ export function createGoogleDriveBroker(
     path: file.description || file.name,
     folder_id: file.id,
     folder_url: file.webViewLink ?? `https://drive.google.com/drive/folders/${file.id}`,
+    complete: file.appProperties?.pibComplete === "1",
+    ...(file.appProperties?.pibRun ? { created_by_run: file.appProperties.pibRun } : {}),
   });
 
   async function findRegistered(type: DriveEntityType, id: string): Promise<DriveFile | null> {
@@ -139,7 +141,8 @@ export function createGoogleDriveBroker(
   }
 
   async function resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null> {
-    const file = await findRegistered(type, id);
+    // The marketing branch registers a project's leaf folder as a "campaign" (same id), so a project lookup finds that too.
+    const file = (await findRegistered(type, id)) ?? (type === "project" ? await findRegistered("campaign", id) : null);
     return file ? toRegistry(type, id, file) : null;
   }
 
@@ -172,7 +175,9 @@ export function createGoogleDriveBroker(
       parentPath = parent.path;
     }
     const path = parentPath ? `${parentPath}/${name}` : name;
-    const tag = { pibEntityType: type, pibEntityId: idTag(body.entity_id) };
+    const wantsSubfolders = (body.subfolders ?? []).length > 0;
+    // pibComplete marks a folder whose numbered sub-folders all exist; a folder that wants some gets it only after the last one.
+    const tag: Record<string, string> = { pibEntityType: type, pibEntityId: idTag(body.entity_id), ...(wantsSubfolders ? {} : { pibComplete: "1" }), ...(body.created_by_run ? { pibRun: body.created_by_run.slice(0, 100) } : {}) };
 
     let folder = await findRegistered(type, id);
     let created = false;
@@ -189,7 +194,7 @@ export function createGoogleDriveBroker(
       }
     }
 
-    const registered = toRegistry(type, id, folder);
+    let registered = toRegistry(type, id, folder);
     const tree: EnsureResult["tree"] = [];
     for (const sub of body.subfolders ?? []) {
       let child = await findChildFolder(folder.id, sub);
@@ -199,6 +204,10 @@ export function createGoogleDriveBroker(
         subCreated = true;
       }
       tree.push({ path: `${registered.path}/${sub}`, folderId: child.id, created: subCreated });
+    }
+    if (wantsSubfolders && !registered.complete) {
+      const done = await json<DriveFile>("PATCH", `${DRIVE}/files/${folder.id}?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, { appProperties: { pibComplete: "1" } });
+      registered = toRegistry(type, id, { ...folder, ...done, appProperties: { ...folder.appProperties, ...done.appProperties } });
     }
     return { folder: registered, created, tree };
   }

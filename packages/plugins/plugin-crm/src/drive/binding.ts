@@ -321,8 +321,8 @@ export async function driveBindingStatus(
   const bound = !!binding;
   const sharedDriveId = binding?.sharedDriveId;
 
-  // A Drive service account key (native) or the legacy broker token counts as a credential
-  const tokenSet = !!(cfg.driveServiceAccountJson || cfg.driveBrokerToken);
+  // The Drive service account key is the credential (the field keeps its name for the Setup page)
+  const tokenSet = !!cfg.driveServiceAccountJson;
 
   // Always return basic status; only fetch identity if token is set
   if (!tokenSet) {
@@ -339,7 +339,7 @@ export async function driveBindingStatus(
     };
   }
 
-  // Token is set: try to get identity from the broker
+  // Key is set: ask Google for the identity
   let serviceAccountEmail: string | undefined;
   let serviceAccountIsMember = false;
   let identityError: string | undefined;
@@ -358,44 +358,13 @@ export async function driveBindingStatus(
       await publishStatusEvent(ctx, companyId, { bound, sharedDriveId, serviceAccountEmail, serviceAccountIsMember });
       return { bound, sharedDriveId, tokenSet, serviceAccountIsMember, serviceAccountEmail };
     }
-    const token = await resolver.get("driveBrokerToken");
-    if (!token) {
-      // No token available; return status without identity info
-      await publishStatusEvent(ctx, companyId, {
-        bound,
-        sharedDriveId,
-        serviceAccountIsMember: false,
-      });
-      return {
-        bound,
-        sharedDriveId,
-        tokenSet: false,
-        serviceAccountIsMember: false,
-      };
-    }
-
-    const baseUrl = (cfg.driveBrokerUrl as string) || "https://partnersinbiz.online";
-    // Only append shared_drive_id param when bound
-    const url = bound && sharedDriveId
-      ? `${baseUrl}/api/v1/workspace-broker/identity?shared_drive_id=${encodeURIComponent(sharedDriveId)}`
-      : `${baseUrl}/api/v1/workspace-broker/identity`;
-
-    const res = await ctx.http.fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (res.ok) {
-      const body = JSON.parse(await res.text()) as { serviceAccountEmail?: string; isMember?: boolean };
-      serviceAccountEmail = body.serviceAccountEmail;
-      serviceAccountIsMember = body.isMember === true;
-    } else {
-      identityError = `broker identity unavailable (status ${res.status})`;
-    }
+    // The secret is set but resolves to nothing: report status without identity
+    await publishStatusEvent(ctx, companyId, { bound, sharedDriveId, serviceAccountIsMember: false });
+    return { bound, sharedDriveId, tokenSet: false, serviceAccountIsMember: false };
   } catch (err) {
     identityError = err instanceof BrokerError || (err instanceof Error && /service account key/i.test(err.message))
       ? err.message
-      : "broker identity unavailable (network error)";
+      : "Google Drive identity unavailable (network error)";
   }
 
   // Emit event with available info (excluding secrets) and stored candidates

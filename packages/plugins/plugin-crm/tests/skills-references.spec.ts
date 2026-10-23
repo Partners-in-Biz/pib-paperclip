@@ -216,7 +216,8 @@ describe("the guidance for documents to sign, attribution and site counters", ()
 
   it("the Drive reference carries the tool order and the no-Shared-Drive-ID rule", () => {
     expect(DRIVE_REFERENCE).toMatch(/drive_folder_resolve[\s\S]*drive_folder_ensure[\s\S]*drive_file_save/);
-    expect(DRIVE_REFERENCE).toMatch(/driveBrokerToken/);
+    expect(DRIVE_REFERENCE).toMatch(/driveServiceAccountJson/);
+    expect(DRIVE_REFERENCE).not.toMatch(/driveBrokerToken/);
     expect(DRIVE_REFERENCE).toMatch(/drive\.sharedDriveId/);
     expect(DRIVE_REFERENCE).toMatch(/drive_not_bound[^\n]*once[^\n]*stop/);
     expect(records.markdown).toMatch(/references\/drive\.md/);
