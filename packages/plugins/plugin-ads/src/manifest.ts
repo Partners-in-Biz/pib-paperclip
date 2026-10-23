@@ -11,9 +11,9 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Paid ads",
   description:
-    "Reads Meta and Google Ads performance into daily rollups and an append-only spend ledger for PiB's own ads and each client's, with monthly budget caps, pacing and anomaly alerts. " +
-    "Every campaign or budget change is a proposal with the numbers that goes to the Reviewer and then a person (and the client, through the CRM, where the scope asks): nothing that spends money runs without a recorded human approval, and changes are off until a person switches them on for the company and the scope. " +
-    "OAuth redirect URI for Meta and Google (shown on the Ads page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
+    "Reads Meta and Google Ads performance into daily rollups and a spend ledger for PiB's own ads and each client's, with monthly budget caps, pacing and anomaly alerts. " +
+    "Every campaign or budget change is a proposal with the numbers; nothing that spends money runs without a recorded human approval, and changes are off until a person switches them on. " +
+    "OAuth redirect URI: <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
   instanceConfigSchema: buildInstanceConfigSchema(),

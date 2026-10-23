@@ -27,9 +27,6 @@ import { AD_PLATFORMS, PLATFORM_LABELS, type AdPlatform } from "./platforms.js";
 import { DEFAULT_VARIANT_CONFIG, type VariantConfig } from "./variants.js";
 
 export const DEFAULT_TIMEZONE = "Africa/Johannesburg";
-export const DEFAULT_WEB_BROKER_URL = "https://partnersinbiz.online";
-/** Fixed org slug for partnersinbiz.online ad connections (not editable in settings). */
-export const WEB_ORG_SLUG = "partners-in-biz";
 
 export function buildInstanceConfigSchema(): JsonSchema {
   return {
@@ -81,21 +78,6 @@ export function buildInstanceConfigSchema(): JsonSchema {
           windowDays: { type: "integer", title: "Winner: analysis window (days)", default: DEFAULT_VARIANT_CONFIG.windowDays, minimum: 1 },
           consecutiveDays: { type: "integer", title: "Fatigue: consecutive days required", default: DEFAULT_VARIANT_CONFIG.consecutiveDays, minimum: 1 },
         },
-      },
-      webBrokerUrl: {
-        type: "string",
-        title: "Ad connections broker URL",
-        description: "The partnersinbiz.online API used for web-brokered Google and Meta ad connections (no /admin).",
-        default: DEFAULT_WEB_BROKER_URL,
-      },
-      webBrokerToken: secretField(
-        "Ad connections broker token",
-        "Bearer token for partnersinbiz.online ad connections. Saved as a Paperclip secret; only the name is shown on the Ads page.",
-      ) as JsonSchema,
-      webOrgId: {
-        type: "string",
-        title: "Web organization ID",
-        description: `Organization UUID sent as X-Org-Id to the broker. Org slug is fixed to ${WEB_ORG_SLUG}.`,
       },
       platforms: {
         type: "object",
@@ -298,54 +280,3 @@ export function enabledPlatforms(config: AdsConfig): Array<AdPlatform | "mock"> 
   return ([...AD_PLATFORMS, "mock"] as const).filter((p) => config.platform(p).enabled);
 }
 
-export function webBrokerUrlOf(raw: Record<string, unknown>): string {
-  return text(raw.webBrokerUrl) ?? DEFAULT_WEB_BROKER_URL;
-}
-
-/**
- * Validate the broker base URL before any secret is sent.
- * https only; http is allowed for localhost / 127.0.0.1 (same rule as requirePublicBaseUrl).
- */
-export function requireWebBrokerUrl(raw: Record<string, unknown>): string {
-  const rawUrl = webBrokerUrlOf(raw);
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new Error("Ad connections broker URL is not a valid URL.");
-  }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-    throw new Error("Ad connections broker URL must use https (http is only allowed for localhost).");
-  }
-  return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
-}
-
-export function webOrgIdOf(raw: Record<string, unknown>): string | null {
-  return text(raw.webOrgId);
-}
-
-export function webBrokerConfigured(raw: Record<string, unknown>): boolean {
-  return has(raw.webBrokerToken) && Boolean(webOrgIdOf(raw));
-}
-
-export interface WebBrokerSettingsView {
-  webOrgSlug: typeof WEB_ORG_SLUG;
-  secrets: {
-    webBrokerToken: { configured: boolean };
-    webOrgId: { configured: boolean; value: string | null };
-    webBrokerUrl: { configured: boolean; value: string };
-  };
-}
-
-/** Names and configured flags only — never secret values. */
-export function webBrokerSettingsView(raw: Record<string, unknown>): WebBrokerSettingsView {
-  const orgId = webOrgIdOf(raw);
-  return {
-    webOrgSlug: WEB_ORG_SLUG,
-    secrets: {
-      webBrokerToken: { configured: has(raw.webBrokerToken) },
-      webOrgId: { configured: Boolean(orgId), value: orgId },
-      webBrokerUrl: { configured: Boolean(text(raw.webBrokerUrl) ?? DEFAULT_WEB_BROKER_URL), value: webBrokerUrlOf(raw) },
-    },
-  };
-}
