@@ -4,6 +4,8 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { agentSpendAlarmService, type SpendAlarmHooks } from "./agent-spend-alarm.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -50,8 +52,9 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
-export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+export function costService(db: Db, budgetHooks: BudgetServiceHooks & SpendAlarmHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  const spendAlarm = agentSpendAlarmService(db, budgetHooks);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
@@ -99,6 +102,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      if (event.agentId) {
+        // Never fail cost recording because of the alarm (it runs at run end).
+        await spendAlarm.evaluateAgent(companyId, event.agentId).catch((err) => {
+          logger.error({ err, companyId, agentId: event.agentId }, "agent_spend_alarm.evaluate_failed");
+        });
+      }
 
       return event;
     },
