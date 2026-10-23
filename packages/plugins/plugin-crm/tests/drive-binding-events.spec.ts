@@ -1,20 +1,28 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { boot, CO, tool, toolRaw } from "./helpers/crm.js";
 import { onDriveBindingSetEvent } from "../src/drive/binding.js";
+import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
+import { KEY_JSON, fakeGoogle } from "./support/fake-google-drive.js";
 
 describe("Drive binding events", () => {
   let setup: Awaited<ReturnType<typeof boot>>;
+  let google: ReturnType<typeof fakeGoogle>;
 
   beforeEach(async () => {
+    clearServiceAccountTokenCache();
+    // A service account key is set (the credential the events must never carry); Google is faked in memory.
+    google = fakeGoogle();
+    vi.stubGlobal("fetch", google.fetchFn);
     setup = await boot({
       config: {
         timezone: "Africa/Johannesburg",
-        driveBrokerUrl: "https://broker.test",
-        driveBrokerToken: "test-token",
+        driveServiceAccountJson: KEY_JSON,
         drive: { sharedDriveId: "" },
       },
     });
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   describe("event emission", () => {
     it("emits bare event name without secrets for discover/set/status", async () => {
@@ -38,11 +46,31 @@ describe("Drive binding events", () => {
 
       setup.emit.mockClear();
 
-      // Test status (without token fetch)
+      // Test status (a key is set and d1 is bound, so Google is asked about the Shared Drive)
       await tool(setup.harness, "drive_binding_status", {});
       calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
       expect(calls).toHaveLength(1);
-      expect(JSON.stringify(calls[0][2])).not.toMatch(/token|secret/i);
+      expect(JSON.stringify(calls[0][2])).not.toMatch(/token|secret|PRIVATE KEY|private_key|ya29/i);
+    });
+
+    it("status event of a bound company carries the service account email and Google's membership answer, never the key", async () => {
+      await tool(setup.harness, "drive_binding_discover", { drives: [{ id: "d1", name: "Test" }] });
+      await tool(setup.harness, "drive_binding_set", { sharedDriveId: "d1" });
+      setup.emit.mockClear();
+
+      await tool(setup.harness, "drive_binding_status", {});
+      const calls = setup.emit.mock.calls.filter((c) => c[0] === "drive.binding");
+      expect(calls).toHaveLength(1);
+      expect(calls[0][2]).toMatchObject({
+        companyId: CO,
+        connected: true,
+        bound: true,
+        sharedDriveId: "d1",
+        serviceAccountEmail: "drive-sa@proj.iam.gserviceaccount.com",
+        serviceAccountIsMember: true,
+      });
+      expect(JSON.stringify(calls[0][2])).not.toMatch(/PRIVATE KEY|private_key|ya29|Bearer/i);
+      expect(google.calls.filter((c) => c.startsWith("GET /drive/v3/drives/d1?"))).toHaveLength(1);
     });
 
     it("does not fail tool when event emit throws", async () => {

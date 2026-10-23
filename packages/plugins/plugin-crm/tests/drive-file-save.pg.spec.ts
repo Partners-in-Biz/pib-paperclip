@@ -1,4 +1,4 @@
-/** saveDriveFile and driveFileSave tool handler on real Postgres. */
+/** saveDriveFile and driveFileSave tool handler on real Postgres, with the native Google Drive broker and Google faked in memory. */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,15 +6,13 @@ import { writeFileSync } from "node:fs";
 import { vi, afterEach } from "vitest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { saveDriveFile, type SaveDriveFileInput } from "../src/drive/save.js";
+import { saveDriveFile } from "../src/drive/save.js";
 import { driveFileSave, driveFolderEnsure } from "../src/drive/tools.js";
-import * as brokerModule from "../src/drive/broker.js";
+import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
 import { listDriveFiles, getDriveFile } from "../src/drive/store.js";
 import { insertAccount } from "../src/db.js";
 import { createAccount } from "../src/domain.js";
-import { NAMESPACE } from "../src/namespace.js";
-import { createFakeBroker, type FakeBrokerState } from "./support/fake-broker.js";
-import type { Broker } from "../src/drive/broker.js";
+import { DRIVE_ID, KEY_JSON, fakeGoogle, folderPaths, isFolder, uploadsOf, type FakeGoogleOptions } from "./support/fake-google-drive.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const CO_A = "co-a", CO_B = "co-b";
@@ -23,6 +21,7 @@ const available = await embeddedAvailable();
 describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   let pg: PgHarness, ctx: PluginContext;
   let tempDir: string;
+  let accountAId: string;
 
   beforeAll(async () => {
     pg = await startPg();
@@ -34,102 +33,62 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   });
 
   beforeEach(async () => {
+    clearServiceAccountTokenCache();
     await pg.reset();
     ctx = pg.ctx;
-    await insertAccount(ctx, createAccount({ companyId: CO_A, name: "Company A" }));
+    const accountA = createAccount({ companyId: CO_A, name: "Company A" });
+    accountAId = accountA.id;
+    await insertAccount(ctx, accountA);
     await insertAccount(ctx, createAccount({ companyId: CO_B, name: "Company B" }));
   });
 
-  function setupContext(brokerState?: FakeBrokerState, failWithUpload?: number) {
-    const { uploadFetch: realUploadFetch, state } = createFakeBroker({ failWith: failWithUpload });
-    const brokerState_ = brokerState || state;
-    const folderCache = new Map<string, { id: string; path: string }>();
+  /** Google (in memory) is the only server: the broker under test is the real native one, reached through the global fetch. */
+  function setupContext(googleOptions: FakeGoogleOptions = {}) {
+    const google = fakeGoogle(googleOptions);
+    vi.stubGlobal("fetch", google.fetchFn);
     let publicUrlFetchMock: ((url: string, init?: any) => any) | null = null;
 
-    const brokerFactory = (fetchFn: any, cfg: any) => {
-      const broker: Broker = {
-        resolve: async () => null,
-        ensure: async (body) => {
-          const cacheKey = `${body.entity_type}:${body.entity_id}`;
-          let cached = folderCache.get(cacheKey);
-          let wasCreated = !cached;
-          if (!cached) {
-            cached = { id: `folder_${Math.random().toString(36).slice(2, 11)}`, path: `02 Partners in Biz/Projects/${body.entity_id}` };
-            folderCache.set(cacheKey, cached);
-          }
-          const tree: Array<{ path: string; folderId: string; created: boolean }> = [{ path: cached.path, folderId: cached.id, created: wasCreated }];
-          // Add subfolders to tree if provided in the body
-          if (body.subfolders && Array.isArray(body.subfolders)) {
-            for (const subfolder of body.subfolders) {
-              const subfolderCacheKey = `${body.entity_type}:${body.entity_id}:${subfolder}`;
-              const subfolderPath = `${cached.path}/${subfolder}`;
-              const subfolderFolderId = `${cached.id}_${subfolder.replace(/\s+/g, '_')}`;
-              tree.push({ path: subfolderPath, folderId: subfolderFolderId, created: wasCreated });
-            }
-          }
-          return {
-            folder: { id: cached.id, entity_type: body.entity_type, entity_id: body.entity_id, path: cached.path, folder_id: cached.id, folder_url: `https://drive.google.com/drive/folders/${cached.id}` },
-            created: wasCreated,
-            tree,
-          };
-        },
-        uploadFile: async (input) => {
-          const formData = new FormData();
-          const blob = new Blob([Buffer.from(input.bytes)], { type: input.mimeType });
-          formData.append("file", blob as any, input.name);
-          formData.append("name", input.name);
-          formData.append("sharedDriveId", cfg.sharedDriveId);
-          if (input.parentFolderId) formData.append("parentFolderId", input.parentFolderId);
-          const response = await realUploadFetch("http://broker/upload", { method: "POST", headers: { Authorization: `Bearer ${cfg.token}` }, body: formData });
-          const result = JSON.parse(await response.text());
-          if (!response.ok || !result.success) {
-            const error = new Error(result.error?.message || "Upload failed");
-            (error as any).status = response.status;
-            (error as any).code = result.error?.code || "upload_failed";
-            (error as any).retryable = response.status >= 500;
-            throw error;
-          }
-          return result.data;
-        },
-        identity: async (sharedDriveId?: string) => ({
-          serviceAccountEmail: "test-sa@project.iam.gserviceaccount.com",
-          isMember: true,
-        }),
-      };
-      return broker;
-    };
-
-    vi.spyOn(brokerModule, 'createBroker' as any).mockImplementation(brokerFactory);
     ctx.http = { fetch: async (url: string, init?: any) => publicUrlFetchMock ? publicUrlFetchMock(url, init) : ({} as any) } as any;
     const configMap = new Map<string, any>();
     ctx.config = { get: async (companyId: string) => configMap.get(companyId) ?? null, set: async (companyId: string, value: any) => configMap.set(companyId, value) } as any;
     ctx.projects = { get: async (projectId: string, companyId: string) => projectId.startsWith('p') ? { id: projectId, companyId, name: projectId } : null, list: async () => [] } as any;
 
     const viewer = { companyId: CO_A, userId: "user-1", runId: "run-1", agentId: "agent-1", role: "agent" as const };
-    return { viewer, brokerState: brokerState_, configMap, setPublicUrlFetchMock: (fn: (url: string, init?: any) => any) => { publicUrlFetchMock = fn; } };
+    return { viewer, google, configMap, setPublicUrlFetchMock: (fn: (url: string, init?: any) => any) => { publicUrlFetchMock = fn; } };
   }
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  async function configureCompanyDrive(companyId: string, configMap: Map<string, any>, brokerToken = "fake-token", sharedDriveId = `drive-${companyId}`) {
-    configMap.set(companyId, { driveBrokerToken: brokerToken, drive: { sharedDriveId } });
+  async function configureCompanyDrive(companyId: string, configMap: Map<string, any>, sharedDriveId = DRIVE_ID) {
+    configMap.set(companyId, { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId } });
   }
 
-  it("contentBase64 save -> status 'saved', url no sig, 1 upload", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+  /** The project's Drive folder and its numbered sub-folder by name, found by what Drive holds. */
+  const subfolderOf = (google: ReturnType<typeof fakeGoogle>, project: string, name: string) => {
+    const projectFolder = google.files.find((f) => isFolder(f) && f.appProperties?.pibEntityType === "project" && f.appProperties?.pibEntityId === project)!;
+    return google.files.find((f) => isFolder(f) && f.name === name && f.parents[0] === projectFolder.id)!;
+  };
+  const projectFolderOf = (google: ReturnType<typeof fakeGoogle>, project: string) => google.files.find((f) => isFolder(f) && f.appProperties?.pibEntityType === "project" && f.appProperties?.pibEntityId === project)!;
+
+  it("contentBase64 save -> status 'saved', url no sig, 1 upload into the project's folder", async () => {
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("content").toString("base64"),
     });
     expect(result.status).toBe("saved");
     expect(result.url).not.toMatch(/X-Amz|Signature|token/);
-    expect(brokerState.requests).toHaveLength(1);
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]).toMatchObject({ name: "2026-10-20 test v1.txt", parents: [projectFolderOf(google, "p1").id] });
+    expect(uploads[0].appProperties?.pibSha256).toBe(result.sha256);
   });
 
   it("path source save -> status 'saved', 1 upload", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const filePath = join(tempDir, "test.txt");
     writeFileSync(filePath, "content");
@@ -137,31 +96,32 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
       companyId: CO_A, projectId: "p1", fileKind: "product", name: "PAR-1-1729346000.txt", mimeType: "text/plain", path: filePath,
     }, { allowedRoots: [tempDir] });
     expect(result.status).toBe("saved");
-    expect(brokerState.requests).toHaveLength(1);
+    expect(uploadsOf(google.files)).toHaveLength(1);
   });
 
   it("duplicate -> status 'saved', duplicate:true, 1 upload total", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const cb = Buffer.from("Same").toString("base64");
     const input = { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 dup v1.txt", mimeType: "text/plain", contentBase64: cb };
     const r1 = await saveDriveFile(ctx, viewer, input);
     expect(r1.status).toBe("saved");
-    const count1 = brokerState.requests.length;
+    const count1 = uploadsOf(google.files).length;
     const r2 = await saveDriveFile(ctx, viewer, input);
     expect(r2.duplicate).toBe(true);
     expect(r2.driveFileId).toBe(r1.driveFileId);
-    expect(brokerState.requests).toHaveLength(count1);
+    expect(uploadsOf(google.files)).toHaveLength(count1);
   });
 
   it.each(["foo.png", "2026-13-45 x v1.png", "2026-02-31 x v1.png", "2026-10-20 x.png", "2026-10-20 x v1", "path/to/file.png", "file/../name.png", ".hidden.png", "file\ncontrol.png"])("invalid name '%s'", async (name) => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name, mimeType: "image/png", contentBase64: Buffer.from("t").toString("base64"),
     });
     expect(result.status).toBe("invalid_name");
-    expect(brokerState.requests).toHaveLength(0);
+    expect(uploadsOf(google.files)).toHaveLength(0);
+    expect(google.calls).toHaveLength(0);
   });
 
   it.each(["PAR-4059-1760000000.png", "BUG-123-456789.pdf", "TASK-1-9999999.txt"])("valid evidence '%s'", async (name) => {
@@ -174,13 +134,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   });
 
   it("path outside root -> path_not_allowed, no /etc in hint", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 out v1.txt", mimeType: "text/plain", path: "/etc/hostname",
     }, { allowedRoots: [tempDir] });
     expect(result.status).toBe("path_not_allowed");
-    expect(brokerState.requests).toHaveLength(0);
+    expect(uploadsOf(google.files)).toHaveLength(0);
     if (result.hint) expect(result.hint).not.toContain("/etc");
   });
 
@@ -206,13 +166,24 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(JSON.stringify(result)).not.toContain(input);
   });
 
-  it("unbound company -> drive_not_bound", async () => {
-    const { viewer, brokerState } = setupContext();
+  it("unbound company (no Drive settings at all) -> drive_not_bound, Google never called", async () => {
+    const { viewer, google } = setupContext();
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("t").toString("base64"),
     });
     expect(result.status).toBe("drive_not_bound");
-    expect(brokerState.requests).toHaveLength(0);
+    expect(uploadsOf(google.files)).toHaveLength(0);
+    expect(google.calls).toHaveLength(0);
+  });
+
+  it("a service account key but no Shared Drive -> drive_not_bound, Google never called", async () => {
+    const { viewer, google, configMap } = setupContext();
+    configMap.set(CO_A, { driveServiceAccountJson: KEY_JSON });
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("t").toString("base64"),
+    });
+    expect(result.status).toBe("drive_not_bound");
+    expect(google.calls).toHaveLength(0);
   });
 
   it.each([
@@ -221,42 +192,52 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     ["too_large", "client", Buffer.from("x".repeat(5 * 1024 * 1024 + 1)).toString("base64"), undefined],
     ["sha_mismatch", "client", Buffer.from("t").toString("base64"), "a".repeat(64)],
   ] as const)("error: %s", async (status, kind, cb64, sha) => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: kind, name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: cb64, sha256: sha,
     });
     expect(result.status).toBe(status);
-    expect(brokerState.requests).toHaveLength(0);
+    expect(uploadsOf(google.files)).toHaveLength(0);
+    // Refused before any Google call (the 5 MiB cap included)
+    expect(google.calls).toHaveLength(0);
   });
 
-  it.each([[500], [401]] as const)("broker %i -> broker_error, retryable, no token", async (httpStatus) => {
-    const { viewer, configMap } = setupContext(undefined, httpStatus);
+  it.each([
+    [500, true, undefined],
+    [401, false, "bad_credential"],
+    [403, false, "not_member"],
+  ] as const)("Drive refuses the upload with %i -> broker_error, retryable=%s, nothing stored, no key material", async (httpStatus, retryable, code) => {
+    const { viewer, configMap } = setupContext({ uploadStatus: httpStatus });
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("t").toString("base64"),
     });
     expect(result.status).toBe("broker_error");
-    expect(typeof result.retryable).toBe("boolean");
-    expect(JSON.stringify(result)).not.toContain("fake-token");
+    expect(result.retryable).toBe(retryable);
+    expect(result.code).toBe(code);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE KEY|private_key|ya29/);
+    expect(await listDriveFiles(ctx, CO_A, { projectId: "p1" })).toHaveLength(0);
   });
 
   it("tool: driveFileSave", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await driveFileSave(ctx, viewer as any, {
       projectId: "p1", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("t").toString("base64"),
     });
     expect(result.status).toBe("saved");
+    expect(uploadsOf(google.files)).toHaveLength(1);
   });
 
   it("tool: driveFileSave project_not_found", async () => {
-    const { viewer, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await driveFileSave(ctx, viewer as any, {
       projectId: "nonexistent", fileKind: "client", name: "2026-10-20 test v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("t").toString("base64"),
     });
     expect(result.status).toBe("project_not_found");
+    expect(google.calls).toHaveLength(0);
   });
 
   it("path load error sanitizes message/path in hint", async () => {
@@ -277,7 +258,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   });
 
   it("publicUrl save -> status 'saved', url stripped of sig params, 1 upload", async () => {
-    const { viewer, brokerState, configMap, setPublicUrlFetchMock } = setupContext();
+    const { viewer, google, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const content = Buffer.from("public bytes content");
     setPublicUrlFetchMock(() => new Response(content.buffer, { status: 200, headers: { "content-type": "text/plain" } }));
@@ -287,11 +268,11 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(result.status).toBe("saved");
     expect(result.sha256).toBeTruthy();
     expect(result.url).not.toMatch(/X-Amz|Signature|token/);
-    expect(brokerState.requests).toHaveLength(1);
+    expect(uploadsOf(google.files)).toHaveLength(1);
   });
 
   it("publicUrl non-2xx response -> fetch_failed status", async () => {
-    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    const { viewer, google, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     setPublicUrlFetchMock(() => new Response(null, { status: 404 }));
     const result = await saveDriveFile(ctx, viewer as any, {
@@ -299,6 +280,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("fetch_failed");
     expect(result.hint).not.toContain("example.com");
+    expect(google.calls).toHaveLength(0);
   });
 
   it("publicUrl private IP direct -> fetch_failed via SSRF guard", async () => {
@@ -348,7 +330,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   });
 
   it("publicUrl over-cap body -> fetch_failed", async () => {
-    const { viewer, configMap, setPublicUrlFetchMock } = setupContext();
+    const { viewer, google, configMap, setPublicUrlFetchMock } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const largeData = new Uint8Array(5 * 1024 * 1024 + 1); // Over 5MB limit
     setPublicUrlFetchMock(() => new Response(largeData.buffer, { status: 200 }));
@@ -357,10 +339,11 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("fetch_failed");
     expect(JSON.stringify(result)).not.toContain("example.com");
+    expect(google.calls).toHaveLength(0);
   });
 
   it("save with subfolder '03 Deliverables' -> uses that folder's id for upload and storage", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 deliv v1.txt", mimeType: "text/plain",
@@ -368,14 +351,18 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("saved");
     expect(result.subfolder).toBe("03 Deliverables");
-    expect(brokerState.requests).toHaveLength(1);
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(1);
+    const deliverables = subfolderOf(google, "p1", "03 Deliverables");
+    expect(uploads[0].parents).toEqual([deliverables.id]);
     // Verify the file was stored with subfolder
     const stored = await getDriveFile(ctx, CO_A, result.driveFileId!);
     expect(stored?.subfolder).toBe("03 Deliverables");
+    expect(stored?.folderId).toBe(deliverables.id);
   });
 
   it("same name+sha256 in different subfolders -> creates separate rows", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const input = { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 shared v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("shared").toString("base64") };
 
@@ -389,11 +376,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(r2.status).toBe("saved");
     expect(r2.subfolder).toBe("03 Deliverables");
     expect(r2.driveFileId).not.toBe(r1.driveFileId); // Different files
-    expect(brokerState.requests).toHaveLength(2); // Two uploads
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(2); // Two uploads, one per folder
+    expect(new Set(uploads.map((f) => f.parents[0])).size).toBe(2);
   });
 
   it("same name+sha256 in same subfolder twice -> returns duplicate", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const input = { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 dup-sub v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("dup").toString("base64"), subfolder: "02 Assets" };
 
@@ -405,11 +394,11 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(r2.status).toBe("saved");
     expect(r2.duplicate).toBe(true);
     expect(r2.driveFileId).toBe(r1.driveFileId);
-    expect(brokerState.requests).toHaveLength(1); // Only one upload
+    expect(uploadsOf(google.files)).toHaveLength(1); // Only one upload
   });
 
-  it("unknown subfolder 'Nope' -> invalid_subfolder early (no driveFolderEnsure, no upload)", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+  it("unknown subfolder 'Nope' -> invalid_subfolder early (no driveFolderEnsure, no Google call, no upload)", async () => {
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const toolsModule = await import("../src/drive/tools.js");
     const ensureSpy = vi.spyOn(toolsModule, "driveFolderEnsure");
@@ -419,12 +408,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("invalid_subfolder");
     expect(result.hint).toContain("must be one of");
-    expect(brokerState.requests).toHaveLength(0);
+    expect(uploadsOf(google.files)).toHaveLength(0);
+    expect(google.calls).toHaveLength(0);
     expect(ensureSpy).not.toHaveBeenCalled();
   });
 
   it("no subfolder -> saves to project root with subfolder=null", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 root v1.txt", mimeType: "text/plain",
@@ -432,13 +422,15 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("saved");
     expect(result.subfolder).toBe(null);
-    expect(brokerState.requests).toHaveLength(1);
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].parents).toEqual([projectFolderOf(google, "p1").id]);
     const stored = await getDriveFile(ctx, CO_A, result.driveFileId!);
     expect(stored?.subfolder).toBe(null);
   });
 
   it("tool: drive_file_save with subfolder parameter", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await driveFileSave(ctx, viewer as any, {
       projectId: "p1", fileKind: "client", name: "2026-10-20 tool-sub v1.txt", mimeType: "text/plain",
@@ -446,7 +438,9 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(result.status).toBe("saved");
     expect(result.subfolder).toBe("04 Reports");
-    expect(brokerState.requests).toHaveLength(1);
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].parents).toEqual([subfolderOf(google, "p1", "04 Reports").id]);
   });
 
   it("listDriveFiles with subfolder filter", async () => {
@@ -474,7 +468,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   });
 
   it("subfolder on already-ensured project -> resolves from tree returned with include_tree", async () => {
-    const { viewer, brokerState, configMap } = setupContext();
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
 
     // First call without subfolder (simulates previous ensure)
@@ -483,7 +477,8 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
       mimeType: "text/plain", contentBase64: Buffer.from("first").toString("base64"),
     });
     expect(r1.status).toBe("saved");
-    expect(brokerState.requests).toHaveLength(1);
+    expect(uploadsOf(google.files)).toHaveLength(1);
+    const foldersAfterFirst = google.files.filter(isFolder).length;
 
     // Second call with subfolder on already-ensured project
     const r2 = await saveDriveFile(ctx, viewer, {
@@ -492,41 +487,24 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     });
     expect(r2.status).toBe("saved");
     expect(r2.subfolder).toBe("02 Assets");
-    expect(brokerState.requests).toHaveLength(2); // One more upload
+    const uploads = uploadsOf(google.files);
+    expect(uploads).toHaveLength(2); // One more upload
+    // It went into the existing "02 Assets" folder: no new folder was made for it
+    expect(uploads[1].parents).toEqual([subfolderOf(google, "p1", "02 Assets").id]);
+    expect(google.files.filter(isFolder)).toHaveLength(foldersAfterFirst);
   });
 
-  it("broker returning empty tree falls back to accumulated tree", async () => {
-    // Create context with broker that returns empty tree on last step
-    const { viewer, configMap } = setupContext();
-    const folderCache = new Map<string, { id: string; path: string }>();
-
-    const brokerFactory = (fetchFn: any, cfg: any) => {
-      const broker: any = {
-        resolve: async () => null,
-        ensure: async (body: any) => {
-          const cacheKey = `${body.entity_type}:${body.entity_id}`;
-          let cached = folderCache.get(cacheKey);
-          if (!cached) {
-            cached = { id: `folder_${Math.random().toString(36).slice(2, 11)}`, path: `Projects/${body.entity_id}` };
-            folderCache.set(cacheKey, cached);
-          }
-          return {
-            folder: { id: cached.id, entity_type: body.entity_type, entity_id: body.entity_id, path: cached.path, folder_id: cached.id, folder_url: `https://drive.google.com/drive/folders/${cached.id}` },
-            created: true,
-            tree: [], // Broker returns empty tree
-          };
-        },
-        uploadFile: async (input: any) => ({ fileId: `file_${Date.now()}`, name: input.name, mimeType: input.mimeType, size: 0, sha256: "hash", webViewLink: "url", deduplicated: false }),
-      };
-      return broker;
-    };
-
-    vi.spyOn(await import("../src/drive/broker.js"), "createBroker" as any).mockImplementation(brokerFactory);
+  it("a company folder ensure (no sub-folders at the end of the plan) falls back to the accumulated tree", async () => {
+    // The company step is the leaf of its plan and carries no sub-folders, so the broker's own tree for it is empty.
+    const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
-    const res = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: "p3", include_tree: true });
+    const res = await driveFolderEnsure(ctx, viewer, { entity_type: "crm_company", entity_id: accountAId, include_tree: true });
 
-    // Should use accumulated tree since broker returned empty
+    expect((res as any).status).toBe("created");
+    // Should use accumulated tree since the broker returned an empty one
     expect((res as any).tree).toBeDefined();
     expect((res as any).tree.length).toBeGreaterThan(0); // Has accumulated entries
+    expect((res as any).tree).toEqual([{ path: "Company A", folderId: google.files[0].id, created: true }]);
+    expect(folderPaths(google.files)).toEqual(["Company A"]);
   });
 });

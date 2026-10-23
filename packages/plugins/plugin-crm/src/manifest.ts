@@ -65,14 +65,7 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     } as unknown as JsonSchema,
-    driveBrokerUrl: {
-      type: "string",
-      title: "Drive broker URL (legacy)",
-      description: "Legacy: used only while no Drive service account key is set. The address of the partnersinbiz-web Drive broker API (default: https://partnersinbiz.online).",
-      default: "https://partnersinbiz.online",
-    },
-    driveBrokerToken: secretField("Drive broker token (legacy)", "Legacy: used only while no Drive service account key is set. Bearer token for the partnersinbiz-web Drive broker (admin role). The token must be bound to the correct organization because the broker infers the organization ID from the token's user when none is explicitly sent.") as unknown as JsonSchema,
-    driveServiceAccountJson: secretField("Drive service account key", "The whole JSON key file of a Google service account that is a Content manager of the company's Shared Drive. Drive calls go straight to Google with it. When set it replaces the legacy Drive broker token. Use a service account with Drive access only, not the Search Console one.") as unknown as JsonSchema,
+    driveServiceAccountJson: secretField("Drive service account key", "The whole JSON key file of a Google service account that is a Content manager of the company's Shared Drive. Drive calls go straight to Google with it. Use a service account with Drive access only, not the Search Console one.") as unknown as JsonSchema,
     drive: {
       type: "object",
       title: "Drive settings",

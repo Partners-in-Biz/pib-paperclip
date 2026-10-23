@@ -2,7 +2,7 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
 import { createGoogleDriveBroker } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
@@ -85,7 +85,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 
   try {
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
-    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson (or the legacy driveBrokerToken)" };
+    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson" };
 
     const folder = await broker.resolve(type, id);
     return folder ? { status: "found", path: folder.path, url: folder.folder_url, folder_id: folder.folder_id } : { status: "not_found", hint: "call drive_folder_ensure" };
@@ -113,7 +113,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     }
     throw e;
   }
-  if (!broker) throw new CrmError("Drive is not configured in the CRM plugin settings: set driveServiceAccountJson (or the legacy driveBrokerToken)");
+  if (!broker) throw new CrmError("Drive is not configured in the CRM plugin settings: set driveServiceAccountJson");
 
   let existing: any;
   try {
@@ -122,8 +122,9 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  // If folder exists and we don't need the tree with subfolders, return early
-  if (existing && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  // If the folder exists, is complete (all its numbered sub-folders made) and we don't need the tree, return early.
+  // An interrupted ensure leaves complete:false, and the plan below resumes it.
+  if (existing && existing.complete !== false && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
 
   const facts = await loadDriveFacts(ctx, viewer, type, id);
   const siblings = await loadDriveSiblings(ctx, viewer, type, id);
@@ -157,26 +158,19 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
 export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
   const cfg = await readConfig(ctx, companyId);
-  if (!cfg.driveServiceAccountJson && !cfg.driveBrokerToken) return null;
+  if (!cfg.driveServiceAccountJson) return null;
 
   // Get effective binding (config or state)
   const sharedDriveId = await effectiveSharedDriveId(ctx, companyId, cfg);
 
-  // Check binding FIRST before reading any secret
+  // Check binding FIRST before reading the secret
   if (!sharedDriveId) {
     throw new DriveNotBoundError();
   }
 
-  const resolver = new SecretResolver(ctx, companyId, cfg);
-  // Native path: the Drive service account talks to Google directly. The legacy
-  // web broker below is only used while no service account key is set.
-  const serviceAccountJson = await resolver.get("driveServiceAccountJson");
-  if (serviceAccountJson) return createGoogleDriveBroker(fetch, parseServiceAccountKey(serviceAccountJson), sharedDriveId);
-
-  const token = await resolver.get("driveBrokerToken");
-  if (!token) return null;
-  const baseUrl = (cfg.driveBrokerUrl as string) || "https://partnersinbiz.online";
-  return createBroker(ctx.http.fetch, { baseUrl, token, sharedDriveId });
+  const serviceAccountJson = await new SecretResolver(ctx, companyId, cfg).get("driveServiceAccountJson");
+  if (!serviceAccountJson) return null;
+  return createGoogleDriveBroker(fetch, parseServiceAccountKey(serviceAccountJson), sharedDriveId);
 }
 
 /**

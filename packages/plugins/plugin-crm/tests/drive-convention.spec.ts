@@ -1,14 +1,12 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { boot, CO, toolRaw, seed, company, contact } from "./helpers/crm.js";
-import { planFolders, type DriveFacts, type Sibling, DRIVE_SUBFOLDERS } from "../src/drive/convention.js";
-import { createBroker, DriveNotBoundError } from "../src/drive/broker.js";
+import { planFolders, type DriveFacts, DRIVE_SUBFOLDERS } from "../src/drive/convention.js";
+import { DriveNotBoundError } from "../src/drive/broker.js";
+import { createGoogleDriveBroker } from "../src/drive/google-broker.js";
+import { clearServiceAccountTokenCache, parseServiceAccountKey } from "../src/drive/google-sa.js";
+import { DRIVE_ID, KEY_JSON, fakeGoogle, folderPaths, isFolder, type FakeFile } from "./support/fake-google-drive.js";
 
-interface BrokerState {
-  registry: Map<string, any>;
-  driveFolders: Map<string, { id: string; path: string; folder_id: string; folder_url: string }>;
-  posts: Array<{ url: string; headers: Record<string, string>; body: any }>;
-  requests: Array<{ url: string; method: string; body?: any }>;
-}
+const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
 
 function linked(baseSeed: Record<string, any>, coId: string, name: string) {
   const contactId = `contact-${coId}`;
@@ -18,47 +16,23 @@ function linked(baseSeed: Record<string, any>, coId: string, name: string) {
   baseSeed.client_projects!.push({ id: `cp-${coId}`, company_id: CO, project_id: "p1", client_kind: "company", client_ref: coId, created_at: "2026-01-01T00:00:00Z" });
 }
 
-function createMockBrokerFn(state: BrokerState) {
-  return async (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
-    if (!init.headers.Authorization?.startsWith("Bearer ")) return { status: 401, ok: false, text: async () => "{}" };
-
-    const body = init.body ? JSON.parse(init.body) : undefined;
-    state.requests.push({ url, method: init.method, body });
-
-    if (init.method === "GET" && url.includes("/registry/resolve")) {
-      const params = new URL(url, "http://base").searchParams;
-      const key = `${params.get("entity_type")}:${params.get("entity_id")}`;
-      const found = state.registry.get(key);
-      return found ? { status: 200, ok: true, text: async () => JSON.stringify({ success: true, data: { folder: found } }) } : { status: 404, ok: false, text: async () => JSON.stringify({ success: false, error: "Not found" }) };
-    }
-    if (init.method === "POST" && url.includes("/registry/ensure")) {
-      const { entity_type, entity_id, name, parent_entity_id } = body;
-      state.posts.push({ url, headers: init.headers, body });
-      const key = `${entity_type}:${entity_id}`;
-      if (!state.registry.has(key)) {
-        const fid = `f_${state.registry.size + 1}`;
-        state.registry.set(key, { id: fid, entity_type, entity_id, path: `test/${name}`, folder_id: fid, folder_url: `https://drive.google.com/drive/folders/${fid}` });
-      }
-      const reg = state.registry.get(key)!;
-      return { status: 200, ok: true, text: async () => JSON.stringify({ success: true, data: { folder: reg, created: !state.registry.has(key), tree: [] } }) };
-    }
-    return { status: 404, ok: false, text: async () => "{}" };
-  };
-}
-
-async function setup(config: Record<string, any> = {}, store?: Record<string, any>) {
+/** The tool layer on the native path: the service account key in the CRM settings, Google (faked, in memory) as the only server. */
+async function setup(config: Record<string, any> = NATIVE, store?: Record<string, any>, google = fakeGoogle()) {
   const baseStore = store || seed();
   const { harness } = await boot({ config, store: baseStore });
-  const state: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-  harness.ctx.http.fetch = createMockBrokerFn(state) as any;
-  return { harness, state };
+  const fetchSpy = vi.fn(google.fetchFn);
+  vi.stubGlobal("fetch", fetchSpy);
+  return { harness, google, fetchSpy };
 }
 
-describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
-  beforeEach(() => {
-    // Clear mocks before each test if needed
-  });
+/** The folder Drive holds for a Paperclip entity (its registry is the appProperties on the folder). */
+const folderOf = (files: FakeFile[], type: string, id: string) => files.find((f) => isFolder(f) && f.appProperties?.pibEntityType === type && f.appProperties?.pibEntityId === id);
+const SUB_PATHS = (base: string) => DRIVE_SUBFOLDERS.map((sub) => `${base}/${sub}`);
 
+beforeEach(() => clearServiceAccountTokenCache());
+afterEach(() => vi.unstubAllGlobals());
+
+describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
   describe("DRIVE_SUBFOLDERS constant", () => {
     it("exports DRIVE_SUBFOLDERS with standard folder names", () => {
       expect(DRIVE_SUBFOLDERS).toEqual(["01 Briefs", "02 Assets", "03 Deliverables", "04 Reports", "05 Evidence", "99 Archive"]);
@@ -290,28 +264,35 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
         expect((plan as any).steps).toBeUndefined();
       }
     });
+
+    it("(12b) the run id is carried on every step of the plan (and absent when there is no run)", () => {
+      const facts: DriveFacts = { entityType: "project", entityId: "p1", name: "Website", companyEntityId: "co-a", companyName: "Acme Ltd", contactName: "John Doe" };
+      const withRun = planFolders(facts, [], "run-7");
+      expect(withRun.kind).toBe("ensure");
+      if (withRun.kind === "ensure") expect(withRun.steps.map((step) => step.created_by_run)).toEqual(["run-7", "run-7"]);
+      const without = planFolders(facts, []);
+      if (without.kind === "ensure") expect(without.steps.every((step) => step.created_by_run === undefined)).toBe(true);
+    });
   });
 
-  describe("createBroker with sharedDriveId binding", () => {
+  describe("createGoogleDriveBroker with sharedDriveId binding", () => {
+    const key = () => parseServiceAccountKey(KEY_JSON);
+
     it("(13) throws DriveNotBoundError if sharedDriveId is empty string", () => {
-      const state: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-      const fetchFn = createMockBrokerFn(state);
-      expect(() => createBroker(fetchFn, { baseUrl: "http://test", token: "token", sharedDriveId: "" })).toThrow(DriveNotBoundError);
-      expect(state.requests.length).toBe(0);
+      const g = fakeGoogle();
+      expect(() => createGoogleDriveBroker(g.fetchFn, key(), "")).toThrow(DriveNotBoundError);
+      expect(g.calls.length).toBe(0);
     });
 
     it("(14) throws DriveNotBoundError if sharedDriveId is whitespace", () => {
-      const state: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-      const fetchFn = createMockBrokerFn(state);
-      expect(() => createBroker(fetchFn, { baseUrl: "http://test", token: "token", sharedDriveId: "   " })).toThrow(DriveNotBoundError);
-      expect(state.requests.length).toBe(0);
+      const g = fakeGoogle();
+      expect(() => createGoogleDriveBroker(g.fetchFn, key(), "   ")).toThrow(DriveNotBoundError);
+      expect(g.calls.length).toBe(0);
     });
 
     it("(15) DriveNotBoundError has code='drive_not_bound'", () => {
-      const state: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-      const fetchFn = createMockBrokerFn(state);
       try {
-        createBroker(fetchFn, { baseUrl: "http://test", token: "token", sharedDriveId: "" });
+        createGoogleDriveBroker(fakeGoogle().fetchFn, key(), "");
         expect.fail("Should have thrown");
       } catch (e) {
         expect(e).toBeInstanceOf(DriveNotBoundError);
@@ -319,138 +300,197 @@ describe("Drive convention (planFolders and DRIVE_SUBFOLDERS)", () => {
       }
     });
 
-    it("(16) fetch is never called if sharedDriveId check fails", () => {
-      let fetchCalled = false;
-      const fetchFn = async () => {
-        fetchCalled = true;
-        return { status: 200, ok: true, text: async () => "{}" };
-      };
+    it("(16) Google is never called (not even for a token) if the sharedDriveId check fails", () => {
+      const fetchFn = vi.fn(async () => new Response("{}", { status: 200 }));
       try {
-        createBroker(fetchFn, { baseUrl: "http://test", token: "token", sharedDriveId: "" });
+        createGoogleDriveBroker(fetchFn, key(), "");
       } catch {
         // expected
       }
-      expect(fetchCalled).toBe(false);
+      expect(fetchFn).not.toHaveBeenCalled();
     });
 
-    it("(17) two brokers with different sharedDriveIds send correct ids in resolve query", async () => {
-      const state1: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-      const state2: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-
-      const fetchFn1 = createMockBrokerFn(state1);
-      const fetchFn2 = createMockBrokerFn(state2);
-
-      const broker1 = createBroker(fetchFn1, { baseUrl: "http://test", token: "token", sharedDriveId: "drive-A" });
-      const broker2 = createBroker(fetchFn2, { baseUrl: "http://test", token: "token", sharedDriveId: "drive-B" });
+    it("(17) two brokers with different sharedDriveIds scope their lookups to their own drive", async () => {
+      const g1 = fakeGoogle({ driveId: "drive-A" });
+      const g2 = fakeGoogle({ driveId: "drive-B" });
+      const broker1 = createGoogleDriveBroker(g1.fetchFn, key(), "drive-A");
+      const broker2 = createGoogleDriveBroker(g2.fetchFn, key(), "drive-B");
 
       await broker1.resolve("project", "p1");
       await broker2.resolve("project", "p2");
 
-      expect(state1.requests.some((r) => r.url.includes("shared_drive_id=drive-A"))).toBe(true);
-      expect(state2.requests.some((r) => r.url.includes("shared_drive_id=drive-B"))).toBe(true);
+      expect(g1.calls.length).toBeGreaterThan(0);
+      expect(g1.calls.every((c) => c.includes("corpora=drive") && c.includes("driveId=drive-A"))).toBe(true);
+      expect(g2.calls.length).toBeGreaterThan(0);
+      expect(g2.calls.every((c) => c.includes("corpora=drive") && c.includes("driveId=drive-B"))).toBe(true);
     });
 
-    it("(18) two brokers with different sharedDriveIds send correct ids in ensure body", async () => {
-      const state1: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-      const state2: BrokerState = { registry: new Map(), driveFolders: new Map(), posts: [], requests: [] };
-
-      const fetchFn1 = createMockBrokerFn(state1);
-      const fetchFn2 = createMockBrokerFn(state2);
-
-      const broker1 = createBroker(fetchFn1, { baseUrl: "http://test", token: "token", sharedDriveId: "drive-A" });
-      const broker2 = createBroker(fetchFn2, { baseUrl: "http://test", token: "token", sharedDriveId: "drive-B" });
+    it("(18) two brokers with different sharedDriveIds create their folders in their own drive", async () => {
+      const g1 = fakeGoogle({ driveId: "drive-A" });
+      const g2 = fakeGoogle({ driveId: "drive-B" });
+      const broker1 = createGoogleDriveBroker(g1.fetchFn, key(), "drive-A");
+      const broker2 = createGoogleDriveBroker(g2.fetchFn, key(), "drive-B");
 
       await broker1.ensure({ entity_type: "project", entity_id: "p1", name: "P1" });
       await broker2.ensure({ entity_type: "project", entity_id: "p2", name: "P2" });
 
-      const post1 = state1.posts.find((p) => p.url.includes("/ensure"));
-      const post2 = state2.posts.find((p) => p.url.includes("/ensure"));
-
-      expect(post1?.body.shared_drive_id).toBe("drive-A");
-      expect(post2?.body.shared_drive_id).toBe("drive-B");
+      expect(g1.files).toHaveLength(1);
+      expect(g1.files[0]).toMatchObject({ name: "P1", parents: ["drive-A"] });
+      expect(g2.files).toHaveLength(1);
+      expect(g2.files[0]).toMatchObject({ name: "P2", parents: ["drive-B"] });
     });
   });
 
   describe("tool-level: driveFolderEnsure with drive binding", () => {
-    it("(19) company with NO sharedDriveId: ensure returns drive_not_bound, fetch not called", async () => {
-      const { harness, state } = await setup({ driveBrokerToken: "token" }, seed());
+    it("(19) company with NO sharedDriveId: ensure returns drive_not_bound, Google not called", async () => {
+      const { harness, google, fetchSpy } = await setup({ driveServiceAccountJson: KEY_JSON }, seed());
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Test" } as never] });
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
       expect(r.data?.status).toBe("drive_not_bound");
-      expect(state.requests.length).toBe(0);
+      expect(google.calls.length).toBe(0);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const resolved = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p1" });
+      expect(resolved.data?.status).toBe("drive_not_bound");
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
 
-    it("(20) two companies with different drives: each carries its own shared_drive_id", async () => {
+    it("(20) two companies with different drives: each builds its folders in its own Shared Drive", async () => {
       const st = seed();
       linked(st, "co-a", "Company A");
-      linked(st, "co-b", "Company B");
-      const { harness: h1, state: s1 } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-A" } }, st);
-      const { harness: h2, state: s2 } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-B" } }, JSON.parse(JSON.stringify(st)));
+      const googleA = fakeGoogle({ driveId: "drive-A" });
+      const googleB = fakeGoogle({ driveId: "drive-B" });
+      const a = await setup({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "drive-A" } }, st, googleA);
+      a.harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ProjectA" } as never] });
+      await toolRaw(a.harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
 
-      h1.seed({ projects: [{ id: "p1", companyId: CO, name: "ProjectA" } as never] });
-      h2.seed({ projects: [{ id: "p2", companyId: CO, name: "ProjectB" } as never] });
+      const b = await setup({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "drive-B" } }, seed(), googleB);
+      b.harness.seed({ projects: [{ id: "p2", companyId: CO, name: "ProjectB" } as never] });
+      await toolRaw(b.harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p2" });
 
-      await toolRaw(h1, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
-      await toolRaw(h2, "drive_folder_ensure", { entity_type: "project", entity_id: "p2" });
-
-      const post1 = s1.posts.find((p) => p.body.entity_type === "project");
-      const post2 = s2.posts.find((p) => p.body.entity_type === "project");
-      expect(post1?.body.shared_drive_id).toBe("drive-A");
-      expect(post2?.body.shared_drive_id).toBe("drive-B");
+      expect(folderOf(googleA.files, "crm_company", "co-a")).toMatchObject({ name: "Company A (Primary Contact)", parents: ["drive-A"] });
+      expect(folderOf(googleA.files, "project", "p1")?.name).toBe("ProjectA");
+      expect(folderOf(googleB.files, "project", "p2")).toMatchObject({ name: "ProjectB", parents: ["drive-B"] });
+      expect(googleA.calls.some((c) => c.includes("drive-B"))).toBe(false);
+      expect(googleB.calls.some((c) => c.includes("drive-A"))).toBe(false);
     });
 
-    it("(21) project with no project_drive_kind: produces client chain", async () => {
+    it("(21) project with no project_drive_kind: produces the client chain, company folder then project folder", async () => {
       const st = seed();
       linked(st, "co-c", "Acme Ltd");
-      const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
+      const { harness, google } = await setup(NATIVE, st);
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ClientProject" } as never] });
 
-      await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
-
-      // Should have two POSTs: company first, then project
-      const companyPost = state.posts[0];
-      const projectPost = state.posts[1];
-      expect(companyPost?.body.entity_type).toBe("crm_company");
-      expect(projectPost?.body.entity_type).toBe("project");
-      expect(projectPost?.body.parent_entity_id).toBe("co-c");
-    });
-
-    it("(22) project with product kind: produces Products chain with subfolders", async () => {
-      const st = seed();
-      const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
-      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ProductProject" } as never] });
-
-      // Mock the project drive kind as product - for now just verify the ensure works
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
 
-      // Product projects should have subfolders in the ensure body
-      const projectPost = state.posts.find((p) => p.body.entity_type === "project");
-      expect(projectPost).toBeDefined();
       expect(r.data?.status).toBe("created");
+      expect(r.data?.path).toBe("Acme Ltd (Primary Contact)/ClientProject");
+      // Company first (at the root), then the project inside it; the registry is each folder's appProperties
+      const companyFolder = folderOf(google.files, "crm_company", "co-c");
+      const projectFolder = folderOf(google.files, "project", "p1");
+      expect(companyFolder).toMatchObject({ name: "Acme Ltd (Primary Contact)", parents: [DRIVE_ID] });
+      expect(projectFolder).toMatchObject({ name: "ClientProject", parents: [companyFolder!.id] });
+      expect(google.files.indexOf(companyFolder!)).toBeLessThan(google.files.indexOf(projectFolder!));
+      expect(folderPaths(google.files)).toEqual(["Acme Ltd (Primary Contact)", "Acme Ltd (Primary Contact)/ClientProject", ...SUB_PATHS("Acme Ltd (Primary Contact)/ClientProject")].sort());
     });
 
-    it("(23) ensure called twice: second returns exists, no new POSTs", async () => {
+    it("(22) project with product kind: produces the Products chain with the numbered sub-folders", async () => {
+      const { harness, google } = await setup();
+      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "ProductProject" } as never] });
+      expect((await toolRaw(harness, "drive_project_kind_set", { projectId: "p1", kind: "product" })).data?.status).toBe("set");
+
+      const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+
+      expect(r.data?.status).toBe("created");
+      expect(r.data?.path).toBe("Products/ProductProject");
+      expect(folderOf(google.files, "root", "root:products")).toMatchObject({ name: "Products", parents: [DRIVE_ID] });
+      expect(folderPaths(google.files)).toEqual(["Products", "Products/ProductProject", ...SUB_PATHS("Products/ProductProject")].sort());
+      expect(google.files.some((f) => f.appProperties?.pibEntityType === "crm_company")).toBe(false);
+    });
+
+    it("(23) ensure called twice: second returns exists, nothing new in Drive", async () => {
       const st = seed();
       linked(st, "co-d", "Acme Ltd");
-      const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } }, st);
+      const { harness, google } = await setup(NATIVE, st);
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Twice" } as never] });
 
       const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
       expect(r1.data?.status).toBe("created");
-      const postsAfterFirst = state.posts.length;
+      const filesAfterFirst = google.files.length;
+      const writesAfterFirst = google.calls.filter((c) => !c.startsWith("GET")).length;
 
       const r2 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
       expect(r2.data?.status).toBe("exists");
-      expect(state.posts.length).toBe(postsAfterFirst);
+      expect(google.files.length).toBe(filesAfterFirst);
+      expect(google.calls.filter((c) => !c.startsWith("GET")).length).toBe(writesAfterFirst);
     });
 
-    it("(24) invalid project name: returns invalid_name, no ensure POST", async () => {
-      const { harness, state } = await setup({ driveBrokerToken: "token", drive: { sharedDriveId: "drive-test" } });
+    it("(24) invalid project name: returns invalid_name, nothing is created in Drive", async () => {
+      const { harness, google } = await setup();
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "PAR-123" } as never] });
 
       const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
       expect(r.data?.status).toBe("invalid_name");
-      expect(state.posts.length).toBe(0);
+      expect(google.files).toHaveLength(0);
+      expect(google.calls.every((c) => c.startsWith("GET"))).toBe(true);
+    });
+  });
+
+  describe("tool-level: branch routing by the project's Drive kind", () => {
+    const cases: Array<[string, string | undefined, string]> = [
+      ["product", undefined, "Products/Widget"],
+      ["book", undefined, "Books/Widget"],
+      ["company", undefined, "Company/Widget"],
+      ["marketing", undefined, "Marketing/PiB/Widget"],
+      ["marketing", "Acme Launch", "Marketing/Acme Launch/Widget"],
+    ];
+
+    it.each(cases)("(25) kind %s (scope %s) builds %s, with its root folders at the Shared Drive root and the numbered sub-folders", async (kind, scopeRef, leafPath) => {
+      const { harness, google } = await setup();
+      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Widget" } as never] });
+      expect((await toolRaw(harness, "drive_project_kind_set", { projectId: "p1", kind, ...(scopeRef ? { scopeRef } : {}) })).data?.status).toBe("set");
+
+      const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+
+      expect(r.data?.status).toBe("created");
+      expect(r.data?.path).toBe(leafPath);
+      const paths = folderPaths(google.files);
+      expect(paths).toEqual(expect.arrayContaining([leafPath, ...SUB_PATHS(leafPath)]));
+      // Every folder is a plain chain from the root: the first segment of each path is one of the root folders
+      const top = leafPath.split("/")[0];
+      expect(paths.every((path) => path === top || path.startsWith(`${top}/`))).toBe(true);
+      expect(google.files.filter((f) => f.parents[0] === DRIVE_ID).map((f) => f.name)).toEqual([top]);
+      // Never under a company folder, whatever the project is linked to
+      expect(google.files.some((f) => f.appProperties?.pibEntityType === "crm_company")).toBe(false);
+    });
+
+    it("(26) a company-linked project of a non-client kind goes to its branch, not into the client's folder", async () => {
+      const st = seed();
+      linked(st, "co-p", "Acme Ltd");
+      const { harness, google } = await setup(NATIVE, st);
+      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Widget" } as never] });
+      await toolRaw(harness, "drive_project_kind_set", { projectId: "p1", kind: "product" });
+
+      const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+
+      expect(r.data?.path).toBe("Products/Widget");
+      expect(google.files.some((f) => f.name.startsWith("Acme Ltd"))).toBe(false);
+    });
+
+    it("(27) a repeat ensure on a non-client branch changes nothing in Drive", async () => {
+      const { harness, google } = await setup();
+      for (const kind of ["product", "book", "company", "marketing"]) {
+        const id = `p-${kind}`;
+        harness.seed({ projects: [{ id, companyId: CO, name: `Widget ${kind}` } as never] });
+        await toolRaw(harness, "drive_project_kind_set", { projectId: id, kind });
+        const first = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: id });
+        expect(first.data?.status).toBe("created");
+        const before = google.files.map((f) => f.id);
+        const again = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: id });
+        expect(again.error).toBeUndefined();
+        expect(["created", "exists"]).toContain(again.data?.status);
+        expect(again.data?.folder_id).toBe(first.data?.folder_id);
+        expect(google.files.map((f) => f.id)).toEqual(before);
+      }
     });
   });
 });
