@@ -3,6 +3,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { createBroker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { createGoogleDriveBroker } from "./google-broker.js";
+import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
@@ -83,7 +85,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 
   try {
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
-    if (!broker) return { status: "not_configured", error: "Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)" };
+    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson (or the legacy driveBrokerToken)" };
 
     const folder = await broker.resolve(type, id);
     return folder ? { status: "found", path: folder.path, url: folder.folder_url, folder_id: folder.folder_id } : { status: "not_found", hint: "call drive_folder_ensure" };
@@ -111,7 +113,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     }
     throw e;
   }
-  if (!broker) throw new CrmError("Drive broker token is not configured in the CRM plugin settings (driveBrokerToken)");
+  if (!broker) throw new CrmError("Drive is not configured in the CRM plugin settings: set driveServiceAccountJson (or the legacy driveBrokerToken)");
 
   let existing: any;
   try {
@@ -155,21 +157,50 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
 export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
   const cfg = await readConfig(ctx, companyId);
-  if (!cfg.driveBrokerToken) return null;
+  if (!cfg.driveServiceAccountJson && !cfg.driveBrokerToken) return null;
 
   // Get effective binding (config or state)
   const sharedDriveId = await effectiveSharedDriveId(ctx, companyId, cfg);
 
-  // Check binding FIRST before reading token
+  // Check binding FIRST before reading any secret
   if (!sharedDriveId) {
     throw new DriveNotBoundError();
   }
 
   const resolver = new SecretResolver(ctx, companyId, cfg);
+  // Native path: the Drive service account talks to Google directly. The legacy
+  // web broker below is only used while no service account key is set.
+  const serviceAccountJson = await resolver.get("driveServiceAccountJson");
+  if (serviceAccountJson) return createGoogleDriveBroker(fetch, parseServiceAccountKey(serviceAccountJson), sharedDriveId);
+
   const token = await resolver.get("driveBrokerToken");
   if (!token) return null;
   const baseUrl = (cfg.driveBrokerUrl as string) || "https://partnersinbiz.online";
   return createBroker(ctx.http.fetch, { baseUrl, token, sharedDriveId });
+}
+
+/**
+ * The project whose Drive folder a producer plugin's save lands in. A client's save goes to the
+ * project linked to that client (the one of the same kind when there is one, e.g. the SEO project
+ * for an SEO file, else the oldest); the company's own work goes to `drive.ownProjectId`.
+ */
+export async function resolveProducerSaveProject(
+  ctx: PluginContext,
+  companyId: string,
+  input: { kind?: string; clientKind?: string; clientRef?: string },
+): Promise<string | null> {
+  if (input.clientKind && input.clientRef) {
+    if (input.clientKind !== "company" && input.clientKind !== "contact") return null;
+    const rows = await ctx.db.query<{ project_id: string; kind: string | null }>(
+      `SELECT project_id, kind FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3 ORDER BY created_at ASC LIMIT 50`,
+      [companyId, input.clientKind, input.clientRef],
+    );
+    if (!rows.length) return null;
+    return (rows.find((r) => r.kind && r.kind === input.kind) ?? rows[0]).project_id;
+  }
+  const cfg = await readConfig(ctx, companyId);
+  const own = (cfg.drive as { ownProjectId?: unknown } | undefined)?.ownProjectId;
+  return typeof own === "string" && own.trim() ? own.trim() : null;
 }
 
 async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<DriveFacts> {

@@ -111,9 +111,9 @@ Use these tools for every file that belongs on Google Drive. They find or make t
 4. Quote the returned URL in your issue comment. A \`duplicate: true\` result means the same file was already saved: quote its URL too.
 
 ## Rules
-- Never pass or guess a Drive folder ID or a Shared Drive ID. The code takes the Shared Drive from the company's \`drive.sharedDriveId\` setting and the broker credential from the CRM secret \`driveBrokerToken\`.
+- Never pass or guess a Drive folder ID or a Shared Drive ID. The code takes the Shared Drive from the company's \`drive.sharedDriveId\` setting and the Drive credential from the CRM secret \`driveServiceAccountJson\` (or, until that is set, the legacy \`driveBrokerToken\`).
 - \`drive_not_bound\` means this company has no Shared Drive set. Report it once on the issue and stop: do not retry, do not save somewhere else.
-- \`not_configured\` (no broker token) is reported the same way. Any other status (\`invalid_name\`, \`too_large\`, \`broker_error\`, and so on) comes with a hint: fix what it names once, then report.
+- \`not_configured\` (no Drive credential) is reported the same way. Any other status (\`invalid_name\`, \`too_large\`, \`broker_error\`, and so on) comes with a hint: fix what it names once, then report.
 - No public links, no sharing changes. To share with a client, ask a person.
 - Never print or paste a token.
 `;

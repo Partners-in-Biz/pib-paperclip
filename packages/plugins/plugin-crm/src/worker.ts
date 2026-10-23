@@ -201,7 +201,7 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany, resolveProducerSaveProject } from "./drive/tools.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { saveDriveFile } from "./drive/save.js";
 import { listDriveFiles } from "./drive/store.js";
@@ -547,9 +547,21 @@ const plugin = definePlugin({
       if (!requestId) return;
 
       try {
+        const projectId = await resolveProducerSaveProject(ctx, companyId, {
+          kind: typeof kind === "string" ? kind : undefined,
+          clientKind: typeof clientKind === "string" ? clientKind : undefined,
+          clientRef: typeof clientRef === "string" ? clientRef : undefined,
+        });
+        if (!projectId) {
+          const hint = clientRef
+            ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
+            : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "no_project", hint });
+          return;
+        }
         const input: Parameters<typeof saveDriveFile>[2] = {
           companyId,
-          projectId: "root",
+          projectId,
           fileKind: (kind as string) || "ops",
           name: (name as string) || "",
           mimeType: (mimeType as string) || "",

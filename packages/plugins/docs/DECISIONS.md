@@ -2,6 +2,16 @@
 
 Newest first. One entry per decision. Names of secrets only, never values.
 
+## 2026-10-23 D-002 Drive is native: the CRM talks to Google Drive with its own service account (PAR-4676)
+
+**Why:** every Drive save went through the old partnersinbiz-web broker. Its `pib_usr_` token was rejected (401) and its service account was not in the new Shared Drive, so PAR-4676 and every producer save sat waiting on a system we are leaving. Paperclip now owns the connector.
+
+**What changed (CRM 0.28.0, src-only, no migration):** `plugin-crm/src/drive/google-broker.ts` implements the same `Broker` interface against the Drive v3 API with the secret `driveServiceAccountJson` (a Drive-only service account that is a Content manager of the Shared Drive; not the SEO key). Every call sends `supportsAllDrives` and is scoped with `corpora=drive&driveId`. The registry is in Drive itself: folders carry `appProperties` `pibEntityType` / `pibEntityId` and their path in `description`; uploads carry `pibSha256`, so a repeat is a no-op. A same-named untagged folder (made by the old broker) is adopted, not duplicated; a name owned by another entity is a 409. When `driveServiceAccountJson` is unset the legacy `driveBrokerUrl` / `driveBrokerToken` path still runs; remove it once the native path is proven live.
+
+**Also fixed:** the `drive.save-requested` handler used `projectId: "root"`, which does not exist, so producer saves (SEO, Social, Ads, Campaigns, Billing, Cockpit) could not resolve a folder. It now picks the client's linked project (same kind first, else oldest), and for the company's own work the project in `drive.ownProjectId`. With neither it answers `drive.file.failed` with reason `no_project`.
+
+**One-time grants (Peet):** create a Drive-only service account and JSON key, enable the Drive API on its project, add it to the Shared Drive as Content manager, store the key as the company secret and set `driveServiceAccountJson` (and `drive.ownProjectId`). `drive_binding_status` then shows the service account email and whether it is a member.
+
 ## 2026-10-20 D-001 addendum: how agents use the Drive tools (PAR-4067, epic PAR-3887)
 
 Agents call `drive_folder_resolve`, then `drive_folder_ensure` on `not_found`, then `drive_file_save`, and quote the URL (`plugin-crm/src/skills-references.ts`, `references/drive.md` of `pib-crm-records`). The code reads the CRM secret `driveBrokerToken` and the company's `drive.sharedDriveId`; agents never pass a Shared Drive ID. On `drive_not_bound` they report it once and stop. This replaces the board-made `pib-drive-saving` skill (text kept in `docs/archive/pib-drive-saving.md`; rollback = re-attach it). Every company's agents get the new text on the next deploy.
