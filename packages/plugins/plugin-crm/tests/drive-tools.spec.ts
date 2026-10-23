@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { boot, CO, toolRaw, seed, company, contact } from "./helpers/crm.js";
 import { DRIVE_TOOLS } from "../src/drive/tools.js";
 import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
-import { DRIVE_ID, KEY_JSON, fakeGoogle, folderPaths, isFolder, type FakeFile } from "./support/fake-google-drive.js";
+import { DRIVE_ID, KEY_JSON, LAYOUT, anchorPaths, fakeGoogle, folderPaths, isAnchor, isFolder, rootFolderNames, seedPibDrive, userFolderPaths, type FakeFile } from "./support/fake-google-drive.js";
 
 const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
 
@@ -58,7 +58,7 @@ describe("Drive folder tools", () => {
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Website" } as never] });
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r1.data?.status).toBe("created");
-    expect(r1.data?.path).toBe("Acme Ltd (Primary Contact)/Website");
+    expect(r1.data?.path).toBe(`${LAYOUT.clients}/Acme Ltd (Primary Contact)/Website`);
     const files1 = google.files.length;
     expect(files1).toBeGreaterThan(0);
     const r2 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
@@ -67,25 +67,32 @@ describe("Drive folder tools", () => {
     expect(google.files.length).toBe(files1);
   });
 
-  it("(b) unlinked project: its folder sits at the Shared Drive root, with no company folder above it", async () => {
+  it("(b) unlinked project: its folder sits in Own projects, never at the Shared Drive root, with no company folder above it", async () => {
     const { harness, google } = await setup();
     harness.seed({ projects: [{ id: "p-unlinked", companyId: CO, name: "Solo" } as never] });
-    await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-unlinked" });
+    const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-unlinked" });
+    expect(r.data?.path).toBe(`${LAYOUT.ownProjects}/Solo`);
     const project = folderOf(google.files, "project", "p-unlinked");
-    expect(project).toMatchObject({ name: "Solo", parents: [DRIVE_ID] });
+    const ownProjects = google.files.find((f) => f.name === "Own projects")!;
+    expect(project).toMatchObject({ name: "Solo", parents: [ownProjects.id], description: `${LAYOUT.ownProjects}/Solo` });
+    expect(anchorPaths(google.files)).toEqual([LAYOUT.pib, LAYOUT.ownProjects].sort());
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
     expect(google.files.some((f) => f.appProperties?.pibEntityType === "crm_company")).toBe(false);
   });
 
-  it("(c) company-linked: company folder 'Acme Ltd (Primary Contact)' at the root, the project folder inside it", async () => {
+  it("(c) company-linked: company folder 'Acme Ltd (Primary Contact)' under Clients, the project folder inside it", async () => {
     const st = seed();
     linked(st, "co-c", "Acme Ltd");
     const { harness, google } = await setup(NATIVE, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Website" } as never] });
     await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     const companyFolder = folderOf(google.files, "crm_company", "co-c");
-    expect(companyFolder).toMatchObject({ name: "Acme Ltd (Primary Contact)", parents: [DRIVE_ID] });
+    const clients = google.files.find((f) => f.name === "Clients")!;
+    expect(isAnchor(clients)).toBe(true);
+    expect(companyFolder).toMatchObject({ name: "Acme Ltd (Primary Contact)", parents: [clients.id], description: `${LAYOUT.clients}/Acme Ltd (Primary Contact)` });
     const projectFolder = folderOf(google.files, "project", "p1");
-    expect(projectFolder).toMatchObject({ name: "Website", parents: [companyFolder!.id], description: "Acme Ltd (Primary Contact)/Website" });
+    expect(projectFolder).toMatchObject({ name: "Website", parents: [companyFolder!.id], description: `${LAYOUT.clients}/Acme Ltd (Primary Contact)/Website` });
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
   });
 
   it("(d) every Drive call is scoped to the bound Shared Drive and nothing lands outside it; no key material in the result", async () => {
@@ -100,6 +107,8 @@ describe("Drive folder tools", () => {
     // The agent passes no folder id; every folder hangs off the Shared Drive root or a folder made in this run.
     const ids = new Set(google.files.map((f) => f.id));
     for (const f of google.files) for (const parent of f.parents) expect(parent === DRIVE_ID || ids.has(parent)).toBe(true);
+    // ...and the only thing made directly in the Shared Drive root is the top-level 02 Partners in Biz anchor.
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
     expect(JSON.stringify(r)).not.toMatch(/PRIVATE KEY|private_key|ya29/);
   });
 
@@ -132,20 +141,22 @@ describe("Drive folder tools", () => {
     linked(st, "co-g", "Acme Ltd");
     const { harness, google } = await setup(NATIVE, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
-    // The company folder is created, then Google fails the project folder.
-    google.failNext({ method: "POST", skip: 1, status: 503 });
+    // The layout folders (02 Partners in Biz, Clients) and the company folder are created, then Google fails the project folder.
+    google.failNext({ method: "POST", skip: 3, status: 503 });
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r1.error).toContain("retryable");
     expect(r1.error).toContain("Nothing was renamed or deleted");
-    expect(folderPaths(google.files)).toEqual(["Acme Ltd (Primary Contact)"]);
-    const companyId = google.files[0].id;
+    expect(folderPaths(google.files)).toEqual([LAYOUT.pib, LAYOUT.clients, `${LAYOUT.clients}/Acme Ltd (Primary Contact)`]);
+    const companyId = folderOf(google.files, "crm_company", "co-g")!.id;
     const r2 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r2.data?.status).toBe("created");
     const paths = folderPaths(google.files);
     expect(new Set(paths).size).toBe(paths.length);
-    expect(paths).toHaveLength(8); // company + project + six numbered sub-folders
+    expect(paths).toHaveLength(10); // two layout folders + company + project + six numbered sub-folders
+    expect(userFolderPaths(google.files)).toHaveLength(8); // company + project + six numbered sub-folders
     expect(google.files.filter((f) => f.name.startsWith("Acme Ltd"))).toHaveLength(1);
-    expect(google.files[0].id).toBe(companyId);
+    expect(folderOf(google.files, "crm_company", "co-g")!.id).toBe(companyId);
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
   });
 
   it("(g2) a response lost after the folder was created is adopted on retry, not duplicated", async () => {
@@ -153,11 +164,11 @@ describe("Drive folder tools", () => {
     linked(st, "co-g2", "Acme Ltd");
     const { harness, google } = await setup(NATIVE, st);
     harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
-    // Drive creates the project folder, then the answer is lost (a 502 on the way back).
-    google.failNext({ method: "POST", skip: 1, status: 502, applyFirst: true });
+    // Drive creates the project folder (after the two layout folders and the company folder), then the answer is lost (a 502 on the way back).
+    google.failNext({ method: "POST", skip: 3, status: 502, applyFirst: true });
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     expect(r1.error).toContain("retryable");
-    expect(folderPaths(google.files)).toEqual(["Acme Ltd (Primary Contact)", "Acme Ltd (Primary Contact)/P"]);
+    expect(folderPaths(google.files)).toEqual([LAYOUT.pib, LAYOUT.clients, `${LAYOUT.clients}/Acme Ltd (Primary Contact)`, `${LAYOUT.clients}/Acme Ltd (Primary Contact)/P`]);
     const lost = folderOf(google.files, "project", "p1")!;
     const r2 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
     // Adopted, and the interrupted ensure is resumed: the numbered sub-folders are made, not reported as "exists" with nothing in them.
@@ -179,7 +190,7 @@ describe("Drive folder tools", () => {
     expect(folderOf(google.files, "campaign", "pm")).toBeDefined();
     const found = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "pm" });
     expect(found.data?.status).toBe("found");
-    expect(found.data?.path).toBe("Marketing/PiB/Spring Launch");
+    expect(found.data?.path).toBe(`${LAYOUT.marketing}/PiB/Spring Launch`);
     expect((await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "pm" })).data?.status).toBe("exists");
     expect(google.files.length).toBe(count);
   });
@@ -242,9 +253,10 @@ describe("Drive folder tools", () => {
     harness.seed({ projects: [{ id: "p3", companyId: CO, name: "Site" } as never] });
     const r3 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p3" });
     expect(r3.data?.status).toBe("created");
-    // The unlinked "Site" is its own folder at the root; the client's "Site" stays inside its company folder.
-    expect(folderOf(google.files, "project", "p3")).toMatchObject({ name: "Site", parents: [DRIVE_ID] });
-    expect(folderPaths(google.files)).toEqual(expect.arrayContaining(["Acme Ltd (Primary Contact)/Site", "Site"]));
+    // The unlinked "Site" is its own folder in Own projects; the client's "Site" stays inside its company folder.
+    const ownProjects = google.files.find((f) => f.name === "Own projects")!;
+    expect(folderOf(google.files, "project", "p3")).toMatchObject({ name: "Site", parents: [ownProjects.id] });
+    expect(folderPaths(google.files)).toEqual(expect.arrayContaining([`${LAYOUT.clients}/Acme Ltd (Primary Contact)/Site`, `${LAYOUT.ownProjects}/Site`]));
   });
 
   it("(m) resolve returns the very folder ensure made, with a Drive link to it", async () => {
@@ -257,7 +269,42 @@ describe("Drive folder tools", () => {
     expect(r.data?.folder_id).toBe(folder.id);
     expect(made.data?.folder_id).toBe(folder.id);
     expect(r.data?.url).toContain(folder.id);
-    expect(r.data?.path).toBe("P");
+    expect(r.data?.path).toBe(`${LAYOUT.ownProjects}/P`);
+  });
+
+  it("(r) on a drive laid out like the real one, an existing client folder is adopted and its project is built inside it; nothing lands at the root", async () => {
+    const st = seed();
+    st.companies!.push(company("co-hg", "Hunt and Gun"));
+    st.contacts!.push(contact("con-hg", "Christo Barnard"));
+    st.contact_companies!.push({ id: "cc-hg", company_id: CO, contact_id: "con-hg", account_id: "co-hg", role_label: "primary", created_at: "2026-01-01T00:00:00Z" });
+    st.client_projects!.push({ id: "cp-hg", company_id: CO, project_id: "p-hg", client_kind: "company", client_ref: "co-hg", created_at: "2026-01-01T00:00:00Z" });
+    const google = fakeGoogle();
+    const ids = seedPibDrive(google.files);
+    const humanCount = google.files.length;
+    const hg = `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)`;
+    const { harness } = await setup(NATIVE, st, google);
+    harness.seed({ projects: [{ id: "p-hg", companyId: CO, name: "Hunt and Gun SEO" } as never] });
+
+    const r = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-hg" });
+
+    expect(r.data?.status).toBe("created");
+    expect(r.data?.path).toBe(`${hg}/Hunt and Gun SEO`);
+    const hgFolder = folderOf(google.files, "crm_company", "co-hg")!;
+    expect(hgFolder.id).toBe(ids[hg]);
+    expect(hgFolder).toMatchObject({ description: hg, appProperties: { pibEntityType: "crm_company", pibEntityId: "co-hg", pibComplete: "1" } });
+    expect(folderOf(google.files, "project", "p-hg")!.parents).toEqual([hgFolder.id]);
+    expect(google.files.filter((f) => f.parents.includes(hgFolder.id)).map((f) => f.name).sort()).toEqual(["Assets", "Contracts", "Hunt and Gun SEO"]);
+    expect(google.files.find((f) => f.id === ids[`${hg}/Assets`])).toEqual({ id: ids[`${hg}/Assets`], name: "Assets", mimeType: "application/vnd.google-apps.folder", parents: [hgFolder.id] });
+    // The project and its six sub-folders are the only new things; no layout folder was made or duplicated, and the root is as it was.
+    expect(google.files).toHaveLength(humanCount + 1 + 6);
+    expect(google.files.filter(isAnchor)).toHaveLength(0);
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib, LAYOUT.press].sort());
+    const paths = folderPaths(google.files);
+    expect(new Set(paths).size).toBe(paths.length);
+    // A repeat changes nothing.
+    const again = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-hg" });
+    expect(again.data?.status).toBe("exists");
+    expect(google.files).toHaveLength(humanCount + 1 + 6);
   });
 
   it("(n) company name collision: two crm_company siblings with the same folder key → needs_human_look, no folder", async () => {

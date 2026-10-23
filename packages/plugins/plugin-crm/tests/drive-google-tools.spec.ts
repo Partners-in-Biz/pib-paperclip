@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { boot, CO, toolRaw, seed, company, contact } from "./helpers/crm.js";
 import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
 import { resolveProducerSaveProject } from "../src/drive/tools.js";
-import { DRIVE_ID, KEY_JSON, fakeGoogle } from "./support/fake-google-drive.js";
+import { DRIVE_ID, KEY_JSON, LAYOUT, fakeGoogle, rootFolderNames } from "./support/fake-google-drive.js";
 
 /** The tool layer on the native path: a service account key in the CRM settings, Google (faked) as the only server. */
 async function setup(config: Record<string, unknown> = {}, google = fakeGoogle()) {
@@ -25,13 +25,14 @@ beforeEach(() => clearServiceAccountTokenCache());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive tools on the native service-account path", () => {
-  it("drive_folder_ensure builds Client → Project → numbered sub-folders in the Shared Drive, then reports exists", async () => {
+  it("drive_folder_ensure builds Clients → Client → Project → numbered sub-folders in the Shared Drive, then reports exists", async () => {
     const { harness, google, legacy } = await setup();
     const r1 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-seo" });
     expect(r1.data?.status).toBe("created");
-    expect(r1.data?.path).toBe("Acme Ltd (Primary Contact)/Acme SEO");
+    expect(r1.data?.path).toBe(`${LAYOUT.clients}/Acme Ltd (Primary Contact)/Acme SEO`);
     const names = google.files.map((f) => f.name);
-    expect(names).toEqual(expect.arrayContaining(["Acme Ltd (Primary Contact)", "Acme SEO", "01 Briefs", "02 Assets", "05 Evidence", "99 Archive"]));
+    expect(names).toEqual(expect.arrayContaining([LAYOUT.pib, "Clients", "Acme Ltd (Primary Contact)", "Acme SEO", "01 Briefs", "02 Assets", "05 Evidence", "99 Archive"]));
+    expect(rootFolderNames(google.files)).toEqual([LAYOUT.pib]);
     const count = google.files.length;
     const r2 = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p-seo" });
     expect(r2.data?.status).toBe("exists");
@@ -46,6 +47,7 @@ describe("Drive tools on the native service-account path", () => {
     const r = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p-seo" });
     expect(r.data?.status).toBe("found");
     expect(r.data?.url).toContain("drive.google.com");
+    expect(r.data?.path).toBe(`${LAYOUT.clients}/Acme Ltd (Primary Contact)/Acme SEO`);
   });
 
   it("drive_binding_status asks Google: service account email and Shared Drive membership, no legacy call", async () => {

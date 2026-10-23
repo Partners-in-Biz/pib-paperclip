@@ -31,6 +31,21 @@ const FOLDER_MIME = "application/vnd.google-apps.folder";
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const FOLDER_FIELDS = "id,name,description,webViewLink,parents,appProperties";
 
+/**
+ * Where entities go in the Partners in Biz Shared Drive. The drive already has a layout agreed with Peet on 10 October
+ * (DRIVE-SAVING-RULES.md / FILEMAP.md in it): "Never save to the Drive root". Existing folders are found by name and used;
+ * a missing one is created. Companies go to Clients/<Company (Contact)>, products to Products/<Product>, book projects to
+ * 03 Press (KDP)/Morgan Hale, marketing under Marketing & Sales, and a project with no client under Own projects.
+ */
+export const DRIVE_ANCHORS: Readonly<Record<string, readonly string[]>> = {
+  "root:products": ["02 Partners in Biz", "Products"],
+  "root:books": ["03 Press (KDP)", "Morgan Hale"],
+  "root:company": ["02 Partners in Biz", "Internal"],
+  "root:marketing": ["02 Partners in Biz", "Marketing & Sales"],
+};
+export const CLIENTS_PATH: readonly string[] = ["02 Partners in Biz", "Clients"];
+export const OWN_PROJECTS_PATH: readonly string[] = ["02 Partners in Biz", "Own projects"];
+
 interface DriveFile {
   id: string;
   name: string;
@@ -140,7 +155,42 @@ export function createGoogleDriveBroker(
     return files[0] ?? null;
   }
 
+  const anchorCache = new Map<string, DriveFile>();
+  /** The folder at a fixed path below the Shared Drive root: existing folders are used by name, missing ones created (never a loose root folder). */
+  async function pathFolder(segments: readonly string[], create: boolean): Promise<DriveFile | null> {
+    const key = segments.join("/");
+    const cached = anchorCache.get(key);
+    if (cached) return cached;
+    let parentId = sharedDriveId;
+    let current: DriveFile | null = null;
+    for (let i = 0; i < segments.length; i++) {
+      const here = segments.slice(0, i + 1).join("/");
+      current = anchorCache.get(here) ?? (await findChildFolder(parentId, segments[i]!));
+      if (!current) {
+        if (!create) return null;
+        current = await createFolder(segments[i]!, parentId, here, { pibEntityType: "anchor", pibEntityId: idTag(here) });
+      }
+      anchorCache.set(here, current);
+      parentId = current.id;
+    }
+    return current;
+  }
+  const asAnchor = (type: string, id: string, segments: readonly string[], file: DriveFile): RegistryFolder => ({
+    id: file.id,
+    entity_type: type,
+    entity_id: id,
+    path: segments.join("/"),
+    folder_id: file.id,
+    folder_url: file.webViewLink ?? `https://drive.google.com/drive/folders/${file.id}`,
+    complete: true,
+  });
+
   async function resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null> {
+    const anchor = type === "root" ? DRIVE_ANCHORS[id] : undefined;
+    if (anchor) {
+      const file = await pathFolder(anchor, false);
+      return file ? asAnchor(type, id, anchor, file) : null;
+    }
     // The marketing branch registers a project's leaf folder as a "campaign" (same id), so a project lookup finds that too.
     const file = (await findRegistered(type, id)) ?? (type === "project" ? await findRegistered("campaign", id) : null);
     return file ? toRegistry(type, id, file) : null;
@@ -164,17 +214,12 @@ export function createGoogleDriveBroker(
 
   async function ensure(body: EnsureBody): Promise<EnsureResult> {
     const { entity_type: type, entity_id: id, name } = body;
-    let parentId = sharedDriveId;
-    let parentPath = "";
-    if (body.parent_entity_id) {
-      const parent = await resolve(body.parent_entity_type ?? "crm_company", body.parent_entity_id);
-      if (!parent) {
-        throw new BrokerError(`Parent folder is not registered yet: ${body.parent_entity_type ?? "crm_company"} ${body.parent_entity_id}. Ensure the parent first.`, 409, false, undefined, undefined, "parent_missing");
-      }
-      parentId = parent.folder_id;
-      parentPath = parent.path;
+    // A fixed root such as "root:products" is the existing folder at its known path, not a new folder.
+    const fixed = type === "root" ? DRIVE_ANCHORS[id] : undefined;
+    if (fixed) {
+      const file = (await pathFolder(fixed, true))!;
+      return { folder: asAnchor(type, id, fixed, file), created: false, tree: [] };
     }
-    const path = parentPath ? `${parentPath}/${name}` : name;
     const wantsSubfolders = (body.subfolders ?? []).length > 0;
     // pibComplete marks a folder whose numbered sub-folders all exist; a folder that wants some gets it only after the last one.
     const tag: Record<string, string> = { pibEntityType: type, pibEntityId: idTag(body.entity_id), ...(wantsSubfolders ? {} : { pibComplete: "1" }), ...(body.created_by_run ? { pibRun: body.created_by_run.slice(0, 100) } : {}) };
@@ -182,6 +227,25 @@ export function createGoogleDriveBroker(
     let folder = await findRegistered(type, id);
     let created = false;
     if (!folder) {
+      // The parent (and the fixed anchor folders above it) matter only when the folder has to be made or adopted.
+      let parentId = sharedDriveId;
+      let parentPath = "";
+      if (!body.parent_entity_id && (type === "crm_company" || type === "project")) {
+        // Never the Shared Drive root: clients go under Clients, a project with no client under Own projects.
+        const base = type === "crm_company" ? CLIENTS_PATH : OWN_PROJECTS_PATH;
+        const baseFolder = (await pathFolder(base, true))!;
+        parentId = baseFolder.id;
+        parentPath = base.join("/");
+      }
+      if (body.parent_entity_id) {
+        const parent = await resolve(body.parent_entity_type ?? "crm_company", body.parent_entity_id);
+        if (!parent) {
+          throw new BrokerError(`Parent folder is not registered yet: ${body.parent_entity_type ?? "crm_company"} ${body.parent_entity_id}. Ensure the parent first.`, 409, false, undefined, undefined, "parent_missing");
+        }
+        parentId = parent.folder_id;
+        parentPath = parent.path;
+      }
+      const path = parentPath ? `${parentPath}/${name}` : name;
       const sameName = await findChildFolder(parentId, name);
       if (sameName && sameName.appProperties?.pibEntityType && sameName.appProperties.pibEntityType !== "subfolder") {
         throw new BrokerError(`Folder conflict: "${name}" under ${parentPath || "the Shared Drive root"} already belongs to ${sameName.appProperties.pibEntityType} ${sameName.appProperties.pibEntityId ?? ""}`, 409, false, sameName.id, path);

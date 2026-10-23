@@ -46,6 +46,70 @@ export function folderPaths(files: FakeFile[], driveId = DRIVE_ID): string[] {
 /** The files that are not folders (the uploads). */
 export const uploadsOf = (files: FakeFile[]) => files.filter((f) => !isFolder(f));
 
+/** The fixed layout of the Partners in Biz Shared Drive ("Never save to the Drive root"). Spelled out here so a test pins the real layout, not the broker's own constants. */
+export const LAYOUT = {
+  pib: "02 Partners in Biz",
+  clients: "02 Partners in Biz/Clients",
+  ownProjects: "02 Partners in Biz/Own projects",
+  products: "02 Partners in Biz/Products",
+  internal: "02 Partners in Biz/Internal",
+  marketing: "02 Partners in Biz/Marketing & Sales",
+  press: "03 Press (KDP)",
+  books: "03 Press (KDP)/Morgan Hale",
+} as const;
+
+/** The folders the broker makes for the layout itself (tagged pibEntityType "anchor"), not for an entity. */
+export const isAnchor = (f: FakeFile) => isFolder(f) && f.appProperties?.pibEntityType === "anchor";
+
+/** Every folder that is not a layout anchor: the entity folders and their numbered sub-folders. */
+export const userFolders = (files: FakeFile[]) => files.filter((f) => isFolder(f) && !isAnchor(f));
+
+/** The paths of userFolders, sorted. */
+export const userFolderPaths = (files: FakeFile[], driveId = DRIVE_ID): string[] => userFolders(files).map((f) => pathOf(files, f, driveId)).sort();
+
+/** The paths of the anchor folders the broker created, sorted. */
+export const anchorPaths = (files: FakeFile[], driveId = DRIVE_ID): string[] => files.filter(isAnchor).map((f) => pathOf(files, f, driveId)).sort();
+
+/** The names of the folders sitting directly in the Shared Drive root, sorted. */
+export const rootFolderNames = (files: FakeFile[], driveId = DRIVE_ID): string[] => files.filter((f) => isFolder(f) && f.parents.includes(driveId)).map((f) => f.name).sort();
+
+/**
+ * Pre-seeds `files` like the real Shared Drive: everything human-made, so untagged and with no description.
+ * Returns each seeded folder's id by its path below the drive root.
+ */
+export function seedPibDrive(files: FakeFile[], driveId = DRIVE_ID): Record<string, string> {
+  const ids: Record<string, string> = {};
+  let n = 0;
+  const mkdir = (path: string): string => {
+    if (ids[path]) return ids[path];
+    const parts = path.split("/");
+    const name = parts[parts.length - 1]!;
+    const parent = parts.length === 1 ? driveId : mkdir(parts.slice(0, -1).join("/"));
+    const id = `human-${++n}`;
+    files.push({ id, name, mimeType: "application/vnd.google-apps.folder", parents: [parent] });
+    ids[path] = id;
+    return id;
+  };
+  const mkfile = (parentPath: string, name: string, mimeType: string) => {
+    files.push({ id: `human-${++n}`, name, mimeType, parents: [ids[parentPath]!], size: "1234" });
+  };
+  for (const path of [
+    LAYOUT.clients,
+    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)`,
+    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Assets`,
+    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Contracts`,
+    `${LAYOUT.clients}/Agri Studies (Jan Venter)`,
+    LAYOUT.products,
+    LAYOUT.ownProjects,
+    LAYOUT.internal,
+    LAYOUT.marketing,
+    LAYOUT.books,
+  ]) mkdir(path);
+  mkfile(`${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Assets`, "logo.png", "image/png");
+  mkfile(LAYOUT.pib, "DRIVE-SAVING-RULES.md", "text/markdown");
+  return ids;
+}
+
 /** A tiny in-memory Google: token endpoint + the Drive v3 calls the broker makes. Records every Drive URL. */
 export function fakeGoogle(opts: FakeGoogleOptions = {}) {
   const files: FakeFile[] = [];

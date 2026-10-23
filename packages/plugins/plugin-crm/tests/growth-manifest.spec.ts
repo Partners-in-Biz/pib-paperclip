@@ -12,9 +12,9 @@ const NEW_TOOLS = [...ESIGN_TOOLS, ...GROWTH_TOOLS];
 
 describe("what 0.14.0 declares", () => {
   it("is the next version, in the package and the manifest", async () => {
-    expect(PLUGIN_VERSION).toBe("0.29.1");
+    expect(PLUGIN_VERSION).toBe("0.29.2");
     const pkg = JSON.parse((await import("node:fs")).readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(PLUGIN_VERSION).toBe("0.29.1");
+    expect(PLUGIN_VERSION).toBe("0.29.2");
   });
 
   it("adds no capability and no core table: the host already lets this plugin do all of it", () => {
