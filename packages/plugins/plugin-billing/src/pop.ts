@@ -15,7 +15,7 @@ import { asObject, table } from "./db.js";
 import { BillingError, isOpenStatus } from "./domain.js";
 import { emitInvoiceItem } from "./openitems.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
-import { openBillingApproval } from "./approvals.js";
+import { clientScope, openBillingApproval } from "./approvals.js";
 import { settle, type SettleResult } from "./settle.js";
 
 export type MatchBasis = "thread" | "number" | "sender" | "upload" | "agent" | "none";
@@ -238,6 +238,7 @@ async function openPopIssue(ctx: PluginContext, pop: NewPop & { id: string }, ba
     companyId: pop.companyId,
     title,
     description: lines.join("\n"),
+    ...(invoice ? { client: clientScope(invoice) } : {}),
     originId: `${APPROVAL_ORIGINS.paymentCheck}${pop.id}`,
     outward: false,
   });

@@ -18,6 +18,11 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { assignableUserId, createWorkIssue, openApprovalIssue, PIB_PLUGINS, resolveApprover, resolveClientProjectId, type ApprovalAssignedTo, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import type { BillingSettings } from "./config.js";
 
+/** The client a customer-bearing document (invoice, quote) is for. */
+export function clientScope(doc: { customer_kind: string; customer_ref: string }): ClientScope {
+  return { kind: doc.customer_kind === "contact" ? "contact" : "company", id: doc.customer_ref };
+}
+
 export interface BillingApprovalInput {
   companyId: string;
   title: string;

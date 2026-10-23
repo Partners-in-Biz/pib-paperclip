@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { formatMoneyMinor, reviewerBrief, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, reviewerBrief } from "@partnersinbiz/pib-plugin-kit";
 import { datedAfterToday, invoiceBalance, iso } from "./balances.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2 } from "./config.js";
 import { checkCreditNote, issueCreditNote } from "./credits.js";
@@ -23,7 +23,7 @@ import { recipientsFor, requireOwnInvoice, requireQuote } from "./invoices.js";
 import { parseAddresses, renderTemplate } from "./mail.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { closePopIssues, getPop, listPops, recordDecisionIssue, recordPop } from "./pop.js";
-import { openBillingApproval } from "./approvals.js";
+import { clientScope, openBillingApproval } from "./approvals.js";
 import { billingPath, companyPrefix, issuePath } from "./routing.js";
 import { creditedOnInvoice, paymentBySourceKey, settle } from "./settle.js";
 import { actorLabel, integer, optionalDate, optionalInteger, optionalString, requiredCompany, requiredString, requirePerson } from "./util.js";
@@ -37,10 +37,6 @@ function who(context: PluginPerformActionContext): string {
 function customerName(doc: { customer?: unknown; customer_snapshot?: unknown; customer_ref: string }): string {
   const customer = asObject(doc.customer_snapshot ?? doc.customer);
   return typeof customer.name === "string" && customer.name ? customer.name : doc.customer_ref;
-}
-
-function clientScope(doc: { customer_kind: string; customer_ref: string }): ClientScope {
-  return { kind: doc.customer_kind === "contact" ? "contact" : "company", id: doc.customer_ref };
 }
 
 function clientParam(doc: { customer_kind: string; customer_ref: string }): string {

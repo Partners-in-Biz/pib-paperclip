@@ -7,13 +7,13 @@
  * time the match arrives, so Accounting's retries always get it.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { formatMoneyMinor, OPEN_ITEM_EVENTS, PIB_PLUGINS, receiveOnce, type BankMatched, type BankMatchResult } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, OPEN_ITEM_EVENTS, PIB_PLUGINS, receiveOnce, type BankMatched, type BankMatchResult, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance } from "./balances.js";
 import type { BillingSettings } from "./config.js";
 import { BillingError } from "./domain.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { recordDecisionIssue } from "./pop.js";
-import { openBillingApproval } from "./approvals.js";
+import { clientScope, openBillingApproval } from "./approvals.js";
 import { billPaidMinor, getBill, settle, settleBill, unreconciledPayment } from "./settle.js";
 
 export const BANK_MATCHED_EVENT = `plugin.${PIB_PLUGINS.accounting}.${OPEN_ITEM_EVENTS.bankMatched}` as const;
@@ -56,7 +56,7 @@ async function emitResult(ctx: PluginContext, companyId: string, result: BankMat
   }
 }
 
-async function openReview(ctx: PluginContext, companyId: string, match: BankMatched, label: string, reason: string, settings: BillingSettings): Promise<string | null> {
+async function openReview(ctx: PluginContext, companyId: string, match: BankMatched, label: string, reason: string, settings: BillingSettings, client?: ClientScope): Promise<string | null> {
   try {
     const amount = formatMoneyMinor(match.amountMinor, match.currency || "ZAR");
     // Money: a person decides (the Billing approver, else the owner).
@@ -70,6 +70,7 @@ async function openReview(ctx: PluginContext, companyId: string, match: BankMatc
         `Mark this issue done to record ${amount} against ${label}${match.kind === "receivable" ? " (anything above what is owed stays with the customer as credit)" : ""}.`,
         "Cancel this issue if the match is wrong; then fix it in Accounting.",
       ].join("\n"),
+      ...(client ? { client } : {}),
       originId: `${APPROVAL_ORIGINS.bankMatch}${match.key}`,
       outward: false,
     });
@@ -117,10 +118,12 @@ export async function onBankMatched(ctx: PluginContext, companyId: string, match
     if (!item) return { key: match.key, status: "rejected", error: `Unknown open item ${match.openItemKey}` };
     let label: string;
     let decision: BankDecision;
+    let client: ClientScope | undefined;
     if (item.kind === "invoice") {
       const balance = await invoiceBalance(ctx, item.id);
       if (!balance || balance.invoice.company_id !== companyId) return { key: match.key, status: "rejected", error: "Invoice was not found" };
       label = `invoice ${balance.invoice.number}`;
+      client = clientScope(balance.invoice);
       const recorded = await unreconciledPayment(ctx, balance.invoice.id, match.amountMinor);
       decision = decideBankMatch(match, { outstandingMinor: balance.outstandingMinor, currency: balance.invoice.currency, open: balance.outstandingMinor > 0, recordedPaymentMatches: Boolean(recorded) });
     } else {
@@ -136,7 +139,7 @@ export async function onBankMatched(ctx: PluginContext, companyId: string, match
       closePops = settled.confirmedPopIds;
       return { key: match.key, status: "settled", paymentId: settled.paymentId };
     }
-    await openReview(ctx, companyId, match, label, decision.reason, settings);
+    await openReview(ctx, companyId, match, label, decision.reason, settings, client);
     return { key: match.key, status: "needs_review", error: decision.reason };
   });
   await emitResult(ctx, companyId, result);
