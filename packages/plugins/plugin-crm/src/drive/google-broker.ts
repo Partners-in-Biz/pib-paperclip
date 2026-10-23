@@ -205,6 +205,11 @@ export function createGoogleDriveBroker(
       }
       tree.push({ path: `${registered.path}/${sub}`, folderId: child.id, created: subCreated });
     }
+    if (!wantsSubfolders && !registered.complete) {
+      // A folder made before the tag existed (no sub-folders to wait for) is complete: say so once.
+      const done = await json<DriveFile>("PATCH", `${DRIVE}/files/${folder.id}?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, { appProperties: { pibComplete: "1" } });
+      registered = toRegistry(type, id, { ...folder, ...done, appProperties: { ...folder.appProperties, ...done.appProperties } });
+    }
     if (wantsSubfolders && !registered.complete) {
       const done = await json<DriveFile>("PATCH", `${DRIVE}/files/${folder.id}?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, { appProperties: { pibComplete: "1" } });
       registered = toRegistry(type, id, { ...folder, ...done, appProperties: { ...folder.appProperties, ...done.appProperties } });

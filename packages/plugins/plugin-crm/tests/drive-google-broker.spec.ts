@@ -67,6 +67,18 @@ describe("createGoogleDriveBroker", () => {
     expect((await broker(g).resolve("crm_company", "co1"))?.folder_id).toBe("old1");
   });
 
+  it("back-fills the complete tag on a folder made before the tag existed (no sub-folders to wait for)", async () => {
+    const g = fakeGoogle();
+    g.files.push({ id: "old2", name: "Acme", mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_ID], description: "Acme", appProperties: { pibEntityType: "crm_company", pibEntityId: "co1" } });
+    const b = broker(g);
+    expect((await b.resolve("crm_company", "co1"))?.complete).toBe(false);
+    const r = await b.ensure({ entity_type: "crm_company", entity_id: "co1", name: "Acme" });
+    expect(r.created).toBe(false);
+    expect(r.folder.complete).toBe(true);
+    expect(g.files.find((f) => f.id === "old2")?.appProperties?.pibComplete).toBe("1");
+    expect((await b.resolve("crm_company", "co1"))?.complete).toBe(true);
+  });
+
   it("refuses a same-named folder that already belongs to another entity (409, not retryable)", async () => {
     const g = fakeGoogle();
     const b = broker(g);
