@@ -22,6 +22,7 @@ import {
   refreshAccountToken,
   toProviderAccount,
 } from "./accounts.js";
+import { saveToDrive } from "./drive.js";
 import { inScope, scopeLabel, scopeOfRow } from "./clients.js";
 import { loadSocialConfig, type SocialConfig } from "./config.js";
 import {
@@ -56,7 +57,7 @@ import { moduleGate } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS, PLATFORM_LIMITS, type SocialPlatform } from "./platforms.js";
 
 /** The request a destination publishes: the post plus that platform's override. */
-export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "overrides" | "first_comment">, platform: SocialPlatform): PublishRequest {
+export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "overrides" | "first_comment" | "reply_to_url" | "quote_url">, platform: SocialPlatform): PublishRequest {
   const override = postOverrides(post)[platform] ?? {};
   const pick = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
   return {
@@ -67,8 +68,16 @@ export function buildPublishRequest(post: Pick<PostRow, "body" | "media" | "over
     subreddit: pick(override.subreddit),
     boardId: pick(override.boardId),
     firstComment: pick(post.first_comment),
+    replyToUrl: pick(post.reply_to_url),
+    quoteUrl: pick(post.quote_url),
     media: postMedia(post),
   };
+}
+
+/** Only X publishes a reply or quote target. Elsewhere the post would go out as a plain post, so it is refused (at validation and again at publish). */
+export function unsupportedTargetProblem(platform: SocialPlatform, request: Pick<PublishRequest, "replyToUrl" | "quoteUrl">): string | null {
+  if (platform === "x" || !(request.replyToUrl || request.quoteUrl)) return null;
+  return `${PLATFORM_LABELS[platform]} cannot reply to or quote an X post yet; remove this destination or the ${request.replyToUrl ? "replyToUrl" : "quoteUrl"}`;
 }
 
 /** Problems that would make a destination fail for sure. Checked before scheduling. */
@@ -76,6 +85,8 @@ export function validateDestination(platform: SocialPlatform, request: PublishRe
   const label = PLATFORM_LABELS[platform];
   const limits = PLATFORM_LIMITS[platform];
   const problems: string[] = [];
+  const targetProblem = unsupportedTargetProblem(platform, request);
+  if (targetProblem) problems.push(targetProblem);
   const imgs = request.media.filter((m) => m.kind === "image").length;
   const vids = request.media.filter((m) => m.kind === "video").length;
   if (limits.needsMedia === "any" && request.media.length === 0) problems.push(`${label} needs an image or a video`);
@@ -152,9 +163,22 @@ async function publishDestination(
     }
     const env = await envFor(config, platform, current.meta, { idempotencyKey: destination.id });
     const request = buildPublishRequest(post, platform);
+    // The draft may have been validated before this destination was attached or the target was added: never fall back to a plain post.
+    const targetProblem = unsupportedTargetProblem(platform, request);
+    if (targetProblem) return { outcome: { ok: false, retryable: false, error: targetProblem }, account };
     const outcome = await provider.publish(env, current, request);
     if (!outcome.ok && outcome.tokenInvalid) {
       await markNeedsReconnect(ctx, companyId, account, outcome.error ?? "The platform rejected the token");
+    }
+    if (outcome.ok) {
+      // Not awaited: publish returns immediately; Drive save continues in the background.
+      void saveToDrive(ctx, {
+        companyId,
+        post: { id: post.id, body: post.body },
+        platform,
+        media: postMedia(post),
+        publishedAt: new Date(),
+      }).catch(() => undefined);
     }
     return { outcome, account };
   } catch (error) {

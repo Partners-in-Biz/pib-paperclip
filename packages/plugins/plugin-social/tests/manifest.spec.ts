@@ -48,7 +48,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.9.0");
+    expect(manifest.version).toBe("0.9.21");
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -64,7 +64,7 @@ describe("manifest", () => {
   });
 
   it("declares the managed agent with the canonical skill keys", () => {
-    expect(DESIRED_SKILLS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content"]);
+    expect(DESIRED_SKILLS).toEqual(["plugin/partnersinbiz-social/social-publish", "plugin/partnersinbiz-social/social-content", "plugin/partnersinbiz-social/creative-studio"]);
     const agent = manifest.agents![0]!;
     expect(agent).toMatchObject({ agentKey: "social-media-manager", adapterType: "hermes_local", status: "paused", budgetMonthlyCents: 0 });
     expect(agent.adapterPreference).toEqual(["hermes_local", "claude_local"]);
@@ -77,7 +77,7 @@ describe("manifest", () => {
   });
 
   it("ships pib- prefixed skills with frontmatter and the platform reference", () => {
-    expect(SKILLS.map((s) => s.slug)).toEqual(["pib-social-publish", "pib-social-content"]);
+    expect(SKILLS.map((s) => s.slug)).toEqual(["pib-social-publish", "pib-social-content", "pib-creative-studio"]);
     for (const skill of SKILLS) expect(skill.markdown.startsWith(`---\nname: ${skill.slug}\nslug: ${skill.slug}\n`)).toBe(true);
     expect(SKILLS[1]!.files?.[0]?.path).toBe("references/platforms.md");
     const publish = SKILLS[0]!.markdown;

@@ -24,6 +24,7 @@ import { DEFAULT_GOOGLE_VERSION } from "./providers/google.js";
 import { DEFAULT_META_VERSION } from "./providers/meta.js";
 import type { ProviderApp } from "./providers/types.js";
 import { AD_PLATFORMS, PLATFORM_LABELS, type AdPlatform } from "./platforms.js";
+import { DEFAULT_VARIANT_CONFIG, type VariantConfig } from "./variants.js";
 
 export const DEFAULT_TIMEZONE = "Africa/Johannesburg";
 
@@ -63,6 +64,19 @@ export function buildInstanceConfigSchema(): JsonSchema {
           spikeFactor: { type: "number", title: "Spend spike: times the usual daily spend", default: DEFAULT_ALERT_CONFIG.spikeFactor, minimum: 1.2 },
           spikeMinMinor: { type: "integer", title: "Spend spike: smallest day that counts (minor units, e.g. cents)", default: DEFAULT_ALERT_CONFIG.spikeMinMinor, minimum: 0 },
           cpaTolerance: { type: "number", title: "Cost per result: how far over the target before it is raised (0.25 is 25%)", default: DEFAULT_ALERT_CONFIG.cpaTolerance, minimum: 0 },
+        },
+      },
+      variants: {
+        type: "object",
+        title: "Variant analysis thresholds",
+        description: "Settings for winner and fatigue computation on ad variants. The defaults suit most accounts.",
+        properties: {
+          minImpressions: { type: "integer", title: "Winner: minimum impressions to qualify", default: DEFAULT_VARIANT_CONFIG.minImpressions, minimum: 1 },
+          minConversions: { type: "integer", title: "Winner: minimum conversions to qualify", default: DEFAULT_VARIANT_CONFIG.minConversions, minimum: 1 },
+          ctrDropPct: { type: "integer", title: "Fatigue: CTR drop threshold (percent)", default: DEFAULT_VARIANT_CONFIG.ctrDropPct, minimum: 0 },
+          frequencyThreshold: { type: "number", title: "Fatigue: frequency threshold", default: DEFAULT_VARIANT_CONFIG.frequencyThreshold, minimum: 0 },
+          windowDays: { type: "integer", title: "Winner: analysis window (days)", default: DEFAULT_VARIANT_CONFIG.windowDays, minimum: 1 },
+          consecutiveDays: { type: "integer", title: "Fatigue: consecutive days required", default: DEFAULT_VARIANT_CONFIG.consecutiveDays, minimum: 1 },
         },
       },
       platforms: {
@@ -135,6 +149,7 @@ export interface AdsConfig {
   /** Company-wide master switch for changing ads. */
   writesEnabled: boolean;
   alerts: AlertConfig;
+  variants: VariantConfig;
   encryptionKeyConfigured: boolean;
   /** The bridge redirect URI. Throws when the base URL or the page's own address is not known yet. */
   redirectUri(): string;
@@ -176,6 +191,7 @@ export function adsConfigFrom(ctx: PluginContext, companyId: string, raw: Record
     publicBaseUrlError = error instanceof Error ? error.message : String(error);
   }
   const alertRaw = obj(raw.alerts);
+  const variantRaw = obj(raw.variants);
   let keyringPromise: Promise<TokenKeyring> | null = null;
   return {
     companyId,
@@ -190,6 +206,15 @@ export function adsConfigFrom(ctx: PluginContext, companyId: string, raw: Record
       spikeFactor: Math.max(1.2, num(alertRaw.spikeFactor, DEFAULT_ALERT_CONFIG.spikeFactor)),
       spikeMinMinor: Math.max(0, Math.round(num(alertRaw.spikeMinMinor, DEFAULT_ALERT_CONFIG.spikeMinMinor))),
       cpaTolerance: Math.max(0, num(alertRaw.cpaTolerance, DEFAULT_ALERT_CONFIG.cpaTolerance)),
+    },
+    variants: {
+      ...DEFAULT_VARIANT_CONFIG,
+      minImpressions: Math.max(1, int(variantRaw.minImpressions, DEFAULT_VARIANT_CONFIG.minImpressions)),
+      minConversions: Math.max(1, int(variantRaw.minConversions, DEFAULT_VARIANT_CONFIG.minConversions)),
+      ctrDropPct: Math.max(0, num(variantRaw.ctrDropPct, DEFAULT_VARIANT_CONFIG.ctrDropPct)),
+      frequencyThreshold: Math.max(0, num(variantRaw.frequencyThreshold, DEFAULT_VARIANT_CONFIG.frequencyThreshold)),
+      windowDays: Math.max(1, int(variantRaw.windowDays, DEFAULT_VARIANT_CONFIG.windowDays)),
+      consecutiveDays: Math.max(1, int(variantRaw.consecutiveDays, DEFAULT_VARIANT_CONFIG.consecutiveDays)),
     },
     encryptionKeyConfigured: has(raw.encryptionKey),
     redirectUri() {
@@ -254,3 +279,4 @@ export async function loadAdsConfig(ctx: PluginContext, companyId: string): Prom
 export function enabledPlatforms(config: AdsConfig): Array<AdPlatform | "mock"> {
   return ([...AD_PLATFORMS, "mock"] as const).filter((p) => config.platform(p).enabled);
 }
+

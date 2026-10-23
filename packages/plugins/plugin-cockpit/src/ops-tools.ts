@@ -1,6 +1,6 @@
 /**
- * Runs the Cockpit's measurement, review, improvement, goal and credential
- * tools (declarations in `ops-tool-declarations.ts`).
+ * Runs the Cockpit's measurement, review, improvement, goal, credential and
+ * evidence tools (declarations in `ops-tool-declarations.ts`).
  */
 import type { ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
@@ -9,6 +9,8 @@ import { effortBrief } from "./client-cost-model.js";
 import { openCloseoutNow } from "./closeout.js";
 import { CredentialError } from "./credentials-model.js";
 import { credentialList, recordCredential, verifyCompany } from "./credentials.js";
+import { recordEvidence } from "./evidence.js";
+import { saveEvidenceToDrive } from "./evidence-drive.js";
 import { getRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
@@ -96,6 +98,35 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
     if (name === OPS_TOOL_NAMES.credentialRecord) {
       const result = await recordCredential(env, companyId, p, actor);
       return ok(result.message, { id: result.credential.id, created: result.created });
+    }
+    if (name === OPS_TOOL_NAMES.evidenceRecord) {
+      const result = await recordEvidence(
+        env,
+        companyId,
+        typeof p.issueId === "string" ? p.issueId : null,
+        typeof p.attachmentId === "string" ? p.attachmentId : null,
+        typeof p.sha256 === "string" ? p.sha256 : null,
+        typeof p.step === "string" ? p.step : null,
+        typeof p.summary === "string" ? p.summary : null,
+        { runId: run.runId ?? null, agentId: run.agentId ?? null },
+      );
+      return result;
+    }
+    if (name === OPS_TOOL_NAMES.evidenceSave) {
+      const issueId = typeof p.issueId === "string" && p.issueId.trim() ? p.issueId.trim() : null;
+      const step = typeof p.step === "string" && p.step.trim() ? p.step.trim().slice(0, 60) : null;
+      const pngBase64 = typeof p.pngBase64 === "string" ? p.pngBase64 : null;
+
+      if (!issueId) return fail("issueId is required");
+      if (!step) return fail("step is required and must be non-empty");
+      if (!pngBase64) return fail("pngBase64 is required");
+
+      const result = await saveEvidenceToDrive(env.ctx, { companyId, issueId, step, pngBase64 });
+      if (result === null || result.status === "failed" || result.status === "no_ack") {
+        const reason = result?.status === "failed" ? result.reason : result?.status === "no_ack" ? "no ack from Drive" : "invalid input";
+        return ok(`Evidence could not be saved to Drive (${reason}). The step is not blocked.`, { saved: false, reason });
+      }
+      return ok(`Evidence saved to Drive.`, { saved: true, driveFileId: result.driveFileId, url: result.url });
     }
     return fail(`Unknown tool ${name}`);
   } catch (error) {

@@ -141,7 +141,7 @@ const instanceConfigSchema: JsonSchema = {
         payfast: {
           type: "object",
           title: "PayFast (South Africa)",
-          description: "PayFast sends its payment notifications as web forms, which this Paperclip version cannot receive yet (the Setup item explains and says what to decide). Until it can, switching PayFast on has no effect.",
+          description: "PayFast ITN is received as form posts on the plugin webhook route. Enable only after merchant credentials are set (Merchant ID, Merchant Key, and passphrase when used).",
           properties: {
             enabled: { type: "boolean", title: "Accept payments through PayFast", default: false },
             sandbox: { type: "boolean", title: "Use the PayFast sandbox (test mode)", default: false },
@@ -195,7 +195,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.8.0",
+  version: "0.9.3",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -216,6 +216,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     "issues.wakeup",
     "issue.comments.create",
+    // 0.9: the paid-invoice filing issue carries the invoice as an issue document. A new capability: a stop-first deploy.
+    "issue.documents.write",
     "plugin.state.read",
     "plugin.state.write",
     "secrets.read-ref",
@@ -238,7 +240,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       endpointKey: "payfast",
       displayName: "PayFast payment notifications (ITN)",
-      description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Needs the host to pass form-encoded bodies (see the Setup item).",
+      description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Host accepts form-urlencoded bodies.",
     },
   ],
   jobs: [

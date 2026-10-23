@@ -1,0 +1,123 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "delegate-market-research-to-helper",
+      "title": "Iris delegates market research and data pulls to Haiku helpers",
+      "source": "baseline-2026-10-19/agents/iris.md: Hand the legwork to a Haiku helper with the Task tool; cover research and web look-ups, data pulls from the CRM, Paperclip, plugins or analytics",
+      "situation": "New concept: speed-reading app for German market. Need competitor count, keyword demand, pricing precedent.",
+      "task": "Research yourself or delegate to helper?",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "research|competitor|data|keyword"}
+            },
+            "optional": true
+          }
+        ],
+        "mustSay": [
+          "[Hh]elper|[Tt]ask|delegate|research"
+        ],
+        "mustNotSay": [
+          "I(?:\\s+will|'ll|\\s+am going to)\\s+(?!not\\b|never\\b)(?:research|search|pull|look)"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I will not research this myself. Delegating to helper to pull competitor count, keyword demand, and pricing precedent for German speed-reading app."
+            }
+          ],
+          "summary": "Delegated research to helper, not researching"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "I'll research the German market for competitors and keyword demand."
+            }
+          ],
+          "summary": "Researching myself"
+        }
+      }
+    },
+    {
+      "id": "cite-sources-for-market-claims",
+      "title": "Iris cites sources for every market claim; never invents numbers",
+      "source": "baseline-2026-10-19/agents/iris.md: Every claim about a market carries its source. An uncited market claim is an opinion and you label it as one.",
+      "situation": "Claim: 'Educational gaming market for kids worth $2B.' Include this in concept evaluation.",
+      "task": "Present the number with source or as estimate?",
+      "expect": {
+        "mustSay": [
+          "[Ss]ource|[Cc]ite|estimate|[Rr]esearch"
+        ],
+        "mustNotSay": [
+          "(?:market|gaming|kids)\\b.*?\\$[0-9]+(?:\\.\\d+)?\\s*(?:[BMK]|billion|million|thousand)\\b(?!.*?(?:according|source|cite|estimate))"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Educational gaming market for kids estimated at $2B according to Statista 2024."
+            }
+          ],
+          "summary": "Market claim with source"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "The educational gaming market for kids is worth $2B."
+            }
+          ],
+          "summary": "Uncited market claim"
+        }
+      }
+    },
+    {
+      "id": "ask-arjun-for-feasibility",
+      "title": "Iris asks Arjun for feasibility and effort; never invents estimates",
+      "source": "baseline-2026-10-19/agents/iris.md: Technical feasibility and effort estimates → ask Arjun. Do not invent an estimate.",
+      "situation": "Feature: live cursor presence for 100 concurrent users. Assess technical fit and effort for spec.",
+      "task": "Estimate effort yourself or ask Arjun?",
+      "expect": {
+        "mustSay": [
+          "[Aa]rjun|ask|feasibility|effort"
+        ],
+        "mustNotSay": [
+          "(?:\\b(?:probably|roughly|approximately)\\b|~)\\s*\\d+(?:\\s*[-–]\\s*\\d+)?\\s*(?:hours?|days?|weeks?|months?)\\b"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Asking Arjun for technical feasibility and effort estimate on live cursor presence for 100 concurrent users."
+            }
+          ],
+          "summary": "Asked Arjun for feasibility"
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Live cursor presence should be roughly 2-3 weeks of effort to implement."
+            }
+          ],
+          "summary": "Invented estimate"
+        }
+      }
+    }
+  ]
+}

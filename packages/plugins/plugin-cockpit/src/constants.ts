@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.7.11";
+export const VERSION = "0.13.8";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -20,6 +20,12 @@ export const JOBS = {
   businessReview: "business-review",
   /** Nightly: one acceptance request for the Acceptance agent (the canary journeys), for companies that staffed one. */
   acceptanceNightly: "acceptance-nightly",
+  /** Every 15 minutes: pauses agents when quota failures breach thresholds, resumes when safe. */
+  governor: "governor",
+  /** Every night at 04:00 UTC (06:00 SAST): sends one digest push "N items waited overnight" for each company, collapsing the deferred rows. */
+  pushDigest: "push-digest",
+  /** Every 15 minutes: sweeps asks with expired deadlines, applies standing policy or escalates to owner. */
+  askDeadlines: "ask-deadlines",
 } as const;
 
 export const ROUTINES = {
@@ -57,6 +63,7 @@ export const ORIGIN = {
   setup: `plugin:${COCKPIT_PLUGIN}:setup`,
   /** Acceptance requests (the run's trigger issue) and the failures a run opens for the owning role. */
   acceptance: `plugin:${COCKPIT_PLUGIN}:acceptance`,
+  routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
 } as const;
 
 /**
@@ -75,6 +82,8 @@ export const ORIGIN_ID = {
   ask: "cockpit:ask:",
   /** `cockpit:acceptance:<request key>` (a request) and `cockpit:acceptance:fail:<run id>:<step id>` (a failed step). */
   acceptance: "cockpit:acceptance:",
+  /** `cockpit:routine-failure:<routineKey>:<since>` for routine failures that need wake or escalation. */
+  routineFailure: "cockpit:routine-failure:",
 } as const;
 
 /** The same kinds before 0.4.0 (no plugin part), still checked for issues opened then. */

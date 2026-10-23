@@ -42,9 +42,9 @@ export function pickAdapter(template: Pick<AgentTemplate, "adapterPreference" | 
 }
 
 /** The agent's AGENTS.md: the file, its shared blocks, the company's names, and (for hired agents) the memory and manual lines. */
-export function renderInstructions(template: AgentTemplate, vars: TemplateVars): string {
+export function renderInstructions(template: AgentTemplate, vars: TemplateVars, rawOverride?: string): string {
   const { files, blocks } = packSources();
-  const source = files[template.file];
+  const source = rawOverride !== undefined ? rawOverride : files[template.file];
   if (source === undefined) throw new Error(`The template ${template.key} has no instructions file`);
   const text = fillVariables(expandBlocks(source, blocks), vars).trim();
   return template.provisioning === "hire" ? withMemoryInstruction(text) : text;

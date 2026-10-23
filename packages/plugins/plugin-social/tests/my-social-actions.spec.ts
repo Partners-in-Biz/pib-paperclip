@@ -489,3 +489,26 @@ describe("My Social Actions - Security & Isolation", () => {
     });
   });
 });
+
+describe("My Social page wiring", () => {
+  it("My Social is the same workspace as Social, in the personal space", async () => {
+    const { readFileSync } = await import("node:fs");
+    const ui = readFileSync(new URL("../src/ui/index.tsx", import.meta.url), "utf8");
+    expect(ui).toContain('<SocialWorkspace {...props} space="me" />');
+    expect(ui).toContain("space,\n    })) as Snapshot");
+    // every write that takes the page's scope also carries the space
+    const parts = readFileSync(new URL("../src/ui/parts.tsx", import.meta.url), "utf8");
+    expect(parts).toContain('{ client: null, space: "me" }');
+  });
+
+  it("the UI action list covers every action the pages call", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const dir = new URL("../src/ui/", import.meta.url);
+    const index = readFileSync(new URL("index.tsx", dir), "utf8");
+    const listed = new Set([...index.slice(index.indexOf("const ACTION_KEYS"), index.indexOf("] as const")).matchAll(/"([a-z-]+\.[a-z-]+)"/g)].map((m) => m[1]));
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".tsx"))) {
+      const text = readFileSync(new URL(file, dir), "utf8");
+      for (const m of text.matchAll(/\brun\(\s*"((?:social|my-social)\.[a-z-]+)"/g)) expect(listed.has(m[1]!), `${file}: ${m[1]}`).toBe(true);
+    }
+  });
+});

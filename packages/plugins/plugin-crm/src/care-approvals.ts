@@ -32,6 +32,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { executeApprovedErasure, redactErasureApproval } from "./privacy.js";
 import { reportEmailProblem, reportHooks } from "./report.js";
 import { teamAssignee } from "./routing.js";
+import { speedToLeadHooks } from "./speed-to-lead.js";
 import { feedbackHooks, onFeedbackReply } from "./support.js";
 
 const HOOKS: Partial<Record<ApprovalKind, MailApprovalHooks>> = {
@@ -42,6 +43,7 @@ const HOOKS: Partial<Record<ApprovalKind, MailApprovalHooks>> = {
   esign_request: esignHooks,
   esign_reminder: esignHooks,
   esign_copy: esignHooks,
+  speed_to_lead: speedToLeadHooks,
 };
 
 const ESIGN_KINDS: readonly ApprovalKind[] = ["esign_request", "esign_reminder", "esign_copy"];

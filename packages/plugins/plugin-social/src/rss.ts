@@ -163,9 +163,11 @@ async function pollFeed(ctx: PluginContext, feed: RssFeedRow): Promise<number> {
   const firstPoll = !feed.last_checked_at;
   const toDraft = new Set((firstPoll ? fresh.slice(0, 1) : fresh.slice(0, 5)).map((i) => i.key));
   const wanted = Array.from(new Set([...(feed.account_ids ?? []), ...(feed.account_id ? [feed.account_id] : [])]));
-  // Drafts only target org accounts of the feed's own scope.
+  // Drafts only target accounts of the feed's own space: org accounts for a company feed, the owner's accounts for a personal one.
   const accountIds = toDraft.size && wanted.length
-    ? (await getAccountsByIds(ctx, feed.company_id, wanted)).filter((a) => a.scope === "org" && inScope(a, scopeOfRow(feed))).map((a) => a.id)
+    ? (await getAccountsByIds(ctx, feed.company_id, wanted))
+        .filter((a) => a.scope === feed.scope && (feed.scope === "personal" ? a.owner_user_id === feed.owner_user_id : inScope(a, scopeOfRow(feed))))
+        .map((a) => a.id)
     : [];
   let drafted = 0;
   for (const item of fresh) {
@@ -178,8 +180,8 @@ async function pollFeed(ctx: PluginContext, feed: RssFeedRow): Promise<number> {
         company_id: feed.company_id,
         body: draft.body,
         status: "draft",
-        scope: "org",
-        owner_user_id: feed.created_by_user_id,
+        scope: feed.scope,
+        owner_user_id: feed.scope === "personal" ? feed.owner_user_id : feed.created_by_user_id,
         media: [],
         overrides: {},
         first_comment: null,

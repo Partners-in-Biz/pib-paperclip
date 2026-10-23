@@ -23,6 +23,7 @@ import { clip } from "./domain.js";
 import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdForRow, scopeLine, SOCIAL_ORIGINS, socialAssignee } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
 import { isSocialPlatform, PLATFORM_LABELS, type PostStatus } from "./platforms.js";
+import { summarizeTarget } from "./post-target.js";
 
 export const POST_REVIEW_CHECKS = [
   "Platform limits: length, hashtags, media format and count fit every destination (run `validate-post`).",
@@ -76,7 +77,7 @@ export const CLIENT_APPROVAL_STEPS = [
 
 /** Issue text for the Reviewer: what goes out, where, and the checks. Pure. */
 export function postReviewDescription(input: {
-  post: Pick<PostRow, "id" | "body" | "first_comment" | "client_kind" | "client_ref" | "client_name" | "media">;
+  post: Pick<PostRow, "id" | "body" | "first_comment" | "client_kind" | "client_ref" | "client_name" | "media"> & Partial<Pick<PostRow, "reply_to_url" | "quote_url">>;
   destinations: string[];
   pagePath: string | null;
   handTo: { userId: string | null; label: string };
@@ -95,6 +96,8 @@ export function postReviewDescription(input: {
     "",
     "> " + clip(input.post.body, 2000).replace(/\n/g, "\n> "),
   ];
+  const target = summarizeTarget(input.post);
+  if (target) lines.push("", `**${target.label}:** ${target.url}`);
   if (input.post.first_comment) lines.push("", `First comment: ${clip(input.post.first_comment, 500)}`);
   lines.push(
     "",

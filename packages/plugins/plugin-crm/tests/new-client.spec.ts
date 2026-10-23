@@ -171,9 +171,9 @@ describe("the board actions the ops script calls", () => {
     const { harness, store } = await boot();
     seedProjects(harness);
     const linked = await harness.performAction<Record<string, any>>("crm.link-client-project", { client: "company:acme", projectId: "proj-acme" }, { companyId: CO, actor: BOARD });
-    expect(linked).toEqual({ projectId: "proj-acme", name: "Acme site", client: "company:acme", linked: true });
+    expect(linked).toEqual({ projectId: "proj-acme", name: "Acme site", client: "company:acme", linked: true, kind: null });
     const again = await harness.performAction<Record<string, any>>("crm.link-client-project", { client: "company:acme", projectId: "proj-acme" }, { companyId: CO, actor: BOARD });
-    expect(again).toEqual({ projectId: "proj-acme", name: "Acme site", client: "company:acme", alreadyLinked: true });
+    expect(again).toEqual({ projectId: "proj-acme", name: "Acme site", client: "company:acme", alreadyLinked: true, kind: null });
     expect(store.client_projects).toHaveLength(1);
     // The tool gives the same answer shape.
     const viaTool = await tool<Record<string, any>>(harness, "link-client-project", { client: "company:acme", projectId: "proj-acme" });

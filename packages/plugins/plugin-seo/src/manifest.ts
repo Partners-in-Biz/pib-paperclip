@@ -15,7 +15,7 @@ import {
 } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
-import { SEO_TOOLS } from "./tools.js";
+import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
 
 export const AGENT_INSTRUCTIONS = `# SEO Specialist — Partners in Biz
 
@@ -104,7 +104,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "seo", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "issue_comments"] },
-  tools: SEO_TOOLS,
+  tools: [...SEO_TOOLS, ...GROWTH_TOOLS],
   jobs: [
     {
       jobKey: DAILY_JOB_KEY,

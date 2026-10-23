@@ -26,11 +26,14 @@ export function sha256Hex(text: string): string {
 }
 
 /** The fingerprint of a post and its destination accounts. Pure. */
-export function contentHashOf(post: Pick<PostRow, "body" | "first_comment" | "overrides" | "media" | "scheduled_at">, accountIds: string[]): string {
+export function contentHashOf(post: Pick<PostRow, "body" | "first_comment" | "overrides" | "media" | "scheduled_at" | "reply_to_url" | "quote_url">, accountIds: string[]): string {
   return sha256Hex(
     stableJson({
       body: post.body.trim(),
       firstComment: post.first_comment?.trim() || null,
+      // Added with PAR-4452; omitted when unset so existing approvals keep their hash.
+      ...(post.reply_to_url ? { replyToUrl: post.reply_to_url } : {}),
+      ...(post.quote_url ? { quoteUrl: post.quote_url } : {}),
       overrides: postOverrides(post),
       media: postMedia(post).map((m) => ({ url: m.url, kind: m.kind, altText: m.altText ?? null })),
       accounts: Array.from(new Set(accountIds)).sort(),

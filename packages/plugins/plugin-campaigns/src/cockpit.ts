@@ -44,6 +44,7 @@ export const CAMPAIGN_JOBS: Array<{ key: string; title: string; every: number }>
   { key: "redeliver-mail", title: "Resend campaign email requests", every: 5 },
   { key: "poll-messaging", title: "Read SMS and WhatsApp replies", every: 10 },
   { key: "setup-status", title: "Setup and cockpit report", every: 60 },
+  { key: "measure-experiments", title: "Measure experiments (Growth Lab)", every: 24 * 60 },
 ];
 
 function t(ctx: PluginContext, name: string): string {
@@ -76,6 +77,8 @@ interface Counts {
   failed_7d: string;
   retrying: string;
   oldest_failed: string | null;
+  experiments_running: string;
+  experiments_measured_30d: string;
 }
 
 export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Promise<CockpitSnapshot> {
@@ -90,6 +93,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
            WHERE e.company_id = $1 AND e.status = 'running' AND c.status = 'active' AND e.next_due_at <= now() AND e.open_issue_id IS NULL AND e.sending_key IS NULL)::text AS due,
          (SELECT count(*) FROM ${t(ctx, "campaign_step_events")} WHERE company_id = $1 AND event_type = 'sent' AND occurred_at >= date_trunc('month', now()))::text AS sent_month,
          (SELECT count(*) FROM ${t(ctx, "campaign_step_events")} WHERE company_id = $1 AND event_type = 'reply' AND occurred_at >= date_trunc('month', now()))::text AS replies_month,
+         (SELECT count(*) FROM ${t(ctx, "growth_experiments")} WHERE company_id = $1 AND status = 'running')::text AS experiments_running,
+         (SELECT count(*) FROM ${t(ctx, "growth_experiments")} WHERE company_id = $1 AND status = 'measured' AND measured_at >= now() - interval '30 days')::text AS experiments_measured_30d,
          (SELECT count(*) FROM ${t(ctx, "outbox")} WHERE company_id = $1 AND status = 'failed' AND settled_at >= now() - interval '7 days')::text AS failed_7d,
          (SELECT count(*) FROM ${t(ctx, "outbox")} WHERE company_id = $1 AND status = 'pending' AND last_error IS NOT NULL)::text AS retrying,
          (SELECT min(settled_at) FROM ${t(ctx, "outbox")} WHERE company_id = $1 AND status = 'failed' AND settled_at >= now() - interval '7 days')::text AS oldest_failed`,
@@ -118,6 +123,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
         href: HREF,
         group: "marketing",
       },
+      { key: "experiments_running", label: "Experiments running", value: String(n(counts.experiments_running)), raw: n(counts.experiments_running), tone: "neutral", href: HREF, group: "marketing" },
+      { key: "experiments_measured_30d", label: "Experiments measured (30 days)", value: String(n(counts.experiments_measured_30d)), raw: n(counts.experiments_measured_30d), tone: "neutral", href: HREF, group: "marketing" },
       { key: "campaign_due_steps", label: "Steps due now", value: String(due), raw: due, tone: due > 0 ? "warn" : "ok", href: HREF, group: "marketing" },
     );
   }

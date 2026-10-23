@@ -230,4 +230,10 @@ export async function acknowledgeAlert(rt: AdsRuntime, actor: { userId?: string 
   await audit(rt.ctx, rt.companyId, { actor: actor.userId ? `user:${actor.userId}` : actor.agentId ? `agent:${actor.agentId}` : "system", action: "alert.acknowledged", scopeKey: alert.scope_key, subject: alertId, detail: { note: noteText.slice(0, 200) } });
 }
 
+/** Records an alert from the hourly sweeper, opening an issue for warn and bad severities. */
+export async function raiseSweepAlert(rt: AdsRuntime, scope: ScopeRow, candidate: AlertCandidate, ref: { accountId?: string | null; campaignExternalId?: string | null }): Promise<string> {
+  const sweepResult: EvaluateResult = { alertsNew: 0, alertsSeen: 0, issuesOpened: 0, pauseRequests: 0, errors: [] };
+  return raise(rt, scope, candidate, ref, sweepResult, { issue: candidate.severity !== "info" });
+}
+
 export type { AlertKind };

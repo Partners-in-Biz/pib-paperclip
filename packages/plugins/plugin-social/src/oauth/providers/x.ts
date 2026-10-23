@@ -4,6 +4,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { clip } from "../../domain.js";
+import { parseTweetUrl } from "../../post-target.js";
 import {
   basicAuth,
   downloadMedia,
@@ -127,6 +128,23 @@ async function postTweet(token: string, body: Record<string, unknown>, label: st
   return id;
 }
 
+/** `reply.in_reply_to_tweet_id` or `quote_tweet_id` for a reply / quote draft. A target that is not an X link is refused, never posted plain. */
+export function xTargetFields(req: Pick<PublishRequest, "replyToUrl" | "quoteUrl">): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (req.replyToUrl && req.quoteUrl) throw new PublishRejected("A post is either a reply or a quote, not both; not published");
+  if (req.replyToUrl) {
+    const ref = parseTweetUrl(req.replyToUrl);
+    if (!ref) throw new PublishRejected(`replyToUrl is not an X post link: ${req.replyToUrl}`);
+    fields.reply = { in_reply_to_tweet_id: ref.id };
+  }
+  if (req.quoteUrl) {
+    const ref = parseTweetUrl(req.quoteUrl);
+    if (!ref) throw new PublishRejected(`quoteUrl is not an X post link: ${req.quoteUrl}`);
+    fields.quote_tweet_id = ref.id;
+  }
+  return fields;
+}
+
 async function xPublish(_env: ProviderEnv, account: ProviderAccount, req: PublishRequest): Promise<PublishOutcome> {
   const token = account.token.accessToken;
   const vids = videos(req.media);
@@ -144,6 +162,7 @@ async function xPublish(_env: ProviderEnv, account: ProviderAccount, req: Publis
   }
   const body: Record<string, unknown> = { text };
   if (mediaIds.length) body.media = { media_ids: mediaIds };
+  Object.assign(body, xTargetFields(req));
   const id = await postTweet(token, body, "X post");
   const detail: Record<string, unknown> = {};
   if (req.firstComment) {

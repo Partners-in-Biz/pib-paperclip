@@ -113,6 +113,16 @@ describe("the manifest matches the package and the code", () => {
     expect((manifest as { webhooks?: unknown[] }).webhooks).toBeUndefined();
   });
 
+  it("has a manifest description the host accepts (500 characters at most; the first install was refused at 646)", () => {
+    expect(manifest.description.length).toBeLessThanOrEqual(500);
+  });
+
+  it("no longer has the old site's ad connections broker (settings, actions or code)", () => {
+    const schema = JSON.stringify(manifest.instanceConfigSchema);
+    expect(schema).not.toMatch(/webBroker|webOrgId/);
+    expect(code(src())).not.toMatch(/partnersinbiz\.online\/api|\/api\/v1\/ads|web-connections|webBrokerFor|X-Org-Id/);
+  });
+
   it("declares the jobs the Cockpit watches, and the worker registers each", () => {
     expect(manifest.jobs!.map((j) => j.jobKey)).toEqual(ADS_JOBS.map((j) => j.key));
     const worker = read("src/worker.ts");
@@ -168,9 +178,9 @@ describe("rules every PiB plugin keeps", () => {
     }
   });
 
-  it("the only code that can change an ad platform is the guarded execute path", () => {
+  it("only execute and the sweeper can change an ad platform: execute for guarded changes, sweeper for safety pause", () => {
     const callers = files(join(ROOT, "src")).filter((f) => /\.(createCampaign|setCampaignStatus|setCampaignBudget)\(/.test(code(readFileSync(f, "utf8"))));
-    expect(callers.map((f) => f.slice(ROOT.length))).toEqual(["src/execute.ts"]);
+    expect(callers.map((f) => f.slice(ROOT.length))).toEqual(["src/execute.ts", "src/sweeper.ts"]);
   });
 
   it("the only code that records an approval is called from a person's action or an issue a person closed", () => {

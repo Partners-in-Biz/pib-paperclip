@@ -11,7 +11,10 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { AS_AT_CUTOFF_SQL, INVOICE_COLUMNS, table, type CreditNoteRow, type InvoiceRow } from "./db.js";
 import { balanceOutstanding, deriveInvoiceStatus, OPEN_STATUSES, type BalanceState, type InvoiceStatusValue } from "./domain.js";
+import { isCanarySql } from "./canary.js";
 import { withdrawPaidDecisions } from "./closeouts.js";
+import { iso } from "./dates.js";
+import { openInvoiceFilingIssue } from "./filing.js";
 import { emitInvoicePaid } from "./handoff.js";
 import { retireInvoiceLinks, retireLinksForOtherAmount } from "./pay/links.js";
 
@@ -72,13 +75,6 @@ export function balanceSelect(ctx: PluginContext): string {
        FROM ${table(ctx, "invoices")} i`;
 }
 
-export function iso(value: unknown): string | null {
-  if (value == null || value === "") return null;
-  if (value instanceof Date) return value.toISOString();
-  const parsed = new Date(String(value));
-  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
-}
-
 /**
  * One invoice's balance as at today. `state.status` stays the stored status
  * (refreshInvoiceStatus compares against it); the outstanding amount uses
@@ -122,7 +118,7 @@ export async function invoiceBalance(ctx: PluginContext, invoiceId: string): Pro
 export async function invoiceBalances(
   ctx: PluginContext,
   companyId: string,
-  filter: { customerKind?: string; customerRef?: string; openOnly?: boolean; ids?: string[] } = {},
+  filter: { customerKind?: string; customerRef?: string; openOnly?: boolean; ids?: string[]; includeCanary?: boolean } = {},
 ): Promise<InvoiceBalance[]> {
   const where = ["i.company_id = $1"];
   const params: unknown[] = [companyId];
@@ -135,6 +131,10 @@ export async function invoiceBalances(
   if (filter.ids) {
     params.push(JSON.stringify(filter.ids));
     where.push(`i.id IN (SELECT jsonb_array_elements_text($${params.length}::jsonb))`);
+  }
+  // Finance lists and client-scoped lists hide canary. Pass includeCanary for a lookup that must see the test client.
+  if (!filter.includeCanary) {
+    where.push(`NOT (${isCanarySql("i")})`);
   }
   const rows = await ctx.db.query<InvoiceBalanceRow>(`${balanceSelect(ctx)} WHERE ${where.join(" AND ")} ORDER BY i.created_at DESC`, params);
   return rows.map((row) => toBalance(row));
@@ -169,12 +169,17 @@ export async function refreshInvoiceStatus(ctx: PluginContext, invoiceId: string
   else if (balanceOutstanding({ ...balance.state, status: next }) > 0) await retireLinksForOtherAmount(ctx, invoiceId, balanceOutstanding({ ...balance.state, status: next })).catch(() => 0);
   if (next === "paid" && (res.rowCount ?? 0) > 0) {
     // Paid in full by any path (payment, POP, bank match, credit, approval): tell the CRM and the Cockpit once.
+    let paidAt: unknown = null;
     try {
       const rows = await ctx.db.query<{ paid_at: unknown }>(`SELECT paid_at FROM ${table(ctx, "invoices")} WHERE id = $1`, [invoiceId]);
-      await emitInvoicePaid(ctx, { ...balance.invoice, paid_at: rows[0]?.paid_at ?? null });
+      paidAt = rows[0]?.paid_at ?? null;
+      await emitInvoicePaid(ctx, { ...balance.invoice, paid_at: paidAt });
     } catch (error) {
       ctx.logger.info("invoice.paid hand-off not sent", { invoiceId, error: error instanceof Error ? error.message : String(error) });
     }
+    await openInvoiceFilingIssue(ctx, balance.invoice, paidAt).catch((error) =>
+      ctx.logger.info("Invoice filing issue not opened", { invoiceId, error: error instanceof Error ? error.message : String(error) }),
+    );
     // Payment and reminder decisions still open for it are not needed any more.
     await withdrawPaidDecisions(ctx, balance.invoice.company_id, invoiceId, balance.invoice.number).catch((error) =>
       ctx.logger.info("Open decisions not withdrawn", { invoiceId, error: error instanceof Error ? error.message : String(error) }),
@@ -332,3 +337,5 @@ export async function customerCredit(ctx: PluginContext, companyId: string, cust
     }))
     .filter((row) => row.availableMinor > 0);
 }
+
+export { iso };

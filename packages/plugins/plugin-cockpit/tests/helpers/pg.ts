@@ -61,8 +61,11 @@ export interface FakeIssueRow {
   identifier: string;
   title: string;
   description?: string;
+  status?: string;
   originKind?: string | null;
   parentId?: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
 }
 
 export interface FakeComment {
@@ -72,6 +75,7 @@ export interface FakeComment {
   body: string;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdAt?: string;
   createdByRunId?: string | null;
   deletedAt?: string | null;
 }
@@ -88,6 +92,8 @@ export interface PgHarness {
   fetchCalls: Array<{ state: unknown; questions: Record<string, unknown> }>;
   setJev: (fn: ((state: any, questions: Record<string, any>) => Record<string, any> | null) | null) => void;
   addIssue: (row: Omit<FakeIssueRow, "companyId"> & { companyId?: string }) => FakeIssueRow;
+  addIssueToDb: (row: FakeIssueRow) => Promise<void>;
+  addRelationToDb: (companyId: string, blockerId: string, blockedId: string, createdAt?: string) => Promise<void>;
   reset: () => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -108,14 +114,14 @@ export async function startPg(): Promise<PgHarness> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // Stand-in for the host's core table the Cockpit may read.
   await client.query(
-    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
+    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
   );
   // The core issue columns the operations watch reads (watch.ts), and the blocker relations.
   await client.query(
     `CREATE TABLE public.issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT '', description text, status text NOT NULL, hidden_at timestamptz, assignee_agent_id uuid, assignee_user_id text, blocked_transition_at timestamptz, unblock_descriptor jsonb, priority text, origin_kind text, origin_id text, project_id uuid, parent_id uuid, completed_at timestamptz, started_at timestamptz, execution_policy jsonb, execution_state jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   );
   await client.query(`CREATE TABLE public.projects (id uuid PRIMARY KEY, company_id uuid NOT NULL, name text NOT NULL, status text NOT NULL DEFAULT 'backlog', archived_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
-  await client.query(`CREATE TABLE public.issue_relations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, issue_id uuid NOT NULL, related_issue_id uuid NOT NULL, type text NOT NULL DEFAULT 'blocks')`);
+  await client.query(`CREATE TABLE public.issue_relations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, issue_id uuid NOT NULL, related_issue_id uuid NOT NULL, type text NOT NULL DEFAULT 'blocks', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
   for (const file of readdirSync(join(PLUGIN_ROOT, "migrations")).sort()) {
     const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
     for (const statement of splitSqlStatements(sql)) validateMigrationStatement(statement, NAMESPACE);
@@ -158,6 +164,20 @@ export async function startPg(): Promise<PgHarness> {
         return row && row.companyId === companyId ? { ...row } : null;
       },
       listComments: async (issueId: string, companyId: string) => comments.filter((c) => c.issueId === issueId && c.companyId === companyId).map((c) => ({ ...c })),
+      createComment: async (issueId: string, body: string, companyId: string, opts?: { authorAgentId?: string }) => {
+        seq += 1;
+        const id = `comment-${seq}`;
+        comments.push({
+          id,
+          issueId,
+          body,
+          companyId,
+          createdAt: new Date().toISOString(),
+          authorAgentId: opts?.authorAgentId ?? null,
+          authorUserId: null,
+        });
+        return { id };
+      },
     },
     config: { get: async (companyId: string) => config.get(companyId) ?? {} },
     secrets: { resolve: async (ref: { secretId: string }) => `secret-${ref.secretId}` },
@@ -205,8 +225,33 @@ export async function startPg(): Promise<PgHarness> {
       issues.set(full.id, full);
       return full;
     },
+    async addIssueToDb(row: FakeIssueRow) {
+      await client.query(
+        `INSERT INTO public.issues (id, company_id, identifier, title, description, status, assignee_agent_id, assignee_user_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          row.id,
+          row.companyId,
+          row.identifier || null,
+          row.title,
+          row.description || "",
+          row.status || "todo",
+          row.assigneeAgentId || null,
+          row.assigneeUserId || null,
+          new Date().toISOString(),
+          new Date().toISOString(),
+        ],
+      );
+    },
+    async addRelationToDb(companyId: string, blockerId: string, blockedId: string, createdAt?: string) {
+      await client.query(
+        `INSERT INTO public.issue_relations (company_id, issue_id, related_issue_id, type, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [companyId, blockerId, blockedId, "blocks", createdAt || new Date().toISOString(), new Date().toISOString()],
+      );
+    },
     async reset() {
-      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile", "attestations", "client_revenue", "closeout_reviews", "improvements", "goals", "goal_values", "business_reviews", "credentials", "roles", "health_issues", "brief_issues", "snapshots", "acceptance_runs", "acceptance_requests", "plugin_versions", "eval_results"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
+      for (const table of ["memory_feedback", "memory_briefs", "memory_facts", "crm_companies", "crm_contacts", "asks", "activity", "onboarding", "health_warnings", "company_profile", "attestations", "client_revenue", "closeout_reviews", "improvements", "goals", "goal_values", "business_reviews", "credentials", "roles", "health_issues", "brief_issues", "snapshots", "acceptance_runs", "acceptance_requests", "plugin_versions", "eval_results", "repairs", "growth_ledger", "growth_metrics"]) await client.query(`DELETE FROM ${NAMESPACE}.${table}`);
       await client.query("DELETE FROM public.heartbeat_runs");
       await client.query("DELETE FROM public.issue_relations");
       await client.query("DELETE FROM public.issues");

@@ -7,10 +7,12 @@
  * (tests/tool-params.spec.ts checks both).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { AI_ENGINES } from "./engine/geo.js";
 import { PLAYBOOK_SECTIONS } from "./engine/playbook.js";
 import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-change.js";
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
+import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -196,12 +198,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "compact-task-thread",
     displayName: "Move a long task thread to a fresh issue",
     description:
-      "A task issue whose thread has grown past about 60 KB cannot be handed to an agent (the run fails with spawn E2BIG). This moves the task to a continuation issue (same project, parent, assignee and checkout, the task's description plus a summary of where it stands), points the task and its previews at it, closes the old issue with a pointer and wakes the agent there. The plugin does this by itself every few minutes; call it to do it now. It only reports unless dryRun is false.",
+      `A task issue whose thread has grown past ${THREAD_ROLL_BYTES} comment bytes cannot be handed to an agent (the run fails with spawn E2BIG). This moves the task to a continuation issue (same project, parent, assignee and checkout, the task's description plus a summary of where it stands), points the task and its previews at it, closes the old issue with a pointer and wakes the agent there. The plugin does this by itself every few minutes; call it to do it now. It only reports unless dryRun is false.`,
     parametersSchema: schema([], {
       issueId: text("Move just this task issue: its id or identifier such as PAR-528. Omit to check every open task issue of the company"),
       taskId: text("Move just this task (from list-tasks)"),
       dryRun: flag("Default true: only report which issues would move. Pass false to move them"),
-      minBytes: int("Thread size in bytes that counts as too long (default 60000, at least 10000); lower it to move a smaller thread"),
+      minBytes: int(`Thread size in bytes that counts as too long (default ${THREAD_ROLL_BYTES}, at least 10000); lower it to move a smaller thread`),
     }),
   },
   {
@@ -554,6 +556,9 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Site checks", name: "validate-schema", displayName: "Validate structured data", description: "Extract and parse JSON-LD; report types, missing required properties and FAQ problems.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages (20 s limit): inbound internal links per page, orphans, linked pages missing from the sitemap.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)") }) },
   { group: "Site checks", name: "crawler-sim", displayName: "Crawler view", description: "Fetch as Googlebot: status, redirects, robots.txt block, noindex (meta and X-Robots-Tag), canonical, h1, text size, images without alt, indexable yes/no.", parametersSchema: schema([], { ...urlOrSprint }) },
+  { group: "Site checks", name: "check-soft404", displayName: "Check soft-404", description: "Request a random nonexistent path on the site origin; flag if HTTP 200 is returned (app shell issue).", parametersSchema: schema([], { ...urlOrSprint }) },
+  { group: "Site checks", name: "check-thin-content", displayName: "Check thin content", description: "Measure server-rendered text size and flag pages below threshold (default 200 chars, configurable).", parametersSchema: schema([], { ...urlOrSprint, minChars: int("Text length threshold in characters (50–1000, default 200)") }) },
+  { group: "Site checks", name: "check-byline", displayName: "Check byline and date", description: "For article pages (og:type=article, /blog/ path, or <article> tag), check for author/byline and publication/modified date info.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "run-pagespeed", displayName: "Run PageSpeed Insights", description: "PageSpeed Insights for one URL (up to ~25 s): scores, LCP/CLS/INP (field data when Google has it), top opportunities. Saved to page health with sprintId.", parametersSchema: schema([], { ...urlOrSprint, strategy: choice(["mobile", "desktop"], "Device profile (default mobile; only mobile runs record CWV findings)") }) },
 
   // GSC
@@ -858,3 +863,16 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
 
 /** Manifest form (without the doc-only `group`). */
 export const SEO_TOOLS: PluginToolDeclaration[] = SEO_TOOL_DECLARATIONS.map(({ group: _group, ...tool }) => tool);
+
+/** Growth Lab tools come from the kit; SEO runs own and client scopes only (024 limits client_kind to company and contact). The three playbook tools (get-playbook, propose-playbook-change, decide-playbook-change) remain on SEO's native tables and are not registered here. */
+export const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = {
+  kinds: ["own", "client"],
+  descriptions: {
+    "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for PiB's own sites. Never mix scopes.",
+    "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for PiB's own sites. Never mix scopes.",
+  },
+};
+
+export const GROWTH_TOOLS: PluginToolDeclaration[] = growthToolDeclarations(GROWTH_TOOL_OPTIONS).filter(
+  (d) => !["get-playbook", "propose-playbook-change", "decide-playbook-change"].includes(d.name),
+);

@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import type { DriveBinding } from "../drive-checklist.js";
 import { MODULES, setupSummary, type ModuleKey, type SetupStatus, type SetupSummary } from "../kit-setup.js";
 import { effectiveModules, ORDERED_MODULES } from "../modules.js";
 import { memoryStatus, WIKI_PLUGIN, type WikiSnapshot } from "../memory.js";
@@ -25,6 +26,7 @@ export interface LoadResult {
   finishIssueId: string | null;
   settingsSaved: boolean;
   installed: Record<string, { id: string; status?: string | null }> | null;
+  drive: DriveBinding | null;
   /** The one setup count from the stored statuses (older workers do not send it). */
   summary?: SetupSummary | null;
   /** Where the New company bootstrap stands (older workers do not send it). */

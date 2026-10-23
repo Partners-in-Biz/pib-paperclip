@@ -11,9 +11,9 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Paid ads",
   description:
-    "Reads Meta and Google Ads performance into daily rollups and an append-only spend ledger for PiB's own ads and each client's, with monthly budget caps, pacing and anomaly alerts. " +
-    "Every campaign or budget change is a proposal with the numbers that goes to the Reviewer and then a person (and the client, through the CRM, where the scope asks): nothing that spends money runs without a recorded human approval, and changes are off until a person switches them on for the company and the scope. " +
-    "OAuth redirect URI for Meta and Google (shown on the Ads page): <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
+    "Reads Meta and Google Ads performance into daily rollups and a spend ledger for PiB's own ads and each client's, with monthly budget caps, pacing and anomaly alerts. " +
+    "Every campaign or budget change is a proposal with the numbers; nothing that spends money runs without a recorded human approval, and changes are off until a person switches them on. " +
+    "OAuth redirect URI: <publicBaseUrl>/_plugins/<plugin installation id>/ui/oauth-callback.html",
   author: "Partners in Biz",
   categories: ["connector", "automation", "ui"],
   instanceConfigSchema: buildInstanceConfigSchema(),
@@ -59,6 +59,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Keep sign-ins alive",
       description: "Renews tokens before they lapse (Meta's long-lived token within 10 days of the end, Google's access token within minutes), flags a sign-in that must be done again, resolves old alerts.",
       schedule: "37 * * * *",
+    },
+    {
+      jobKey: "sweep-caps",
+      displayName: "Pause ads at their cap",
+      description: "Hourly: checks every ACTIVE campaign against its lifetime budget and the scope's monthly cap using fresh provider insights, pauses those that have reached or exceeded their cap (safety guardrail, not automatic spend control), and checks for disapproved ads. Raises alerts for the ads agent to see.",
+      schedule: "5 * * * *",
     },
     {
       jobKey: "setup-status",

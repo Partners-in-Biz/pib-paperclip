@@ -96,6 +96,7 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
   const loaded = await loadMailboxConfig(env.ctx, companyId);
   const picked = await pickSender(env, loaded, companyId, { from: request.from, context: request.context });
   let account: AccountRow | null = picked.account;
+  if (picked.kind === "failed") return failedDraft(request, picked.problem!);
   if (picked.kind === "esp") {
     // A send-only account of the email provider has no Drafts folder. Named on purpose: refuse. Not named (the company's
     // provider preference picked it): the draft belongs in the default Gmail account.

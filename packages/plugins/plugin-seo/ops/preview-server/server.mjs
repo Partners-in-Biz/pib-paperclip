@@ -5,14 +5,16 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
-import { chromiumEnv, domArgs, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
+import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
 
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
 const { Pool } = require("pg");
 
 const SCHEMA = "plugin_seo_8099f8879a";
 const PORT = Number(process.env.PORT ?? 3031);
-const CHROME = process.env.CHROME_PATH ?? "/home/paperclip/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome";
+// CHROME_PATH pins one binary; otherwise the newest Playwright Chromium is looked up on each run (findChrome in sweep.mjs).
+const CHROME_PATH = process.env.CHROME_PATH;
+const PLAYWRIGHT_DIR = process.env.PLAYWRIGHT_BROWSERS_DIR ?? "/home/paperclip/.cache/ms-playwright";
 const SHOTS = process.env.SHOTS_DIR ?? "/tmp/pib-preview-shots";
 // One private folder per Chromium run, removed when it ends (sweep.mjs); the service's /tmp is private, so nothing else cleans it.
 const PROFILES = process.env.PROFILES_DIR ?? "/tmp/pib-preview-profiles";
@@ -98,11 +100,12 @@ function wordsOf(html) {
 function renderedDom(url) {
   const run = async () => {
     await housekeeping();
+    const chrome = await findChrome(PLAYWRIGHT_DIR, CHROME_PATH);
     return withChromium(
       (dir) =>
         new Promise((resolve, reject) => {
           execFile(
-            CHROME,
+            chrome,
             domArgs(dir, url),
             { timeout: 60_000, maxBuffer: 40 * 1024 * 1024, env: chromiumEnv(dir) },
             (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
@@ -138,11 +141,12 @@ let shotQueue = Promise.resolve();
 function screenshot(url, file, mobile = false) {
   const run = async () => {
     await housekeeping();
+    const chrome = await findChrome(PLAYWRIGHT_DIR, CHROME_PATH);
     return withChromium(
       (dir) =>
         new Promise((resolve, reject) => {
           execFile(
-            CHROME,
+            chrome,
             shotArgs(dir, url, file, mobile),
             { timeout: 60_000, env: chromiumEnv(dir) },
             (error) => (error ? reject(error) : resolve()),

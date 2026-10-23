@@ -30,6 +30,7 @@ import { createIssueSafely, ORIGIN_KIND, projectIdForRow, SOCIAL_ORIGINS, scopeL
 import { socialOn } from "./modules.js";
 import { handToSocialAgent, issueOpen, reviewIssueOf, type ReviewActor } from "./review.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
+import { summarizeTarget } from "./post-target.js";
 import { buildPublishRequest } from "./publish.js";
 import { validatePostRow } from "./validate.js";
 
@@ -79,13 +80,15 @@ export interface ApprovalSnapshot {
   timezone: string;
   scheduledAt: string | null;
   firstComment: string | null;
+  /** The X post this one replies to or quotes (the content hash covers it, so the client must see it). Never the internal note. */
+  target: { kind: "reply" | "quote"; label: string; url: string } | null;
   media: Array<{ url: string; kind: "image" | "video"; altText: string | null }>;
   destinations: Array<{ platform: string; label: string; account: string; text: string; title: string | null; link: string | null }>;
 }
 
 /** The post as it will publish, frozen for the approval page. Only https media is shown. Pure over its inputs. */
 export function snapshotOf(input: {
-  post: Pick<PostRow, "body" | "first_comment" | "overrides" | "media" | "scheduled_at">;
+  post: Pick<PostRow, "body" | "first_comment" | "overrides" | "media" | "scheduled_at" | "reply_to_url" | "quote_url">;
   accounts: Array<{ platform: string; display_name: string }>;
   poster: string;
   clientName: string | null;
@@ -111,6 +114,7 @@ export function snapshotOf(input: {
     timezone: input.timezone,
     scheduledAt: iso(input.post.scheduled_at),
     firstComment: input.post.first_comment?.trim() || null,
+    target: summarizeTarget(input.post),
     media: postMedia(input.post).filter((m) => /^https:\/\//i.test(m.url)).map((m) => ({ url: m.url, kind: m.kind, altText: m.altText })),
     destinations,
   };

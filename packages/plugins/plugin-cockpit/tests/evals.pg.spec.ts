@@ -5,10 +5,14 @@
  * baseline, and the gate the deploy asks ("no skill version ships if a golden
  * scenario regressed"). The grader and the gate rule are tested in eval-model.spec.ts.
  */
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { evalMarker, evalPrompt, scenarioHash, skillContentHash, type Scenario } from "../src/eval-model.js";
-import { scenariosFor } from "../src/eval-scenarios.js";
-import { candidateSlugFor, listResults, markBaseline, ownSkills } from "../src/evals.js";
+import { evalMarker, evalPrompt, loadEvalTemplate, parseResultsFile, scenarioHash, skillContentHash, type Scenario } from "../src/eval-model.js";
+import { AGENT_EVALS, scenariosFor } from "../src/eval-scenarios.js";
+import { candidateSlugFor, listResults, markBaseline, ownSkills, templateSlugFor } from "../src/evals.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable } from "./helpers/pg.js";
@@ -16,10 +20,16 @@ import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
 import { installedLikeHost, type InstalledCopy } from "./helpers/host-skills.js";
 
 // The committed gate file (evals/results.json) grows with every recorded baseline; these tests describe the harness, so they run against an empty one.
-vi.mock("../src/eval-scenarios.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/eval-scenarios.js")>()),
-  RESULTS_FILE: { version: 1, enforce: false, minPassRate: 0.8, skills: {} },
-}));
+// "template-fixture" is an agent template whose scenarios carry right and wrong example answers (the shipped ones do not yet), so the record and baseline tests can grade it.
+vi.mock("../src/eval-scenarios.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/eval-scenarios.js")>();
+  const own = original.scenariosFor("pib-operator").slice(0, 2).map((s) => ({ ...s, id: `fixture-${s.id}` }));
+  return {
+    ...original,
+    RESULTS_FILE: { version: 1, enforce: false, minPassRate: 0.8, skills: {} },
+    AGENT_EVALS: { ...original.AGENT_EVALS, "template-fixture": { skill: "pib-operator", version: 1, scenarios: own } },
+  };
+});
 
 const available = await embeddedAvailable();
 const d = available ? describe : describe.skip;
@@ -102,6 +112,87 @@ d("skill evals (Postgres)", () => {
     const items = scenarios.map((s) => ({ scenarioId: s.id, issueId: harness(w, s, wrongIds.includes(s.id) ? wrong(s) : right(s)) }));
     return call(w, { action: "record", skill: SKILL, items, ...params });
   }
+
+  describe("template mode (PAR-4574: an agent template is planned, recorded and baselined on its own scenarios)", () => {
+    const evalsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "evals", "agents");
+    const FIXTURE = "template-fixture";
+    const fileScenarios = (key: string): Scenario[] => (key === FIXTURE ? (AGENT_EVALS[FIXTURE] as { scenarios: Scenario[] }).scenarios : (JSON.parse(readFileSync(join(evalsDir, `${key}.json`), "utf8")) as { scenarios: Scenario[] }).scenarios);
+    const textOf = (key: string): string => `original text of the ${key} template`;
+    const hashOf = (key: string): string => createHash("sha256").update(textOf(key), "utf8").digest("hex").slice(0, 16);
+    const planParams = (key: string) => ({ action: "plan", skill: SKILL, mode: "template", templateKey: key, templateText: textOf(key), templateHash: hashOf(key), agentId: OP });
+
+    it.each(["summarizer", "crm-data-steward", "developer", "senior-developer"])("plan %s: the harness requests are exactly the template's own scenarios, never the skill's", async (key) => {
+      const w = await make();
+      const result = await call(w, planParams(key));
+      expect(result.error).toBeUndefined();
+      const wanted = fileScenarios(key).map((s) => s.id);
+      const requests = result.data.requests as Array<{ scenarioId: string; path: string; body: { content: string } }>;
+      expect(requests.map((r) => r.scenarioId).sort()).toEqual([...wanted].sort());
+      expect(result.data.scenarios.map((s: { id: string }) => s.id).sort()).toEqual([...wanted].sort());
+      // The guard: a request built from the skill's own scenarios (the PAR-4574 bug) fails here.
+      const own = new Set(scenarios.map((s) => s.id));
+      expect(requests.filter((r) => own.has(r.scenarioId))).toEqual([]);
+      for (const r of requests) expect(r.body.content).toContain(evalMarker(SKILL, fileScenarios(key).find((s) => s.id === r.scenarioId)!));
+      expect(requests.every((r) => r.path.endsWith("/skills/<templateSkillId>/test-runs"))).toBe(true);
+    });
+
+    it("plan: a scenarioIds filter takes the template's ids, and a skill scenario id is refused", async () => {
+      const w = await make();
+      const one = fileScenarios("summarizer")[0]!.id;
+      const ok = await call(w, { ...planParams("summarizer"), scenarioIds: [one] });
+      expect((ok.data.requests as Array<{ scenarioId: string }>).map((r) => r.scenarioId)).toEqual([one]);
+      const bad = await call(w, { ...planParams("summarizer"), scenarioIds: [scenarios[0]!.id] });
+      expect(bad.error).toContain("is a scenario in template");
+    });
+
+    it("record + baseline: grades the template's scenarios from the test copy, baselines its hash, and leaves the live baseline alone", async () => {
+      const w = await make();
+      // The live skill has its baseline first.
+      expect((await recordAll(w)).error).toBeUndefined();
+      expect((await call(w, { action: "baseline", skill: SKILL })).error).toBeUndefined();
+      const liveBefore = (await listResults(w.env.ctx, A, SKILL)).filter((r) => r.baseline).length;
+      expect(liveBefore).toBe(scenarios.length);
+
+      const key = FIXTURE;
+      const hash = hashOf(key);
+      const title = `Skill test: ${templateSlugFor(SKILL, hash)}`;
+      const items = fileScenarios(key).map((s) => ({ scenarioId: s.id, issueId: harness(w, s, right(s), { title }) }));
+      const recorded = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: key, templateHash: hash, items });
+      expect(recorded.error).toBeUndefined();
+      expect((recorded.data.recorded as Array<{ state: string }>).map((r) => r.state)).toEqual(items.map(() => "graded"));
+      expect(recorded.data.entry).not.toBeNull();
+
+      const base = await call(w, { action: "baseline", skill: SKILL, mode: "template", templateKey: key, templateHash: hash });
+      expect(base.error).toBeUndefined();
+      expect(base.data.hash).toBe(hash);
+      expect(Object.keys(base.data.entry.scenarios).sort()).toEqual(fileScenarios(key).map((s) => s.id).sort());
+      expect(base.data.commit[0]).toContain("evals/agents/results.json");
+      expect(base.data.commit[0]).toContain(`skills.${key}.baseline`);
+
+      // The skill's own rows and baseline are untouched, and no template row leaked into them.
+      const live = await listResults(w.env.ctx, A, SKILL);
+      expect(live.filter((r) => r.baseline).length).toBe(liveBefore);
+      expect(live.length).toBe(scenarios.length);
+      const stored = await listResults(w.env.ctx, A, `template:${key}`);
+      expect(stored.filter((r) => r.baseline).length).toBe(items.length);
+    });
+
+    it("record: refuses a run whose title is not the template's test copy for that hash", async () => {
+      const w = await make();
+      const key = FIXTURE;
+      const s = fileScenarios(key)[0]!;
+      const liveTitle = harness(w, s, right(s), { title: `Skill test: ${SKILL}` });
+      const otherHash = harness(w, s, right(s), { title: `Skill test: ${templateSlugFor(SKILL, "fedcba9876543210")}` });
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: key, templateHash: hashOf(key), items: [{ scenarioId: s.id, issueId: liveTitle }, { scenarioId: s.id, issueId: otherHash }] });
+      expect(result.error).toContain("Unknown template hash");
+    });
+
+    it("baseline: refuses while a template scenario has no result", async () => {
+      const w = await make();
+      const result = await call(w, { action: "baseline", skill: SKILL, mode: "template", templateKey: "summarizer", templateHash: hashOf("summarizer") });
+      expect(result.error).toContain("Run every scenario of template summarizer");
+    });
+  });
 
   describe("plan", () => {
     it("live: finds the installed skill and hands the Operator one harness request per scenario, with the prompt and the marker", async () => {
@@ -195,6 +286,18 @@ d("skill evals (Postgres)", () => {
       expect(out.data.skills.map((s: { skill: string }) => s.skill).sort()).toEqual(["pib-acceptance", "pib-company-os", "pib-operator", "pib-reviewer"]);
       expect(out.data.skills.find((s: { skill: string }) => s.skill === SKILL).hash).toBe(info.hash);
       expect(await listResults(w.ctx, A, SKILL)).toEqual([]);
+    });
+
+    it("parses evals/agents/results.json (enforce off, minPassRate 0.8)", async () => {
+      // Parse the committed results file from the real location
+      const resultsPath = join(fileURLToPath(new URL(".", import.meta.url)), "../evals/agents/results.json");
+      const content = readFileSync(resultsPath, "utf8");
+      const raw = JSON.parse(content);
+      const parsed = parseResultsFile(raw);
+      expect(parsed.version).toBe(1);
+      expect(parsed.enforce).toBe(false);
+      expect(parsed.minPassRate).toBe(0.8);
+      expect(parsed.skills).toEqual({});
     });
   });
 
@@ -311,6 +414,65 @@ d("skill evals (Postgres)", () => {
       const item = { scenarioId: scenarios[0]!.id, issueId: id };
       expect((await call(w, { action: "record", skill: SKILL, mode: "candidate", items: [item] })).error).toContain("needs candidateHash");
       expect((await call(w, { action: "record", skill: SKILL, mode: "candidate", candidateHash: "nope", items: [item] })).error).toContain("needs candidateHash");
+    });
+
+    it("template: rejects a 64-hex hash with a clear message about the 16-hex requirement", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const fullHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", templateHash: fullHash, items: [item] });
+      expect(result.error).toContain("16 hexadecimal characters");
+      expect(result.error).toContain("not 64");
+      expect(result.error).toContain("16-hex hash from skill-eval plan");
+    });
+
+    it("template: rejects a non-16-hex, non-64-hex hash", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", templateHash: "nope", items: [item] });
+      expect(result.error).toContain("16 hexadecimal characters");
+    });
+
+    it("template: rejects an unknown template key", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "nonexistent", templateHash: "0123456789abcdef", items: [item] });
+      expect(result.error).toContain("no eval file for template");
+    });
+
+    it("template: needs templateKey and templateHash", async () => {
+      const w = await make();
+      const id = harness(w, scenarios[0]!, right(scenarios[0]!));
+      const item = { scenarioId: scenarios[0]!.id, issueId: id };
+      const noKey = await call(w, { action: "record", skill: SKILL, mode: "template", templateHash: "0123456789abcdef", items: [item] });
+      expect(noKey.error).toContain("needs templateKey");
+      const noHash = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test", items: [item] });
+      expect(noHash.error).toContain("needs templateHash");
+    });
+
+    it("template: rejects unknown hash (valid key, harness on real skill not template copy)", async () => {
+      const w = await make();
+      // Mock loadEvalTemplate to return a valid template (would need real scenarios)
+      const spy = vi.spyOn(await import("../src/eval-model.js"), "loadEvalTemplate");
+      spy.mockReturnValue({
+        skill: SKILL,
+        scenarios: [scenarios[0]!],
+      } as any);
+      try {
+        // Create harness run on the real skill (title "Skill test: pib-operator"), not the template copy
+        // This will cause recordOne to refuse it because the skill name doesn't match the template copy name
+        const id = harness(w, scenarios[0]!, right(scenarios[0]!), { title: "Skill test: pib-operator" });
+        const item = { scenarioId: scenarios[0]!.id, issueId: id };
+        // Record with template mode: valid key, unknown hash (no test copy was run for this hash)
+        const result = await call(w, { action: "record", skill: SKILL, mode: "template", templateKey: "test-template", templateHash: "fedcba9876543210", items: [item] });
+        expect(result.error).toContain("Unknown template hash");
+        expect(result.error).toContain("fedcba9876543210");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("when every scenario has a result it hands back the entry for evals/results.json", async () => {

@@ -234,8 +234,9 @@ describe("replies from the Mailbox", () => {
   }
 
   it("logs the email on the oldest matching contact and stops on interest, with a follow-up for the agent", async () => {
-    const { harness, store } = await bootWithEnrollments({ choice: "interested", confidence: 0.92 });
-    await receive(harness, mail());
+    const { harness, store, emit } = await bootWithEnrollments({ choice: "interested", confidence: 0.92 });
+    // Fresh receivedAt so speed-to-lead's 24h stale gate does not skip the draft.
+    await receive(harness, mail({ receivedAt: new Date().toISOString() }));
     const received = store.activities!.filter((row) => row.kind === "email_received");
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({ record_id: "ada", source_key: "mail:m-1" });
@@ -249,6 +250,10 @@ describe("replies from the Mailbox", () => {
     expect(store.decisions![0]).toMatchObject({ purpose: "crm.reply", question_key: "reply_kind", value_text: "interested", acted: true });
     expect(jev.calls[0]!.state).toBe("Subject: Re: Hi Ada\n\nYes please, can we talk on Tuesday?");
     expect(store.activities!.find((row) => row.kind === "reply_classified")!.body).toMatch(/interested \(92% sure\)/);
+    // Speed-to-lead draft for Jagter/sequence reply (never auto-send).
+    expect((store.care_approvals ?? []).some((a) => a.kind === "speed_to_lead" && a.subject_id === "reply:m-1")).toBe(true);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
   });
 
   it("stops on a question and opens a follow-up for the owner", async () => {

@@ -75,7 +75,7 @@ Tab **New company** on the Setup page (`#new-company`, also `?section=new-compan
 | roles | page | one hire task per missing required kit role, through the owning plugin's own `start-hire` (the CEO executes it) |
 | templates | page | one hire task per template of the standard team that is switched on |
 | company-wiki | page | the Company wiki set-up |
-| starter-pack | page | the memory starter pack, only when approved and ticked |
+| starter-pack | page | the memory starter pack, on by default, only for an approved hash |
 | finish-issue | worker | opens the Finish setup issue |
 | owner-list | page (the owner's list) | ONE batched list of what only a person can do, with deep links, computed by the page and recorded with the step; the worker appends it to the Finish setup issue and drops a plugin item from it once that plugin reports it done (`currentGrants`) |
 
@@ -101,7 +101,7 @@ Rules: idempotent (repeating changes nothing that is done; live facts override s
 
 ### Memory starter pack (Q7-13)
 
-`templates/memory/starter-pack.json`: 14 company-wide platform lessons in the Cockpit memory export format (`pib-company-memory` v1), built on 2026-10-03 from the live memory store by a read-only SELECT of company-wide pinned facts. No client facts, no secrets; 22 other facts were reviewed and are listed under `_excluded` with the reason. It is **off by default and marked "needs owner OK"** (`_pack.needsOwnerOk`): the owner's rule is that agent memory starts empty and is never wired to another store. The Setup page shows each fact, approves the exact version by content hash (`setup.approve-starter-pack`, stored in `starter_pack_approvals`), and only then does the run import it, through the Cockpit's `memory.import` action (a Cockpit that has it is needed). Changing one word changes the hash and the approval no longer applies.
+`templates/memory/starter-pack.json`: 14 company-wide platform lessons in the Cockpit memory export format (`pib-company-memory` v1), built on 2026-10-03 from the live memory store by a read-only SELECT of company-wide pinned facts. No client facts, no secrets; 22 other facts were reviewed and are listed under `_excluded` with the reason. It is **on by default for every new company** (`starterPack` defaults to true) under the owner's standing yes (PAR-2885, PAR-4691), recorded as the content hash in `src/standing-approval.ts`. The pack stays marked "needs owner OK" (`_pack.needsOwnerOk`): a changed pack has a new hash that is not listed, so it is not seeded until a board user approves it. The Setup page shows each fact, approves the exact version by content hash (`setup.approve-starter-pack`, stored in `starter_pack_approvals`), and only then does the run import it, through the Cockpit's `memory.import` action (a Cockpit that has it is needed). Changing one word changes the hash and the approval no longer applies.
 
 ### Actions and routes added
 

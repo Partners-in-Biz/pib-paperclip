@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, repairUnroutedApprovals, syncAllCompanies, wakeIssue, type SkillSyncer as KitSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { reannounceEffects, reconcileAsks } from "./asks.js";
+import { ensureAuthCard } from "./auth-card.js";
 import { forgetChecks } from "./checks.js";
 import { ensureCockpitAsks } from "./effects.js";
 import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
@@ -18,6 +19,11 @@ import { agentHealth, parseSnapshot, staleChecks, type AgentLite, type CockpitSn
 import { ownSnapshot } from "./own.js";
 import { plainDetail } from "./plain.js";
 import { operatorAgentId } from "./roles.js";
+import { ladderTick } from "./ladder.js";
+import { routineFailureTick } from "./routine-failures.js";
+import { authStreakAgents, type StreakRun } from "./watch-model.js";
+import { readStreakRuns } from "./watch.js";
+import { checkCriticalTriggers } from "./push/triggers-critical.js";
 
 const CLOSED = new Set(["done", "cancelled"]);
 
@@ -340,12 +346,56 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         env.ctx.logger.info("Approval repair failed", { companyId: row.companyId, error: message(error) });
       }
       try {
+        const ladderCounts = await ladderTick(env, row.companyId);
+        for (const [name, value] of Object.entries(ladderCounts)) {
+          if (value > 0) counts[`ladder_${name}`] = (counts[`ladder_${name}`] ?? 0) + value;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Ladder tick failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        const routineCounts = await routineFailureTick(env, row.companyId);
+        for (const [name, value] of Object.entries(routineCounts)) {
+          if (value > 0) counts[name] = (counts[name] ?? 0) + value;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Routine failure tick failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
         // The hourly issue is built from fresh checks, not the page's ten-minute copy.
         forgetChecks(env, row.companyId);
         key = (await refreshHealthIssue(env, row.companyId)).action;
       } catch (error) {
         key = "failed";
         env.ctx.logger.info("System health issue failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // Auth card: when agents fail with claude_auth_required in a row, ask the owner to re-login.
+        const runs = await readStreakRuns(env.ctx, row.companyId, env.now());
+        const authAgents = authStreakAgents(runs);
+        if (authAgents.size > 0) {
+          const result = await ensureAuthCard(env, row.companyId, [...authAgents.keys()]);
+          if (result.action === "opened") counts.authCardOpened = (counts.authCardOpened ?? 0) + 1;
+        }
+      } catch (error) {
+        env.ctx.logger.info("Auth card failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // Critical triggers: push notifications for critical health, agent errors, auth issues
+        const agents = await listAgents(env, row.companyId);
+        const runs = await readStreakRuns(env.ctx, row.companyId, env.now());
+        const authAgentsMap = authStreakAgents(runs);
+        const authAgentIds = new Set(authAgentsMap.keys());
+        const problems = await collectProblems(env, row.companyId, { trackWarnings: false });
+        const healthLevel = problems.entries.length === 0 ? "ok" : problems.entries.some((e) => e.status === "bad") ? "bad" : "warn";
+        const criticalsNotified = await checkCriticalTriggers(env.ctx, row.companyId, {
+          agents: agents.map((a) => ({ status: a.status, id: a.id, name: a.name })),
+          authAgentIds,
+          healthLevel,
+        });
+        if (criticalsNotified > 0) counts.criticalsPushed = (counts.criticalsPushed ?? 0) + criticalsNotified;
+      } catch (error) {
+        env.ctx.logger.info("Critical triggers failed", { companyId: row.companyId, error: message(error) });
       }
     }
     counts[key] = (counts[key] ?? 0) + 1;

@@ -47,7 +47,7 @@ import { PLUGIN_ID } from "../namespace.js";
 import { accountSenderKey } from "../sender.js";
 import { announce, suppressionPayload } from "../suppression.js";
 import { refreshSendingDomain } from "./domains.js";
-import { addressOf, tagValue, type ResendEvent } from "./resend.js";
+import { addressOf, tagValue, type EspEvent } from "./resend.js";
 import { noteEspState } from "./runtime.js";
 import type { EspDayField, EspDomainRow } from "./types.js";
 import { SOFT_BOUNCE_LIMIT, SOFT_BOUNCE_WINDOW_DAYS, softBounceBackoffUntil, utcDay } from "./warmup.js";
@@ -89,7 +89,7 @@ async function senderKeyFor(env: Env, companyId: string, accountId: string | nul
   return senderKeyOf({ clientKind: domain.client_kind, clientRef: domain.client_ref });
 }
 
-export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: ResendEvent, delivery: { id: string }): Promise<EspEventOutcome> {
+export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: EspEvent, delivery: { id: string }): Promise<EspEventOutcome> {
   const companyId = loaded.companyId;
   const s = env.store;
   const now = env.now();
@@ -98,7 +98,7 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
     const rows = await s.listEspDomains(companyId);
     const row = rows.find((entry) => entry.provider_domain_id === event.domainId);
     if (!row) return "ignored";
-    if (!(await s.recordEspEvent({ companyId, eventId: delivery.id, dedupeKey: `${delivery.id}`, provider: "resend", type: event.type, emailId: null, recipient: "", domain: row.domain, sendKey: null, detail: {} }))) return "duplicate";
+    if (!(await s.recordEspEvent({ companyId, eventId: delivery.id, dedupeKey: `${delivery.id}`, provider: event.provider, type: event.type, emailId: null, recipient: "", domain: row.domain, sendKey: null, detail: {} }))) return "duplicate";
     try {
       await refreshSendingDomain(env, loaded, companyId, row.domain, { verify: false });
     } catch (error) {
@@ -114,23 +114,38 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
   const domain = domainName ? await s.getEspDomain(companyId, domainName) : null;
   if (!domain) return "ignored";
 
-  const send = await s.sendByProviderMessage(companyId, "resend", event.emailId);
+  let send = await s.sendByProviderMessage(companyId, event.provider, event.emailId);
+
+  // For Send/Delivered events, also try to find by pib_send tag (for reconciling failed-unknown sends)
+  if (!send && (event.kind === "sent" || event.kind === "delivered") && event.tags.pib_send) {
+    const pibSendTag = event.tags.pib_send;
+    if (typeof pibSendTag === "string") {
+      send = await s.findSendByPibSendTag(companyId, pibSendTag);
+    }
+  }
+
   // Only about a message this Mailbox sent: one it recorded, or one that carries the tag it puts on everything it sends. The webhook is
   // team-wide, so another app's mail through the same provider team and domain must not count here.
   if (!send && event.tags.pib_company !== tagValue(companyId)) return "ignored";
 
-  const recipient = event.to.length === 1 && isValidEmail(event.to[0]) ? event.to[0]!.toLowerCase() : "";
+  // For per-recipient events (bounce, complaint, delivery, etc.), apply once per recipient.
+  // For whole-message events (send, reject), apply once.
+  const recipients = event.about && event.about.length > 0 ? event.about : (event.to.length === 1 && isValidEmail(event.to[0]) ? [event.to[0]!.toLowerCase()] : []);
+  const isPerRecipient = event.about !== null;
   const type = TYPE_OF[event.kind] ?? event.type;
   const once = !(event.kind === "opened" || event.kind === "clicked");
   const detail: Record<string, unknown> = {};
   if (event.bounce) Object.assign(detail, { bounceType: event.bounce.type, bounceSubType: event.bounce.subType });
   if (event.failedReason) detail.reason = event.failedReason.slice(0, 120);
-  if (event.to.length > 1) detail.recipients = event.to.length;
+  if (event.to.length > 1 && !isPerRecipient) detail.recipients = event.to.length;
+
+  // Apply the event once per recipient if about is set, otherwise once with recipient="" if more than one recipient.
+  const recipient = !isPerRecipient && event.to.length !== 1 ? "" : recipients[0] ?? "";
   const created = await s.recordEspEvent({
     companyId,
-    eventId: delivery.id,
+    eventId: isPerRecipient && recipients.length > 0 ? `${delivery.id}:${recipient}` : delivery.id,
     dedupeKey: once ? `${event.emailId}:${event.type}:${recipient || "many"}` : delivery.id,
-    provider: "resend",
+    provider: event.provider,
     type: event.type,
     emailId: event.emailId,
     recipient,
@@ -138,7 +153,45 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
     sendKey: send?.key ?? null,
     detail,
   });
-  if (!created) return "duplicate";
+
+  // For per-recipient events, don't return duplicate immediately - continue processing other recipients
+  // For non-per-recipient events, return duplicate if this single event was already processed
+  if (!created && !isPerRecipient) return "duplicate";
+
+  // If there are more recipients, record them first (for per-recipient events like bounces)
+  // Track if at least one recipient was successfully created for per-recipient events
+  let hasNewRecipient = created;
+  const remainingRecipients = recipients.slice(1);
+  if (isPerRecipient && remainingRecipients.length > 0) {
+    for (const rcpt of remainingRecipients) {
+      try {
+        const created2 = await s.recordEspEvent({
+          companyId,
+          eventId: `${delivery.id}:${rcpt}`,
+          dedupeKey: once ? `${event.emailId}:${event.type}:${rcpt}` : delivery.id,
+          provider: event.provider,
+          type: event.type,
+          emailId: event.emailId,
+          recipient: rcpt,
+          domain: domain.domain,
+          sendKey: send?.key ?? null,
+          detail,
+        });
+        if (created2) hasNewRecipient = true; // At least one new recipient
+      } catch (error) {
+        // Clean up only this recipient's event (already recorded is index 0, remaining start after that)
+        // Forget the already-processed first recipient's event on failure
+        await s.forgetEspEvent(companyId, `${delivery.id}:${recipient}`).catch(() => undefined);
+        throw error;
+      }
+    }
+  }
+
+  // For per-recipient events, return duplicate only if NO recipients were new
+  if (isPerRecipient && !hasNewRecipient) return "duplicate";
+
+  // Track which recipient failed processing so we can clean up only that one on error
+  let failedRecipient: string | null = null;
 
   try {
     const at = Date.parse(event.createdAt ?? "");
@@ -147,83 +200,105 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
     const atIso = new Date(eventTime).toISOString();
     const senderKey = await senderKeyFor(env, companyId, send?.account_id ?? null, domain);
     let reputationChanged = false;
-    // The counter this event moves, applied after everything else (see the header).
-    let counter: EspDayField | null = null;
+    let totalCounter: EspDayField | null = null;
 
-    switch (event.kind) {
-      case "delivered": {
-        if (recipient) await s.clearRecipientHealth(companyId, recipient);
-        counter = "delivered";
-        break;
-      }
-      case "bounced_hard":
-      case "suppressed": {
-        if (recipient) {
-          // A hard bounce is per address: it stops every send from every sender.
-          const stored = await s.upsertSuppression({ companyId, email: recipient, scope: "all", reason: "bounced", source: PLUGIN_ID, detail: `Hard bounce (${event.kind === "suppressed" ? "on the provider's own list" : event.bounce?.subType ?? "Permanent"})`, senderKey: "" });
-          await s.clearRecipientHealth(companyId, recipient);
-          if (stored.created || stored.widened) await announce(env, companyId, suppressionPayload({ email: recipient, reason: "bounced", scope: suppressionScope("bounced"), at: atIso }));
+    // Process each recipient (or once if not per-recipient)
+    const recipientsToProcess = isPerRecipient && recipients.length > 0 ? recipients : [recipient];
+
+    for (const rcpt of recipientsToProcess) {
+      failedRecipient = rcpt;
+      let counter: EspDayField | null = null;
+
+      switch (event.kind) {
+        case "delivered": {
+          if (rcpt) await s.clearRecipientHealth(companyId, rcpt);
+          counter = "delivered";
+          break;
         }
-        // The provider's own refusal is not the domain's bounce: only a real hard bounce counts toward its rate.
-        if (event.kind === "bounced_hard") {
-          counter = "hard_bounces";
+        case "bounced_hard":
+        case "suppressed": {
+          if (rcpt) {
+            // A hard bounce is per address: it stops every send from every sender.
+            const stored = await s.upsertSuppression({ companyId, email: rcpt, scope: "all", reason: "bounced", source: PLUGIN_ID, detail: `Hard bounce (${event.kind === "suppressed" ? "on the provider's own list" : event.bounce?.subType ?? "Permanent"})`, senderKey: "" });
+            await s.clearRecipientHealth(companyId, rcpt);
+            if (stored.created || stored.widened) await announce(env, companyId, suppressionPayload({ email: rcpt, reason: "bounced", scope: suppressionScope("bounced"), at: atIso }));
+          }
+          // The provider's own refusal is not the domain's bounce: only a real hard bounce counts toward its rate.
+          if (event.kind === "bounced_hard") {
+            counter = "hard_bounces";
+            reputationChanged = true;
+          } else {
+            counter = "failed";
+          }
+          break;
+        }
+        case "bounced_soft": {
+          if (rcpt) {
+            const row = await s.recordSoftBounce(companyId, rcpt, atIso, SOFT_BOUNCE_WINDOW_DAYS);
+            await s.setBackoff(companyId, rcpt, softBounceBackoffUntil(row.soft_bounces, eventTime));
+            if (row.soft_bounces >= SOFT_BOUNCE_LIMIT) {
+              // It keeps not arriving: stop the marketing, keep the invoices.
+              const stored = await s.upsertSuppression({ companyId, email: rcpt, scope: "marketing", reason: "bounced", source: PLUGIN_ID, detail: `${row.soft_bounces} soft bounces in ${SOFT_BOUNCE_WINDOW_DAYS} days`, senderKey });
+              if (stored.created) await announce(env, companyId, suppressionPayload({ email: rcpt, reason: "bounced", scope: "marketing", senderKey, at: atIso }));
+            }
+          }
+          counter = "soft_bounces";
+          break;
+        }
+        case "complained": {
+          if (rcpt) {
+            // An unsubscribe and a complaint are per sender: a client's recipient complaining does not silence the company's own marketing.
+            const stored = await s.upsertSuppression({ companyId, email: rcpt, scope: "marketing", reason: "complained", source: PLUGIN_ID, detail: "Marked the mail as spam (provider feedback loop)", senderKey });
+            if (stored.created) {
+              await announce(env, companyId, suppressionPayload({ email: rcpt, reason: "complained", scope: "marketing", senderKey, at: atIso }));
+              await announceOptOut(env, companyId, { email: rcpt, senderKey, source: "api", wording: "marked the mail as spam", at: atIso });
+            }
+          }
+          counter = "complaints";
           reputationChanged = true;
-        } else {
+          break;
+        }
+        case "failed": {
           counter = "failed";
+          if (/quota/i.test(event.failedReason ?? "")) await noteEspState(env.ctx, companyId, { code: "quota", detail: event.failedReason }, now);
+          break;
         }
-        break;
+        case "opened":
+          counter = "opened";
+          break;
+        case "clicked":
+          counter = "clicked";
+          break;
+        default:
+          break;
       }
-      case "bounced_soft": {
-        if (recipient) {
-          const row = await s.recordSoftBounce(companyId, recipient, atIso, SOFT_BOUNCE_WINDOW_DAYS);
-          await s.setBackoff(companyId, recipient, softBounceBackoffUntil(row.soft_bounces, eventTime));
-          if (row.soft_bounces >= SOFT_BOUNCE_LIMIT) {
-            // It keeps not arriving: stop the marketing, keep the invoices.
-            const stored = await s.upsertSuppression({ companyId, email: recipient, scope: "marketing", reason: "bounced", source: PLUGIN_ID, detail: `${row.soft_bounces} soft bounces in ${SOFT_BOUNCE_WINDOW_DAYS} days`, senderKey });
-            if (stored.created) await announce(env, companyId, suppressionPayload({ email: recipient, reason: "bounced", scope: "marketing", senderKey, at: atIso }));
-          }
-        }
-        counter = "soft_bounces";
-        break;
-      }
-      case "complained": {
-        if (recipient) {
-          // An unsubscribe and a complaint are per sender: a client's recipient complaining does not silence the company's own marketing.
-          const stored = await s.upsertSuppression({ companyId, email: recipient, scope: "marketing", reason: "complained", source: PLUGIN_ID, detail: "Marked the mail as spam (provider feedback loop)", senderKey });
-          if (stored.created) {
-            await announce(env, companyId, suppressionPayload({ email: recipient, reason: "complained", scope: "marketing", senderKey, at: atIso }));
-            await announceOptOut(env, companyId, { email: recipient, senderKey, source: "api", wording: "marked the mail as spam", at: atIso });
-          }
-        }
-        counter = "complaints";
-        reputationChanged = true;
-        break;
-      }
-      case "failed": {
-        counter = "failed";
-        if (/quota/i.test(event.failedReason ?? "")) await noteEspState(env.ctx, companyId, { code: "quota", detail: event.failedReason }, now);
-        break;
-      }
-      case "opened":
-        counter = "opened";
-        break;
-      case "clicked":
-        counter = "clicked";
-        break;
-      default:
-        break;
-    }
 
-    // What happened to the message, kept on its send so mail-status shows it.
-    if (send) {
-      const status = mergedDeliveryStatus(send.delivery_status, type);
-      const note: Record<string, unknown> = { [`${type}_at`]: atIso, ...detail };
-      await s.setSendDelivery(companyId, send.key, event.kind === "opened" || event.kind === "clicked" ? send.delivery_status ?? "sent" : status, note);
-    }
+      // What happened to the message, kept on its send so mail-status shows it (only once per message, not per recipient).
+      if (rcpt === recipients[0] && send) {
+        const status = mergedDeliveryStatus(send.delivery_status, type);
+        const note: Record<string, unknown> = { [`${type}_at`]: atIso, ...detail };
 
-    // Nothing below can throw (the re-judging and the announcement catch their own errors), so the event is either not counted and taken back
-    // out for the provider's retry, or counted and complete.
-    if (counter) await s.bumpEspDay(companyId, domain.domain, day, counter, 1);
+        // For sent/delivered events, also update provider and provider_message_id if not already set
+        if ((event.kind === "sent" || event.kind === "delivered") && send.provider === null) {
+          // Update provider and provider_message_id for Send and Delivery events
+          await s.updateSendProvider(companyId, send.key, event.provider, `${event.provider}:${event.emailId}`);
+        }
+
+        await s.setSendDelivery(companyId, send.key, event.kind === "opened" || event.kind === "clicked" ? send.delivery_status ?? "sent" : status, note);
+      }
+
+      // Nothing below can throw (the re-judging and the announcement catch their own errors), so the event is either not counted and taken back
+      // out for the provider's retry, or counted and complete.
+      if (counter) {
+        await s.bumpEspDay(companyId, domain.domain, day, counter, 1);
+        if (!totalCounter) totalCounter = counter;
+      }
+
+      // Everything the consumers can use is announced per recipient
+      if (type !== "sent") {
+        await announceDelivery(env, companyId, { id: delivery.id, eventIdSuffix: isPerRecipient && rcpt ? `:${rcpt}` : "", type: type as MailDeliveryType, sendKey: send?.key ?? null, recipient: rcpt, at: atIso, context: send?.context ?? null, client: deliveryClient(send?.context ?? null, domain), bounce: event.bounce, provider: event.provider });
+      }
+    }
 
     if (reputationChanged) {
       try {
@@ -233,14 +308,14 @@ export async function applyEspEvent(env: Env, loaded: LoadedConfig, event: Resen
       }
     }
 
-    // Everything the consumers can use is announced; the provider's own "sent" only says it took the message, which `mail.send.result` already did.
-    if (type !== "sent") {
-      await announceDelivery(env, companyId, { id: delivery.id, type: type as MailDeliveryType, sendKey: send?.key ?? null, recipient, at: atIso, context: send?.context ?? null, client: deliveryClient(send?.context ?? null, domain), bounce: event.bounce });
-    }
     return "applied";
   } catch (error) {
-    // Not applied: the provider's retry must be able to apply it.
-    await s.forgetEspEvent(companyId, delivery.id).catch(() => undefined);
+    // Not applied: the provider's retry must be able to apply it. Clean up only the failed recipient's event.
+    if (isPerRecipient && failedRecipient) {
+      await s.forgetEspEvent(companyId, `${delivery.id}:${failedRecipient}`).catch(() => undefined);
+    } else if (!isPerRecipient) {
+      await s.forgetEspEvent(companyId, delivery.id).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -255,11 +330,11 @@ function deliveryClient(context: MailSendRequested["context"] | null, domain: Pi
 }
 
 /** `mail.delivery`: what happened to a message after the provider took it. No message content, no link, no address unless it is the single recipient. Never throws. */
-async function announceDelivery(env: Pick<Env, "ctx">, companyId: string, input: { id: string; type: MailDeliveryType; sendKey: string | null; recipient: string; at: string; context: MailSendRequested["context"] | null; client: { kind: "company" | "contact" | null; ref: string | null }; bounce: ResendEvent["bounce"] }): Promise<void> {
+async function announceDelivery(env: Pick<Env, "ctx">, companyId: string, input: { id: string; eventIdSuffix?: string; type: MailDeliveryType; sendKey: string | null; recipient: string; at: string; context: MailSendRequested["context"] | null; client: { kind: "company" | "contact" | null; ref: string | null }; bounce: EspEvent["bounce"]; provider: string }): Promise<void> {
   const payload: MailDelivery = {
-    key: `esp:${input.id}`,
+    key: `esp:${input.id}${input.eventIdSuffix ?? ""}`,
     type: input.type,
-    provider: "resend",
+    provider: input.provider,
     sendKey: input.sendKey,
     ...(input.recipient ? { recipient: input.recipient } : {}),
     at: input.at,

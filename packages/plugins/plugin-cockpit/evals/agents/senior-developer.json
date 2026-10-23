@@ -1,0 +1,73 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "standard-ui-ticket-delegate-to-developer",
+      "title": "Standard UI/CRUD ticket reassigned to Developer with one-line reason",
+      "source": "baseline-2026-10-19/agents/senior-developer.md: Athleet flow - you take hard tickets only; standard UI/page/CRUD goes to Developer with one-line reason",
+      "situation": "You are Senior Developer. You are handed ticket PAR-600: 'Add a profile edit page to the app'. The scope is: create a new page, add a form with name/email/phone fields, wire the API endpoint (already exists), add basic validation. No architecture or security changes needed.",
+      "task": "Should you take this ticket or reassign it? If reassigning, provide a one-line reason.",
+      "expect": {
+        "apiCalls": [
+          {"method": "PATCH", "path": "^/api/issues/[^/]+$", "args": {"assigneeAgentId": {}}}
+        ],
+        "mustSay": [
+          "[Dd]eveloper|standard|CRUD|UI|[Rr]eassign"
+        ],
+        "mustNotSay": [
+          "take|own|implement"
+        ],
+        "maxSteps": 2
+      }
+    },
+    {
+      "id": "delegates-implementation-to-haiku",
+      "title": "Senior Developer plans, Senior Developer delegates implementation to Haiku helpers",
+      "source": "baseline-2026-10-19/agents/senior-developer.md: plan and set interfaces yourself; Haiku writes code and tests",
+      "situation": "You are Senior Developer on a hard ticket: refactor the data access layer to support multi-tenant isolation. You've identified the changes needed and the interfaces. Now you need implementers to write the actual code changes across 5 files.",
+      "task": "Plan the work and spawn implementer tasks. Do not write the code yourself.",
+      "expect": {
+        "mustSay": [
+          "[Dd]elegate|[Ss]ubagent|[Ii]mplementer|[Hh]aiku"
+        ],
+        "mustNotSay": [
+          "[Ee]dit|[Ww]rite|directly"
+        ],
+        "maxSteps": 4,
+        "plainWriting": true
+      }
+    },
+    {
+      "id": "no-merge-without-local-ci-gate",
+      "title": "No merge without a LOCAL CI GATE comment showing lint, tsc, jest, build pass",
+      "source": "baseline-2026-10-19/agents/developer.md: TEMPORARY local CI gate - post proof before merge",
+      "situation": "You are Senior Developer. Your PR is ready to merge. You have run lint, tsc, jest, and npm run build locally. Results: PASS (0 errors), PASS (0 errors), PASS (12 tests), PASS (build complete). You are about to hand off to Code Reviewer for final approval and merge.",
+      "task": "Post the proof comment with LOCAL CI GATE evidence before moving to review.",
+      "expect": {
+        "mustSay": [
+          "LOCAL CI GATE",
+          "PASS",
+          "HEAD|commit|development|SHA"
+        ],
+        "mustNotSay": [
+          "merge|ready for merge"
+        ],
+        "maxSteps": 3
+      }
+    },
+    {
+      "id": "at-most-6-direct-calls-senior",
+      "title": "Senior Developer keeps direct tool calls to 6 or fewer per run",
+      "source": "baseline-2026-10-19/agents/senior-developer.md: Hard limits v2 - at most 6 direct calls per run",
+      "situation": "You are Senior Developer working on a hard ticket. You've planned interfaces and spawned 3 implementer tasks. Now you need to: (1) read the diff from implementers, (2) read a code-explorer's analysis, (3) run a test-runner to verify, (4) write a git commit, (5) run git push, (6) post a final comment on the issue.",
+      "task": "Complete the work and closure within 6 direct calls.",
+      "expect": {
+        "maxSteps": 6,
+        "mustSay": [
+          "Delegation:|direct"
+        ]
+      }
+    }
+  ]
+}

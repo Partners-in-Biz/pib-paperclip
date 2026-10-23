@@ -7,7 +7,7 @@
 // - Every Chromium run gets its own profile folder (--user-data-dir, HOME and TMPDIR all point into it) that is removed
 //   when the run ends; a folder a killed run left behind is swept after an hour.
 // Only names this service creates are ever deleted, and only directly under the folder given.
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 
 export const SHOT_MAX_AGE_MS = 3_600_000;
@@ -75,6 +75,25 @@ export async function makeProfile(root) {
  */
 export function chromiumEnv(dir, base = process.env) {
   return { ...base, HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir };
+}
+
+/**
+ * The Chromium to run: `explicit` (CHROME_PATH) when set, else the newest `chromium-<build>/chrome-linux64/chrome` under
+ * Playwright's browser folder. Playwright removes the build folders it replaces, so a path fixed at deploy time went
+ * missing and every /shot answered 502 while /health stayed ok (PAR-4798). Looked up on each run, so a later browser
+ * update needs no restart. Throws a message naming the folder when no build is installed.
+ */
+export async function findChrome(root, explicit) {
+  if (explicit) return explicit;
+  const builds = (await readdir(root).catch(() => []))
+    .map((name) => /^chromium-(\d+)$/.exec(name))
+    .filter(Boolean)
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  for (const [name] of builds) {
+    const bin = join(root, name, "chrome-linux64", "chrome");
+    if (await access(bin).then(() => true, () => false)) return bin;
+  }
+  throw new Error(`no Chromium build under ${root}`);
 }
 
 const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";

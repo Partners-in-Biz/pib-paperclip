@@ -133,7 +133,7 @@ The post becomes approved when every sign-off its policy asks for is in **for it
 
 ### Autonomy inputs (Q10-10)
 
-Every Reviewer, team member and client verdict is a row in `review_outcomes`: stage, outcome (approved or changes), round (a post sent back and forth has rounds 1, 2, 3), the post's **type** (`original`, `repurpose`, `rss` or `reply`, by format: text, image, carousel, video), its scope and platforms, how it was recorded and who. A person sending a post back from review counts as the owner asking for changes. `review-outcomes` (tool, and `social.review-outcomes`) returns first-pass approval rates and approval streaks per type and stage for one scope. **Auto-approval is NOT built and nothing graduates**: the output says `autonomy.enabled: false`. Turning on an autonomy ladder changes the owner design "approvals only a person decides", so the owner decides it once, on purpose (Q10-10).
+Every Reviewer, team member and client verdict is a row in `review_outcomes`: stage, outcome (approved or changes), round (a post sent back and forth has rounds 1, 2, 3), the post's **type** (`original`, `repurpose`, `rss` or `reply`, by format: text, image, carousel, video), its scope and platforms, how it was recorded and who. A person sending a post back from review counts as the owner asking for changes. `review-outcomes` (tool, and `social.review-outcomes`) returns first-pass approval rates and approval streaks per type and stage for one scope. **The autonomy ladder (PAR-4701) is built for low-risk posts only.** A post is auto-approved in place of the team member's click when its source is `original` or `repurpose`, its format is text or one image, its scope's policy does not ask for the client, `validate-post` passes, and the owner streak for that type in that scope is at least 5 (people's verdicts only). A required Reviewer pass still comes first. The complaint/legal/safety/PR exclusion works by source only: inbox replies and RSS items are out, but an agent-written original is eligible, because nothing reads its content. `review-outcomes` reports `autonomy.enabled` true only when some type qualifies in that scope; everything else stays with a person.
 
 ### Client issues in the client's project (Q1a-12)
 
@@ -166,10 +166,26 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
-## My Social (personal space, v0.9.0)
+## 0.9.21: X replies and quotes, draft note (PAR-4452)
 
-User-owned social accounts and queues separate from company Social. Scope `'org'` (company-wide) or `'personal'` (owner bound to `owner_user_id`); accounts and inbox items are scoped via migration 001, with templates, media and feeds scoped in 016. Migration 017 adds unique indexes: org accounts unique on platform/external_id; personal accounts unique on platform/external_id/owner_user_id (one LinkedIn profile per person). Page route `/mysocial` shows the owner's own work only. Implementation uses `scope` ('org'|'personal') + `owner_user_id` columns rather than a single owner_type column.
+`create-post`, `update-post` and `create-personal-draft` take `replyToUrl` or `quoteUrl` (an x.com / twitter.com post link, not both) and an internal `note` (max 500 characters, never published; for example "HOLD until PAR-1234"). On publish X gets `reply.in_reply_to_tweet_id` or `quote_tweet_id`. Other platforms refuse a reply or quote draft in `validate-post` instead of posting it plain; Threads and Bluesky are not supported yet. The Posts list, the post sheet and the composer (Social and My Social) show "Replying to @handle" / "Quoting @handle" with the link, and the note. Changing the target changes the approval fingerprint; the note does not.
 
-OAuth reuses existing LinkedIn and X apps; the owner is bound in the state. Agents get one tool `create-personal-draft` (drafts only, explicit `targetUserId`; cannot approve, schedule, publish, or read tokens). Only the owner approves and schedules; the publish job is unchanged and publishes only approved/scheduled posts.
+**Deploy: stop-first** (migration `019_social.sql` adds `reply_to_url`, `quote_url`, `note`; additive, old code ignores them). The skill text changes what agents do for drafts of X replies.
 
-**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). Optional: drop the added unique indexes and columns with the SQL from the migration rollback comments.
+## 0.9.1
+
+Migration 017 no longer has comment lines. The host validator reads quotes before it strips comments, so an apostrophe in a comment made activation reject the file. The two unique indexes are unchanged.
+
+**Deploy: stop-first.**
+
+## Spaces: Partners in Biz, My Social, clients (v0.9.4)
+
+One workspace, three kinds of space. Every tab (Posts, Calendar, Accounts, Inbox, Media, Feeds, Templates) works the same in each:
+
+- **Partners in Biz** (`/social`): the company's own socials, scope `org`.
+- **My Social** (`/mysocial`): the signed-in user's own socials, scope `personal` with `owner_user_id`. Separate from the company and from every client: org queries exclude personal rows, personal queries return only the owner's. Same page code as Social with `space: "me"` (no overview, no Growth Lab, no review stage: the owner approves, schedules and publishes; agents can only add drafts through `create-personal-draft`). Every platform can be connected; the connection uses the same apps as the company.
+- **Clients** (`/social?client=company:<id>`): a CRM company or contact, opened from the CRM; scope `org` with `client_ref`.
+
+Actions take `space: "me"` next to (or instead of) `client`; `spaceOf()` in `src/space.ts` is the one place that reads it. Personal rows exist in accounts, posts, destinations (through their post), inbox items (copied from the account at sync), media, feeds, templates. Nobody else, including agents and other team members, can read, change or publish them.
+
+**Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). 016 still has its rollback comments. 017's indexes are `accounts_org_external` and `accounts_personal_external`.

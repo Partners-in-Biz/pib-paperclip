@@ -40,7 +40,8 @@ describe("billing load filter", () => {
     expect(compact(calls[0]!.sql)).toContain("WHERE (company_id = $1 OR id IN ( SELECT invoice_id FROM");
     expect(compact(calls[0]!.sql)).toContain(")) AND customer_kind = $2 AND customer_ref = $3");
     expect(calls[0]!.params).toEqual(["w", "contact", "ct-ada"]);
-    expect(compact(calls[1]!.sql)).toContain("WHERE company_id = $1 AND customer_kind = $2 AND customer_ref = $3");
+    expect(compact(calls[1]!.sql)).toContain("company_id = $1 AND customer_kind = $2 AND customer_ref = $3");
+    expect(compact(calls[1]!.sql)).toContain("COALESCE"); // Verify canary filter is present
     expect(calls[1]!.params).toEqual(["w", "company", "co-acme"]);
   });
 

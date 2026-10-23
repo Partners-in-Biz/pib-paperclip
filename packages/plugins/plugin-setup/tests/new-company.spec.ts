@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { RUN_PROFILES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
 import { allModulesOn } from "../src/modules.js";
 import { PLUGIN_ID } from "../src/namespace.js";
-import { recordStep, sanitizeOptions, starterPackHash, toAgentLikes } from "../src/new-company.js";
+import { standingApproval } from "../src/standing-approval.js";
+import { isOwnerCompany, recordStep, sanitizeOptions, starterPackHash, toAgentLikes, templateDraft, startTemplateHire, templatesForOps } from "../src/new-company.js";
 import { handleApiRoute, registerSetup } from "../src/register.js";
 import { fixedClock, fakeCtx } from "./helpers/fake-ctx.js";
 import { loadStarterPack } from "../src/starter-pack.js";
@@ -206,9 +207,9 @@ describe("setup.new-company", () => {
   it("reads the state of a company that was never touched", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asUser(A));
-    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 1, templates: 11 }, hires: [] });
+    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 13 }, hires: [] });
     expect(state.steps).toHaveLength(10);
-    expect(state.starterPack).toMatchObject({ approved: false, needsOwnerOk: true, version: 1 });
+    expect(state.starterPack).toMatchObject({ approved: true, approvedBy: expect.stringContaining("standing-approval"), needsOwnerOk: true, version: 1, hash: starterPackHash(loadStarterPack()) });
     expect(state.starterPack.facts.length).toBe(loadStarterPack().facts.length);
     expect(state.starterPack.factCount).toBe(loadStarterPack().facts.length);
   });
@@ -216,7 +217,7 @@ describe("setup.new-company", () => {
   it("gives an agent the run state and the starter pack's counts, never the facts to read", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asAgent(A));
-    expect(state).toMatchObject({ status: "created", starterPack: { approved: false, needsOwnerOk: true, factCount: loadStarterPack().facts.length, facts: [], excluded: [], reviewNotes: [] } });
+    expect(state).toMatchObject({ status: "created", starterPack: { approved: true, needsOwnerOk: true, factCount: loadStarterPack().facts.length, facts: [], excluded: [], reviewNotes: [] } });
     expect(JSON.stringify(state.starterPack)).not.toContain(loadStarterPack().facts[0]!.text);
   });
 });
@@ -240,7 +241,7 @@ describe("template hire tasks", () => {
     const { call, issues, wakes, store } = setup();
     const first = await call("setup.start-template-hire", { key: "developer", assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444", ownerName: "Jo" }, asUser(A));
     expect(first).toMatchObject({ existed: false, woke: true, identifier: expect.stringMatching(/^ACM-/) });
-    expect(first.hire).toMatchObject({ companyId: A, templateKey: "developer", status: "open", packVersion: 1, assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444" });
+    expect(first.hire).toMatchObject({ companyId: A, templateKey: "developer", status: "open", packVersion: 2, assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444" });
     const issue = issues.get(first.hire.issueId)!;
     expect(issue).toMatchObject({ companyId: A, title: "Hire: Developer (team template)", originKind: `plugin:${PLUGIN_ID}`, originId: "template-hire:developer", assigneeAgentId: "aaaaaaaa-1111-2222-3333-444444444444", status: "todo" });
     expect(issue.description).toContain("POST /api/companies/{companyId}/agent-hires");
@@ -312,9 +313,8 @@ describe("the starter pack approval", () => {
     await expect(call("setup.approve-starter-pack", { hash: starterPackHash(loadStarterPack()) }, asAgent(A))).rejects.toThrow(/board user/);
   });
 
-  it("hands out the import only after the owner approved this exact version", async () => {
+  it("hands out the import for the version the owner approved (standing yes or a click)", async () => {
     const { call } = setup();
-    await expect(call("setup.starter-pack-import", {}, asUser(A))).rejects.toThrow(/needs the owner's OK first/);
     const hash = starterPackHash(loadStarterPack());
     const approved = await call("setup.approve-starter-pack", { hash }, asUser(A, "owner-1"));
     expect(approved).toMatchObject({ approved: true, approvedBy: "owner-1", hash });
@@ -323,6 +323,14 @@ describe("the starter pack approval", () => {
     expect(body.data.facts).toHaveLength(loadStarterPack().facts.length);
     // Approval is of the pack, not of a company: the next company may use it too, and a changed pack would not be covered.
     expect((await call("setup.new-company", {}, asUser(B))).starterPack.approved).toBe(true);
+  });
+
+  it("covers only the exact pack hash: a changed pack or version is not approved", () => {
+    const pack = loadStarterPack();
+    const hash = starterPackHash(pack);
+    expect(standingApproval(pack.version, hash)).not.toBeNull();
+    expect(standingApproval(pack.version, starterPackHash({ ...pack, facts: pack.facts.map((fact, index) => (index === 0 ? { ...fact, text: `${fact.text} (edited)` } : fact)) }))).toBeNull();
+    expect(standingApproval(pack.version + 1, hash)).toBeNull();
   });
 
   it("hashes the facts, not the reviewer's notes", () => {
@@ -354,7 +362,7 @@ describe("GET /templates for the ops scripts", () => {
       expect(role.profiles.hermes_local === null).toBe(!kit.hermes);
       if (kit.hermes) expect(role.profiles.hermes_local.adapterConfig).toMatchObject({ model: kit.hermes.model, provider: kit.hermes.provider, timeoutSec: kit.timeoutSec });
     }
-    expect(result.templates.map((template: any) => template.key)).toEqual(loadPack().templates.map((template) => template.key));
+    expect(result.templates.map((template: any) => template.key)).toEqual(loadPack().templates.filter((t) => (t.scope ?? "generic") !== "pib").map((template) => template.key));
     const planner = result.templates.find((template: any) => template.key === "planner");
     expect(planner.instructions).toContain("Acme Ltd");
     expect(planner.adapterConfig).toMatchObject({ model: "claude-fable-5-1" });
@@ -381,8 +389,9 @@ describe("GET /templates for the ops scripts", () => {
 
 describe("options", () => {
   it("keeps ids and switches only", () => {
-    expect(sanitizeOptions(null)).toEqual({});
-    expect(sanitizeOptions({ copyFromCompanyId: "<script>", hiringAgentId: "../x", templates: "developer", includeOptionalRoles: "yes", starterPack: 1 })).toEqual({});
+    expect(sanitizeOptions(null)).toEqual({ starterPack: true });
+    expect(sanitizeOptions({ copyFromCompanyId: "<script>", hiringAgentId: "../x", templates: "developer", includeOptionalRoles: "yes", starterPack: 1 })).toEqual({ starterPack: true });
+    expect(sanitizeOptions({ starterPack: false }).starterPack).toBe(false);
     expect(sanitizeOptions({ templates: ["developer", 5, "nope", "planner"] }).templates).toEqual(["developer", "planner"]);
   });
 
@@ -390,5 +399,36 @@ describe("options", () => {
     expect(toAgentLikes("x")).toEqual([]);
     expect(toAgentLikes([{ id: "1", name: "A", title: "T", role: "r", status: "idle", reportsTo: "0", urlKey: "a" }, { name: "no id" }, "x"])).toEqual([{ id: "1", name: "A", title: "T", role: "r", status: "idle", reportsTo: "0", urlKey: "a" }]);
     expect(toAgentLikes(Array.from({ length: 300 }, (_v, index) => ({ id: String(index), name: "A" })))).toHaveLength(200);
+  });
+});
+
+describe("ownerCompany setting and template filtering", () => {
+  it("isOwnerCompany reads the ownerCompany config setting, fails closed on error", async () => {
+    const { ctx: ctxOwner } = fakeCtx({ companies: COMPANIES, savedConfigs: { [A]: { ownerCompany: true } } });
+    const { ctx: ctxClient } = fakeCtx({ companies: COMPANIES, savedConfigs: { [B]: { ownerCompany: false } } });
+    const { ctx: ctxNoConfig } = fakeCtx({ companies: COMPANIES, savedConfigs: {} });
+    expect(await isOwnerCompany(ctxOwner, A)).toBe(true);
+    expect(await isOwnerCompany(ctxClient, B)).toBe(false);
+    expect(await isOwnerCompany(ctxNoConfig, A)).toBe(false);
+  });
+
+  it("templatesForOps lists only generic templates for a client company, all for owner", async () => {
+    const { ctx: ctxClient } = fakeCtx({ companies: COMPANIES, savedConfigs: { [B]: { ownerCompany: false } } });
+    const { ctx: ctxOwner } = fakeCtx({ companies: COMPANIES, savedConfigs: { [A]: { ownerCompany: true } } });
+    const resultClient = await templatesForOps(ctxClient, { companyId: B, key: "ceo", agents: [] });
+    const resultOwner = await templatesForOps(ctxOwner, { companyId: A, key: "ceo", agents: [] });
+    expect(resultClient.templates.every((t: any) => t.key !== "pib" && (t as any).scope !== "pib")).toBe(true);
+    expect(resultOwner.templates.length >= resultClient.templates.length).toBe(true);
+    expect(resultClient.ownerCompany).toBe(false);
+    expect(resultOwner.ownerCompany).toBe(true);
+  });
+
+  it("templateDraft works for generic templates in client and owner companies", async () => {
+    const { ctx: ctxClient } = fakeCtx({ companies: COMPANIES, savedConfigs: { [B]: { ownerCompany: false } } });
+    const { ctx: ctxOwner } = fakeCtx({ companies: COMPANIES, savedConfigs: { [A]: { ownerCompany: true } } });
+    const draftClient = await templateDraft(ctxClient, { companyId: B, key: "ceo", agents: [] });
+    const draftOwner = await templateDraft(ctxOwner, { companyId: A, key: "ceo", agents: [] });
+    expect(draftClient).toHaveProperty("key", "ceo");
+    expect(draftOwner).toHaveProperty("key", "ceo");
   });
 });

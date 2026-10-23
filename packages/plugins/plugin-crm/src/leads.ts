@@ -45,6 +45,7 @@ import { LEGACY_ORIGINS, originFor } from "./origins.js";
 import { companyPrefix, crmLink, pagePath, refOf, type ClientKind } from "./refs.js";
 import { recordAssignee } from "./routing.js";
 import { heldLeadCompanies, holdLead, insertClientLead, markHeldLeadDone, markHeldLeadFailed, pendingHeldLeads } from "./store.js";
+import { onClientLeadStoredForSpeedToLead, onLeadStoredForSpeedToLead } from "./speed-to-lead.js";
 import { emitChanges } from "./sync.js";
 
 /** The senders of `lead.captured` the CRM listens to (Social and the Mailbox). */
@@ -249,6 +250,23 @@ export async function intakeLead(ctx: PluginContext, companyId: string, eventTyp
       confidence: lead.confidence ?? null,
       capturedAt: lead.capturedAt,
     });
+    // Draft-only speed-to-lead for client-channel leads with email (no CRM contact created).
+    if (lead.email) {
+      try {
+        await onClientLeadStoredForSpeedToLead(ctx, {
+          companyId,
+          client,
+          leadKey: lead.key,
+          source: lead.source,
+          text: lead.text,
+          name: lead.name ?? null,
+          email: lead.email,
+          arrivedAt: lead.capturedAt,
+        });
+      } catch (error) {
+        ctx.logger.info("CRM speed-to-lead deferred", { leadKey: lead.key, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     return { key, status: "stored", contactId: null, reason: `The client's own lead (${refOf(client.kind, client.id)}): kept on their CRM page, not added to our contacts.` };
   }
 
@@ -415,6 +433,26 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
       ctx.logger.info("CRM change broadcast deferred", { companyId, error: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  // Speed-to-lead: draft + Peet approval only. Never fails lead intake.
+  if (lead.email) {
+    try {
+      await onLeadStoredForSpeedToLead(ctx, {
+        companyId,
+        contactId: contact.id,
+        leadKey: lead.key,
+        source: lead.source,
+        text: extras?.message || lead.text,
+        name: lead.name ?? contact.name,
+        email: lead.email,
+        langHint: typeof contact.custom.language === "string" ? contact.custom.language : null,
+        arrivedAt: lead.capturedAt,
+      });
+    } catch (error) {
+      ctx.logger.info("CRM speed-to-lead deferred", { leadKey: lead.key, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   return { contactId: contact.id, created, issueId, scored: Boolean(score) };
 }
 

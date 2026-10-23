@@ -1,0 +1,269 @@
+{
+  "key": "support-case-nps",
+  "version": 1,
+  "title": "Support case and NPS feedback",
+  "summary": "The care loop on the canary: a support request becomes a case with an Account Manager issue; an NPS request stays a draft behind an approval that must reach the Reviewer (never sent); a low score opens the crm:feedback-low issue. The canary cannot send mail, so the Mailbox triage leg is covered by the CRM's own tests.",
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
+  "ownerRole": "account-manager",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "note": "Asking again returns the same client. Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary.",
+      "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        }
+      ],
+      "capture": {
+        "contactId": {
+          "path": "contact.ref",
+          "strip": "contact:"
+        }
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "open-case",
+      "title": "Support request becomes a case with a work issue",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:open-support-case",
+      "input": {
+        "client": "{{client}}",
+        "title": "Acceptance rehearsal {{runId}}: the canary cannot find its invoices",
+        "summary": "A made-up support request from the canary contact. Nothing here is real.",
+        "severity": "normal",
+        "source": "manual",
+        "contactId": "{{contactId}}"
+      },
+      "note": "An address ending @canary.invalid cannot send mail, so the Mailbox's own triage (a support mail becoming a case) cannot be driven from here; the CRM's tests cover that hand-off. This step opens the case the way the CRM does for a request that did not come by mail, which also opens the Account Manager's work issue (issueId): leave it alone, the Cockpit cancels it when the run ends.",
+      "expect": [
+        {
+          "path": "created",
+          "equals": true
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "status",
+          "equals": "new"
+        },
+        {
+          "path": "source",
+          "equals": "manual"
+        },
+        {
+          "path": "caseId",
+          "notEmpty": true
+        },
+        {
+          "path": "issueId",
+          "notEmpty": true
+        }
+      ],
+      "capture": {
+        "caseId": {
+          "path": "caseId"
+        }
+      },
+      "cleanupIssues": [
+        "issueId"
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "list-case",
+      "title": "The case is listed",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:list-support-cases",
+      "input": {
+        "client": "{{client}}",
+        "status": "open"
+      },
+      "expect": [
+        {
+          "path": "count",
+          "gte": 1
+        },
+        {
+          "path": "cases[caseId={{caseId}}].status",
+          "equals": "new"
+        },
+        {
+          "path": "cases[caseId={{caseId}}].source",
+          "equals": "manual"
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "request-feedback",
+      "title": "NPS request: a draft behind an approval",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:request-feedback",
+      "input": {
+        "client": "{{client}}",
+        "kind": "nps",
+        "contactId": "{{contactId}}"
+      },
+      "note": "This opens an approval issue for the email. Do NOT approve it and do not touch it: the Cockpit checks where it went and cancels it when the run ends. Nothing is sent by this call.",
+      "expect": [
+        {
+          "path": "kind",
+          "equals": "nps"
+        },
+        {
+          "path": "feedbackId",
+          "notEmpty": true
+        },
+        {
+          "path": "to",
+          "contains": "@canary.invalid"
+        },
+        {
+          "path": "approvalIssueId",
+          "notEmpty": true
+        }
+      ],
+      "capture": {
+        "feedbackId": {
+          "path": "feedbackId"
+        }
+      },
+      "probe": {
+        "kind": "approval-route",
+        "idPath": "approvalIssueId",
+        "outward": true
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "feedback-is-draft",
+      "title": "The request is still a draft",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:get-company",
+      "input": {
+        "companyRecordId": "{{companyRecordId}}"
+      },
+      "expect": [
+        {
+          "path": "care.feedback.items[feedbackId={{feedbackId}}].status",
+          "equals": "draft"
+        },
+        {
+          "path": "care.feedback.items[feedbackId={{feedbackId}}].kind",
+          "equals": "nps"
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "record-low-score",
+      "title": "A low score is recorded",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:record-feedback",
+      "input": {
+        "feedbackId": "{{feedbackId}}",
+        "score": 3,
+        "comment": "Acceptance rehearsal {{runId}}: a made-up low score."
+      },
+      "expect": [
+        {
+          "path": "feedbackId",
+          "equals": "{{feedbackId}}"
+        },
+        {
+          "path": "score",
+          "equals": 3
+        },
+        {
+          "path": "lowScoreIssue",
+          "equals": true
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "find-low-score-issue",
+      "title": "The low score opened a feedback-low issue",
+      "kind": "check",
+      "input": {},
+      "note": "Find the issue with the Paperclip API: an issue whose originId is crm:feedback-low:{{feedbackId}} (its title names PiB Canary Co and the score). Do NOT work, close or cancel it: the Cockpit cancels it when the run ends. Report {issueId}. If there is none, report error: no feedback-low issue (the CRM promises one).",
+      "expect": [
+        {
+          "path": "issueId",
+          "notEmpty": true
+        }
+      ],
+      "probe": {
+        "kind": "issue",
+        "idPath": "issueId",
+        "matches": "canary"
+      },
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "feedback-answered",
+      "title": "The score shows on the client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:get-company",
+      "input": {
+        "companyRecordId": "{{companyRecordId}}"
+      },
+      "expect": [
+        {
+          "path": "care.feedback.items[feedbackId={{feedbackId}}].status",
+          "equals": "answered"
+        },
+        {
+          "path": "care.feedback.items[feedbackId={{feedbackId}}].score",
+          "equals": 3
+        }
+      ],
+      "ownerRole": "account-manager"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": {
+        "confirm": true
+      },
+      "expect": [
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}

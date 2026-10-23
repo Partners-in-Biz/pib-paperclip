@@ -37,6 +37,9 @@ export const WATCH = {
   named: 5,
 } as const;
 
+/** Ladder escalation: maximum candidates to process per tick (bounded; real creation still bounded by ESCALATION_DAILY_CAP). */
+export const LADDER_CANDIDATES = 25;
+
 /** Run statuses that carry a verdict: the run ran to a result. Cancelled, interrupted, queued and running runs are not counted. */
 export const FINISHED_RUN = ["succeeded", ...FAILED_RUN] as const;
 
@@ -201,15 +204,42 @@ export function runRateChecks(rows: RateRow[], agents: Map<string, WatchAgent>):
 // Run streak
 // ---------------------------------------------------------------------------
 
-/** The same error code on three or more of an agent's latest finished runs in a row (a success or another code ends the streak). */
-export function runStreakChecks(runs: StreakRun[], agents: Map<string, WatchAgent>): HealthCheck[] {
+/** Organizes runs by agent (newest first), returning their error streaks. Pure helper for both runStreakChecks and authStreakAgents. */
+export function streaksByAgent(runs: StreakRun[]): Map<string, { newestFirst: StreakRun[]; code: string | null; status: string | null }> {
   const byAgent = new Map<string, StreakRun[]>();
   for (const run of runs) byAgent.set(run.agentId, [...(byAgent.get(run.agentId) ?? []), run]);
-  const out: Array<{ check: HealthCheck; length: number }> = [];
+  const out = new Map<string, { newestFirst: StreakRun[]; code: string | null; status: string | null }>();
   for (const [agentId, list] of byAgent) {
     const newestFirst = [...list].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-    const code = newestFirst[0]?.errorCode;
-    if (!code || !isFailed(newestFirst[0]!.status)) continue;
+    out.set(agentId, { newestFirst, code: newestFirst[0]?.errorCode ?? null, status: newestFirst[0]?.status ?? null });
+  }
+  return out;
+}
+
+/** Agents whose latest WATCH.streakMin runs failed with claude_auth_required. */
+export function authStreakAgents(runs: StreakRun[]): Map<string, { code: string; startedAt: string }> {
+  const streaks = streaksByAgent(runs);
+  const out = new Map<string, { code: string; startedAt: string }>();
+  for (const [agentId, { newestFirst, code, status }] of streaks) {
+    if (code !== "claude_auth_required" || !isFailed(status ?? "")) continue;
+    const streak: StreakRun[] = [];
+    for (const run of newestFirst) {
+      if (!isFailed(run.status) || run.errorCode !== "claude_auth_required") break;
+      streak.push(run);
+    }
+    if (streak.length >= WATCH.streakMin) {
+      out.set(agentId, { code, startedAt: earliest(streak.map((r) => r.startedAt)) ?? newestFirst[0]!.startedAt });
+    }
+  }
+  return out;
+}
+
+/** The same error code on three or more of an agent's latest finished runs in a row (a success or another code ends the streak). */
+export function runStreakChecks(runs: StreakRun[], agents: Map<string, WatchAgent>): HealthCheck[] {
+  const streaks = streaksByAgent(runs);
+  const out: Array<{ check: HealthCheck; length: number }> = [];
+  for (const [agentId, { newestFirst, code, status }] of streaks) {
+    if (!code || !isFailed(status ?? "")) continue;
     const streak: StreakRun[] = [];
     for (const run of newestFirst) {
       if (!isFailed(run.status) || run.errorCode !== code) break;
@@ -317,6 +347,121 @@ export function stalledCheck(items: StalledIssue[], total: number, agents: Map<s
     fix: "Wake the assignee with a comment saying what to do next. If it cannot do the work, reassign it to the role that owns it; if the work is finished, close it with evidence.",
     since: since(shown[0]!),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Execution reconciliation required
+// ---------------------------------------------------------------------------
+
+/** A run with error_code = 'execution_reconciliation_required'. */
+export interface ReconciliationRun {
+  issueId: string;
+  identifier: string | null;
+  title: string | null;
+  runId: string;
+  runTime: string; // ISO, coalesce(started_at, created_at)
+  error: string | null;
+  assigneeAgentId: string | null;
+}
+
+/** Issue with unresolved execution_reconciliation_required: needs wake (first), escalate (second), or nothing. */
+export interface ReconciliationIssue {
+  issueId: string;
+  identifier: string | null;
+  title: string | null;
+  assigneeAgentId: string | null;
+  action: "wake" | "escalate" | "none";
+  runId: string;
+  error: string | null;
+}
+
+/**
+ * Detect issues with execution reconciliation required. Returns decisions (one per
+ * affected issue, up to `perRule`), worst first (by error recency). Pure function:
+ * inputs are reconciliation runs, woken/escalated run ids (tracked in repairs), and markers.
+ */
+export function executionReconciliationDecisions(
+  reconciliationRuns: ReconciliationRun[],
+  wakenRunIds: Set<string>,
+  escalationMarkerIssueIds: Set<string>,
+  escalatedRunIds: Set<string>,
+): ReconciliationIssue[] {
+  if (reconciliationRuns.length === 0) return [];
+
+  // Group by issue; newest run first within each issue
+  const byIssue = new Map<string, ReconciliationRun[]>();
+  for (const run of reconciliationRuns) {
+    const list = byIssue.get(run.issueId) ?? [];
+    list.push(run);
+    byIssue.set(run.issueId, list);
+  }
+
+  const decisions: ReconciliationIssue[] = [];
+  for (const [issueId, runs] of byIssue) {
+    const sorted = [...runs].sort((a, b) => Date.parse(b.runTime) - Date.parse(a.runTime));
+    const newest = sorted[0]!;
+
+    // Skip if any run in this issue was already escalated
+    if (sorted.some((r) => escalatedRunIds.has(r.runId))) continue;
+
+    // Find the newest woken run (could be any of them)
+    const wakenRunInIssue = sorted.find((r) => wakenRunIds.has(r.runId));
+
+    // Determine action based on wake state
+    if (wakenRunInIssue && wakenRunInIssue.runId !== newest.runId) {
+      // An older run was woken, but now there's a newer run → escalate
+      decisions.push({
+        issueId: newest.issueId,
+        identifier: newest.identifier,
+        title: newest.title,
+        assigneeAgentId: newest.assigneeAgentId,
+        action: "escalate",
+        runId: newest.runId,
+        error: newest.error,
+      });
+    } else if (!wakenRunInIssue && !escalationMarkerIssueIds.has(issueId)) {
+      // Not yet woken and no active marker → wake the newest
+      decisions.push({
+        issueId: newest.issueId,
+        identifier: newest.identifier,
+        title: newest.title,
+        assigneeAgentId: newest.assigneeAgentId,
+        action: "wake",
+        runId: newest.runId,
+        error: newest.error,
+      });
+    }
+  }
+
+  // Sort by recency (newest run first) and cap at perRule
+  decisions.sort((a, b) => Date.parse(
+    reconciliationRuns.find((r) => r.runId === b.runId)?.runTime ?? "",
+  ) - Date.parse(reconciliationRuns.find((r) => r.runId === a.runId)?.runTime ?? ""));
+
+  return decisions.slice(0, WATCH.perRule);
+}
+
+/**
+ * Convert decisions to health checks (one per issue with action != "none").
+ */
+export function executionReconciliationChecks(
+  decisions: ReconciliationIssue[],
+  reconciliationRuns: ReconciliationRun[],
+  agents: Map<string, WatchAgent>,
+): HealthCheck[] {
+  return decisions.map((d): HealthCheck => {
+    const what = d.title ? `${issueRef(d)} "${d.title.slice(0, 80)}"` : issueRef(d);
+    const detail = `${what}${d.assigneeAgentId ? ` (assigned to ${agentName(agents, d.assigneeAgentId)})` : ""} failed with execution_reconciliation_required${d.error ? `: ${redactSecrets(d.error.replace(/\s+/g, " ")).slice(0, 160)}` : ""}.`;
+    return {
+      key: `execution-reconciliation:${d.issueId}`,
+      title: `${issueRef(d)} needs execution reconciliation`,
+      status: "warn",
+      detail,
+      href: issueHref(d),
+      fix: d.action === "escalate" ? "The issue failed again after reconciliation. Check if the cause changed; if not, escalate to the owner or move the work." : "Read the latest run and fix the underlying issue (usually a conversation reset or stale state). Wake the agent to retry.",
+      since: reconciliationRuns.find((r) => r.runId === d.runId)?.runTime ?? null,
+    };
+  });
 }
 
 /** A rule whose rows could not be read: say so instead of silently checking nothing. */

@@ -16,8 +16,8 @@ describe("rules", () => {
   it("rollReason: size, E2BIG, or a named issue whose size is unknown", () => {
     expect(rollReason({ bytes: 103_000, e2big: false, explicit: false }, THREAD_ROLL_BYTES)).toBe("size");
     expect(rollReason({ bytes: THREAD_ROLL_BYTES, e2big: false, explicit: false }, THREAD_ROLL_BYTES)).toBe("size");
-    expect(rollReason({ bytes: 59_999, e2big: false, explicit: false }, THREAD_ROLL_BYTES)).toBeNull();
-    expect(rollReason({ bytes: 45_000, e2big: true, explicit: false }, THREAD_ROLL_BYTES)).toBe("e2big");
+    expect(rollReason({ bytes: 39_999, e2big: false, explicit: false }, THREAD_ROLL_BYTES)).toBeNull();
+    expect(rollReason({ bytes: 25_000, e2big: true, explicit: false }, THREAD_ROLL_BYTES)).toBe("e2big");
     // E2BIG on a small thread is some other cause: moving it would not help.
     expect(rollReason({ bytes: 4_000, e2big: true, explicit: false }, THREAD_ROLL_BYTES)).toBeNull();
     expect(rollReason({ bytes: null, e2big: true, explicit: false }, THREAD_ROLL_BYTES)).toBe("e2big");
@@ -56,6 +56,26 @@ describe("rules", () => {
     expect(text).toMatch(/Review or build issues opened for this task before the move still name PAR-528 as their parent/);
     expect((text.match(/^- agent,/gm) ?? []).length).toBe(3);
     expect(text.length).toBeLessThan(9_000);
+  });
+
+  it("omits a comment that starts with Query: from the last-3 list", () => {
+    const text = continuationSummary({
+      oldIdentifier: "PAR-1347",
+      bytes: 70_000,
+      comments: 12,
+      reason: "it passed the size the plugin allows",
+      task: { title: "Hunt page", status: "in_progress", blockerReason: null, humanAsk: null, startedAt: null, evidenceSummary: null },
+      previews: [],
+      lastComments: [
+        { author: "agent", at: "2026-10-03T05:01:00Z", body: "Query: You are the SEO Specialist. Rewrite the hunt page." },
+        { author: "agent", at: "2026-10-03T05:02:00Z", body: "Updated the title tag on the hunt page." },
+        { author: "agent", at: "2026-10-03T05:03:00Z", body: "  Query: second echo" },
+      ],
+      sprintId: "sp-1",
+    });
+    expect(text).not.toContain("Query:");
+    expect(text).toContain("Updated the title tag on the hunt page.");
+    expect((text.match(/^- agent,/gm) ?? []).length).toBe(1);
   });
 });
 
@@ -306,7 +326,7 @@ describe("compact-task-thread: dry run first", () => {
   it("reports the issues that would move and changes nothing", async () => {
     const h = host([PAR528, PAR545, PAR130, SMALL]);
     const out = await compactTaskThreadTool(h.env, "co-1", {});
-    expect(out).toMatchObject({ dryRun: true, thresholdBytes: 60_000, sizesAvailable: true, checked: 4, rolled: 0 });
+    expect(out).toMatchObject({ dryRun: true, thresholdBytes: 40_000, sizesAvailable: true, checked: 4, rolled: 0 });
     expect(out.items.map((i) => [i.identifier, i.action, i.reason, i.bytes])).toEqual([
       ["PAR-528", "would_roll", "size", 102_996],
       ["PAR-545", "would_roll", "size", 103_916],
@@ -432,7 +452,7 @@ describe("moving a task thread", () => {
   it("tells a person who names a small thread why nothing moves", async () => {
     const h = host([SMALL]);
     const out = await compactTaskThreads(h.env, "co-1", { dryRun: false, issue: "PAR-525" });
-    expect(out.items).toEqual([expect.objectContaining({ identifier: "PAR-525", action: "skipped", detail: expect.stringMatching(/352 bytes, under the 60000/) })]);
+    expect(out.items).toEqual([expect.objectContaining({ identifier: "PAR-525", action: "skipped", detail: expect.stringMatching(/352 bytes, under the 40000/) })]);
     expect(h.created).toEqual([]);
     const lowered = await compactTaskThreads(h.env, "co-1", { dryRun: true, issue: "PAR-525", minBytes: 10_000 });
     expect(lowered.items[0]).toMatchObject({ action: "skipped" });
@@ -603,7 +623,7 @@ describe("an issue an agent is working on is not moved under it", () => {
   });
 
   it("an issue whose latest run failed with E2BIG is not busy, and moves", async () => {
-    const h = host([{ ...PAR528, bytes: 45_000, e2big: true }]);
+    const h = host([{ ...PAR528, bytes: 25_000, e2big: true }]);
     const out = await compactTaskThreads(h.env, "co-1", { dryRun: false });
     expect(out.items[0]).toMatchObject({ action: "rolled", reason: "e2big" });
   });

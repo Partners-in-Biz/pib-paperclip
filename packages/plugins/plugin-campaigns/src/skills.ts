@@ -1,10 +1,13 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
-import { CHANNELS_REFERENCE, PRIVACY_REFERENCE, SENDERS_REFERENCE } from "./skill-references.js";
+import { CHANNELS_REFERENCE, GROWTH_LAB_REFERENCE, PRIVACY_REFERENCE, SENDERS_REFERENCE } from "./skill-references.js";
 
 export const CAMPAIGN_SKILL = `# Campaigns
 
 Themed email, SMS and WhatsApp programs for PiB's own marketing or a client's, with the \`partnersinbiz.campaigns\` tools. You build and run them; a person approves every launch.
+
+## Learning
+The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbook-change\`, \`decide-playbook-change\`, \`list-experiments\`, \`propose-experiment\`, \`approve-experiment\`, \`reject-experiment\`) keep a playbook per scope and test one change at a time on A/B steps. Read \`get-playbook\` before you write a campaign. Details: references/growth-lab.md.
 
 ## Scope
 - Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project.
@@ -96,6 +99,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/channels.md", content: CHANNELS_REFERENCE },
       { path: "references/senders-and-unsubscribe.md", content: SENDERS_REFERENCE },
       { path: "references/privacy.md", content: PRIVACY_REFERENCE },
+      { path: "references/growth-lab.md", content: GROWTH_LAB_REFERENCE },
     ],
   },
 ];

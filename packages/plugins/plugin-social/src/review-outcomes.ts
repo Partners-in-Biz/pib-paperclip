@@ -10,16 +10,16 @@
  * client. `content_hash` ties a sign-off to the exact version that was checked:
  * a sign-off on older content no longer counts (`currentSignoffs`).
  *
- * Nothing here approves anything. Auto-approval is NOT built: the stats are
- * numbers for a person to read, and for a later policy (which changes an owner
- * design, "approvals only a person decides") to be set deliberately.
+ * Nothing here approves anything; `autonomy.ts` holds the one narrow rule that
+ * does (low-risk posts with a clean owner streak) and `approval-flow.ts` applies it.
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { clientWhere, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { clientWhere, type ClientScope, formatOf } from "@partnersinbiz/pib-plugin-kit";
 import { scopeOfRow } from "./clients.js";
+import { getPolicy } from "./approval-policy.js";
+import { AUTO_APPROVE_STREAK, autoApprovalDecision } from "./autonomy.js";
 import { postMedia, table, type PostRow } from "./db.js";
-import { formatOf } from "./growth/engine.js";
 
 export const STAGES = ["reviewer", "owner", "client"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -64,7 +64,7 @@ export interface RecordOutcomeInput {
   outcome: Outcome;
   contentHash: string | null;
   /** How it was recorded: `tool` (an agent), `ui` (a person on the page), `link` (the client's approval page), `recorded` (a person on the client's behalf). */
-  via: "tool" | "ui" | "link" | "recorded";
+  via: "tool" | "ui" | "link" | "recorded" | "auto";
   actor?: OutcomeActor;
   note?: string | null;
 }
@@ -155,6 +155,8 @@ export interface StatRow {
   round: number;
   post_id: string;
   created_at: unknown;
+  /** How it was recorded; the ladder leaves `auto` rows out of the streak. */
+  via?: string;
 }
 
 export interface TypeStats {
@@ -219,23 +221,38 @@ export async function statRows(ctx: PluginContext, companyId: string, scope: Cli
   const w = clientWhere(scope, params.length + 1);
   params.push(...w.params);
   return ctx.db.query<StatRow>(
-    `SELECT post_type, stage, outcome, round, post_id, created_at FROM ${table(ctx, "review_outcomes")}
+    `SELECT post_type, stage, outcome, round, post_id, created_at, via FROM ${table(ctx, "review_outcomes")}
       WHERE company_id = $1 AND created_at >= now() - make_interval(days => $2) AND ${w.sql}
       ORDER BY created_at DESC LIMIT 2000`,
     params,
   );
 }
 
+/** The streak counts people's verdicts only: an auto-approval must not extend its own streak. */
+export function humanRows(rows: StatRow[]): StatRow[] {
+  return rows.filter((row) => row.via !== "auto");
+}
+
 /** What `review-outcomes` returns for one scope. */
 export async function reviewStats(ctx: PluginContext, companyId: string, scope: ClientScope, days = 90) {
-  const stats = summariseOutcomes(await statRows(ctx, companyId, scope, days));
+  const rows = await statRows(ctx, companyId, scope, days);
+  const stats = summariseOutcomes(rows);
+  const { requireClient } = await getPolicy(ctx, companyId, scope);
+  const owner = summariseOutcomes(humanRows(rows)).filter((row) => row.stage === "owner");
+  const ladder = owner.map((row) => {
+    const [kind = "", format = ""] = row.postType.split(":");
+    const decision = autoApprovalDecision({ kind, format, requireClient, missing: ["owner"], validateOk: true, streak: row.streak });
+    return { postType: row.postType, streak: row.streak, enabled: decision.eligible };
+  });
   return {
     days,
     scope: scope ? `${scope.kind}:${scope.id}` : null,
     types: stats,
     autonomy: {
-      enabled: false,
-      note: "Auto-approval is off. These numbers are inputs only: a person approves every post. A later policy has to be set by the owner on purpose.",
+      enabled: ladder.some((row) => row.enabled),
+      streakRequired: AUTO_APPROVE_STREAK,
+      types: ladder,
+      note: `Only a low-risk post (original or repurpose, text or one image, scope without client approval, validate-post passing) whose owner streak is ${AUTO_APPROVE_STREAK} approvals in a row skips the team member's click. Every other type is approved by a person.`,
     },
   };
 }

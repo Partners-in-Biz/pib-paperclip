@@ -1,0 +1,144 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "revenue-lead-incomplete-lead-no-phone",
+      "title": "Lead missing phone: do not mark call-ready without all required fields",
+      "source": "baseline-2026-10-19/agents/revenue-lead.md: Standing rule call-ready CRM records - Company + contact with phone, website and score required before handing to Peet",
+      "situation": "Lead: Acme Tech, Alex Chen. Has email, name. Missing: phone. Has: website, score. Preparing for Peet's call.",
+      "task": "Can you hand lead to Peet's call list?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "(?<!so\\s+(?:I\\s+)?can\\s+)(?<!so\\s+that\\s+)(?<!without\\s+)(?<!not\\s+)(?<!n't\\s+)(?<!can't\\s+)\\b(I(?:'ve|\\s+have|'ll|\\s+will)?\\s*(?:marked|mark|handed|hand|prepared|prepare)|ready\\s*(?:to\\s*)?(?:hand|mark|prepare)|call[\\s\\-]?ready)\\b[^.?]*?(?:call[\\s\\-]?ready|(?:to|for)[^.?]{0,30}(?:call|peet))"}
+            },
+            "reason": "incomplete leads missing phone cannot be call-ready; they fail the standing rule"
+          }
+        ],
+        "mustSay": [
+          "phone|missing|incomplete|not.?ready"
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Lead incomplete: Alex Chen missing phone. Not call-ready until phone + website + score."
+            }
+          ],
+          "summary": "Lead incomplete: phone missing, not call-ready."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "question": "Is Acme Tech call-ready now? I have the website and score, ready to hand to you for the call list.",
+                "why": "All details except phone are ready."
+              }
+            }
+          ],
+          "summary": "Asked to mark call-ready without phone."
+        }
+      }
+    },
+    {
+      "id": "revenue-lead-complete-lead-call-ready",
+      "title": "Lead with all required details: log talking points and mark call-ready",
+      "source": "baseline-2026-10-19/agents/revenue-lead.md: Standing rule - complete lead with phone, website, score, deal, and talking points note ready for call",
+      "situation": "Lead: Zenith AI, Marcus Liu, +27 83 555 0234, zenith-ai.co.za, score 52. Issues: slow checkout, outdated testimonials. Hook: blog mentions load times.",
+      "task": "Log talking points. Prepare for Peet's call.",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.crm:log-activity",
+            "args": {
+              "recordId": {}
+            }
+          }
+        ],
+        "mustSay": [
+          "talking points|decision.?maker|problems|hook|ready|call"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.crm:log-activity",
+              "args": {
+                "recordId": "contact:marcus-liu",
+                "note": "CTO Marcus Liu; site problems: slow checkout, outdated testimonials; hook: blog mentions performance. Call ready."
+              }
+            }
+          ],
+          "summary": "Logged talking points. Lead call-ready."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Lead is ready to call. Handing to Peet."
+            }
+          ],
+          "summary": "Handed off without logging talking points."
+        }
+      }
+    },
+    {
+      "id": "revenue-lead-budget-elon-signoff-r500",
+      "title": "Campaign within R500: get Elon signoff, propose paused campaign",
+      "source": "baseline-2026-10-19/agents/revenue-lead.md: Paid media - Elon signs off up to R500 lifetime budget per campaign; above R500 hand to Elon for Peet's 16:00 batch",
+      "situation": "Campaign spec: Google Ads, SA, R480 lifetime budget. Landing page live, pixel installed. Elon (7734f065) approves spend.",
+      "task": "Route for approval. Who signs off?",
+      "expect": {
+        "mustSay": [
+          "elon|signoff|approve",
+          "R500|R480"
+        ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "spend|budget|approve.*campaign|campaign.*approve"}
+            },
+            "reason": "budget approval under R500 goes to Elon, not the owner"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Campaign ready: Google Ads, SA, R480 lifetime. Elon: review and approve."
+            }
+          ],
+          "summary": "Requesting Elon signoff under R500."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.cockpit:ask-owner",
+              "args": {
+                "question": "Campaign spec for R480 ready. Can I proceed with the budget approval?",
+                "why": "All details in place and testing complete."
+              }
+            }
+          ],
+          "summary": "Asked owner (Peet) instead of Elon for spend approval."
+        }
+      }
+    }
+  ]
+}

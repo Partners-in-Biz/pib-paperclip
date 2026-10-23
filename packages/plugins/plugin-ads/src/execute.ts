@@ -23,7 +23,10 @@ import type { AccountRef } from "./providers/types.js";
 import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
+import { saveCreativeToDrive } from "./drive.js";
 import { syncAccount } from "./sync.js";
+import { isOwnerDelegateApproval, ownerRouteOf } from "./owner-route.js";
+import { assertPlatformCapsFor } from "./platformCaps.js";
 
 export interface ExecuteActor {
   userId?: string | null;
@@ -43,6 +46,10 @@ export function additionFromPayload(p: Pick<ProposalRow, "kind" | "payload">): S
   if (p.kind === "create_campaign") return { dailyMinor: Number(x.dailyBudgetMinor) || 0, fromDay: (x.startDate as string | null) ?? null, toDay: (x.endDate as string | null) ?? null };
   if (p.kind === "change_budget") return x.campaignStatus === "active" ? { dailyMinor: Math.max(0, Number(x.newDailyBudgetMinor) - Number(x.currentDailyBudgetMinor)) } : null;
   if (p.kind === "resume_campaign") return { dailyMinor: ((x.targets as CampaignTarget[]) ?? []).reduce((sum, t) => sum + (t.dailyBudgetMinor ?? 0), 0) };
+  if (p.kind === "create_ad_set") {
+    const days = Number(x.plannedDays) || 1;
+    return { dailyMinor: Math.ceil(Number(x.lifetimeBudgetMinor) / days), fromDay: (x.startDate as string | null) ?? null, toDay: (x.endDate as string | null) ?? null };
+  }
   return null;
 }
 
@@ -61,10 +68,24 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   // 2. the approval, the other sign-offs, the review
   const approval = await getApproval(rt.ctx, rt.companyId, input.approvalId);
   if (!approval || approval.proposal_id !== p.id) return refuse(rt, actor, p, "bad_approval", "That approval id is not an approval of this proposal.");
-  if (approval.role !== "owner" || approval.decision !== "approved" || !approval.decided_by.startsWith("user:")) return refuse(rt, actor, p, "bad_approval", "That approval is not a person's yes (the owner's approval id is needed).");
+  if (approval.role !== "owner" || approval.decision !== "approved" || !(approval.decided_by.startsWith("user:") || isOwnerDelegateApproval(approval))) {
+    return refuse(rt, actor, p, "bad_approval", "That approval is not the owner's yes (a person, or the owner's delegate within the threshold).");
+  }
   if (approval.consumed_at) return refuse(rt, actor, p, "approval_used", "That approval was already used. An approval runs one change, once; ask for a new one.");
   if (!approval.expires_at || Date.parse(approval.expires_at) <= rt.now().getTime()) return refuse(rt, actor, p, "approval_expired", "That approval is older than 72 hours. Ask the owner to approve again.");
   if (approval.content_hash !== p.content_hash) return refuse(rt, actor, p, "approval_stale", "The proposal changed after it was approved. The approval no longer covers these numbers.");
+
+  // Check if Elon's approval is still valid (threshold may have been lowered)
+  if (isOwnerDelegateApproval(approval)) {
+    const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
+    if (!scope) return refuse(rt, actor, p, "no_scope", "That scope is gone.");
+    const route = ownerRouteOf(scope, p);
+    if (route.route === "peet_required") {
+      await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
+      return refuse(rt, actor, p, "peet_required", "This proposal is above the owner threshold, so Elon's approval no longer covers it. Peet needs to approve it on the Ads page.");
+    }
+  }
+
   const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now());
   if (!state.complete) return refuse(rt, actor, p, "signoff_missing", `Still needed before this can run: ${state.missing.join(", ")} sign-off.`);
   if (!reviewStands(p)) return refuse(rt, actor, p, "review_missing", "The Reviewer's check does not stand for these numbers.");
@@ -86,6 +107,14 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
     if (impact.state === "exceeds" && !approval.over_cap_ack) {
       return refuse(rt, actor, p, "over_cap", `This would take the month to about ${impact.projectedAfterMinor} (minor units) against a cap of ${impact.capMinor}, and the approver did not accept that. Propose a smaller change, or ask the owner to approve it over the cap.`);
     }
+  }
+
+  // 5b. the platform caps
+  try {
+    await assertPlatformCapsFor(rt, p.kind, p.payload);
+  } catch (error) {
+    if (error instanceof AdsError) return refuse(rt, actor, p, error.code, error.message);
+    throw error;
   }
 
   // 6. the numbers still match
@@ -135,6 +164,50 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
       } else if (p.kind === "change_budget") {
         await t.provider.setCampaignBudget(t.env, t.token, t.ref, String(p.payload.campaignExternalId), Number(p.payload.newDailyBudgetMinor));
         results.push({ what: `Set the daily budget of "${String(p.payload.campaignName)}" to ${Number(p.payload.newDailyBudgetMinor)} minor units`, ok: true, externalId: String(p.payload.campaignExternalId) });
+      } else if (p.kind === "create_ad_set") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAdSet(t.env, t.token, t.ref, {
+          campaignExternalId: String(payload.campaignExternalId),
+          name: String(payload.name),
+          lifetimeBudgetMinor: Number(payload.lifetimeBudgetMinor),
+          startDate: String(payload.startDate),
+          endDate: String(payload.endDate),
+          optimizationGoal: String(payload.optimizationGoal),
+          billingEvent: String(payload.billingEvent),
+          targeting: payload.targeting as any,
+          publisherPlatforms: (payload.publisherPlatforms as string[] | null) ?? undefined,
+        });
+        results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
+      } else if (p.kind === "create_ad_creative") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAdCreative(t.env, t.token, t.ref, {
+          name: String(payload.name),
+          pageId: String(payload.pageId),
+          imageHash: (payload.imageHash as string | null) ?? undefined,
+          videoId: (payload.videoId as string | null) ?? undefined,
+          link: String(payload.link),
+          headline: String(payload.headline),
+          body: String(payload.body),
+          cta: String(payload.cta),
+        });
+        results.push({ what: `Created creative "${created.name}"`, ok: true, externalId: created.externalId });
+        await saveCreativeToDrive(rt.ctx, {
+          companyId: rt.companyId,
+          proposalId: p.id,
+          name: created.name,
+          platform: t.account.platform,
+          fields: { externalId: created.externalId, link: payload.link, headline: payload.headline, body: payload.body, cta: payload.cta, imageHash: payload.imageHash ?? null, videoId: payload.videoId ?? null },
+          savedAt: rt.now(),
+          driveSave: rt.driveSave,
+        });
+      } else if (p.kind === "create_ad") {
+        const payload = p.payload as Record<string, unknown>;
+        const created = await t.provider.createAd(t.env, t.token, t.ref, {
+          name: String(payload.name),
+          adSetExternalId: String(payload.adSetExternalId),
+          creativeExternalId: String(payload.creativeExternalId),
+        });
+        results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else {
         const status = p.kind === "pause_campaign" ? "paused" : "active";
         await t.provider.setCampaignStatus(t.env, t.token, t.ref, t.target!.campaignExternalId, status);

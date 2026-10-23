@@ -31,7 +31,7 @@ describe("the provider settings", () => {
     expect(on.blockers).toEqual([expect.stringMatching(/webhook signing secret is not saved: until it is, nothing is sent through the provider/)]);
     expect(espReadiness(parseEspConfig({ esp: { enabled: true, apiKey: { type: "secret_ref", secretId: "s1" }, webhookSecret: { type: "secret_ref", secretId: "s2" } } }))).toEqual({ domains: true, sending: true, blockers: [] });
     // A secret ref with no id is not a saved secret.
-    expect(parseEspConfig({ esp: { enabled: true, apiKey: { type: "secret_ref", secretId: "" } } }).hasApiKey).toBe(false);
+    expect(parseEspConfig({ esp: { enabled: true, apiKey: { type: "secret_ref", secretId: "" } } }).hasCredentials).toBe(false);
   });
 
   it("reads the numbers with their defaults and limits", () => {

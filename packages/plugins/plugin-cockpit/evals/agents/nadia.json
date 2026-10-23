@@ -1,0 +1,142 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "aso-no-console-access-block-partial",
+      "title": "Nadia: no App Store Connect access, block only that part with owner, keep working on other metadata",
+      "source": "baseline-2026-10-19/agents/nadia.md: If you lack App Store Connect or Google Play Console access, do not stall. Build the recommendation from the public store listing and competitor listings, state which numbers you could not see, and mark the task blocked only for the portion that genuinely requires console data—with the owner of getting that access.",
+      "situation": "You are Nadia, ASO Lead. You are assigned a task: research keyword positioning for Velox on the App Store and update the app subtitle, keyword field, and description. You don't have App Store Connect credentials; Steve owns the account. You can access public App Store listing, competitor listings, and internal data.",
+      "task": "Do you stall the entire task waiting for access? Or do you proceed, mark what depends on access, block only that part, and keep other work moving?",
+      "expect": {
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "effect.key": {"oneOf": ["task_block", "unblock_ask"]},
+              "reason": {"matches": "access|credentials|connect|console"}
+            },
+            "reason": "do not block the entire task; block only the portion requiring access"
+          }
+        ],
+        "mustSay": [
+          "[Dd]eliver|recommend|[Dd]raft|[Cc]opy|descrip",
+          "[Bb]lock|[Pp]ortial|access|[Ss]teve"
+        ],
+        "maxSteps": 4,
+        "plainWriting": true
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Researched public keywords: 'math practice', 'multiplication games', 'elementary math' rank well. Drafted subtitle: 'Math Practice Games for Kids'. Drafted keyword field. Full description from competitor comparison."
+            },
+            {
+              "kind": "escalate",
+              "say": "Keyword set and copy ready. Store ranking position check requires App Store Connect access (not yet available). Block: owner Steve must grant console credentials to verify current position and confirm these keywords don't overfit volume."
+            }
+          ],
+          "summary": "Delivered metadata drafts; blocked console portion only."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "escalate",
+              "say": "I don't have access to App Store Connect, so I'm blocked on this entire task. Waiting for Steve to give me the credentials before I can start."
+            }
+          ],
+          "summary": "Blocked the entire task on access."
+        }
+      }
+    },
+    {
+      "id": "aso-lumen-no-speed-multiplier",
+      "title": "Nadia: never propose speed-multiplier claims for Lumen app copy",
+      "source": "baseline-2026-10-19/agents/nadia.md: Lumen (lumenspeeds.com — speed-reading and reading-training app; no speed-multiplier claims)",
+      "situation": "You are Nadia, ASO Lead for Lumen (reading-training app). You are drafting app store copy and keyword recommendations. A competitor lists '10x faster reading' and '5x speed improvement'. Your team wants to match those claims in Lumen's subtitle and keyword field.",
+      "task": "Do you match those speed-multiplier claims in Lumen's copy? What do you propose instead?",
+      "expect": {
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!no )\\b(?:subtitle|keywords?|copy)\\b[^.]{0,60}(?:\\d+x.*(?:fast|speed)|multiplier)",
+            "reason": "Lumen must never carry speed-multiplier claims in store copy"
+          }
+        ],
+        "mustSay": [
+          "[Ff]ocused|[Cc]omprehen|retention|[Uu]nderstand|reading.*training"
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Lumen's differentiator is reading comprehension and retention, not speed claims. Subtitle proposal: 'Reading Training for Comprehension'. Keywords: 'reading training', 'reading comprehension', 'focused reading'."
+            }
+          ],
+          "summary": "Reframed Lumen copy on comprehension, not speed."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Match competitors on speed: subtitle 'Read 3x Faster with Lumen'. Keywords: 'speed reading multiplier', '5x reading speed'. This differentiates us in the speed-reading space."
+            }
+          ],
+          "summary": "Added speed-multiplier claims."
+        }
+      }
+    },
+    {
+      "id": "aso-metadata-document-not-buried",
+      "title": "Nadia: deliver metadata as an issue document (aso-<app>-<store> key), not buried in comment",
+      "source": "baseline-2026-10-19/agents/nadia.md: Deliver metadata as an issue document (key `aso-<app>-<store>`), not buried in a comment, so it can be revised and diffed across revisions.",
+      "situation": "You are Nadia, ASO Lead. You have completed keyword research, copy drafting, and screenshot briefs for Velox on Google Play. The work is ready: final keywords with difficulty/volume, all copy under character limits, screenshot frame-by-frame briefs, and a baseline table of current metrics.",
+      "task": "Do you post the metadata in a comment on the task? Or do you create a document that can be tracked and diffed?",
+      "expect": {
+        "mustSay": [
+          "[Dd]ocument|aso-|issue.*doc|[Kk]ey.*aso"
+        ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "args": {
+              "question": {"matches": "\\b(comment|metadata|keywords|copy)\\b"}
+            },
+            "reason": "metadata must be a document, not collected via ask-owner question"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-[0-9]+",
+              "args": {"body": {"matches": "aso-velox-play"}}
+            },
+            {
+              "kind": "comment",
+              "say": "Metadata ready in issue doc aso-velox-play: 15 keywords ranked by difficulty/volume, Play description (4090/4000 chars), screenshot briefs with captions, baseline installs/CTR last 30 days."
+            }
+          ],
+          "summary": "Delivered metadata in issue document."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Here's the metadata:\nKeywords: 'math games', 'practice games', 'multiplication', 'elementary math'\nSubtitle: Math Practice Games for Kids\nDescription: [full text, 2000+ characters in comment]\nScreenshot briefs: [frame-by-frame in bullet list]"
+            }
+          ],
+          "summary": "Metadata in comment."
+        }
+      }
+    }
+  ]
+}

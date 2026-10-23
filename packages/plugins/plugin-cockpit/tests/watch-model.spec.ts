@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ageLabel,
+  authStreakAgents,
   blockedCheck,
   blockedOwnerCheck,
   FINISHED_RUN,
@@ -127,6 +128,49 @@ describe("run streak: the same error code three or more times in a row", () => {
   it("keeps agents apart", () => {
     const rows = [run("seo", "failed", "adapter_failed", 1), run("rev", "succeeded", null, 2), run("seo", "failed", "adapter_failed", 3), run("seo", "failed", "adapter_failed", 4)];
     expect(runStreakChecks(rows, agents).map((c) => c.key)).toEqual(["run-streak:seo:adapter_failed"]);
+  });
+});
+
+describe("auth streak agents: agents whose latest streakMin runs failed with the same error code", () => {
+  it("identifies agents with three claude_auth_required failures in a row", () => {
+    const rows = [run("seo", "failed", "claude_auth_required", 5), run("seo", "failed", "claude_auth_required", 6), run("seo", "failed", "claude_auth_required", 7)];
+    const agents = authStreakAgents(rows);
+    expect(agents.size).toBe(1);
+    expect(agents.get("seo")).toEqual({
+      code: "claude_auth_required",
+      startedAt: new Date(NOW.getTime() - 7 * 60_000).toISOString(),
+    });
+  });
+
+  it("does not flag other error codes", () => {
+    const rows = [run("seo", "failed", "adapter_failed", 5), run("seo", "failed", "adapter_failed", 6), run("seo", "failed", "adapter_failed", 7)];
+    expect(authStreakAgents(rows)).toEqual(new Map());
+  });
+
+  it("does not flag fewer than streakMin failures", () => {
+    const rows = [run("seo", "failed", "claude_auth_required", 6), run("seo", "failed", "claude_auth_required", 7)];
+    expect(authStreakAgents(rows)).toEqual(new Map());
+  });
+
+  it("breaks the streak on success or another code", () => {
+    const rows = [run("seo", "failed", "claude_auth_required", 5), run("seo", "succeeded", null, 6), run("seo", "failed", "claude_auth_required", 7)];
+    expect(authStreakAgents(rows)).toEqual(new Map());
+  });
+
+  it("keeps agents apart", () => {
+    const rows = [
+      run("seo", "failed", "claude_auth_required", 1),
+      run("rev", "succeeded", null, 2),
+      run("seo", "failed", "claude_auth_required", 3),
+      run("seo", "failed", "claude_auth_required", 4),
+      run("rev", "failed", "adapter_failed", 5),
+      run("rev", "failed", "adapter_failed", 6),
+      run("rev", "failed", "adapter_failed", 7),
+    ];
+    const agents = authStreakAgents(rows);
+    expect(agents.size).toBe(1);
+    expect(agents.has("seo")).toBe(true);
+    expect(agents.has("rev")).toBe(false);
   });
 });
 

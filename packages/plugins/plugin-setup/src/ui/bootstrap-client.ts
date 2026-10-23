@@ -36,6 +36,8 @@ export interface EnvInput {
   starter: StarterState;
   hires: TemplateHireLike[];
   actions: SetupActions;
+  /** Whether this is Partners in Biz's own company, allowing pib-scope templates. */
+  ownerCompany?: boolean;
 }
 
 function rec(value: unknown): Record<string, unknown> {
@@ -76,6 +78,7 @@ export function buildRunnerEnv(input: EnvInput): RunnerEnv {
     modules: input.modules,
     installed: plugins,
     options: input.options,
+    ownerCompany: input.ownerCompany,
     requireApproval: input.requireApproval,
     statuses: input.statuses,
     starter: input.starter,

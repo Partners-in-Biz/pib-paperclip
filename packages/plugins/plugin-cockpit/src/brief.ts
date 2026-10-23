@@ -11,6 +11,7 @@ import { openAskViews } from "./asks.js";
 import { assignableUser, ORIGIN } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
 import { message, type Env } from "./env.js";
+import { listRepairs, type RepairRow } from "./repairs.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
 import { goalViews, goalViewsBrief } from "./goals.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
@@ -203,13 +204,15 @@ export interface CompanyData {
   asks: AskView[];
   /** Open issues nobody is assigned to (older than a day). */
   unassigned: { count: number; items: UnassignedIssue[] };
+  /** Repair rows for escalation tracking. */
+  repairs: RepairRow[];
 }
 
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24): Promise<CompanyData> {
   const roles = await getRoles(env.ctx, companyId);
   const stored = await storedSnapshots(env, companyId);
   const own = await ownSnapshot(env, companyId);
-  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned] = await Promise.all([
+  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
     listAgents(env, companyId),
     listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
     listApprovals(env.ctx, companyId),
@@ -220,6 +223,10 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
       return [] as AskView[];
     }),
     listUnassigned(env.ctx, companyId),
+    listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }).catch((error) => {
+      env.ctx.logger.info("Cockpit repairs read failed", { companyId, error: message(error) });
+      return [] as RepairRow[];
+    }),
   ]);
   const enabled = await enabledModules(env, companyId, Object.keys(statuses));
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
@@ -238,13 +245,22 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     listeningSince: roles?.createdAt ?? null,
     asks,
     unassigned,
+    repairs,
   };
 }
 
 /** Everything waiting: questions for the owner first, then each plugin's items, unassigned work and the host's approvals and issues; each issue once. */
-export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId">>): WaitingEntry[] {
+export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs">>): WaitingEntry[] {
+  // Build a map of ask id -> escalation time for asks with escalate_ask repairs
+  const escalatedAsks = new Map<string, string>();
+  for (const repair of data.repairs ?? []) {
+    if (repair.targetKind === "ask" && repair.action === "escalate_ask") {
+      escalatedAsks.set(repair.targetId, repair.createdAt);
+    }
+  }
+
   const own = [
-    { source: "asks", sourceTitle: "Asked by agents", items: (data.asks ?? []).map(askWaitingItem) },
+    { source: "asks", sourceTitle: "Asked by agents", items: (data.asks ?? []).map((ask) => askWaitingItem(ask, escalatedAsks.get(ask.id))) },
     ...data.snapshots.map((snapshot) => ({ source: snapshot.plugin, sourceTitle: snapshot.title, items: snapshot.waiting })),
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
@@ -322,6 +338,35 @@ export function stuckFlowItem(stage: FlowStageView, link: (href: string) => stri
   };
 }
 
+/** Repairs from the last 7 days, formatted as at most 10 lines. */
+export function repairLines(rows: RepairRow[], max: number = 10): string[] {
+  if (!rows || rows.length === 0) return [];
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000);
+
+  const filtered = rows.filter((row) => {
+    const createdAt = new Date(row.createdAt);
+    return createdAt >= sevenDaysAgo;
+  });
+
+  if (filtered.length === 0) return [];
+
+  const lines: string[] = [];
+  for (let i = 0; i < Math.min(filtered.length, max - (filtered.length > max ? 1 : 0)); i++) {
+    const row = filtered[i];
+    if (!row) break;
+    const date = new Date(row.createdAt).toLocaleDateString("en-ZA", { month: "short", day: "numeric" });
+    lines.push(`${date} ${row.kind} ${row.targetKind}:${row.targetId} ${row.action} -> ${row.outcome}`);
+  }
+
+  if (filtered.length > max - 1) {
+    const remaining = filtered.length - lines.length;
+    lines.push(`…and ${remaining} more`);
+  }
+
+  return lines.slice(0, max);
+}
+
 /** Compact JSON for the Operator: waiting, health, KPIs, activity, agents incl. spend/budget. */
 export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number } = {}) {
   const windowHours = Math.min(Math.max(Math.round(options.windowHours ?? 24), 1), 720);
@@ -359,6 +404,12 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     .catch((error) => {
       env.ctx.logger.info("Brief: goals unreadable", { companyId, error: message(error) });
       return null;
+    });
+  const repairs = await listRepairs(env.ctx, companyId, { limit: 100 })
+    .then((rows) => repairLines(rows))
+    .catch((error) => {
+      env.ctx.logger.info("Brief: repairs unreadable", { companyId, error: message(error) });
+      return [];
     });
 
   return {
@@ -448,6 +499,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     improvements,
     /** Goals the owner confirmed or an agent proposed, each with its number now, progress and the change since last week. Null when they could not be read. */
     goals,
+    /** System repairs from the last 7 days, formatted as lines. */
+    repairs,
     setupMissing: data.setupMissing,
     links: { cockpit: link("/cockpit"), flows: link("/cockpit?tab=flows"), setup: link("/setup") },
   };

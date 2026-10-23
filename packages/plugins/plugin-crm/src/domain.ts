@@ -72,6 +72,7 @@ export interface Viewer {
   userId: string | null;
   agentId: string | null;
   role: string | null;
+  runId?: string | null;
 }
 
 export interface Grant {

@@ -9,9 +9,11 @@ import {
 } from "react";
 import {
   DataTable,
+  useHostContext,
   useHostLocation,
   useHostNavigation,
   usePluginAction,
+  usePluginData,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -75,6 +77,7 @@ import { ClientAgreementsCard, type CreatedKey } from "./agreements.js";
 import { agreementsVisible, type AgreementsView, type GrowthView } from "./agreements-view.js";
 import { ClientCareCard } from "./care.js";
 import { careVisible, type CareView } from "./care-view.js";
+import { DriveFiles } from "./DriveFiles.js";
 import type { CreatedLeadForm, LeadFormView } from "./leads-view.js";
 import type { ChecklistResult } from "./checklist-view.js";
 import { NewClientCard } from "./new-client.js";
@@ -83,6 +86,7 @@ import { DealSheet, type DealView } from "./deal.js";
 import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts.js";
 import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
 import { dialerHref, TELEPHONY_PLUGIN_KEY } from "../phone-link.js";
+import { DriveFolderLink } from "./DriveFolderLink.js";
 
 interface Account {
   id: string;
@@ -1477,6 +1481,11 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
             />
           ) : null}
           {company || companies.length === 0 ? (
+            (data.projects ?? []).map((project) => (
+              <DriveFiles key={project.projectId} projectId={project.projectId} />
+            ))
+          ) : null}
+          {company || companies.length === 0 ? (
             <NewClientCard
               onLoad={async () => {
                 setMessage("");
@@ -1847,6 +1856,8 @@ function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
   const [vatNumber, setVatNumber] = useState("");
   const [registrationNumber, setRegistrationNumber] = useState("");
   const contributions = useUiContributions();
+  const hostContext = useHostContext();
+  const driveFolderData = usePluginData<{ folder: { name: string; url: string } | null }>("drive-folder", { companyId: hostContext.companyId ?? undefined, crmCompanyId: company.id });
 
   function startEdit() {
     setName(company.name);
@@ -1895,6 +1906,7 @@ function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
     { key: "address", label: "Address", value: company.address ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{company.address}</span> : <NotSet /> },
     { key: "vatNumber", label: "VAT no.", value: company.vatNumber || <NotSet /> },
     { key: "registrationNumber", label: "Reg. no.", value: company.registrationNumber || <NotSet /> },
+    ...(driveFolderData.data?.folder ? [{ key: "driveFolder", label: "Drive folder", value: <DriveFolderLink folder={driveFolderData.data.folder} label="Drive folder" /> }] : []),
   ];
 
   return (

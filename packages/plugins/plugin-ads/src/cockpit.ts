@@ -21,7 +21,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { agentSummary } from "./agent.js";
 import { addDays } from "./dates.js";
-import { clientNames, listAccounts, listAlerts, listAudit, listConnections, listProposals, listScopes, summaryRows, type ProposalRow } from "./db.js";
+import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, listVariants, summaryRows, type ProposalRow } from "./db.js";
 import { errorMessage, scopeLabelOf } from "./domain.js";
 import { derive, sumRows } from "./metrics.js";
 import { formatMoney } from "./money.js";
@@ -31,11 +31,13 @@ import { scopePace } from "./pacing.js";
 import { ADS_ROLE_KEY, PLUGIN_ID, PROPOSAL_KIND_LABELS, SPEND_KINDS, platformLabel } from "./platforms.js";
 import { runtimeFor, type AdsRuntime } from "./runtime.js";
 import { todayIn } from "./dates.js";
+import { routeFromImpact } from "./owner-route.js";
 
 /** Scheduled jobs and their interval in minutes (manifest schedules). */
 export const ADS_JOBS: Array<{ key: string; title: string; everyMinutes: number }> = [
   { key: "sync-insights", title: "Read ad numbers", everyMinutes: 180 },
   { key: "refresh-connections", title: "Keep sign-ins alive", everyMinutes: 60 },
+  { key: "sweep-caps", title: "Pause ads at their cap", everyMinutes: 60 },
   { key: "setup-status", title: "Report setup status", everyMinutes: 60 },
 ];
 
@@ -88,6 +90,37 @@ async function kpis(rt: AdsRuntime): Promise<CockpitKpi[]> {
   out.push({ key: "ads_changes", label: "Ad changes waiting", value: String(open.length), hint: open.length === 0 ? "None open" : `${waiting} waiting for a person or the Reviewer`, raw: open.length, tone: waiting > 0 ? "warn" : "neutral", href: PROPOSALS, group: "marketing" });
   const alerts = await listAlerts(ctx, companyId, { status: "open", limit: 200 });
   out.push({ key: "ads_alerts", label: "Ad alerts", value: String(alerts.length), hint: alerts.length === 0 ? "Nothing unusual" : `${alerts.filter((a) => a.severity === "bad").length} serious`, raw: alerts.length, tone: alerts.some((a) => a.severity === "bad") ? "bad" : alerts.length ? "warn" : "ok", href: `${ADS}?tab=alerts`, group: "marketing" });
+  const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
+  const pending = await listAds(ctx, companyId, { policyStatus: "PENDING_REVIEW" });
+  out.push({ key: "ads_policy", label: "Ad policy reviews", value: String(disapproved.length), hint: disapproved.length === 0 ? "All ads approved" : `${pending.length} pending review`, raw: disapproved.length, tone: disapproved.length > 0 ? "bad" : pending.length > 0 ? "warn" : "ok", href: ACCOUNTS, group: "marketing" });
+  try {
+    const variants = await listVariants(ctx, companyId, { limit: 500 });
+    if (variants.length > 0) {
+      const today = todayIn(rt.config.timezone, rt.now());
+      const windowStart = addDays(today, -rt.config.variants.windowDays + 1);
+      const campaignMap = new Map<string, typeof variants>();
+      for (const v of variants) {
+        const key = `${v.account_id}:${v.campaign_external_id}`;
+        if (!campaignMap.has(key)) campaignMap.set(key, []);
+        campaignMap.get(key)!.push(v);
+      }
+
+      let winners = 0, fatigued = 0;
+      for (const [campaignKey, campaignVariants] of campaignMap) {
+        const [accId, campaignId] = campaignKey.split(":") as [string, string];
+        const { listAdDailyForCampaign } = await import("./db.js");
+        const adDaily = await listAdDailyForCampaign(ctx, companyId, accId, campaignId, windowStart);
+        const evaluated = (await import("./variants.js")).evaluateVariants(campaignVariants, adDaily, rt.config.variants, today);
+        winners += evaluated.filter((v) => v.winner).length;
+        fatigued += evaluated.filter((v) => v.fatigue).length;
+      }
+      out.push({ key: "ads_variants", label: "Ad variants", value: String(variants.length), hint: `${winners} winner${winners === 1 ? "" : "s"}${fatigued > 0 ? `, ${fatigued} fatigued` : ""}`, raw: variants.length, tone: "neutral", href: ADS, group: "marketing" });
+    } else {
+      out.push({ key: "ads_variants", label: "Ad variants", value: "0", hint: "None yet", raw: 0, tone: "neutral", href: ADS, group: "marketing" });
+    }
+  } catch (error) {
+    ctx.logger.info("Ads variants KPI failed", { error: errorMessage(error) });
+  }
   return out;
 }
 
@@ -123,7 +156,26 @@ async function healthChecks(rt: AdsRuntime, agentId: string | null): Promise<Hea
 function proposalWaiting(p: ProposalRow, names: Record<string, string>): WaitingItem {
   const label = scopeLabelOf(p.scope_key, names[p.scope_key]);
   const money = SPEND_KINDS.includes(p.kind) || p.origin.startsWith("budget_");
-  const missing = p.status === "in_review" && p.review_state !== "pending" ? "your yes" : p.status === "in_review" ? "the Reviewer, then your yes" : p.status === "approved" ? "to be run (or marked done)" : "changes by the ads agent";
+  const peetRequired = routeFromImpact(p.impact)?.route === "peet_required";
+  let missing = p.status === "in_review" && p.review_state !== "pending" ? "your yes" : p.status === "in_review" ? "the Reviewer, then your yes" : p.status === "approved" ? "to be run (or marked done)" : "changes by the ads agent";
+
+  if (peetRequired && (p.status === "in_review" || p.status === "approved")) {
+    const lifetimeRands = p.impact && typeof p.impact.lifetimeMinor === "number" ? (p.impact.lifetimeMinor / 100).toFixed(2) : "?";
+    const thresholdRands = p.impact && typeof p.impact.thresholdMinor === "number" ? (p.impact.thresholdMinor / 100).toFixed(2) : "?";
+    const why = `Lifetime budget R${lifetimeRands} exceeds the owner threshold R${thresholdRands}. `;
+    missing = `Peet's yes (above the owner threshold, Elon cannot sign it)`;
+    const whyText = why + (p.cap_state === "exceeds" ? "It also goes over the month's cap. " : "") + "Nothing changes in any ad platform until a person approves.";
+    return {
+      key: `ads-proposal:${p.id}`,
+      title: `${PROPOSAL_KIND_LABELS[p.kind]} for ${label}: ${p.title}`.slice(0, 160),
+      why: whyText,
+      href: PROPOSALS,
+      issueId: p.approval_issue_id,
+      kind: "money",
+      since: p.created_at,
+    };
+  }
+
   return {
     key: `ads-proposal:${p.id}`,
     title: `${PROPOSAL_KIND_LABELS[p.kind]} for ${label}: ${p.title}`.slice(0, 160),
@@ -138,7 +190,21 @@ function proposalWaiting(p: ProposalRow, names: Record<string, string>): Waiting
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const names = await clientNames(ctx, companyId);
   const proposals = await listProposals(ctx, companyId, { open: true, limit: 50 });
-  return proposals.map((p) => proposalWaiting(p, names));
+  const items = proposals.map((p) => proposalWaiting(p, names));
+  const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
+  for (const ad of disapproved.slice(0, 10)) {
+    const feedback = ad.policy_feedback ? ad.policy_feedback.slice(0, 200) : "No feedback provided by Meta";
+    items.push({
+      key: `ads-disapproved:${ad.id}`,
+      title: `Disapproved ad: ${ad.name}`.slice(0, 160),
+      why: `Meta declined this ad. Feedback: ${feedback}`,
+      href: ACCOUNTS,
+      issueId: null,
+      kind: "review",
+      since: ad.policy_changed_at,
+    });
+  }
+  return items;
 }
 
 async function activityItems(ctx: PluginContext, companyId: string): Promise<ActivityItem[]> {

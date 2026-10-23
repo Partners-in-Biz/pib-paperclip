@@ -50,7 +50,7 @@ import { AttachmentError, downloadAttachments, domainWarnings, failed, resultFro
 import { checkSuppression } from "../suppression.js";
 import { ownOneClickUrl } from "../unsubscribe.js";
 import { tagValue } from "./resend.js";
-import { espProviderFor, noteEspState } from "./runtime.js";
+import { espProviderFor, noteEspState, pauseEspLimiter } from "./runtime.js";
 import { EspApiError, type EspAttachment, type EspDomainRow, type EspEmail } from "./types.js";
 import { dailyCap, DAY_MS, highestDailyCap, utcDay, WARMUP_IDLE_RESET_DAYS } from "./warmup.js";
 
@@ -84,6 +84,8 @@ export const ESP_MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 export interface EspPick {
   account: AccountRow;
   domain: EspDomainRow | null;
+  /** A Gmail address the request named, carried by this (SES owner) account: the From header is this address, the sending account stays `account`. */
+  fromAddress?: string;
 }
 
 const recipientsOf = (request: Pick<MailSendRequested, "to" | "cc" | "bcc">) => [...request.to, ...(request.cc ?? []), ...(request.bcc ?? [])];
@@ -111,7 +113,15 @@ export function generationOf(row: Pick<SendRow, "delivery"> | null): number {
   return Number.isInteger(gen) && gen > 0 ? gen : 0;
 }
 
-export function buildEspEmail(input: { companyId: string; account: Pick<AccountRow, "address" | "from_name" | "reply_to">; fromName: string | null; request: MailSendRequested; unsubscribeUrl: string | null; attachments: EspAttachment[]; generation?: number }): { email: EspEmail; replyToMissing: boolean } {
+/**
+ * The `pib_send` tag value: the send's key made tag-safe (letters, digits, underscore, dash), or a hash of it when it is too long for a tag.
+ * An SES event names the send through it, so the same function is used wherever a tag is matched to a send.
+ */
+export function sendTagValue(key: string): string {
+  return key.length <= 200 ? tagValue(key) : `h_${createHash("sha256").update(key).digest("hex").slice(0, 48)}`;
+}
+
+export function buildEspEmail(input: { companyId: string; account: Pick<AccountRow, "address" | "from_name" | "reply_to">; fromName: string | null; request: MailSendRequested; unsubscribeUrl: string | null; attachments: EspAttachment[]; generation?: number; /** Also tag the message with its send key (SES: an unknown outcome is reconciled by the later Send event). */ sendTag?: boolean }): { email: EspEmail; replyToMissing: boolean } {
   const { request, account } = input;
   const replyTo = effectiveReplyTo(request.replyTo, account.address)?.email ?? account.reply_to ?? null;
   const email: EspEmail = {
@@ -126,10 +136,24 @@ export function buildEspEmail(input: { companyId: string; account: Pick<AccountR
     // RFC 8058: the https address and the Post header together. No mailto form: nobody reads the inbox of a send-only address.
     ...(request.marketing === true && input.unsubscribeUrl ? { headers: { "List-Unsubscribe": `<${input.unsubscribeUrl}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } } : {}),
     ...(input.attachments.length ? { attachments: input.attachments } : {}),
-    tags: [{ name: "pib_company", value: tagValue(input.companyId) }],
+    tags: [{ name: "pib_company", value: tagValue(input.companyId) }, ...(input.sendTag ? [{ name: "pib_send", value: sendTagValue(request.key) }] : [])],
     idempotencyKey: idempotencyKeyFor(input.companyId, request.key, input.generation ?? 0),
   };
   return { email, replyToMissing: replyTo === null };
+}
+
+/** The words for where a person looks up a message the provider may have taken. */
+const lookIn = (provider: string): string => (provider === "ses" ? "the SES console (Amazon SES, then Configuration sets and the account dashboard)" : "the provider's log (resend.com, Emails)");
+
+/**
+ * Marketing through a provider whose account is still in its sandbox (SES): refused before any call, so a person asks for production access
+ * instead of watching sends fail on unverified recipients. null when the provider reports no limits or is out of the sandbox.
+ */
+async function sandboxProblem(env: Env, loaded: LoadedConfig, marketing: boolean): Promise<string | null> {
+  if (!marketing) return null;
+  const provider = await espProviderFor(env, loaded, { forSending: true });
+  if (!provider.ok || !provider.quota || provider.quota.productionAccessEnabled) return null;
+  return "SES is in the sandbox: 200 a day, 1 a second, verified recipients only; ask AWS for production access.";
 }
 
 /** The reasons this send cannot go out from this account at all (permanent), or null. */
@@ -207,7 +231,7 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
   };
 
   // 1. Allowed to send at all.
-  const early = problem ?? accountScopeProblem(account, request) ?? (await notAllowed(env, loaded, pick, request)) ?? (await trackingProblem(env, loaded, pick, request));
+  const early = problem ?? accountScopeProblem(account, request) ?? (await notAllowed(env, loaded, pick, request)) ?? (await trackingProblem(env, loaded, pick, request)) ?? (await sandboxProblem(env, loaded, marketing));
   if (early) return fail(early);
 
   // 2. The do-not-email list.
@@ -304,12 +328,16 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
     }
 
     const generation = generationOf(before);
-    const built = buildEspEmail({ companyId, account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation });
+    const providerKey = loaded.config.esp.provider;
+    // A Gmail `from` carried by this account: the From header (and the SES envelope sender) is the named address, which sits on the verified domain; replies reach that mailbox.
+    // The carrier's Reply-To and display name do not apply to it: the only Reply-To is the request's own.
+    const named = pick.fromAddress ? await env.store.findAccountByAddress(companyId, pick.fromAddress) : null;
+    const built = buildEspEmail({ companyId, account: pick.fromAddress ? { ...account, address: pick.fromAddress, reply_to: null, from_name: named?.from_name ?? null } : account, fromName: loaded.config.fromName, request: outgoing, unsubscribeUrl, attachments, generation, sendTag: providerKey === "ses" });
     // After a definitive answer the next attempt (by hand, once the cause is fixed) must not reuse the key the provider may have kept with it,
     // and the mark of an earlier unanswered attempt belonged to that key. (Only the notes change: `delivery_status` is the provider's, and a
     // "failed" left there would hide a later "delivered" once the retry by hand goes out.)
     const answeredForGood = async () => env.store.patchSendDelivery(companyId, request.key, { gen: generation + 1, maybeAcceptedAt: null }).catch(() => undefined);
-    if (built.replyToMissing) warnings.push(`No Reply-To: replies go to ${account.address}, which nobody reads. Give the account a reply-to address (add-sending-domain with replyTo, or the request's replyTo).`);
+    if (built.replyToMissing && !pick.fromAddress) warnings.push(`No Reply-To: replies go to ${account.address}, which nobody reads. Give the account a reply-to address (add-sending-domain with replyTo, or the request's replyTo).`);
 
     const provider = await espProviderFor(env, loaded, { forSending: true });
     if (!provider.ok) {
@@ -341,7 +369,7 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
         }
         case "conflict": {
           await release();
-          const text = "The provider has an earlier attempt of this message under the same key that differed from this one, so whether it was delivered is unknown. Look in the provider's log (resend.com, Emails) before sending it again.";
+          const text = `The provider has an earlier attempt of this message under the same key that differed from this one, so whether it was delivered is unknown. Look in ${lookIn(providerKey)} before sending it again.`;
           await env.store.recordSendFailure(record, text, true, skipped);
           await answeredForGood();
           return failed(request, text, skipped);
@@ -350,11 +378,14 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
           await release();
           await noteEspState(env.ctx, companyId, { code: "key_refused", detail: message }, now);
           await env.store.markRetrying(record, message).catch(() => undefined);
+          if (providerKey === "ses") throw new EspUnavailable(`SES refused the Mailbox's access keys or has paused sending (${message}). The owner must check the keys in the Mailbox settings and the account in the SES console; the send is tried again meanwhile.`);
           throw new EspUnavailable(`The email provider refused the Mailbox's API key (${message}). The owner must create a new key and save it in the Mailbox settings; the send is tried again meanwhile.`);
         }
         case "quota": {
           await release();
           await noteEspState(env.ctx, companyId, { code: "quota", detail: message }, now);
+          // A provider that refuses on quota (SES) is not asked again for a minute by any send of the company.
+          if (!provider.provider.idempotentSends) pauseEspLimiter(companyId, loaded.config.esp, 60);
           await env.store.markRetrying(record, message).catch(() => undefined);
           throw new EspUnavailable(`The email provider's sending quota is used up (${message}); the send is tried again later.`);
         }
@@ -362,6 +393,14 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
           if (outcome.batched) {
             // The messages of a batch the provider never answered are not sent again one by one: that could deliver them twice.
             const text = "The provider did not answer the batch this message was in, so whether it was delivered is unknown. Look in the provider's log (resend.com, Emails) before sending it again.";
+            await env.store.recordSendFailure(record, text, true, skipped);
+            return failed(request, text, skipped);
+          }
+          if (!provider.provider.idempotentSends) {
+            // The provider has no idempotency key: repeating the call could deliver the message twice. It stays counted against the day (it may have gone out)
+            // and fails for good; the person looks in the console. (A later SES Send event that names this send moves it to sent: T2.)
+            reserved = false;
+            const text = `SES did not confirm this message (${message}), so whether it was sent is unknown. SES cannot tell a repeat from a new message. Look in ${lookIn(providerKey)} before sending it again: sending it again could deliver it twice.`;
             await env.store.recordSendFailure(record, text, true, skipped);
             return failed(request, text, skipped);
           }
@@ -388,7 +427,7 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
     await noteEspState(env.ctx, companyId, { code: null }, now);
     const providerId = outcome.id;
     const restart = Boolean(pick.domain?.last_sent_at) && now - Date.parse(pick.domain!.last_sent_at!) > WARMUP_IDLE_RESET_DAYS * DAY_MS;
-    await env.store.markSendSentProvider(request.key, { provider: "resend", providerMessageId: providerId, accountId: account.id, fromAddress: account.address, skipped });
+    await env.store.markSendSentProvider(request.key, { provider: providerKey, providerMessageId: providerId, accountId: account.id, fromAddress: account.address, skipped });
     await env.store.noteEspSend(companyId, domainName, new Date(now).toISOString(), restart).catch((error: unknown) => env.ctx.logger.info("Domain send time not recorded", { domain: domainName, error: errorMessage(error) }));
     if (options.draftRowId) {
       await env.store
@@ -400,13 +439,13 @@ export async function performEspSend(env: Env, loaded: LoadedConfig, pick: EspPi
     return {
       key: request.key,
       status: "sent",
-      messageId: `resend:${providerId}`,
+      messageId: `${providerKey}:${providerId}`,
       threadId: null,
       sentAt: new Date(now).toISOString(),
       error: null,
       permanent: false,
       context: request.context,
-      provider: "resend",
+      provider: providerKey,
       // Where a reply arrives: a provider send has no thread, so the sender that wants to attribute a reply keeps this and the key.
       replyTo: built.email.replyTo ?? null,
       ...(skipped.length ? { suppressed: skipped } : {}),

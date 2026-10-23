@@ -14,7 +14,7 @@ The review page (`/p/<token>/review?key=...`) shows side-by-side screenshots of 
 
 - **Screenshots** are saved in `/tmp/pib-preview-shots/<token>-<live|proposed>[-m].png` (`SHOTS_DIR`). A screenshot is reused for 55 minutes (the review page links each image more than once). Every call that starts Chromium, and the service at startup, deletes screenshots older than an hour. Only files with that exact name are ever deleted.
 - **Chromium profiles**: every run gets a folder of its own, `/tmp/pib-preview-profiles/p-xxxxxx` (`PROFILES_DIR`), used as `--user-data-dir` with `HOME`, `TMPDIR` and the XDG folders pointing into it, so the HTTP cache and crash data go with it. The folder is removed when the run ends, whatever the outcome; one a killed run left behind is swept after an hour. Only `p-xxxxxx` folders directly under that root are ever removed.
-- **`--incognito` is required** with `--user-data-dir` on this Chromium (153, `--headless=new`): without it `--screenshot` and `--dump-dom` never finish. Checked on the VPS on 2026-10-03; recheck after a Chromium update (`chromium-1243` in `CHROME_PATH`).
+- **`--incognito` is required** with `--user-data-dir` on this Chromium (153, `--headless=new`): without it `--screenshot` and `--dump-dom` never finish. Checked on the VPS on 2026-10-03; recheck after a Chromium update. The binary is the newest `chromium-<build>` under `~/.cache/ms-playwright` (looked up on each run; `CHROME_PATH` pins one). Before PAR-4798 the build folder was fixed in the code, Playwright removed it, and every `/shot` answered 502 while `/health` stayed ok.
 - Steady state: at most about an hour of screenshots (a few MB each) and no profile folders.
 
 ## Deploy

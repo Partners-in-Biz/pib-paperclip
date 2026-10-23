@@ -7,7 +7,7 @@
  * lasts 7 days), or whose platform was down, would otherwise come back with a hole in its numbers and every month-to-date figure (cap pacing, the
  * 90% pause request, the over-cap check) would understate spend. Only a read that covered all of that window moves the "last good read" forward.
  */
-import { audit, dailyRows, getConnection, listAccounts, recordDaily, updateAccount, updateConnection, upsertCampaign, type AccountRow } from "./db.js";
+import { audit, dailyRows, getConnection, listAccounts, recordDaily, updateAccount, updateConnection, upsertAd, upsertCampaign, type AccountRow } from "./db.js";
 import { addDays, daysBetween, monthOf, monthStart, todayIn } from "./dates.js";
 import { errorMessage } from "./domain.js";
 import { markConnected, markNeedsReconnect, tokenFor } from "./connections.js";
@@ -27,6 +27,7 @@ export interface SyncResult {
   campaigns: number;
   days: number;
   ledgerEntries: number;
+  ads: number;
   error?: string;
   needsReconnect?: boolean;
   /** Days since the last good read, when the read had to reach back further than a normal one (an outage was backfilled). */
@@ -70,7 +71,7 @@ export function syncWindow(input: { lastOkAt: string | null; until: string; time
 export async function syncAccount(rt: AdsRuntime, account: AccountRow, options: { days?: number } = {}): Promise<SyncResult> {
   const fail = async (message: string, needsReconnect = false): Promise<SyncResult> => {
     await updateAccount(rt.ctx, rt.companyId, account.id, { syncOk: false, syncError: message.slice(0, 400), at: rt.now().toISOString() });
-    return { accountId: account.id, ok: false, campaigns: 0, days: 0, ledgerEntries: 0, error: message, ...(needsReconnect ? { needsReconnect } : {}) };
+    return { accountId: account.id, ok: false, campaigns: 0, days: 0, ledgerEntries: 0, ads: 0, error: message, ...(needsReconnect ? { needsReconnect } : {}) };
   };
   const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
   if (!conn || conn.status === "disabled") return fail("No connection is linked to this ad account. Connect the platform again.");
@@ -113,6 +114,19 @@ export async function syncAccount(rt: AdsRuntime, account: AccountRow, options: 
         ledgerEntries += (await recordDaily(rt.ctx, rt.companyId, account, { campaignExternalId: old.campaign_external_id, day: old.day, spendMinor: 0, impressions: 0, clicks: 0, conversions: 0, valueMinor: 0 })).ledgerEntry ? 1 : 0;
       }
     }
+
+    let adsCount = 0;
+    try {
+      const ads = await provider.listAds(env, token, ref);
+      for (const a of ads) {
+        await upsertAd(rt.ctx, rt.companyId, account.id, { externalId: a.externalId, name: a.name, adSetExternalId: a.adSetExternalId, creativeExternalId: a.creativeExternalId, rawStatus: a.rawStatus, policyStatus: a.policyStatus, feedback: a.feedback });
+      }
+      adsCount = ads.length;
+    } catch (error) {
+      // Like insights failure: log but don't fail the sync or set sync_failed, so the stored campaigns/insights are preserved.
+      rt.ctx.logger.info("Ads policy read failed (non-fatal)", { accountId: account.id, error: errorMessage(error) });
+    }
+
     await updateAccount(rt.ctx, rt.companyId, account.id, { syncOk: true, at: rt.now().toISOString(), ...(partial ? { partial: true } : {}) });
     if (conn.status !== "connected") await markConnected(rt, conn);
     else await updateConnection(rt.ctx, rt.companyId, conn.id, { lastOk: true });
@@ -122,7 +136,7 @@ export async function syncAccount(rt: AdsRuntime, account: AccountRow, options: 
       await audit(rt.ctx, rt.companyId, { actor: "system", action: window.truncated ? "sync.gap_truncated" : "sync.backfilled", scopeKey: account.scope_key, subject: account.id, detail: { lastOkAt: account.last_sync_ok_at, gapDays: window.gapDays, readDays: days, wantedDays: window.wantedDays } });
       if (window.truncated) rt.ctx.logger.info("Ads sync gap is longer than a read can go back", { accountId: account.id, gapDays: window.gapDays, readDays: days });
     }
-    return { accountId: account.id, ok: true, campaigns: campaigns.length, days, ledgerEntries, ...(backfilled && !partial ? { gapDays: window.gapDays! } : {}), ...(window.truncated && !partial ? { truncated: true } : {}), ...(partial ? { partial: true } : {}) };
+    return { accountId: account.id, ok: true, campaigns: campaigns.length, days, ledgerEntries, ads: adsCount, ...(backfilled && !partial ? { gapDays: window.gapDays! } : {}), ...(window.truncated && !partial ? { truncated: true } : {}), ...(partial ? { partial: true } : {}) };
   } catch (error) {
     if (error instanceof ProviderError && error.tokenInvalid) {
       await markNeedsReconnect(rt, conn, error.message);

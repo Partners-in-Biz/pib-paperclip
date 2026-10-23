@@ -1,5 +1,7 @@
 # SEO
 
+Thread roll is `40_000` comment bytes in `src/engine/thread.ts` (`THREAD_ROLL_BYTES`).
+
 Paperclip plugin `partnersinbiz.seo` (v0.23.2): 90-day SEO sprints for Partners in Biz's own sites and its clients.
 
 - A **sprint** is one site on the 90-day plan for its **kind of business** (see *Plans by business type*): 42–46 tasks over weeks 0–13, then open-ended compounding, plus 13–15 seeded directories and business profiles. Three extras (AI search with 8 more tasks, Google Analytics reading, page groups) are **off until a person switches them on for a sprint** (see *0.23.1*).

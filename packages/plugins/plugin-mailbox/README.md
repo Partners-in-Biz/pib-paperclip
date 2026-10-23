@@ -1,6 +1,6 @@
 # Mailbox
 
-Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold.
+Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend or Amazon SES, 0.7.0) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold.
 
 ## Gmail hub (0.2.0)
 
@@ -24,7 +24,20 @@ The Mailbox is the company's Gmail. Every PiB plugin sends and receives mail thr
 | `domainChecks` | default on: the daily SPF, DKIM, DMARC and MX check of every sending domain |
 | `dkimSelectors` | extra DKIM selectors to look for, comma separated (the usual ones are always tried) |
 | `unsubscribe.secret` | secret ref, 16+ characters: with it, and once the Mailbox has proved the proxy rule works (see One-click unsubscribe), marketing mail to one recipient carries an https one-click unsubscribe link of the Mailbox's own |
-| `esp.*` | the email provider (Resend), off by default (see 0.6.0): `enabled`, `apiKey` and `webhookSecret` (secret refs), `ratePerSecond` (default 4), `steadyDailyCap` (default 10,000), `prefer` (`gmail` or `transactional`), `defaultFrom`, `batch` |
+| `esp.provider` | `resend` (default) or `ses` (0.7.0); the email provider to use for send-only accounts |
+| `esp.enabled` | off by default; switch the email provider on (requires credentials and configuration) |
+| `esp.prefer` | `gmail` (default) or `marketing`; which kinds of mail go through the provider (0.7.0: SES only; `marketing` routes Campaigns bulk and CRM sequences through SES, everything else stays on Gmail) |
+| `esp.ratePerSecond` | default 4; request rate limit for the provider |
+| `esp.steadyDailyCap` | default 10,000; daily recipient limit for marketing mail on a new domain after warm-up |
+| `esp.defaultFrom` | default sending account address for transactional mail through the provider |
+| `esp.batch` | opt-in micro-batcher (Resend only; SES has no batch) |
+| `esp.apiKey` | Resend: secret ref, the API key (see 0.6.0) |
+| `esp.webhookSecret` | Resend: secret ref, the webhook signing secret (see 0.6.0) |
+| `esp.ses.accessKeyId` | SES: secret ref, AWS IAM access key id (0.7.0) |
+| `esp.ses.secretAccessKey` | SES: secret ref, AWS IAM secret access key (0.7.0) |
+| `esp.ses.region` | SES: default `eu-north-1`; AWS region for the SES account (0.7.0) |
+| `esp.ses.configurationSet` | SES: configuration set name for event publishing (0.7.0) |
+| `esp.ses.snsTopicArn` | SES: SNS topic ARN (`arn:aws:sns:<region>:<account>:<name>`) for bounce and complaint events (0.7.0) |
 
 ### Connect Gmail
 
@@ -353,3 +366,105 @@ A provider domain whose hard bounce rate reached 2% or whose complaint rate reac
 ### Tests (0.6.1)
 
 `tests/private-mail.spec.ts`, `tests/private-mail.pg.spec.ts`, `tests/esp/client-message.spec.ts` (the tracking guard, the answers that do not say, a provider that cannot be asked, the Reply-To in the result), and in `tests/esp/pg.spec.ts` the hold: lifted once and on record, a bounce after it counts again, never by an agent, never without a reason, never when nothing is held, the audit-or-nothing rule, the Setup item and the card. `pnpm test` runs 626 tests in 40 files (the SQL and worker ones on a real Postgres where embedded-postgres is installed), `pnpm typecheck` and `pnpm build` pass. 42 mutations of the new rules (the scrub in each settle statement and in the conflict path, the stale sweep and the hourly call, the withheld reads, the sent-copy preview on both paths, the retry refusal, the tracking guard and its unknown answer, a provider that cannot be asked, the flags registered and read back, the Reply-To in the result, the person-only check, the actor taken from the request, the audit row and its rollback, the baseline arithmetic, the re-judging after a lift, the Setup item, the announced opens and clicks, the migration's check) were applied one by one and each was caught by a failing test.
+
+## 0.7.0: Amazon SES for marketing (PAR-1857, audit PAR-1848)
+
+Deploy: **stop-first** (migration `011` and one new public webhook `ses`). No new capability. After the deploy run the plugin's skill sync for every company (the hourly job also does it). Nothing changes for a company without SES switched on.
+
+### Amazon SES instead of Resend (the flip that sends marketing only)
+
+From 0.6.0, Resend was the only email provider. 0.7.0 adds Amazon SES (the SESv2 REST API) as an alternative. Like Resend, SES is a **send-only account kind** (off until the owner switches it on) and is separate from Gmail. Unlike Resend, SES has no batch, no idempotency key (a send whose outcome is unknown may have been accepted), and bounces, complaints and delivery confirmations arrive via SNS (not webhooks). A configuration set publishes the events; the Mailbox listens on a public SNS webhook.
+
+### Switching it on (all one-time, in the Setup checklist with links)
+
+1. An AWS account with SES (https://console.aws.amazon.com/ses/). An IAM user or role with `ses:SendEmail`, `ses:GetAccount` and the identity calls. Save the access key and secret access key as Paperclip secrets and pick them under Mailbox settings, **Email provider, Amazon SES, AWS access key id** and **AWS secret access key**. Tick **Switch the email provider on** and **set the provider to ses**.
+2. The region (`Mailbox settings, Email provider, Amazon SES, AWS region`, default `eu-north-1`). The Mailbox sends through the SES account in that region.
+3. A configuration set (created in the SES console; the Mailbox does not create it): name it under **Configuration set**. SES publishes bounce, complaint, delivery, delivery delay and reject events from this set (not open or click tracking).
+4. An SNS topic in the **same region as the SES account** (created in the SNS console; the Mailbox does not create it): save its ARN as `arn:aws:sns:<region>:<account>:<name>` under **SNS topic ARN**. The configuration set publishes to it.
+5. An SNS subscription on the topic to the Mailbox's public webhook: ARN → **Create subscription** → HTTPS, endpoint `<publicBaseUrl>/api/plugins/partnersinbiz.mailbox/webhooks/ses` → Create. Leave the subscription **Pending Confirmation** for now.
+6. **Request confirmation** (SNS console, the topic, the subscription, **Confirm subscription**). When the first message arrives (in the test below), the Mailbox's webhook answers the confirmation and marks the topic confirmed in company state.
+7. Test it: In Mailbox settings, click the link to **Check SES account**, which asks SES for its quota and state. It also verifies the configuration set and the SNS topic (existence and the topic's region). Until the SNS subscription confirms, a test badge shows that and says to "Request confirmation" in the SNS console.
+
+All three items (SES account, configuration set, SNS topic) are optional. SES is not switched on until the access keys and configuration set are named, the SNS topic ARN is named, the subscription endpoint is confirmed, and `prefer` is not `gmail`.
+
+### A sending domain for a client's own domain (like 0.6.0)
+
+`add-sending-domain` with `provider: ses` takes the same fields as for Resend and:
+
+- registers the domain at SES (Easy DKIM, no custom MAIL FROM yet), adopting one the owner already verified in the console;
+- creates a **send-only account** (`accounts.provider = ses`, status `pending`; `connected` once SES verifies the domain), bound to the client when `clientRef` is given;
+- reads the DNS now and watches the domain every day, judged on what SES needs: three DKIM CNAMEs; MX and TXT for the custom MAIL FROM host only when the Mailbox set one (the Mailbox never changes MAIL FROM on an identity it did not create, and a domain it did not register never gets a custom MAIL FROM). A domain no Gmail mailbox is on is not asked for an MX or an SPF of its own;
+- returns `dns` with the records and the **onboarding steps**, same contract as Resend.
+
+`list-sending-domains` shows each domain's status and the 7-day bounce and complaint rates (like Resend, but not the daily cap numbers, which SES does not publish).
+
+### How SES takes a request
+
+The contract is unchanged: `mail.send.requested` in, `mail.send.result` out. Which account sends a request (pick-sender.ts):
+
+| Request | Sender |
+|---|---|
+| names a sender (`from`) | that account, Gmail or SES. An address that is neither connected nor a SES account fails for good |
+| no `from`, nothing set up | the default Gmail account, as always |
+| no `from`, **marketing for a client** that has a SES account | that account. It is never moved to another sender if it cannot send: the send fails with the reason |
+| no `from`, **transactional**, `esp.prefer = transactional` | the company's own SES account (`esp.defaultFrom`, else the oldest ready one), only while it is verified. Otherwise Gmail takes it: the preference never holds an invoice back |
+
+The SES send path, in this order:
+
+1. **Allowed to send at all**: the provider is on with both access keys AND the configuration set AND the SNS topic is confirmed; the account is connected and its domain is `verified` at SES; the request is for the account's client; the domain's check is not `bad`. Each is a permanent failure that says what to fix; the mail is never re-routed to Gmail.
+2. **The do-not-email list**, per sender, same code as Gmail and Resend.
+3. **Soft-bounce back-off** (marketing): same as Resend.
+4. **An unsubscribe link** (marketing): same as Resend.
+5. **A blind retry is bounded** (the send may have been accepted when no answer came back).
+6. **The SES quota** (below): not a daily cap (SES does not publish daily totals), but the account's 24-hour limit.
+7. **The request rate** (`esp.ratePerSecond`), then the call. **SES has no idempotency key**, so a send whose outcome is unknown (5xx, no answer) fails for good and tells the sender to look in the provider's log.
+8. Attachments (same size limit as Resend, 15 MB).
+
+SES answers: refused message or 400 is permanent; a 429 rate limit or 503 defers (nothing stored, the sender retries); a 401 API key refused, an account suspended, or quota used up defers and shows on the Cockpit; a 5xx or no answer is unknown (permanent; the send fails and the name of the log is given).
+
+**Not accepted is not the same as no answer.** SES never confirms sending; only a `Delivery` event says a message went out. A `Send` event says SES took it. A send that gets no answer at all and whose message may have been accepted fails for good: nothing is stored, and the sender is told to look in the provider's log. A delivery event with an unknown message (a tag mismatch) is ignored.
+
+The result is the same `mail.send.result` with `messageId` `ses:<id>` (never mistakable for a Gmail id), `provider: "ses"`, `suppressed[]` and `warnings[]`. Replies go to the Reply-To (the account's, or the request's `replyTo`); the Mailbox does not read them.
+
+### Bounces, complaints and reputation (SES events via SNS)
+
+SES's configuration set publishes events to SNS; the Mailbox's public webhook parses and applies them (`esp/sns.ts`, `esp/ses.ts`):
+
+| Event | What the Mailbox does |
+|---|---|
+| `Send` | logs for later (the first Delivery or bounce for that message counts) |
+| `Delivery` | counts it, forgets earlier soft bounces of the address, marks the send delivered |
+| `DeliveryDelay` | marks the send delayed |
+| `Bounce`, Permanent | the address goes on the do-not-email list for **all** mail and is announced as `contact.suppressed`; counted toward the domain's bounce rate |
+| `Bounce`, Transient or Undetermined | marketing to the address waits 6, 24, then 72 hours; the third in 14 days puts it on the marketing list |
+| `Complaint` | the address goes on the do-not-email list for marketing, **on the sender's list**, announced as `contact.suppressed` and as a withdrawn consent; counted toward the complaint rate |
+| `Bounce`, OnAccountSuppressionList | treated as a hard bounce (SES's account-level suppression list) |
+| `Reject` | marks the send rejected (identity not verified, message refused); a reason is logged |
+
+Rules for every event: it is **applied once** (the delivery id + type + recipients + company tag are both recorded, so a replay and a second copy under another id change nothing); it must be about a **domain the company registered** AND **a message this Mailbox sent** (a send it recorded, or the `pib_company` tag the Mailbox puts on every SES send). The webhook is SNS (topic-wide), so when the PiB web app or another app shares the SES account and a domain, its bounces and complaints arrive here too: they are acknowledged and ignored when the company is not the sender. The day counters move last, so an event that fails halfway and is re-applied does not count twice.
+
+**SNS prerequisites.** The host's route `POST /api/plugins/partnersinbiz.mailbox/webhooks/ses` (public) hands the plugin the raw body and headers. An SNS message is JSON with `Type`, `MessageId`, `Message`, `Timestamp`, `TopicArn`, `Signature`, `SignatureVersion`, `SigningCertURL`. The signature is verified against the AWS public key at `SigningCertURL` (same `Region.amazonaws.com` as the topic, cached 24 hours, budget 10 fetches per minute per topic ARN). On a SubscriptionConfirmation the webhook fetches the `SubscribeURL` and marks the topic confirmed in company state; on a Notification it parses the inner SES event and applies it; unsubscribe confirmations are logged and ignored. **The host must pass the raw body for text/plain webhook posts** (SNS posts `Content-Type: text/plain`); without it no SNS message is read, and Setup will tell the owner so.
+
+**Reputation.** Same thresholds as Resend: hard bounce rate 2% or more, complaint rate 0.1% or more over 7 days hold marketing back (transactional still goes) until the window clears. Sample sizes: bounce rate from 100 recipients, complaint rate from 1,000 (under the samples, three hard bounces or two complaints are a problem on their own). A bounce or complaint re-judges the domain at once. Reputation is per company and domain.
+
+### Differences from Resend
+
+- **No batch** (`batching: false`). Resend supports batch; SES does not. Marketing is always one recipient per message.
+- **No idempotency key.** SES never confirms sending. A send without an answer is unknown and fails for good, because it cannot be repeated without risking delivery twice.
+- **Send is not `Sent`.** Resend's webhook says a message reached the provider; SES's `Send` event is log-only. A `Delivery` event or a `Reject`/`Bounce` event is what Resend's `sent` is. Until then nothing is known.
+- **Per-recipient events.** SES's `Delivery` and `Bounce` events name the recipients (usually one per message).
+- **No tracking domains.** SES configuration sets have no tracking settings (only by a mail client turning it on in the SES console). Campaigns publishes to the same `mail.delivery` so the records are there.
+- **No daily cap.** SES publishes a 24-hour limit from the console, not a daily envelope the Mailbox controls. The quota check asks SES at the start, and every send checks it. Over quota the send is deferred.
+- **On rollback to 0.6.6** the `ses` endpoint disappears while SNS keeps posting to it (if the subscription is not switched off first). Switch off the SNS subscription before rolling back, or accept that bounce and complaint events stay unprocessed that window.
+
+### Migration 011
+
+`accounts` adds a unique index on (company_id, provider, address), replacing the one per provider. No change to the send or other tables.
+
+### Tools, actions, tables
+
+No new tool. Changed: `list-sending-domains` shows `provider` (resend or ses). The SES webhook is public like the Resend one.
+
+Health on the Cockpit: `mailbox:esp-*` (same format for both providers). Setup: three optional items (SES account, configuration set, SNS topic), one per provider.
+
+Tests: the provider code is tested against mock SES (every documented error answer, quota check), SNS signature verification against independent computation, the sender with every rule above (a replayed webhook, a bad or stale signature, a duplicate event, a domain not yet verified, a message without SES sending it, a soft bounce back-off, a bounce or complaint re-judging the domain). Migration 011 was applied to a restored copy of the live data with `migration-dryrun.sh`.

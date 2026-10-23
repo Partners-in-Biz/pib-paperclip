@@ -27,18 +27,46 @@ const creative: JsonSchema = {
 };
 
 const proposalFields: Record<string, JsonSchema> = {
-  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign and change_budget."),
-  name: str("create_campaign: the new campaign's name. creative_check: a label for the copy."),
+  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, and create_ad."),
+  name: str("create_campaign: the new campaign's name. create_ad_set: the new ad set's name. create_ad_creative: the creative's name. create_ad: the ad's name. creative_check: a label for the copy."),
   objective: str("create_campaign: Meta OUTCOME_LEADS, OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT or OUTCOME_APP_PROMOTION; Google SEARCH (the only Google type version 0.1 creates). Default OUTCOME_LEADS / SEARCH."),
   dailyBudgetMinor: int("create_campaign: the daily budget in minor units of the account's currency (15000 means 150.00)."),
-  startDate: str("create_campaign: YYYY-MM-DD it should start. Leave out to start when someone switches it on."),
-  endDate: str("create_campaign: YYYY-MM-DD it should end. Leave out for no end date (the approval then shows an open-ended commitment)."),
+  lifetimeBudgetMinor: int("create_ad_set: the total budget in minor units for the lifetime of the ad set."),
+  startDate: str("create_campaign: YYYY-MM-DD it should start. Leave out to start when someone switches it on. create_ad_set: YYYY-MM-DD (required)."),
+  endDate: str("create_campaign: YYYY-MM-DD it should end. Leave out for no end date. create_ad_set: YYYY-MM-DD (required)."),
   specialAdCategories: list("Meta special ad categories that apply (CREDIT, EMPLOYMENT, HOUSING, ISSUES_ELECTIONS_POLITICS...). Empty when none apply."),
   audience: str("create_campaign: who it is for, in words. Audiences and ad sets are built in the platform in version 0.1; this is for the approver and the person building it."),
+  campaignExternalId: str("change_budget: the campaign's platform id from list-ad-campaigns. create_ad_set: the campaign's platform id."),
+  newDailyBudgetMinor: int("change_budget: the new daily budget in minor units."),
+  optimizationGoal: str("create_ad_set: LINK_CLICKS, LANDING_PAGE_VIEWS, IMPRESSIONS, REACH, OFFSITE_CONVERSIONS, or APP_INSTALLS."),
+  billingEvent: str("create_ad_set: IMPRESSIONS or LINK_CLICKS."),
+  targeting: {
+    type: "object",
+    description: "create_ad_set: geo_locations, age range, interests.",
+    additionalProperties: false,
+    properties: {
+      countries: list("create_ad_set: required array of 2-letter ISO country codes."),
+      ageMin: int("create_ad_set: minimum age (13-65, default 18)."),
+      ageMax: int("create_ad_set: maximum age (18-65, default 65, must be >= ageMin)."),
+      interests: {
+        type: "array",
+        description: "Optional: interests as { id, name }.",
+        items: { type: "object", additionalProperties: false, required: ["id"], properties: { id: str("Interest id."), name: str("Interest name.") } },
+      },
+    },
+  },
+  publisherPlatforms: list("create_ad_set: optional array of facebook, instagram, audience_network, messenger (automatic if not specified)."),
+  pageId: str("create_ad_creative: the Page's id (digits only)."),
+  imageHash: str("create_ad_creative: the image hash from upload-ad-media (exactly one of imageHash or videoId)."),
+  videoId: str("create_ad_creative: the video id from upload-ad-media (exactly one of imageHash or videoId)."),
+  link: str("create_ad_creative: the https URL this creative links to."),
+  headline: str("create_ad_creative: 1-40 characters."),
+  body: str("create_ad_creative: 1-2000 characters."),
+  cta: oneOf(["LEARN_MORE", "SHOP_NOW", "SIGN_UP", "DOWNLOAD", "BOOK_TRAVEL", "CONTACT_US", "GET_OFFER", "SUBSCRIBE", "APPLY_NOW", "ORDER_NOW", "GET_QUOTE", "WATCH_MORE"], "create_ad_creative: call-to-action button text."),
+  adSetExternalId: str("create_ad: the ad set's platform id (from an executed create_ad_set proposal)."),
+  creativeExternalId: str("create_ad: the creative's id (from an executed create_ad_creative proposal)."),
   creative,
   notes: str("Anything the approver should know."),
-  campaignExternalId: str("change_budget: the campaign's platform id from list-ad-campaigns."),
-  newDailyBudgetMinor: int("change_budget: the new daily budget in minor units."),
   targets: {
     type: "array",
     description: "pause_campaign / resume_campaign: the campaigns, each { accountId, campaignExternalId } from list-ad-campaigns (up to 25).",
@@ -135,7 +163,7 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
   {
     name: "check-ad-creative",
     displayName: "Check ad copy",
-    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
+    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. Also scores the copy on the shared creative rubric (out of 100; 80 passes). A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check. It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
     parametersSchema: schema(["platform"], {
       client,
       platform: oneOf(["meta", "google"], "Which platform's rules."),
@@ -149,11 +177,23 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "upload-ad-media",
+    displayName: "Upload an ad image or video",
+    description: "Upload an image or video for use in ads (Meta only for now). Returns the image hash or video id to use in ad creation. Image files up to 10 MB; videos must be https.",
+    parametersSchema: schema(["accountId", "mediaType"], {
+      accountId: str("The ad account's id from list-ad-accounts."),
+      mediaType: oneOf(["image", "video"], "image or video."),
+      filename: str("Image only: the filename (for reference)."),
+      imageBase64: str("Image only: the file encoded as base64."),
+      videoUrl: str("Video only: the https URL of the video file."),
+    }),
+  },
+  {
     name: "propose-ad-change",
     displayName: "Propose an ad change",
     description:
-      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
-    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "creative_check"], "What to change."), client, ...proposalFields }),
+      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, create_ad_set (Meta only, made PAUSED), create_ad_creative (Meta only), create_ad (Meta only, made PAUSED), creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
+    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "creative_check"], "What to change."), client, ...proposalFields }),
   },
   {
     name: "revise-ad-proposal",
@@ -166,6 +206,12 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     displayName: "List proposals",
     description: "Proposals with status and what each waits for. Default: the open ones (needs changes, waiting for approval, approved).",
     parametersSchema: schema([], { client: clientOrAll, status: str("open (default), or one of needs_changes, in_review, approved, executing, executed, cleared, failed, rejected, cancelled, expired.") }),
+  },
+  {
+    name: "list-variants",
+    displayName: "List ad variants",
+    description: "Ad variants with winner and fatigue flags. Winner is the lowest-CPA ad in the campaign over the analysis window, among ads meeting minimum impressions and conversions. Fatigue is when CTR drops consistently over consecutive days, the total drop exceeds the threshold, and frequency exceeds the threshold on the last day.",
+    parametersSchema: schema([], { client, accountId: str("Optional: the ad account's id from list-ad-accounts to list variants for one account."), campaignExternalId: str("Optional: the campaign's platform id from list-ad-campaigns to list variants for one campaign.") }),
   },
   {
     name: "get-ad-proposal",

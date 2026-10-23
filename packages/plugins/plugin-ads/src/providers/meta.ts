@@ -14,7 +14,7 @@
 import { decimalToMinor } from "../money.js";
 import { AdsError } from "../domain.js";
 import { FORM_HEADERS, ProviderError, expiresAtFrom, formBody, int, readJson, request, str } from "./http.js";
-import type { AccountRef, AdsProvider, CampaignInfo, CampaignStatus, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AccountCaps, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_META_VERSION = "v25.0";
 const DAY_MS = 86_400_000;
@@ -220,6 +220,36 @@ export const metaProvider: AdsProvider = {
     return out;
   },
 
+  async listAds(env, token, account) {
+    const ads = await pages<Record<string, unknown>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      {
+        fields: "id,name,adset_id,creative,status,ad_review_feedback{ad_review_status,feedback}",
+        limit: 500,
+      },
+      "Meta list ads",
+    );
+    const out: AdPolicyRow[] = [];
+    for (const ad of ads) {
+      const creative = ad.creative as Record<string, unknown> | undefined;
+      const review = ad.ad_review_feedback as Record<string, unknown> | undefined;
+      const policyStatus = review ? (str(review.ad_review_status).toUpperCase() as AdPolicyStatus) : "ACTIVE";
+      const feedback = review && review.feedback ? (Array.isArray(review.feedback) ? (review.feedback as Array<{ message?: string }>)[0]?.message : str(review.feedback)) ?? null : null;
+      out.push({
+        externalId: str(ad.id),
+        name: str(ad.name),
+        adSetExternalId: str(ad.adset_id) || null,
+        creativeExternalId: creative ? str(creative.id) : null,
+        rawStatus: str(ad.status),
+        policyStatus,
+        feedback,
+      });
+    }
+    return out;
+  },
+
   async createCampaign(env, token, account, request_) {
     const created = await post<{ id?: string }>(
       env,
@@ -255,5 +285,153 @@ export const metaProvider: AdsProvider = {
     }
     const res = await post<{ success?: boolean }>(env, token, `/${campaignExternalId}`, { daily_budget: dailyBudgetMinor }, "Meta campaign budget");
     if (res.success === false) throw new ProviderError("Meta did not accept the budget change.");
+  },
+
+  async uploadAdImage(env, token, account, { filename, imageBase64 }) {
+    const images = await post<{ images?: Record<string, { hash?: string }> }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adimages`,
+      { bytes: imageBase64 },
+      "Meta upload ad image",
+    );
+    const hash = images.images?.[filename]?.hash;
+    if (!hash) throw new ProviderError("Meta did not return the image hash.");
+    return { imageHash: hash };
+  },
+
+  async uploadAdVideo(env, token, account, { videoUrl, title }) {
+    const uploaded = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/advideos`,
+      { file_url: videoUrl, ...(title ? { title } : {}) },
+      "Meta upload ad video",
+    );
+    if (!uploaded.id) throw new ProviderError("Meta did not return the video id.");
+    return { videoId: uploaded.id };
+  },
+
+  async createAdSet(env, token, account, request) {
+    const targeting = {
+      geo_locations: { countries: request.targeting.countries },
+      age_min: request.targeting.ageMin,
+      age_max: request.targeting.ageMax,
+      ...(request.targeting.interests?.length ? { interests: request.targeting.interests } : {}),
+      ...(request.publisherPlatforms?.length ? { publisher_platforms: request.publisherPlatforms } : {}),
+    };
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adsets`,
+      {
+        name: request.name,
+        campaign_id: request.campaignExternalId,
+        lifetime_budget: request.lifetimeBudgetMinor,
+        start_time: `${request.startDate}T00:00:00`,
+        end_time: `${request.endDate}T23:59:59`,
+        billing_event: request.billingEvent,
+        optimization_goal: request.optimizationGoal,
+        bid_strategy: "LOWEST_COST_WITHOUT_CAP",
+        status: "PAUSED",
+        targeting: JSON.stringify(targeting),
+      },
+      "Meta create ad set",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new ad set's id.");
+    return { externalId: created.id, name: request.name };
+  },
+
+  async createAdCreative(env, token, account, request) {
+    const adCreative = {
+      name: request.name,
+      object_story_spec: {
+        page_id: request.pageId,
+        link_data: {
+          message: request.headline,
+          link: request.link,
+          caption: request.body,
+          call_to_action: { type: request.cta },
+          ...(request.imageHash ? { image_hash: request.imageHash } : {}),
+          ...(request.videoId ? { video_id: request.videoId } : {}),
+        },
+      },
+    };
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/adcreatives`,
+      { creative: JSON.stringify(adCreative) },
+      "Meta create ad creative",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new creative's id.");
+    return { externalId: created.id, name: request.name };
+  },
+
+  async createAd(env, token, account, request) {
+    const created = await post<{ id?: string }>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      {
+        name: request.name,
+        adset_id: request.adSetExternalId,
+        creative: JSON.stringify({ creative_id: request.creativeExternalId }),
+        status: request.status === "ACTIVE" ? "ACTIVE" : "PAUSED",
+      },
+      "Meta create ad",
+    );
+    if (!created.id) throw new ProviderError("Meta did not return the new ad's id.");
+    return { externalId: created.id, name: request.name };
+  },
+
+  async accountCaps(env, token, account): Promise<AccountCaps> {
+    const accountData = await get<{ spend_cap?: unknown; currency?: string }>(env, token, `/${actId(account.externalId)}`, { fields: "spend_cap,currency" }, "Meta account caps");
+    const spendCapStr = str(accountData.spend_cap);
+    const spendCapMinor = spendCapStr && spendCapStr !== "0" ? int(spendCapStr) : null;
+    const adSetRows = await pages<Record<string, unknown>>(env, token, `/${actId(account.externalId)}/adsets`, { fields: "id,campaign_id,lifetime_budget,effective_status", limit: 200 }, "Meta ad sets");
+    const adSets = adSetRows
+      .filter((r) => {
+        const status = str(r.effective_status).toUpperCase();
+        return status !== "ARCHIVED" && status !== "DELETED";
+      })
+      .map((r) => ({
+        externalId: str(r.id),
+        campaignExternalId: str(r.campaign_id),
+        lifetimeBudgetMinor: r.lifetime_budget !== undefined && str(r.lifetime_budget) !== "0" ? int(r.lifetime_budget) : null,
+      }));
+    return { spendCapMinor, adSets };
+  },
+
+  async campaignHealth(env, token, account, campaignExternalIds): Promise<CampaignHealth[]> {
+    if (campaignExternalIds.length === 0) return [];
+    const campaignRows = await get<Page<Record<string, unknown>>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/campaigns`,
+      { fields: "id,effective_status", filtering: JSON.stringify([{ field: "id", operator: "IN", value: campaignExternalIds }]) },
+      "Meta campaign health",
+    );
+    const campaignMap = new Map<string, { status: CampaignStatus; rawStatus: string }>();
+    for (const row of campaignRows.data ?? []) {
+      const id = str(row.id);
+      if (id) campaignMap.set(id, { status: campaignStatus(row.effective_status), rawStatus: str(row.effective_status) });
+    }
+    const adRows = await pages<Record<string, unknown>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      { fields: "campaign_id,effective_status", filtering: JSON.stringify([{ field: "effective_status", operator: "IN", value: ["DISAPPROVED"] }]) },
+      "Meta disapproved ads",
+    );
+    const disapprovedCount = new Map<string, number>();
+    for (const row of adRows) {
+      const campaignId = str(row.campaign_id);
+      if (campaignId) disapprovedCount.set(campaignId, (disapprovedCount.get(campaignId) ?? 0) + 1);
+    }
+    return campaignExternalIds.map((id) => {
+      const info = campaignMap.get(id) ?? { status: "other" as const, rawStatus: "UNKNOWN" };
+      return { campaignExternalId: id, status: info.status, rawStatus: info.rawStatus, disapprovedAds: disapprovedCount.get(id) ?? 0 };
+    });
   },
 };

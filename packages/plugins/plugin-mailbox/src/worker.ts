@@ -68,6 +68,7 @@ import { readEspState } from "./esp/runtime.js";
 import { liftReputationHold } from "./esp/hold.js";
 import { isEspProvider, type EspDomainRow } from "./esp/types.js";
 import { ESP_ENDPOINT, handleEspWebhook } from "./esp/webhook.js";
+import { SES_ENDPOINT, handleSnsWebhook } from "./esp/sns.js";
 import { eraseSubject, onConsentRecorded } from "./erasure.js";
 import { isFreeMailDomain } from "./free-mail.js";
 import { handleUnsubscribeWebhook, probeCompanies, probeUnsubscribeProxy, probeUrl } from "./unsubscribe.js";
@@ -181,7 +182,7 @@ const plugin = definePlugin({
         clientRef: optionalString(params, "clientRef") ?? null,
         region: optionalString(params, "region") ?? null,
         createdBy: userId,
-        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider) },
       });
       return { created, ...view };
     });
@@ -307,6 +308,12 @@ const plugin = definePlugin({
       env.ctx.logger.info("Provider webhook handled", { outcome: result.outcome });
       return;
     }
+    // Amazon SES delivery events via SNS: signed with AWS signature; a message that does not verify throws, so the host answers with an error and SNS retries.
+    if (input.endpointKey === SES_ENDPOINT) {
+      const result = await handleSnsWebhook(env, input);
+      env.ctx.logger.info("SNS webhook handled", { outcome: result.outcome });
+      return;
+    }
     const outcome = await handleUnsubscribeWebhook(env, input);
     env.ctx.logger.info("Unsubscribe webhook handled", { outcome });
   },
@@ -419,7 +426,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
         clientRef: optionalString(body, "clientRef") ?? null,
         region: optionalString(body, "region") ?? null,
         createdBy: `agent:${run.agentId}`,
-        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl) },
+        ownerLinks: { settings: (await settingsHref(ctx).catch(() => ({ href: "/company/settings/instance/plugins" }))).href, webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider) },
       });
       return { content: `${view.domain}: ${view.ready ? "ready to send" : view.status === "verified" ? "verified" : "waiting for DNS records"}${created ? " (registered now)" : ""}`, data: { created, ...view } };
     }
@@ -870,7 +877,7 @@ async function checkSenderDomain(companyId: string, params: Record<string, unkno
 /** The onboarding of a domain at the email provider: the records the provider has not verified yet, and what is already right. */
 function espOnboarding(row: EspDomainRow, report: DomainReport, reportsMailbox: string | null) {
   const pending = row.status === "verified" ? [] : row.records.filter((record) => record.status !== "verified");
-  const instructions = dnsInstructions({ ...row, records: pending }, { report, reportsMailbox });
+  const instructions = dnsInstructions({ ...row, records: pending, provider: row.provider as "resend" | "ses" }, { report, reportsMailbox });
   const alreadyDone = row.records.filter((record) => record.status === "verified" && record.record.toUpperCase() !== "TRACKING").map((record) => `${record.record} ${record.type} at ${record.fqdn}`);
   const nothing = pending.length === 0 && !instructions.dmarc;
   return {
@@ -915,7 +922,7 @@ async function sendingDomainsOverview(ctx: PluginContext, companyId: string, dom
     enabled: config.enabled,
     ready: { domains: readiness.domains, sending: readiness.sending },
     blockers: readiness.blockers,
-    webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl),
+    webhookUrl: espWebhookUrl(loaded.config.publicBaseUrl, loaded.config.esp.provider),
     /** What the provider last answered about the Mailbox's key: set when it was refused or the quota is used up. */
     providerState: state && !state.ok ? { code: state.code, detail: state.detail, at: state.at } : null,
     domains: views,

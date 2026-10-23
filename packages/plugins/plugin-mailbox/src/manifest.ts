@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
-import { DOMAIN_JOB_KEY, ESP_ENDPOINT, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
+import { DOMAIN_JOB_KEY, ESP_ENDPOINT, SES_ENDPOINT, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -74,6 +74,11 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: ESP_ENDPOINT,
       displayName: "Email provider events",
       description: "POST /api/plugins/partnersinbiz.mailbox/webhooks/resend: the email provider's delivery events (delivered, bounced, complained, delayed, failed, opened, clicked, domain changes), signed with Svix. A delivery is believed only when its signature matches a company's saved webhook signing secret (and is under five minutes old); anything else is refused and changes nothing.",
+    },
+    {
+      endpointKey: SES_ENDPOINT,
+      displayName: "Amazon SES events",
+      description: "POST /api/plugins/partnersinbiz.mailbox/webhooks/ses: Amazon SES delivery events (bounce, complaint, delivery, send) via SNS. A message is believed only when its AWS signature verifies and it matches a saved SNS topic ARN; anything else is refused and changes nothing.",
     },
     {
       endpointKey: UNSUBSCRIBE_ENDPOINT,

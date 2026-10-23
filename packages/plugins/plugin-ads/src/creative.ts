@@ -6,6 +6,7 @@
  * `blocker` findings stop a proposal from going to review (a platform would reject it, or the client's brand forbids it).
  * `warn` findings go to the Reviewer with the proposal.
  */
+import { AD_POLICY_CLAIMS, scoreCreative, type CreativePlatform, type CreativeRubricResult } from "@partnersinbiz/pib-plugin-kit";
 import type { AdPlatform } from "./platforms.js";
 
 export interface CreativeInput {
@@ -32,6 +33,7 @@ export interface CreativeResult {
   blockers: number;
   warnings: number;
   findings: CreativeFinding[];
+  rubric?: CreativeRubricResult;
 }
 
 const LIMITS: Record<AdPlatform, Array<{ field: keyof CreativeInput; max: number; hard: boolean; label: string }>> = {
@@ -45,18 +47,6 @@ const LIMITS: Record<AdPlatform, Array<{ field: keyof CreativeInput; max: number
     { field: "description", max: 90, hard: true, label: "description" },
   ],
 };
-
-/** Claims an ad platform's policy treats as misleading or unsubstantiated. A hit is for the Reviewer, not an automatic refusal. */
-const CLAIMS: Array<{ rule: string; pattern: RegExp; hint: string }> = [
-  { rule: "guarantee", pattern: /\b(guarantee[ds]?|guaranteed)\b/i, hint: "A guarantee needs proof and terms the page states. Remove it, or have the client confirm it." },
-  { rule: "risk_free", pattern: /\b(risk[- ]free|no[- ]risk|zero risk)\b/i, hint: "No ad can promise no risk." },
-  { rule: "superlative", pattern: /(?:^|\s)(#1|no\.?\s?1|number\s(?:one|1)|best in|world'?s best|the best)\b/i, hint: "A ranking claim needs a source the ad can show." },
-  { rule: "absolute_pct", pattern: /\b100\s?%\s?(safe|effective|free|guaranteed|natural|results?)\b/i, hint: "Absolute claims are rejected by ad policy." },
-  { rule: "miracle", pattern: /\b(miracle|instant(?:ly)? (?:results?|cure|relief)|cure[sd]?\b|get rich)/i, hint: "Health and wealth cure claims are rejected by ad policy." },
-  { rule: "before_after", pattern: /\bbefore\s?(?:and|&|\/)\s?after\b/i, hint: "Before-and-after images and claims are restricted on Meta." },
-  { rule: "personal_attribute", pattern: /\b(are you|do you have|did you)\s+(diabetic|depressed|anxious|overweight|obese|bankrupt|in debt|gay|pregnant|disabled|unemployed|sick)/i, hint: "Ads may not imply they know a personal attribute (health, finances, identity). Rephrase to describe the offer, not the person." },
-  { rule: "urgency_caps", pattern: /(!{3,}|\b[A-Z]{4,}(?:\s+[A-Z]{4,}){2,})/, hint: "Shouting (capitals, repeated exclamation marks) lowers approval and trust." },
-];
 
 /** Topics that need a special ad category declared on Meta (and that Google restricts). */
 const CATEGORY_WORDS: Array<{ category: string; pattern: RegExp }> = [
@@ -89,7 +79,7 @@ export function checkCreative(input: CreativeInput, options: { bannedWords?: str
     banned.forEach((re, i) => {
       if (re.test(text)) findings.push({ level: "blocker", rule: "banned_word", where, text: `Uses "${(options.bannedWords ?? [])[i]}", which the client's brand profile bans.` });
     });
-    for (const claim of CLAIMS) {
+    for (const claim of AD_POLICY_CLAIMS) {
       if (claim.pattern.test(text)) findings.push({ level: "warn", rule: claim.rule, where, text: claim.hint });
     }
   }
@@ -124,6 +114,68 @@ export function checkCreative(input: CreativeInput, options: { bannedWords?: str
   }
   const blockers = findings.filter((f) => f.level === "blocker").length;
   return { ok: blockers === 0, blockers, warnings: findings.length - blockers, findings };
+}
+
+/**
+ * Build rubric input from ad creative fields and call scoreCreative.
+ * Merges rubric blockers into the findings, deduping banned_word blockers, and updates ok/blockers/warnings.
+ */
+export function checkCreativeWithRubric(input: CreativeInput, options: { bannedWords?: string[] } = {}): CreativeResult {
+  const baseResult = checkCreative(input, options);
+
+  // Build rubric input
+  const platform = input.platform === "google" ? ("web" as CreativePlatform) : ("facebook" as CreativePlatform);
+  const textParts = [
+    input.headline ?? "",
+    input.primaryText ?? "",
+    input.description ?? "",
+    input.callToAction ?? "",
+  ].filter((s) => s.trim());
+  const text = textParts.join("\n");
+
+  const rubricResult = scoreCreative({
+    platform,
+    text,
+    landingUrl: input.landingUrl ?? undefined,
+    bannedWords: options.bannedWords ?? [],
+  });
+
+  // Merge rubric blockers into findings, deduping banned_word blockers
+  const existingBannedWords = new Set(
+    baseResult.findings
+      .filter((f) => f.rule === "banned_word")
+      .map((f) => {
+        const match = f.text.match(/Uses "([^"]+)"/);
+        return match ? match[1] : "";
+      })
+      .filter(Boolean),
+  );
+
+  const newFindings = [...baseResult.findings];
+  for (const blocker of rubricResult.blockers) {
+    if (blocker.rule === "banned_word") {
+      const match = blocker.text.match(/Uses "([^"]+)"/);
+      const word = match ? match[1] : "";
+      if (existingBannedWords.has(word)) continue; // Dedupe
+    }
+    newFindings.push({
+      level: "blocker",
+      rule: blocker.rule,
+      where: "copy",
+      text: blocker.text,
+    });
+  }
+
+  const blockers = newFindings.filter((f) => f.level === "blocker").length;
+  const warnings = newFindings.length - blockers;
+
+  return {
+    ok: blockers === 0,
+    blockers,
+    warnings,
+    findings: newFindings,
+    rubric: rubricResult,
+  };
 }
 
 /** The creative fields the proposal carries, or null when it carries none (a budget change has no copy). */
