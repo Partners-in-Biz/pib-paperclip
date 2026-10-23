@@ -8,7 +8,7 @@ import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError } from "./broker.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
 import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
-import { DRIVE_SUBFOLDERS } from "./convention.js";
+import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
 
 const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo", "social", "campaigns", "ads", "ops"] as const;
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
@@ -65,17 +65,20 @@ export interface SaveDriveFileResult {
 }
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[] }): Promise<SaveDriveFileResult> {
-  const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256, subfolder } = input;
+  const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
     return { status: "invalid_name", hint: 'Name must be YYYY-MM-DD <what> v<n>.<ext> or ISSUE-step-ts.<ext>' };
   }
 
-  // Validate subfolder early, before any file/broker work
+  // Validate subfolder early, before any file/broker work. The producer plugins still send the old numbered names
+  // ("02 Assets", "04 Reports"): those are translated to the drive's own names first, then everything is validated against the same list.
+  let subfolder: string | undefined = input.subfolder || undefined;
   if (subfolder) {
     if (typeof subfolder !== "string" || subfolder.trim() === "") {
       return { status: "invalid_subfolder", hint: `subfolder must be a non-empty string` };
     }
+    subfolder = translateSubfolder(subfolder);
     if (!(DRIVE_SUBFOLDERS as readonly string[]).includes(subfolder)) {
       return { status: "invalid_subfolder", hint: `subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}` };
     }
@@ -154,6 +157,8 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   }
 
   let resolvedSubfolderId: string | null = null;
+  // The sub-folder the file really goes into (null: the folder itself, also when the folder has no sub-folders and the requested one is ignored)
+  let savedSubfolder: string | null = null;
   // Pass include_tree when subfolder is set, so already-ensured projects return tree with subfolders
   const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, ...(subfolder ? { include_tree: true } : {}) });
   if (typeof folderRes !== "object" || !folderRes) {
@@ -172,22 +177,22 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_input", hint: "No folder_id from ensure result" };
   }
 
-  // Resolve subfolder to folderId from tree
+  // Resolve subfolder to folderId from tree, by the exact path below the folder (a nested name such as "Assets/Social" is one path)
   if (subfolder) {
-    const tree = folderAny.tree ?? [];
-    const projectFolderPath = folderAny.path;
-    const subfolderEntry = tree.find((entry: any) => {
-      if (!entry.path) return false;
-      // Match exact last segment and verify parent path
-      const segments = entry.path.split("/");
-      const lastSegment = segments[segments.length - 1];
-      const parentPath = segments.slice(0, -1).join("/");
-      return lastSegment === subfolder && parentPath === projectFolderPath;
-    });
-    if (!subfolderEntry) {
-      return { status: "invalid_subfolder", hint: `Project does not have subfolder "${subfolder}" in its Drive folder structure` };
+    const tree: Array<{ path?: string; folderId?: string }> = folderAny.tree ?? [];
+    const folderPath: string = folderAny.path;
+    if (tree.length === 0) {
+      // A folder with no standard sub-folders (a book, company or marketing folder): the sub-folder is ignored and the file goes into the folder itself.
+      // It is stored with no sub-folder, which is where it is.
+    } else {
+      const subfolderEntry = tree.find((entry) => entry.path === `${folderPath}/${subfolder}`);
+      if (!subfolderEntry?.folderId) {
+        const options = tree.filter((entry) => entry.path?.startsWith(`${folderPath}/`)).map((entry) => entry.path!.slice(folderPath.length + 1));
+        return { status: "invalid_subfolder", hint: `This project's Drive folder has no "${subfolder}" sub-folder. Its sub-folders are: ${options.join(", ")}` };
+      }
+      resolvedSubfolderId = subfolderEntry.folderId;
+      savedSubfolder = subfolder;
     }
-    resolvedSubfolderId = subfolderEntry.folderId;
   }
 
   const uploadFolderId = resolvedSubfolderId ?? folderId;
@@ -209,7 +214,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   try {
     const { file: inserted } = await upsertDriveFile(ctx, {
       companyId, projectId, kind: fileKind, folderId: uploadFolderId, name, sha256: computedSha256,
-      driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null, subfolder: subfolder ?? null,
+      driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null, subfolder: savedSubfolder,
     });
     return { status: "saved", driveFileId: inserted.id, url: stripSignedUrl(inserted.webUrl), name: inserted.name, sha256: inserted.sha256, subfolder: inserted.subfolder, duplicate: false };
   } catch (e) {

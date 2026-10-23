@@ -91,6 +91,20 @@ function toBrokerError(status: number, text: string): BrokerError {
   return new BrokerError(`Google Drive error: ${msg}`, status, false);
 }
 
+/**
+ * Find-then-create has no lock in Drive, and a client's saves all go through one folder, so two first saves for the same
+ * client could each make the folder and its sub-folders. The plugin worker is one process: calls with the same key run one
+ * after the other, so the second finds what the first made. Different keys run in parallel.
+ */
+const chains = new Map<string, Promise<unknown>>();
+function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const next = (chains.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn);
+  chains.set(key, next);
+  const clear = () => { if (chains.get(key) === next) chains.delete(key); };
+  next.then(clear, clear);
+  return next;
+}
+
 export function createGoogleDriveBroker(
   fetchFn: GoogleFetch,
   key: ServiceAccountKey,
@@ -157,7 +171,10 @@ export function createGoogleDriveBroker(
 
   const anchorCache = new Map<string, DriveFile>();
   /** The folder at a fixed path below the Shared Drive root: existing folders are used by name, missing ones created (never a loose root folder). */
-  async function pathFolder(segments: readonly string[], create: boolean): Promise<DriveFile | null> {
+  function pathFolder(segments: readonly string[], create: boolean): Promise<DriveFile | null> {
+    return create ? serialized(`${sharedDriveId}|anchors`, () => pathFolderUnlocked(segments, true)) : pathFolderUnlocked(segments, false);
+  }
+  async function pathFolderUnlocked(segments: readonly string[], create: boolean): Promise<DriveFile | null> {
     const key = segments.join("/");
     const cached = anchorCache.get(key);
     if (cached) return cached;
@@ -212,7 +229,10 @@ export function createGoogleDriveBroker(
     return files[0] ?? null;
   }
 
-  async function ensure(body: EnsureBody): Promise<EnsureResult> {
+  function ensure(body: EnsureBody): Promise<EnsureResult> {
+    return serialized(`${sharedDriveId}|${body.entity_type}|${body.entity_id}`, () => ensureUnlocked(body));
+  }
+  async function ensureUnlocked(body: EnsureBody): Promise<EnsureResult> {
     const { entity_type: type, entity_id: id, name } = body;
     // A fixed root such as "root:products" is the existing folder at its known path, not a new folder.
     const fixed = type === "root" ? DRIVE_ANCHORS[id] : undefined;
@@ -221,7 +241,7 @@ export function createGoogleDriveBroker(
       return { folder: asAnchor(type, id, fixed, file), created: false, tree: [] };
     }
     const wantsSubfolders = (body.subfolders ?? []).length > 0;
-    // pibComplete marks a folder whose numbered sub-folders all exist; a folder that wants some gets it only after the last one.
+    // pibComplete marks a folder whose standard sub-folders all exist; a folder that wants some gets it only after the last one.
     const tag: Record<string, string> = { pibEntityType: type, pibEntityId: idTag(body.entity_id), ...(wantsSubfolders ? {} : { pibComplete: "1" }), ...(body.created_by_run ? { pibRun: body.created_by_run.slice(0, 100) } : {}) };
 
     let folder = await findRegistered(type, id);
@@ -260,14 +280,30 @@ export function createGoogleDriveBroker(
 
     let registered = toRegistry(type, id, folder);
     const tree: EnsureResult["tree"] = [];
+    // A sub-folder may be a nested path such as "Assets/Images": every segment is found or created (a human-made folder is reused as it is).
+    // The tree lists one entry per requested path (its leaf); the intermediate folders are made but not listed.
+    const walked = new Map<string, DriveFile>();
     for (const sub of body.subfolders ?? []) {
-      let child = await findChildFolder(folder.id, sub);
-      let subCreated = false;
-      if (!child) {
-        child = await createFolder(sub, folder.id, `${registered.path}/${sub}`, { pibEntityType: "subfolder", pibEntityId: idTag(`${id}/${sub}`) });
-        subCreated = true;
+      const segments = sub.split("/").map((segment) => segment.trim()).filter(Boolean);
+      if (!segments.length) continue;
+      let parent = folder;
+      let child: DriveFile = folder;
+      let leafCreated = false;
+      for (let i = 0; i < segments.length; i++) {
+        const here = segments.slice(0, i + 1).join("/");
+        const known = walked.get(here);
+        if (known) {
+          child = known;
+          leafCreated = false;
+        } else {
+          const found = await findChildFolder(parent.id, segments[i]!);
+          leafCreated = !found;
+          child = found ?? (await createFolder(segments[i]!, parent.id, `${registered.path}/${here}`, { pibEntityType: "subfolder", pibEntityId: idTag(`${id}/${here}`) }));
+          walked.set(here, child);
+        }
+        parent = child;
       }
-      tree.push({ path: `${registered.path}/${sub}`, folderId: child.id, created: subCreated });
+      tree.push({ path: `${registered.path}/${segments.join("/")}`, folderId: child.id, created: leafCreated });
     }
     if (!wantsSubfolders && !registered.complete) {
       // A folder made before the tag existed (no sub-folders to wait for) is complete: say so once.

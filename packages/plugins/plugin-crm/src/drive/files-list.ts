@@ -3,6 +3,7 @@
  * No database context or side effects. Groups drive files by subfolder value.
  */
 import type { DriveFile } from "./store.js";
+import { DRIVE_SUBFOLDERS } from "./convention.js";
 
 export interface ClientFile {
   name: string;
@@ -14,7 +15,7 @@ export interface ClientFile {
 export interface FileGroup {
   subfolder: string | null;
   label: string;
-  sortNumber: number; // For ordering: 1-5, 99, or 999 for root files
+  sortNumber: number; // For ordering: the index in DRIVE_SUBFOLDERS, UNKNOWN_SORT for a name not in it (old numbered names too), ROOT_SORT for root files
   files: ClientFile[];
 }
 
@@ -46,21 +47,26 @@ function mapToClientFiles(files: DriveFile[]): ClientFile[] {
     }));
 }
 
+const UNKNOWN_SORT = 100;
+const ROOT_SORT = 999;
+
 /**
- * Extract the leading number from a subfolder name (e.g. "03 Deliverables" -> 3).
- * Returns 999 for null/unknown subfolders, indicating they should appear last.
+ * The position of a subfolder in the drive's own order (DRIVE_SUBFOLDERS: the client folders first, then the product ones).
+ * A name that is not in it (an old numbered name such as "03 Deliverables", or anything else) sorts after all of those,
+ * and the root files (no subfolder) sort last.
  */
 function getSortNumber(subfolder: string | null): number {
-  if (!subfolder) return 999;
-  const match = subfolder.match(/^(\d+)/);
-  return match ? parseInt(match[1], 10) : 999;
+  if (!subfolder) return ROOT_SORT;
+  const index = (DRIVE_SUBFOLDERS as readonly string[]).indexOf(subfolder);
+  return index === -1 ? UNKNOWN_SORT : index;
 }
 
 /**
  * List and group drive files by subfolder. Files are ordered by creation date
  * (newest first) within each group. Files are grouped by their saved subfolder
- * value (e.g. "03 Deliverables"). Files with null/unknown subfolder are grouped
- * in "Project root files" and appear last.
+ * value (e.g. "Deliverables") and the groups follow the order of DRIVE_SUBFOLDERS.
+ * Groups whose name is not in it (old numbered names, anything else) come after those,
+ * by name; files with no subfolder are grouped in "Project root files" and appear last.
  *
  * Files with non-https URLs are filtered out and not returned.
  *

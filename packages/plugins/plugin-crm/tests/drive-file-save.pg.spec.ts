@@ -9,10 +9,11 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { saveDriveFile } from "../src/drive/save.js";
 import { driveFileSave, driveFolderEnsure } from "../src/drive/tools.js";
 import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
-import { listDriveFiles, getDriveFile } from "../src/drive/store.js";
+import { listDriveFiles, getDriveFile, setProjectDriveKind } from "../src/drive/store.js";
+import { CLIENT_SUBFOLDERS, PRODUCT_SUBFOLDERS } from "../src/drive/convention.js";
 import { insertAccount } from "../src/db.js";
 import { createAccount } from "../src/domain.js";
-import { DRIVE_ID, KEY_JSON, fakeGoogle, folderPaths, isFolder, uploadsOf, type FakeGoogleOptions } from "./support/fake-google-drive.js";
+import { DRIVE_ID, KEY_JSON, LAYOUT, fakeGoogle, folderAt, folderPaths, isFolder, pathOf, uploadsOf, type FakeGoogleOptions } from "./support/fake-google-drive.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const CO_A = "co-a", CO_B = "co-b";
@@ -66,12 +67,9 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     configMap.set(companyId, { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId } });
   }
 
-  /** The project's Drive folder and its numbered sub-folder by name, found by what Drive holds. */
-  const subfolderOf = (google: ReturnType<typeof fakeGoogle>, project: string, name: string) => {
-    const projectFolder = google.files.find((f) => isFolder(f) && f.appProperties?.pibEntityType === "project" && f.appProperties?.pibEntityId === project)!;
-    return google.files.find((f) => isFolder(f) && f.name === name && f.parents[0] === projectFolder.id)!;
-  };
+  /** The project's Drive folder (here an unlinked project, so its own folder in Own projects) and its sub-folder by exact path, found by what Drive holds. */
   const projectFolderOf = (google: ReturnType<typeof fakeGoogle>, project: string) => google.files.find((f) => isFolder(f) && f.appProperties?.pibEntityType === "project" && f.appProperties?.pibEntityId === project)!;
+  const subfolderOf = (google: ReturnType<typeof fakeGoogle>, project: string, path: string) => folderAt(google.files, `${pathOf(google.files, projectFolderOf(google, project))}/${path}`)!;
 
   it("contentBase64 save -> status 'saved', url no sig, 1 upload into the project's folder", async () => {
     const { viewer, google, configMap } = setupContext();
@@ -342,23 +340,98 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(google.calls).toHaveLength(0);
   });
 
-  it("save with subfolder '03 Deliverables' -> uses that folder's id for upload and storage", async () => {
+  it("save with subfolder 'Deliverables' -> uses that folder's id for upload and storage", async () => {
     const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const result = await saveDriveFile(ctx, viewer as any, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 deliv v1.txt", mimeType: "text/plain",
-      contentBase64: Buffer.from("deliv content").toString("base64"), subfolder: "03 Deliverables",
+      contentBase64: Buffer.from("deliv content").toString("base64"), subfolder: "Deliverables",
     });
     expect(result.status).toBe("saved");
-    expect(result.subfolder).toBe("03 Deliverables");
+    expect(result.subfolder).toBe("Deliverables");
     const uploads = uploadsOf(google.files);
     expect(uploads).toHaveLength(1);
-    const deliverables = subfolderOf(google, "p1", "03 Deliverables");
+    const deliverables = subfolderOf(google, "p1", "Deliverables");
+    expect(deliverables.description).toBe(`${LAYOUT.ownProjects}/p1/Deliverables`);
     expect(uploads[0].parents).toEqual([deliverables.id]);
     // Verify the file was stored with subfolder
     const stored = await getDriveFile(ctx, CO_A, result.driveFileId!);
-    expect(stored?.subfolder).toBe("03 Deliverables");
+    expect(stored?.subfolder).toBe("Deliverables");
     expect(stored?.folderId).toBe(deliverables.id);
+  });
+
+  it("save with a nested subfolder 'Assets/Social' -> lands in that exact folder, stored with the full name", async () => {
+    const { viewer, google, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 social v1.txt", mimeType: "text/plain",
+      contentBase64: Buffer.from("social content").toString("base64"), subfolder: "Assets/Social",
+    });
+    expect(result.status).toBe("saved");
+    expect(result.subfolder).toBe("Assets/Social");
+    const social = subfolderOf(google, "p1", "Assets/Social");
+    expect(uploadsOf(google.files)[0].parents).toEqual([social.id]);
+    expect((await getDriveFile(ctx, CO_A, result.driveFileId!))?.subfolder).toBe("Assets/Social");
+  });
+
+  it.each([["02 Assets", "Assets/Social"], ["04 Reports", "Deliverables"], ["01 Briefs", "Meetings & Notes"]])("legacy subfolder '%s' is translated to '%s' (upload and stored row)", async (legacy, current) => {
+    const { viewer, google, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 legacy v1.txt", mimeType: "text/plain",
+      contentBase64: Buffer.from("legacy content").toString("base64"), subfolder: legacy,
+    });
+    expect(result.status).toBe("saved");
+    expect(result.subfolder).toBe(current);
+    expect(uploadsOf(google.files)[0].parents).toEqual([subfolderOf(google, "p1", current).id]);
+    expect((await getDriveFile(ctx, CO_A, result.driveFileId!))?.subfolder).toBe(current);
+    expect(google.files.some((f) => f.name === legacy)).toBe(false);
+  });
+
+  it("legacy '99 Archive' has no alias -> invalid_subfolder before any Google call", async () => {
+    const { viewer, google, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 archive v1.txt", mimeType: "text/plain",
+      contentBase64: Buffer.from("x").toString("base64"), subfolder: "99 Archive",
+    });
+    expect(result.status).toBe("invalid_subfolder");
+    expect(result.hint).toContain("must be one of");
+    expect(google.calls).toHaveLength(0);
+  });
+
+  it("a product project: 'Marketing assets/Images' is saved there, 'Deliverables' is invalid_subfolder and the hint lists the product's sub-folders", async () => {
+    const { viewer, google, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    await setProjectDriveKind(ctx, { companyId: CO_A, projectId: "p1", kind: "product" });
+    const base = { companyId: CO_A, projectId: "p1", fileKind: "client", mimeType: "text/plain", contentBase64: Buffer.from("p").toString("base64") };
+    const ok = await saveDriveFile(ctx, viewer as any, { ...base, name: "2026-10-20 mock v1.txt", subfolder: "Marketing assets/Images" });
+    expect(ok.status).toBe("saved");
+    expect(uploadsOf(google.files)[0].parents).toEqual([subfolderOf(google, "p1", "Marketing assets/Images").id]);
+    expect(pathOf(google.files, projectFolderOf(google, "p1"))).toBe(`${LAYOUT.products}/p1`);
+
+    const bad = await saveDriveFile(ctx, viewer as any, { ...base, name: "2026-10-20 other v1.txt", subfolder: "Deliverables" });
+    expect(bad.status).toBe("invalid_subfolder");
+    for (const option of PRODUCT_SUBFOLDERS) expect(bad.hint).toContain(option);
+    expect(uploadsOf(google.files)).toHaveLength(1);
+    expect(await listDriveFiles(ctx, CO_A, { projectId: "p1" })).toHaveLength(1);
+  });
+
+  it("a book project has no sub-folders: a save that names one lands in the book folder itself and is stored with no sub-folder", async () => {
+    const { viewer, google, configMap } = setupContext();
+    await configureCompanyDrive(CO_A, configMap);
+    await setProjectDriveKind(ctx, { companyId: CO_A, projectId: "p1", kind: "book" });
+    const result = await saveDriveFile(ctx, viewer as any, {
+      companyId: CO_A, projectId: "p1", fileKind: "book", name: "2026-10-20 chapter v1.txt", mimeType: "text/plain",
+      contentBase64: Buffer.from("chapter").toString("base64"), subfolder: "Deliverables",
+    });
+    expect(result.status).toBe("saved");
+    expect(result.subfolder).toBe(null);
+    const folder = projectFolderOf(google, "p1");
+    expect(pathOf(google.files, folder)).toBe(`${LAYOUT.books}/p1`);
+    expect(uploadsOf(google.files)[0].parents).toEqual([folder.id]);
+    expect(google.files.filter((f) => isFolder(f) && f.parents.includes(folder.id))).toEqual([]);
+    expect((await getDriveFile(ctx, CO_A, result.driveFileId!))?.subfolder).toBe(null);
   });
 
   it("same name+sha256 in different subfolders -> creates separate rows", async () => {
@@ -371,10 +444,10 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(r1.status).toBe("saved");
     expect(r1.subfolder).toBe(null);
 
-    // Save same file to "03 Deliverables"
-    const r2 = await saveDriveFile(ctx, viewer, { ...input, subfolder: "03 Deliverables" });
+    // Save same file to "Deliverables"
+    const r2 = await saveDriveFile(ctx, viewer, { ...input, subfolder: "Deliverables" });
     expect(r2.status).toBe("saved");
-    expect(r2.subfolder).toBe("03 Deliverables");
+    expect(r2.subfolder).toBe("Deliverables");
     expect(r2.driveFileId).not.toBe(r1.driveFileId); // Different files
     const uploads = uploadsOf(google.files);
     expect(uploads).toHaveLength(2); // Two uploads, one per folder
@@ -384,7 +457,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
   it("same name+sha256 in same subfolder twice -> returns duplicate", async () => {
     const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
-    const input = { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 dup-sub v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("dup").toString("base64"), subfolder: "02 Assets" };
+    const input = { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 dup-sub v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("dup").toString("base64"), subfolder: "Assets/Social" };
 
     const r1 = await saveDriveFile(ctx, viewer, input);
     expect(r1.status).toBe("saved");
@@ -434,13 +507,13 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     await configureCompanyDrive(CO_A, configMap);
     const result = await driveFileSave(ctx, viewer as any, {
       projectId: "p1", fileKind: "client", name: "2026-10-20 tool-sub v1.txt", mimeType: "text/plain",
-      contentBase64: Buffer.from("tool content").toString("base64"), subfolder: "04 Reports",
+      contentBase64: Buffer.from("tool content").toString("base64"), subfolder: "Contracts & Quotes",
     });
     expect(result.status).toBe("saved");
-    expect(result.subfolder).toBe("04 Reports");
+    expect(result.subfolder).toBe("Contracts & Quotes");
     const uploads = uploadsOf(google.files);
     expect(uploads).toHaveLength(1);
-    expect(uploads[0].parents).toEqual([subfolderOf(google, "p1", "04 Reports").id]);
+    expect(uploads[0].parents).toEqual([subfolderOf(google, "p1", "Contracts & Quotes").id]);
   });
 
   it("listDriveFiles with subfolder filter", async () => {
@@ -448,8 +521,8 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     await configureCompanyDrive(CO_A, configMap);
 
     // Save files to different subfolders
-    await saveDriveFile(ctx, viewer, { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 f1 v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("f1").toString("base64"), subfolder: "01 Briefs" });
-    await saveDriveFile(ctx, viewer, { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 f2 v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("f2").toString("base64"), subfolder: "03 Deliverables" });
+    await saveDriveFile(ctx, viewer, { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 f1 v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("f1").toString("base64"), subfolder: "Meetings & Notes" });
+    await saveDriveFile(ctx, viewer, { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 f2 v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("f2").toString("base64"), subfolder: "Deliverables" });
     await saveDriveFile(ctx, viewer, { companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 f3 v1.txt", mimeType: "text/plain", contentBase64: Buffer.from("f3").toString("base64") });
 
     // List all files for project
@@ -457,9 +530,9 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     expect(allFiles.length).toBe(3);
 
     // Filter by subfolder
-    const briefsFiles = await listDriveFiles(ctx, CO_A, { projectId: "p1", subfolder: "01 Briefs" });
-    expect(briefsFiles).toHaveLength(1);
-    expect(briefsFiles[0].subfolder).toBe("01 Briefs");
+    const notesFiles = await listDriveFiles(ctx, CO_A, { projectId: "p1", subfolder: "Meetings & Notes" });
+    expect(notesFiles).toHaveLength(1);
+    expect(notesFiles[0].subfolder).toBe("Meetings & Notes");
 
     // Filter by root (null subfolder)
     const rootFiles = await listDriveFiles(ctx, CO_A, { projectId: "p1", subfolder: null });
@@ -483,28 +556,30 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     // Second call with subfolder on already-ensured project
     const r2 = await saveDriveFile(ctx, viewer, {
       companyId: CO_A, projectId: "p1", fileKind: "client", name: "2026-10-20 second v1.txt",
-      mimeType: "text/plain", contentBase64: Buffer.from("second").toString("base64"), subfolder: "02 Assets",
+      mimeType: "text/plain", contentBase64: Buffer.from("second").toString("base64"), subfolder: "Assets/Social",
     });
     expect(r2.status).toBe("saved");
-    expect(r2.subfolder).toBe("02 Assets");
+    expect(r2.subfolder).toBe("Assets/Social");
     const uploads = uploadsOf(google.files);
     expect(uploads).toHaveLength(2); // One more upload
-    // It went into the existing "02 Assets" folder: no new folder was made for it
-    expect(uploads[1].parents).toEqual([subfolderOf(google, "p1", "02 Assets").id]);
+    // It went into the existing "Assets/Social" folder: no new folder was made for it
+    expect(uploads[1].parents).toEqual([subfolderOf(google, "p1", "Assets/Social").id]);
     expect(google.files.filter(isFolder)).toHaveLength(foldersAfterFirst);
   });
 
-  it("a company folder ensure (no sub-folders at the end of the plan) falls back to the accumulated tree", async () => {
-    // The company step is the leaf of its plan and carries no sub-folders, so the broker's own tree for it is empty.
+  it("a company folder ensure returns the client sub-folders as its tree, one entry per leaf path (the Assets level is made but not listed)", async () => {
     const { viewer, google, configMap } = setupContext();
     await configureCompanyDrive(CO_A, configMap);
     const res = await driveFolderEnsure(ctx, viewer, { entity_type: "crm_company", entity_id: accountAId, include_tree: true });
 
     expect((res as any).status).toBe("created");
-    // Should use accumulated tree since the broker returned an empty one
-    expect((res as any).tree).toBeDefined();
-    expect((res as any).tree.length).toBeGreaterThan(0); // Has accumulated entries
-    expect((res as any).tree).toEqual([{ path: "02 Partners in Biz/Clients/Company A", folderId: google.files.find((f) => f.name === "Company A")!.id, created: true }]);
-    expect(folderPaths(google.files)).toEqual(["02 Partners in Biz", "02 Partners in Biz/Clients", "02 Partners in Biz/Clients/Company A"]);
+    expect((res as any).path).toBe(`${LAYOUT.clients}/Company A`);
+    expect((res as any).tree.map((t: any) => t.path)).toEqual(CLIENT_SUBFOLDERS.map((sub) => `${LAYOUT.clients}/Company A/${sub}`));
+    expect((res as any).tree.every((t: any) => t.created === true)).toBe(true);
+    expect(folderAt(google.files, `${LAYOUT.clients}/Company A/Assets`)).toBeDefined();
+    // The same folder, asked for again with its tree, reports every sub-folder as already there
+    const again = await driveFolderEnsure(ctx, viewer, { entity_type: "crm_company", entity_id: accountAId, include_tree: true });
+    expect((again as any).tree.every((t: any) => t.created === false)).toBe(true);
+    expect(folderPaths(google.files).filter((path) => path.startsWith(`${LAYOUT.clients}/Company A`))).toHaveLength(1 + 9);
   });
 });

@@ -6,7 +6,7 @@ import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.
 import { createGoogleDriveBroker } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
-import { planFolders, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
+import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
@@ -20,19 +20,19 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "drive_folder_resolve",
     displayName: "Resolve Drive folder",
-    description: "Look up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result. Read-only.",
+    description: "Look up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. A client's project has no folder of its own: it resolves to the client's folder (Clients/<Company (Contact)>), shared by all of that client's projects. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result. Read-only.",
     parametersSchema: schema(["entity_type", "entity_id"], { entity_type: oneOf(["project", "crm_company"], "The kind of entity: Paperclip project or CRM company."), entity_id: text("The entity's id: a project id or a CRM company record id.", 100) }),
   },
   {
     name: "drive_folder_ensure",
     displayName: "Ensure Drive folder",
-    description: "Create (once) the standard Drive folder tree for a project or CRM company and return its path and URL. Call drive_folder_resolve first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Never hard-code a Drive ID. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.",
+    description: "Create (once) the standard Drive folder for a project or CRM company, with its standard sub-folders, and return its path and URL. A client's project uses the client's folder (Clients/<Company (Contact)> with Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client); a product project gets Products/<Product> (Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally). Call drive_folder_resolve first; call this only when resolve says not_found. It is safe to call again: an existing folder (also one a person made by hand) is used as it is and nothing is duplicated. Never hard-code a Drive ID. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.",
     parametersSchema: schema(["entity_type", "entity_id"], { entity_type: oneOf(["project", "crm_company"], "The kind of entity: Paperclip project or CRM company."), entity_id: text("The entity's id: a project id or a CRM company record id.", 100) }),
   },
   {
     name: "drive_file_save",
     displayName: "Save file to Drive",
-    description: "Save a file to a Paperclip project's Google Drive folder. Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths (max 5 MB). Exactly one source required: contentBase64 or path.",
+    description: "Save a file to a Paperclip project's Google Drive folder (a client's project saves into the client's folder). Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths (max 5 MB). Exactly one source required: contentBase64 or path.",
     parametersSchema: schema(["projectId", "fileKind", "name", "mimeType"], {
       projectId: text("The Paperclip project id (determines the Drive folder).", 100),
       fileKind: text("File kind for classification (e.g. client, product, book, marketing, company, seo, social, campaigns, ads, ops; stored in the Drive file record).", 50),
@@ -41,7 +41,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       contentBase64: text("File content as base64 (mutually exclusive with path). Binary-safe."),
       path: text("Absolute local file path (mutually exclusive with contentBase64). Must be inside an allowed root. Max 5 MB."),
       sha256: text("Optional: hex-encoded sha256 to verify the file content after decode/read.", 64),
-      subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder within the project's Drive folder (01 Briefs, 02 Assets, 03 Deliverables, 04 Reports, 05 Evidence, 99 Archive). Omit to save to project root."),
+      subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder of the project's Drive folder. A client's folder has Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client; a product's has Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally. A name the project's folder does not have is refused (invalid_subfolder lists the real ones); book, company and marketing folders have none, so the file goes into the folder itself. Omit to save into the folder itself."),
       requestId: text("Optional: request ID for correlation.", 100),
     }),
   },
@@ -87,7 +87,9 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
     if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson" };
 
-    const folder = await broker.resolve(type, id);
+    // A client's project has no folder of its own: it is looked up as its company's folder.
+    const target = await registryTarget(ctx, viewer, type, id);
+    const folder = await broker.resolve(target.type, target.id);
     return folder ? { status: "found", path: folder.path, url: folder.folder_url, folder_id: folder.folder_id } : { status: "not_found", hint: "call drive_folder_ensure" };
   } catch (e) {
     if (e instanceof DriveNotBoundError) {
@@ -115,32 +117,37 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   }
   if (!broker) throw new CrmError("Drive is not configured in the CRM plugin settings: set driveServiceAccountJson");
 
+  // A client's project has no folder of its own: it is ensured as its company's folder, and that folder is what comes back.
+  // The contact's name (it is part of the folder name) is looked up only when the folder has to be planned, not on the hot "exists" path.
+  const projectFacts = type === "project" ? await loadProjectFacts(ctx, viewer, id, false) : null;
+  const target = projectFacts ? folderTarget(projectFacts) : { entityType: type, entityId: id };
+
   let existing: any;
   try {
-    existing = await broker.resolve(type, id);
+    existing = await broker.resolve(target.entityType, target.entityId);
   } catch (e) {
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  // If the folder exists, is complete (all its numbered sub-folders made) and we don't need the tree, return early.
+  // If the folder exists, is complete (all its standard sub-folders made) and we don't need the tree, return early.
   // An interrupted ensure leaves complete:false, and the plan below resumes it.
   if (existing && existing.complete !== false && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
 
-  const facts = await loadDriveFacts(ctx, viewer, type, id);
-  const siblings = await loadDriveSiblings(ctx, viewer, type, id);
+  let facts = type === "project" ? projectFacts : await loadDriveFacts(ctx, viewer, type, id);
+  if (!facts) throw new CrmError("project not found");
+  if (type === "project" && facts.companyEntityId && facts.companyName) {
+    facts = { ...facts, contactName: (await getPrimaryContact(ctx, viewer.companyId, facts.companyEntityId))?.name };
+  }
+  // Collisions are checked for the folder that is actually made: a client's project is checked as its company (against the other companies).
+  const siblings = await loadDriveSiblings(ctx, viewer, target.entityType, target.entityId);
   const plan = planFolders(facts, siblings, viewer.runId ?? undefined);
 
   if (plan.kind === "invalid_name") return { status: "invalid_name", problem: plan.problem, name: plan.name, hint: "rename the project/company to a plain human-readable name (no ID, issue key or slash) and retry" };
   if (plan.kind === "needs_human_look") return { status: "needs_human_look", reason: plan.reason, conflictsWith: plan.conflictsWith };
 
-  const tree = [];
   let lastResult = null;
   try {
-    for (const step of plan.steps) {
-      const result = await broker.ensure(step);
-      tree.push({ path: result.folder.path, folderId: result.folder.folder_id, created: result.created });
-      lastResult = result;
-    }
+    for (const step of plan.steps) lastResult = await broker.ensure(step);
   } catch (e) {
     if (e instanceof BrokerError && e.retryable) {
       const details = e.folderId || e.path ? ` (folderId: ${e.folderId}) (path: ${e.path})` : "";
@@ -150,10 +157,9 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   }
 
   if (!lastResult) throw new CrmError("No plan steps executed");
-  // Use the tree from the last step (the leaf folder) which includes subfolders
-  // Fall back to accumulated tree if lastResult.tree is empty (broker may return [])
-  const finalTree = lastResult.tree?.length ? lastResult.tree : tree;
-  return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree: finalTree };
+  // The tree is the leaf folder's standard sub-folders, and nothing else: a book, company or marketing folder has none, so its tree is
+  // empty (the steps above it, the layout folders, are not part of what a save can choose from).
+  return { status: "created", path: lastResult.folder.path, url: lastResult.folder.folder_url, folder_id: lastResult.folder.folder_id, tree: lastResult.tree ?? [] };
 }
 
 export async function createBrokerForCompany(ctx: PluginContext, companyId: string) {
@@ -197,6 +203,15 @@ export async function resolveProducerSaveProject(
   return typeof own === "string" && own.trim() ? own.trim() : null;
 }
 
+/** The registry key of the folder an entity saves into: for a client's project the company's, otherwise the entity itself (also when the project is unknown). */
+async function registryTarget(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<{ type: DriveEntityType; id: string }> {
+  if (type !== "project") return { type, id };
+  const facts = await loadProjectFacts(ctx, viewer, id, false);
+  if (!facts) return { type, id };
+  const target = folderTarget(facts);
+  return { type: target.entityType, id: target.entityId };
+}
+
 async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<DriveFacts> {
   if (type === "crm_company") {
     const company = await getAccount(ctx, id);
@@ -204,9 +219,15 @@ async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEnt
     const contact = await getPrimaryContact(ctx, viewer.companyId, id);
     return { entityType: "crm_company", entityId: id, name: company.name, contactName: contact?.name };
   }
+  const facts = await loadProjectFacts(ctx, viewer, id);
+  if (!facts) throw new CrmError("project not found");
+  return facts;
+}
 
+/** What decides a project's folder: its name, its Drive kind and the company it is linked to (with its primary contact, which names the folder, unless `withContact` is false). Null when the project does not exist. */
+async function loadProjectFacts(ctx: PluginContext, viewer: Viewer, id: string, withContact = true): Promise<DriveFacts | null> {
   const project = await ctx.projects.get(id, viewer.companyId);
-  if (!project) throw new CrmError("project not found");
+  if (!project) return null;
   let companyId: string | undefined, companyName: string | undefined, contactName: string | undefined;
   let branch: "client" | "product" | "book" | "marketing" | "company" = "client";
   let scopeRef: string | null = null;
@@ -224,8 +245,10 @@ async function loadDriveFacts(ctx: PluginContext, viewer: Viewer, type: DriveEnt
     const company = await getAccount(ctx, companyLink);
     if (company) {
       companyName = company.name;
-      const contact = await getPrimaryContact(ctx, viewer.companyId, companyLink);
-      if (contact) contactName = contact.name;
+      if (withContact) {
+        const contact = await getPrimaryContact(ctx, viewer.companyId, companyLink);
+        if (contact) contactName = contact.name;
+      }
     }
   }
   return { entityType: "project", entityId: id, name: project.name, companyEntityId: companyId, companyName, contactName, branch, scopeRef };
@@ -277,7 +300,7 @@ async function getPrimaryContact(ctx: PluginContext, companyId: string, accountI
 
 async function getCompanyLink(ctx: PluginContext, companyId: string, projectId: string) {
   const rows = await ctx.db.query<{ client_ref: string }>(
-    `SELECT client_ref FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND project_id = $2 AND client_kind = 'company' LIMIT 1`,
+    `SELECT client_ref FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND project_id = $2 AND client_kind = 'company' ORDER BY created_at ASC, client_ref ASC LIMIT 1`,
     [companyId, projectId],
   );
   return rows.length ? rows[0].client_ref : null;
