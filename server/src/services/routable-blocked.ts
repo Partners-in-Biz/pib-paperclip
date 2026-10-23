@@ -20,8 +20,22 @@ export function isProspectiveBlockedTransition(issue: RoutableBlockedIssue): iss
     Boolean(issue.blockedTransitionAt && issue.blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT);
 }
 
+export function isSelfOwnedUnblockWakeSkipEnabled(env: NodeJS.ProcessEnv = process.env) {
+  return env.PAPERCLIP_SKIP_SELF_OWNED_UNBLOCK_WAKE !== "0";
+}
+
+export function isSelfOwnedUnblockDescriptor(
+  issue: RoutableBlockedIssue,
+  actorAgentId: string | null | undefined,
+) {
+  const owner = issue.unblockDescriptor?.owner;
+  return Boolean(actorAgentId && owner && owner !== "board" && "agentId" in owner && owner.agentId === actorAgentId);
+}
+
 export async function deliverAgentUnblockNotification(input: {
   issue: RoutableBlockedIssue;
+  /** Agent making the PATCH (agent actors only). An agent naming itself as owner is not woken. */
+  actorAgentId?: string | null;
   wakeup: (agentId: string, options: {
     source: "automation";
     triggerDetail: "system";
@@ -40,6 +54,10 @@ export async function deliverAgentUnblockNotification(input: {
 
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
+
+  if (isSelfOwnedUnblockWakeSkipEnabled() && input.actorAgentId && owner.agentId === input.actorAgentId) {
+    return false;
+  }
 
   await input.wakeup(owner.agentId, {
     source: "automation",
