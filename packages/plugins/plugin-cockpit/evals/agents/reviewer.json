@@ -106,8 +106,24 @@
         ],
         "forbid": [
           {
-            "tool": "partnersinbiz.campaigns:.*",
-            "reason": "never call plugin tools that approve, send or publish"
+            "tool": "partnersinbiz.campaigns:launch-campaign",
+            "reason": "never launch a campaign yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.campaigns:approve-experiment",
+            "reason": "never approve an experiment yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.campaigns:decide-playbook-change",
+            "reason": "never decide a playbook change yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.mailbox:send-draft",
+            "reason": "never send an email yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.social:schedule-post",
+            "reason": "never schedule a post for publishing yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
           }
         ],
         "maxSteps": 2

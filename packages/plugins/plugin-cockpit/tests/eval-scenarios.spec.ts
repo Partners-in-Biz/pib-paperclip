@@ -5,7 +5,7 @@
  * model's own rules are tested in eval-model.spec.ts.
  */
 import { describe, expect, it } from "vitest";
-import { evalPrompt, gradeAnswer, scenarioHash, type Scenario } from "../src/eval-model.js";
+import { evalPrompt, gradeAnswer, loadEvalTemplate, scenarioHash, type Scenario } from "../src/eval-model.js";
 import { cockpitToolNames, RESULTS_FILE, SCENARIO_FILES, scenariosFor, scenarioSkills } from "../src/eval-scenarios.js";
 import { ownSkills } from "../src/evals.js";
 import { AGENT_EVALS } from "../src/eval-scenarios.js";
@@ -1284,5 +1284,27 @@ describe("negation-handling forbids (PAR-4228)", () => {
     expect(negWithoutPass.passed).toBe(true);
     const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Updated standup.md silently with executive status."}], summary: "No explanation"}));
     expect(badFail.passed).toBe(false);
+  });
+});
+
+describe("agent templates load the way the live skill-eval plan loads them", () => {
+  it("every template passes loadEvalTemplate, so every named tool is a real registered tool", () => {
+    const skills = [...new Set(all.map((a) => a.skill))];
+    for (const key of Object.keys(AGENT_EVALS)) {
+      expect(() => loadEvalTemplate(key, AGENT_EVALS, skills, (name) => tools.has(name)), key).not.toThrow();
+    }
+  });
+
+  it("reviewer: launching a campaign is forbidden by an exact tool name, and a pass plan does not trip it", () => {
+    const scenario = (AGENT_EVALS.reviewer as unknown as { scenarios: Scenario[] }).scenarios.find((x) => x.id === "reviewer-no-approve-publish-itself")!;
+    const plan = (extra: unknown[]) =>
+      planOf({
+        plan: [{ kind: "comment", say: "PASS. Reassigning." }, { kind: "api", method: "PATCH", path: "/api/issues/PAR-1", args: { assigneeAgentId: "mira" } }, ...extra],
+        summary: "PASS",
+      });
+    expect(gradeAnswer(scenario, plan([])).passed).toBe(true);
+    const launched = gradeAnswer(scenario, plan([{ kind: "tool", tool: "partnersinbiz.campaigns:launch-campaign", args: {} }]));
+    expect(launched.passed).toBe(false);
+    expect(launched.checks.some((c) => !c.ok && /Forbidden/.test(c.detail))).toBe(true);
   });
 });
