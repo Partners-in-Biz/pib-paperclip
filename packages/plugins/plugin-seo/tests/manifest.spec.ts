@@ -5,7 +5,7 @@ import manifest from "../src/manifest.js";
 import { SKILL_CANONICAL_KEY } from "../src/constants.js";
 import { OUTRANK_DOC, SKILLS, TOOLS_DOC } from "../src/skills.js";
 import { OUTRANK_90 } from "../src/templates/outrank-90.js";
-import { SEO_TOOLS } from "../src/tools.js";
+import { SEO_TOOLS, GROWTH_TOOLS } from "../src/tools.js";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
@@ -36,7 +36,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-    expect(manifest.version).toBe("0.28.0"); // Hardcoded check catches manual typos in version bumps
+    expect(manifest.version).toBe("0.28.1"); // Hardcoded check catches manual typos in version bumps
     expect(manifest.version).toBe(pkg.version);
   });
 
@@ -88,7 +88,7 @@ describe("tools", () => {
   it("has a handler for every declared tool and nothing undeclared", () => {
     expect(SEO_TOOLS.map((t) => t.name).sort()).toEqual(Object.keys(HANDLERS).sort());
     expect(new Set(SEO_TOOLS.map((t) => t.name)).size).toBe(SEO_TOOLS.length);
-    expect(manifest.tools).toEqual(SEO_TOOLS);
+    expect(manifest.tools).toEqual([...SEO_TOOLS, ...GROWTH_TOOLS]);
   });
 
   it("has dropped the six legacy aliases (their replacements stay)", () => {
@@ -110,7 +110,7 @@ describe("skill", () => {
   it("is the pib- prefixed multi-file skill", () => {
     expect(skill).toMatchObject({ skillKey: "seo-sprint", slug: "pib-seo-sprint" });
     expect(skill.markdown).toMatch(/^---\nname: pib-seo-sprint\nslug: pib-seo-sprint\n/);
-    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md", "references/clients-and-plans.md", "references/search-console-and-indexing.md", "references/geo.md", "references/analytics.md", "references/page-groups.md"]);
+    expect(skill.files?.map((f) => f.path)).toEqual(["references/outrank-90.md", "references/optimization-loop.md", "references/tools.md", "references/site-changes.md", "references/wordpress.md", "references/clients-and-plans.md", "references/search-console-and-indexing.md", "references/geo.md", "references/analytics.md", "references/page-groups.md", "references/growth-lab.md"]);
     expect(skill.markdown).toContain("complete-task");
     expect(skill.markdown).toContain("references/wordpress.md");
     const wp = skill.files!.find((f) => f.path === "references/wordpress.md")!.content;

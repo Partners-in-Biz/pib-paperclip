@@ -86,7 +86,7 @@ A person switches each one on per sprint (SEO page → the sprint → Integratio
 
 The \`seo-weekly\` job runs the detectors and puts up to 2 proposals (first 4 weeks; 5 later) on one approval issue for the owner. In the "Weekly SEO review" routine: \`list-optimizations\` (status proposed) and \`detect-signals\` per active sprint, comment your recommendation per proposal on the approval issue, approve only when autopilot is \`full\`, then turn last week's measured results into playbook proposals (step 7). Details: \`references/optimization-loop.md\`.
 
-References: \`tools.md\` (every tool), \`site-changes.md\` (repo procedure), \`wordpress.md\`, \`clients-and-plans.md\` (plans, timeline), \`search-console-and-indexing.md\`, \`geo.md\`, \`analytics.md\`, \`page-groups.md\`.
+References: \`tools.md\` (every tool), \`site-changes.md\` (repo procedure), \`wordpress.md\`, \`clients-and-plans.md\` (plans, timeline), \`search-console-and-indexing.md\`, \`geo.md\`, \`analytics.md\`, \`page-groups.md\`, \`growth-lab.md\` (Growth Lab A/B experiments).
 `;
 
 /** Where a task key appears: its title in each plan that has it. */
@@ -482,6 +482,25 @@ export const SEARCH_DOC = `# Search Console, crawling and Bing
 
 `;
 
+export const GROWTH_LAB_DOC = `# Growth Lab for SEO: what works, per scope
+
+SEO learns from experiments one change at a time. The unit is a page with a control version (A, what we do now) and a variant version (B, the one change). The metric is Google Search Console clicks and impressions over 14 days. Pass \`scope\` on every call: omit it for PiB's own sites, or \`client:company:<CRM id>\` / \`client:contact:<CRM id>\`. Product and book scopes are not run here. Never read or write another scope's playbook or experiments.
+
+## The loop
+
+1. \`performance-review\`: running and proposed experiments, pending playbook changes, hypothesis types ranked by UCB.
+2. \`list-experiments\` shows arms, verdicts and the scoreboard. One at a time: one variable, arms \`control\` (A) and \`variant\` (B). On \`safe\` a person approves with \`approve-experiment\` or declines with \`reject-experiment\`; on \`reviewed\` the Reviewer decides; on \`full\` the agent decides.
+3. The daily \`measure-experiments\` job judges each experiment once both pages have 20+ impressions: win at +15% lift on clicks with 60% of days ahead, else loss, no change or inconclusive. 21 days after the start it closes as inconclusive.
+4. A verdict drafts one playbook change per win or loss (if one fits).
+5. \`propose-experiment\` first, then decide with the verdict, or discard. Only when autopilot is \`full\`.
+
+## Rules
+
+- Never approve, reject or decide your own proposal unless the scope's autopilot allows it for you.
+- Never invent results. If a page is not measured yet, say "not measured yet".
+- A verdict never publishes or launches a change. Publication still goes through a normal Paperclip approval.
+`;
+
 export const OUTRANK_DOC = renderOutrank();
 export const SITE_CHANGES_REF = renderSiteChanges();
 export const TOOLS_DOC = renderTools();
@@ -504,6 +523,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/geo.md", content: GEO_DOC },
       { path: "references/analytics.md", content: ANALYTICS_DOC },
       { path: "references/page-groups.md", content: PAGE_GROUPS_DOC },
+      { path: "references/growth-lab.md", content: GROWTH_LAB_DOC },
     ],
   },
 ];

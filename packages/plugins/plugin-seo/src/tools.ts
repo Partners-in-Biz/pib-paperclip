@@ -7,6 +7,7 @@
  * (tests/tool-params.spec.ts checks both).
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { AI_ENGINES } from "./engine/geo.js";
 import { PLAYBOOK_SECTIONS } from "./engine/playbook.js";
 import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-change.js";
@@ -862,3 +863,16 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
 
 /** Manifest form (without the doc-only `group`). */
 export const SEO_TOOLS: PluginToolDeclaration[] = SEO_TOOL_DECLARATIONS.map(({ group: _group, ...tool }) => tool);
+
+/** Growth Lab tools come from the kit; SEO runs own and client scopes only (024 limits client_kind to company and contact). The three playbook tools (get-playbook, propose-playbook-change, decide-playbook-change) remain on SEO's native tables and are not registered here. */
+export const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = {
+  kinds: ["own", "client"],
+  descriptions: {
+    "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for PiB's own sites. Never mix scopes.",
+    "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for PiB's own sites. Never mix scopes.",
+  },
+};
+
+export const GROWTH_TOOLS: PluginToolDeclaration[] = growthToolDeclarations(GROWTH_TOOL_OPTIONS).filter(
+  (d) => !["get-playbook", "propose-playbook-change", "decide-playbook-change"].includes(d.name),
+);
