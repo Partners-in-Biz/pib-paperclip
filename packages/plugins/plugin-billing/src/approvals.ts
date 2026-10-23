@@ -15,7 +15,7 @@
  * and falls back to the kit's chain if the host refuses that person.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { assignableUserId, createWorkIssue, openApprovalIssue, PIB_PLUGINS, resolveApprover, type ApprovalAssignedTo } from "@partnersinbiz/pib-plugin-kit";
+import { assignableUserId, createWorkIssue, openApprovalIssue, PIB_PLUGINS, resolveApprover, resolveClientProjectId, type ApprovalAssignedTo, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import type { BillingSettings } from "./config.js";
 
 export interface BillingApprovalInput {
@@ -29,6 +29,11 @@ export interface BillingApprovalInput {
   priority?: "low" | "medium" | "high" | "critical";
   /** The person who asked from a page, when there is one (a last-resort approver). */
   actorUserId?: string | null;
+  /**
+   * The client the document is for. The issue opens in the client's own Paperclip project (the CRM's link);
+   * without one it has no project, and the Reviewer's billing reads fail ("invalid tool access context").
+   */
+  client?: ClientScope;
   /** The Reviewer's brief, given the person it hands the issue to. */
   brief?: (approverUserId: string | null) => string;
 }
@@ -49,12 +54,14 @@ export async function openBillingApproval(ctx: PluginContext, settings: BillingS
   const configured = configuredApprover(settings);
   const route = await resolveApprover(ctx, input.companyId, { outward: input.outward, actorUserId: input.actorUserId ?? null });
   const approver = configured ?? route.approverUserId;
+  const projectId = input.client ? (await resolveClientProjectId(ctx, input.companyId, input.client)).projectId : null;
   const kitInput = {
     companyId: input.companyId,
     title: input.title,
     description: input.description,
     originKind: `plugin:${PIB_PLUGINS.billing}`,
     originId: input.originId,
+    ...(projectId ? { projectId } : {}),
     ...(input.priority ? { priority: input.priority } : {}),
     outward: input.outward,
     actorUserId: input.actorUserId ?? null,
@@ -71,6 +78,7 @@ export async function openBillingApproval(ctx: PluginContext, settings: BillingS
       description: input.description,
       originKind: `plugin:${PIB_PLUGINS.billing}` as never,
       originId: input.originId,
+      ...(projectId ? { projectId } : {}),
       ...(input.priority ? { priority: input.priority } : {}),
       assigneeUserId: configured,
       wake: false,

@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { formatMoneyMinor, reviewerBrief } from "@partnersinbiz/pib-plugin-kit";
+import { formatMoneyMinor, reviewerBrief, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { datedAfterToday, invoiceBalance, iso } from "./balances.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2 } from "./config.js";
 import { checkCreditNote, issueCreditNote } from "./credits.js";
@@ -37,6 +37,10 @@ function who(context: PluginPerformActionContext): string {
 function customerName(doc: { customer?: unknown; customer_snapshot?: unknown; customer_ref: string }): string {
   const customer = asObject(doc.customer_snapshot ?? doc.customer);
   return typeof customer.name === "string" && customer.name ? customer.name : doc.customer_ref;
+}
+
+function clientScope(doc: { customer_kind: string; customer_ref: string }): ClientScope {
+  return { kind: doc.customer_kind === "contact" ? "contact" : "company", id: doc.customer_ref };
 }
 
 function clientParam(doc: { customer_kind: string; customer_ref: string }): string {
@@ -182,6 +186,7 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     companyId,
     title: sendApprovalTitle("invoice", name, amount),
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.invoiceSend}${invoice.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
@@ -236,6 +241,7 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
     companyId,
     title: sendApprovalTitle("quote", name, amount),
     description: lines.join("\n"),
+    client: clientScope(quote),
     originId: `${APPROVAL_ORIGINS.quoteSend}${quote.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
@@ -268,6 +274,7 @@ export async function requestPayApproval(ctx: PluginContext, context: PluginPerf
     companyId,
     title: `Approve payment of ${invoice.number} (${customerName(invoice)}, ${money})`,
     description: `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`,
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.invoicePay}${invoice.id}`,
     outward: false,
     actorUserId: context.actor.userId ?? null,
@@ -353,6 +360,7 @@ export async function requestPaymentDecision(ctx: PluginContext, context: Plugin
     companyId,
     title: `Record payment of ${money} on ${invoice.number} (${name})?`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.recordPayment}${invoice.id}`,
     outward: false,
   });
@@ -395,6 +403,7 @@ export async function requestCreditDecision(ctx: PluginContext, context: PluginP
     companyId,
     title: `Issue credit note of ${money} on ${invoice.number} (${customerName(invoice)})?`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.creditNote}${invoice.id}`,
     outward: false,
   });
@@ -507,6 +516,7 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
     companyId,
     title: `Approve payment reminder ${pick.stage + 1} for ${invoice.number} (${name}, ${formatMoneyMinor(balance.outstandingMinor, invoice.currency)})`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.reminder}${invoice.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
