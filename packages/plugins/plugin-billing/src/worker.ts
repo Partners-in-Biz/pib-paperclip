@@ -27,6 +27,7 @@ import {
   registerSkillSyncJob,
   rememberPluginUiBase,
   resolveCrmClient,
+  registerClientProjectWatch,
   retryOutbox,
   SETUP_EVENTS,
   SETUP_PLUGIN,
@@ -382,6 +383,7 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
     registerDriveReplies(ctx);
     registerModuleWatch(ctx);
+    registerClientProjectWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {

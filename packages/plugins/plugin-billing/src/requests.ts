@@ -23,7 +23,7 @@ import { recipientsFor, requireOwnInvoice, requireQuote } from "./invoices.js";
 import { parseAddresses, renderTemplate } from "./mail.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { closePopIssues, getPop, listPops, recordDecisionIssue, recordPop } from "./pop.js";
-import { openBillingApproval } from "./approvals.js";
+import { clientScope, openBillingApproval } from "./approvals.js";
 import { billingPath, companyPrefix, issuePath } from "./routing.js";
 import { creditedOnInvoice, paymentBySourceKey, settle } from "./settle.js";
 import { actorLabel, integer, optionalDate, optionalInteger, optionalString, requiredCompany, requiredString, requirePerson } from "./util.js";
@@ -182,6 +182,7 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     companyId,
     title: sendApprovalTitle("invoice", name, amount),
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.invoiceSend}${invoice.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
@@ -236,6 +237,7 @@ export async function requestQuoteSend(ctx: PluginContext, context: PluginPerfor
     companyId,
     title: sendApprovalTitle("quote", name, amount),
     description: lines.join("\n"),
+    client: clientScope(quote),
     originId: `${APPROVAL_ORIGINS.quoteSend}${quote.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,
@@ -268,6 +270,7 @@ export async function requestPayApproval(ctx: PluginContext, context: PluginPerf
     companyId,
     title: `Approve payment of ${invoice.number} (${customerName(invoice)}, ${money})`,
     description: `Confirm the payment of ${money} for invoice ${invoice.number} has cleared (EFT proof and the bank statement), then mark this issue done. The plugin then records the payment and the invoice is paid.`,
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.invoicePay}${invoice.id}`,
     outward: false,
     actorUserId: context.actor.userId ?? null,
@@ -353,6 +356,7 @@ export async function requestPaymentDecision(ctx: PluginContext, context: Plugin
     companyId,
     title: `Record payment of ${money} on ${invoice.number} (${name})?`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.recordPayment}${invoice.id}`,
     outward: false,
   });
@@ -395,6 +399,7 @@ export async function requestCreditDecision(ctx: PluginContext, context: PluginP
     companyId,
     title: `Issue credit note of ${money} on ${invoice.number} (${customerName(invoice)})?`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.creditNote}${invoice.id}`,
     outward: false,
   });
@@ -507,6 +512,7 @@ export async function requestReminderSend(ctx: PluginContext, context: PluginPer
     companyId,
     title: `Approve payment reminder ${pick.stage + 1} for ${invoice.number} (${name}, ${formatMoneyMinor(balance.outstandingMinor, invoice.currency)})`,
     description: lines.join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.reminder}${invoice.id}`,
     outward: true,
     actorUserId: context.actor.type === "user" ? context.actor.userId ?? null : null,

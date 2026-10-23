@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor } from "@partnersinbiz/pib-plugin-kit";
-import { openBillingApproval } from "../approvals.js";
+import { clientScope, openBillingApproval } from "../approvals.js";
 import { refreshInvoiceStatus } from "../balances.js";
 import type { BillingSettings } from "../config.js";
 import { getInvoice, table, type InvoiceRow } from "../db.js";
@@ -77,6 +77,7 @@ async function askPerson(ctx: PluginContext, settings: BillingSettings, link: Pa
       "",
       `Invoices: ${billingPath(prefix, { tab: "invoices" })}`,
     ].join("\n"),
+    ...(invoice ? { client: clientScope(invoice) } : {}),
     originId: `${APPROVAL_ORIGINS.gatewayPayment}${link.provider}:${event.eventId}`,
     outward: false,
     priority: "high",
@@ -187,6 +188,7 @@ export async function recordRefund(ctx: PluginContext, input: RefundInput, setti
       "",
       `Invoice: ${billingPath(prefix, { tab: "invoices" })}`,
     ].join("\n"),
+    client: clientScope(invoice),
     originId: `${APPROVAL_ORIGINS.refund}${refundId}`,
     outward: false,
   });
