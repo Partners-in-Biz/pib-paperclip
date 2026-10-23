@@ -504,7 +504,7 @@ describe.skipIf(!available)("saveDriveFile and driveFileSave", () => {
     // Should use accumulated tree since the broker returned an empty one
     expect((res as any).tree).toBeDefined();
     expect((res as any).tree.length).toBeGreaterThan(0); // Has accumulated entries
-    expect((res as any).tree).toEqual([{ path: "Company A", folderId: google.files[0].id, created: true }]);
-    expect(folderPaths(google.files)).toEqual(["Company A"]);
+    expect((res as any).tree).toEqual([{ path: "02 Partners in Biz/Clients/Company A", folderId: google.files.find((f) => f.name === "Company A")!.id, created: true }]);
+    expect(folderPaths(google.files)).toEqual(["02 Partners in Biz", "02 Partners in Biz/Clients", "02 Partners in Biz/Clients/Company A"]);
   });
 });
