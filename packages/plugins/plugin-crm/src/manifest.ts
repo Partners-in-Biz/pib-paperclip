@@ -73,7 +73,7 @@ const instanceConfigSchema: JsonSchema = {
         sharedDriveId: {
           type: "string",
           title: "Shared Drive ID",
-          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. This is separate from the broker token and must be set for planning to work.",
+          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. It must be set for planning to work.",
           default: "",
         },
         ownProjectId: {

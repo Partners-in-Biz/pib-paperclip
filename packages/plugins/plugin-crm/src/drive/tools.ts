@@ -72,7 +72,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "drive_binding_status",
     displayName: "Check Shared Drive binding status",
-    description: "read-only: check whether this company's Shared Drive is bound, whether the broker token is set, and whether the service account is a member of the drive. Does not modify anything.",
+    description: "read-only: check whether this company's Shared Drive is bound, whether the Drive service account key is set, and whether the service account is a member of the drive. Does not modify anything.",
     parametersSchema: schema([], {}),
   },
 ];

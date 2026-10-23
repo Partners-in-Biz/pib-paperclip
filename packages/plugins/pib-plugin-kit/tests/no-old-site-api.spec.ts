@@ -23,15 +23,16 @@ function sourceFiles(dir: string): string[] {
 const FORBIDDEN: Array<[string, RegExp]> = [
   ["a call to the old site's API", /https?:\/\/(?:www\.)?partnersinbiz\.online\/api\b/],
   ["a base URL that defaults to the old site", /(?:BrokerUrl|BASE_URL|baseUrl)\s*[:=]\s*["']https:\/\/partnersinbiz\.online["']/],
-  ["an old-site broker route", /workspace-broker|workspace-folders\/registry|\/api\/v1\/ads\/(?:connections|google|meta)/],
+  ["an old-site broker route", /workspace-broker|workspace-folders|\/api\/v1\/agent\/|\/api\/v1\/ads\/(?:connections|google|meta)/],
   ["an old-site broker setting", /\b(?:driveBrokerUrl|driveBrokerToken|webBrokerUrl|webBrokerToken|webOrgId)\b/],
   ["an old-site bearer token", /\bpib_(?:usr|dlg|rt|ag|ak)_/],
   ["the old site's org header", /["']X-Org-Id["']/i],
 ];
 
 describe("no plugin depends on the old site's API", () => {
+  // Every package that is ours: plugin-*, pib-* (kit, ui, browser, build host, WordPress connector). Not the upstream SDK, examples or sandbox providers.
   const files = readdirSync(PLUGINS)
-    .filter((d) => d.startsWith("plugin-") || d === "pib-plugin-kit" || d === "pib-wp-connector")
+    .filter((d) => (d.startsWith("plugin-") || d.startsWith("pib-")) && statSync(join(PLUGINS, d)).isDirectory())
     .flatMap((d) => sourceFiles(join(PLUGINS, d)));
 
   it("scans a meaningful number of source files", () => {
