@@ -25,7 +25,7 @@ export interface FakeFault { method: "POST" | "PATCH"; status: number; skip?: nu
 /** True for a folder. */
 export const isFolder = (f: FakeFile) => f.mimeType.includes("folder");
 
-/** The path of a folder or file below the Shared Drive root, from names and parents: "Acme (Jo)/Site/01 Briefs". */
+/** The path of a folder or file below the Shared Drive root, from names and parents: "Acme (Jo)/Assets/Images". */
 export function pathOf(files: FakeFile[], file: FakeFile, driveId = DRIVE_ID): string {
   const names: string[] = [file.name];
   let parent = file.parents[0];
@@ -37,6 +37,9 @@ export function pathOf(files: FakeFile[], file: FakeFile, driveId = DRIVE_ID): s
   }
   return names.join("/");
 }
+
+/** The folder at a path below the Shared Drive root (undefined when there is none). */
+export const folderAt = (files: FakeFile[], path: string, driveId = DRIVE_ID): FakeFile | undefined => files.find((f) => isFolder(f) && pathOf(files, f, driveId) === path);
 
 /** Every folder's path below the Shared Drive root, sorted. */
 export function folderPaths(files: FakeFile[], driveId = DRIVE_ID): string[] {
@@ -58,10 +61,21 @@ export const LAYOUT = {
   books: "03 Press (KDP)/Morgan Hale",
 } as const;
 
+/**
+ * The human-made folder tree of a client and of a product in the real Shared Drive (DRIVE-SAVING-RULES.md), spelled out here on purpose:
+ * a test pins the real drive, not the plugin's own CLIENT_SUBFOLDERS / PRODUCT_SUBFOLDERS. Nested names are paths below the folder.
+ */
+export const REAL_CLIENT_TREE = ["Assets/Images", "Assets/Video", "Assets/Brand", "Assets/Social", "Deliverables", "Contracts & Quotes", "Meetings & Notes", "Shared with client"] as const;
+export const REAL_PRODUCT_TREE = ["Brand", "Design", "Marketing assets/Images", "Marketing assets/Video", "App store", "Shared externally"] as const;
+
+/** The seeded client (all human-made) and product folders. */
+export const SEEDED_CLIENT = `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)`;
+export const SEEDED_PRODUCT = `${LAYOUT.products}/Athleet`;
+
 /** The folders the broker makes for the layout itself (tagged pibEntityType "anchor"), not for an entity. */
 export const isAnchor = (f: FakeFile) => isFolder(f) && f.appProperties?.pibEntityType === "anchor";
 
-/** Every folder that is not a layout anchor: the entity folders and their numbered sub-folders. */
+/** Every folder that is not a layout anchor: the entity folders and their sub-folders. */
 export const userFolders = (files: FakeFile[]) => files.filter((f) => isFolder(f) && !isAnchor(f));
 
 /** The paths of userFolders, sorted. */
@@ -95,17 +109,19 @@ export function seedPibDrive(files: FakeFile[], driveId = DRIVE_ID): Record<stri
   };
   for (const path of [
     LAYOUT.clients,
-    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)`,
-    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Assets`,
-    `${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Contracts`,
+    ...REAL_CLIENT_TREE.map((sub) => `${SEEDED_CLIENT}/${sub}`),
     `${LAYOUT.clients}/Agri Studies (Jan Venter)`,
     LAYOUT.products,
+    ...REAL_PRODUCT_TREE.map((sub) => `${SEEDED_PRODUCT}/${sub}`),
     LAYOUT.ownProjects,
     LAYOUT.internal,
     LAYOUT.marketing,
     LAYOUT.books,
   ]) mkdir(path);
-  mkfile(`${LAYOUT.clients}/Hunt and Gun (Christo Barnard)/Assets`, "logo.png", "image/png");
+  mkfile(`${SEEDED_CLIENT}/Assets/Brand`, "logo.png", "image/png");
+  mkfile(`${SEEDED_CLIENT}/Deliverables`, "2026-09-30 SEO report v1.pdf", "application/pdf");
+  mkfile(`${SEEDED_CLIENT}/Contracts & Quotes`, "2026-08-01 Agreement v1.pdf", "application/pdf");
+  mkfile(`${SEEDED_PRODUCT}/Design`, "app-icon.png", "image/png");
   mkfile(LAYOUT.pib, "DRIVE-SAVING-RULES.md", "text/markdown");
   return ids;
 }

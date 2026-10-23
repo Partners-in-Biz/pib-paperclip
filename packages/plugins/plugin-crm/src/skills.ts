@@ -47,8 +47,8 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 - **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
 ## Files in Drive
-\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
-\`drive_folder_ensure\` creates (once) the standard Drive folder tree for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company (a client's project resolves to the client's folder). ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
+\`drive_folder_ensure\` creates (once) the standard Drive folder, with its sub-folders, for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
 \`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
 
 ## Binding a company's Shared Drive

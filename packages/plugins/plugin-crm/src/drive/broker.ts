@@ -6,7 +6,7 @@ export interface RegistryFolder {
   entity_id: string;
   path: string;
   created_by_run?: string;
-  /** False when the folder exists but its numbered sub-folders were not all created (an interrupted ensure). Always set by the native broker; a missing value (a test double) is read as complete. */
+  /** False when the folder exists but its standard sub-folders were not all created (an interrupted ensure). Always set by the native broker; a missing value (a test double) is read as complete. */
   complete?: boolean;
   folder_id: string;
   folder_url: string;
