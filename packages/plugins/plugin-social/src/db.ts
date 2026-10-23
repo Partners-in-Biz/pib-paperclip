@@ -590,6 +590,10 @@ export interface PostRow {
   client_ref: string | null;
   client_name: string | null;
   first_comment: string | null;
+  /** X post this draft replies to / quotes (canonical x.com link); an internal note that is never published. */
+  reply_to_url?: string | null;
+  quote_url?: string | null;
+  note?: string | null;
   source: string | null;
   source_ref: string | null;
   failure_issue_id: string | null;
@@ -608,7 +612,7 @@ export interface PostRow {
 const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
-  "schedule_issue_id", "created_at", "updated_at",
+  "schedule_issue_id", "reply_to_url", "quote_url", "note", "created_at", "updated_at",
 ].join(", ");
 
 export function postMedia(row: Pick<PostRow, "media">): MediaRef[] {
@@ -699,6 +703,9 @@ export interface PostWrite {
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
   first_comment: string | null;
+  reply_to_url?: string | null;
+  quote_url?: string | null;
+  note?: string | null;
   client_kind: string | null;
   client_ref: string | null;
   client_name: string | null;
@@ -711,12 +718,12 @@ export async function insertPost(ctx: PluginContext, row: PostWrite): Promise<vo
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "posts")}
       (id, company_id, body, overrides, media, status, scheduled_at, scope, owner_user_id, first_comment, client_kind, client_ref,
-       client_name, source, source_ref, created_by_agent_id)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $16::timestamptz, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+       client_name, source, source_ref, created_by_agent_id, reply_to_url, quote_url, note)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $16::timestamptz, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17, $18, $19)`,
     [
       row.id, row.company_id, row.body, JSON.stringify(row.overrides), JSON.stringify(row.media), row.status, row.scope, row.owner_user_id,
       row.first_comment, row.client_kind, row.client_ref, row.client_name, row.source, row.source_ref, row.created_by_agent_id,
-      row.scheduled_at ?? null,
+      row.scheduled_at ?? null, row.reply_to_url ?? null, row.quote_url ?? null, row.note ?? null,
     ],
   );
 }
@@ -729,6 +736,10 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
   scope?: ScopeWrite;
   /** The proposed publish time; null clears it, undefined keeps it. */
   scheduledAt?: string | null;
+  /** Reply / quote target and internal note; null clears, undefined keeps. */
+  replyToUrl?: string | null;
+  quoteUrl?: string | null;
+  note?: string | null;
 }): Promise<number> {
   const result = await ctx.db.execute(
     `UPDATE ${table(ctx, "posts")}
@@ -740,6 +751,9 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
             client_ref = CASE WHEN $8::boolean THEN $10 ELSE client_ref END,
             client_name = CASE WHEN $8::boolean THEN $11 ELSE client_name END,
             scheduled_at = CASE WHEN $12::boolean THEN $13::timestamptz ELSE scheduled_at END,
+            reply_to_url = CASE WHEN $14::boolean THEN $15 ELSE reply_to_url END,
+            quote_url = CASE WHEN $16::boolean THEN $17 ELSE quote_url END,
+            note = CASE WHEN $18::boolean THEN $19 ELSE note END,
             updated_at = now()
       WHERE id = $1 AND company_id = $2`,
     [
@@ -749,6 +763,9 @@ export async function updatePostContent(ctx: PluginContext, companyId: string, i
       fields.firstComment !== undefined, fields.firstComment ?? null,
       fields.scope !== undefined, fields.scope?.client_kind ?? null, fields.scope?.client_ref ?? null, fields.scope?.client_name ?? null,
       fields.scheduledAt !== undefined, fields.scheduledAt ?? null,
+      fields.replyToUrl !== undefined, fields.replyToUrl ?? null,
+      fields.quoteUrl !== undefined, fields.quoteUrl ?? null,
+      fields.note !== undefined, fields.note ?? null,
     ],
   );
   return result.rowCount;

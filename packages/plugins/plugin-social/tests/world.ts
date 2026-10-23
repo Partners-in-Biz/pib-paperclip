@@ -412,7 +412,7 @@ export function world(accounts: AccountRow[] = []) {
             overrides: JSON.parse(String(params[3])),
             media: JSON.parse(String(params[4])),
             status: String(params[5]) as PostStatus,
-            scheduled_at: params[16] ? new Date(String(params[16])).toISOString() : null,
+            scheduled_at: params[15] ? new Date(String(params[15])).toISOString() : null,
             scope: String(params[6]) as "org" | "personal",
             owner_user_id: params[7] ? String(params[7]) : null,
             client_kind: params[9] ? String(params[9]) : null,
@@ -425,6 +425,9 @@ export function world(accounts: AccountRow[] = []) {
             published_at: null,
             error: null,
             created_by_agent_id: params[14] ? String(params[14]) : null,
+            reply_to_url: params[16] ? String(params[16]) : null,
+            quote_url: params[17] ? String(params[17]) : null,
+            note: params[18] ? String(params[18]) : null,
             created_at: new Date(),
             updated_at: new Date(),
           };

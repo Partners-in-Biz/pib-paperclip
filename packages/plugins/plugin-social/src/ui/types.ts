@@ -77,6 +77,10 @@ export interface Post extends Scoped {
   scheduledAt: string | null;
   publishedAt: string | null;
   firstComment: string | null;
+  /** The X post this draft replies to / quotes, and the team's internal note (never published). */
+  replyTo: { url: string; id: string; handle: string | null } | null;
+  quote: { url: string; id: string; handle: string | null } | null;
+  note: string | null;
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
   source: string;

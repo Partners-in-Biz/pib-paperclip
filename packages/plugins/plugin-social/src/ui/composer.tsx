@@ -118,6 +118,9 @@ export function Composer({ snapshot, post, run, onClose }: {
   );
   const [mediaIds, setMediaIds] = useState<string[]>(post?.media.map((m) => m.assetId).filter((id): id is string => Boolean(id)) ?? []);
   const [firstComment, setFirstComment] = useState(post?.firstComment ?? "");
+  const [replyToUrl, setReplyToUrl] = useState(post?.replyTo?.url ?? "");
+  const [quoteUrl, setQuoteUrl] = useState(post?.quote?.url ?? "");
+  const [note, setNote] = useState(post?.note ?? "");
   // The proposed publish time: approval schedules the post for it.
   const [when, setWhen] = useState(post?.scheduledAt ? toLocalInput(new Date(post.scheduledAt)) : "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
@@ -189,6 +192,10 @@ export function Composer({ snapshot, post, run, onClose }: {
         accountIds: [...accountIds],
         mediaAssetIds: mediaIds,
         firstComment: firstComment || null,
+        // "" clears the reply, quote or note on an existing post.
+        replyToUrl: replyToUrl.trim(),
+        quoteUrl: quoteUrl.trim(),
+        note: note.trim(),
         overrides: cleanOverrides,
         // "" clears a proposed time on an existing post.
         ...(when ? { scheduledAt: new Date(when).toISOString() } : post ? { scheduledAt: "" } : {}),
@@ -287,6 +294,19 @@ export function Composer({ snapshot, post, run, onClose }: {
 
       <Field label="First comment (optional)">
         <TextArea value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} placeholder="Posted as the first comment or reply where the platform allows" />
+      </Field>
+
+      <Field label="Reply to an X post (optional)">
+        <Input value={replyToUrl} onChange={(e) => setReplyToUrl(e.target.value)} placeholder="https://x.com/handle/status/123…" disabled={Boolean(quoteUrl.trim())} />
+      </Field>
+      <Field label="Quote an X post (optional)">
+        <Input value={quoteUrl} onChange={(e) => setQuoteUrl(e.target.value)} placeholder="https://x.com/handle/status/123…" disabled={Boolean(replyToUrl.trim())} />
+      </Field>
+      {(replyToUrl.trim() || quoteUrl.trim()) && selectedPlatforms.some((p) => p !== "x") ? (
+        <Muted style={{ color: tone("warn").fg }}>Replies and quotes publish on X only. Deselect the other destinations before sending this for review.</Muted>
+      ) : null}
+      <Field label="Note (optional, internal, never published)">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="For example: HOLD until PAR-1234" />
       </Field>
 
       {selectedPlatforms.length ? (

@@ -111,6 +111,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
 5. Use the first comment (\`firstComment\`) for extra hashtags or a link on Instagram, Facebook and LinkedIn when it keeps the caption clean.
+6. To draft an X reply or quote post, pass \`replyToUrl\` or \`quoteUrl\` (the x.com link of the post, not both) on \`create-post\` or \`create-personal-draft\`, with only X accounts as destinations; do not paste the link into the text. Put a hold or context line in \`note\` (for example "HOLD until PAR-1234"): it is internal and never published.
 
 ## Quick limits
 

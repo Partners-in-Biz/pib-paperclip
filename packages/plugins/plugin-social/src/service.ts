@@ -127,6 +127,7 @@ import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
 import { emptyStats, scopeStats } from "./stats.js";
+import { parseTweetUrl, targetFromParams } from "./post-target.js";
 
 export interface Viewer {
   companyId: string;
@@ -301,6 +302,12 @@ function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
   };
 }
 
+/** A reply / quote target for display: the link, the tweet id and the author handle. */
+export function targetOut(url: string | null | undefined): { url: string; id: string; handle: string | null } | null {
+  const ref = url ? parseTweetUrl(url) : null;
+  return ref ? { url: ref.url, id: ref.id, handle: ref.handle } : null;
+}
+
 export function postOut(row: PostRow, destinations: DestinationRow[] = [], accounts: Map<string, AccountRow> = new Map()) {
   const tags = ((row.overrides as Record<string, unknown>)?.tags as string[] | undefined) ?? [];
   return {
@@ -313,6 +320,9 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     publishedAt: iso(row.published_at),
     ...scopeOut(row),
     firstComment: row.first_comment,
+    replyTo: targetOut(row.reply_to_url),
+    quote: targetOut(row.quote_url),
+    note: row.note ?? null,
     media: postMedia(row),
     overrides: postOverrides(row),
     tags: tags.length > 0 ? tags : undefined,
@@ -395,6 +405,7 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   const overrides = normalizeOverrides(overridesWithTags) ?? {};
   const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
+  const targetFields = targetFromParams(params);
   const row = {
     id: randomUUID(),
     company_id: viewer.companyId,
@@ -405,6 +416,9 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
+    reply_to_url: targetFields.replyToUrl ?? null,
+    quote_url: targetFields.quoteUrl ?? null,
+    note: targetFields.note ?? null,
     scheduled_at: scheduledAt,
     ...scopeColumns(target),
     source: handoff ? "repurpose" : viewer.isAgent ? "agent" : "manual",
@@ -420,6 +434,14 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   await attachAccounts(ctx, viewer, post, accounts);
   await writeExperimentTag(growth, viewer.companyId, row.id, tag);
   return getPostDetail(ctx, viewer, row.id);
+}
+
+/** Reply / quote / note changes of an update. Setting one of reply and quote clears the other, so a post never keeps both. */
+export function changedTarget(params: Record<string, unknown>) {
+  const fields = targetFromParams(params);
+  if (fields.replyToUrl && fields.quoteUrl === undefined) fields.quoteUrl = null;
+  if (fields.quoteUrl && fields.replyToUrl === undefined) fields.replyToUrl = null;
+  return fields;
 }
 
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
@@ -469,6 +491,7 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
+    ...changedTarget(params),
   });
   // Any edit voids the client's open links: they were made for the old version.
   await supersedePendingLinks(ctx, viewer.companyId, post.id);

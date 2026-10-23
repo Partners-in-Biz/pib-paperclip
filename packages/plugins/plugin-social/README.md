@@ -166,6 +166,12 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.9.21: X replies and quotes, draft note (PAR-4452)
+
+`create-post`, `update-post` and `create-personal-draft` take `replyToUrl` or `quoteUrl` (an x.com / twitter.com post link, not both) and an internal `note` (max 500 characters, never published; for example "HOLD until PAR-1234"). On publish X gets `reply.in_reply_to_tweet_id` or `quote_tweet_id`. Other platforms refuse a reply or quote draft in `validate-post` instead of posting it plain; Threads and Bluesky are not supported yet. The Posts list, the post sheet and the composer (Social and My Social) show "Replying to @handle" / "Quoting @handle" with the link, and the note. Changing the target changes the approval fingerprint; the note does not.
+
+**Deploy: stop-first** (migration `019_social.sql` adds `reply_to_url`, `quote_url`, `note`; additive, old code ignores them). The skill text changes what agents do for drafts of X replies.
+
 ## 0.9.1
 
 Migration 017 no longer has comment lines. The host validator reads quotes before it strips comments, so an apostrophe in a comment made activation reject the file. The two unique indexes are unchanged.
