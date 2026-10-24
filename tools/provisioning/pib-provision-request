@@ -64,6 +64,10 @@ def cmd_company(a):
             json.dump(req, fh)
         os.rename(tmp, os.path.join(inc, rid + ".json"))
     except OSError as e:
+        try:
+            os.unlink(tmp)  # never leave a half-written file holding the token
+        except OSError:
+            pass
         die("could not file the request: %s" % e.strerror, 3)
     print("Filed provisioning request %s for %s." % (rid, req["name"]))
     print("The runner picks it up within a minute. Its answer is posted as a comment on %s." % a.issue)
