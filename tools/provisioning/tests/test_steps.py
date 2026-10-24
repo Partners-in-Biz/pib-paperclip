@@ -1,6 +1,8 @@
 """Step-by-step tests for provision_steps. Server commands and the Paperclip API are faked; nothing real is touched."""
+import json
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
@@ -10,15 +12,37 @@ sys.path.insert(0, ti.ROOT)
 import provision_steps as ps  # noqa: E402
 
 
+def hire(n, status="done"):
+    return {"id": "t%d" % n, "identifier": "ACM-%d" % n, "title": "Hire: Agent %d" % n, "status": status, "originKind": "plugin:partnersinbiz.setup"}
+
+
+class Clock:
+    """Stands in for the time module in provision_steps: sleeping moves the clock, nothing really waits."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, n):
+        self.t += n
+
+
 class StepApi(ti.FakeApi):
-    def __init__(self, hires=5, crm_ok=True, **kw):
+    def __init__(self, hires=5, crm_ok=True, tasks=None, **kw):
         super().__init__(**kw)
         self.posts, self.hires, self.crm_ok = [], hires, crm_ok
+        self.tasks = [hire(i) for i in range(4)] if tasks is None else tasks  # a list, or a function of the poll number
+        self.task_polls = 0
         self._board = "board-secret-token"
 
     def get(self, path):
         if path == "/api/companies/new-co":
             return {"id": "new-co", "name": "Acme", "issuePrefix": "ACM"}
+        if path.startswith("/api/companies/new-co/issues"):
+            self.task_polls += 1
+            return self.tasks(self.task_polls) if callable(self.tasks) else self.tasks
         if path == "/api/companies/new-co/agents":
             return [{"id": "ag%d" % i, "name": n, "role": "general", "title": n, "status": "idle"}
                     for i, n in enumerate(["CEO", "Account Manager", "SEO Specialist", "Social Manager", "Operator"][: self.hires])]
@@ -61,7 +85,8 @@ class StepTests(ti.Base):
     def run_req(self, api=None, cmds=None, **over):
         api, cmds = api or StepApi(), cmds or Cmds()
         r = self.runner(api, ps)
-        with mock.patch.object(ps, "exec_cmd", cmds):
+        clock = Clock()
+        with mock.patch.object(ps, "exec_cmd", cmds), mock.patch.object(ps, "time", types.SimpleNamespace(time=clock.time, sleep=clock.sleep)):
             return self.go(r, **over), api, cmds
 
     def test_happy_path_order_and_result(self):
@@ -143,12 +168,101 @@ class StepTests(ti.Base):
         self.assertEqual(res["step"], "verify")
         self.assertIn("WARN model key", res["message"])
 
-    def test_hires_timeout_fails_without_touching_hire_tasks(self):
-        self.policy["stepTimeouts"] = {"hires": -1}
-        res, api, _ = self.run_req(api=StepApi(hires=2))
+    def test_hires_all_done_and_agents_is_not_a_wait_count(self):
+        res, api, _ = self.run_req(agents=9)  # 5 live agents, 4 done hire tasks: --agents 9 must not make the step wait for 9
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertGreaterEqual(api.task_polls, 2)  # two confirming polls
+        self.assertEqual([p for p, _ in api.posts if "comments" in p], ["/api/issues/iss-1/comments"])  # never touches a hire task
+
+    def test_hires_some_cancelled_still_passes(self):
+        res, _, _ = self.run_req(api=StepApi(tasks=[hire(1), hire(2), hire(3, "cancelled")], hires=3))
+        self.assertEqual(res["status"], "done", res["message"])
+
+    def test_hires_none_found_fails_never_succeeds(self):
+        res, api, _ = self.run_req(api=StepApi(tasks=[]))
+        self.assertEqual(res["status"], "failed")
         self.assertEqual(res["step"], "hires")
-        self.assertIn("hired 2 of 5", res["message"])
-        self.assertEqual([p for p, _ in api.posts if "comments" in p], ["/api/issues/iss-1/comments"])  # the result, on the PAR issue only
+        self.assertIn("no hire tasks found", res["message"])
+
+    def test_hires_ignores_tasks_that_are_not_plugin_hire_tasks(self):
+        other = [{"id": "x", "identifier": "ACM-9", "title": "Hire: Someone", "status": "done", "originKind": "manual"},
+                 {"id": "y", "identifier": "ACM-10", "title": "Welcome", "status": "done", "originKind": "plugin:partnersinbiz.setup"}]
+        res, _, _ = self.run_req(api=StepApi(tasks=other))
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("no hire tasks found", res["message"])
+
+    def test_hires_resume_of_a_staffed_company_passes_with_a_note(self):
+        self.prior("failed", "verify", ["create-company", "entitlements", "create-ceo", "setup-run", "copy-secrets"])
+        res, api, _ = self.run_req(api=StepApi(tasks=[], hires=5))
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertIn("already staffed", res["message"])
+
+    def test_hires_resume_of_a_thin_company_with_no_tasks_still_fails(self):
+        self.prior("failed", "hires", ["create-company", "entitlements", "create-ceo", "setup-run", "copy-secrets"])
+        res, _, _ = self.run_req(api=StepApi(tasks=[], hires=1))
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("no hire tasks found", res["message"])
+
+    def test_hires_terminal_tasks_but_missing_agents_fail_with_both_numbers(self):
+        res, _, _ = self.run_req(api=StepApi(hires=2))  # 4 done tasks, 2 live agents
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["step"], "hires")
+        self.assertIn("4 hire tasks are done", res["message"])
+        self.assertIn("only 2 live agents", res["message"])
+
+    def test_hires_transient_block_that_clears_passes(self):
+        api = StepApi(tasks=lambda n: [hire(1), hire(2, "blocked" if n <= 3 else "done")])
+        res, _, _ = self.run_req(api=api)
+        self.assertEqual(res["status"], "done", res["message"])
+
+    def test_hires_block_at_the_deadline_is_needs_owner(self):
+        self.policy["stepTimeouts"] = {"hires": 60}
+        res, api, _ = self.run_req(api=StepApi(tasks=[hire(1), hire(2, "blocked")]))
+        self.assertEqual(res["status"], "needs_owner")
+        self.assertEqual(res["step"], "hires")
+        self.assertIn("ACM-2", res["message"])
+        self.assertEqual(res["company_id"], "new-co")
+        self.assertIn("NEEDS_OWNER", api.comments[-1][1]["body"])  # the result comment says so
+
+    def test_hires_timeout_lists_the_open_tasks_and_fails(self):
+        self.policy["stepTimeouts"] = {"hires": 60}
+        res, _, _ = self.run_req(api=StepApi(tasks=[hire(1), hire(2, "in_progress"), hire(3, "blocked")]))
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("ACM-2 (in_progress)", res["message"])
+        self.assertIn("ACM-3 (blocked)", res["message"])
+
+    def test_needs_owner_request_is_resumed_without_a_second_company(self):
+        self.policy.update(stepTimeouts={"hires": 60}, maxHostedCompanies=2)
+        res, api, _ = self.run_req(api=StepApi(tasks=[hire(1), hire(2, "blocked")]))
+        self.assertEqual(res["status"], "needs_owner")
+        api2 = StepApi(companies=[{"id": ti.PAR, "status": "active"}, {"id": "new-co", "status": "active"}])  # the owner acted: hire tasks are done now
+        res2, api2, cmds2 = self.run_req(api=api2)
+        self.assertEqual(res2["status"], "done", res2["message"])  # not refused as open, not refused by maxHostedCompanies 2
+        self.assertEqual([p for p, _ in api2.posts if p == "/api/companies"], [])
+        self.assertFalse(any("--create-ceo" in c for c in cmds2.calls))
+
+    def test_needs_owner_company_counts_once_for_capacity(self):
+        self.policy.update(maxHostedCompanies=2)
+        self.prior("needs_owner", "hires", ["create-company", "entitlements", "create-ceo", "setup-run", "copy-secrets"])
+        api = StepApi(companies=[{"id": ti.PAR, "status": "active"}, {"id": "new-co", "status": "active"}])
+        r = self.runner(api, ps)
+        gate = r.capacity({"agents": None}, resume="new-co")
+        self.assertEqual(gate["companies"], 2)
+        with self.assertRaises(ti.pr.Refused):
+            r.capacity({"agents": None}, resume=None)
+
+    def test_prior_failed_matches_needs_owner(self):
+        self.prior("needs_owner", "hires", ["create-company"])
+        r = self.runner(StepApi(), ps)
+        found = ps.prior_failed(r, {"crm_company_id": "crm-1"}, "p-other")
+        self.assertEqual(found["status"], "needs_owner")
+
+    def prior(self, status, step, done):
+        os.makedirs(os.path.join(self.dir, "results"), exist_ok=True)
+        old = {"id": "p-20261024-000000-aaaaaa", "status": status, "crm_company_id": "crm-1", "company_id": "new-co", "prefix": "ACM",
+               "step": step, "steps_done": done, "updated": "2026-10-24T16:30:00Z"}
+        with open(os.path.join(self.dir, "results", old["id"] + ".json"), "w") as fh:
+            json.dump(old, fh)
 
     def test_crm_record_written_and_read_back(self):
         _, api, _ = self.run_req()

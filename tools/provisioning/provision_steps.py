@@ -1,7 +1,8 @@
 """The provisioning steps for provision-runner.py. Order and commands follow the PAR-5149 bring-up and docs/new-company.md.
 
 Each step either completes or raises StepError; the first failure fails the request and leaves the company as it is (the message names
-the step and, for the keys step, the --undo file). A failed request that already made a company is resumed by the next request for the
+the step and, for the keys step, the --undo file). A step that needs a person raises NeedsOwner: the request ends as `needs_owner`. A failed or
+needs_owner request that already made a company is resumed by the next request for the
 same CRM company: finished steps are skipped. The runner only reads state after the hires start: it never comments on, reopens or
 touches a hire task (that wakes the CEO).
 """
@@ -16,9 +17,24 @@ SECRET_RE = re.compile(r"(sk-ant-[A-Za-z0-9_-]+|Bearer\s+\S+|[A-Fa-f0-9]{40,}|pc
 
 
 class StepError(Exception):
+    needs_owner = False
+
     def __init__(self, msg, **extra):
         super().__init__(msg)
         self.extra = extra
+
+
+class NeedsOwner(StepError):
+    """The request cannot go on until a person acts. The result is `needs_owner`, not `failed`; the same CRM company resumes it."""
+    needs_owner = True
+
+
+# a request that stopped on one of these is picked up by the next request for the same CRM company
+RESUMABLE = ("failed", "needs_owner")
+HIRE_TERMINAL = ("done", "cancelled")
+HIRE_GRACE = 120
+HIRE_POLL = 15
+MIN_STAFFED = 2  # a resumed company with at least this many live agents already has its hires
 
 
 def redact(text):
@@ -125,18 +141,59 @@ def step_copy_secrets(c):
                         undo_file=undo[-1] if undo else None)
 
 
+def _live_agents(c):
+    return [a for a in c.api.get("/api/companies/%s/agents" % c.st["company_id"]) if str(a.get("status")).lower() != "terminated"]
+
+
+def _hire_tasks(c):
+    """The company's Setup hire tasks: plugin-origin issues whose title starts `Hire:`. Read-only."""
+    q = "?originKindPrefix=plugin%3A&includePluginOperations=true&limit=200"
+    rows = c.api.get("/api/companies/%s/issues%s" % (c.st["company_id"], q))
+    if isinstance(rows, dict):
+        rows = rows.get("items") or rows.get("issues") or []
+    return [t for t in rows if str(t.get("originKind") or "").startswith("plugin:") and str(t.get("title") or "").startswith("Hire:")]
+
+
+def _ids(tasks):
+    return ", ".join("%s (%s)" % (t.get("identifier") or t.get("id"), t.get("status")) for t in tasks)
+
+
 def step_hires(c):
-    """Wait until the CEO has hired. Read-only: no comment, no wake."""
-    want = int(c.req.get("agents") or c.p["agentsPerNewCompany"])  # the CEO counts
-    deadline = time.time() + c.timeout("hires")
+    """Wait until every `Hire:` task of the new company is done or cancelled, then check the agents exist. Read-only: no
+    comment, no wake. `--agents` is a capacity number only; it is not a wait count."""
+    t0 = time.time()
+    deadline = t0 + c.timeout("hires")
+    last = None
     while True:
-        agents = [a for a in c.api.get("/api/companies/%s/agents" % c.st["company_id"]) if str(a.get("status")).lower() != "terminated"]
+        tasks = _hire_tasks(c)
+        agents = _live_agents(c)
         c.st["agents"] = [{"id": a["id"], "name": a.get("name"), "role": a.get("role"), "title": a.get("title")} for a in agents]
-        if len(agents) >= want:
-            return
+        open_ = [t for t in tasks if str(t.get("status")).lower() not in HIRE_TERMINAL]
+        if tasks and not open_:
+            now = sorted(t.get("id") or t.get("identifier") or "" for t in tasks)
+            if now == last:  # two polls in a row with the same, all-terminal set
+                break
+            last = now
+        else:
+            last = None
+            if not tasks and time.time() - t0 >= HIRE_GRACE:
+                if c.st.get("resumed") and len(agents) >= MIN_STAFFED:
+                    c.st["note_hires"] = "no hire tasks found; the company already has %d agents (already staffed)" % len(agents)
+                    return
+                raise StepError("no hire tasks found in the new company after %d s" % HIRE_GRACE)
         if time.time() > deadline:
-            raise StepError("the CEO has hired %d of %d agents after %d s; not touching the hire tasks" % (len(agents), want, c.timeout("hires")))
-        c.sleep(15)
+            if tasks and not open_:
+                break  # all finished, the second confirming poll just ran out of time
+            stuck = [t for t in open_ if str(t.get("status")).lower() == "blocked"]
+            if stuck and len(stuck) == len(open_):
+                raise NeedsOwner("hire task(s) still blocked after %d s, so a person must act: %s" % (c.timeout("hires"), _ids(stuck)))
+            if open_:
+                raise StepError("hire tasks not finished after %d s: %s" % (c.timeout("hires"), _ids(open_)))
+            raise StepError("no hire tasks found in the new company after %d s" % c.timeout("hires"))
+        c.sleep(HIRE_POLL)
+    done = [t for t in tasks if str(t.get("status")).lower() == "done"]
+    if len(agents) < len(done):
+        raise StepError("%d hire tasks are done but the company has only %d live agents" % (len(done), len(agents)))
 
 
 def step_link_agents(c):
@@ -196,10 +253,11 @@ def prior_failed(runner, req, rid):
     best = None
     for n in sorted(os.listdir(d)):
         try:
-            r = json.load(open(os.path.join(d, n)))
+            with open(os.path.join(d, n)) as fh:
+                r = json.load(fh)
         except (OSError, ValueError):
             continue
-        if r.get("id") != rid and r.get("status") == "failed" and r.get("crm_company_id") == req["crm_company_id"] and r.get("company_id"):
+        if r.get("id") != rid and r.get("status") in RESUMABLE and r.get("crm_company_id") == req["crm_company_id"] and r.get("company_id"):
             best = r
     return best
 
@@ -210,6 +268,7 @@ def run(runner, rid, req):
     if prior:
         st.update({k: prior.get(k) for k in ("company_id", "prefix")})
         st["steps_done"] = [s for s in prior.get("steps_done", []) if s != prior.get("step")]
+        st["resumed"] = True
     for name, fn in STEPS:
         if name in st["steps_done"]:
             continue
@@ -217,6 +276,9 @@ def run(runner, rid, req):
         runner.save_result(rid, req, "running", "step: " + name, step=name, **keep())
         try:
             fn(Ctx(runner, rid, req, st))
+        except NeedsOwner as e:
+            raise NeedsOwner("step %s needs the owner: %s. File the same request again once it is done; it resumes this company." % (name, e),
+                             step=name, **{**keep(), **e.extra})
         except StepError as e:
             raise StepError("step %s failed: %s" % (name, e), step=name, **{**keep(), **e.extra})
         except RuntimeError as e:  # an API call failed
@@ -224,7 +286,7 @@ def run(runner, rid, req):
         st["steps_done"].append(name)
     url = (runner.policy.get("ownerListUrlTemplate") or "").replace("{prefix}", st["prefix"]).replace("{companyId}", st["company_id"])
     msg = "Company %s (%s) is provisioned and `new-company.py --verify` passed." % (req["name"], st["prefix"])
-    for k in ("note_entitlements", "note_model_key"):
+    for k in ("note_entitlements", "note_hires", "note_model_key"):
         if st.get(k):
             msg += "\n- " + st[k]
     if not url:

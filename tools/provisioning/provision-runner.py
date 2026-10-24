@@ -23,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SPOOL = os.environ.get("PIB_PR_SPOOL", "/var/spool/pib-provision")
 POLICY = os.environ.get("PIB_PR_POLICY", os.path.join(HERE, "provision-policy.json"))
 OPEN = ("queued", "running")
+RESUMABLE = ("failed", "needs_owner")  # a later request for the same CRM company picks these up
 ID_RE = re.compile(r"^p-\d{8}-\d{6}-[0-9a-f]{6}$")
 
 
@@ -215,7 +216,7 @@ class Runner:
                 r["status"] = "failed"
                 r["message"] = "marked failed: the run was killed or lost (no update for %d s)" % self.policy.get("staleRunningSeconds", 7200)
                 write_json(os.path.join(d, n), r)
-            if r.get("status") == "failed" and r.get("company_id") and str(r.get("updated") or "") >= resume_at:
+            if r.get("status") in RESUMABLE and r.get("company_id") and str(r.get("updated") or "") >= resume_at:
                 resume, resume_at = r["company_id"], str(r.get("updated") or "")
                 continue
             if r.get("status") in OPEN:
@@ -286,8 +287,8 @@ class Runner:
             if self.steps is None:
                 return self.finish(rid, req, "failed", "no provisioning steps are installed in this runner")
             out = self.steps.run(self, rid, req)
-        except Exception as e:  # a step failure fails the request, with the step's own message
-            return self.finish(rid, req, "failed", str(e), **getattr(e, "extra", {}))
+        except Exception as e:  # a step failure fails the request, with the step's own message; a stop for a person is needs_owner
+            return self.finish(rid, req, "needs_owner" if getattr(e, "needs_owner", False) else "failed", str(e), **getattr(e, "extra", {}))
         return self.finish(rid, req, "done", out.pop("message", "provisioned"), **out)
 
     @staticmethod

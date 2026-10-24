@@ -33,14 +33,14 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 4. Setup New company run, headless, with `profile` as a parameter (`setupRunnerCommand`; the board token goes in `PIB_BOARD_TOKEN`).
    **`profile: client` is refused at intake, before anything is created, until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
 5. `copy-company-secrets.py --profile client --from <PAR company id> --to <prefix> --apply` (always `--profile client`, `--from` always named; the `internal` profile was removed: a request with `profile: internal` is refused at intake, the PiB dev team is set up by hand) (non-zero: stop; the `--undo` file it names is in the result)
-6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO)
+6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO). The wait is on the company's `Hire:` tasks (plugin origin), polled every 15 s, until all are `done` or `cancelled` in two polls in a row, and then the company must have at least as many live agents as done hire tasks. No hire task after 120 s fails the step (a resumed company that already has 2 or more live agents passes as "already staffed"). At the 900 s deadline the request ends as `needs_owner` (naming the tasks) only if every open task is `blocked`; if any open task is in another state the step fails and lists them all. `--agents` only sets the capacity count; it is not a wait count.
 7. `<plugin>.link-agent` for Account Manager, SEO and Social (`linkAgents`)
 8. `new-company.py --company <prefix> --apply` (attaches role skills for the agents it recognises)
 9. `new-company.py --company <prefix> --model-key-bind --apply` (only with `--model-key`)
 10. `new-company.py --company <prefix> --verify` (any WARN or FAIL fails the request)
 11. write `hosted_company_id` on the CRM company record (`crm:update-company`, read back), then the result comment on the issue with the owner list link
 
-A failed request keeps its company. The next request for the same CRM company resumes after the last finished step, and the capacity gate then counts that company once (no extra company, only the agents it does not have yet). Roll back with the
+Result statuses: `queued`, `running`, `done`, `failed`, `refused` and `needs_owner` (the request stopped until a person acts; the result comment names who and what). A `needs_owner` request is not open: the next request for the same CRM company resumes it like a failed one. A failed request keeps its company. The next request for the same CRM company resumes after the last finished step, and the capacity gate then counts that company once (no extra company, only the agents it does not have yet). Roll back with the
 `--undo` file or `new-company.py`, not by filing again with a new name.
 
 Expected time per company: about 1 minute of script time plus about 2 minutes of CEO time for four agents.
