@@ -5,7 +5,8 @@
   "boardTokenFile": "/etc/pib-provision/board-token",
   "allowedRequesters": [
     "operator",
-    "account manager"
+    "account manager",
+    "operations manager"
   ],
   "requireIssueAssignee": true,
   "profiles": [
@@ -18,7 +19,7 @@
   "maxAgentsPerRequest": 10,
   "opsDir": "/root/pib-ops",
   "setupPluginKey": "partnersinbiz.setup",
-  "entitlementsAction": "set-entitlements",
+  "entitlementsAction": "setup.set-entitlements",
   "setupProfileWired": false,
   "setupRunnerCommand": null,
   "linkAgents": [

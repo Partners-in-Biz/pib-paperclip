@@ -16,7 +16,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 
 1. Kill switch: `enabled` in the policy, or a file `DISABLED` in the spool.
 2. Identity: the run's `PAPERCLIP_API_KEY` against `GET /api/agents/me`; the token is dropped at once and is never written to a result.
-   Only agents of the PAR company whose role or title equals an `allowedRequesters` entry (Operator, Account Manager); the name does not count.
+   Only agents of the PAR company whose role or title equals an `allowedRequesters` entry (Operator, Account Manager, Operations Manager); the name does not count.
 3. The `--issue` exists in PAR and the requester is its assignee. The runner writes on an issue only after steps 2 and 3 pass.
 4. A client company needs `--model-key` (the client's own key, task 2.2); the key itself never goes in a request.
 5. One open request per CRM company; a CRM company that is already `done` is refused.
@@ -28,11 +28,11 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 ## Steps (first failure fails the request and says which step)
 
 1. create the company (board API; the host picks the prefix; read back)
-2. `setup.set-entitlements` when `--plan` or `--modules` is given
+2. `setup.set-entitlements` when `--plan` or `--modules` is given. It runs on PAR's page (only the operator company may set entitlements; the host overwrites `params.companyId` with the page's company) and names the new company in `targetCompanyId`; `--modules` become a module → `entitled` map
 3. `new-company.py --company <prefix> --create-ceo --apply`
 4. Setup New company run, headless, with `profile` as a parameter (`setupRunnerCommand`; the board token goes in `PIB_BOARD_TOKEN`).
    **`profile: client` is refused at intake, before anything is created, until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
-5. `copy-company-secrets.py --profile client --to <prefix> --apply` (non-zero: stop; the `--undo` file it names is in the result)
+5. `copy-company-secrets.py --profile client --from <PAR company id> --to <prefix> --apply` (`--from` is always named: the script defaults it to PAR only for `--profile client`) (non-zero: stop; the `--undo` file it names is in the result)
 6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO)
 7. `<plugin>.link-agent` for Account Manager, SEO and Social (`linkAgents`)
 8. `new-company.py --company <prefix> --apply` (attaches role skills for the agents it recognises)
@@ -40,7 +40,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 10. `new-company.py --company <prefix> --verify` (any WARN or FAIL fails the request)
 11. write `hosted_company_id` on the CRM company record (`crm:update-company`, read back), then the result comment on the issue with the owner list link
 
-A failed request keeps its company. The next request for the same CRM company resumes after the last finished step. Roll back with the
+A failed request keeps its company. The next request for the same CRM company resumes after the last finished step, and the capacity gate then counts that company once (no extra company, only the agents it does not have yet). Roll back with the
 `--undo` file or `new-company.py`, not by filing again with a new name.
 
 Expected time per company: about 1 minute of script time plus about 2 minutes of CEO time for four agents.

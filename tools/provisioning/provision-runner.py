@@ -200,7 +200,10 @@ class Runner:
             raise Refused("refused: agents must be a whole number from 1 to %d" % self.policy.get("maxAgentsPerRequest", 10))
 
     def check_open_and_done(self, req):
+        """Refuses an open or finished request for the same CRM company. Returns the company id a failed earlier request
+        already created (this request resumes it), or None."""
         d = self.path("results")
+        resume, resume_at = None, ""
         for n in os.listdir(d):
             r = load_json(os.path.join(d, n)) if n.endswith(".json") else None
             if not r or r.get("id") == req["id"] or r.get("crm_company_id") != req["crm_company_id"]:
@@ -210,11 +213,14 @@ class Runner:
                 r["status"] = "failed"
                 r["message"] = "marked failed: the run was killed or lost (no update for %d s)" % self.policy.get("staleRunningSeconds", 7200)
                 write_json(os.path.join(d, n), r)
+            if r.get("status") == "failed" and r.get("company_id") and str(r.get("updated") or "") >= resume_at:
+                resume, resume_at = r["company_id"], str(r.get("updated") or "")
                 continue
             if r.get("status") in OPEN:
                 raise Refused("refused: request %s for this company is still open (%s)" % (r["id"], r["status"]))
             if r.get("status") == "done":
                 raise Refused("refused: this CRM company is already provisioned by request %s (company %s)" % (r["id"], r.get("company_id")))
+        return resume
 
     def stale(self, r):
         """A running result nobody has updated for staleRunningSeconds belongs to a killed run; it no longer blocks."""
@@ -224,16 +230,22 @@ class Runner:
             return True
         return age > self.policy.get("staleRunningSeconds", 7200)
 
-    def capacity(self, req):
-        """The gate. Counts the whole box (PAR included): companies not archived, agents not terminated."""
+    def capacity(self, req, resume=None):
+        """The gate. Counts the whole box (PAR included): companies not archived, agents not terminated. A request that
+        resumes a company an earlier failed request created adds no company, and only the agents it does not have yet."""
         p = self.policy
         companies = [c for c in self.api.get("/api/companies") if str(c.get("status") or "").lower() != "archived"]
-        if len(companies) >= p["maxHostedCompanies"]:
+        if len([c for c in companies if c.get("id") != resume]) >= p["maxHostedCompanies"]:
             raise Refused("refused: maxHostedCompanies %d reached (current %d)" % (p["maxHostedCompanies"], len(companies)))
-        agents = 0
+        agents, existing = 0, 0
         for c in companies:
-            agents += sum(1 for a in self.api.get("/api/companies/%s/agents" % c["id"]) if str(a.get("status") or "").lower() != "terminated")
+            n = sum(1 for a in self.api.get("/api/companies/%s/agents" % c["id"]) if str(a.get("status") or "").lower() != "terminated")
+            agents += n
+            if c.get("id") == resume:
+                existing = n
         adds = max(req.get("agents") or 0, p["agentsPerNewCompany"])  # the requester can ask for more, never for less than the policy
+        if resume:
+            adds = max(0, adds - existing)
         if agents + adds > p["maxAgentsTotal"]:
             raise Refused("refused: maxAgentsTotal %d would be exceeded (current %d, request adds %d)" % (p["maxAgentsTotal"], agents, adds))
         return {"companies": len(companies), "agents": agents, "adds": adds}
@@ -259,8 +271,8 @@ class Runner:
             verified[0] = True  # only now may the runner write on the issue
             self.kill_switch()
             self.check_request(req)
-            self.check_open_and_done(req)
-            gate = self.capacity(req)
+            resume = self.check_open_and_done(req)
+            gate = self.capacity(req, resume)
         except Refused as e:
             return self.finish(rid, req, "refused", str(e), comment=verified[0])
         except Exception as e:
