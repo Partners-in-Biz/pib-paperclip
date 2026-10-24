@@ -11,8 +11,8 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save these settings once for each Paperclip company that runs campaigns. Saving is what lets the scheduled job open due-step issues for the company.",
   properties: {
-    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg", description: "Moved to the Preferences section on the page. Used only until the company saves a preference there." },
-    defaultFromName: { type: "string", title: "Default sender name", description: "Moved to the Preferences section on the page. Used only until the company saves a preference there." },
+    timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg", description: "Moved to the Preferences section on the page. Edit it there." },
+    defaultFromName: { type: "string", title: "Default sender name", description: "Moved to the Preferences section on the page. Edit it there." },
     publicBaseUrl: {
       type: "string",
       title: "Public base URL",

@@ -21,7 +21,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { readCampaignPreferences } from "./preferences.js";
-import { resolveSender, senderKeyOf, type SenderIdentity } from "@partnersinbiz/pib-plugin-kit";
+import { readConfig, resolveSender, senderKeyOf, type SenderIdentity } from "@partnersinbiz/pib-plugin-kit";
 import type { MessagingChannel } from "./channels.js";
 import { listSenderIdentityRows, type SenderIdentityRow } from "./db.js";
 import { campaignSenderKey, type CampaignDraft } from "./domain.js";
@@ -51,6 +51,16 @@ async function senderName(ctx: PluginContext, companyId: string, campaign: Pick<
   try {
     return String((await readCampaignPreferences(ctx, companyId)).defaultFromName ?? "").trim();
   } catch {
+    return savedFromName(ctx, companyId);
+  }
+}
+
+/** The host-form sender name, used only when the preferences cannot be read (never a blank From name for PAR). */
+async function savedFromName(ctx: PluginContext, companyId: string): Promise<string> {
+  try {
+    const name = (await readConfig(ctx, companyId)).defaultFromName;
+    return typeof name === "string" ? name.trim() : "";
+  } catch {
     return "";
   }
 }
@@ -66,7 +76,7 @@ export async function senderDisplayName(ctx: PluginContext, companyId: string, c
     const row = (await listSenderIdentityRows(ctx, companyId)).find((entry) => entry.sender_key === key);
     return await senderName(ctx, companyId, campaign, row);
   } catch {
-    return campaign?.fromName || campaign?.clientName || "";
+    return campaign?.fromName || campaign?.clientName || (await savedFromName(ctx, companyId));
   }
 }
 

@@ -24,6 +24,8 @@ import {
   PageMessage,
   Pill,
   PreferencesPanel,
+  type PreferencesLoadResult,
+  type PreferencesSaveResult,
   Select,
   Send,
   Settings,
@@ -334,8 +336,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
 
       {tab === "preferences" ? (
         <PreferencesPanel
-          load={() => loadPreferences({}) as never}
-          save={(patch) => savePreferences({ patch }) as never}
+          load={() => loadPreferences({}) as Promise<PreferencesLoadResult>}
+          save={(patch) => savePreferences({ patch }) as Promise<PreferencesSaveResult>}
         />
       ) : null}
 

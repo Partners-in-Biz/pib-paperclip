@@ -59,7 +59,7 @@ describe("campaigns preferences", () => {
     expect((await readCampaignPreferences(ctx, CLIENT)).timezone).toBe("Africa/Johannesburg");
   });
 
-  it("fails if the manifest lacks access.members.read while preferences-save is registered", async () => {
+  it("declares access.members.read while preferences-save is registered, and refuses a save without it", async () => {
     expect(manifest.capabilities).toContain("access.members.read");
     expect(manifest.capabilities).toContain("plugin.state.write");
     const source = (await import("node:fs")).readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
