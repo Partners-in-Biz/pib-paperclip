@@ -115,8 +115,12 @@ function legacyValues(schema: PreferencesSchema, raw: Record<string, unknown>): 
   const out: PreferenceValues = {};
   for (const [id, field] of Object.entries(schema.fields)) {
     if (!field.legacy) continue;
-    const value = typeof field.legacy === "string" ? valueAtPath(raw, field.legacy) : field.legacy(raw);
-    if (value !== undefined && value !== null && checkValue(field, value) === null) out[id] = value as PreferenceValue;
+    try {
+      const value = typeof field.legacy === "string" ? valueAtPath(raw, field.legacy) : field.legacy(raw);
+      if (value !== undefined && value !== null && checkValue(field, value) === null) out[id] = value as PreferenceValue;
+    } catch {
+      // Legacy function threw; skip this field
+    }
   }
   return out;
 }
@@ -241,17 +245,28 @@ export async function savePreferences(
   }
 
   const raw = await rawConfig(ctx, companyId);
-  if (!(await getRow(ctx, companyId))) await seedIfOwn(ctx, companyId, schema, raw);
+  let seeded: Row | null = null;
+  if (!(await getRow(ctx, companyId))) seeded = await seedIfOwn(ctx, companyId, schema, raw);
   // Fresh read right before the write, so a seed that landed meanwhile is merged, not overwritten.
-  const current = await getRow(ctx, companyId);
+  const current = (await getRow(ctx, companyId)) ?? seeded;
   const previous = await effective(ctx, companyId, schema, current, raw);
   const values = { ...(current?.values ?? {}), ...set };
   for (const id of clear) delete values[id];
-  const row: Row = { values, updatedBy: userId, updatedAt: new Date().toISOString() };
+  // Drop keys not in the schema so stale keys do not count toward the 16 KB cap.
+  const filtered: PreferenceValues = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (Object.hasOwn(schema.fields, key)) filtered[key] = value;
+  }
+  const row: Row = { values: filtered, updatedBy: userId, updatedAt: new Date().toISOString() };
   if (Buffer.byteLength(JSON.stringify(row), "utf8") > PREFERENCES_MAX_BYTES) {
     return refuse(`Preferences are too large (limit ${PREFERENCES_MAX_BYTES} bytes)`);
   }
-  await ctx.state.set(scope(companyId), row);
+  try {
+    await ctx.state.set(scope(companyId), row);
+  } catch (error) {
+    ctx.logger.info("Could not save preferences", { error: error instanceof Error ? error.message : String(error) });
+    return refuse("Could not save preferences");
+  }
   return { ok: true, values: await effective(ctx, companyId, schema, row, raw), previous };
 }
 
