@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""pib-provision-request: ask the provisioning runner to set up a hosted client company.
+
+Installed on the VPS as /usr/local/bin/pib-provision-request (any user can run it; it needs no sudo and no root). Agents use it from
+their shell, in their own run: it identifies the agent with the run's PAPERCLIP_API_KEY, which the runner checks against Paperclip and
+then drops. Only the Operator and the Account Manager are allowed to request.
+
+  pib-provision-request company --name "Acme (Pty) Ltd" --crm-company <crm company record id> --issue PAR-123
+                                [--profile client|internal] [--plan <plan>] [--modules a,b,c] [--agents N] [--model-key] [--note "why"]
+  pib-provision-request status <request id> [--json]
+  pib-provision-request list [--limit 10]
+
+What happens: a root service picks the request up within a minute, checks who you are and the capacity limit, creates the company,
+sets it up (keys, CEO, hires, skills, model key), proves it with `new-company.py --verify` and posts the result as a comment on --issue.
+File the request, then end your run; do not wait for it. Do not comment on the new company's hire tasks: that wakes its CEO.
+
+--model-key says the client's own model key has been supplied (task 2.2). The key itself never goes in a request.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import secrets
+import sys
+
+SPOOL = os.environ.get("PIB_PR_SPOOL", "/var/spool/pib-provision")
+PROFILES = ("client", "internal")
+
+
+def die(msg, code=2):
+    sys.stderr.write("pib-provision-request: %s\n" % msg)
+    sys.exit(code)
+
+
+def cmd_company(a):
+    if not a.name.strip() or len(a.name) > 80:
+        die("--name must be 1 to 80 characters")
+    if not re.match(r"^[A-Za-z0-9_-]{4,64}$", a.crm_company):
+        die("--crm-company must be the CRM company record id (letters, digits, - and _)")
+    if not re.match(r"^[A-Z]{2,6}-\d{1,6}$", a.issue):
+        die("--issue must look like PAR-123")
+    modules = sorted(set(m for m in (a.modules or "").split(",") if m.strip()))
+    for m in modules:
+        if not re.match(r"^[a-z][a-z0-9-]{1,30}$", m.strip()):
+            die("--modules: %r is not a module key" % m)
+    token = os.environ.get("PAPERCLIP_API_KEY") or None
+    if not token and os.geteuid() != 0:
+        sys.stderr.write("pib-provision-request: warning: PAPERCLIP_API_KEY is not set, so the runner cannot tell who you are and will "
+                         "refuse. Run this from an agent run.\n")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rid = "p-%s-%s" % (now.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(3))
+    req = {"id": rid, "kind": "company", "name": a.name.strip(), "crm_company_id": a.crm_company, "issue": a.issue,
+           "profile": a.profile, "plan": a.plan, "modules": modules, "agents": a.agents, "model_key": bool(a.model_key),
+           "note": (a.note or "")[:300], "token": token, "run_id": os.environ.get("PAPERCLIP_RUN_ID") or None,
+           "created": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    inc = os.path.join(SPOOL, "incoming")
+    if not os.path.isdir(inc):
+        die("the provisioning runner is not installed here (%s is missing)" % inc, 3)
+    tmp = os.path.join(inc, ".tmp-" + rid)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(req, fh)
+        os.rename(tmp, os.path.join(inc, rid + ".json"))
+    except OSError as e:
+        try:
+            os.unlink(tmp)  # never leave a half-written file holding the token
+        except OSError:
+            pass
+        die("could not file the request: %s" % e.strerror, 3)
+    print("Filed provisioning request %s for %s." % (rid, req["name"]))
+    print("The runner picks it up within a minute. Its answer is posted as a comment on %s." % a.issue)
+    print("Check it: pib-provision-request status %s" % rid)
+
+
+def load(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def show(r, as_json):
+    if as_json:
+        print(json.dumps(r, indent=2, sort_keys=True))
+        return
+    print("%s  %s  %s" % (r.get("id"), r.get("status", "?").upper(), r.get("name") or ""))
+    for k in ("issue", "company_id", "prefix", "step", "updated"):
+        if r.get(k):
+            print("  %-10s %s" % (k, r[k]))
+    if r.get("message"):
+        print("  " + r["message"].replace("\n", "\n  "))
+
+
+def cmd_status(a):
+    if not re.match(r"^p-\d{8}-\d{6}-[0-9a-f]{6}$", a.id):
+        die("that is not a request id (p-YYYYMMDD-HHMMSS-xxxxxx)")
+    r = load(os.path.join(SPOOL, "results", a.id + ".json"))
+    if r is None:
+        print("%s: no result yet. The runner has not picked it up (it runs within a minute), or the id is wrong." % a.id)
+        sys.exit(1)
+    show(r, a.json)
+
+
+def cmd_list(a):
+    d = os.path.join(SPOOL, "results")
+    try:
+        names = sorted((n for n in os.listdir(d) if n.endswith(".json")), reverse=True)[: a.limit]
+    except OSError:
+        die("the provisioning runner is not installed here", 3)
+    for n in names:
+        r = load(os.path.join(d, n)) or {}
+        print("%-28s %-9s %-30s %s" % (r.get("id", n), (r.get("status") or "?").upper(), r.get("name") or "", r.get("issue") or ""))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="pib-provision-request", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("company", help="provision a hosted client company")
+    c.add_argument("--name", required=True, help="the company name")
+    c.add_argument("--crm-company", required=True, help="the client's CRM company record id (gets hosted_company_id when done)")
+    c.add_argument("--issue", required=True, help="the Paperclip issue you are working on, e.g. PAR-123; you must be its assignee")
+    c.add_argument("--profile", choices=PROFILES, default="client")
+    c.add_argument("--plan", help="entitlement plan to set")
+    c.add_argument("--modules", help="comma-separated modules to entitle")
+    c.add_argument("--agents", type=int, help="how many agents the company will start with, for the capacity check")
+    c.add_argument("--model-key", action="store_true", help="the client's own model key has been supplied (required for profile client)")
+    c.add_argument("--note", help="one line on why (shown in the log)")
+    c.set_defaults(fn=cmd_company)
+    s = sub.add_parser("status", help="show the state of a request")
+    s.add_argument("id")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_status)
+    ls = sub.add_parser("list", help="the latest requests")
+    ls.add_argument("--limit", type=int, default=10)
+    ls.set_defaults(fn=cmd_list)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()
