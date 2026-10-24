@@ -21,6 +21,7 @@ import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { RoutinesSwitchOn, useRoutineReports } from "./routines.js";
 import { CreateSprintModal, SprintHome, StartPlanModal } from "./home.js";
 import { Banner, StuckBanner, compactLink, linkButton, small } from "./parts.js";
+import { SeoPreferences } from "./preferences.js";
 import { SPRINT_TAB_IDS, SprintCockpit } from "./sprint.js";
 import type { HireView, LoadResult, SprintSummary, TabId } from "./types.js";
 
@@ -247,6 +248,7 @@ export function SeoPage({ context }: PluginPageProps) {
       ) : (
         <SprintHome data={data} client={client} onOpen={openSummary} onCreate={() => setCreating(true)} onStartPlan={setStarting} onChanged={refresh} onMessage={setMessage} />
       )}
+      {data && !scope && !sprintId ? <SeoPreferences /> : null}
       {data ? (
         <CreateSprintModal
           open={creating}

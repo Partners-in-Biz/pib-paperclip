@@ -40,6 +40,7 @@ import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary, UI_ONLY_HANDLERS } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
 import { NAMESPACE } from "./namespace.js";
+import { loadPreferencesView, savePreferencesFor } from "./preferences.js";
 import {
   defaultHireAssignee,
   ensureProject,
@@ -298,6 +299,13 @@ function registerActions(e: Env) {
       await e.skills.ensure(companyId).catch(() => []);
       return fn(companyId, actionActor(context), asParams(params));
     });
+
+  // Company preferences: the kit checks that the caller is an owner or admin of this company (fails closed).
+  ctx.actions.register("seo.preferences-load", async (_params, context) => loadPreferencesView(ctx, actionCompany(context)));
+  ctx.actions.register("seo.preferences-save", async (params, context) => {
+    actionCompany(context);
+    return savePreferencesFor(ctx, context, asParams(params).patch);
+  });
 
   action("seo.load", async (companyId, actor, params) => {
     const uiBase = (await rememberPluginUiBase(ctx, params.uiBase)) ?? (await pluginUiBase(ctx));

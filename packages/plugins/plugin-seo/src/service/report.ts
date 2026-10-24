@@ -10,6 +10,7 @@ import { t } from "../db.js";
 import { progressEmail, type ProgressSite } from "../engine/progress-email.js";
 import { sprintClock } from "../engine/sprint.js";
 import { companyInfo, reqStr, SeoError, str, strList, type Actor, type Env, type Params } from "./common.js";
+import { companyDisplayName } from "../preferences.js";
 import { displayTitle } from "./overview.js";
 
 const FIRST_WEEKS = 3;
@@ -79,7 +80,7 @@ export async function draftProgressReport(env: Env, companyId: string, _actor: A
       clientRef = sprint.clientRef;
     }
   }
-  const mail = progressEmail({ greetingName: str(params, "greetingName", { max: 80 }) ?? null, sites, signature: "Partners in Biz" });
+  const mail = progressEmail({ greetingName: str(params, "greetingName", { max: 80 }) ?? null, sites, signature: await companyDisplayName(env.ctx, companyId) });
   const key = `seo-report:${companyId}:${createHash("sha1").update([...sprintIds].sort().join(",") + info.today).digest("hex").slice(0, 16)}`;
   const request: MailDraftRequested = {
     key,
