@@ -31,24 +31,32 @@ export function getPublicBaseUrl(headers: HeaderBag): string | null {
   return `${proto}://${host}`;
 }
 
+/** Twilio signatures are base64 of an HMAC-SHA1 digest: 20 bytes, 28 chars. */
+const SIGNATURE_SHAPE = /^[A-Za-z0-9+/]{27}=$/;
+
+/** How long the company list and tokens are reused between unauthenticated hits. */
+export const TOKEN_CACHE_TTL_MS = 60_000;
+
+type TokenEntry = { companyId: string; authToken: string };
+const tokenCache = new WeakMap<object, { at: number; entries: TokenEntry[] }>();
+
 /**
- * Get all companies from ctx.companies.list, paginating through all results.
- * Returns empty list if no companies exist or if listing fails.
+ * List companies (paginated) and resolve each one's TWILIO_AUTH_TOKEN.
+ * Cached briefly per plugin context so a flood of unsigned requests cannot
+ * cause a company list plus one secret lookup per company on every hit.
  */
-async function getAllCompanies(ctx: PluginContext): Promise<string[]> {
-  const companies: string[] = [];
+async function loadTokens(ctx: PluginContext): Promise<TokenEntry[]> {
+  const cached = tokenCache.get(ctx);
+  if (cached && Date.now() - cached.at < TOKEN_CACHE_TTL_MS) return cached.entries;
+
+  const ids: string[] = [];
   let offset = 0;
   const limit = 100;
-
   try {
     while (true) {
       const batch = await ctx.companies.list({ offset, limit });
       if (batch.length === 0) break;
-
-      for (const company of batch) {
-        companies.push(company.id);
-      }
-
+      for (const company of batch) ids.push(company.id);
       if (batch.length < limit) break;
       offset += limit;
     }
@@ -56,7 +64,17 @@ async function getAllCompanies(ctx: PluginContext): Promise<string[]> {
     return [];
   }
 
-  return companies;
+  const entries: TokenEntry[] = [];
+  for (const companyId of ids) {
+    try {
+      const authToken = await ctx.secrets.resolve(TWILIO_AUTH_TOKEN, { companyId });
+      if (authToken) entries.push({ companyId, authToken });
+    } catch {
+      // Secret not found or not resolvable for this company; skip it
+    }
+  }
+  tokenCache.set(ctx, { at: Date.now(), entries });
+  return entries;
 }
 
 /**
@@ -75,23 +93,16 @@ export async function resolveVerifiedCompany(
   rawBody: string,
   webhookUrl: string,
 ): Promise<{ companyId: string } | { error: string } | null> {
-  const companyIds = await getAllCompanies(ctx);
+  // Cheap reject first: a malformed or missing signature never costs a lookup.
+  const signature = readHeader(headers, "x-twilio-signature");
+  if (!signature || !SIGNATURE_SHAPE.test(signature)) {
+    return { error: "bad_signature" };
+  }
 
-  let hadToken = false;
+  const entries = await loadTokens(ctx);
+  if (entries.length === 0) return null;
 
-  for (const companyId of companyIds) {
-    let authToken: string | undefined;
-    try {
-      authToken = await ctx.secrets.resolve(TWILIO_AUTH_TOKEN, { companyId });
-    } catch {
-      // Secret not found or not resolvable for this company; skip it
-      continue;
-    }
-
-    if (!authToken) continue;
-
-    hadToken = true;
-
+  for (const { companyId, authToken } of entries) {
     const result = verifyTwilioWebhook({
       authToken,
       headers,
@@ -104,11 +115,5 @@ export async function resolveVerifiedCompany(
     }
   }
 
-  // If we tried at least one token and it failed, report bad signature
-  if (hadToken) {
-    return { error: "bad_signature" };
-  }
-
-  // No company had a token to try
-  return null;
+  return { error: "bad_signature" };
 }
