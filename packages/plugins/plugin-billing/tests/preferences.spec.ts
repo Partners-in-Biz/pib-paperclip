@@ -46,7 +46,7 @@ describe("capability", () => {
     const without = { ...manifest, capabilities: manifest.capabilities.filter((c) => c !== "access.members.read") } as PaperclipPluginManifestV1;
     const h = boot({}, without);
     expect(await save(h, { defaultDueDays: 30 })).toEqual({ ok: false, error: "Cannot verify your role" });
-    expect((await billingSettings(h.ctx, CO)).defaultDueDays).toBe(0);
+    expect((await billingSettings(h.ctx, CO)).defaultDueDays).toBeUndefined();
   });
 });
 
@@ -105,11 +105,25 @@ describe("a company that never opens the panel", () => {
     expect(totals(after)).toEqual(totals(config as BillingSettings));
   });
 
-  it("no settings and no preferences: the defaults Billing always used", async () => {
+  it("no settings and no preferences: exactly what the old code did, including a 0 tax rate with the 15% code", async () => {
     const h = boot({});
     const s = await billingSettings(h.ctx, CO);
-    expect(effective(s)).toEqual({ tax: 15, code: "za_std_15", vat: true, book: "ZAR", due: null, currency: "ZAR", inclusive: false, notes: null });
-    expect(await PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(h.ctx, as(OWNER), {})).toMatchObject({ values: { defaultCurrency: "ZAR", defaultDueDays: 0, vatRegistered: true } });
+    expect(s).toEqual({});
+    expect(effective(s)).toEqual({ tax: 0, code: "za_std_15", vat: true, book: "ZAR", due: null, currency: "ZAR", inclusive: false, notes: null });
+    expect(await PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(h.ctx, as(OWNER), {})).toMatchObject({ values: { defaultCurrency: "ZAR", defaultDueDays: 0, vatRegistered: true, defaultTaxRate: 15 } });
+  });
+
+  it("a rate a person saves counts, even when it equals the form default", async () => {
+    const h = boot({});
+    await save(h, { defaultTaxRate: 15 });
+    expect(defaultTax(await billingSettings(h.ctx, CO))).toBe(15);
+  });
+
+  it("a saved rate the kit would drop (7.5) is kept until a person saves another", async () => {
+    const h = boot({ ...PAR_CONFIG, defaultTaxRate: 7.5 });
+    await save(h, { defaultDueDays: 30 });
+    const s = await billingSettings(h.ctx, CO);
+    expect([s.defaultTaxRate, s.defaultDueDays]).toEqual([7.5, 30]);
   });
 });
 
@@ -118,7 +132,7 @@ describe("saving", () => {
     const h = boot({});
     expect((await save(h, { defaultDueDays: 30 }, "u-operator")).ok).toBe(false);
     expect((await save(h, { defaultDueDays: 30 }, "agent-1", "agent")).ok).toBe(false);
-    expect((await billingSettings(h.ctx, CO)).defaultDueDays).toBe(0);
+    expect((await billingSettings(h.ctx, CO)).defaultDueDays).toBeUndefined();
   });
 
   it("checks money fields: currency codes, the VAT rate range and the VAT code", async () => {
@@ -127,7 +141,7 @@ describe("saving", () => {
       const result = await save(h, patch);
       expect(result.ok, JSON.stringify(patch)).toBe(false);
     }
-    expect((await billingSettings(h.ctx, CO)).defaultTaxRate).toBe(15);
+    expect((await billingSettings(h.ctx, CO)).defaultTaxRate).toBeUndefined();
     const ok = await save(h, { defaultCurrency: " usd ", defaultTaxRate: 0 });
     expect(ok.ok).toBe(true);
     const s = await billingSettings(h.ctx, CO);

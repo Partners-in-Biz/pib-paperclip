@@ -34,20 +34,35 @@ const CURRENCY_FIELDS = ["defaultCurrency", "reportingCurrency"] as const;
 /** Empty text means "not set": the code that reads settings treats a missing value, not "", as unset. */
 const EMPTY_IS_UNSET = new Set(["defaultTaxCode", "invoiceNotes"]);
 
-/** Preferences laid over the saved settings; a preference wins. Pure. */
-export function mergePreferences<T extends object>(settings: T, prefs: PreferenceValues): T {
+/**
+ * Preferences laid over the saved settings; a preference wins. Only the ids in `explicit` (saved by a person) are
+ * laid over: every other setting stays exactly as saved, or unset, so a company that never used the panel behaves as
+ * before (the schema defaults are for the form, not for the code that reads settings). Pure.
+ */
+export function mergePreferences<T extends object>(settings: T, prefs: PreferenceValues, explicit: ReadonlySet<string>): T {
   const out: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
-  for (const [id, value] of Object.entries(prefs)) {
+  for (const id of explicit) {
+    const value = prefs[id];
+    if (value === undefined) continue;
     if (EMPTY_IS_UNSET.has(id) && value === "") delete out[id];
     else out[id] = value;
   }
   return out as T;
 }
 
-/** Saved settings with the company's preferences on top. A failed preferences read leaves the settings as they are. */
+/** The ids a person saved. Reads the kit's preferences row (scope below must match `scope()` in the kit's preferences.ts). */
+async function explicitIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  const row = await ctx.state.get({ scopeKind: "company", scopeId: companyId, namespace: "preferences", stateKey: "v1" });
+  const values = row && typeof row === "object" ? (row as { values?: unknown }).values : undefined;
+  return new Set(values && typeof values === "object" && !Array.isArray(values) ? Object.keys(values).filter((id) => Object.hasOwn(BILLING_PREFERENCES.fields, id)) : []);
+}
+
+/** Saved settings with the company's saved preferences on top. A failed preferences read leaves the settings as they are. */
 export async function withPreferences<T extends object>(ctx: PluginContext, companyId: string, settings: T): Promise<T> {
   try {
-    return mergePreferences(settings, await readPreferences(ctx, companyId, BILLING_PREFERENCES));
+    const explicit = await explicitIds(ctx, companyId);
+    if (explicit.size === 0) return settings;
+    return mergePreferences(settings, await readPreferences(ctx, companyId, BILLING_PREFERENCES), explicit);
   } catch {
     return settings;
   }
