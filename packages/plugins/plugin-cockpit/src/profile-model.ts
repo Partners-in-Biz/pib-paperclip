@@ -35,8 +35,8 @@ export interface ProfileField {
 }
 
 export const PROFILE_FIELDS: ProfileField[] = [
-  { key: "legalName", label: "Legal name", group: "identity", kind: "text", max: 200, hint: "As registered, for invoices, quotes and contracts.", placeholder: "Partners in Biz (Pty) Ltd" },
-  { key: "tradingName", label: "Trading name", group: "identity", kind: "text", max: 200, hint: "The name clients know, for posts and emails.", placeholder: "Partners in Biz" },
+  { key: "legalName", label: "Legal name", group: "identity", kind: "text", max: 200, hint: "As registered, for invoices, quotes and contracts.", placeholder: "Your company (Pty) Ltd" },
+  { key: "tradingName", label: "Trading name", group: "identity", kind: "text", max: 200, hint: "The name clients know, for posts and emails.", placeholder: "Your company name" },
   { key: "vatNumber", label: "VAT number", group: "identity", kind: "vat", max: 20, hint: "10 digits starting with 4. Leave empty when not VAT registered.", placeholder: "4123456789" },
   { key: "address", label: "Address", group: "identity", kind: "long", max: 500, hint: "Postal or physical address for invoices and email footers." },
   { key: "website", label: "Website", group: "online", kind: "url", max: 300, hint: "The main website.", placeholder: "https://example.co.za" },
