@@ -34,12 +34,14 @@ export function normalizeModules(input: unknown): ModuleChoice {
 }
 
 /**
- * Like normalizeModules for a save: a module the company is not entitled to is
- * forced off when the input leaves it out, and refused when the input turns it on.
+ * Like normalizeModules for a save: a module the input leaves out keeps its saved value (on when
+ * nothing is saved), so a partial map never switches anything on. A module the company is not
+ * entitled to is forced off when the input leaves it out, and refused when the input turns it on.
  */
-export function normalizeEntitledModules(input: unknown, entitled: Partial<Record<ModuleKey, boolean>>): ModuleChoice {
+export function normalizeEntitledModules(input: unknown, entitled: Partial<Record<ModuleKey, boolean>>, saved?: Partial<Record<ModuleKey, boolean>> | null): ModuleChoice {
   const result = normalizeModules(input);
   const source = input as Record<string, unknown>;
+  if (saved) for (const key of MODULE_KEYS) if (source[key] === undefined && saved[key] === false) result[key] = false;
   for (const key of MODULE_KEYS) {
     if (entitled[key] === true) continue;
     if (source[key] === true) throw new ForbiddenError(`${MODULES[key].title} is not in this company's plan`);

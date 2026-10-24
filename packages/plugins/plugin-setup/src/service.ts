@@ -119,9 +119,9 @@ export async function saveModules(
   clock: Clock = systemClock,
 ): Promise<{ modules: ModuleChoice; updatedAt: string; issue: RefreshResult | null }> {
   const { entitled } = await moduleView(ctx, input.companyId, clock);
-  const modules = normalizeEntitledModules(input.modules, entitled);
-  const updatedAt = clock.now().toISOString();
   const previous = await getChoice(ctx, input.companyId);
+  const modules = normalizeEntitledModules(input.modules, entitled, previous?.modules);
+  const updatedAt = clock.now().toISOString();
   await saveChoice(ctx, { companyId: input.companyId, modules, updatedAt, updatedBy: input.userId ?? previous?.updatedBy ?? null });
   try {
     await emitModules(ctx, input.companyId, modules, updatedAt);
@@ -555,7 +555,7 @@ export async function setEntitlements(
   ctx: PluginContext,
   input: { companyId: string; plan?: unknown; modules?: unknown; until?: unknown; userId: string },
   clock: Clock = systemClock,
-): Promise<{ plan: string | null; entitled: Record<ModuleKey, boolean>; modules: ModuleChoice; updatedAt: string }> {
+): Promise<{ plan: string | null; entitled: Record<ModuleKey, boolean>; modules: ModuleChoice; updatedAt: string; emitted: boolean; note: string | null }> {
   // The host scopes companies.get to the company the action runs for, and the operator runs this from its own
   // page, so a client target cannot be looked up here: a denied lookup is not "unknown", only a clean null is.
   let known: unknown = true;
@@ -595,10 +595,12 @@ export async function setEntitlements(
     await saveEntitlement(ctx, row);
   }
   const view = await moduleView(ctx, input.companyId, clock);
+  let emitted = true;
   try {
     await emitModules(ctx, input.companyId, view.modules, updatedAt);
   } catch (error) {
-    // The hourly re-emit catches up.
+    // The host may refuse an event for a company other than the one the action runs for; the hourly re-emit catches up.
+    emitted = false;
     ctx.logger.info("Module switch emit failed", { companyId: input.companyId, error: message(error) });
   }
   try {
@@ -607,5 +609,6 @@ export async function setEntitlements(
     ctx.logger.info("Finish setup refresh failed", { companyId: input.companyId, error: message(error) });
   }
   // `entitled` is what the stored rows grant; `modules` is what is switched on now (nothing is locked before the backfill has run).
-  return { plan, entitled: entitledModules(await getEntitlements(ctx, input.companyId), clock.now()), modules: view.modules, updatedAt };
+  const note = emitted ? null : "Saved. The other plugins pick the new plan up with the hourly re-send (the host did not accept the switch event for this company now).";
+  return { plan, entitled: entitledModules(await getEntitlements(ctx, input.companyId), clock.now()), modules: view.modules, updatedAt, emitted, note };
 }

@@ -2,11 +2,12 @@ import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPer
 import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
+import { operatorDowngrade } from "./entitlements.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
 import { JOBS } from "./manifest.js";
 import { effectiveModules, ForbiddenError, SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { approveStarterPack, bootstrapCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
+import { approveStarterPack, bootstrapCompany, isOwnerCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
 import { registerTemplateTools } from "./template-tools.js";
 import { backfillEntitlements, loadSetup, message, moduleView, setEntitlements, onDriveBind, onDriveBindingEvent, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
 
@@ -31,24 +32,37 @@ export function registerSetup(ctx: PluginContext): void {
   });
   registerTemplateTools(ctx);
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
-  ctx.actions.register("setup.save-modules", async (params, context) => {
-    const companyId = requiredCompany(context);
-    if (context.actor.type !== "user" || !context.actor.userId) throw new SetupError("Only a board user can change the modules");
-    // Only an owner or admin of this company, or of ours (the operator), may change what a company runs.
-    if (!(await isCompanyAdmin(ctx, companyId, context.actor.userId)) && !(await isOperatorAdmin(ctx, context.actor.userId))) {
-      throw new ForbiddenError("Only a company owner or admin can change the modules");
-    }
-    if (params.installed) await rememberInstalled(ctx, params.installed);
-    return saveModules(ctx, { companyId, modules: params.modules, userId: context.actor.userId });
-  });
-  // What a company bought. Only an owner or admin of the operator company (ours) may write it: the host
-  // does not pass an instance-admin flag to plugin actions, so a client's own owner is refused.
-  ctx.actions.register("setup.set-entitlements", async (params, context) => {
-    if (context.actor.type !== "user" || !context.actor.userId) throw new ForbiddenError("Only a board user can set entitlements");
-    if (!(await isOperatorAdmin(ctx, context.actor.userId))) throw new ForbiddenError("Only an owner or admin of the operator company can set entitlements, and only from that company's own page (the host scopes member lookups to the company the action runs for)");
-    const companyId = typeof params.companyId === "string" && params.companyId ? params.companyId : requiredCompany(context);
-    return setEntitlements(ctx, { companyId, plan: params.plan, modules: params.modules, until: params.until, userId: context.actor.userId });
-  });
+  ctx.actions.register("setup.save-modules", (params, context) =>
+    refusable(async () => {
+      const companyId = requiredCompany(context);
+      if (context.actor.type !== "user" || !context.actor.userId) throw new SetupError("Only a board user can change the modules");
+      // Only an owner or admin of this company, or of ours (the operator), may change what a company runs.
+      if (!(await isCompanyAdmin(ctx, companyId, context.actor.userId)) && !(await isOperatorAdmin(ctx, context.actor.userId))) {
+        throw new ForbiddenError("Only a company owner or admin can change the modules");
+      }
+      if (params.installed) await rememberInstalled(ctx, params.installed);
+      return { ok: true, ...(await saveModules(ctx, { companyId, modules: params.modules, userId: context.actor.userId })) };
+    }),
+  );
+  // What a company bought. Only an owner or admin of the operator company (ours) may write it, from that company's
+  // own page: the host does not pass an instance-admin flag to plugin actions, so a client's own owner is refused.
+  // The host overwrites `params.companyId` with the page's company, so the company to change is `params.targetCompanyId`.
+  ctx.actions.register("setup.set-entitlements", (params, context) =>
+    refusable(async () => {
+      if (context.actor.type !== "user" || !context.actor.userId) throw new ForbiddenError("Only a board user can set entitlements");
+      if (!(await isOperatorAdmin(ctx, context.actor.userId))) throw new ForbiddenError("Only an owner or admin of the operator company can set entitlements, and only from that company's own page (the host scopes member lookups to the company the action runs for)");
+      const pageCompanyId = requiredCompany(context);
+      const companyId = typeof params.targetCompanyId === "string" ? params.targetCompanyId.trim() : "";
+      if (!companyId) throw new SetupError("targetCompanyId is required: the company whose plan to set (the host replaces companyId with the page's company)");
+      // The operator company is always on the full plan; nobody downgrades it, not even by naming it.
+      // (The host may hide another company's settings from this page, so the page's own company is checked by id.)
+      if (await isOwnerCompany(ctx, companyId) || (companyId === pageCompanyId && (await isOwnerCompany(ctx, pageCompanyId)))) {
+        const problem = operatorDowngrade(params.plan, params.modules);
+        if (problem) throw new ForbiddenError(problem);
+      }
+      return { ok: true, ...(await setEntitlements(ctx, { companyId, plan: params.plan, modules: params.modules, until: params.until, userId: context.actor.userId })) };
+    }),
+  );
   ctx.actions.register("setup.refresh-issue", async (params, context) => {
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
@@ -174,6 +188,19 @@ export async function handleApiRoute(ctx: PluginContext, input: PluginApiRequest
   } catch (error) {
     ctx.logger.info("Setup modules route failed", { error: message(error) });
     return { status: 500, body: { error: message(error) } };
+  }
+}
+
+/**
+ * A refusal the caller can act on comes back as `{ ok: false, error }`, not a throw: the host turns a thrown plugin
+ * error into HTTP 502, and behind Cloudflare the page then loses the message.
+ */
+async function refusable<T extends object>(run: () => Promise<T>): Promise<T | { ok: false; error: string }> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof SetupError) return { ok: false, error: error.message };
+    throw error;
   }
 }
 

@@ -141,7 +141,11 @@ export function SetupPage({ context }: PluginPageProps) {
     setBusy("save");
     setMessage("");
     try {
-      await saveModules({ modules: draft, installed: installedReport(data.installed) });
+      const result = (await saveModules({ modules: draft, installed: installedReport(data.installed) })) as { ok?: boolean; error?: string } | undefined;
+      if (result && result.ok === false) {
+        setMessage(result.error || "Setup refused this change.");
+        return;
+      }
       let note = "Modules saved. The other plugins pick this up within a minute.";
       if (data.load && !data.load.settingsSaved) {
         try {
