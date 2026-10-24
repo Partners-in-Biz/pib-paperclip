@@ -30,21 +30,30 @@ class Clock:
 
 
 class StepApi(ti.FakeApi):
-    def __init__(self, hires=5, crm_ok=True, tasks=None, **kw):
+    def __init__(self, hires=5, crm_ok=True, tasks=None, catalog=None, catalog_error=None, bound=True, **kw):
         super().__init__(**kw)
         self.posts, self.hires, self.crm_ok = [], hires, crm_ok
         self.tasks = [hire(i) for i in range(4)] if tasks is None else tasks  # a list, or a function of the poll number
         self.task_polls = 0
+        # fake secrets catalog: metadata only, as the host returns it (id, name, key, status), never a value
+        self.catalog = [{"id": "sec-1", "name": "ANTHROPIC_API_KEY", "key": "ANTHROPIC_API_KEY", "status": "active"}] if catalog is None else catalog
+        self.catalog_error, self.bound, self.gets = catalog_error, bound, []
         self._board = "board-secret-token"
 
     def get(self, path):
+        self.gets.append(path)
+        if path == "/api/companies/new-co/secrets/catalog":
+            if self.catalog_error:
+                raise RuntimeError("GET %s -> HTTP %d" % (path, self.catalog_error))
+            return self.catalog
         if path == "/api/companies/new-co":
             return {"id": "new-co", "name": "Acme", "issuePrefix": "ACM"}
         if path.startswith("/api/companies/new-co/issues"):
             self.task_polls += 1
             return self.tasks(self.task_polls) if callable(self.tasks) else self.tasks
         if path == "/api/companies/new-co/agents":
-            return [{"id": "ag%d" % i, "name": n, "role": "general", "title": n, "status": "idle"}
+            env = {"ANTHROPIC_API_KEY": {"type": "secret_ref", "secretId": "sec-1"}} if self.bound else {}
+            return [{"id": "ag%d" % i, "name": n, "role": "general", "title": n, "status": "idle", "adapterType": "claude_local", "adapterConfig": {"env": env}}
                     for i, n in enumerate(["CEO", "Account Manager", "SEO Specialist", "Social Manager", "Operator"][: self.hires])]
         return super().get(path)
 
@@ -256,6 +265,106 @@ class StepTests(ti.Base):
         r = self.runner(StepApi(), ps)
         found = ps.prior_failed(r, {"crm_company_id": "crm-1"}, "p-other")
         self.assertEqual(found["status"], "needs_owner")
+
+    def test_key_gate_missing_secret_is_needs_owner_before_any_agent_exists(self):
+        res, api, cmds = self.run_req(api=StepApi(catalog=[]))
+        self.assertEqual(res["status"], "needs_owner")
+        self.assertEqual(res["step"], "key-gate")
+        self.assertIn("add secret ANTHROPIC_API_KEY on the Secrets page of ACM (Setup, Model key step)", res["message"])
+        self.assertEqual(cmds.calls, [])  # no create-ceo, no Setup run: no agent was created
+        self.assertEqual([p for p, _ in api.posts], ["/api/companies", "/api/issues/iss-1/comments"])  # a company and the result comment; nothing hired, linked or run
+        self.assertEqual(res["company_id"], "new-co")
+
+    def test_key_gate_inactive_or_other_names_do_not_pass(self):
+        for cat in ([{"id": "s", "name": "ANTHROPIC_API_KEY", "status": "disabled"}],
+                    [{"id": "s", "name": "ANTHROPIC_API_KEY_OLD", "status": "active"}, {"id": "t", "name": "anthropic_api_key", "status": "active"}]):
+            res, _, cmds = self.run_req(api=StepApi(catalog=cat))
+            self.assertEqual(res["status"], "needs_owner", cat)
+            self.assertEqual(cmds.calls, [])
+
+    def test_key_gate_present_continues(self):
+        res, api, _ = self.run_req()
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertIn("key gate", res["message"])
+        self.assertIn("/api/companies/new-co/secrets/catalog", api.gets)
+
+    def test_key_gate_runs_after_entitlements_and_before_create_ceo(self):
+        self.assertEqual([n for n, _ in ps.STEPS][:4], ["create-company", "entitlements", "key-gate", "create-ceo"])
+
+    def test_key_gate_http_error_fails_with_the_status_code(self):
+        for code in (403, 500):
+            res, _, cmds = self.run_req(api=StepApi(catalog_error=code))
+            self.assertEqual(res["status"], "failed")
+            self.assertEqual(res["step"], "key-gate")
+            self.assertIn("HTTP %d" % code, res["message"])
+            self.assertEqual(cmds.calls, [])
+
+    def test_key_gate_resume_reruns_the_gate_and_reuses_the_company(self):
+        res, api, cmds = self.run_req(api=StepApi(catalog=[]))
+        self.assertEqual(res["status"], "needs_owner")
+        res2, api2, cmds2 = self.run_req(api=StepApi())  # the owner added the secret
+        self.assertEqual(res2["status"], "done", res2["message"])
+        self.assertIn("/api/companies/new-co/secrets/catalog", api2.gets)
+        self.assertEqual([p for p, _ in api2.posts if p == "/api/companies"], [])
+        self.assertTrue(any("--create-ceo" in c for c in cmds2.calls))
+
+    def test_key_gate_skipped_without_a_model_key(self):
+        self.runner(StepApi(), ps)
+        c = types.SimpleNamespace(req={"model_key": False}, st={}, api=StepApi(catalog_error=500))
+        ps.step_key_gate(c)  # never calls the API
+        self.assertIn("skipped", c.st["note_key_gate"])
+
+    def test_model_key_step_stops_if_the_secret_vanished(self):
+        api = StepApi()
+        calls = []
+        orig = api.get
+
+        def get(path):
+            if path.endswith("/secrets/catalog"):
+                calls.append(path)
+                return api.catalog if len(calls) == 1 else []  # present at the gate, gone at step 9
+            return orig(path)
+        api.get = get
+        res, _, cmds = self.run_req(api=api)
+        self.assertEqual(res["status"], "needs_owner")
+        self.assertEqual(res["step"], "model-key")
+        self.assertFalse(any("--model-key-bind" in c for c in cmds.calls))
+
+    def test_model_key_readback_requires_a_secret_ref_on_the_first_claude_local_agent(self):
+        res, _, _ = self.run_req(api=StepApi(bound=False))
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["step"], "model-key")
+        self.assertIn("no env.ANTHROPIC_API_KEY secret_ref", res["message"])
+
+    def test_model_key_readback_rejects_a_plain_value_and_never_prints_it(self):
+        api = StepApi()
+        orig = api.get
+        plain = "plain-fake-value-123"
+
+        def get(path):
+            rows = orig(path)
+            if path == "/api/companies/new-co/agents":
+                for a in rows:
+                    a["adapterConfig"]["env"] = {"ANTHROPIC_API_KEY": {"type": "plain", "value": plain}}
+            return rows
+        api.get = get
+        res, _, _ = self.run_req(api=api)
+        self.assertEqual(res["status"], "failed")
+        self.assertNotIn(plain, json.dumps(res))
+
+    def test_model_key_readback_fails_without_a_claude_local_agent(self):
+        api = StepApi()
+        orig = api.get
+        api.get = lambda path: [dict(a, adapterType="codex_local") for a in orig(path)] if path == "/api/companies/new-co/agents" else orig(path)
+        res, _, _ = self.run_req(api=api)
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("no claude_local agent", res["message"])
+
+    def test_no_key_value_in_argv_env_or_result(self):
+        res, api, cmds = self.run_req()
+        blob = json.dumps([cmds.calls, cmds.envs, res, api.posts, api.comments])
+        self.assertNotIn("sk-ant", blob)
+        self.assertNotIn("model_key", json.dumps(cmds.calls))
 
     def prior(self, status, step, done):
         os.makedirs(os.path.join(self.dir, "results"), exist_ok=True)
