@@ -231,7 +231,7 @@ class Runner:
         try:
             out = self.steps.run(self, rid, req)
         except Exception as e:  # a step failure fails the request, with the step's own message
-            return self.finish(rid, req, "failed", str(e))
+            return self.finish(rid, req, "failed", str(e), **getattr(e, "extra", {}))
         return self.finish(rid, req, "done", out.pop("message", "provisioned"), **out)
 
     def finish(self, rid, req, status, message, **extra):
