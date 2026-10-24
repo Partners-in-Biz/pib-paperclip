@@ -572,6 +572,15 @@ describe("Cloudflare Turnstile", () => {
     expect(booted.harness.logs.some((entry) => /returned non-OK/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
   });
 
+  it("an unreachable Cloudflare allows one lead per visitor an hour, then rate-limits", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    expect(await post(booted, lead(source.key, { email: "d1@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(90) })).toMatchObject({ status: "stored" });
+    expect(String(await rejected(post(booted, lead(source.key, { email: "d2@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(90) })))).toMatch(/Too many submissions/);
+    expect(await post(booted, lead(source.key, { email: "d3@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(91) })).toMatchObject({ status: "stored" });
+  });
+
   it("a signed server request needs no token; a form with no secret saved is not checked", async () => {
     const booted = await bootLeads({ config: withTurnstile });
     const made = await makeSourceAsPerson(booted, { serverSecret: true });

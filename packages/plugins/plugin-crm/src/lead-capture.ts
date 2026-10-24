@@ -101,6 +101,9 @@ export const RATE = {
   ipPerMinute: 3,
   ipPerHour: 12,
   signedHourlyFactor: 5,
+  /** While the bot check cannot be answered the form stays open (a lost lead is worse), but on a much tighter cap. */
+  degradedIpPerHour: 1,
+  degradedSourcePerHour: 20,
 } as const;
 
 const ERROR_GENERIC = "Something went wrong on our side. Please try again later.";
@@ -196,6 +199,15 @@ async function overLimit(ctx: PluginContext, source: LeadSource, ipHash: string 
   return false;
 }
 
+/** True when this visitor (or the whole form) already used its small allowance for a bot check that could not be answered. */
+async function overDegradedLimit(ctx: PluginContext, source: LeadSource, ipHash: string | null, now: Date): Promise<boolean> {
+  const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
+  const perHour = Math.min(RATE.degradedSourcePerHour, source.rateLimitPerHour);
+  if ((await countHits(ctx, source.id, hourAgo, perHour)) >= perHour) return true;
+  if (ipHash && (await countHits(ctx, source.id, hourAgo, RATE.degradedIpPerHour, ipHash)) >= RATE.degradedIpPerHour) return true;
+  return false;
+}
+
 const TURNSTILE_VERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /**
@@ -213,8 +225,8 @@ const secretCache = new Map<string, { at: number; value: string | undefined }>()
  *   The lead is rejected, and the bad config is logged (warn level). The missing
  *   secret is never cached (every failed request re-checks).
  * - "unavailable": secret read throws, Cloudflare is unreachable, or fetch fails.
- *   The lead is stored (fail-open), the error is logged (warn level), and a
- *   structured event is included for alerting.
+ *   The lead is accepted only under a stricter rate limit (see RATE.degraded*),
+ *   the error is logged (warn level), and a structured event is included for alerting.
  */
 export async function verifyTurnstile(ctx: PluginContext, companyId: string, token: string | null, ip: string | null): Promise<"ok" | "failed" | "unavailable" | "misconfigured"> {
   let secret: string | undefined;
@@ -234,7 +246,7 @@ export async function verifyTurnstile(ctx: PluginContext, companyId: string, tok
         return "misconfigured";
       }
     } catch (error) {
-      ctx.logger.warn("CRM Turnstile secret could not be read; the check is skipped", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
+      ctx.logger.warn("CRM Turnstile secret could not be read; the check is rate-limited instead", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
       return "unavailable";
     }
   }
@@ -245,13 +257,13 @@ export async function verifyTurnstile(ctx: PluginContext, companyId: string, tok
     if (ip) form.set("remoteip", ip);
     const response = await ctx.http.fetch(TURNSTILE_VERIFY, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString() });
     if (!response.ok) {
-      ctx.logger.warn("CRM Turnstile check returned non-OK; the request passes", { event: "turnstile_unavailable", reason: `http_${response.status}` });
+      ctx.logger.warn("CRM Turnstile check returned non-OK; the request passes under a stricter rate limit", { event: "turnstile_unavailable", reason: `http_${response.status}` });
       return "unavailable";
     }
     const body = asRecord(await response.json().catch(() => ({})));
     return body.success === true ? "ok" : "failed";
   } catch (error) {
-    ctx.logger.warn("CRM Turnstile check did not answer; the request passes", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
+    ctx.logger.warn("CRM Turnstile check did not answer; the request passes under a stricter rate limit", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
     return "unavailable";
   }
 }
@@ -328,6 +340,7 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
       const verdict = await verifyTurnstile(ctx, source.companyId, cleanText(body.turnstileToken, 4_000) || null, ip);
       if (verdict === "failed") throw new LeadRejected("Please complete the spam check and send again.", "bot_check");
       if (verdict === "misconfigured") throw new LeadRejected("This form is temporarily unavailable", "bot_check");
+      if (verdict === "unavailable" && (await overDegradedLimit(ctx, source, ipHash, now))) throw new LeadRejected("Too many submissions. Please try again in a few minutes.", "rate_limited");
     }
 
     const parsed = parseSubmission(body, { extraBlockedDomains: settings.blockedDomains, allowReserved: source.canary });
