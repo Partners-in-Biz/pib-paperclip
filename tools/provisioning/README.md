@@ -32,7 +32,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 3. `new-company.py --company <prefix> --create-ceo --apply`
 4. Setup New company run, headless, with `profile` as a parameter (`setupRunnerCommand`; the board token goes in `PIB_BOARD_TOKEN`).
    **`profile: client` is refused at intake, before anything is created, until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
-5. `copy-company-secrets.py --profile client --from <PAR company id> --to <prefix> --apply` (`--from` is always named: the script defaults it to PAR only for `--profile client`) (non-zero: stop; the `--undo` file it names is in the result)
+5. `copy-company-secrets.py --profile client --from <PAR company id> --to <prefix> --apply` (always `--profile client`, `--from` always named; the `internal` profile was removed: a request with `profile: internal` is refused at intake, the PiB dev team is set up by hand) (non-zero: stop; the `--undo` file it names is in the result)
 6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO)
 7. `<plugin>.link-agent` for Account Manager, SEO and Social (`linkAgents`)
 8. `new-company.py --company <prefix> --apply` (attaches role skills for the agents it recognises)

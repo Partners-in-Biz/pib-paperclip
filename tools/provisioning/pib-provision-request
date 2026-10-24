@@ -6,7 +6,7 @@ their shell, in their own run: it identifies the agent with the run's PAPERCLIP_
 then drops. Only the Operator and the Account Manager are allowed to request.
 
   pib-provision-request company --name "Acme (Pty) Ltd" --crm-company <crm company record id> --issue PAR-123
-                                [--profile client|internal] [--plan <plan>] [--modules a,b,c] [--agents N] [--model-key] [--note "why"]
+                                [--profile client] [--plan <plan>] [--modules a,b,c] [--agents N] [--model-key] [--note "why"]
   pib-provision-request status <request id> [--json]
   pib-provision-request list [--limit 10]
 
@@ -25,7 +25,13 @@ import secrets
 import sys
 
 SPOOL = os.environ.get("PIB_PR_SPOOL", "/var/spool/pib-provision")
-PROFILES = ("client", "internal")
+PROFILES = ("client",)
+
+
+def profile_arg(value):
+    if value == "internal":
+        raise argparse.ArgumentTypeError("profile internal is not provisioned by the runner; the PiB dev team is set up by hand")
+    return value
 
 
 def die(msg, code=2):
@@ -122,7 +128,7 @@ def main():
     c.add_argument("--name", required=True, help="the company name")
     c.add_argument("--crm-company", required=True, help="the client's CRM company record id (gets hosted_company_id when done)")
     c.add_argument("--issue", required=True, help="the Paperclip issue you are working on, e.g. PAR-123; you must be its assignee")
-    c.add_argument("--profile", choices=PROFILES, default="client")
+    c.add_argument("--profile", type=profile_arg, choices=PROFILES, default="client")
     c.add_argument("--plan", help="entitlement plan to set")
     c.add_argument("--modules", help="comma-separated modules to entitle")
     c.add_argument("--agents", type=int, help="how many agents the company will start with, for the capacity check")

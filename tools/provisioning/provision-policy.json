@@ -10,8 +10,7 @@
   ],
   "requireIssueAssignee": true,
   "profiles": [
-    "client",
-    "internal"
+    "client"
   ],
   "maxHostedCompanies": 3,
   "maxAgentsTotal": 60,

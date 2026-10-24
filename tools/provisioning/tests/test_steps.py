@@ -120,12 +120,22 @@ class StepTests(ti.Base):
         self.assertFalse(any("--verify" in c or "model-key" in c for c in cmds.calls))
         self.assertEqual(res["company_id"], "new-co")
 
-    def test_model_key_step_only_with_a_key(self):
-        res, _, cmds = self.run_req(model_key=False, profile="internal")
+    def test_model_key_step_runs_with_a_key_and_no_key_is_refused_before_any_command(self):
+        res, _, cmds = self.run_req()
         self.assertEqual(res["status"], "done", res["message"])
-        self.assertFalse(any("--model-key-bind" in c for c in cmds.calls))
-        self.assertIn("copy-company-secrets.py --from par-company --to ACM --apply", cmds.calls[2])  # no --profile for internal
-        self.assertIn("no model key supplied", res["message"])
+        self.assertTrue(any("--model-key-bind" in c for c in cmds.calls))
+        res, _, cmds = self.run_req(model_key=False)
+        self.assertEqual(res["status"], "refused")
+        self.assertEqual(cmds.calls, [])
+
+    def test_copy_secrets_always_runs_with_profile_client_and_named_source(self):
+        res, _, cmds = self.run_req()
+        copy = [c for c in cmds.calls if "copy-company-secrets.py" in c]
+        self.assertEqual(len(copy), 1)
+        self.assertIn("--profile client --from par-company --to ACM --apply", copy[0])
+        res, _, cmds = self.run_req(profile="internal")
+        self.assertEqual(res["status"], "refused")
+        self.assertFalse(any("copy-company-secrets.py" in c for c in cmds.calls))
 
     def test_verify_warn_fails_the_request(self):
         res, _, _ = self.run_req(cmds=Cmds(outputs={"--verify": "ok\nWARN model key not bound for agent ag1\n"}))

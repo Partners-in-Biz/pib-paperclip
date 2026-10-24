@@ -182,6 +182,8 @@ class Runner:
         name = (req.get("name") or "").strip()
         if not name or len(name) > 80:
             raise Refused("refused: the company name must be 1 to 80 characters")
+        if req.get("profile") == "internal":
+            raise Refused("refused: profile internal is not provisioned by the runner; the PiB dev team is set up by hand")
         if req.get("profile") not in self.policy["profiles"]:
             raise Refused("refused: profile must be one of %s" % ", ".join(self.policy["profiles"]))
         if not re.match(r"^[A-Za-z0-9_-]{4,64}$", req.get("crm_company_id") or ""):
