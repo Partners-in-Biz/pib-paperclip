@@ -70,6 +70,53 @@ export function hostStatementProblem(statement: string): string | null {
   return null;
 }
 
+// An odd number of one quote character inside a single comment (a "--" line, a "/* */" block, also after the last statement)
+// leaves a quote open: the host strips strings first, so it pairs with a quote in code or in the next comment. That may pass
+// today and break after the next edit, so it is a failure here even when the statement check above happens to pass. Balanced
+// pairs ('cockpit') pair inside the comment, are harmless, and are all over migrations that are already applied and frozen.
+export function commentQuoteProblems(input: string): string[] {
+  const problems: string[] = [];
+  let quote: string | null = null;
+  let comment: { kind: "--" | "/*"; text: string; line: number } | null = null;
+  let line = 1;
+  const flush = () => {
+    const count = (q: string) => (comment?.text.split(q).length ?? 1) - 1;
+    if (comment && (count("'") % 2 === 1 || count("\"") % 2 === 1)) problems.push(`line ${comment.line}: unpaired quote in a ${comment.kind} comment: ${comment.text.trim().slice(0, 70)}`);
+    comment = null;
+  };
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    const next = input[i + 1];
+    if (char === "\n") line += 1;
+    if (comment?.kind === "--") { if (char === "\n") flush(); else comment.text += char; continue; }
+    if (comment?.kind === "/*") { if (char === "*" && next === "/") { flush(); i += 1; } else comment.text += char; continue; }
+    if (quote) {
+      if (char === quote) { if (next === quote) i += 1; else quote = null; }
+      continue;
+    }
+    if (char === "-" && next === "-") { comment = { kind: "--", text: "", line }; i += 1; continue; }
+    if (char === "/" && next === "*") { comment = { kind: "/*", text: "", line }; i += 1; continue; }
+    if (char === "'" || char === "\"") quote = char;
+  }
+  flush();
+  return problems;
+}
+
+// Migrations applied before this check existed that carry an unpaired quote in a comment. The host accepts them today and
+// they cannot be edited (checksums), so only the stricter comment check is skipped for them; the host statement check still
+// runs. Never add to this list: a new migration with an unpaired quote in a comment has to be fixed.
+const FROZEN_UNPAIRED_COMMENT_QUOTES = new Set([
+  "plugin-billing/migrations/014_billing.sql",
+  "plugin-crm/migrations/018_crm.sql",
+  "plugin-seo/migrations/010_seo.sql",
+  "plugin-seo/migrations/013_seo.sql",
+  "plugin-seo/migrations/015_seo.sql",
+  "plugin-seo/migrations/016_seo.sql",
+  "plugin-seo/migrations/017_seo.sql",
+  "plugin-social/migrations/013_social.sql",
+  "plugin-social/migrations/015_social.sql",
+]);
+
 const PLUGINS = resolve(__dirname, "..", "..");
 function migrationFiles(): string[] {
   const out: string[] = [];
@@ -93,13 +140,23 @@ describe("plugin migrations pass the host's statement check", () => {
     expect(hostStatementProblem("DROP TABLE plugin_x.t")).toMatch(/destructive/);
   });
 
+  it("catches unpaired quotes in line, block and trailing comments, and ignores quotes in strings and paired quotes", () => {
+    expect(commentQuoteProblems("-- the plugin's start\nCREATE TABLE t (a int);")).toHaveLength(1);
+    expect(commentQuoteProblems("CREATE TABLE t (a int); /* the \"x column */")).toHaveLength(1);
+    expect(commentQuoteProblems("CREATE TABLE t (a int);\n-- done, it's fine")).toHaveLength(1);
+    expect(commentQuoteProblems("CREATE TABLE t (a text DEFAULT 'it''s'); -- kind 'x' and \"y\"\n/* block\n comment */")).toEqual([]);
+  });
+
   const files = migrationFiles();
   it("finds the migrations of the PiB plugins", () => {
     expect(files.length).toBeGreaterThan(50);
   });
   for (const file of files) {
-    it(file.slice(PLUGINS.length + 1), () => {
-      const statements = splitSqlStatements(readFileSync(file, "utf8"));
+    const name = file.slice(PLUGINS.length + 1);
+    it(name, () => {
+      const sql = readFileSync(file, "utf8");
+      if (!FROZEN_UNPAIRED_COMMENT_QUOTES.has(name)) expect(commentQuoteProblems(sql)).toEqual([]);
+      const statements = splitSqlStatements(sql);
       expect(statements.length).toBeGreaterThan(0);
       const problems = statements.map((s, i) => [i, hostStatementProblem(s)] as const).filter(([, p]) => p);
       expect(problems.map(([i, p]) => `statement ${i}: ${p}`)).toEqual([]);
