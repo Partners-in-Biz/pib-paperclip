@@ -39,7 +39,11 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 8. `new-company.py --company <prefix> --apply` (attaches role skills for the agents it recognises)
 9. `new-company.py --company <prefix> --model-key-bind --apply` (only with `--model-key`). It re-checks the key secret first (gone: `needs_owner`), and after the bind reads the first `claude_local` agent back and requires `env.ANTHROPIC_API_KEY` to be a `secret_ref`; otherwise the step fails. Only the shape is read, never a value.
 10. `new-company.py --company <prefix> --verify` (any WARN or FAIL fails the request)
-11. write `hosted_company_id` on the CRM company record (`crm:update-company`, read back), then the result comment on the issue with the owner list link
+11. write `hosted_company_id` on the CRM company record (`crm:update-company`, read back)
+12. **Owner invite** (PAR-5232, last step): `POST /api/companies/<id>/invites` with exactly `{"allowedJoinTypes": "human", "humanRole": "owner"}` (the body is a constant: role owner of this company only, never instance admin). While `auth.disableSignUp` is true (host patch 12) the client's first person can create an account only through this invite. Then the result comment on the issue with the owner list link and the invite link.
+   - **The invite link is a credential** and the host returns its token once. It goes in the result comment only (next to the owner list link). It is never written to the result file, the result message, a log line or an error text (the `pcp_` token pattern is redacted from API error text like any key).
+   - **Resume, no duplicate:** the invite id is saved in the result the moment the host answers, and a resumed request carries it. A resumed request with a recorded id makes no new invite: if the invite was accepted the step passes with a note; if it is still active the request ends as `needs_owner` (the link cannot be shown again: revoke it on the Members page, file the same request again, and one fresh invite is made); if it was revoked or expired a fresh one is made. An API error on the POST fails the step with the status code, records no invite, and the next request for the same CRM company resumes at this step only.
+   - A finished (`done`) request is final for its CRM company, so filing again never makes a second invite.
 
 Result statuses: `queued`, `running`, `done`, `failed`, `refused` and `needs_owner` (the request stopped until a person acts; the result comment names who and what). A `needs_owner` request is not open: the next request for the same CRM company resumes it like a failed one. A failed request keeps its company. The next request for the same CRM company resumes after the last finished step, and the capacity gate then counts that company once (no extra company, only the agents it does not have yet). Roll back with the
 `--undo` file or `new-company.py`, not by filing again with a new name.
@@ -58,7 +62,7 @@ The runner never carries a model key (not in the command line, the request file,
 ## Runbook text for `docs/new-company.md` (pib-ops; paste under step 4)
 
 > **Automatic route.** From an Operator or Account Manager run: `pib-provision-request company --name "<name>" --crm-company <crm id> --issue PAR-n --model-key`.
-> The runner runs steps 1 to 10 above and comments the result on the issue. Use the manual steps only when the runner is switched off or
+> The runner runs steps 1 to 12 above and comments the result on the issue. Use the manual steps only when the runner is switched off or
 > refused. Capacity: at most 3 companies (PAR included) and 60 agents on the box; the limits are in `provision-policy.json`.
 > Kill switch: `touch /var/spool/pib-provision/DISABLED`.
 
