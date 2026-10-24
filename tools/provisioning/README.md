@@ -29,6 +29,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 
 1. create the company (board API; the host picks the prefix; read back)
 2. `setup.set-entitlements` when `--plan` or `--modules` is given. It runs on PAR's page (only the operator company may set entitlements; the host overwrites `params.companyId` with the page's company) and names the new company in `targetCompanyId`; `--modules` become a module → `entitled` map
+   **Key gate** (between 2 and 3, only with `--model-key`): `GET /api/companies/<id>/secrets/catalog` (names and status only, never a value). It passes only when the new company has a secret named exactly `ANTHROPIC_API_KEY` with status `active`. Missing or inactive: the request ends as `needs_owner` before any agent exists. Any HTTP error (403, 5xx) fails the step with the status code; it is never a pass.
 3. `new-company.py --company <prefix> --create-ceo --apply`
 4. Setup New company run, headless, with `profile` as a parameter (`setupRunnerCommand`; the board token goes in `PIB_BOARD_TOKEN`).
    **`profile: client` is refused at intake, before anything is created, until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
@@ -36,7 +37,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO). The wait is on the company's `Hire:` tasks (plugin origin), polled every 15 s, until all are `done` or `cancelled` in two polls in a row, and then the company must have at least as many live agents as done hire tasks. No hire task after 120 s fails the step (a resumed company that already has 2 or more live agents passes as "already staffed"). At the 900 s deadline the request ends as `needs_owner` (naming the tasks) only if every open task is `blocked`; if any open task is in another state the step fails and lists them all. `--agents` only sets the capacity count; it is not a wait count.
 7. `<plugin>.link-agent` for Account Manager, SEO and Social (`linkAgents`)
 8. `new-company.py --company <prefix> --apply` (attaches role skills for the agents it recognises)
-9. `new-company.py --company <prefix> --model-key-bind --apply` (only with `--model-key`)
+9. `new-company.py --company <prefix> --model-key-bind --apply` (only with `--model-key`). It re-checks the key secret first (gone: `needs_owner`), and after the bind reads the first `claude_local` agent back and requires `env.ANTHROPIC_API_KEY` to be a `secret_ref`; otherwise the step fails. Only the shape is read, never a value.
 10. `new-company.py --company <prefix> --verify` (any WARN or FAIL fails the request)
 11. write `hosted_company_id` on the CRM company record (`crm:update-company`, read back), then the result comment on the issue with the owner list link
 
@@ -44,6 +45,15 @@ Result statuses: `queued`, `running`, `done`, `failed`, `refused` and `needs_own
 `--undo` file or `new-company.py`, not by filing again with a new name.
 
 Expected time per company: about 1 minute of script time plus about 2 minutes of CEO time for four agents.
+
+## Runbook: the owner enters the key
+
+The runner never carries a model key (not in the command line, the request file, the result or the logs). A client company runs on its own key, so:
+
+1. File the request with `--model-key` (it only says a key is required; it holds no value). The runner creates the company, sets entitlements, then stops at the key gate with status `needs_owner` and the line `owner: add secret ANTHROPIC_API_KEY on the Secrets page of <PREFIX> (Setup, Model key step)`.
+2. The owner opens the new company's Secrets page and adds a secret named exactly `ANTHROPIC_API_KEY` with the client's key, and leaves it active.
+3. File the same request again (same CRM company). It resumes the same company, reruns the key gate, and goes on from create-ceo. No second company is made.
+4. For the live proof, record the HTTP status of the catalog call (a 403 or 5xx fails the step and names the code; the gate's success note says the catalog answered 2xx), and read the first hired `claude_local` agent's `adapterConfig.env.ANTHROPIC_API_KEY` to show a `secret_ref` (never the value).
 
 ## Runbook text for `docs/new-company.md` (pib-ops; paste under step 4)
 

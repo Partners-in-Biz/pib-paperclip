@@ -115,6 +115,31 @@ def step_entitlements(c):
         raise StepError("setup.set-entitlements refused: %s" % redact(str(data.get("error") or data)[:300]))
 
 
+KEY_SECRET = "ANTHROPIC_API_KEY"
+
+
+def _require_key_secret(c):
+    """The new company must hold an active secret named ANTHROPIC_API_KEY. Reads the catalog (id, name, key, status), never a value.
+    An HTTP error is a failure (the RuntimeError from the API helper carries the status code), never a pass and never `needs_owner`."""
+    rows = c.api.get("/api/companies/%s/secrets/catalog" % c.st["company_id"])
+    if isinstance(rows, dict):
+        rows = rows.get("items") or rows.get("secrets") or []
+    mine = [r for r in rows if isinstance(r, dict) and r.get("name") == KEY_SECRET]
+    if any(str(r.get("status")).lower() == "active" for r in mine):
+        return
+    why = "its status is %s" % ", ".join(sorted({str(r.get("status")) for r in mine})) if mine else "it does not exist"
+    raise NeedsOwner("owner: add secret %s on the Secrets page of %s (Setup, Model key step); %s" % (KEY_SECRET, c.st["prefix"], why))
+
+
+def step_key_gate(c):
+    """Before the first agent exists: a client company must have its own model key, or its agents would run on the host login."""
+    if not c.req.get("model_key"):
+        c.st["note_key_gate"] = "no model key supplied; the key gate was skipped"
+        return
+    _require_key_secret(c)
+    c.st["note_key_gate"] = "key gate: the secrets catalog answered 2xx and holds an active %s" % KEY_SECRET
+
+
 def step_create_ceo(c):
     c.must("create-ceo", "new-company.py", "--company", c.st["prefix"], "--create-ceo", "--apply")
 
@@ -216,7 +241,17 @@ def step_model_key(c):
     if not c.req.get("model_key"):
         c.st["note_model_key"] = "no model key supplied; the company runs on the instance login"
         return
+    _require_key_secret(c)  # the secret may have gone since the gate; bind nothing without it
     c.must("model-key", "new-company.py", "--company", c.st["prefix"], "--model-key-bind", "--apply")
+    # read-back: the first claude_local agent must carry env.ANTHROPIC_API_KEY as a secret reference. Only the shape is checked, never a value.
+    agents = [a for a in c.api.get("/api/companies/%s/agents" % c.st["company_id"])
+              if str(a.get("status")).lower() != "terminated" and a.get("adapterType") == "claude_local"]
+    if not agents:
+        raise StepError("model key read-back: the company has no claude_local agent")
+    env = (agents[0].get("adapterConfig") or {}).get("env") or {}
+    bound = env.get(KEY_SECRET)
+    if not (isinstance(bound, dict) and bound.get("type") == "secret_ref"):
+        raise StepError("model key read-back: agent %s has no env.%s secret_ref" % (agents[0].get("name") or agents[0].get("id"), KEY_SECRET))
 
 
 def step_verify(c):
@@ -243,7 +278,7 @@ def step_crm_record(c):
         raise StepError("hosted_company_id did not read back on CRM company %s" % c.req["crm_company_id"])
 
 
-STEPS = [("create-company", step_create_company), ("entitlements", step_entitlements), ("create-ceo", step_create_ceo),
+STEPS = [("create-company", step_create_company), ("entitlements", step_entitlements), ("key-gate", step_key_gate), ("create-ceo", step_create_ceo),
          ("setup-run", step_setup_run), ("copy-secrets", step_copy_secrets), ("hires", step_hires), ("link-agents", step_link_agents),
          ("apply", step_apply), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record)]
 
@@ -286,7 +321,7 @@ def run(runner, rid, req):
         st["steps_done"].append(name)
     url = (runner.policy.get("ownerListUrlTemplate") or "").replace("{prefix}", st["prefix"]).replace("{companyId}", st["company_id"])
     msg = "Company %s (%s) is provisioned and `new-company.py --verify` passed." % (req["name"], st["prefix"])
-    for k in ("note_entitlements", "note_hires", "note_model_key"):
+    for k in ("note_entitlements", "note_key_gate", "note_hires", "note_model_key"):
         if st.get(k):
             msg += "\n- " + st[k]
     if not url:
