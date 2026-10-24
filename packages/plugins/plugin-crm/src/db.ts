@@ -320,6 +320,27 @@ export async function getAccount(ctx: PluginContext, id: string): Promise<Accoun
   return rows[0] ? mapAccount(rows[0]) : null;
 }
 
+export interface HostedInfo {
+  hostedCompanyId: string | null;
+  hostedPlan: string | null;
+}
+
+/** The hosted-company link of a CRM company (the platform service). Kept apart from `AccountDraft` so no other save touches it. */
+export async function getHosted(ctx: PluginContext, accountId: string): Promise<HostedInfo> {
+  const rows = await ctx.db.query<{ hosted_company_id: string | null; hosted_plan: string | null }>(
+    `SELECT hosted_company_id, hosted_plan FROM ${table(ctx, "companies")} WHERE id = $1 LIMIT 1`,
+    [accountId],
+  );
+  return { hostedCompanyId: rows[0]?.hosted_company_id ?? null, hostedPlan: rows[0]?.hosted_plan ?? null };
+}
+
+/** Only the fields given change. The caller has validated the plan. */
+export async function setHosted(ctx: PluginContext, accountId: string, patch: Partial<HostedInfo>): Promise<void> {
+  const current = await getHosted(ctx, accountId);
+  const next = { ...current, ...patch };
+  await ctx.db.execute(`UPDATE ${table(ctx, "companies")} SET hosted_company_id = $2, hosted_plan = $3, updated_at = now() WHERE id = $1`, [accountId, next.hostedCompanyId, next.hostedPlan]);
+}
+
 export async function insertAccount(ctx: PluginContext, account: AccountDraft): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "companies")}

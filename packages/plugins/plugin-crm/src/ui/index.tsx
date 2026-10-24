@@ -1076,6 +1076,8 @@ interface WorkspaceData {
   care?: CareView | null;
   /** Documents to sign: whether e-sign is on for the client and its documents (null when it could not be read). */
   agreements?: AgreementsView | null;
+  /** The hosted company this client's platform service provisioned (companies only). */
+  hosted?: { hostedCompanyId: string | null; hostedPlan: string | null } | null;
   /** Where enquiries came from and the site visit counters (null when it could not be read). */
   growth?: GrowthView | null;
 }
@@ -1638,6 +1640,16 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
               clientRef={`${client.kind}:${client.id}`}
               onRun={(action, params, success) => run(() => careActions[action]!(params), success)}
             />
+          ) : null}
+
+          {company && data.hosted && (data.hosted.hostedPlan || data.hosted.hostedCompanyId) ? (
+            <SectionCard title="Hosted company" icon={Building2}>
+              {data.hosted.hostedCompanyId ? (
+                <Muted>Provisioned. Hosted company id: {data.hosted.hostedCompanyId}{data.hosted.hostedPlan ? ` (plan ${data.hosted.hostedPlan})` : ""}.</Muted>
+              ) : (
+                <Muted>Plan {data.hosted.hostedPlan}. Not provisioned yet: the provisioning task writes the hosted company id here.</Muted>
+              )}
+            </SectionCard>
           ) : null}
 
           {(company || companies.length === 0) && agreementsVisible(data.agreements, data.growth) ? (

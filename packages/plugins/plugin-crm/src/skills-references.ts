@@ -76,6 +76,9 @@ ${serviceTable()}
 - While the Cockpit's first-win onboarding issue for the client is open, the services flagged then are covered by it and get no step of their own.
 - The daily \`services-check\` job gives the same step to customers whose services were set before this existed (up to 8 new steps per company a day), and saves older free-text profiles in the list. A step that was cancelled stays cancelled until the service is added again.
 
+## The platform service (a hosted company on our Paperclip)
+Its step is "Provision hosted company for <client>", for the Operator, with the request line prefilled: profile \`client\`, the plan label, the modules the plan gives, and the owner email from the company's first linked person. Set the plan from the signed quote first: \`update-company\` with \`hostedPlan\` (starter, growth or business; anything else is refused). When the hosted company exists, write its id with \`update-company\` \`hostedCompanyId\`; the client page then shows it.
+
 ## Working a step
 First open the module's client workspace: if the service already runs (a sprint set up by hand), log it on the client (\`log-activity\` with the link or id) and close. Otherwise do what starting means, then log the proof on the client and close. Closing is checked: proof must be logged on the client since the step opened. Removing a service cancels its open step.
 `;

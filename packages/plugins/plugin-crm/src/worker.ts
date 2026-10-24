@@ -18,6 +18,8 @@ import {
   createSkillSyncer,
   createWorkIssue,
   DRIVE_EVENTS,
+  HOSTED_TIERS,
+  isHostedTier,
   isModuleEnabled,
   linkAgent,
   MAIL_EVENTS,
@@ -50,7 +52,7 @@ import {
   tryLinkAccountManager,
   wireAgent,
 } from "./agent.js";
-import { asRecord, asStringList, table } from "./db.js";
+import { asRecord, asStringList, getHosted, setHosted, table, type HostedInfo } from "./db.js";
 import { runSalesDaily, runSalesWeekly } from "./sales.js";
 import {
   contactCompanyLinks,
@@ -1141,6 +1143,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     ...base,
     found: true as const,
     care,
+    hosted: account ? await getHosted(ctx, account.id).catch(() => null) : null,
     agreements: agreementsAndGrowth.agreements,
     growth: agreementsAndGrowth.growth,
     company: account,
@@ -1591,9 +1594,27 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   for (const key of BILLING_KEYS) account[key] = result.columns[key] as string | null;
   account.custom = result.custom;
   await saveAccount(ctx, account);
+  const hosted = await applyHostedPatch(ctx, account.id, params);
   await insertFacts(ctx, account.companyId, "company", account.id, result.facts);
   if (account.lifecycle === "churned" && lifecycleBefore !== "churned") await offboardCompany(ctx, account);
-  return { ...account, refused: result.refused };
+  return { ...account, ...hosted, refused: result.refused };
+}
+
+/** `hostedPlan` (starter, growth or business; null clears) and `hostedCompanyId` on update-company. Anything else is refused. */
+async function applyHostedPatch(ctx: PluginContext, accountId: string, params: Record<string, unknown>): Promise<HostedInfo> {
+  const patch: Partial<HostedInfo> = {};
+  if ("hostedPlan" in params) {
+    const plan = params.hostedPlan;
+    if (plan !== null && !isHostedTier(plan)) throw new CrmError(`hostedPlan must be one of ${HOSTED_TIERS.join(", ")}`);
+    patch.hostedPlan = plan;
+  }
+  if ("hostedCompanyId" in params) {
+    const id = params.hostedCompanyId;
+    if (id !== null && (typeof id !== "string" || !id.trim())) throw new CrmError("hostedCompanyId must be a company id or null");
+    patch.hostedCompanyId = id === null ? null : (id as string).trim();
+  }
+  if (Object.keys(patch).length > 0) await setHosted(ctx, accountId, patch);
+  return getHosted(ctx, accountId);
 }
 
 /** A company became churned: its people's running sequences stop, and it is logged. */
