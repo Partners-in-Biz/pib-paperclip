@@ -49,3 +49,14 @@ export function entitledModules(rows: readonly Pick<EntitlementRow, "module" | "
   result.cockpit = true;
   return result;
 }
+
+/**
+ * Why a change to the operator company's own entitlements is refused, or null. It stays on `pib`:
+ * every module entitled, so a mistaken target can never switch Partners in Biz itself off.
+ */
+export function operatorDowngrade(plan: unknown, modules: unknown): string | null {
+  const refusal = "The operator company stays on the pib plan with every module entitled; it cannot be downgraded";
+  if (plan !== undefined && plan !== null && plan !== "pib") return refusal;
+  if (modules && typeof modules === "object" && !Array.isArray(modules) && Object.values(modules).some((state) => state !== "entitled")) return refusal;
+  return null;
+}

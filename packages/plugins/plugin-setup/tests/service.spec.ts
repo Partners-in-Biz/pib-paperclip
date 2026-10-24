@@ -29,7 +29,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.6.2");
+    expect(manifest.version).toBe("0.6.3");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -121,7 +121,7 @@ describe("module choice", () => {
     const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "user-9", membershipRole: "admin" }] } });
     registerSetup(ctx);
     const save = actions.get("setup.save-modules")!;
-    await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/board user/);
+    await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/board user/) });
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
     expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup].sort());

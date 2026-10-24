@@ -76,6 +76,11 @@ describe("normalizeEntitledModules", () => {
   it("refuses a module that is switched on but not entitled", () => {
     expect(() => normalizeEntitledModules({ payroll: true }, entitled)).toThrow(ForbiddenError);
   });
+  it("keeps an unmentioned module at its saved value", () => {
+    const wide = entitledModules([{ module: "crm", state: "entitled", until: null }, { module: "mailbox", state: "entitled", until: null }], new Date());
+    expect(on(normalizeEntitledModules({ crm: true }, wide, { mailbox: false, memory: false }))).toEqual(["cockpit", "crm"]);
+    expect(on(normalizeEntitledModules({ crm: true }, wide, null))).toEqual(["cockpit", "crm", "mailbox", "memory"]);
+  });
   it("forces an unmentioned, unentitled module off", () => {
     expect(on(normalizeEntitledModules({}, entitled))).toEqual(["cockpit", "crm", "memory"]);
   });
@@ -101,23 +106,29 @@ describe("setup.save-modules roles and entitlements", () => {
       expect(on(result.modules)).toEqual(["cockpit", "crm", "memory"]);
     }
   });
-  it("refuses a member, a viewer, a stranger, a suspended admin and an agent with 403-type errors", async () => {
+  it("refuses a member, a viewer, a stranger, a suspended admin and an agent with a refusal result", async () => {
     const env = await entitle();
     const save = env.actions.get("setup.save-modules")!;
     for (const who of ["client-member", "client-viewer", "stranger", "ops-gone"]) {
-      await expect(save({ modules: {} }, user(who))).rejects.toThrow(ForbiddenError);
+      await expect(save({ modules: {} }, user(who))).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/owner or admin/) });
     }
-    await expect(save({ modules: {} }, { companyId: CLIENT, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/board user/);
+    await expect(save({ modules: {} }, { companyId: CLIENT, actor: { type: "agent", userId: null, agentId: "ag" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/board user/) });
     expect(env.store.module_choices ?? []).toHaveLength(0);
   });
   it("refuses a company admin switching on a module that is not in the plan", async () => {
     const env = await entitle();
-    await expect(env.actions.get("setup.save-modules")!({ modules: { payroll: true } }, user("client-admin"))).rejects.toThrow(/not in this company's plan/);
+    await expect(env.actions.get("setup.save-modules")!({ modules: { payroll: true } }, user("client-admin"))).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/not in this company's plan/) });
     expect(env.store.module_choices ?? []).toHaveLength(0);
   });
   it("lets an operator-company admin save for a client", async () => {
     const env = await entitle();
     await expect(env.actions.get("setup.save-modules")!({ modules: { crm: true } }, user("peet"))).resolves.toBeTruthy();
+  });
+  it("keeps a saved module off when a later save leaves it out", async () => {
+    const env = await entitle();
+    await saveModules(env.ctx, { companyId: CLIENT, modules: { mailbox: false }, userId: "client-admin" }, clock);
+    const result = await saveModules(env.ctx, { companyId: CLIENT, modules: { crm: true }, userId: "client-admin" }, clock);
+    expect(on(result.modules)).toEqual(["cockpit", "crm", "memory"]);
   });
   it("stores nothing unentitled even when the page leaves a module out", async () => {
     const env = await entitle();
@@ -127,7 +138,7 @@ describe("setup.save-modules roles and entitlements", () => {
 });
 
 describe("setup.set-entitlements gate", () => {
-  const call = (env: ReturnType<typeof setup>, userId: string | null, params: Record<string, unknown> = { companyId: CLIENT, plan: "growth" }, type = "user") =>
+  const call = (env: ReturnType<typeof setup>, userId: string | null, params: Record<string, unknown> = { targetCompanyId: CLIENT, plan: "growth" }, type = "user") =>
     env.actions.get("setup.set-entitlements")!(params, { companyId: PAR, actor: { type, userId, agentId: type === "agent" ? "ag" : null } });
 
   it("accepts an owner or admin of the operator company and stores a row per module", async () => {
@@ -142,53 +153,95 @@ describe("setup.set-entitlements gate", () => {
   });
   it("refuses an agent", async () => {
     const env = setup();
-    await expect(call(env, null, undefined, "agent")).rejects.toThrow(ForbiddenError);
+    await expect(call(env, null, undefined, "agent")).resolves.toMatchObject({ ok: false });
   });
   it("refuses a missing user id", async () => {
-    await expect(call(setup(), null)).rejects.toThrow(ForbiddenError);
+    await expect(call(setup(), null)).resolves.toMatchObject({ ok: false });
   });
   it("refuses a client's own owner and admin", async () => {
     const env = setup();
-    for (const who of ["client-owner", "client-admin"]) await expect(call(env, who)).rejects.toThrow(ForbiddenError);
+    for (const who of ["client-owner", "client-admin"]) await expect(call(env, who)).resolves.toMatchObject({ ok: false });
     expect(env.store.entitlements ?? []).toHaveLength(0);
   });
   it("refuses a member of the operator company and a suspended operator admin", async () => {
     const env = setup();
-    for (const who of ["ops-member", "ops-gone", "stranger"]) await expect(call(env, who)).rejects.toThrow(ForbiddenError);
+    for (const who of ["ops-member", "ops-gone", "stranger"]) await expect(call(env, who)).resolves.toMatchObject({ ok: false });
   });
   it("refuses everyone when no company is marked as the operator company", async () => {
     const env = fakeCtx({ companies, members, savedConfigs: {} });
     registerSetup(env.ctx);
-    await expect(call(env, "peet")).rejects.toThrow(ForbiddenError);
+    await expect(call(env, "peet")).resolves.toMatchObject({ ok: false });
   });
   it("fails closed when the membership lookup throws", async () => {
     const env = setup();
     (env.ctx as unknown as { access: { members: { list: () => Promise<never> } } }).access.members.list = async () => {
       throw new Error("access.members.read denied");
     };
-    await expect(call(env, "peet")).rejects.toThrow(ForbiddenError);
+    await expect(call(env, "peet")).resolves.toMatchObject({ ok: false });
   });
   it("validates the input", async () => {
     const env = setup();
-    await expect(call(env, "peet", { companyId: CLIENT, plan: "gold" })).rejects.toThrow(/plan must be/);
-    await expect(call(env, "peet", { companyId: CLIENT })).rejects.toThrow(/plan, a module/);
-    await expect(call(env, "peet", { companyId: "nope", plan: "starter" })).rejects.toThrow(/Unknown company/);
-    await expect(call(env, "peet", { companyId: CLIENT, modules: { seo: "trial" } })).rejects.toThrow(/until/);
-    await expect(call(env, "peet", { companyId: CLIENT, modules: { cockpit: "off" } })).rejects.toThrow(/Cockpit/);
-    await expect(call(env, "peet", { companyId: CLIENT, modules: { nonsense: "entitled" } })).rejects.toThrow(/Unknown module/);
+    await expect(call(env, "peet", { targetCompanyId: CLIENT, plan: "gold" })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/plan must be/) });
+    await expect(call(env, "peet", { targetCompanyId: CLIENT })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/plan, a module/) });
+    await expect(call(env, "peet", { targetCompanyId: "nope", plan: "starter" })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/Unknown company/) });
+    await expect(call(env, "peet", { targetCompanyId: CLIENT, modules: { seo: "trial" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/until/) });
+    await expect(call(env, "peet", { targetCompanyId: CLIENT, modules: { cockpit: "off" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/Cockpit/) });
+    await expect(call(env, "peet", { targetCompanyId: CLIENT, modules: { nonsense: "entitled" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/Unknown module/) });
   });
   it("still sets a client's entitlements when the host denies the out-of-scope company lookup", async () => {
     const env = setup();
     (env.ctx.companies as { get: unknown }).get = async () => {
       throw new Error("requested company is outside the current invocation scope");
     };
-    await expect(call(env, "peet", { companyId: CLIENT, plan: "starter" })).resolves.toMatchObject({ plan: "starter" });
+    await expect(call(env, "peet", { targetCompanyId: CLIENT, plan: "starter" })).resolves.toMatchObject({ plan: "starter" });
+    expect(env.store.entitlements).toHaveLength(MODULE_KEYS.length);
+  });
+  it("writes only the target's rows when the target differs from the page's company", async () => {
+    const env = setup();
+    const result = await call(env, "peet", { companyId: OTHER, targetCompanyId: CLIENT, plan: "starter" });
+    expect(result).toMatchObject({ ok: true, plan: "starter" });
+    const rows = env.store.entitlements!;
+    expect(rows).toHaveLength(MODULE_KEYS.length);
+    expect(new Set(rows.map((row) => row.company_id))).toEqual(new Set([CLIENT]));
+    expect(env.emitted.some((e) => e.name === SETUP_EVENTS.modulesUpdated && e.companyId === PAR)).toBe(false);
+  });
+  it("requires targetCompanyId and ignores the companyId the host overwrites", async () => {
+    const env = setup();
+    await expect(call(env, "peet", { companyId: PAR, plan: "starter" })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/targetCompanyId is required/) });
+    await expect(call(env, "peet", { companyId: CLIENT, targetCompanyId: " ", plan: "starter" })).resolves.toMatchObject({ ok: false });
+    expect(env.store.entitlements ?? []).toHaveLength(0);
+  });
+  it("refuses to downgrade the operator company, by plan or by module, and leaves its rows alone", async () => {
+    const env = setup();
+    await call(env, "peet", { targetCompanyId: PAR, plan: "pib" });
+    const before = JSON.stringify(env.store.entitlements);
+    await expect(call(env, "peet", { targetCompanyId: PAR, plan: "starter" })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/cannot be downgraded/) });
+    await expect(call(env, "peet", { targetCompanyId: PAR, modules: { payroll: "off" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/cannot be downgraded/) });
+    await expect(call(env, "peet", { targetCompanyId: PAR, modules: { seo: "trial" }, until: "2026-11-01T00:00:00.000Z" })).resolves.toMatchObject({ ok: false });
+    expect(JSON.stringify(env.store.entitlements)).toBe(before);
+    expect(env.store.entitlements!.every((row) => row.state === "entitled" && row.plan === "pib")).toBe(true);
+  });
+  it("still refuses an operator downgrade when the host hides the operator company's settings", async () => {
+    const env = setup();
+    await call(env, "peet", { targetCompanyId: PAR, plan: "pib" });
+    // From the operator's own page the target is the page's company, found by id.
+    await expect(call(env, "peet", { companyId: PAR, targetCompanyId: PAR, plan: "growth" })).resolves.toMatchObject({ ok: false });
+  });
+  it("says so when the host refuses the module event for the target, and still stores the rows", async () => {
+    const env = setup();
+    const emit = env.ctx.events.emit.bind(env.ctx.events);
+    (env.ctx.events as { emit: unknown }).emit = async (name: string, companyId: string, payload: unknown) => {
+      if (name === SETUP_EVENTS.modulesUpdated && companyId === CLIENT) throw new Error("outside the current invocation scope");
+      return emit(name as never, companyId as never, payload as never);
+    };
+    const result = (await call(env, "peet", { targetCompanyId: CLIENT, plan: "starter" })) as { ok: boolean; emitted: boolean; note: string };
+    expect(result).toMatchObject({ ok: true, emitted: false, note: expect.stringMatching(/hourly re-send/) });
     expect(env.store.entitlements).toHaveLength(MODULE_KEYS.length);
   });
   it("keeps the plan label and applies a per-module trial on top", async () => {
     const env = setup();
-    await call(env, "peet", { companyId: CLIENT, plan: "starter" });
-    await call(env, "peet", { companyId: CLIENT, modules: { seo: "trial" }, until: "2026-11-01T00:00:00.000Z" });
+    await call(env, "peet", { targetCompanyId: CLIENT, plan: "starter" });
+    await call(env, "peet", { targetCompanyId: CLIENT, modules: { seo: "trial" }, until: "2026-11-01T00:00:00.000Z" });
     const seo = env.store.entitlements!.find((row) => row.module === "seo")!;
     expect(seo).toMatchObject({ state: "trial", plan: "starter" });
     const crm = env.store.entitlements!.find((row) => row.module === "crm")!;
