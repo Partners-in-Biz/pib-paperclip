@@ -28,7 +28,7 @@ type Result = { ok: boolean; error?: string; needsConfirmation?: string[]; value
 const save = (h: ReturnType<typeof boot>, patch: Record<string, unknown>, confirmed?: boolean, userId = OWNER) =>
   PREFERENCES_ACTIONS[PREFERENCES_SAVE_ACTION]!(h.ctx, { companyId: CO, actor: { type: "user", userId } } as never, { patch, ...(confirmed === undefined ? {} : { confirmed }) }) as Promise<Result>;
 
-/** PiB's details as they were saved in the host form before preferences existed. */
+/** Made-up details with the shape of PiB's host-form settings before preferences existed (none is a real name, number or account). */
 const PAR_CONFIG = {
   sender: { name: "Partners in Biz", address: "1 Main Rd\nBallito", email: "billing@pib.test", vatNumber: "4123456789", registrationNumber: "2020/123456/07" },
   payment: { bankName: "FNB", accountName: "Partners in Biz (Pty) Ltd", accountNumber: "62000000123", branchCode: "250655", accountType: "Cheque" },
@@ -96,6 +96,24 @@ describe("bank details need the owner's confirmation", () => {
     expect(masked["payment.accountNumber"]).toBe("••••••••123");
     expect(JSON.stringify(masked)).not.toContain("62000000123");
     expect(masked["sender.name"]).toBe("Partners in Biz");
+  });
+
+  it("masks every bank id for a non-admin, and fails closed for an agent, no user and a role lookup that throws", async () => {
+    const h = boot(PAR_CONFIG);
+    const load = (actor: unknown) => PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(h.ctx, { companyId: CO, actor } as never, {}) as Promise<{ values: Record<string, string> }>;
+    const real = PAR_CONFIG.payment as Record<string, string>;
+    for (const actor of [{ type: "user", userId: "u-operator" }, { type: "agent", agentId: "a-1" }, { type: "user" }, { type: "user", userId: "u-nobody" }]) {
+      const { values } = await load(actor);
+      for (const id of BANK_PREFERENCE_IDS) {
+        const raw = real[id.slice("payment.".length)];
+        if (raw) expect(values[id], `${id} for ${JSON.stringify(actor)}`).toBe(raw.length <= 3 ? "•".repeat(raw.length) : "•".repeat(raw.length - 3) + raw.slice(-3));
+      }
+    }
+    const failing = boot(PAR_CONFIG);
+    failing.ctx.access.members.list = async () => { throw new Error("denied"); };
+    const out = (await PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(failing.ctx, { companyId: CO, actor: { type: "user", userId: OWNER } } as never, {})) as { values: Record<string, string> };
+    expect(out.values["payment.accountNumber"]).toBe("••••••••123");
+    expect(await save(h, { "payment.bankName": "X" }, true, "")).toMatchObject({ ok: false });
   });
 
   it("saves with confirmation and the response shows the previous value", async () => {
