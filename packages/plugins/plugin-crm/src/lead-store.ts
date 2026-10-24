@@ -245,10 +245,12 @@ export async function recordHit(ctx: PluginContext, sourceId: string, ipHash: st
 }
 
 /** How many requests this source answered since `sinceIso` (capped at `cap`: past it the answer is "too many"). */
-export async function countHits(ctx: PluginContext, sourceId: string, sinceIso: string, cap: number, ipHash?: string | null): Promise<number> {
-  const rows = ipHash
-    ? await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "lead_hits")} WHERE source_id = $1 AND ip_hash = $2 AND created_at >= $3::timestamptz LIMIT ${Math.max(1, Math.trunc(cap))}`, [sourceId, ipHash, sinceIso])
-    : await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "lead_hits")} WHERE source_id = $1 AND created_at >= $2::timestamptz LIMIT ${Math.max(1, Math.trunc(cap))}`, [sourceId, sinceIso]);
+export async function countHits(ctx: PluginContext, sourceId: string, sinceIso: string, cap: number, ipHash?: string | null, outcome?: string): Promise<number> {
+  const params: unknown[] = [sourceId, sinceIso];
+  let where = "source_id = $1 AND created_at >= $2::timestamptz";
+  if (ipHash) { params.push(ipHash); where += ` AND ip_hash = $${params.length}`; }
+  if (outcome) { params.push(outcome); where += ` AND outcome = $${params.length}`; }
+  const rows = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "lead_hits")} WHERE ${where} LIMIT ${Math.max(1, Math.trunc(cap))}`, params);
   return rows.length;
 }
 

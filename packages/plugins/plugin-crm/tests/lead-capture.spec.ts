@@ -581,6 +581,26 @@ describe("Cloudflare Turnstile", () => {
     expect(await post(booted, lead(source.key, { email: "d3@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(91) })).toMatchObject({ status: "stored" });
   });
 
+  it("an unreachable Cloudflare: a rejected first try does not use up the visitor's one lead", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    await rejected(post(booted, lead(source.key, { email: "not-an-email", turnstileToken: "tok" }), { "x-real-ip": ip(92) }));
+    expect(await post(booted, lead(source.key, { email: "retry@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(92) })).toMatchObject({ status: "stored" });
+  });
+
+  it("an unreachable Cloudflare: 20 unverified leads an hour per form; normal traffic from before the outage does not count", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    const earlier = new Date(Date.now() - 600_000).toISOString();
+    const seed = (outcome: string, n: number) => booted.store.lead_hits.push(...Array.from({ length: n }, (_, i) => ({ id: `${outcome}-${i}`, source_id: source.id, ip_hash: `h${outcome}${i}`, outcome, created_at: earlier })));
+    seed("stored", RATE.degradedSourcePerHour);
+    expect(await post(booted, lead(source.key, { email: "a@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(93) })).toMatchObject({ status: "stored" });
+    seed("unverified", RATE.degradedSourcePerHour);
+    expect(String(await rejected(post(booted, lead(source.key, { email: "b@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(94) })))).toMatch(/Too many submissions/);
+  });
+
   it("a signed server request needs no token; a form with no secret saved is not checked", async () => {
     const booted = await bootLeads({ config: withTurnstile });
     const made = await makeSourceAsPerson(booted, { serverSecret: true });

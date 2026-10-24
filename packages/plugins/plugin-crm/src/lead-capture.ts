@@ -199,12 +199,15 @@ async function overLimit(ctx: PluginContext, source: LeadSource, ipHash: string 
   return false;
 }
 
+/** The outcome written for a lead accepted while the bot check was down: only these rows use up the small allowance below, so a rejected retry or earlier normal traffic does not. */
+const UNVERIFIED = "unverified";
+
 /** True when this visitor (or the whole form) already used its small allowance for a bot check that could not be answered. */
 async function overDegradedLimit(ctx: PluginContext, source: LeadSource, ipHash: string | null, now: Date): Promise<boolean> {
   const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
   const perHour = Math.min(RATE.degradedSourcePerHour, source.rateLimitPerHour);
-  if ((await countHits(ctx, source.id, hourAgo, perHour)) >= perHour) return true;
-  if (ipHash && (await countHits(ctx, source.id, hourAgo, RATE.degradedIpPerHour, ipHash)) >= RATE.degradedIpPerHour) return true;
+  if ((await countHits(ctx, source.id, hourAgo, perHour, null, UNVERIFIED)) >= perHour) return true;
+  if (ipHash && (await countHits(ctx, source.id, hourAgo, RATE.degradedIpPerHour, ipHash, UNVERIFIED)) >= RATE.degradedIpPerHour) return true;
   return false;
 }
 
@@ -336,11 +339,13 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     if (!signed && typeof body.t === "number" && Number.isFinite(body.t) && body.t < MIN_FILL_MS) return await dropped(ctx, source, ipHash, "too_fast");
 
     const settings = await leadsConfig(ctx, source.companyId);
+    let unverified = false;
     if (!signed && source.turnstileSiteKey) {
       const verdict = await verifyTurnstile(ctx, source.companyId, cleanText(body.turnstileToken, 4_000) || null, ip);
       if (verdict === "failed") throw new LeadRejected("Please complete the spam check and send again.", "bot_check");
       if (verdict === "misconfigured") throw new LeadRejected("This form is temporarily unavailable", "bot_check");
       if (verdict === "unavailable" && (await overDegradedLimit(ctx, source, ipHash, now))) throw new LeadRejected("Too many submissions. Please try again in a few minutes.", "rate_limited");
+      unverified = verdict === "unavailable";
     }
 
     const parsed = parseSubmission(body, { extraBlockedDomains: settings.blockedDomains, allowReserved: source.canary });
@@ -352,7 +357,7 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     // A server may pass the visitor's own address, so the consent record names the visitor, not the web server.
     const visitorHash = signed && submission.visitorIp && /^[0-9a-f:.]{3,45}$/i.test(submission.visitorIp) ? hashIp(salt, submission.visitorIp.toLowerCase()) : ipHash;
     const result = await processSubmission(ctx, source, submission, { now, ipHash: visitorHash });
-    await recordHit(ctx, source.id, ipHash, result.status === "dropped" ? result.reason : result.status);
+    await recordHit(ctx, source.id, ipHash, result.status === "dropped" ? result.reason : unverified ? UNVERIFIED : result.status);
     return result;
   } catch (error) {
     if (error instanceof LeadRejected) {
