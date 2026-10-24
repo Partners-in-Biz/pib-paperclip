@@ -25,9 +25,9 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, readConfig, routeRole, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
+import { HOSTED_TIERS, isHostedTier, isModuleEnabled, MODULES, readConfig, routeRole, TIER_MODULES, type HostedTier, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
 import { isCrmRoleKey } from "./agent.js";
-import { getAccount, getContact, table } from "./db.js";
+import { getAccount, getContact, getHosted, listContacts, listLinks, table } from "./db.js";
 import { sendHandoff } from "./handoffs.js";
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -186,9 +186,53 @@ const today = (now: Date) => now.toISOString().slice(0, 10).replace(/-/g, "");
 /** To the second: a service that was removed and added again gets a step of its own (its old step is cancelled, and an origin id is never reused). */
 const stamp = (now: Date) => now.toISOString().slice(0, 19).replace(/[-:T]/g, "");
 
+/** What the provisioning request needs: the tier from the signed quote, and the client's owner (primary contact) email. */
+export interface HostedRequest {
+  plan: string | null;
+  ownerEmail: string | null;
+}
+
+/** The request line of the provisioning task (pure). The modules come from the tier table in the kit, never typed by hand. */
+export function provisioningRequest(input: { name: string; hosted: HostedRequest }): string[] {
+  const { plan, ownerEmail } = input.hosted;
+  const owner = ownerEmail ? `owner email \`${ownerEmail}\`` : "owner email MISSING (ask the client's primary contact; do not guess)";
+  if (!isHostedTier(plan)) {
+    return [`**Provisioning request:** the plan label is MISSING or not one of ${HOSTED_TIERS.join(", ")}. Read the tier on the signed quote, set it with \`update-company\` (\`hostedPlan\`), then continue (the plan on the company, and the latest comment here, win over this description). ${owner}.`];
+  }
+  const modules = TIER_MODULES[plan as HostedTier].map((key) => MODULES[key].title);
+  return [`**Provisioning request:** company "${input.name}", profile \`client\`, plan \`${plan}\`, modules ${modules.join(", ")}, ${owner}.`];
+}
+
+/** The owner's email: the first person linked to the company who has one (links are in the order they were made). */
+async function primaryContactEmail(ctx: PluginContext, companyId: string, accountId: string): Promise<string | null> {
+  const links = (await listLinks(ctx, companyId)).filter((link) => link.accountId === accountId);
+  const contacts = new Map((await listContacts(ctx, companyId)).map((contact) => [contact.id, contact]));
+  for (const link of links) {
+    const email = contacts.get(link.contactId)?.emails.find((value) => value.trim());
+    if (email) return email.trim();
+  }
+  return null;
+}
+
 /** Title and description of a service's step (pure). */
-export function serviceStepContent(input: { def: ServiceDef; client: Pick<ClientInfo, "kind" | "id" | "name" | "canary">; prefix: string | null; missing: string[] }): { title: string; description: string } {
+export function serviceStepContent(input: { def: ServiceDef; client: Pick<ClientInfo, "kind" | "id" | "name" | "canary">; prefix: string | null; missing: string[]; hosted?: HostedRequest }): { title: string; description: string } {
   const { def, client } = input;
+  if (def.key === "platform") {
+    const ref = refOf(client.kind, client.id);
+    const lines = [
+      `${client.name} (\`${ref}\`) bought the **${def.label}**.${client.canary ? " This is the CANARY client: a test. Everything outward stays a draft or a dry run." : ""}`,
+      "",
+      ...provisioningRequest({ name: client.name, hosted: input.hosted ?? { plan: null, ownerEmail: null } }),
+      "",
+      "**What starting it means:**",
+      ...def.start.map((line) => `- ${line}`),
+      "",
+      `**Done when** the hosted company id is written on \`${ref}\` (\`hostedCompanyId\`) and logged as proof. Closing checks it.`,
+      "",
+      `Client: ${crmLink(input.prefix, client.kind, client.id)}`,
+    ];
+    return { title: `Provision hosted company for ${client.name}`.slice(0, 200), description: lines.join("\n") };
+  }
   const ref = refOf(client.kind, client.id);
   const links = workspaceLinks(input.prefix, client.kind, client.id);
   const workspace = def.module ? links[def.module] : null;
@@ -232,6 +276,8 @@ export async function ensureServiceStep(
   const def = serviceDef(input.service);
   if (!def) return { service: input.service, status: "skipped", reason: "not a service in the vocabulary" };
   const { companyId, client } = input;
+  // The hosted link lives on a CRM company: a person-only client has nowhere to record it, so no step is opened.
+  if (def.key === "platform" && client.kind !== "company") return { service: def.key, status: "skipped", reason: "the platform service needs a company record: link the person to a company first" };
   const existing = (await serviceSteps(ctx, companyId, client.kind, client.id)).find((step) => step.service === def.key);
   if (existing && existing.status !== "dropped") return { service: def.key, status: "exists", issueId: existing.issueId };
   const now = input.now ?? new Date();
@@ -243,7 +289,10 @@ export async function ensureServiceStep(
   const profile = await getClientProfile(ctx, companyId, client.kind, client.id).catch(() => null);
   const missing = profile ? (["brandVoice", "audience", "website"] as const).filter((field) => !profile[field]) : ["brandVoice", "audience", "website"];
   const prefix = await companyPrefix(ctx, companyId);
-  const content = serviceStepContent({ def, client, prefix, missing });
+  const hosted: HostedRequest | undefined = def.key === "platform" && client.kind === "company"
+    ? { plan: (await getHosted(ctx, client.id).catch(() => null))?.hostedPlan ?? null, ownerEmail: await primaryContactEmail(ctx, companyId, client.id).catch(() => null) }
+    : undefined;
+  const content = serviceStepContent({ def, client, prefix, missing, hosted });
   const projects = await clientProjectIds(ctx, companyId, client.kind, client.id).catch(() => [] as string[]);
   const issueId = await openIssueOnce(ctx, {
     companyId,
@@ -256,6 +305,21 @@ export async function ensureServiceStep(
   });
   await putStep(ctx, { ...base, issueId });
   return { service: def.key, status: "opened", issueId };
+}
+
+/**
+ * The plan was set or changed on a company: put the current request line on its open platform step, because the task
+ * description is fixed when it opens (it may say the plan was missing). Never throws.
+ */
+export async function noteHostedPlan(ctx: PluginContext, companyId: string, account: { id: string; name: string }, plan: string | null): Promise<void> {
+  try {
+    const step = (await serviceSteps(ctx, companyId, "company", account.id)).find((row) => row.service === "platform" && row.status === "open" && row.issueId);
+    if (!step?.issueId) return;
+    const [line] = provisioningRequest({ name: account.name, hosted: { plan, ownerEmail: await primaryContactEmail(ctx, companyId, account.id) } });
+    await ctx.issues.createComment(step.issueId, `The plan changed. Current request, use this one:\n\n${line}`, companyId);
+  } catch (error) {
+    ctx.logger.info("CRM hosted plan note not posted", { companyId, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export interface ServicesChangeResult {
