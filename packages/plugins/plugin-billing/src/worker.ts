@@ -62,6 +62,7 @@ import {
   r2Configured,
   reportingCurrency,
 } from "./config.js";
+import { FALLBACK_SENDER_NAME } from "./documents.js";
 import { PREFERENCES_ACTIONS } from "./preferences.js";
 import {
   approveBillAction,
@@ -647,7 +648,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       taxRate: Number(settings.defaultTaxRate ?? 0),
       // The code new lines get (out of scope when "VAT registered" is off).
       taxCode: settings.vatRegistered === false ? "za_out_of_scope" : settings.defaultTaxCode ?? null,
-      senderName: String(asObject(settings.sender).name ?? "Partners in Biz"),
+      senderName: String(asObject(settings.sender).name ?? FALLBACK_SENDER_NAME),
       pricesIncludeVat: Boolean(settings.pricesIncludeVat),
       reportingCurrency: reportingCurrency(settings),
       hourlyRateMinor: Math.max(0, Math.floor(Number(settings.defaultHourlyRateMinor ?? 0))),
