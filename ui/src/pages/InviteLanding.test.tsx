@@ -247,6 +247,7 @@ describe("InviteLandingPage", () => {
       name: "Jane Example",
       email: "jane@example.com",
       password: "supersecret",
+      inviteToken: "pcp_invite_test",
     });
     expect(container.textContent).toContain("An account already exists for jane@example.com. Sign in below to continue with this invite.");
     expect(container.querySelector('input[name="name"]')).toBeNull();
@@ -535,6 +536,7 @@ describe("InviteLandingPage", () => {
       name: "Jane Example",
       email: "jane@example.com",
       password: "supersecret",
+      inviteToken: "pcp_invite_test",
     });
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });

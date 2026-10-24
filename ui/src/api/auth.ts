@@ -176,7 +176,9 @@ export const authApi = {
     await authPost("/sign-in/email", input);
   },
 
-  signUpEmail: async (input: { name: string; email: string; password: string }) => {
+  // `inviteToken` lets a closed-sign-up instance accept a new person who holds a
+  // valid invite for that email (server/src/auth/invite-signup-gate.ts).
+  signUpEmail: async (input: { name: string; email: string; password: string; inviteToken?: string }) => {
     await authPost("/sign-up/email", input);
   },
 

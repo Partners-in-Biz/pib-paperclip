@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { createInviteSignUpGate } from "./invite-signup-gate.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
   workspaceLoginHandoffPlugin,
@@ -273,8 +274,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
-      disableSignUp: config.authDisableSignUp,
+      // PiB: when sign-up is closed the invite gate below enforces it, so an
+      // invited client owner can still register (see invite-signup-gate.ts).
+      disableSignUp: false,
     },
+    ...(config.authDisableSignUp
+      ? { hooks: { before: createInviteSignUpGate(db) } }
+      : {}),
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,

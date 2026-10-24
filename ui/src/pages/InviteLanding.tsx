@@ -382,6 +382,7 @@ export function InviteLandingPage() {
         name: name.trim(),
         email: email.trim(),
         password,
+        inviteToken: token,
       });
     },
     onSuccess: async () => {
