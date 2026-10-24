@@ -38,6 +38,7 @@ import {
   Send,
   Settings as SettingsIcon,
   Sparkles,
+  PreferencesPanel,
   StatusDot,
   Tabs,
   TextArea,
@@ -241,7 +242,7 @@ interface TriageStats {
 }
 interface NamedAgent { id: string; name: string; status: string }
 
-const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
+const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage", "preferences"] as const;
 type TabId = (typeof TAB_IDS)[number];
 type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | "esp-domain" | "esp-limits" | "esp-hold" | null;
 type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
@@ -478,6 +479,8 @@ export function MailboxPage({ context }: PluginPageProps) {
   const refreshSendingDomain = usePluginAction("mailbox.refresh-sending-domain");
   const setSendingDomain = usePluginAction("mailbox.set-sending-domain");
   const clearHold = usePluginAction("mailbox.clear-reputation-hold");
+  const loadPreferences = usePluginAction("mailbox.preferences-load");
+  const savePreferences = usePluginAction("mailbox.preferences-save");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
@@ -933,6 +936,7 @@ export function MailboxPage({ context }: PluginPageProps) {
           { id: "drafts", label: "Drafts", icon: FileText, count: allDrafts.filter((row) => row.status === "draft").length || null, countTone: "warn" },
           { id: "mailboxes", label: "Mailboxes", icon: Mail, count: reconnects || null, countTone: reconnects ? "bad" : undefined },
           { id: "triage", label: "Sorting", icon: Sparkles },
+          { id: "preferences", label: "Preferences", icon: SettingsIcon },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -1393,6 +1397,13 @@ export function MailboxPage({ context }: PluginPageProps) {
             <button type="button" onClick={() => setCreate("mailbox")} style={{ appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", color: tokens.primary, fontWeight: 600, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>Add it here</button>
           </Muted>
         </div>
+      ) : null}
+
+      {tab === "preferences" ? (
+        <PreferencesPanel
+          load={() => loadPreferences({}) as never}
+          save={(patch) => savePreferences({ patch }) as never}
+        />
       ) : null}
 
       {tab === "triage" ? (

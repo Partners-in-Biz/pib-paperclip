@@ -7,11 +7,13 @@
 import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
 import { isSecretRef, jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { readSesTopicConfirmed } from "./esp/topic-state.js";
+import { mailboxPrefs } from "./preferences.js";
 import { DEFAULT_STEADY_CAP } from "./esp/warmup.js";
 
 /** Same Google Cloud Web client as SEO and YouTube. */
 export const DEFAULT_GOOGLE_CLIENT_ID = "430887310034-6hc826irms25pf22ou7qi22s70gbm79k.apps.googleusercontent.com";
-export const DEFAULT_LABEL_PREFIX = "PiB";
+/** Last resort when a company has no label prefix and no short name. The real default is the company's short name (preferences.ts). */
+export const DEFAULT_LABEL_PREFIX = "Mail";
 export const DEFAULT_SEND_RATE = 20;
 
 /** `autoDelegate` setting: who gets a default delegation on the company's own mailboxes (see delegations.ts). */
@@ -45,25 +47,24 @@ export const instanceConfigSchema: JsonSchema = {
     labelPrefix: {
       type: "string",
       title: "Gmail label prefix",
-      description: "Triage labels are added as <prefix>/<Category>, e.g. PiB/Lead.",
-      default: DEFAULT_LABEL_PREFIX,
+      description: "Moved to Preferences on the Mailbox page, where a company owner edits it. A value saved here is used until the company saves its own.",
     },
     fromName: {
       type: "string",
       title: "Sender name",
-      description: "Optional name shown next to the Gmail address on mail the plugins send, e.g. Partners in Biz.",
+      description: "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own.",
     },
     replyIssues: {
       type: "boolean",
       title: "Open reply issues",
-      description: "Mail from a client, a known lead or support that needs a reply opens one issue per thread for the agent who answers it. New leads go to the CRM instead.",
+      description: "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. Mail from a client, a known lead or support that needs a reply opens one issue per thread; new leads go to the CRM instead.",
       default: true,
     },
     triageIssueAssignee: {
       type: "string",
       title: "Assign reply issues to",
       description:
-        "Optional. An agent id, or user:<id> for a person. Empty: the Account Manager, else the Operator, else the owner.",
+        "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. An agent id, or user:<id> for a person.",
     },
     r2: {
       type: "object",
@@ -96,7 +97,7 @@ export const instanceConfigSchema: JsonSchema = {
       type: "string",
       title: "Mailbox access given without asking",
       description:
-        "Who gets read and draft access (never sending) on the company's own Gmail mailboxes automatically. operator: only the Operator (default). operator+roles: also the Account Manager (read and draft) and the Bookkeeper (read). off: nobody; access is given by hand or by answering an agent's ask. Access a person removes is never given back automatically.",
+        "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. operator: only the Operator (default). operator+roles: also the Account Manager (read and draft) and the Bookkeeper (read). off: nobody. Access a person removes is never given back automatically.",
       enum: ["operator", "operator+roles", "off"],
       default: "operator",
     },
@@ -286,6 +287,10 @@ export function parseLabelPrefix(value: unknown): string {
   return cleaned || DEFAULT_LABEL_PREFIX;
 }
 
+export function parseFromName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.replace(/[\r\n]/g, " ").trim().slice(0, 120) : null;
+}
+
 export function parseTriageAssignee(value: unknown): TriageAssignee | null {
   if (typeof value !== "string") return null;
   const raw = value.trim();
@@ -313,7 +318,7 @@ export function parseMailboxConfig(raw: Record<string, unknown>): MailboxConfig 
   const google = (raw.google && typeof raw.google === "object" ? raw.google : {}) as Record<string, unknown>;
   const rate = Number(raw.sendRatePerMinute);
   const base = typeof raw.publicBaseUrl === "string" && raw.publicBaseUrl.trim() ? raw.publicBaseUrl.trim() : null;
-  const fromName = typeof raw.fromName === "string" && raw.fromName.trim() ? raw.fromName.replace(/[\r\n]/g, " ").trim().slice(0, 120) : null;
+  const fromName = parseFromName(raw.fromName);
   return {
     autoDelegate: parseAutoDelegate(raw.autoDelegate),
     domainChecks: raw.domainChecks !== false,
@@ -374,6 +379,15 @@ export async function loadMailboxConfig(ctx: PluginContext, companyId: string): 
     raw = {};
   }
   const config = parseMailboxConfig(raw);
+  // The five person-facing settings come from the company's preferences (row, else the saved host value above, else a neutral default).
+  const prefs = await mailboxPrefs(ctx, companyId);
+  if (prefs) {
+    config.labelPrefix = parseLabelPrefix(prefs.labelPrefix);
+    config.fromName = parseFromName(prefs.fromName);
+    config.triageAssignee = parseTriageAssignee(prefs.triageIssueAssignee);
+    config.replyIssues = prefs.replyIssues !== false;
+    config.autoDelegate = parseAutoDelegate(prefs.autoDelegate);
+  }
   // Whether the SNS topic is confirmed lives in company state: read only where SES is in use.
   // The saved state must match the current topic ARN (changing the ARN resets the confirmation).
   if (config.esp.provider === "ses" && config.esp.ses.snsTopicArn) config.esp.ses.topicConfirmed = await readSesTopicConfirmed(ctx, companyId, config.esp.ses.snsTopicArn);

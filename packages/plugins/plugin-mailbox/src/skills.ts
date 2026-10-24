@@ -28,7 +28,7 @@ The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plu
 - \`create-email-template\` and \`list-email-templates\` keep reusable copy.
 
 ## Where inbound mail goes
-New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a plugin sent, then Jev or keyword rules) and labelled \`PiB/<Category>\` in Gmail. Then:
+New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a plugin sent, then Jev or keyword rules) and labelled \`<prefix>/<Category>\` in Gmail (the company's own label prefix; a message's \`labels\` show the exact names, e.g. \`<prefix>/Lead\`). Then:
 
 | Mail | Who acts | What happens |
 |---|---|---|
@@ -39,7 +39,7 @@ New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a pl
 | Invoice or bill from a known supplier | Billing | Drafted as a supplier bill to complete. |
 | Bank statement | Bookkeeper | Accounting opens "Bank statement received" with the message id, attachment ids and mailbox: \`get-attachment\`, then \`partnersinbiz.accounting:import-statement\`, then reconcile. |
 | Newsletter, notification, personal, other | Nobody | Labelled only. |
-| Spam or phishing (\`PiB/Suspicious\`) | Nobody | Never open its links, reply or act on it. |
+| Spam or phishing (\`<prefix>/Suspicious\`) | Nobody | Never open its links, reply or act on it. |
 
 Never answer a legal threat or a money question you cannot check: ask the owner.
 

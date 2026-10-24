@@ -468,3 +468,15 @@ No new tool. Changed: `list-sending-domains` shows `provider` (resend or ses). T
 Health on the Cockpit: `mailbox:esp-*` (same format for both providers). Setup: three optional items (SES account, configuration set, SNS topic), one per provider.
 
 Tests: the provider code is tested against mock SES (every documented error answer, quota check), SNS signature verification against independent computation, the sender with every rule above (a replayed webhook, a bad or stale signature, a duplicate event, a domain not yet verified, a message without SES sending it, a soft bounce back-off, a bounce or complaint re-judging the domain). Migration 011 was applied to a restored copy of the live data with `migration-dryrun.sh`.
+
+## 0.8.0: company preferences (PAR-5183, plan PAR-5163)
+
+Deploy: **stop-first** (capability change: adds `access.members.read`; no migration). Skill text changes for every company's agents: the Gmail label is now written `<prefix>/<Category>` (and `<prefix>/Suspicious`) instead of `PiB/...`; PAR's real labels are unchanged because PAR's prefix stays `PiB`. No tool is renamed or removed.
+
+A company owner or admin edits five settings on the **Preferences** tab of the Mailbox page, with no instance admin: sender name (`fromName`), Gmail label prefix (`labelPrefix`), open reply issues (`replyIssues`), assign reply issues to (`triageIssueAssignee`) and mailbox access given without asking (`autoDelegate`). The actions are `mailbox.preferences-load` and `mailbox.preferences-save`; saving checks the person's role with `ctx.access.members.list` (the new capability) and refuses when it cannot.
+
+- Precedence: the company's saved preference, then a value explicitly saved in the host form (the old place), then a neutral default. The label prefix defaults to the company's short name (never `PiB`); the sender name defaults to empty (just the address).
+- The instance's own company (PAR) is seeded once with `labelPrefix: "PiB"` plus its saved host values, so its labels, sender name and routing do not change.
+- `loadMailboxConfig` reads the five through `mailboxPrefs()` (`src/preferences.ts`), so every reader keeps using `loaded.config`.
+- Still in the host form: publicBaseUrl, encryptionKey, google.*, jev, r2, sendRatePerMinute, domainChecks, dkimSelectors, unsubscribe.secret, esp.*, `defaultDelegation` (unused).
+- Rollback to 0.7.1 removes the capability and is itself stop-first; the old code ignores the preferences row and reads the host form as before.
