@@ -25,6 +25,9 @@ import {
   skillSyncCheck,
   toolsGrantWaitingItem,
   unpinnedRunProfileCheck,
+  unboundModelKeyCheck,
+  hostingFromConfig,
+  readConfig,
   unroutedApprovalsCheck,
   waitingBacklog,
   type CockpitKpi,
@@ -121,6 +124,13 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
     ["run-profile", async () => {
       const agents = (await ctx.agents.list({ companyId, limit: 200 })) as unknown as Array<Record<string, unknown>>;
       return { health: nonOk(unpinnedRunProfileCheck(agents.map((a) => ({ id: String(a.id), name: String(a.name ?? "Agent"), status: a.status == null ? null : String(a.status), adapterType: a.adapterType == null ? null : String(a.adapterType), adapterConfig: (a.adapterConfig as Record<string, unknown> | null) ?? null })))) };
+    }],
+    // A client company's Claude agents must run on the company's own key, not PiB's subscription (PAR-5158).
+    ["model-key", async () => {
+      const hosting = hostingFromConfig(await readConfig(ctx, companyId));
+      if (hosting.profile !== "client") return {};
+      const agents = (await ctx.agents.list({ companyId, limit: 200 })) as unknown as Array<Record<string, unknown>>;
+      return { health: nonOk(unboundModelKeyCheck(agents.map((a) => ({ id: String(a.id), name: String(a.name ?? "Agent"), status: a.status == null ? null : String(a.status), adapterType: a.adapterType == null ? null : String(a.adapterType), adapterConfig: (a.adapterConfig as Record<string, unknown> | null) ?? null })), hosting)) };
     }],
     // Agents that cannot call the memory tools (Q9-6, Q8-12). The owner is asked once (effects.ts); the kit's Needs-you item stands in only until that question is open.
     ["grants", async () => {
