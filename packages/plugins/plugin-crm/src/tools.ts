@@ -567,7 +567,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       tags: P.tagsReplace,
       custom: P.custom,
       hostedPlan: text("The hosted plan label from the signed quote: starter, growth or business. Set it before marking the `platform` service sold."),
-      hostedCompanyId: text("The Paperclip company id the platform service provisioned. Written once by the provisioning task."),
+      hostedCompanyId: text("The Paperclip company id the platform service provisioned. Written by the provisioning task. Once set it cannot be replaced by an agent."),
     }),
   },
   {

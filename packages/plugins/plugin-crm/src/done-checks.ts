@@ -30,7 +30,7 @@ import { siteIssueResolved } from "./monitor.js";
 import { reportIssueResolved } from "./report.js";
 import { breachResolved, caseIssueResolved } from "./support.js";
 import { getFeedback } from "./care-store.js";
-import { asRecord, contactCompanyLinks, enrollmentById, findDuplicateContacts, getAccount, getContact, getDeal, listDeals, listSteps, stageKind, table } from "./db.js";
+import { asRecord, contactCompanyLinks, enrollmentById, findDuplicateContacts, getAccount, getContact, getDeal, getHosted, listDeals, listSteps, stageKind, table } from "./db.js";
 import { ACTIVITY_KINDS, duplicateGroups, type ContactDraft, type DealDraft } from "./domain.js";
 import { clientDeals } from "./handoffs.js";
 import { CRM_ORIGINS, parseStepRef } from "./origins.js";
@@ -262,6 +262,9 @@ export async function checkServiceStep(ctx: PluginContext, issue: DoneCheckIssue
   const profile = await getClientProfile(ctx, issue.companyId, step.kind, step.clientId);
   // Removed from the client's services, or the client is gone: nothing to prove.
   if (!profile || !profile.services.includes(step.service)) return DONE;
+  if (step.service === "platform" && step.kind === "company" && !(await getHosted(ctx, step.clientId)).hostedCompanyId) {
+    return { done: false, missing: [`The hosted company id is not written on \`company:${step.clientId}\` yet: set it with \`update-company\` (\`hostedCompanyId\`), then close this issue.`] };
+  }
   if (await workLoggedSince(ctx, issue.companyId, [step.clientId], openedAt(issue))) return DONE;
   return {
     done: false,

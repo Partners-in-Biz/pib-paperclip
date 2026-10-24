@@ -197,7 +197,7 @@ export function provisioningRequest(input: { name: string; hosted: HostedRequest
   const { plan, ownerEmail } = input.hosted;
   const owner = ownerEmail ? `owner email \`${ownerEmail}\`` : "owner email MISSING (ask the client's primary contact; do not guess)";
   if (!isHostedTier(plan)) {
-    return [`**Provisioning request:** the plan label is MISSING or not one of ${HOSTED_TIERS.join(", ")}. Read the tier on the signed quote, set it with \`update-company\` (\`hostedPlan\`), then continue. ${owner}.`];
+    return [`**Provisioning request:** the plan label is MISSING or not one of ${HOSTED_TIERS.join(", ")}. Read the tier on the signed quote, set it with \`update-company\` (\`hostedPlan\`), then continue (the plan on the company, and the latest comment here, win over this description). ${owner}.`];
   }
   const modules = TIER_MODULES[plan as HostedTier].map((key) => MODULES[key].title);
   return [`**Provisioning request:** company "${input.name}", profile \`client\`, plan \`${plan}\`, modules ${modules.join(", ")}, ${owner}.`];
@@ -276,6 +276,8 @@ export async function ensureServiceStep(
   const def = serviceDef(input.service);
   if (!def) return { service: input.service, status: "skipped", reason: "not a service in the vocabulary" };
   const { companyId, client } = input;
+  // The hosted link lives on a CRM company: a person-only client has nowhere to record it, so no step is opened.
+  if (def.key === "platform" && client.kind !== "company") return { service: def.key, status: "skipped", reason: "the platform service needs a company record: link the person to a company first" };
   const existing = (await serviceSteps(ctx, companyId, client.kind, client.id)).find((step) => step.service === def.key);
   if (existing && existing.status !== "dropped") return { service: def.key, status: "exists", issueId: existing.issueId };
   const now = input.now ?? new Date();
@@ -303,6 +305,21 @@ export async function ensureServiceStep(
   });
   await putStep(ctx, { ...base, issueId });
   return { service: def.key, status: "opened", issueId };
+}
+
+/**
+ * The plan was set or changed on a company: put the current request line on its open platform step, because the task
+ * description is fixed when it opens (it may say the plan was missing). Never throws.
+ */
+export async function noteHostedPlan(ctx: PluginContext, companyId: string, account: { id: string; name: string }, plan: string | null): Promise<void> {
+  try {
+    const step = (await serviceSteps(ctx, companyId, "company", account.id)).find((row) => row.service === "platform" && row.status === "open" && row.issueId);
+    if (!step?.issueId) return;
+    const [line] = provisioningRequest({ name: account.name, hosted: { plan, ownerEmail: await primaryContactEmail(ctx, companyId, account.id) } });
+    await ctx.issues.createComment(step.issueId, `The plan changed. Current request, use this one:\n\n${line}`, companyId);
+  } catch (error) {
+    ctx.logger.info("CRM hosted plan note not posted", { companyId, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export interface ServicesChangeResult {
