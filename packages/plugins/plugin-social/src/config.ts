@@ -182,7 +182,7 @@ export function buildInstanceConfigSchema(): JsonSchema {
       timezone: {
         type: "string",
         title: "Timezone",
-        description: `Used for the calendar and the weekly routine. Default ${DEFAULT_TIMEZONE}.`,
+        description: `Used for the calendar and the weekly routine. Default ${DEFAULT_TIMEZONE}. Once a company has saved Preferences (Social > Overview > Preferences), those win and this field is ignored for that company.`,
         default: DEFAULT_TIMEZONE,
       },
       linkedinOrgPages: {
@@ -207,7 +207,7 @@ export function buildInstanceConfigSchema(): JsonSchema {
       allowAgentReplies: {
         type: "boolean",
         title: "Agents may send inbox replies",
-        description: "Off: an agent's reply is saved as a suggestion that a person sends. On: agent replies publish immediately.",
+        description: "Off: an agent's reply is saved as a suggestion that a person sends. On: agent replies publish immediately. Once a company has saved Preferences (Social > Overview > Preferences), those win and this field is ignored for that company.",
         default: false,
       },
       platforms: {
