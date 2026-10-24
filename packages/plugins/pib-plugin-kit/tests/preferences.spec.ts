@@ -285,4 +285,52 @@ describe("savePreferences validation and merge", () => {
     expect((await savePreferences(ctx, owner, bare, { mode: "b" })).ok).toBe(true);
     expect((await row(CO))?.values).toEqual({ labelPrefix: "PiB", mode: "b" });
   });
+
+  it("keeps seed values when the seed write fails on first call only", async () => {
+    const { ctx, row } = boot({ config: { fromName: "Legacy" } });
+    let setCallCount = 0;
+    const set = ctx.state.set.bind(ctx.state);
+    (ctx.state as { set: unknown }).set = async (scope: never, value: never) => {
+      setCallCount++;
+      if (setCallCount === 1) throw new Error("first write fails");
+      return set(scope, value);
+    };
+    const result = await savePreferences(ctx, owner, schema, { mode: "b" });
+    expect(result.ok).toBe(true);
+    expect((await row(CO))?.values).toEqual({ labelPrefix: "PiB", fromName: "Legacy", mode: "b" });
+  });
+
+  it("refuses and throws nothing when state.set always throws", async () => {
+    const { ctx, row } = boot();
+    (ctx.state as { set: unknown }).set = async () => {
+      throw new Error("always fails");
+    };
+    const result = await savePreferences(ctx, owner, schema, { mode: "b" });
+    expect(result).toEqual({ ok: false, error: "Could not save preferences" });
+    expect(await row(CO)).toBeNull();
+  });
+
+  it("drops keys not in the schema when storing the row", async () => {
+    const { ctx, row } = boot();
+    await ctx.state.set(scopeOf(CO), { values: { gone: "x", mode: "a" }, updatedBy: "u", updatedAt: "t" });
+    const result = await savePreferences(ctx, owner, schema, { retries: 2 });
+    expect(result.ok).toBe(true);
+    const stored = await row(CO);
+    expect(stored?.values).toEqual({ mode: "a", retries: 2 });
+    expect(stored?.values && Object.hasOwn(stored.values, "gone")).toBe(false);
+  });
+
+  it("handles a legacy function that throws by skipping that field", async () => {
+    const throwingSchema = definePreferences({
+      id: "test",
+      fields: {
+        throwing: { type: "string", label: "Throws", default: "default-val", legacy: (_raw: Record<string, unknown>) => { throw new Error("boom"); } },
+        safe: { type: "string", label: "Safe", default: "safe-default", legacy: "safe" },
+      },
+    });
+    const { ctx } = boot({ config: { throwing: "should-be-ignored", safe: "legacy-safe" } });
+    const values = await readPreferences(ctx, OTHER, throwingSchema);
+    expect(values.throwing).toBe("default-val");
+    expect(values.safe).toBe("legacy-safe");
+  });
 });
