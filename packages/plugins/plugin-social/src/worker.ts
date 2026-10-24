@@ -122,6 +122,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
+import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
   myAccountsAction,
   myPostsAction,
@@ -606,6 +607,9 @@ const plugin = definePlugin({
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
+    ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
+    ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {

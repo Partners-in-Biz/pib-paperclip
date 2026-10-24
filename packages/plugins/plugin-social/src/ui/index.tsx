@@ -42,6 +42,7 @@ import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { GrowthTab } from "./growth.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { RoutineSwitchOn, useWeeklyRoutine } from "./routine.js";
+import { PreferencesSection } from "./preferences.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
@@ -287,6 +288,7 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
         onChange={(id) => setTab(id as TabId)}
       />
       {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} onOpenPost={(p) => setDetailId(p.id)} tabLink={tabLink} /> : null}
+      {tab === "overview" && !me && !scopeKey ? <PreferencesSection /> : null}
       {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} run={run} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
       {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
       {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
