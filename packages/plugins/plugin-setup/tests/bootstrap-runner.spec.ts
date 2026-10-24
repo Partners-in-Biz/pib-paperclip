@@ -78,6 +78,8 @@ function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; ro
       return action === "memory.import" ? { added: 12, duplicates: 1, skippedClient: 0, invalid: [] } : {};
     },
     fetchAgents: async () => agents,
+    fetchSecretCatalog: async () => [],
+    bindAgentKey: async () => {},
     loadTeam: async (roles) => Object.fromEntries(roles.map((role) => [role.key, roleState(role)])),
     hireOptions: async (role) => {
       if (failures[`options:${role.key}`]) throw new Error(failures[`options:${role.key}`]!);
@@ -117,7 +119,7 @@ describe("a fresh company with a CEO", () => {
   it("saves every setting, syncs every plugin's skills, opens a hire task per required role and per dev-chain template, and lists what only a person can do", async () => {
     const f = fake();
     const results = await runClientSteps(f.env);
-    expect(results.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
+    expect(results.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "model-key", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
 
     // Setup's own settings first (Q7-7), then each ready plugin's defaults.
     expect(f.saves[0]).toEqual({ target: SETUP_PLUGIN, config: { weeklyIssue: true } });
@@ -154,7 +156,7 @@ describe("a fresh company with a CEO", () => {
     expect(owner.status).toBe("needs_owner");
     expect((owner.grants as Array<{ id: string }>).map((grant) => grant.id)).toEqual(expect.arrayContaining(["plugin-secrets", "github-token", "resume-agents", "tools-grant", "starter-pack"]));
     // Every page step reported itself.
-    expect(f.recorded.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
+    expect(f.recorded.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "model-key", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
   });
 
   it("changes nothing the second time: settings saved, roles and templates already hiring", async () => {

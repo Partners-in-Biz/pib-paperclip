@@ -2,6 +2,7 @@
  * Host API calls from the Setup page (same-origin, board session cookie).
  */
 import { MODULES, type SetupStatus } from "../kit-setup.js";
+import { parseSecretCatalog, type SecretLite } from "../model-key.js";
 import { parseSetupStatus } from "../status.js";
 
 export interface PluginRecordLite {
@@ -156,4 +157,26 @@ export async function fetchCompanyInfo(companyId: string): Promise<CompanyInfoLi
   } catch {
     return null;
   }
+}
+
+/** The company's secrets by id, name and key (never a value). Null when they cannot be read. */
+export async function fetchSecretCatalog(companyId: string): Promise<SecretLite[] | null> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/secrets/catalog`, { credentials: "include", headers: { accept: "application/json" } });
+    const body = await readJson(res);
+    return res.ok ? parseSecretCatalog(body) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Replaces one agent's adapter config. The host replaces on update, so the caller sends the whole config. */
+export async function patchAgentAdapterConfig(agentId: string, adapterConfig: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ adapterConfig }),
+  });
+  if (!res.ok) throw errorFrom(await readJson(res), `Could not update the agent (${res.status})`);
 }
