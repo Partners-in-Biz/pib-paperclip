@@ -18,7 +18,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { configSaved, createClaimGuard, decide, getCrmContact, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createClaimGuard, decide, readConfig, getCrmContact, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
 import {
   addChannelSuppression,
   crmContactsByPhone,
@@ -301,9 +301,9 @@ export async function handleInboundWebhook(ctx: PluginContext, input: { headers:
   const body = (input.parsedBody && typeof input.parsedBody === "object" ? input.parsedBody : {}) as Record<string, unknown>;
   const companyId = field(body, "companyId");
   if (!companyId) throw new Error("companyId is required.");
-  if (!claimGuard.allow(input.headers)) throw new Error("Not accepted.");
-  // A company with no saved settings (or an unknown id) resolves to nothing, remembered for a minute.
-  const secret = await claimGuard.resolve(companyId, async () => ((await configSaved(ctx, companyId)) ? await inboundWebhookSecret(ctx, companyId) : null));
+  // A company with no saved settings (or an unknown id) resolves to nothing, remembered for a minute. A config read error throws, so it is not remembered.
+  // (A secret change can take about 6 minutes to show: this minute on top of the 5-minute secret cache.)
+  const secret = await claimGuard.resolve(companyId, input.headers, async () => (Object.keys(await readConfig(ctx, companyId)).length > 0 ? await inboundWebhookSecret(ctx, companyId) : null));
   const header = input.headers["x-pib-webhook-secret"];
   const given = Array.isArray(header) ? header[0] : header;
   // The same refusal whether the secret is unset or wrong: nothing to learn from the answer.

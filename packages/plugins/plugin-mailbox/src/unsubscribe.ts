@@ -46,7 +46,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { createClaimGuard, HANDOFF_EVENTS, signUnsubscribeToken, verifyUnsubscribeToken, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
+import { createClaimGuard, HANDOFF_EVENTS, readConfig, SecretResolver, signUnsubscribeToken, verifyUnsubscribeToken, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "./config.js";
 import { UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { announceOptOut } from "./erasure.js";
@@ -128,10 +128,11 @@ export async function handleUnsubscribeWebhook(env: Pick<Env, "ctx" | "store" | 
   if (!companyId) return "invalid";
   try {
     // Per visitor, a minute's memory (misses too), and no secret read for a company with no saved settings.
-    if (!claimGuard.allow(input.headers)) return "invalid";
-    const secret = await claimGuard.resolve(companyId, async () => {
-      const loaded = await loadMailboxConfig(env.ctx, companyId);
-      return Object.keys(loaded.raw).length > 0 ? ((await loaded.secrets.get("unsubscribe.secret")) ?? null) : null;
+    const secret = await claimGuard.resolve(companyId, input.headers, async () => {
+      // A config read error throws (not remembered); an empty config is a confirmed absence.
+      const raw = await readConfig(env.ctx, companyId);
+      if (Object.keys(raw).length === 0) return null;
+      return (await new SecretResolver(env.ctx, companyId, raw).get("unsubscribe.secret")) ?? null;
     });
     if (!secret) return "unconfigured";
     const payload = verifyUnsubscribeToken(found.token, secret);

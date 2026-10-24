@@ -6,14 +6,17 @@
  * must be read first. Without a guard, a flood of made-up ids makes one secret
  * read each (the host allows 30 a minute per company and counts the rest as
  * failures). The guard does three things, all in worker memory:
- * - a visitor (address from the proxy headers) gets a few requests a minute;
- * - a looked-up value, a miss included, is kept for a minute, so a repeated id costs nothing;
+ * - a looked-up value, a miss included, is kept for a minute, so a repeated id costs nothing
+ *   (a cached id costs the visitor nothing either, so shared egress addresses are not starved);
+ * - a visitor (address from the proxy headers: the Caddy `X-Real-IP` rule is load-bearing) gets a
+ *   few uncached lookups a minute;
  * - the number of uncached lookups a minute is capped for the whole worker.
  * A refused request looks like any other bad token to the caller.
  */
 
 export interface ClaimGuardOptions {
   ttlMs?: number;
+  /** Uncached lookups per visitor per minute. */
   perVisitorPerMinute?: number;
   lookupsPerMinute?: number;
   maxEntries?: number;
@@ -21,10 +24,12 @@ export interface ClaimGuardOptions {
 }
 
 export interface ClaimGuard<T> {
-  /** False when this visitor is over its allowance (counts the request when true). */
-  allow(headers: Record<string, string | string[] | undefined>): boolean;
-  /** The value for a claimed id: cached for the TTL (a null too); null without calling `load` when over the lookup budget. */
-  resolve(id: string, load: () => Promise<T | null>): Promise<T | null>;
+  /**
+   * The value for a claimed id: cached for the TTL (a null too). An uncached id spends the visitor's allowance and
+   * the worker's lookup budget; over either, null without calling `load`. `load` returns null only for a confirmed
+   * absence; a read error must throw, so it is not remembered.
+   */
+  resolve(id: string, headers: Record<string, string | string[] | undefined>, load: () => Promise<T | null>): Promise<T | null>;
   clear(): void;
 }
 
@@ -50,28 +55,30 @@ export function createClaimGuard<T>(options: ClaimGuardOptions = {}): ClaimGuard
   const visitors = new Map<string, { windowStart: number; count: number }>();
   let lookups = { windowStart: 0, count: 0 };
 
+  // Oldest-first eviction: a flood of ids can push warm entries out, which only costs them one more lookup.
   const trim = (map: Map<string, unknown>): void => {
     while (map.size > maxEntries) map.delete(map.keys().next().value as string);
   };
 
+  const visitorAllowed = (headers: Record<string, string | string[] | undefined>, at: number): boolean => {
+    const key = visitorKey(headers);
+    const seen = visitors.get(key);
+    if (!seen || at - seen.windowStart >= MINUTE) {
+      visitors.delete(key);
+      visitors.set(key, { windowStart: at, count: 1 });
+      trim(visitors);
+      return true;
+    }
+    seen.count += 1;
+    return seen.count <= perVisitor;
+  };
+
   return {
-    allow(headers) {
-      const key = visitorKey(headers);
-      const at = now();
-      const seen = visitors.get(key);
-      if (!seen || at - seen.windowStart >= MINUTE) {
-        visitors.delete(key);
-        visitors.set(key, { windowStart: at, count: 1 });
-        trim(visitors);
-        return true;
-      }
-      seen.count += 1;
-      return seen.count <= perVisitor;
-    },
-    async resolve(id, load) {
+    async resolve(id, headers, load) {
       const at = now();
       const hit = cache.get(id);
       if (hit && at - hit.at < ttl) return hit.value;
+      if (!visitorAllowed(headers, at)) return null;
       if (at - lookups.windowStart >= MINUTE) lookups = { windowStart: at, count: 0 };
       if (lookups.count >= lookupCap) return null;
       lookups.count += 1;

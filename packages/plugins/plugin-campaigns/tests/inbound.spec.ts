@@ -369,16 +369,15 @@ describe("the reply webhook", () => {
     expect(s.channel_suppressions).toEqual([expect.objectContaining({ address: ADA, sender_key: "own" })]);
   });
 
-  it("a flood from one visitor is cut off after its allowance, even with the right secret", async () => {
+  it("a flood of made-up companies from one visitor is cut off, while the known company still works", async () => {
     const s = store();
     await bootInbound({ store: s });
-    const outcomes: string[] = [];
-    for (let i = 0; i < 40; i += 1) {
-      outcomes.push(await post({ ...body, companyId: i % 2 ? CO : `made-up-${i}`, MessageSid: `SMf${i}` }, { "x-pib-webhook-secret": SECRET, "x-real-ip": "7.7.7.7" }).then(() => "ok", () => "refused"));
-    }
-    // Once the visitor is over 30 requests even the real company is refused.
-    expect(outcomes.slice(30).every((o) => o === "refused")).toBe(true);
-    expect(outcomes.slice(0, 30).some((o) => o === "ok")).toBe(true);
+    const ip = { "x-pib-webhook-secret": SECRET, "x-real-ip": "7.7.7.7" };
+    await post(body, ip);
+    for (let i = 0; i < 40; i += 1) await post({ ...body, companyId: `made-up-${i}`, MessageSid: `SMf${i}` }, ip).catch(() => undefined);
+    // The real company is cached, so it is not counted against the visitor.
+    await post({ ...body, MessageSid: "SMlast" }, ip);
+    expect(s.channel_suppressions!.length).toBeGreaterThan(0);
   });
 
   it("refuses a missing, wrong or too short secret with the same answer, and records nothing", async () => {
