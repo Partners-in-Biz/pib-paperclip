@@ -18,8 +18,11 @@ import { invites } from "@paperclipai/db";
  *
  * The hook only lets the account be created. It grants no instance role and no
  * company access: that still happens through `POST /invites/:token/accept`.
- * A repeat sign-up for the same email is refused by Better Auth itself (the user
- * exists), so one invite creates at most one account.
+ * A repeat sequential sign-up for the same email is refused by Better Auth (the
+ * user exists). That check is not race-safe: the host `user` table has no unique
+ * index on email and the invite is consumed at accept, not at sign-up, so two
+ * concurrent sign-ups with the same token and email could both pass. Only the
+ * invitee can trigger that, and it grants no access by itself.
  */
 
 export const INVITE_SIGNUP_TOKEN_FIELD = "inviteToken";
@@ -56,11 +59,17 @@ export async function inviteAllowsSignUp(
   if (!email) return false;
   if (typeof input.token !== "string" || input.token.trim().length === 0) return false;
 
-  const invite = await db
-    .select()
-    .from(invites)
-    .where(eq(invites.tokenHash, hashToken(input.token.trim())))
-    .then((rows) => rows[0] ?? null);
+  let invite: typeof invites.$inferSelect | null;
+  try {
+    invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenHash, hashToken(input.token.trim())))
+      .then((rows) => rows[0] ?? null);
+  } catch {
+    // Fail closed: a lookup error is a refusal, not a 500.
+    return false;
+  }
 
   if (!invite) return false;
   if (invite.inviteType !== "company_join" || !invite.companyId) return false;
