@@ -58,7 +58,7 @@ export async function unsubscribeByLink(ctx: PluginContext, payload: Unsubscribe
 /** Returns normally whether the token is valid or not; logs refusals silently. */
 export async function handleUnsubscribeWebhook(ctx: PluginContext, input: Pick<PluginWebhookInput, "headers" | "parsedBody">): Promise<void> {
   const token = tokenFrom(input);
-  const payload = token ? await checkUnsubscribeToken(ctx, token) : null;
+  const payload = token ? await checkUnsubscribeToken(ctx, token, input.headers) : null;
   if (!payload) {
     ctx.logger.info("Unsubscribe link refused", { reason: "invalid_token" });
     return;

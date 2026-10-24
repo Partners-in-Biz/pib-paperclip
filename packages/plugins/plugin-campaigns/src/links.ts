@@ -20,7 +20,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { pluginUiBase, readConfig, requirePublicBaseUrl, signUnsubscribeToken, verifyUnsubscribeToken, type UnsubscribePayload } from "@partnersinbiz/pib-plugin-kit";
+import { createClaimGuard, pluginUiBase, readConfig, requirePublicBaseUrl, signUnsubscribeToken, verifyUnsubscribeToken, type UnsubscribePayload } from "@partnersinbiz/pib-plugin-kit";
 
 const SECRET_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "campaigns-links", stateKey: "unsubscribe-secret" });
 const secrets = new Map<string, string>();
@@ -53,8 +53,12 @@ export async function linkSecret(ctx: PluginContext, companyId: string, options:
   return null;
 }
 
+/** Guards the secret read for a company id a token only claims (unsigned). */
+const claimGuard = createClaimGuard<string>();
+
 export function clearLinkCache(): void {
   secrets.clear();
+  claimGuard.clear();
   configCache.clear();
 }
 
@@ -135,10 +139,12 @@ export function claimedCompany(token: string): string | null {
 }
 
 /** The payload of a token signed by this company's secret, or null. */
-export async function checkUnsubscribeToken(ctx: PluginContext, token: string): Promise<UnsubscribePayload | null> {
+export async function checkUnsubscribeToken(ctx: PluginContext, token: string, headers: Record<string, string | string[] | undefined> = {}): Promise<UnsubscribePayload | null> {
   const companyId = claimedCompany(token);
   if (!companyId) return null;
-  const secret = await linkSecret(ctx, companyId, { create: false });
+  // Per visitor, a minute's memory (misses too) and a cap on fresh reads: a flood of made-up company ids cannot become a flood of secret reads.
+  if (!claimGuard.allow(headers)) return null;
+  const secret = await claimGuard.resolve(companyId, () => linkSecret(ctx, companyId, { create: false }));
   if (!secret) return null;
   const payload = verifyUnsubscribeToken(token, secret);
   // A signature made for another company's secret never verifies, but check the claim matches too.

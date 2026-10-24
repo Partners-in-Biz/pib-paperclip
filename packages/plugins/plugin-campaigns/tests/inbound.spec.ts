@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HANDOFF_EVENTS } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
+import { resetInboundGuard } from "../src/inbound.js";
 import { INBOUND_READ_CAP, setMessagingProvider } from "../src/messaging.js";
 import { boot, campaign, CO, contact, enrollment, PUBLIC_URL, seed, seedIssue, step } from "./helpers/harness.js";
 import { MockProvider, reply } from "./helpers/mock-provider.js";
@@ -45,6 +46,7 @@ const sentMessage = (enrollmentId: string, campaignId: string, to: string, sende
 });
 
 async function bootInbound(options: { store?: Store; jev?: boolean; messaging?: Record<string, unknown> } = {}) {
+  resetInboundGuard();
   const mock = new MockProvider();
   const s = options.store ?? store();
   const config = {
@@ -365,6 +367,18 @@ describe("the reply webhook", () => {
     await bootInbound({ store: s });
     await post(body);
     expect(s.channel_suppressions).toEqual([expect.objectContaining({ address: ADA, sender_key: "own" })]);
+  });
+
+  it("a flood from one visitor is cut off after its allowance, even with the right secret", async () => {
+    const s = store();
+    await bootInbound({ store: s });
+    const outcomes: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      outcomes.push(await post({ ...body, companyId: i % 2 ? CO : `made-up-${i}`, MessageSid: `SMf${i}` }, { "x-pib-webhook-secret": SECRET, "x-real-ip": "7.7.7.7" }).then(() => "ok", () => "refused"));
+    }
+    // Once the visitor is over 30 requests even the real company is refused.
+    expect(outcomes.slice(30).every((o) => o === "refused")).toBe(true);
+    expect(outcomes.slice(0, 30).some((o) => o === "ok")).toBe(true);
   });
 
   it("refuses a missing, wrong or too short secret with the same answer, and records nothing", async () => {

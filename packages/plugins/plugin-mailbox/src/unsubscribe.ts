@@ -46,7 +46,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { HANDOFF_EVENTS, signUnsubscribeToken, verifyUnsubscribeToken, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
+import { createClaimGuard, HANDOFF_EVENTS, signUnsubscribeToken, verifyUnsubscribeToken, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "./config.js";
 import { UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { announceOptOut } from "./erasure.js";
@@ -109,6 +109,14 @@ export function claimedCompany(token: string): string | null {
   }
 }
 
+/** Guards the secret read for a company id a token only claims (unsigned). */
+const claimGuard = createClaimGuard<string>();
+
+/** Tests. */
+export function resetUnsubscribeGuard(): void {
+  claimGuard.clear();
+}
+
 export type UnsubscribeOutcome = "suppressed" | "already" | "invalid" | "no_token" | "unconfigured" | "probe_ok" | "probe_unproven";
 
 /** Handles one delivery to the `unsubscribe` webhook. Returns what happened (nothing in it is shown to the caller). Never throws. */
@@ -119,7 +127,12 @@ export async function handleUnsubscribeWebhook(env: Pick<Env, "ctx" | "store" | 
   const companyId = claimedCompany(found.token);
   if (!companyId) return "invalid";
   try {
-    const secret = await (await loadMailboxConfig(env.ctx, companyId)).secrets.get("unsubscribe.secret");
+    // Per visitor, a minute's memory (misses too), and no secret read for a company with no saved settings.
+    if (!claimGuard.allow(input.headers)) return "invalid";
+    const secret = await claimGuard.resolve(companyId, async () => {
+      const loaded = await loadMailboxConfig(env.ctx, companyId);
+      return Object.keys(loaded.raw).length > 0 ? ((await loaded.secrets.get("unsubscribe.secret")) ?? null) : null;
+    });
     if (!secret) return "unconfigured";
     const payload = verifyUnsubscribeToken(found.token, secret);
     if (!payload || payload.companyId !== companyId) return "invalid";

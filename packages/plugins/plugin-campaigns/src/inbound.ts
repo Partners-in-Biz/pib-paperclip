@@ -18,7 +18,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { configSaved, decide, getCrmContact, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createClaimGuard, decide, getCrmContact, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
 import {
   addChannelSuppression,
   crmContactsByPhone,
@@ -284,6 +284,14 @@ function sameSecret(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** Guards the config and secret reads for a company id the body only claims. */
+const claimGuard = createClaimGuard<string>();
+
+/** Tests. */
+export function resetInboundGuard(): void {
+  claimGuard.clear();
+}
+
 /**
  * A reply forwarded as JSON: `{ companyId, MessageSid, From, To, Body }` (Twilio's
  * own field names, or camelCase), with the company's shared secret in the
@@ -293,8 +301,9 @@ export async function handleInboundWebhook(ctx: PluginContext, input: { headers:
   const body = (input.parsedBody && typeof input.parsedBody === "object" ? input.parsedBody : {}) as Record<string, unknown>;
   const companyId = field(body, "companyId");
   if (!companyId) throw new Error("companyId is required.");
-  if (!(await configSaved(ctx, companyId))) throw new Error("Not accepted.");
-  const secret = await inboundWebhookSecret(ctx, companyId);
+  if (!claimGuard.allow(input.headers)) throw new Error("Not accepted.");
+  // A company with no saved settings (or an unknown id) resolves to nothing, remembered for a minute.
+  const secret = await claimGuard.resolve(companyId, async () => ((await configSaved(ctx, companyId)) ? await inboundWebhookSecret(ctx, companyId) : null));
   const header = input.headers["x-pib-webhook-secret"];
   const given = Array.isArray(header) ? header[0] : header;
   // The same refusal whether the secret is unset or wrong: nothing to learn from the answer.
