@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HANDOFF_EVENTS } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
+import { resetInboundGuard } from "../src/inbound.js";
 import { INBOUND_READ_CAP, setMessagingProvider } from "../src/messaging.js";
 import { boot, campaign, CO, contact, enrollment, PUBLIC_URL, seed, seedIssue, step } from "./helpers/harness.js";
 import { MockProvider, reply } from "./helpers/mock-provider.js";
@@ -45,6 +46,7 @@ const sentMessage = (enrollmentId: string, campaignId: string, to: string, sende
 });
 
 async function bootInbound(options: { store?: Store; jev?: boolean; messaging?: Record<string, unknown> } = {}) {
+  resetInboundGuard();
   const mock = new MockProvider();
   const s = options.store ?? store();
   const config = {
@@ -365,6 +367,17 @@ describe("the reply webhook", () => {
     await bootInbound({ store: s });
     await post(body);
     expect(s.channel_suppressions).toEqual([expect.objectContaining({ address: ADA, sender_key: "own" })]);
+  });
+
+  it("a flood of made-up companies from one visitor is cut off, while the known company still works", async () => {
+    const s = store();
+    await bootInbound({ store: s });
+    const ip = { "x-pib-webhook-secret": SECRET, "x-real-ip": "7.7.7.7" };
+    await post(body, ip);
+    for (let i = 0; i < 40; i += 1) await post({ ...body, companyId: `made-up-${i}`, MessageSid: `SMf${i}` }, ip).catch(() => undefined);
+    // The real company is cached, so it is not counted against the visitor.
+    await post({ ...body, MessageSid: "SMlast" }, ip);
+    expect(s.channel_suppressions!.length).toBeGreaterThan(0);
   });
 
   it("refuses a missing, wrong or too short secret with the same answer, and records nothing", async () => {
