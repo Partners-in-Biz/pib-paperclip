@@ -170,13 +170,13 @@ export async function fetchSecretCatalog(companyId: string): Promise<SecretLite[
   }
 }
 
-/** Replaces one agent's adapter config. The host replaces on update, so the caller sends the whole config. */
-export async function patchAgentAdapterConfig(agentId: string, adapterConfig: Record<string, unknown>): Promise<void> {
+/** Sets one agent's adapter `env`. Only `env` is sent: the host merges adapter keys shallowly and replaces `env` whole. */
+export async function patchAgentEnv(agentId: string, env: Record<string, unknown>): Promise<void> {
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
     method: "PATCH",
     credentials: "include",
     headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ adapterConfig }),
+    body: JSON.stringify({ adapterConfig: { env } }),
   });
   if (!res.ok) throw errorFrom(await readJson(res), `Could not update the agent (${res.status})`);
 }

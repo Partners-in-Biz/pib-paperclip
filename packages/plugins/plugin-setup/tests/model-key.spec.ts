@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { claudeAgents, findKeySecret, isBound, parseAgents, parseSecretCatalog, withKey } from "../src/model-key.js";
+import { describe, expect, it, vi } from "vitest";
+import { patchAgentEnv } from "../src/ui/api.js";
+import { claudeAgents, findKeySecret, isBound, parseAgents, parseSecretCatalog, withKeyEnv } from "../src/model-key.js";
 import { runClientSteps, stepModelKey, type RunnerEnv } from "../src/bootstrap-runner.js";
 import type { StepItem } from "../src/bootstrap.js";
 import { allModulesOn } from "../src/modules.js";
@@ -10,7 +11,7 @@ const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: 
 
 function env(patch: { profile?: "client" | "pib"; catalog?: unknown; agents?: unknown[] | null; failBind?: string; config?: Record<string, unknown> } = {}) {
   const saves: Array<{ target: string; config: Record<string, unknown> }> = [];
-  const binds: Array<{ agentId: string; adapterConfig: Record<string, unknown> }> = [];
+  const binds: Array<{ agentId: string; env: Record<string, unknown> }> = [];
   const catalog = patch.catalog === undefined ? [{ id: "sec-1", name: "ANTHROPIC_API_KEY", key: "anthropic_api_key", status: "active" }] : patch.catalog;
   const e = {
     companyId: CO,
@@ -22,9 +23,9 @@ function env(patch: { profile?: "client" | "pib"; catalog?: unknown; agents?: un
     saveConfig: async (target: string, _c: string, config: Record<string, unknown>) => void saves.push({ target, config }),
     fetchSecretCatalog: async () => catalog as never,
     fetchAgents: async () => (patch.agents === undefined ? [agent("a1")] : patch.agents),
-    bindAgentKey: async (agentId: string, adapterConfig: Record<string, unknown>) => {
+    bindAgentKey: async (agentId: string, bindEnv: Record<string, unknown>) => {
       if (patch.failBind === agentId) throw new Error("host said no");
-      binds.push({ agentId, adapterConfig });
+      binds.push({ agentId, env: bindEnv });
     },
     record: async () => {},
   } as unknown as RunnerEnv;
@@ -39,8 +40,8 @@ describe("model key helpers", () => {
     expect(findKeySecret([{ id: "3", name: "ANTHROPIC_API_KEY", key: "k", status: "disabled" }])).toBeNull();
     expect(findKeySecret([{ id: "4", name: "other", key: "other", status: "active" }])).toBeNull();
   });
-  it("keeps the rest of the config and replaces only the key entry", () => {
-    expect(withKey({ model: "m", env: { A: "1", ANTHROPIC_API_KEY: "plain" } }, "sec-1")).toEqual({ model: "m", env: { A: "1", ANTHROPIC_API_KEY: REF } });
+  it("sends only the env: the other entries stay and the key entry is replaced", () => {
+    expect(withKeyEnv({ model: "m", env: { A: "1", ANTHROPIC_API_KEY: "plain" } }, "sec-1")).toEqual({ A: "1", ANTHROPIC_API_KEY: REF });
     expect(isBound({ env: { ANTHROPIC_API_KEY: REF } }, "sec-1")).toBe(true);
     expect(isBound({ env: { ANTHROPIC_API_KEY: REF } }, "sec-2")).toBe(false);
     expect(isBound(null, "sec-1")).toBe(false);
@@ -67,7 +68,7 @@ describe("stepModelKey", () => {
     const out = await stepModelKey(e);
     expect(out.status).toBe("done");
     expect(saves).toEqual([{ target: "crm-id", config: { enabled: true, hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" } }]);
-    expect(binds).toEqual([{ agentId: "a1", adapterConfig: { model: "m", env: { KEEP: "1", ANTHROPIC_API_KEY: REF } } }]);
+    expect(binds).toEqual([{ agentId: "a1", env: { KEEP: "1", ANTHROPIC_API_KEY: REF } }]);
   });
 
   it("is repeatable: bound agents and saved profiles change nothing", async () => {
@@ -83,7 +84,7 @@ describe("stepModelKey", () => {
     const stale = agent("a1", { adapterConfig: { env: { ANTHROPIC_API_KEY: { ...REF, secretId: "old" } } } });
     const { e, binds } = env({ agents: [stale] });
     await stepModelKey(e);
-    expect(binds[0]!.adapterConfig).toEqual({ env: { ANTHROPIC_API_KEY: REF } });
+    expect(binds[0]!.env).toEqual({ ANTHROPIC_API_KEY: REF });
   });
 
   it("without the secret saves an empty key name, binds nothing and tells the owner the exact name", async () => {
@@ -95,13 +96,34 @@ describe("stepModelKey", () => {
     expect(itemOf(out.items, "secret").detail).toContain("ANTHROPIC_API_KEY");
   });
 
-  it("never overwrites an agent whose config was not returned, and keeps going after one failure", async () => {
-    const { e, binds } = env({ agents: [agent("a1", { adapterConfig: undefined }), agent("a2"), agent("a3")], failBind: "a2" });
+  it("never touches an agent whose config was not returned (missing or the empty view), and keeps going after one failure", async () => {
+    const { e, binds } = env({ agents: [agent("a1", { adapterConfig: undefined }), agent("a2"), agent("a3"), agent("a4", { adapterConfig: {} })], failBind: "a2" });
     const out = await stepModelKey(e);
     expect(out.status).toBe("failed");
     expect(itemOf(out.items, "a1").status).toBe("failed");
     expect(itemOf(out.items, "a2").detail).toBe("host said no");
+    expect(itemOf(out.items, "a4").status).toBe("failed");
     expect(binds.map((b) => b.agentId)).toEqual(["a3"]);
+  });
+
+  it("reports two matching secrets and uses the first", async () => {
+    const { e, binds } = env({ catalog: [{ id: "sec-1", name: "ANTHROPIC_API_KEY", key: "a", status: "active" }, { id: "sec-2", name: "anthropic-api-key", key: "b", status: "active" }] });
+    const out = await stepModelKey(e);
+    expect(itemOf(out.items, "secret-duplicate").detail).toContain("2 secrets");
+    expect(binds[0]!.env).toEqual({ KEEP: "1", ANTHROPIC_API_KEY: REF });
+  });
+
+  it("tells a pib company how to reset a client setting", async () => {
+    expect((await stepModelKey(env({ profile: "pib" }).e)).detail).toContain("stays client");
+  });
+
+  it("the page sends only env in the PATCH body", async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: { body: string }) => (calls.push({ url, body: init.body }), { ok: true, json: async () => ({}) }));
+    await patchAgentEnv("a1", { ANTHROPIC_API_KEY: REF });
+    vi.unstubAllGlobals();
+    expect(calls[0]!.url).toBe("/api/agents/a1");
+    expect(JSON.parse(calls[0]!.body)).toEqual({ adapterConfig: { env: { ANTHROPIC_API_KEY: REF } } });
   });
 
   it("fails without changing anything when the secrets or the agents cannot be read", async () => {

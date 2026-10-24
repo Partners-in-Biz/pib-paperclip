@@ -38,10 +38,14 @@ const WANTED = new Set([norm(MODEL_KEY_SECRET_NAME), "anthropic_api_key"]);
 
 const rec = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
-/** The company secret named `ANTHROPIC_API_KEY` or `anthropic-api-key` (by name or key), if it is usable. */
+/** Every usable company secret named `ANTHROPIC_API_KEY` or `anthropic-api-key` (by name or key), in list order. */
+export function keySecretMatches(catalog: SecretLite[]): SecretLite[] {
+  return catalog.filter((secret) => (secret.status === null || secret.status === "active") && (WANTED.has(norm(secret.key)) || WANTED.has(norm(secret.name))));
+}
+
+/** The first match. Two matches are reported by the step, not guessed between silently. */
 export function findKeySecret(catalog: SecretLite[]): SecretLite | null {
-  const usable = catalog.filter((secret) => secret.status === null || secret.status === "active");
-  return usable.find((secret) => WANTED.has(norm(secret.key)) || WANTED.has(norm(secret.name))) ?? null;
+  return keySecretMatches(catalog)[0] ?? null;
 }
 
 export function parseSecretCatalog(body: unknown): SecretLite[] | null {
@@ -81,11 +85,18 @@ export function hasKeyEntry(config: Record<string, unknown> | null): boolean {
 }
 
 /**
- * The whole adapter config with only `env.ANTHROPIC_API_KEY` changed: the host
- * replaces the config on update, so everything else is carried over as read.
+ * The `env` to send: the agent's env as read plus the key reference. The host
+ * merges `adapterConfig` shallowly (every other key stays as stored) but replaces
+ * `env` as a whole and restores redacted plain env values from what it stored.
+ * Nothing but `env` is ever sent, because the read view redacts other keys.
  */
-export function withKey(config: Record<string, unknown>, secretId: string): Record<string, unknown> {
-  return { ...config, env: { ...rec(config.env), [MODEL_KEY_ENV]: envRef(secretId) } };
+export function withKeyEnv(config: Record<string, unknown>, secretId: string): Record<string, unknown> {
+  return { ...rec(config.env), [MODEL_KEY_ENV]: envRef(secretId) };
+}
+
+/** A caller without config access gets `{}`, not null: an empty view is "not read", never "no settings". */
+export function isReadableConfig(config: Record<string, unknown> | null): config is Record<string, unknown> {
+  return !!config && Object.keys(config).length > 0;
 }
 
 /** The agents this step binds: `claude_local`, not terminated. */

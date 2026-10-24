@@ -15,7 +15,7 @@
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { defaultsFromSchema, missingHandlerError, needsSettingsError, ownerGrants, SKILL_SYNC_ACTIONS, type BootstrapOptions, type OwnerGrant, type StepId, type StepItem, type StepStatus } from "./bootstrap.js";
 import { mergeMissing, planCopy, previewValue } from "./copy.js";
-import { claudeAgents, findKeySecret, hasKeyEntry, isBound, MODEL_KEY_SECRET_NAME, ownerSecretSteps, parseAgents, withKey, type SecretLite } from "./model-key.js";
+import { claudeAgents, findKeySecret, hasKeyEntry, isBound, isReadableConfig, keySecretMatches, MODEL_KEY_SECRET_NAME, ownerSecretSteps, parseAgents, withKeyEnv, type SecretLite } from "./model-key.js";
 import { hiringLine, pickHiringAgent, toHiringCandidates, type HiringPick } from "./hiring.js";
 import { MODULES, type ModuleKey, type SetupStatus } from "./kit-setup.js";
 import { WIKI_PLUGIN } from "./memory.js";
@@ -70,8 +70,8 @@ export interface RunnerEnv {
   fetchAgents(): Promise<unknown[] | null>;
   /** The company's secrets (id, name, key; never a value), or null when they cannot be read. */
   fetchSecretCatalog(): Promise<SecretLite[] | null>;
-  /** Replaces one agent's whole adapter config (the host replaces on update, so the caller sends everything). */
-  bindAgentKey(agentId: string, adapterConfig: Record<string, unknown>): Promise<void>;
+  /** Sets one agent's adapter `env` and nothing else (the host keeps every other adapter key and replaces `env` whole, so the caller sends the full env). */
+  bindAgentKey(agentId: string, env: Record<string, unknown>): Promise<void>;
   /** Each role's state (kit roles of the switched-on modules). */
   loadTeam(roles: TeamRole[]): Promise<Partial<Record<TeamRoleKey, TeamRoleState>>>;
   hireOptions(role: TeamRole): Promise<HireOptionsLite>;
@@ -196,13 +196,15 @@ export async function stepPluginSettings(env: RunnerEnv): Promise<StepOutcome> {
  */
 export async function stepModelKey(env: RunnerEnv): Promise<StepOutcome> {
   const profile = env.options.hostingProfile ?? "pib";
-  if (profile !== "client") return { status: "skipped", detail: "Not a client company: it keeps PiB's lanes and no company key is bound.", items: [] };
+  if (profile !== "client") return { status: "skipped", detail: "Not a client company: it keeps PiB's lanes and no company key is bound. A company already saved as client stays client: change its plugin settings by hand to reset it.", items: [] };
   const { ready, problems, unreadable } = pluginsToRun(env);
   if (unreadable) return pluginsUnreadable();
   const catalog = await env.fetchSecretCatalog();
   if (!catalog) return { status: "failed", detail: "The company's secrets could not be read, so nothing was checked and nothing was changed. Try again.", items: [] };
   const secret = findKeySecret(catalog);
   const items: StepItem[] = [...problems];
+  const matches = keySecretMatches(catalog);
+  if (matches.length > 1) items.push({ key: "secret-duplicate", label: "Company model key", status: "skipped", detail: `${matches.length} secrets match ${MODEL_KEY_SECRET_NAME}; the first in the list is used. Remove the others.` });
   const secretName = secret ? secret.name || secret.key : "";
   const secretId = secret ? secret.id : "";
   for (const plugin of ready) {
@@ -231,8 +233,8 @@ export async function stepModelKey(env: RunnerEnv): Promise<StepOutcome> {
   const agents = claudeAgents(parseAgents(raw));
   if (agents.length === 0) items.push({ key: "agents", label: "Claude agents", status: "skipped", detail: "No Claude agent yet. Each hire task asks for the key to be bound when the agent is created." });
   for (const agent of agents) {
-    if (!agent.adapterConfig) {
-      items.push({ key: agent.id, label: agent.name, status: "failed", detail: "The agent list did not return this agent's settings, so the key was not bound. A board member can bind it." });
+    if (!isReadableConfig(agent.adapterConfig)) {
+      items.push({ key: agent.id, label: agent.name, status: "failed", detail: "The agent list returned no settings for this agent (empty or hidden), so the key was not bound. A board member with access to agent settings can bind it." });
       continue;
     }
     if (isBound(agent.adapterConfig, secret.id)) {
@@ -240,8 +242,8 @@ export async function stepModelKey(env: RunnerEnv): Promise<StepOutcome> {
       continue;
     }
     try {
-      await env.bindAgentKey(agent.id, withKey(agent.adapterConfig, secret.id));
-      items.push({ key: agent.id, label: agent.name, status: "done", detail: hasKeyEntry(agent.adapterConfig) ? "Replaced the key entry with the company key." : "Bound the company key." });
+      await env.bindAgentKey(agent.id, withKeyEnv(agent.adapterConfig, secret.id));
+      items.push({ key: agent.id, label: agent.name, status: "done", detail: hasKeyEntry(agent.adapterConfig) ? "Replaced a plain ANTHROPIC_API_KEY value with the company key." : "Bound the company key." });
     } catch (error) {
       items.push({ key: agent.id, label: agent.name, status: "failed", detail: message(error) });
     }

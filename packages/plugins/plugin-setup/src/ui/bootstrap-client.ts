@@ -6,7 +6,7 @@
 import type { OwnerGrant, StepId, StepItem, StepStatus } from "../bootstrap.js";
 import type { RunnerEnv, RunnerPlugin, StarterState } from "../bootstrap-runner.js";
 import { runMemorySetup } from "./memory-client.js";
-import { fetchPluginConfig, fetchSecretCatalog, patchAgentAdapterConfig, runPluginAction, savePluginConfig, type PluginRecordLite } from "./api.js";
+import { fetchPluginConfig, fetchSecretCatalog, patchAgentEnv, runPluginAction, savePluginConfig, type PluginRecordLite } from "./api.js";
 import { fetchCompanyAgentsRaw, fetchHireOptions, loadTeam, startHire } from "./team-client.js";
 import type { BootstrapOptions } from "../bootstrap.js";
 import type { ModuleKey, SetupStatus } from "../kit-setup.js";
@@ -89,7 +89,7 @@ export function buildRunnerEnv(input: EnvInput): RunnerEnv {
     // One read per run: the steps look at the same agents.
     fetchAgents: () => (rawAgents ??= fetchCompanyAgentsRaw(companyId)),
     fetchSecretCatalog: () => fetchSecretCatalog(companyId),
-    bindAgentKey: (agentId, adapterConfig) => patchAgentAdapterConfig(agentId, adapterConfig),
+    bindAgentKey: (agentId, env) => patchAgentEnv(agentId, env),
     loadTeam: async (roles) => (await loadTeam({ companyId, roles, installed: input.installed })).states,
     hireOptions: (role) => fetchHireOptions(companyId, role),
     startRoleHire: (role, task) => startHire(companyId, role, task),
