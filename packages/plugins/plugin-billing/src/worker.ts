@@ -54,6 +54,7 @@ import { BANK_MATCHED_EVENT } from "./bank.js";
 import {
   billingSettings,
   emailEnabled,
+  hasSavedSettings,
   expenseCategories,
   ledgerEnabled,
   loadBilling,
@@ -61,6 +62,7 @@ import {
   r2Configured,
   reportingCurrency,
 } from "./config.js";
+import { PREFERENCES_ACTIONS } from "./preferences.js";
 import {
   approveBillAction,
   addBillLine,
@@ -201,6 +203,7 @@ type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params:
 
 /** Action key (UI) → handler. Tools reuse the same handlers. */
 const ACTIONS: Record<string, Handler> = {
+  ...PREFERENCES_ACTIONS,
   "billing.load": (ctx, context, params) => load(ctx, context, params),
   "billing.invoice-html": (ctx, context, params) => invoiceHtml(ctx, context, params),
   "billing.quote-html": (ctx, context, params) => quoteHtml(ctx, context, params),
@@ -638,7 +641,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   return {
     asOf: asAtDate(),
     futurePayments,
-    settingsSaved: Object.keys(settings).length > 0,
+    settingsSaved: await hasSavedSettings(ctx, companyId),
     defaults: {
       currency: settings.defaultCurrency ?? "ZAR",
       taxRate: Number(settings.defaultTaxRate ?? 0),

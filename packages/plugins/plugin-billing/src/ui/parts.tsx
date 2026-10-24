@@ -10,7 +10,7 @@ export const FONT = `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto
 // ── Actions ────────────────────────────────────────────────────────────────
 
 const ACTION_KEYS = [
-  "billing.load", "billing.create-invoice", "billing.add-line", "billing.update-line", "billing.remove-line", "billing.update-invoice",
+  "billing.preferences-load", "billing.preferences-save", "billing.load", "billing.create-invoice", "billing.add-line", "billing.update-line", "billing.remove-line", "billing.update-invoice",
   "billing.invoice-detail", "billing.request-send", "billing.request-pay", "billing.mark-sent", "billing.retry-send", "billing.cancel-invoice",
   "billing.document-pdf", "billing.create-quote", "billing.add-quote-line", "billing.update-quote-line", "billing.remove-quote-line",
   "billing.update-quote", "billing.quote-detail", "billing.set-quote-status", "billing.request-quote-send", "billing.convert-quote",

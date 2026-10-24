@@ -195,7 +195,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.9.3",
+  version: "0.10.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -227,6 +227,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
+    // 0.10: company preferences. Saving checks the caller is an owner or admin of the company (ctx.access.members.list). A new capability: a stop-first deploy.
+    "access.members.read",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
