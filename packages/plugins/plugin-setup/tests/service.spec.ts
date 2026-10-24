@@ -29,7 +29,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.6.1");
+    expect(manifest.version).toBe("0.6.2");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -81,7 +81,7 @@ describe("manifest and migration", () => {
 describe("module choice", () => {
   it("saves, emits modules.updated and serves GET /modules", async () => {
     const { ctx, emitted, store } = fakeCtx();
-    expect(await handleApiRoute(ctx, apiInput(A))).toEqual({ status: 200, body: { modules: null, updatedAt: null } });
+    expect(await handleApiRoute(ctx, apiInput(A))).toEqual({ status: 200, body: { modules: null, enabled: null, entitled: null, updatedAt: null } });
 
     const clock = fixedClock("2026-09-26T08:00:00.000Z");
     const result = await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "user-1" }, clock);
@@ -94,7 +94,7 @@ describe("module choice", () => {
     const res = await handleApiRoute(ctx, apiInput(A));
     expect(res.status).toBe(200);
     expect((res.body as { modules: Record<string, boolean> }).modules.seo).toBe(false);
-    expect((await handleApiRoute(ctx, apiInput(B))).body).toEqual({ modules: null, updatedAt: null });
+    expect((await handleApiRoute(ctx, apiInput(B))).body).toEqual({ modules: null, enabled: null, entitled: null, updatedAt: null });
     expect((await handleApiRoute(ctx, apiInput(A, "other"))).status).toBe(404);
   });
 
