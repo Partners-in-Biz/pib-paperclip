@@ -278,9 +278,47 @@ def step_crm_record(c):
         raise StepError("hosted_company_id did not read back on CRM company %s" % c.req["crm_company_id"])
 
 
+INVITE_BODY = {"allowedJoinTypes": "human", "humanRole": "owner"}  # the only body ever sent: owner of this company, never instance admin
+
+
+def _invite_rows(c, state):
+    rows = c.api.get("/api/companies/%s/invites?state=%s&limit=100" % (c.st["company_id"], state))
+    if isinstance(rows, dict):
+        rows = rows.get("items") or rows.get("invites") or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def step_owner_invite(c):
+    """The client's first person gets a human invite with role owner (host patch 12: sign-up stays closed except through a valid invite).
+    The invite link is a credential and the host returns its token once, so the link goes to the result comment only: never to the
+    result file, a log line or an error text. The invite id is saved the moment the host answers, so a resumed request never makes a second one."""
+    old = c.st.get("invite_id")
+    if old:
+        if any(r.get("id") == old for r in _invite_rows(c, "accepted")):
+            c.st["note_invite"] = "owner invite %s was already accepted; no second invite was made" % old
+            return
+        if any(r.get("id") == old for r in _invite_rows(c, "active")):
+            raise NeedsOwner("owner invite %s exists but its link was not kept (the host shows it once). Revoke it on the Members page of %s, then file the same request again; "
+                             "a fresh invite is made" % (old, c.st["prefix"]))
+        c.st["invite_id"] = None  # revoked or expired: safe to make a new one
+    made = c.api.post("/api/companies/%s/invites" % c.st["company_id"], dict(INVITE_BODY))
+    iid = (made or {}).get("id")
+    if not iid:
+        raise StepError("Paperclip did not return an invite id")
+    c.st["invite_id"] = iid
+    c.runner.save_result(c.rid, c.req, "running", "step: owner-invite", step="owner-invite", company_id=c.st["company_id"], prefix=c.st["prefix"],
+                         steps_done=list(c.st["steps_done"]), invite_id=iid)  # recorded at once: a crash after this resumes without a duplicate
+    url = made.get("inviteUrl")
+    if not url:
+        raise StepError("Paperclip returned invite %s without an inviteUrl; revoke it on the Members page and file again" % iid)
+    c.st["invite_url"] = url  # memory only; see run() and Runner.comment
+    c.st["note_invite"] = "owner invite %s created (role owner, human); the link is in the comment below, it is single use" % iid
+
+
 STEPS = [("create-company", step_create_company), ("entitlements", step_entitlements), ("key-gate", step_key_gate), ("create-ceo", step_create_ceo),
          ("setup-run", step_setup_run), ("copy-secrets", step_copy_secrets), ("hires", step_hires), ("link-agents", step_link_agents),
-         ("apply", step_apply), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record)]
+         ("apply", step_apply), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record),
+         ("owner-invite", step_owner_invite)]
 
 
 def prior_failed(runner, req, rid):
@@ -301,13 +339,13 @@ def run(runner, rid, req):
     prior = prior_failed(runner, req, rid)
     st = {"steps_done": [], "company_id": None, "prefix": None}
     if prior:
-        st.update({k: prior.get(k) for k in ("company_id", "prefix")})
+        st.update({k: prior.get(k) for k in ("company_id", "prefix", "invite_id")})
         st["steps_done"] = [s for s in prior.get("steps_done", []) if s != prior.get("step")]
         st["resumed"] = True
     for name, fn in STEPS:
         if name in st["steps_done"]:
             continue
-        keep = lambda: {k: st.get(k) for k in ("company_id", "prefix", "steps_done")}  # noqa: E731
+        keep = lambda: {k: st.get(k) for k in ("company_id", "prefix", "steps_done", "invite_id")}  # noqa: E731
         runner.save_result(rid, req, "running", "step: " + name, step=name, **keep())
         try:
             fn(Ctx(runner, rid, req, st))
@@ -321,9 +359,11 @@ def run(runner, rid, req):
         st["steps_done"].append(name)
     url = (runner.policy.get("ownerListUrlTemplate") or "").replace("{prefix}", st["prefix"]).replace("{companyId}", st["company_id"])
     msg = "Company %s (%s) is provisioned and `new-company.py --verify` passed." % (req["name"], st["prefix"])
-    for k in ("note_entitlements", "note_key_gate", "note_hires", "note_model_key"):
+    for k in ("note_entitlements", "note_key_gate", "note_hires", "note_model_key", "note_invite"):
         if st.get(k):
             msg += "\n- " + st[k]
     if not url:
         msg += "\n- No ownerListUrlTemplate in the policy, so there is no owner list link yet."
-    return {"message": msg, "company_id": st["company_id"], "prefix": st["prefix"], "steps_done": st["steps_done"], "owner_list_url": url or None}
+    # invite_url is a credential: Runner.finish takes it out before the result file is written and only the comment shows it
+    return {"message": msg, "company_id": st["company_id"], "prefix": st["prefix"], "steps_done": st["steps_done"], "owner_list_url": url or None,
+            "invite_id": st.get("invite_id"), "invite_url": st.get("invite_url")}

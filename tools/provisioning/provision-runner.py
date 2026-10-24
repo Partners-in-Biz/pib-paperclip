@@ -299,22 +299,25 @@ class Runner:
             pass
 
     def finish(self, rid, req, status, message, comment=True, **extra):
+        invite_url = extra.pop("invite_url", None)  # a credential: it goes to the comment only, never into the result file
         try:
             r = self.save_result(rid, req, status, message, **extra)
         except Exception as e:  # already final, or the spool is unwritable: best effort, never lose the loop
             sys.stderr.write("provision-runner: could not write result %s: %s\n" % (rid, e))
             return None
         if comment:
-            self.comment(req, r)
+            self.comment(req, r, invite_url)
         return r
 
-    def comment(self, req, r):
+    def comment(self, req, r, invite_url=None):
         ref = req.get("issue")
         if not ref:
             return
         body = "Provisioning request `%s` (%s): **%s**\n\n%s" % (r["id"], req.get("name"), r["status"].upper(), r["message"])
         if r.get("owner_list_url"):
             body += "\n\nOwner list: %s" % r["owner_list_url"]
+        if invite_url:
+            body += "\n\nOwner invite link (sensitive, single use, gives the owner role of this company only): %s" % invite_url
         try:
             iss = self.api.get("/api/issues/" + ref)
             self.api.post("/api/issues/%s/comments" % iss["id"], {"body": body})

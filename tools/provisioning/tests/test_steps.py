@@ -12,6 +12,10 @@ sys.path.insert(0, ti.ROOT)
 import provision_steps as ps  # noqa: E402
 
 
+INVITE_TOKEN = "pcp_invite_FAKEtoken0123456789abcdefghij"
+INVITE_URL = "https://paperclip.example/invite/" + INVITE_TOKEN
+
+
 def hire(n, status="done"):
     return {"id": "t%d" % n, "identifier": "ACM-%d" % n, "title": "Hire: Agent %d" % n, "status": status, "originKind": "plugin:partnersinbiz.setup"}
 
@@ -30,9 +34,11 @@ class Clock:
 
 
 class StepApi(ti.FakeApi):
-    def __init__(self, hires=5, crm_ok=True, tasks=None, catalog=None, catalog_error=None, bound=True, **kw):
+    def __init__(self, hires=5, crm_ok=True, tasks=None, catalog=None, catalog_error=None, bound=True, invite_error=None, invite_rows=None, invite_no_url=False, **kw):
         super().__init__(**kw)
         self.posts, self.hires, self.crm_ok = [], hires, crm_ok
+        # invites: the host returns the link once, on creation; the list never holds a token. invite_rows maps a state to the rows the list answers.
+        self.invite_error, self.invite_rows, self.invite_no_url, self.invite_posts = invite_error, invite_rows or {}, invite_no_url, []
         self.tasks = [hire(i) for i in range(4)] if tasks is None else tasks  # a list, or a function of the poll number
         self.task_polls = 0
         # fake secrets catalog: metadata only, as the host returns it (id, name, key, status), never a value
@@ -48,6 +54,8 @@ class StepApi(ti.FakeApi):
             return self.catalog
         if path == "/api/companies/new-co":
             return {"id": "new-co", "name": "Acme", "issuePrefix": "ACM"}
+        if path.startswith("/api/companies/new-co/invites?state="):
+            return self.invite_rows.get(path.split("state=")[1].split("&")[0], [])
         if path.startswith("/api/companies/new-co/issues"):
             self.task_polls += 1
             return self.tasks(self.task_polls) if callable(self.tasks) else self.tasks
@@ -61,6 +69,15 @@ class StepApi(ti.FakeApi):
         self.posts.append((path, body))
         if path == "/api/companies":
             return {"id": "new-co", "name": body["name"]}
+        if path == "/api/companies/new-co/invites":
+            self.invite_posts.append(body)
+            if self.invite_error:
+                raise RuntimeError("POST %s -> HTTP %d: {\"inviteUrl\": \"%s\"}" % (path, self.invite_error, INVITE_URL))
+            n = len(self.invite_posts)
+            made = {"id": "inv-%d" % n, "token": INVITE_TOKEN, "inviteUrl": INVITE_URL, "allowedJoinTypes": "human"}
+            if self.invite_no_url:
+                del made["inviteUrl"]
+            return made
         if path == "/api/plugins/tools/execute" and body["tool"] == "crm:get-company":
             return {"data": {"custom": {"hosted_company_id": "new-co" if self.crm_ok else "x"}}}
         return super().post(path, body, timeout)
@@ -408,6 +425,112 @@ class StepTests(ti.Base):
         ent = [b for p, b in api.posts if p.endswith("/actions/setup.set-entitlements")]
         self.assertEqual(ent[0]["params"], {"targetCompanyId": "new-co", "plan": "growth", "modules": {"crm": "entitled", "seo": "entitled"}})
         self.assertNotEqual(ent[0]["companyId"], "new-co")   # runs on the operator company's page, never the new company's
+
+    # --- owner invite (PAR-5232) ---
+    def results(self):
+        d = os.path.join(self.dir, "results")
+        return [json.load(open(os.path.join(d, n))) for n in sorted(os.listdir(d))]
+
+    def test_invite_happy_path_owner_role_and_link_in_the_comment_only(self):
+        res, api, _ = self.run_req()
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertEqual(res["steps_done"][-1], "owner-invite")
+        self.assertEqual(api.invite_posts, [{"allowedJoinTypes": "human", "humanRole": "owner"}])
+        self.assertEqual(res["invite_id"], "inv-1")
+        body = api.comments[-1][1]["body"]
+        self.assertIn(INVITE_URL, body)
+        self.assertIn("https://x.example/ACM/owner-list", body)  # the owner list link is still there
+        self.assertNotIn("invite_url", res)
+        # the link is a credential: not in the result file, not in the result message
+        self.assertNotIn(INVITE_TOKEN, json.dumps(self.results()))
+        self.assertNotIn(INVITE_TOKEN, res["message"])
+
+    def test_invite_runs_last_after_the_key_gate_and_the_needs_owner_steps(self):
+        names = [n for n, _ in ps.STEPS]
+        self.assertEqual(names[-1], "owner-invite")
+        self.assertEqual(names[:4], ["create-company", "entitlements", "key-gate", "create-ceo"])
+        res, api, _ = self.run_req(api=StepApi(catalog=[]))  # needs_owner at the key gate: no invite is made
+        self.assertEqual(res["status"], "needs_owner")
+        self.assertEqual(api.invite_posts, [])
+        res, api, _ = self.run_req(cmds=Cmds(fail={"--verify": (1, "FAIL x")}))  # a failed verify: no invite either
+        self.assertEqual(res["step"], "verify")
+        self.assertEqual(api.invite_posts, [])
+
+    def test_invite_resume_makes_no_second_invite(self):
+        self.prior("failed", "crm-record", ["create-company", "entitlements", "key-gate", "create-ceo", "setup-run", "copy-secrets", "hires",
+                                            "link-agents", "apply", "model-key", "verify"])
+        res, api, _ = self.run_req(api=StepApi(), cmds=Cmds())
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertEqual(len(api.invite_posts), 1)  # made once, on the resume
+        # a finished request is final: the same CRM company is refused, so no second invite can come from filing again
+        res2, api2, _ = self.run_req()
+        self.assertEqual(res2["status"], "refused")
+        self.assertEqual(api2.invite_posts, [])
+
+    def test_invite_recorded_but_link_lost_waits_for_the_owner_instead_of_duplicating(self):
+        done = ["create-company", "entitlements", "key-gate", "create-ceo", "setup-run", "copy-secrets", "hires", "link-agents", "apply", "model-key", "verify", "crm-record"]
+        self.prior("failed", "owner-invite", done)
+        path = os.path.join(self.dir, "results", "p-20261024-000000-aaaaaa.json")
+        old = json.load(open(path))
+        old["invite_id"] = "inv-old"
+        json.dump(old, open(path, "w"))
+        api = StepApi(invite_rows={"active": [{"id": "inv-old"}]})
+        res, api, _ = self.run_req(api=api)
+        self.assertEqual(res["status"], "needs_owner")
+        self.assertEqual(res["step"], "owner-invite")
+        self.assertEqual(res["invite_id"], "inv-old")
+        self.assertEqual(api.invite_posts, [])
+        # the owner revoked it: the resume makes one fresh invite
+        old["id"] = res["id"]
+        res2, api2, _ = self.run_req(api=StepApi())
+        self.assertEqual(res2["status"], "done", res2["message"])
+        self.assertEqual(len(api2.invite_posts), 1)
+        self.assertEqual(res2["invite_id"], "inv-1")
+
+    def test_invite_already_accepted_is_done_without_a_new_invite(self):
+        done = ["create-company", "entitlements", "key-gate", "create-ceo", "setup-run", "copy-secrets", "hires", "link-agents", "apply", "model-key", "verify", "crm-record"]
+        self.prior("failed", "owner-invite", done)
+        path = os.path.join(self.dir, "results", "p-20261024-000000-aaaaaa.json")
+        old = json.load(open(path))
+        old["invite_id"] = "inv-old"
+        json.dump(old, open(path, "w"))
+        res, api, _ = self.run_req(api=StepApi(invite_rows={"accepted": [{"id": "inv-old"}]}))
+        self.assertEqual(res["status"], "done", res["message"])
+        self.assertIn("already accepted", res["message"])
+        self.assertEqual(api.invite_posts, [])
+        self.assertNotIn("Owner invite link", api.comments[-1][1]["body"])
+
+    def test_invite_api_error_leaves_the_request_resumable_and_never_echoes_the_link(self):
+        res, api, _ = self.run_req(api=StepApi(invite_error=500))
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["step"], "owner-invite")
+        self.assertIn("HTTP 500", res["message"])
+        self.assertNotIn(INVITE_TOKEN, json.dumps(self.results()))
+        self.assertNotIn(INVITE_TOKEN, json.dumps(api.comments))
+        self.assertEqual(res["company_id"], "new-co")
+        self.assertNotIn("owner-invite", res["steps_done"])
+        self.assertIsNone(res.get("invite_id"))
+        res2, api2, cmds2 = self.run_req(api=StepApi())  # the host is back: resumes this company, only the invite is made
+        self.assertEqual(res2["status"], "done", res2["message"])
+        self.assertEqual([p for p, _ in api2.posts if p == "/api/companies"], [])
+        self.assertEqual(cmds2.calls, [])
+        self.assertEqual(len(api2.invite_posts), 1)
+        self.assertIn(INVITE_URL, api2.comments[-1][1]["body"])
+
+    def test_invite_response_without_a_link_fails_but_keeps_the_invite_id(self):
+        res, api, _ = self.run_req(api=StepApi(invite_no_url=True))
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["step"], "owner-invite")
+        self.assertEqual(res["invite_id"], "inv-1")  # so the resume cannot duplicate it
+        self.assertEqual(len(api.invite_posts), 1)
+
+    def test_only_the_owner_role_is_ever_sent(self):
+        _, api, _ = self.run_req(plan="growth", modules=["crm"])  # whatever the request asks for, the invite body is fixed
+        self.assertTrue(api.invite_posts)
+        for body in api.invite_posts:
+            self.assertEqual(body, {"allowedJoinTypes": "human", "humanRole": "owner"})
+        self.assertEqual(ps.INVITE_BODY, {"allowedJoinTypes": "human", "humanRole": "owner"})
+        self.assertNotIn("admin", json.dumps(ps.INVITE_BODY))
 
 
 if __name__ == "__main__":
