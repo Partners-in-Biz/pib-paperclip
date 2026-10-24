@@ -209,6 +209,47 @@ class IntakeTests(Base):
         pr.write_json(os.path.join(self.dir, "results", old["id"] + ".json"), old)
         self.assertEqual(self.go(r)["status"], "done")
 
+    def test_stale_running_with_company_is_marked_failed_and_resumed_not_duplicated(self):
+        class Rec:
+            seen = None
+            def run(self, runner, rid, req):
+                Rec.seen = steps_mod.prior_failed(runner, req, rid)
+                return {"message": "ok"}
+        import sys
+        sys.path.insert(0, ROOT)
+        import provision_steps as steps_mod
+        r = self.runner(FakeApi(), Rec())
+        old = {"id": "p-20261024-000000-aaaaaa", "status": "running", "crm_company_id": "crm-1", "company_id": "new-co", "prefix": "ACM",
+               "steps_done": ["create-company"], "updated": "2026-10-20T00:00:00Z"}
+        pr.write_json(os.path.join(self.dir, "results", old["id"] + ".json"), old)
+        self.assertEqual(self.go(r)["status"], "done")
+        self.assertEqual(r.result(old["id"])["status"], "failed")
+        self.assertEqual(Rec.seen["company_id"], "new-co")
+
+    def test_exception_after_intake_still_writes_a_failed_result(self):
+        r = self.runner(FakeApi(), Steps())
+        real = r.save_result
+        calls = []
+        def flaky(rid, req, status, message="", **extra):
+            calls.append(status)
+            if status == "running":
+                raise OSError("disk full")
+            return real(rid, req, status, message, **extra)
+        r.save_result = flaky
+        res = self.go(r)
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("disk full", res["message"])
+
+    def test_old_tmp_file_with_token_is_removed_new_one_kept(self):
+        r = self.runner(FakeApi(), Steps())
+        old, new = (os.path.join(self.dir, "incoming", n) for n in (".tmp-p-old", ".tmp-p-new"))
+        for f in (old, new):
+            open(f, "w").write('{"token": "good"}')
+        os.utime(old, (0, 0))
+        r.run_all()
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(new))
+
     def test_crash_in_intake_writes_a_failed_result(self):
         api = FakeApi()
         api.get = lambda path: (_ for _ in ()).throw(ValueError("boom")) if path == "/api/companies" else FakeApi.get(api, path)

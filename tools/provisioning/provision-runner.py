@@ -205,7 +205,13 @@ class Runner:
             r = load_json(os.path.join(d, n)) if n.endswith(".json") else None
             if not r or r.get("id") == req["id"] or r.get("crm_company_id") != req["crm_company_id"]:
                 continue
-            if r.get("status") in OPEN and not self.stale(r):
+            if r.get("status") in OPEN and self.stale(r):
+                # a killed run: mark it failed (company_id and finished steps stay) so this request resumes it, not a second company
+                r["status"] = "failed"
+                r["message"] = "marked failed: the run was killed or lost (no update for %d s)" % self.policy.get("staleRunningSeconds", 7200)
+                write_json(os.path.join(d, n), r)
+                continue
+            if r.get("status") in OPEN:
                 raise Refused("refused: request %s for this company is still open (%s)" % (r["id"], r["status"]))
             if r.get("status") == "done":
                 raise Refused("refused: this CRM company is already provisioned by request %s (company %s)" % (r["id"], r.get("company_id")))
@@ -243,6 +249,7 @@ class Runner:
         token = req.pop("token", None)
         self.drop(src)  # the token now lives only in memory; no result file ever holds it
         if self.result(rid):
+            sys.stderr.write("provision-runner: ignoring replayed request id %s\n" % rid)
             return None  # a replayed id never overwrites an earlier result
         verified = [False]
         try:
@@ -260,10 +267,10 @@ class Runner:
             return self.finish(rid, req, "failed", "intake could not complete: %s" % e, comment=verified[0])
         finally:
             token = None
-        self.save_result(rid, req, "running", "accepted; capacity %(companies)d companies, %(agents)d agents, request adds %(adds)d" % gate)
-        if self.steps is None:
-            return self.finish(rid, req, "failed", "no provisioning steps are installed in this runner")
         try:
+            self.save_result(rid, req, "running", "accepted; capacity %(companies)d companies, %(agents)d agents, request adds %(adds)d" % gate)
+            if self.steps is None:
+                return self.finish(rid, req, "failed", "no provisioning steps are installed in this runner")
             out = self.steps.run(self, rid, req)
         except Exception as e:  # a step failure fails the request, with the step's own message
             return self.finish(rid, req, "failed", str(e), **getattr(e, "extra", {}))
@@ -279,8 +286,8 @@ class Runner:
     def finish(self, rid, req, status, message, comment=True, **extra):
         try:
             r = self.save_result(rid, req, status, message, **extra)
-        except RuntimeError as e:  # the result for this id is already final: leave it
-            sys.stderr.write("provision-runner: %s\n" % e)
+        except Exception as e:  # already final, or the spool is unwritable: best effort, never lose the loop
+            sys.stderr.write("provision-runner: could not write result %s: %s\n" % (rid, e))
             return None
         if comment:
             self.comment(req, r)
@@ -296,7 +303,7 @@ class Runner:
         try:
             iss = self.api.get("/api/issues/" + ref)
             self.api.post("/api/issues/%s/comments" % iss["id"], {"body": body})
-        except (RuntimeError, KeyError, TypeError) as e:
+        except Exception as e:
             sys.stderr.write("provision-runner: could not comment on %s: %s\n" % (ref, e))
 
     def run_all(self):
@@ -306,6 +313,10 @@ class Runner:
         except OSError:
             return 0  # another runner is working; the path unit fires again
         n = 0
+        for fname in os.listdir(self.path("incoming")):  # a SIGKILLed client leaves .tmp-<id> holding its token
+            fp = self.path("incoming", fname)
+            if fname.startswith(".tmp-") and time.time() - os.lstat(fp).st_mtime > 300:
+                self.drop(fp)
         for fname in sorted(os.listdir(self.path("incoming"))):
             if fname.startswith(".") or not fname.endswith(".json"):
                 continue
