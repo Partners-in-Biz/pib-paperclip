@@ -2,7 +2,7 @@
  * Entitlements: what a company bought. Pure helpers shared by the worker and
  * the page. No node imports (the UI bundle uses this file).
  */
-import { MODULE_KEYS, type ModuleKey } from "./kit-setup.js";
+import { MODULE_KEYS, TIER_MODULES, type ModuleKey } from "./kit-setup.js";
 
 export const PLANS = ["starter", "growth", "business", "pib"] as const;
 export type Plan = (typeof PLANS)[number];
@@ -20,18 +20,13 @@ export interface EntitlementRow {
   updatedAt: string;
 }
 
-const STARTER: readonly ModuleKey[] = ["crm", "mailbox"];
-const GROWTH: readonly ModuleKey[] = [...STARTER, "social", "seo", "campaigns"];
-const BUSINESS: readonly ModuleKey[] = [...GROWTH, "billing"];
-
 /** Always entitled: the platform, not sold. */
 export const PLATFORM_MODULES: readonly ModuleKey[] = ["cockpit", "memory"];
 
 /** The sellable modules a plan entitles, plus the platform modules. `pib` is everything (our own companies). */
 export function planModules(plan: Plan): ModuleKey[] {
   if (plan === "pib") return [...MODULE_KEYS];
-  const sold = plan === "starter" ? STARTER : plan === "growth" ? GROWTH : BUSINESS;
-  return [...sold, ...PLATFORM_MODULES];
+  return [...TIER_MODULES[plan], ...PLATFORM_MODULES];
 }
 
 export function isPlan(value: unknown): value is Plan {
