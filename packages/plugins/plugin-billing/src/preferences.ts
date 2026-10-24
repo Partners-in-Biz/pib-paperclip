@@ -2,7 +2,8 @@
  * Company preferences for Billing: the choices a company owner or admin edits
  * on the Billing page without an instance admin. They are merged over the saved
  * Billing settings at one point (`billingSettings` in config.ts), so every
- * reader of settings sees them. The sender and EFT details are not here yet.
+ * reader of settings sees them. The sender (`sender.*`) and the EFT bank details
+ * (`payment.*`) are here too: an id with a dot is a key inside that saved settings object.
  *
  * Defaults are what Billing did before this existed, so a company that never
  * opens the panel (and the saved settings it already has, which are read as the
@@ -11,6 +12,7 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { definePreferences, describePreferences, readPreferences, savePreferences, TAX_CODES, type PreferenceValue, type PreferenceValues } from "@partnersinbiz/pib-plugin-kit";
 import { BillingError } from "./domain.js";
+import { BANK_PREFERENCE_IDS } from "./preference-ids.js";
 import { requiredCompany } from "./util.js";
 
 export const PREFERENCES_LOAD_ACTION = "billing.preferences-load";
@@ -27,6 +29,18 @@ export const BILLING_PREFERENCES = definePreferences({
     pricesIncludeVat: { type: "bool", label: "Prices include VAT", help: "Off: VAT is added to line prices. On: line prices already include it.", default: false, legacy: "pricesIncludeVat" },
     defaultDueDays: { type: "int", label: "Days until an invoice is due", help: "0: no due date unless one is set.", min: 0, max: 365, default: 0, legacy: "defaultDueDays" },
     invoiceNotes: { type: "text", label: "Footer notes", help: "Printed at the bottom of invoices (terms, thank-you note).", max: 2000, default: "", legacy: "invoiceNotes" },
+    "sender.name": { type: "string", label: "Business name", help: "Printed as the sender on documents and emails. Empty: the company name.", max: 200, default: ({ companyName }) => companyName, legacy: "sender.name" },
+    "sender.address": { type: "text", label: "Address", help: "Use new lines for each address line.", max: 500, default: "", legacy: "sender.address" },
+    "sender.email": { type: "string", label: "Billing email", max: 200, default: "", legacy: "sender.email" },
+    "sender.phone": { type: "string", label: "Phone", max: 50, default: "", legacy: "sender.phone" },
+    "sender.vatNumber": { type: "string", label: "VAT number", help: "When set, documents are titled Tax invoice / Tax credit note.", max: 50, default: "", legacy: "sender.vatNumber" },
+    "sender.registrationNumber": { type: "string", label: "Company registration number", max: 50, default: "", legacy: "sender.registrationNumber" },
+    "payment.bankName": { type: "string", label: "Bank", help: "Customers pay into these details: you confirm before a change is saved.", max: 100, default: "", legacy: "payment.bankName" },
+    "payment.accountName": { type: "string", label: "Account holder", max: 200, default: "", legacy: "payment.accountName" },
+    "payment.accountNumber": { type: "string", label: "Account number", max: 50, default: "", legacy: "payment.accountNumber" },
+    "payment.branchCode": { type: "string", label: "Branch code", max: 50, default: "", legacy: "payment.branchCode" },
+    "payment.accountType": { type: "string", label: "Account type", max: 50, default: "", legacy: "payment.accountType" },
+    "payment.swift": { type: "string", label: "SWIFT code", max: 50, default: "", legacy: "payment.swift" },
   },
 });
 
@@ -44,7 +58,16 @@ export function mergePreferences<T extends object>(settings: T, prefs: Preferenc
   for (const id of explicit) {
     const value = prefs[id];
     if (value === undefined) continue;
-    if (EMPTY_IS_UNSET.has(id) && value === "") delete out[id];
+    const dot = id.indexOf(".");
+    if (dot > 0) {
+      // "sender.name" is the key `name` inside the saved `sender` object; its other keys stay as saved. Empty means unset.
+      const parentKey = id.slice(0, dot);
+      const parent = out[parentKey];
+      const nested: Record<string, unknown> = parent && typeof parent === "object" && !Array.isArray(parent) ? { ...(parent as Record<string, unknown>) } : {};
+      if (value === "") delete nested[id.slice(dot + 1)];
+      else nested[id.slice(dot + 1)] = value;
+      out[parentKey] = nested;
+    } else if (EMPTY_IS_UNSET.has(id) && value === "") delete out[id];
     else out[id] = value;
   }
   return out as T;
@@ -87,14 +110,26 @@ export function checkedPatch(raw: unknown): Record<string, PreferenceValue | nul
   return patch;
 }
 
+/** The bank-detail ids a patch touches. Pure. */
+export function bankIdsIn(patch: Record<string, unknown>): string[] {
+  return BANK_PREFERENCE_IDS.filter((id) => Object.hasOwn(patch, id));
+}
+
 async function save(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  requiredCompany(context);
+  const companyId = requiredCompany(context);
   let patch: Record<string, PreferenceValue | null>;
   try {
     patch = checkedPatch(params.patch);
   } catch (error) {
     if (error instanceof BillingError) return { ok: false as const, error: error.message };
     throw error;
+  }
+  // Money data: the page asks the owner first and sends `confirmed: true`. A save without it is refused and says what would change.
+  const bank = bankIdsIn(patch);
+  if (bank.length > 0 && params.confirmed !== true) {
+    const current = await readPreferences(ctx, companyId, BILLING_PREFERENCES);
+    const changes = bank.map((id) => `${BILLING_PREFERENCES.fields[id]!.label} (now ${current[id] === "" || current[id] === undefined ? "empty" : String(current[id])})`);
+    return { ok: false as const, needsConfirmation: bank, error: `Confirm the change to the bank details before it is saved: ${changes.join(", ")}` };
   }
   return savePreferences(ctx, context, BILLING_PREFERENCES, patch);
 }

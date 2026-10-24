@@ -108,7 +108,8 @@ describe("a company that never opens the panel", () => {
   it("no settings and no preferences: exactly what the old code did, including a 0 tax rate with the 15% code", async () => {
     const h = boot({});
     const s = await billingSettings(h.ctx, CO);
-    expect(s).toEqual({});
+    // Only the sender name is new: a company with no saved name sends as its company name (this one is named for PiB).
+    expect(s).toEqual({ sender: { name: "Partners in Biz" } });
     expect(effective(s)).toEqual({ tax: 0, code: "za_std_15", vat: true, book: "ZAR", due: null, currency: "ZAR", inclusive: false, notes: null });
     expect(await PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(h.ctx, as(OWNER), {})).toMatchObject({ values: { defaultCurrency: "ZAR", defaultDueDays: 0, vatRegistered: true, defaultTaxRate: 15 } });
   });

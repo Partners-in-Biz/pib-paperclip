@@ -21,7 +21,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { table } from "./db.js";
 import { BillingError } from "./domain.js";
-import { paymentLines, type DocView } from "./documents.js";
+import { FALLBACK_SENDER_NAME, paymentLines, type DocView } from "./documents.js";
 
 export type MailKind = "invoice" | "quote" | "credit_note" | "statement" | "reminder";
 
@@ -133,7 +133,7 @@ export interface EmailContent {
 }
 
 function signOff(sender: Record<string, unknown>, signature?: string | null): string {
-  return (signature && signature.trim()) || `Thank you,\n${typeof sender.name === "string" && sender.name ? sender.name : "Partners in Biz"}`;
+  return (signature && signature.trim()) || `Thank you,\n${typeof sender.name === "string" && sender.name ? sender.name : FALLBACK_SENDER_NAME}`;
 }
 
 /** The invoice email: amount, due date, EFT details and "reply with proof of payment". */
@@ -149,7 +149,7 @@ export function invoiceEmail(view: DocView, options: { hasAttachment: boolean; s
   const lines = options.hasAttachment ? "" : view.lines.map((l) => `- ${l.description}: ${formatMoneyMinor(view.pricesIncludeVat ? l.grossMinor : l.netMinor, view.currency)}`).join("\n");
   const textBody = [intro, lines, how, online.text, eft.text, view.notes ?? "", signOff(view.sender, options.signature)].filter(Boolean).join("\n\n");
   const html = wrap(`${paragraphs(intro)}${lines ? paragraphs(lines) : ""}${paragraphs(how)}${online.html}${eft.html}${view.notes ? `<div style="margin-top:16px">${paragraphs(view.notes)}</div>` : ""}<div style="margin-top:18px">${paragraphs(signOff(view.sender, options.signature))}</div>`);
-  return { subject: `Invoice ${view.number} from ${String(view.sender.name ?? "Partners in Biz")}`, html, text: textBody };
+  return { subject: `Invoice ${view.number} from ${String(view.sender.name ?? FALLBACK_SENDER_NAME)}`, html, text: textBody };
 }
 
 export function quoteEmail(view: DocView, options: { hasAttachment: boolean; signature?: string | null }): EmailContent {
@@ -157,7 +157,7 @@ export function quoteEmail(view: DocView, options: { hasAttachment: boolean; sig
   const until = day(view.dueAt);
   const intro = `${greeting(view.customer)}\n\n${options.hasAttachment ? "Please find" : "Here is"} quote ${view.number} for ${amount}${until ? `, valid until ${until}` : ""}.${options.hasAttachment ? " The PDF is attached." : ""}\n\nReply to this email to accept it or to ask a question.`;
   const textBody = [intro, signOff(view.sender, options.signature)].join("\n\n");
-  return { subject: `Quote ${view.number} from ${String(view.sender.name ?? "Partners in Biz")}`, html: wrap(paragraphs(textBody)), text: textBody };
+  return { subject: `Quote ${view.number} from ${String(view.sender.name ?? FALLBACK_SENDER_NAME)}`, html: wrap(paragraphs(textBody)), text: textBody };
 }
 
 export function creditNoteEmail(view: DocView, options: { hasAttachment: boolean; signature?: string | null }): EmailContent {
@@ -173,7 +173,7 @@ export function statementEmail(input: { customer: Record<string, unknown>; sende
   const eft = eftTable(input.payment, reference);
   const textBody = [intro, "Please use the invoice numbers as payment references, and reply with proof of payment once paid.", eft.text, signOff(input.sender, input.signature)].filter(Boolean).join("\n\n");
   return {
-    subject: `Statement from ${String(input.sender.name ?? "Partners in Biz")}`,
+    subject: `Statement from ${String(input.sender.name ?? FALLBACK_SENDER_NAME)}`,
     html: wrap(`${paragraphs(intro)}${paragraphs("Please use the invoice numbers as payment references, and reply with proof of payment once paid.")}${eft.html}<div style="margin-top:18px">${paragraphs(signOff(input.sender, input.signature))}</div>`),
     text: textBody,
   };
