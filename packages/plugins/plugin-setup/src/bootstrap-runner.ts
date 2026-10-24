@@ -204,15 +204,16 @@ export async function stepModelKey(env: RunnerEnv): Promise<StepOutcome> {
   const secret = findKeySecret(catalog);
   const items: StepItem[] = [...problems];
   const secretName = secret ? secret.name || secret.key : "";
+  const secretId = secret ? secret.id : "";
   for (const plugin of ready) {
     const label = MODULES[plugin.module].title;
     try {
       const current = await env.getConfig(plugin.id, env.companyId);
-      if (current.config.hostingProfile === "client" && current.config.modelKeySecretName === secretName) {
+      if (current.config.hostingProfile === "client" && current.config.modelKeySecretName === secretName && current.config.modelKeySecretId === secretId) {
         items.push({ key: plugin.pluginKey, label, status: "done", detail: "The hosting profile was already saved." });
         continue;
       }
-      await env.saveConfig(plugin.id, env.companyId, { ...current.config, hostingProfile: "client", modelKeySecretName: secretName });
+      await env.saveConfig(plugin.id, env.companyId, { ...current.config, hostingProfile: "client", modelKeySecretName: secretName, modelKeySecretId: secretId });
       items.push({ key: plugin.pluginKey, label, status: "done", detail: "Saved the hosting profile." });
     } catch (error) {
       items.push({ key: plugin.pluginKey, label, status: "failed", detail: message(error) });

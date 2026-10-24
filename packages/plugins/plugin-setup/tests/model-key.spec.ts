@@ -66,13 +66,13 @@ describe("stepModelKey", () => {
     const { e, saves, binds } = env({ agents: [agent("a1"), agent("a2", { adapterType: "hermes_local" })] });
     const out = await stepModelKey(e);
     expect(out.status).toBe("done");
-    expect(saves).toEqual([{ target: "crm-id", config: { enabled: true, hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY" } }]);
+    expect(saves).toEqual([{ target: "crm-id", config: { enabled: true, hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" } }]);
     expect(binds).toEqual([{ agentId: "a1", adapterConfig: { model: "m", env: { KEEP: "1", ANTHROPIC_API_KEY: REF } } }]);
   });
 
   it("is repeatable: bound agents and saved profiles change nothing", async () => {
     const bound = agent("a1", { adapterConfig: { model: "m", env: { ANTHROPIC_API_KEY: REF } } });
-    const { e, saves, binds } = env({ agents: [bound], config: { hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY" } });
+    const { e, saves, binds } = env({ agents: [bound], config: { hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" } });
     const out = await stepModelKey(e);
     expect(out.status).toBe("done");
     expect(saves).toEqual([]);
@@ -90,7 +90,7 @@ describe("stepModelKey", () => {
     const { e, saves, binds } = env({ catalog: [] });
     const out = await stepModelKey(e);
     expect(out.status).toBe("needs_owner");
-    expect(saves[0]!.config).toMatchObject({ hostingProfile: "client", modelKeySecretName: "" });
+    expect(saves[0]!.config).toMatchObject({ hostingProfile: "client", modelKeySecretName: "", modelKeySecretId: "" });
     expect(binds).toEqual([]);
     expect(itemOf(out.items, "secret").detail).toContain("ANTHROPIC_API_KEY");
   });
