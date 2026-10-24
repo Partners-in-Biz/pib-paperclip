@@ -45,7 +45,7 @@ export function registerSetup(ctx: PluginContext): void {
   // does not pass an instance-admin flag to plugin actions, so a client's own owner is refused.
   ctx.actions.register("setup.set-entitlements", async (params, context) => {
     if (context.actor.type !== "user" || !context.actor.userId) throw new ForbiddenError("Only a board user can set entitlements");
-    if (!(await isOperatorAdmin(ctx, context.actor.userId))) throw new ForbiddenError("Only an owner or admin of the operator company can set entitlements");
+    if (!(await isOperatorAdmin(ctx, context.actor.userId))) throw new ForbiddenError("Only an owner or admin of the operator company can set entitlements, and only from that company's own page (the host scopes member lookups to the company the action runs for)");
     const companyId = typeof params.companyId === "string" && params.companyId ? params.companyId : requiredCompany(context);
     return setEntitlements(ctx, { companyId, plan: params.plan, modules: params.modules, until: params.until, userId: context.actor.userId });
   });

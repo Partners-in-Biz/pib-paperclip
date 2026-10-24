@@ -532,11 +532,11 @@ export async function entitlementsReady(ctx: PluginContext): Promise<boolean> {
  */
 export async function backfillEntitlements(ctx: PluginContext, clock: Clock = systemClock): Promise<{ companies: number; alreadyDone: boolean }> {
   if (await entitlementsReady(ctx)) return { companies: 0, alreadyDone: true };
-  const have = await companiesWithEntitlements(ctx);
   const at = clock.now().toISOString();
   let companies = 0;
+  // Every module of every company, row by row: ON CONFLICT DO NOTHING makes a retry after a part-way
+  // failure complete the company instead of skipping it because it already has some rows.
   for (const company of await listAllCompanies(ctx)) {
-    if (have.has(company.id)) continue;
     for (const module of MODULE_KEYS) {
       await insertEntitlementIfMissing(ctx, { companyId: company.id, module, state: "entitled", plan: "pib", until: null, updatedBy: "backfill", updatedAt: at });
     }
@@ -556,7 +556,15 @@ export async function setEntitlements(
   input: { companyId: string; plan?: unknown; modules?: unknown; until?: unknown; userId: string },
   clock: Clock = systemClock,
 ): Promise<{ plan: string | null; entitled: Record<ModuleKey, boolean>; modules: ModuleChoice; updatedAt: string }> {
-  if (!(await ctx.companies.get(input.companyId))) throw new SetupError("Unknown company");
+  // The host scopes companies.get to the company the action runs for, and the operator runs this from its own
+  // page, so a client target cannot be looked up here: a denied lookup is not "unknown", only a clean null is.
+  let known: unknown = true;
+  try {
+    known = await ctx.companies.get(input.companyId);
+  } catch (error) {
+    ctx.logger.info("Entitlement target could not be looked up (out of invocation scope)", { companyId: input.companyId, error: message(error) });
+  }
+  if (!known) throw new SetupError("Unknown company");
   const hasPlan = input.plan !== undefined && input.plan !== null;
   const hasModules = input.modules !== undefined && input.modules !== null;
   if (!hasPlan && !hasModules) throw new SetupError("Give a plan, a module → state map, or both");

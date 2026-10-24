@@ -177,6 +177,14 @@ describe("setup.set-entitlements gate", () => {
     await expect(call(env, "peet", { companyId: CLIENT, modules: { cockpit: "off" } })).rejects.toThrow(/Cockpit/);
     await expect(call(env, "peet", { companyId: CLIENT, modules: { nonsense: "entitled" } })).rejects.toThrow(/Unknown module/);
   });
+  it("still sets a client's entitlements when the host denies the out-of-scope company lookup", async () => {
+    const env = setup();
+    (env.ctx.companies as { get: unknown }).get = async () => {
+      throw new Error("requested company is outside the current invocation scope");
+    };
+    await expect(call(env, "peet", { companyId: CLIENT, plan: "starter" })).resolves.toMatchObject({ plan: "starter" });
+    expect(env.store.entitlements).toHaveLength(MODULE_KEYS.length);
+  });
   it("keeps the plan label and applies a per-module trial on top", async () => {
     const env = setup();
     await call(env, "peet", { companyId: CLIENT, plan: "starter" });
@@ -188,16 +196,35 @@ describe("setup.set-entitlements gate", () => {
   });
 });
 
+async function entitlementsReadyForTest(env: ReturnType<typeof setup>): Promise<boolean> {
+  return (await env.ctx.state.get({ scopeKind: "instance", namespace: "setup", stateKey: "entitlements-backfilled" })) != null;
+}
+
 describe("backfill (the plan's 1.4)", () => {
   it("entitles every existing company to every module once, without overwriting", async () => {
     const env = setup();
     await setEntitlements(env.ctx, { companyId: OTHER, plan: "starter", userId: "peet" }, clock);
     const first = await backfillEntitlements(env.ctx, clock);
-    expect(first).toEqual({ companies: 2, alreadyDone: false });
+    expect(first).toEqual({ companies: 3, alreadyDone: false });
     const rows = env.store.entitlements!;
     expect(rows.filter((row) => row.company_id === PAR && row.state === "entitled" && row.plan === "pib")).toHaveLength(MODULE_KEYS.length);
     expect(rows.filter((row) => row.company_id === OTHER && row.state === "entitled")).toHaveLength(4);
     expect(await backfillEntitlements(env.ctx, clock)).toEqual({ companies: 0, alreadyDone: true });
+  });
+  it("completes a company after a part-way failure instead of skipping it", async () => {
+    const env = setup();
+    const real = env.ctx.db.execute.bind(env.ctx.db);
+    let calls = 0;
+    (env.ctx.db as { execute: unknown }).execute = async (sql: string, params?: unknown[]) => {
+      calls += 1;
+      if (calls === 5) throw new Error("db went away");
+      return real(sql, params);
+    };
+    await expect(backfillEntitlements(env.ctx, clock)).rejects.toThrow(/db went away/);
+    expect(env.store.entitlements!.length).toBe(4);
+    expect(await entitlementsReadyForTest(env)).toBe(false);
+    await backfillEntitlements(env.ctx, clock);
+    for (const id of [PAR, CLIENT, OTHER]) expect(env.store.entitlements!.filter((row) => row.company_id === id)).toHaveLength(MODULE_KEYS.length);
   });
   it("leaves PAR with all modules on after the backfill, and nothing locked before it", async () => {
     const env = setup();
