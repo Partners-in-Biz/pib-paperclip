@@ -78,8 +78,8 @@ class StepApi(ti.FakeApi):
             if self.invite_no_url:
                 del made["inviteUrl"]
             return made
-        if path == "/api/plugins/tools/execute" and body["tool"] == "crm:get-company":
-            return {"data": {"custom": {"hosted_company_id": "new-co" if self.crm_ok else "x"}}}
+        if path == "/api/plugins/tools/execute" and body["tool"] == "partnersinbiz.crm:get-company":
+            return {"data": {"hostedCompanyId": "new-co" if self.crm_ok else "x"}}
         return super().post(path, body, timeout)
 
 
@@ -209,6 +209,52 @@ class StepTests(ti.Base):
         self.assertEqual(res["status"], "failed")
         self.assertEqual(res["step"], "hires")
         self.assertIn("no hire tasks found", res["message"])
+
+    def test_hires_parked_tasks_with_their_agents_pass_and_hire_skills_closes_them(self):
+        desc = "intro\n\n## Skills to attach\n\n- `pib/operator`\n- `pib/crm`\n\nAttach them.\n\n## Instructions\n- `not-a-skill`\n"
+
+        class Api(StepApi):
+            def __init__(s, **kw):
+                super().__init__(**kw)
+                s.patches, s.cards_open = [], True
+
+            def get(s, path):
+                if path == "/api/issues/t1":
+                    return {"id": "t1", "description": desc}
+                if path == "/api/issues/t1/interactions":
+                    return [{"id": "c1", "kind": "request_confirmation", "status": "pending" if s.cards_open else "accepted"},
+                            {"id": "c2", "kind": "connection_intent", "status": "pending"}]
+                return super().get(path)
+
+            def post(s, path, body, timeout=60):
+                if path.endswith("/accept"):
+                    s.cards_open = False
+                    s.posts.append((path, body))
+                    return {}
+                return super().post(path, body, timeout)
+
+            def patch(s, path, body):
+                s.patches.append((path, body))
+                return {}
+
+        t1 = dict(hire(1, "in_review"), title="Hire: Operator (team template)")
+        t2 = dict(hire(2, "done"), title="Hire: CEO (team template)")
+        res, api, _ = self.run_req(api=Api(tasks=[t1, t2]))
+        self.assertEqual(res["status"], "done", res["message"])
+        posts = [p for p, _ in api.posts]
+        self.assertIn("/api/agents/ag4/skills/sync", posts)
+        self.assertEqual(dict(api.posts)["/api/agents/ag4/skills/sync"], {"mode": "add", "desiredSkills": ["pib/operator", "pib/crm"]})
+        self.assertIn("/api/issues/t1/interactions/c1/accept", posts)
+        self.assertNotIn("/api/issues/t1/interactions/c2/accept", posts)
+        self.assertEqual([(p, b["status"]) for p, b in api.patches], [("/api/issues/t1", "done")])
+        self.assertLess(posts.index("/api/agents/ag4/skills/sync"), posts.index("/api/issues/t1/interactions/c1/accept"))
+
+    def test_hires_parked_task_without_an_agent_still_times_out(self):
+        self.policy["stepTimeouts"] = {"hires": 60}
+        t = dict(hire(1, "in_review"), title="Hire: Ghost (team template)")
+        res, _, _ = self.run_req(api=StepApi(tasks=[t]))
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("hire tasks not finished", res["message"])
 
     def test_hires_ignores_tasks_that_are_not_plugin_hire_tasks(self):
         other = [{"id": "x", "identifier": "ACM-9", "title": "Hire: Someone", "status": "done", "originKind": "manual"},
@@ -393,9 +439,9 @@ class StepTests(ti.Base):
     def test_crm_record_written_and_read_back(self):
         _, api, _ = self.run_req()
         tools = [b["tool"] for p, b in api.posts if p == "/api/plugins/tools/execute"]
-        self.assertEqual(tools, ["crm:define-field", "crm:update-company", "crm:get-company"])
-        upd = [b for p, b in api.posts if p == "/api/plugins/tools/execute" and b["tool"] == "crm:update-company"][0]
-        self.assertEqual(upd["parameters"], {"companyRecordId": "crm-1", "custom": {"hosted_company_id": "new-co"}})
+        self.assertEqual(tools, ["partnersinbiz.crm:update-company", "partnersinbiz.crm:get-company"])
+        upd = [b for p, b in api.posts if p == "/api/plugins/tools/execute" and b["tool"] == "partnersinbiz.crm:update-company"][0]
+        self.assertEqual(upd["parameters"], {"companyRecordId": "crm-1", "hostedCompanyId": "new-co"})
 
     def test_crm_readback_mismatch_fails(self):
         res, _, _ = self.run_req(api=StepApi(crm_ok=False))
