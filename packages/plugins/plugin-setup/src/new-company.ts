@@ -127,6 +127,7 @@ export function sanitizeOptions(raw: unknown): BootstrapOptions {
   if (typeof row.hiringAgentId === "string" && /^[0-9a-f-]{8,64}$/i.test(row.hiringAgentId)) out.hiringAgentId = row.hiringAgentId;
   // On unless the caller says false: the owner's standing yes (PAR-4701). Only an approved pack version is ever seeded.
   out.starterPack = typeof row.starterPack === "boolean" ? row.starterPack : true;
+  if (row.hostingProfile === "client" || row.hostingProfile === "pib") out.hostingProfile = row.hostingProfile;
   return out;
 }
 

@@ -133,6 +133,7 @@ describe("setup.bootstrap-record", () => {
     const report = (stepId: string, status: string) => call("setup.bootstrap-record", { stepId, status, detail: stepId }, asUser(A));
     expect((await report("setup-settings", "done")).run.status).toBe("running");
     await report("plugin-settings", "done");
+    await report("model-key", "skipped");
     await report("skills", "done");
     await report("roles", "done");
     await report("templates", "done");
@@ -208,7 +209,7 @@ describe("setup.new-company", () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asUser(A));
     expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 13 }, hires: [] });
-    expect(state.steps).toHaveLength(10);
+    expect(state.steps).toHaveLength(11);
     expect(state.starterPack).toMatchObject({ approved: true, approvedBy: expect.stringContaining("standing-approval"), needsOwnerOk: true, version: 1, hash: starterPackHash(loadStarterPack()) });
     expect(state.starterPack.facts.length).toBe(loadStarterPack().facts.length);
     expect(state.starterPack.factCount).toBe(loadStarterPack().facts.length);
@@ -372,7 +373,7 @@ describe("GET /templates for the ops scripts", () => {
     const critic = result.templates.find((template: any) => template.key === "plan-critic");
     expect(critic.adapterType).toBe("hermes_local");
     expect(critic.profiles.hermes_local.adapterConfig).toMatchObject({ provider: "nous", model: "deepseek/deepseek-v4-flash-0731" });
-    expect(result.steps).toHaveLength(10);
+    expect(result.steps).toHaveLength(11);
     expect(result.skillSyncActions).toMatchObject({ "partnersinbiz.crm": "crm.sync-skills", "partnersinbiz.cockpit": "cockpit.load" });
     // No secret and no company data beyond its name and prefix.
     expect(JSON.stringify(result)).not.toMatch(/secret_ref|ghp_|github_pat_/);

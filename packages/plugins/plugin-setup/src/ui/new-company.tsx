@@ -380,6 +380,12 @@ export function NewCompanyView(props: NewCompanyViewProps) {
               {(props.sources ?? []).map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
             </Select>
           </Field>
+          <Field label="Model key">
+            <Select value={options.hostingProfile ?? "pib"} onChange={(event) => props.onOptions({ ...options, hostingProfile: event.target.value === "client" ? "client" : "pib" })}>
+              <option value="pib">PiB's own company: keeps today's lanes</option>
+              <option value="client">Client: runs on its own Anthropic key (company secret ANTHROPIC_API_KEY)</option>
+            </Select>
+          </Field>
           <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 13, alignSelf: "end", minHeight: 36 }}>
             <input type="checkbox" checked={options.includeOptionalRoles === true} onChange={(event) => props.onOptions({ ...options, includeOptionalRoles: event.target.checked })} />
             Also hire the optional roles (Reviewer, Payroll Clerk, sales roles)
