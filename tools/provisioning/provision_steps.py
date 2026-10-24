@@ -116,10 +116,8 @@ def step_setup_run(c):
 
 
 def step_copy_secrets(c):
-    # Always name the source: copy-company-secrets.py defaults --from to PAR only for --profile client.
-    args = ["--from", c.p["parCompanyId"], "--to", c.st["prefix"], "--apply"]
-    if c.req["profile"] == "client":
-        args = ["--profile", "client"] + args
+    # Always the client profile, always named source: the runner never copies the PiB dev-team secrets.
+    args = ["--profile", "client", "--from", c.p["parCompanyId"], "--to", c.st["prefix"], "--apply"]
     rc, out = c.script("copy-secrets", "copy-company-secrets.py", *args)
     if rc != 0:
         undo = re.findall(r"\S+\.undo\S*", out)

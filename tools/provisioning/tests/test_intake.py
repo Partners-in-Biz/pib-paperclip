@@ -122,10 +122,20 @@ class IntakeTests(Base):
         api = FakeApi(issue={"id": "i", "companyId": "other", "assigneeAgentId": "a1"})
         self.assertIn("not in the PAR company", self.go(self.runner(api, Steps()))["message"])
 
-    def test_client_without_model_key_is_refused_but_internal_is_not(self):
+    def test_client_without_model_key_is_refused(self):
         r = self.runner(FakeApi(), Steps())
         self.assertIn("own model key", self.go(r, model_key=False)["message"])
-        self.assertEqual(self.go(r, model_key=False, profile="internal", crm_company_id="crm-2")["status"], "done")
+
+    def test_internal_profile_is_refused_with_or_without_a_model_key(self):
+        api = FakeApi()
+        steps = Steps()
+        r = self.runner(api, steps)
+        for mk in (True, False):
+            res = self.go(r, profile="internal", model_key=mk, crm_company_id="crm-2")
+            self.assertEqual(res["status"], "refused")
+            self.assertEqual(res["message"], "refused: profile internal is not provisioned by the runner; the PiB dev team is set up by hand")
+        self.assertNotIn("internal", self.runner(api, steps).policy["profiles"])
+        self.assertIn("profile must be one of client", self.go(r, profile="other")["message"])
 
     def test_one_open_request_per_crm_company_and_no_repeat_after_done(self):
         r = self.runner(FakeApi(), Steps())
@@ -161,7 +171,6 @@ class IntakeTests(Base):
         res = self.go(self.runner(api, Steps(), setupProfileWired=False))
         self.assertIn("PAR-5157", res["message"])
         self.assertEqual(res["status"], "refused")
-        self.assertEqual(self.go(self.runner(api, Steps(), setupProfileWired=False), profile="internal", model_key=False, crm_company_id="crm-3")["status"], "done")
 
     def test_plan_and_modules_are_validated(self):
         r = self.runner(FakeApi(), Steps())
