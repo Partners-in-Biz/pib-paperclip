@@ -84,11 +84,19 @@ def step_entitlements(c):
     if not c.req.get("plan") and not c.req.get("modules"):
         c.st["note_entitlements"] = "no plan or modules requested; entitlements left at the defaults"
         return
-    body = {"companyId": c.st["company_id"], "params": {"companyId": c.st["company_id"], "plan": c.req.get("plan"),
-                                                       "modules": c.req.get("modules") or []}}
-    out = c.api.post("/api/plugins/%s/actions/%s" % (c.p.get("setupPluginKey", "partnersinbiz.setup"), c.p.get("entitlementsAction", "set-entitlements")), body)
-    if isinstance(out, dict) and (out.get("error") or out.get("ok") is False):
-        raise StepError("setup.set-entitlements refused: %s" % redact(str(out.get("error") or out)[:300]))
+    # Setup 0.6.3+ (PAR-5205): the host overwrites params.companyId with the page's company, and only the operator company's
+    # page may set entitlements. So the action runs on PAR's page and names the new company in targetCompanyId. A module list
+    # from the request means "entitle these"; the action wants a module -> state map.
+    params = {"targetCompanyId": c.st["company_id"]}
+    if c.req.get("plan"):
+        params["plan"] = c.req["plan"]
+    if c.req.get("modules"):
+        params["modules"] = {m: "entitled" for m in c.req["modules"]}
+    body = {"companyId": c.p["parCompanyId"], "params": params}
+    out = c.api.post("/api/plugins/%s/actions/%s" % (c.p.get("setupPluginKey", "partnersinbiz.setup"), c.p.get("entitlementsAction", "setup.set-entitlements")), body)
+    data = out.get("data", out) if isinstance(out, dict) else out
+    if isinstance(data, dict) and (data.get("error") or data.get("ok") is False):
+        raise StepError("setup.set-entitlements refused: %s" % redact(str(data.get("error") or data)[:300]))
 
 
 def step_create_ceo(c):
@@ -108,7 +116,8 @@ def step_setup_run(c):
 
 
 def step_copy_secrets(c):
-    args = ["--to", c.st["prefix"], "--apply"]
+    # Always name the source: copy-company-secrets.py defaults --from to PAR only for --profile client.
+    args = ["--from", c.p["parCompanyId"], "--to", c.st["prefix"], "--apply"]
     if c.req["profile"] == "client":
         args = ["--profile", "client"] + args
     rc, out = c.script("copy-secrets", "copy-company-secrets.py", *args)

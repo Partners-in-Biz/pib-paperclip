@@ -70,7 +70,7 @@ class StepTests(ti.Base):
         order = [c.split("/")[-1].split(" ")[0] if "pib-ops" in c else c.split(" ")[0] for c in cmds.calls]
         self.assertEqual(order, ["new-company.py", "node", "copy-company-secrets.py", "new-company.py", "new-company.py", "new-company.py"])
         self.assertIn("--company ACM --create-ceo --apply", cmds.calls[0])
-        self.assertIn("copy-company-secrets.py --profile client --to ACM --apply", cmds.calls[2])
+        self.assertIn("copy-company-secrets.py --profile client --from par-company --to ACM --apply", cmds.calls[2])
         self.assertTrue(cmds.calls[3].endswith("--company ACM --apply"))
         self.assertTrue(cmds.calls[4].endswith("--model-key-bind --apply"))
         self.assertTrue(cmds.calls[5].endswith("--verify"))
@@ -124,7 +124,7 @@ class StepTests(ti.Base):
         res, _, cmds = self.run_req(model_key=False, profile="internal")
         self.assertEqual(res["status"], "done", res["message"])
         self.assertFalse(any("--model-key-bind" in c for c in cmds.calls))
-        self.assertIn("copy-company-secrets.py --to ACM --apply", cmds.calls[2])  # no --profile for internal
+        self.assertIn("copy-company-secrets.py --from par-company --to ACM --apply", cmds.calls[2])  # no --profile for internal
         self.assertIn("no model key supplied", res["message"])
 
     def test_verify_warn_fails_the_request(self):
@@ -172,8 +172,9 @@ class StepTests(ti.Base):
 
     def test_entitlements_sent_when_plan_given(self):
         _, api, _ = self.run_req(plan="growth", modules=["crm", "seo"])
-        ent = [b for p, b in api.posts if p.endswith("/actions/set-entitlements")]
-        self.assertEqual(ent[0]["params"], {"companyId": "new-co", "plan": "growth", "modules": ["crm", "seo"]})
+        ent = [b for p, b in api.posts if p.endswith("/actions/setup.set-entitlements")]
+        self.assertEqual(ent[0]["params"], {"targetCompanyId": "new-co", "plan": "growth", "modules": {"crm": "entitled", "seo": "entitled"}})
+        self.assertNotEqual(ent[0]["companyId"], "new-co")   # runs on the operator company's page, never the new company's
 
 
 if __name__ == "__main__":

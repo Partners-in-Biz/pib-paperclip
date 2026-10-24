@@ -110,6 +110,8 @@ class IntakeTests(Base):
         self.assertIn("only operator or account manager", self.go(self.runner(api, Steps()))["message"])  # a name alone is not a role
         api = FakeApi(me={"id": "a1", "companyId": PAR, "name": "Ann", "role": "general", "title": "Account Manager", "status": "idle"})
         self.assertEqual(self.go(self.runner(api, Steps()))["status"], "done")
+        api = FakeApi(me={"id": "a1", "companyId": PAR, "name": "Ops", "role": "general", "title": "Operations Manager", "status": "idle"})
+        self.assertEqual(self.go(self.runner(api, Steps()), crm_company_id="crm-2")["status"], "done")  # crm-1 is already provisioned above
 
     def test_issue_must_exist_and_belong_to_requester(self):
         api = FakeApi()
@@ -296,6 +298,21 @@ class CapacityTests(Base):
         agents = {PAR: [{"status": "idle"}] * 56}
         res = self.go(self.runner(FakeApi(agents=agents), Steps()))
         self.assertIn("current 56, request adds 5", res["message"])
+
+    def test_resume_of_a_failed_request_is_not_blocked_by_its_own_company(self):
+        api = FakeApi(companies=[{"id": PAR}, {"id": "c2"}, {"id": "new-co"}], agents={"new-co": [{"status": "idle"}]})
+        r = self.runner(api, Steps())
+        old = {"id": "p-20261024-000000-bbbbbb", "status": "failed", "crm_company_id": "crm-1", "company_id": "new-co", "updated": "2026-10-24T16:30:00Z"}
+        pr.write_json(os.path.join(self.dir, "results", old["id"] + ".json"), old)
+        self.assertEqual(self.go(r)["status"], "done")
+
+    def test_a_new_company_is_still_refused_when_another_crm_company_failed(self):
+        api = FakeApi(companies=[{"id": PAR}, {"id": "c2"}, {"id": "new-co"}])
+        r = self.runner(api, Steps())
+        old = {"id": "p-20261024-000000-cccccc", "status": "failed", "crm_company_id": "crm-2", "company_id": "new-co", "updated": "2026-10-24T16:30:00Z"}
+        pr.write_json(os.path.join(self.dir, "results", old["id"] + ".json"), old)
+        res = self.go(r)
+        self.assertEqual(res["message"], "refused: maxHostedCompanies 3 reached (current 3)")
 
     def test_limits_live_in_the_policy_not_the_code(self):
         api = FakeApi(companies=[{"id": PAR}, {"id": "c2"}, {"id": "c3"}])
