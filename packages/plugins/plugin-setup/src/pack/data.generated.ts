@@ -107,7 +107,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },
@@ -150,7 +153,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },
@@ -196,7 +202,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },
@@ -238,7 +247,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },
@@ -277,7 +289,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },
@@ -317,7 +332,10 @@ export const PACK_MANIFEST_JSON: unknown = {
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": {
+        "pib": true,
+        "client": "repo"
+      },
       "requires": {
         "modules": []
       },

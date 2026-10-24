@@ -21,7 +21,7 @@ import { MODULES, type ModuleKey, type SetupStatus } from "./kit-setup.js";
 import { WIKI_PLUGIN } from "./memory.js";
 import { SETUP_PLUGIN } from "./kit-setup.js";
 import { roleHealth, teamRolesFor, type HireOptionsLite, type TeamHire, type TeamRole, type TeamRoleKey, type TeamRoleState } from "./team.js";
-import { hireOrder, loadPack, offeredTemplates, templateByKey, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike } from "./templates.js";
+import { hireOrder, isDefaultOn, loadPack, offeredTemplates, templateByKey, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike } from "./templates.js";
 
 export const COCKPIT_KEY = "partnersinbiz.cockpit";
 
@@ -62,6 +62,8 @@ export interface RunnerEnv {
   hires: TemplateHireLike[];
   /** Whether this is Partners in Biz's own company, allowing pib-scope templates. */
   ownerCompany?: boolean;
+  /** Whether the company has a project with a repository (the `client` profile hires the dev team only then). Absent or false when none, or when the projects could not be read. */
+  hasRepository?: boolean;
   // --- host and plugin calls (board session) ---
   getConfig(pluginIdOrKey: string, companyId: string): Promise<{ saved: boolean; config: Record<string, unknown> }>;
   saveConfig(pluginIdOrKey: string, companyId: string, config: Record<string, unknown>): Promise<void>;
@@ -294,11 +296,16 @@ export async function hiringFor(env: RunnerEnv): Promise<{ pick: HiringPick; age
   return { pick, agents, assigneeAgentId: chosen ?? pick.agent?.id ?? null, unreadable: false };
 }
 
-/** Template keys the run opens hire tasks for: the options, else the pack's defaults, limited to templates whose modules are on. */
-export function selectedTemplates(options: BootstrapOptions, modules: Record<ModuleKey, boolean>, ownerCompany = false): AgentTemplate[] {
+/**
+ * Template keys the run opens hire tasks for: the options, else the pack's defaults for the hosting profile
+ * (`pib` unless the options say `client`), limited to templates whose modules are on. Kit roles are not templates:
+ * the roles step hires the required ones of the switched-on modules under either profile.
+ */
+export function selectedTemplates(options: BootstrapOptions, modules: Record<ModuleKey, boolean>, ownerCompany = false, hasRepository = false): AgentTemplate[] {
   const pack = loadPack();
   const offered = offeredTemplates(pack.templates, ownerCompany);
-  const keys = options.templates ?? offered.filter((template) => template.defaultOn).map((template) => template.key);
+  const profile = options.hostingProfile ?? "pib";
+  const keys = options.templates ?? offered.filter((template) => isDefaultOn(template, profile, hasRepository)).map((template) => template.key);
   return keys
     .map((key) => templateByKey(key))
     .filter((template): template is AgentTemplate => !!template)
@@ -313,7 +320,7 @@ export async function stepRoles(env: RunnerEnv): Promise<StepOutcome> {
   if (roles.length === 0) return { status: "skipped", detail: "No module that needs an agent is switched on.", items: [] };
   const { pick, assigneeAgentId, unreadable } = await hiringFor(env);
   // A role a selected template holds (the Growth Marketing Lead holds Social) is hired by the templates step.
-  const heldByTemplate = new Set(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false).flatMap((template) => (template.kitRole ? [template.kitRole] : [])));
+  const heldByTemplate = new Set(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false, env.hasRepository ?? false).flatMap((template) => (template.kitRole ? [template.kitRole] : [])));
   const states = await env.loadTeam(roles);
   const items: StepItem[] = [];
   for (const role of roles) {
@@ -344,7 +351,7 @@ export async function stepRoles(env: RunnerEnv): Promise<StepOutcome> {
 }
 
 export async function stepTemplates(env: RunnerEnv): Promise<StepOutcome> {
-  const selected = hireOrder(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false));
+  const selected = hireOrder(selectedTemplates(env.options, env.modules, env.ownerCompany ?? false, env.hasRepository ?? false));
   if (selected.length === 0) return { status: "skipped", detail: "No template is selected.", items: [] };
   const { pick, agents, assigneeAgentId, unreadable } = await hiringFor(env);
   const list = pluginList(env);

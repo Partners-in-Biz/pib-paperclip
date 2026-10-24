@@ -38,6 +38,8 @@ export interface EnvInput {
   actions: SetupActions;
   /** Whether this is Partners in Biz's own company, allowing pib-scope templates. */
   ownerCompany?: boolean;
+  /** Whether the company has a project with a repository (the `client` profile's dev team waits for one). */
+  hasRepository?: boolean;
 }
 
 function rec(value: unknown): Record<string, unknown> {
@@ -79,6 +81,7 @@ export function buildRunnerEnv(input: EnvInput): RunnerEnv {
     installed: plugins,
     options: input.options,
     ownerCompany: input.ownerCompany,
+    hasRepository: input.hasRepository,
     requireApproval: input.requireApproval,
     statuses: input.statuses,
     starter: input.starter,
