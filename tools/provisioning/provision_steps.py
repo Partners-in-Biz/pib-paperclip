@@ -3,8 +3,8 @@
 Each step either completes or raises StepError; the first failure fails the request and leaves the company as it is (the message names
 the step and, for the keys step, the --undo file). A step that needs a person raises NeedsOwner: the request ends as `needs_owner`. A failed or
 needs_owner request that already made a company is resumed by the next request for the
-same CRM company: finished steps are skipped. The runner only reads state after the hires start: it never comments on, reopens or
-touches a hire task (that wakes the CEO).
+same CRM company: finished steps are skipped. The runner only reads state until the hire-skills step (after apply); only that step touches a hire task, to attach skills, accept
+the skills card and close it (that wakes the CEO, which is intended).
 """
 import json
 import os
@@ -12,7 +12,7 @@ import re
 import subprocess
 import time
 
-DEFAULT_TIMEOUTS = {"create-ceo": 300, "setup-run": 300, "copy-secrets": 300, "hires": 900, "apply": 300, "model-key": 300, "verify": 300}
+DEFAULT_TIMEOUTS = {"create-ceo": 300, "setup-run": 300, "copy-secrets": 300, "hires": 900, "apply": 300, "hire-skills": 120, "model-key": 300, "verify": 300}
 SECRET_RE = re.compile(r"(sk-ant-[A-Za-z0-9_-]+|Bearer\s+\S+|[A-Fa-f0-9]{40,}|pcp_[A-Za-z0-9_-]{16,})")
 
 
@@ -32,6 +32,7 @@ class NeedsOwner(StepError):
 # a request that stopped on one of these is picked up by the next request for the same CRM company
 RESUMABLE = ("failed", "needs_owner")
 HIRE_TERMINAL = ("done", "cancelled")
+HIRE_PARKED = ("in_review", "blocked")  # the CEO cannot attach skills itself (403 agents:configure): its task waits on the runner's hire-skills step
 HIRE_GRACE = 120
 HIRE_POLL = 15
 MIN_STAFFED = 2  # a resumed company with at least this many live agents already has its hires
@@ -183,6 +184,22 @@ def _ids(tasks):
     return ", ".join("%s (%s)" % (t.get("identifier") or t.get("id"), t.get("status")) for t in tasks)
 
 
+def _hire_name(task):
+    m = re.match(r"\s*Hire:\s*(.+?)\s*(\(.*\))?\s*$", str(task.get("title") or ""))
+    return m.group(1).strip().lower() if m else ""
+
+
+def _hired_agent(task, agents):
+    """The live agent a `Hire:` task names (its role, title or name equals the task's name part), or None."""
+    want = _hire_name(task)
+    if not want:
+        return None
+    for a in agents:
+        if want in (str(a.get(k) or "").strip().lower() for k in ("name", "title", "role")):
+            return a
+    return None
+
+
 def step_hires(c):
     """Wait until every `Hire:` task of the new company is done or cancelled, then check the agents exist. Read-only: no
     comment, no wake. `--agents` is a capacity number only; it is not a wait count."""
@@ -193,7 +210,9 @@ def step_hires(c):
         tasks = _hire_tasks(c)
         agents = _live_agents(c)
         c.st["agents"] = [{"id": a["id"], "name": a.get("name"), "role": a.get("role"), "title": a.get("title")} for a in agents]
-        open_ = [t for t in tasks if str(t.get("status")).lower() not in HIRE_TERMINAL]
+        # a parked task whose agent exists counts as hired: only the runner's hire-skills step can finish it
+        open_ = [t for t in tasks if str(t.get("status")).lower() not in HIRE_TERMINAL
+                 and not (str(t.get("status")).lower() in HIRE_PARKED and _hired_agent(t, agents))]
         if tasks and not open_:
             now = sorted(t.get("id") or t.get("identifier") or "" for t in tasks)
             if now == last:  # two polls in a row with the same, all-terminal set
@@ -216,7 +235,7 @@ def step_hires(c):
                 raise StepError("hire tasks not finished after %d s: %s" % (c.timeout("hires"), _ids(open_)))
             raise StepError("no hire tasks found in the new company after %d s" % c.timeout("hires"))
         c.sleep(HIRE_POLL)
-    done = [t for t in tasks if str(t.get("status")).lower() == "done"]
+    done = [t for t in tasks if str(t.get("status")).lower() not in ("cancelled",)]
     if len(agents) < len(done):
         raise StepError("%d hire tasks are done but the company has only %d live agents" % (len(done), len(agents)))
 
@@ -235,6 +254,54 @@ def step_link_agents(c):
 def step_apply(c):
     # attaches each recognised hired agent's role skills (an Operator without its identity skill is skipped by the script)
     c.must("apply", "new-company.py", "--company", c.st["prefix"], "--apply")
+
+
+SKILL_RE = re.compile(r"^\s*-\s*`([^`]+)`\s*$")
+
+
+def _task_skills(description):
+    """The skill keys under `## Skills to attach` in a hire task's description."""
+    out, on = [], False
+    for ln in str(description or "").splitlines():
+        if ln.startswith("## "):
+            on = ln.strip().lower() == "## skills to attach"
+        elif on:
+            m = SKILL_RE.match(ln)
+            if m:
+                out.append(m.group(1))
+    return out
+
+
+def step_hire_skills(c):
+    """The CEO cannot attach skills (403 agents:configure), so its hire task sits `in_review` with an owner card. Here, after link-agents
+    and apply, the board token attaches the skills the task names (add mode), accepts the open cards and closes the task. The accept wakes
+    the CEO, which is intended: it closes its own task. A task with no matching agent is left alone (the hires step already decided)."""
+    agents = _live_agents(c)
+    left = []
+    for t in _hire_tasks(c):
+        if str(t.get("status")).lower() not in HIRE_PARKED:
+            continue
+        agent = _hired_agent(t, agents)
+        if not agent:
+            left.append(t)
+            continue
+        tid = t["id"]
+        desc = t.get("description")
+        if desc is None:
+            desc = (c.api.get("/api/issues/%s" % tid) or {}).get("description")
+        skills = _task_skills(desc)
+        if skills:
+            c.api.post("/api/agents/%s/skills/sync" % agent["id"], {"mode": "add", "desiredSkills": skills})
+        cards = c.api.get("/api/issues/%s/interactions" % tid)
+        if isinstance(cards, dict):
+            cards = cards.get("items") or cards.get("interactions") or []
+        for card in cards or []:
+            if isinstance(card, dict) and str(card.get("status")).lower() == "pending" and card.get("kind") != "connection_intent":
+                c.api.post("/api/issues/%s/interactions/%s/accept" % (tid, card["id"]), {})
+        c.api.patch("/api/issues/%s" % tid, {"status": "done", "comment": "Provisioning runner: attached %s to %s and accepted the skills card. Closing this hire."
+                                             % (", ".join(skills) or "no skills", agent.get("name") or agent["id"])})
+    if left:
+        raise StepError("hire task(s) with no matching agent: %s" % _ids(left))
 
 
 def step_model_key(c):
@@ -317,7 +384,7 @@ def step_owner_invite(c):
 
 STEPS = [("create-company", step_create_company), ("entitlements", step_entitlements), ("key-gate", step_key_gate), ("create-ceo", step_create_ceo),
          ("setup-run", step_setup_run), ("copy-secrets", step_copy_secrets), ("hires", step_hires), ("link-agents", step_link_agents),
-         ("apply", step_apply), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record),
+         ("apply", step_apply), ("hire-skills", step_hire_skills), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record),
          ("owner-invite", step_owner_invite)]
 
 
