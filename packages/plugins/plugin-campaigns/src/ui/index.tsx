@@ -23,8 +23,10 @@ import {
   PageFrame,
   PageMessage,
   Pill,
+  PreferencesPanel,
   Select,
   Send,
+  Settings,
   Sheet,
   Tabs,
   TextArea,
@@ -91,7 +93,7 @@ interface WorkspaceClient {
 }
 
 interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null; series?: CampaignSeries; suppressed?: number }
-type TabId = "overview" | "campaigns";
+type TabId = "overview" | "campaigns" | "preferences";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
 function defaultAudience(scope: ClientScope): AudienceMode {
@@ -140,6 +142,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const load = usePluginAction("campaigns.load");
   const loadDetail = usePluginAction("campaigns.detail");
   const createCampaign = usePluginAction("campaigns.create-campaign");
+  const loadPreferences = usePluginAction("campaigns.preferences-load");
+  const savePreferences = usePluginAction("campaigns.preferences-save");
   const addStep = usePluginAction("campaigns.add-step");
   const launch = usePluginAction("campaigns.launch");
   const requestApproval = usePluginAction("campaigns.request-approval");
@@ -155,7 +159,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
-  const [tab, setTab] = useUrlTab<TabId>(["overview", "campaigns"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
+  const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns"] : ["overview", "campaigns", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
   // `?campaign=<id>` opens that campaign's detail, so an approval can link straight to what goes out.
   const openId = new URLSearchParams(location.search).get("campaign");
   // "Finish setting up Campaigns" on the overview until its required setup is done.
@@ -307,6 +311,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
           { id: "campaigns", label: "Campaigns", icon: Send, count: waitingCount || null, countTone: "warn" },
+          ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -325,6 +330,13 @@ export function CampaignsPage({ context }: PluginPageProps) {
             onOpen={openCampaign}
           />
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{message ? "Campaigns could not load." : "Loading campaigns…"}</p>
+      ) : null}
+
+      {tab === "preferences" ? (
+        <PreferencesPanel
+          load={() => loadPreferences({}) as never}
+          save={(patch) => savePreferences({ patch }) as never}
+        />
       ) : null}
 
       {tab === "campaigns" ? (

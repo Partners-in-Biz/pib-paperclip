@@ -20,7 +20,8 @@
  * - A campaign's own `fromName` and `replyTo` win over the identity's.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { readConfig, resolveSender, senderKeyOf, type SenderIdentity } from "@partnersinbiz/pib-plugin-kit";
+import { readCampaignPreferences } from "./preferences.js";
+import { resolveSender, senderKeyOf, type SenderIdentity } from "@partnersinbiz/pib-plugin-kit";
 import type { MessagingChannel } from "./channels.js";
 import { listSenderIdentityRows, type SenderIdentityRow } from "./db.js";
 import { campaignSenderKey, type CampaignDraft } from "./domain.js";
@@ -48,12 +49,10 @@ async function senderName(ctx: PluginContext, companyId: string, campaign: Pick<
   if (row?.from_name) return row.from_name;
   if (campaign?.clientRef) return campaign.clientName ?? "";
   try {
-    const config = await readConfig(ctx, companyId);
-    if (typeof config.defaultFromName === "string" && config.defaultFromName.trim()) return config.defaultFromName.trim();
+    return String((await readCampaignPreferences(ctx, companyId)).defaultFromName ?? "").trim();
   } catch {
-    // no settings yet
+    return "";
   }
-  return "Partners in Biz";
 }
 
 /**
@@ -67,7 +66,7 @@ export async function senderDisplayName(ctx: PluginContext, companyId: string, c
     const row = (await listSenderIdentityRows(ctx, companyId)).find((entry) => entry.sender_key === key);
     return await senderName(ctx, companyId, campaign, row);
   } catch {
-    return campaign?.fromName || campaign?.clientName || "Partners in Biz";
+    return campaign?.fromName || campaign?.clientName || "";
   }
 }
 
