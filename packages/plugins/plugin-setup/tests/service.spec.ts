@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
 import { PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
@@ -29,7 +29,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.6.0");
+    expect(manifest.version).toBe("0.6.1");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -45,6 +45,26 @@ describe("manifest and migration", () => {
     const statements = splitSqlStatements(sql);
     expect(statements).toHaveLength(3);
     for (const statement of statements) validateMigrationStatement(statement, NAMESPACE);
+  });
+
+  it("passes the host migration guard for every file in migrations/, with no unbalanced quote in a comment", () => {
+    const dir = new URL("../migrations/", import.meta.url);
+    const files = readdirSync(dir).filter((name) => name.endsWith(".sql")).sort();
+    expect(files).toContain("003_entitlements.sql");
+    for (const file of files) {
+      const sql = readFileSync(new URL(file, dir), "utf8");
+      // The host strips quoted text before comments: a lone quote in a comment swallows the next statement text (PAR-5153).
+      for (const line of sql.split("\n")) {
+        if (!line.trimStart().startsWith("--")) continue;
+        for (const quote of ["'", '"']) expect((line.split(quote).length - 1) % 2, `${file}: unbalanced ${quote} in a comment`).toBe(0);
+      }
+      for (const statement of splitSqlStatements(sql)) validateMigrationStatement(statement, NAMESPACE);
+    }
+  });
+
+  it("the guard rejects the apostrophe-in-comment trap that failed the 0.6.0 deploy", () => {
+    const trap = "-- entitled to everything (plan 'pib') by the plugin's first start\nCREATE TABLE plugin_setup_48494712db.t (state text CHECK (state IN ('entitled', 'off')))";
+    expect(() => validateMigrationStatement(trap, NAMESPACE)).toThrow(/DDL or backfill only/);
   });
 
   it("passes the host migration guard with the New company tables (002), and 001 is untouched", () => {
