@@ -74,6 +74,27 @@ describe("startHire", () => {
     await startHire(ctx, "co", role, { actorUserId: null, description: modelKeyHireText(client) });
     expect((String(created[1]!.description).match(/## Model key \(client company\)/g) ?? []).length).toBe(1);
   });
+  it("no saved settings (null) means pib: the hire is not refused", async () => {
+    const { ctx, created } = ctxWith(null);
+    await startHire(ctx, "co", role, { actorUserId: null });
+    expect(created).toHaveLength(1);
+    expect(String(created[0]!.description)).not.toContain("## Model key");
+  });
+  it("a config read that throws fails the hire (closed, on purpose: never guess a client is pib)", async () => {
+    const { ctx, created } = ctxWith({});
+    (ctx as unknown as { config: { get: () => Promise<never> } }).config.get = async () => {
+      throw new Error("config unavailable");
+    };
+    await expect(startHire(ctx, "co", role, { actorUserId: null })).rejects.toThrow("config unavailable");
+    expect(created).toEqual([]);
+  });
+  it("a client hire whose role prefers hermes_local is not refused with the key, and asks for claude_local", async () => {
+    const { ctx, created } = ctxWith({ hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" });
+    await startHire(ctx, "co", { ...role, adapterPreference: ["hermes_local"] }, { actorUserId: null });
+    const text = String(created[0]!.description);
+    expect(text).toContain("| **Adapter** | `claude_local` (the company's own key) |");
+    expect(text).not.toContain("hermes_local");
+  });
   it("does not change a pib hire or a plugin with no config reader", async () => {
     const { ctx, created } = ctxWith({ hostingProfile: "pib" });
     await startHire(ctx, "co", role, { actorUserId: null, description: "Plain." });

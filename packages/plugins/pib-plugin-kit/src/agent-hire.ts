@@ -153,7 +153,9 @@ export function hireSkills(role: HireRole): HireSkill[] {
 
 export function hireTaskDraft(role: HireRole, hosting?: Hosting): { title: string; description: string } {
   const preference = adapterPreferenceFor(role.adapterPreference, hosting);
-  const profile = role.runProfile ?? runProfileForRole(role.roleKey);
+  const base = role.runProfile ?? runProfileForRole(role.roleKey);
+  // A client company runs on its own Anthropic key: the Hermes option is not offered.
+  const profile = hosting?.profile === "client" ? { ...base, hermes: undefined } : base;
   const skillLines = hireSkills(role).map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
   const setupLines = role.pluginSetup.map((line) => `- ${line}`).join("\n");
   const description = `The ${role.pluginName} plugin needs an agent. Please hire it the way we hire every agent, so it sits in the right place in the org chart.
