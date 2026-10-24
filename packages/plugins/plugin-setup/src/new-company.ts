@@ -51,7 +51,7 @@ import { standingApproval } from "./standing-approval.js";
 import { loadStarterPack, parseImportResult, starterPackExport, type StarterPack } from "./starter-pack.js";
 import { loadPack, matchTemplate, offeredTemplates, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
 import { pickAdapter, renderHire, templateConfig } from "./templates-render.js";
-import { message, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
+import { message, moduleView, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
 
 const systemClock: Clock = { now: () => new Date() };
 
@@ -256,7 +256,7 @@ export async function bootstrapCompany(
 
   // 1. modules (and, through saveModules, the Finish setup issue)
   const existing = await getChoice(ctx, input.companyId);
-  let modules: Record<string, boolean> | null = existing ? (existing.modules as Record<string, boolean>) : null;
+  let modules: Record<string, boolean> | null = existing ? ((await moduleView(ctx, input.companyId, clock)).modules as Record<string, boolean>) : null;
   let issueNote: { status: StepRecord["status"]; detail: string };
   if (options.modules !== undefined || !existing) {
     const saved = await saveModules(ctx, { companyId: input.companyId, modules: options.modules ?? {}, userId: input.userId }, clock);

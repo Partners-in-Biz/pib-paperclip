@@ -8,6 +8,9 @@ export type ModuleChoice = Record<ModuleKey, boolean>;
 
 export class SetupError extends Error {}
 
+/** The caller may not do this (wrong role, or the module is not in the company's plan). */
+export class ForbiddenError extends SetupError {}
+
 /** Every module on: what a company without a saved choice gets. */
 export function allModulesOn(): ModuleChoice {
   return Object.fromEntries(MODULE_KEYS.map((key) => [key, true])) as ModuleChoice;
@@ -30,9 +33,29 @@ export function normalizeModules(input: unknown): ModuleChoice {
   return result;
 }
 
-/** The effective switches: saved choice, or everything on. */
-export function effectiveModules(saved: Partial<Record<ModuleKey, boolean>> | null | undefined): ModuleChoice {
+/**
+ * Like normalizeModules for a save: a module the company is not entitled to is
+ * forced off when the input leaves it out, and refused when the input turns it on.
+ */
+export function normalizeEntitledModules(input: unknown, entitled: Partial<Record<ModuleKey, boolean>>): ModuleChoice {
+  const result = normalizeModules(input);
+  const source = input as Record<string, unknown>;
+  for (const key of MODULE_KEYS) {
+    if (entitled[key] === true) continue;
+    if (source[key] === true) throw new ForbiddenError(`${MODULES[key].title} is not in this company's plan`);
+    result[key] = false;
+  }
+  return result;
+}
+
+/**
+ * The effective switches: the saved choice AND what the company is entitled to.
+ * With `entitled` given, a company with no saved choice gets exactly its
+ * entitlements; without it (old callers) the choice or everything on.
+ */
+export function effectiveModules(saved: Partial<Record<ModuleKey, boolean>> | null | undefined, entitled?: Partial<Record<ModuleKey, boolean>> | null): ModuleChoice {
   const result = allModulesOn();
+  if (entitled) for (const key of MODULE_KEYS) if (entitled[key] !== true) result[key] = false;
   if (!saved) return result;
   for (const key of MODULE_KEYS) if (saved[key] === false) result[key] = false;
   return result;

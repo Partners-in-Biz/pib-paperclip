@@ -2,7 +2,7 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { PLUGIN_ID } from "./namespace.js";
 import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.5.16";
+export const VERSION = "0.6.0";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -41,6 +41,8 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    // Entitlements: who is an owner or admin of a company (role checks on save-modules and set-entitlements).
+    "access.members.read",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
