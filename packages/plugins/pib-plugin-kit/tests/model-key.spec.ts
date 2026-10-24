@@ -51,8 +51,11 @@ describe("hosting settings", () => {
 });
 
 describe("hire task text", () => {
-  it("is unchanged for pib and carries the secret reference for a client", () => {
+  it("is unchanged for pib (golden rows) and carries the secret reference for a client", () => {
     expect(hireTaskDraft(role).description).toBe(hireTaskDraft(role, hostingFromConfig({})).description);
+    expect(hireTaskDraft(role).description).toContain("| **Adapter** | `hermes_local`, then `claude_local` (first one that has a working model key) |");
+    expect(hireTaskDraft(role).description).toContain("| **Start** | paused, until its model key is checked |");
+    expect(hireTaskDraft(role).description).not.toContain("Model key (client company)");
     const draft = hireTaskDraft(role, client).description;
     expect(draft).toContain('"secretId": "sec-1"');
     expect(draft).toContain('"type": "secret_ref"');
@@ -95,6 +98,22 @@ describe("startHire", () => {
     expect(text).toContain("| **Adapter** | `claude_local` (the company's own key) |");
     expect(text).not.toContain("hermes_local");
   });
+  it("a client hire from a preview drafted without the hosting settings loses Hermes (unedited draft)", async () => {
+    const { ctx, created } = ctxWith({ hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" });
+    await startHire(ctx, "co", role, { actorUserId: null, description: hireTaskDraft(role).description });
+    const text = String(created[0]!.description);
+    expect(text).not.toContain("hermes_local");
+    expect(text).toContain("| **Adapter** | `claude_local` (the company's own key) |");
+    expect(text).toBe(hireTaskDraft(role, { profile: "client", secretName: "ANTHROPIC_API_KEY", secretId: "sec-1" }).description);
+  });
+  it("an edited preview keeps the edit, loses Hermes and gets the key section once", async () => {
+    const { ctx, created } = ctxWith({ hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" });
+    await startHire(ctx, "co", role, { actorUserId: null, description: `${hireTaskDraft(role).description}\n\nPlease report to Sam.` });
+    const text = String(created[0]!.description);
+    expect(text).toContain("Please report to Sam.");
+    expect(text).not.toContain("hermes_local");
+    expect((text.match(/## Model key \(client company\)/g) ?? []).length).toBe(1);
+  });
   it("does not change a pib hire or a plugin with no config reader", async () => {
     const { ctx, created } = ctxWith({ hostingProfile: "pib" });
     await startHire(ctx, "co", role, { actorUserId: null, description: "Plain." });
@@ -109,7 +128,7 @@ describe("startHire", () => {
 describe("unbound agents", () => {
   const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: id, status: "idle", adapterType: "claude_local", adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-1" } } }, ...extra });
   it("flags claude agents without the binding, in client companies only", () => {
-    const agents = [agent("ok"), agent("none", { adapterConfig: {} }), agent("plain", { adapterConfig: { env: { ANTHROPIC_API_KEY: "x" } } }), agent("stale", { adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "old" } } } }), agent("hermes", { adapterType: "hermes_local" }), agent("gone", { status: "terminated", adapterConfig: {} })];
+    const agents = [agent("ok"), agent("none", { adapterConfig: { model: "m" } }), agent("unread", { adapterConfig: {} }), agent("absent", { adapterConfig: null }), agent("plain", { adapterConfig: { env: { ANTHROPIC_API_KEY: "x" } } }), agent("stale", { adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "old" } } } }), agent("hermes", { adapterType: "hermes_local" }), agent("gone", { status: "terminated", adapterConfig: {} })];
     expect(unboundKeyAgents(agents, client).map((a) => a.id)).toEqual(["none", "plain", "stale"]);
     expect(unboundKeyAgents(agents, hostingFromConfig({}))).toEqual([]);
     expect(unboundModelKeyCheck(agents, client)).toMatchObject({ key: "agents:model-key", status: "bad" });

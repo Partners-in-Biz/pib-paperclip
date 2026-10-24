@@ -308,6 +308,27 @@ async function comment(ctx: PluginContext, companyId: string, issueId: string, b
 }
 
 /** Opens the hire task and remembers it. The assignee is woken when it is an agent. */
+/**
+ * A prefilled hire description for a client company. Every plugin's preview and Setup draft it without the hosting
+ * settings, so it still offers Hermes. An unedited draft is rebuilt for the client; an edited one is kept, with its
+ * adapter row, run-profile rows and config block swapped where they are still found, and the key section added.
+ */
+function clientDescription(role: HireRole, supplied: string, hosting: Hosting): string {
+  if (supplied.includes(MODEL_KEY_MARKER)) return supplied;
+  if (supplied === hireTaskDraft(role).description.trim()) return hireTaskDraft(role, hosting).description;
+  const base = role.runProfile ?? runProfileForRole(role.roleKey);
+  const client = { ...base, hermes: undefined };
+  const preference = adapterPreferenceFor(role.adapterPreference, hosting);
+  let text = supplied;
+  const swap = (from: string, to: string) => {
+    if (from && text.includes(from)) text = text.replace(from, () => to);
+  };
+  swap(runProfileRows(base, role.adapterPreference).join("\n"), runProfileRows(client, preference).join("\n"));
+  swap(runProfileHireText(base, role.adapterPreference), runProfileHireText(client, preference));
+  text = text.replace(/^\| \*\*Adapter\*\* \|.*$/m, () => "| **Adapter** | `claude_local` (the company's own key) |");
+  return `${text}\n\n${modelKeyHireText(hosting)}`;
+}
+
 export async function startHire(
   ctx: PluginContext,
   companyId: string,
@@ -321,7 +342,7 @@ export async function startHire(
   const title = input.title?.trim() || draft.title;
   // A description the caller prefilled (Setup does) may have been drafted without the hosting settings: add the key section.
   const supplied = input.description?.trim();
-  const description = supplied ? (hosting.profile === "client" && !supplied.includes(MODEL_KEY_MARKER) ? `${supplied}\n\n${modelKeyHireText(hosting)}` : supplied) : draft.description;
+  const description = supplied ? (hosting.profile === "client" ? clientDescription(role, supplied, hosting) : supplied) : draft.description;
   const assigneeAgentId = input.assigneeAgentId || null;
   const assigneeUserId = assigneeAgentId ? null : input.assigneeUserId || null;
   const issue = await ctx.issues.create({

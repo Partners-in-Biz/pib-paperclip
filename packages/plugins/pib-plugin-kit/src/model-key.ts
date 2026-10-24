@@ -68,6 +68,8 @@ export function unboundKeyAgents(agents: KeyAgentLike[], hosting: Hosting): KeyA
   if (hosting.profile !== "client") return [];
   return agents.filter((agent) => {
     if (agent.adapterType !== "claude_local" || GONE.has(String(agent.status ?? ""))) return false;
+    // A missing or empty config is "not read" (a caller without config access gets {}), never "unbound".
+    if (!agent.adapterConfig || Object.keys(agent.adapterConfig).length === 0) return false;
     const env = (agent.adapterConfig?.env ?? {}) as Record<string, unknown>;
     const binding = (env[MODEL_KEY_ENV] ?? {}) as Record<string, unknown>;
     return !(binding.type === "secret_ref" && (!hosting.secretId || binding.secretId === hosting.secretId));
