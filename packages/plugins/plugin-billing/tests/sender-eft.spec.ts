@@ -21,12 +21,12 @@ const member = (principalId: string, membershipRole: string) =>
 
 function boot(config: Record<string, unknown>, companyName = "Partners in Biz") {
   const h = createTestHarness({ manifest, config });
-  h.seed({ companies: [{ id: CO, name: companyName, issuePrefix: "PAR" } as never], accessMembers: [member(OWNER, "owner")] });
+  h.seed({ companies: [{ id: CO, name: companyName, issuePrefix: "PAR" } as never], accessMembers: [member(OWNER, "owner"), member("u-operator", "operator")] });
   return h;
 }
 type Result = { ok: boolean; error?: string; needsConfirmation?: string[]; values?: Record<string, unknown>; previous?: Record<string, unknown> };
-const save = (h: ReturnType<typeof boot>, patch: Record<string, unknown>, confirmed?: boolean) =>
-  PREFERENCES_ACTIONS[PREFERENCES_SAVE_ACTION]!(h.ctx, { companyId: CO, actor: { type: "user", userId: OWNER } } as never, { patch, ...(confirmed === undefined ? {} : { confirmed }) }) as Promise<Result>;
+const save = (h: ReturnType<typeof boot>, patch: Record<string, unknown>, confirmed?: boolean, userId = OWNER) =>
+  PREFERENCES_ACTIONS[PREFERENCES_SAVE_ACTION]!(h.ctx, { companyId: CO, actor: { type: "user", userId } } as never, { patch, ...(confirmed === undefined ? {} : { confirmed }) }) as Promise<Result>;
 
 /** PiB's details as they were saved in the host form before preferences existed. */
 const PAR_CONFIG = {
@@ -68,6 +68,34 @@ describe("bank details need the owner's confirmation", () => {
     expect((await billingSettings(h.ctx, CO)).payment).toEqual(PAR_CONFIG.payment);
     expect((await save(h, { "payment.accountNumber": "99999999999" }, false)).ok).toBe(false);
     expect((await billingSettings(h.ctx, CO)).payment).toEqual(PAR_CONFIG.payment);
+  });
+
+  it("a refusal never echoes a value, and a non-admin without confirmation learns nothing", async () => {
+    const h = boot(PAR_CONFIG);
+    for (const userId of [OWNER, "u-operator"]) {
+      const refused = await save(h, { "payment.accountNumber": "99999999999" }, undefined, userId);
+      expect(refused.ok).toBe(false);
+      expect(JSON.stringify(refused)).not.toMatch(/62000000123|250655|FNB|99999999999/);
+    }
+    expect(await save(h, { "payment.accountNumber": "99999999999" }, true, "u-operator")).toMatchObject({ ok: false, error: "Only a company owner or admin can change preferences" });
+  });
+
+  it("clearing a bank field with null blanks it like an empty value: the host-form value does not come back", async () => {
+    const h = boot(PAR_CONFIG);
+    expect((await save(h, { "payment.accountNumber": null }, true)).ok).toBe(true);
+    expect("accountNumber" in ((await billingSettings(h.ctx, CO)).payment ?? {})).toBe(false);
+    expect((await save(h, { "payment.bankName": "" }, true)).ok).toBe(true);
+    expect("bankName" in ((await billingSettings(h.ctx, CO)).payment ?? {})).toBe(false);
+  });
+
+  it("loading the panel masks bank details (all but the last 3) for anyone but an owner or admin", async () => {
+    const h = boot(PAR_CONFIG);
+    const load = (userId: string) => PREFERENCES_ACTIONS[PREFERENCES_LOAD_ACTION]!(h.ctx, { companyId: CO, actor: { type: "user", userId } } as never, {}) as Promise<{ values: Record<string, string> }>;
+    expect((await load(OWNER)).values["payment.accountNumber"]).toBe("62000000123");
+    const masked = (await load("u-operator")).values;
+    expect(masked["payment.accountNumber"]).toBe("••••••••123");
+    expect(JSON.stringify(masked)).not.toContain("62000000123");
+    expect(masked["sender.name"]).toBe("Partners in Biz");
   });
 
   it("saves with confirmation and the response shows the previous value", async () => {
@@ -137,6 +165,14 @@ describe("what customers read", () => {
     const text = rendered({});
     expect(text).toContain(`from ${FALLBACK_SENDER_NAME}`);
     expect(text).not.toMatch(/PiB|Partners in Biz/);
+  });
+
+  it("bank details saved in the host form but no sender name: the sender is the company name", async () => {
+    const h = boot({ payment: PAR_CONFIG.payment, sender: { vatNumber: "4123456789" } }, "Acme Roofing");
+    const settings = await billingSettings(h.ctx, CO);
+    expect(settings.sender).toEqual({ vatNumber: "4123456789", name: "Acme Roofing" });
+    expect(settings.payment).toEqual(PAR_CONFIG.payment);
+    expect(rendered(settings)).toContain("Invoice LUM-001 from Acme Roofing");
   });
 
   it("a name a person saved beats the company name, and clearing it returns to the company name", async () => {

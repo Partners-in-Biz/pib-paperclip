@@ -7,7 +7,8 @@
  *
  * Defaults are what Billing did before this existed, so a company that never
  * opens the panel (and the saved settings it already has, which are read as the
- * fallback) behaves exactly as before.
+ * fallback) behaves as before. One exception: with no sender name saved, the
+ * sender is now the company name (see `withSenderName` in config.ts), not "Partners in Biz".
  */
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { definePreferences, describePreferences, readPreferences, savePreferences, TAX_CODES, type PreferenceValue, type PreferenceValues } from "@partnersinbiz/pib-plugin-kit";
@@ -91,9 +92,33 @@ export async function withPreferences<T extends object>(ctx: PluginContext, comp
   }
 }
 
+/** All but the last 3 characters hidden. */
+export function maskTail(value: string): string {
+  return value.length <= 3 ? "•".repeat(value.length) : "•".repeat(value.length - 3) + value.slice(-3);
+}
+
+/** The kit's own rule for who may save: a signed-in owner or admin (local-board is the owner of a local instance). Fails closed. */
+async function mayEdit(ctx: PluginContext, context: PluginPerformActionContext): Promise<boolean> {
+  const userId = context.actor?.type === "user" && typeof context.actor.userId === "string" ? context.actor.userId.trim() : "";
+  if (!userId) return false;
+  if (userId === "local-board") return true;
+  try {
+    const members = await ctx.access.members.list({ companyId: requiredCompany(context) });
+    const role = members.find((m) => m.principalType === "user" && m.principalId === userId && m.status === "active")?.membershipRole;
+    return role === "owner" || role === "admin";
+  } catch {
+    return false;
+  }
+}
+
+/** Bank details were only in the host form before: anyone but an owner or admin sees them masked. */
 async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   const companyId = requiredCompany(context);
-  return { fields: describePreferences(BILLING_PREFERENCES), values: await readPreferences(ctx, companyId, BILLING_PREFERENCES) };
+  const values = await readPreferences(ctx, companyId, BILLING_PREFERENCES);
+  if (!(await mayEdit(ctx, context))) {
+    for (const id of BANK_PREFERENCE_IDS) if (typeof values[id] === "string") values[id] = maskTail(values[id] as string);
+  }
+  return { fields: describePreferences(BILLING_PREFERENCES), values };
 }
 
 /** Currency codes are checked here: the kit checks length only. Returns the patch with codes upper-cased. */
@@ -107,6 +132,8 @@ export function checkedPatch(raw: unknown): Record<string, PreferenceValue | nul
     if (!/^[A-Z]{3}$/.test(code)) throw new BillingError(`${BILLING_PREFERENCES.fields[id]!.label} must be a three-letter currency code`);
     patch[id] = code;
   }
+  // A cleared bank field is blanked, not removed from the row: removing it would bring the old host-form value back.
+  for (const id of BANK_PREFERENCE_IDS) if (patch[id] === null) patch[id] = "";
   return patch;
 }
 
@@ -116,7 +143,7 @@ export function bankIdsIn(patch: Record<string, unknown>): string[] {
 }
 
 async function save(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  const companyId = requiredCompany(context);
+  requiredCompany(context);
   let patch: Record<string, PreferenceValue | null>;
   try {
     patch = checkedPatch(params.patch);
@@ -124,12 +151,11 @@ async function save(ctx: PluginContext, context: PluginPerformActionContext, par
     if (error instanceof BillingError) return { ok: false as const, error: error.message };
     throw error;
   }
-  // Money data: the page asks the owner first and sends `confirmed: true`. A save without it is refused and says what would change.
+  // Money data: the page asks the owner first and sends `confirmed: true`. A save without it is refused and names the fields.
   const bank = bankIdsIn(patch);
   if (bank.length > 0 && params.confirmed !== true) {
-    const current = await readPreferences(ctx, companyId, BILLING_PREFERENCES);
-    const changes = bank.map((id) => `${BILLING_PREFERENCES.fields[id]!.label} (now ${current[id] === "" || current[id] === undefined ? "empty" : String(current[id])})`);
-    return { ok: false as const, needsConfirmation: bank, error: `Confirm the change to the bank details before it is saved: ${changes.join(", ")}` };
+    // Field names only: this runs before the role check, so it must not echo a value.
+    return { ok: false as const, needsConfirmation: bank, error: `Confirm the change to the bank details before it is saved: ${bank.map((id) => BILLING_PREFERENCES.fields[id]!.label).join(", ")}` };
   }
   return savePreferences(ctx, context, BILLING_PREFERENCES, patch);
 }

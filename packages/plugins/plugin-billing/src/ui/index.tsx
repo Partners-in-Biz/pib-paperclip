@@ -235,7 +235,7 @@ export function BillingPage({ context }: PluginPageProps) {
   return (
     <Page
       title="Billing"
-      description="PiB's invoices, quotes, payments, retainers, bills and time. Agents draft and ask; a person approves sending and money."
+      description="Invoices, quotes, payments, retainers, bills and time. Agents draft and ask; a person approves sending and money."
       message={pageMessage}
       actions={headerAction}
       accent="billing"
