@@ -4,6 +4,7 @@
 import { MODULES, type SetupStatus } from "../kit-setup.js";
 import { parseSecretCatalog, type SecretLite } from "../model-key.js";
 import { parseSetupStatus } from "../status.js";
+import { projectsHaveRepository } from "../templates.js";
 
 export interface PluginRecordLite {
   id: string;
@@ -167,6 +168,16 @@ export async function fetchSecretCatalog(companyId: string): Promise<SecretLite[
     return res.ok ? parseSecretCatalog(body) : null;
   } catch {
     return null;
+  }
+}
+
+/** Whether the company has a project with a repository. False when the projects cannot be read: the `client` profile then leaves the dev team out, and a repeat run can add it. */
+export async function fetchHasRepository(companyId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/projects`, { credentials: "include", headers: { accept: "application/json" } });
+    return res.ok ? projectsHaveRepository(await readJson(res)) : false;
+  } catch {
+    return false;
   }
 }
 

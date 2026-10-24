@@ -505,6 +505,8 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
         group: template.group,
         provisioning: template.provisioning,
         defaultOn: template.defaultOn,
+        // The `client` hosting profile's default: true, false, or "repo" (only when the company has a project with a repository).
+        defaultOnClient: template.defaultOnClient ?? template.defaultOn,
         kitRole: template.kitRole ?? null,
         reportsTo: template.reportsTo,
         adapterType,

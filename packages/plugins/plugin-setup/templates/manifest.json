@@ -105,7 +105,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
@@ -148,7 +148,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
@@ -194,7 +194,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
@@ -236,7 +236,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
@@ -275,7 +275,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
@@ -315,7 +315,7 @@
         ]
       },
       "provisioning": "hire",
-      "defaultOn": true,
+      "defaultOn": { "pib": true, "client": "repo" },
       "requires": {
         "modules": []
       },
