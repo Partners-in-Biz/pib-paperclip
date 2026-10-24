@@ -16,14 +16,14 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 
 1. Kill switch: `enabled` in the policy, or a file `DISABLED` in the spool.
 2. Identity: the run's `PAPERCLIP_API_KEY` against `GET /api/agents/me`; the token is dropped at once and is never written to a result.
-   Only agents of the PAR company whose role, title or name contains an `allowedRequesters` entry (Operator, Account Manager).
-3. The `--issue` exists in PAR and the requester is its assignee.
+   Only agents of the PAR company whose role or title equals an `allowedRequesters` entry (Operator, Account Manager); the name does not count.
+3. The `--issue` exists in PAR and the requester is its assignee. The runner writes on an issue only after steps 2 and 3 pass.
 4. A client company needs `--model-key` (the client's own key, task 2.2); the key itself never goes in a request.
 5. One open request per CRM company; a CRM company that is already `done` is refused.
 6. Capacity gate (Decision 4 on PAR-5152): `maxHostedCompanies` 3 and `maxAgentsTotal` 60, counted over the whole box, PAR included
    (archived companies and terminated agents do not count). A refusal names the limit and the count:
    `refused: maxHostedCompanies 3 reached (current 3)` or `refused: maxAgentsTotal 60 would be exceeded (current 58, request adds 4)`.
-   The values live only in `provision-policy.json`; re-set them from the Task 0.3 measurements after the pilot.
+   The request counts at least `agentsPerNewCompany` agents, whatever `--agents` says. The values live only in `provision-policy.json`; re-set them from the Task 0.3 measurements after the pilot.
 
 ## Steps (first failure fails the request and says which step)
 
@@ -31,7 +31,7 @@ with `install-provisioning.sh --check`. Nothing here edits pib-ops itself.
 2. `setup.set-entitlements` when `--plan` or `--modules` is given
 3. `new-company.py --company <prefix> --create-ceo --apply`
 4. Setup New company run, headless, with `profile` as a parameter (`setupRunnerCommand`; the board token goes in `PIB_BOARD_TOKEN`).
-   **`profile: client` is refused until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
+   **`profile: client` is refused at intake, before anything is created, until `setupProfileWired` is true: it waits on PAR-5157 (task 2.1).**
 5. `copy-company-secrets.py --profile client --to <prefix> --apply` (non-zero: stop; the `--undo` file it names is in the result)
 6. wait for the CEO's hires (read only; never comment on or reopen a hire task: it wakes the CEO)
 7. `<plugin>.link-agent` for Account Manager, SEO and Social (`linkAgents`)

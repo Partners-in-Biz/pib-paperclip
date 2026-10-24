@@ -89,13 +89,20 @@ class StepTests(ti.Base):
         issue_posts = [p for p, _ in api.posts if "/issues" in p]
         self.assertEqual(issue_posts, ["/api/issues/iss-1/comments"])  # only the requesting PAR issue gets the result comment
 
-    def test_client_profile_waits_on_task_2_1_until_wired(self):
+    def test_client_profile_waits_on_task_2_1_and_creates_nothing(self):
         self.policy["setupProfileWired"] = False
-        res, _, cmds = self.run_req()
-        self.assertEqual(res["status"], "failed")
+        res, api, cmds = self.run_req()
+        self.assertEqual(res["status"], "refused")
         self.assertIn("PAR-5157", res["message"])
-        self.assertEqual(res["step"], "setup-run")
-        self.assertEqual(len(cmds.calls), 1)  # only --create-ceo ran; keys were not copied
+        self.assertEqual(cmds.calls, [])
+        self.assertEqual([p for p, _ in api.posts if p == "/api/companies"], [])
+
+    def test_unsafe_prefix_from_host_is_not_passed_to_scripts(self):
+        api = StepApi()
+        api.get = lambda path: {"id": "new-co", "name": "Acme", "issuePrefix": "A; id"} if path == "/api/companies/new-co" else StepApi.get(api, path)
+        res, _, cmds = self.run_req(api=api)
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(cmds.calls, [])
 
     def test_setup_run_gets_profile_param_and_board_token_in_env_not_argv(self):
         _, _, cmds = self.run_req()

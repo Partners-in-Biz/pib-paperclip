@@ -21,7 +21,7 @@ class FakeApi:
     def __init__(self, companies=None, agents=None, me=None, issue=None):
         self.companies = companies if companies is not None else [{"id": PAR, "status": "active"}]
         self.agents = agents or {}  # company id -> list of agent dicts
-        self.me = me if me is not None else {"id": "a1", "companyId": PAR, "name": "Operator", "role": "general", "status": "idle"}
+        self.me = me if me is not None else {"id": "a1", "companyId": PAR, "name": "Op", "role": "general", "title": "Operator", "status": "idle"}
         self.issue = issue if issue is not None else {"id": "iss-1", "companyId": PAR, "assigneeAgentId": "a1"}
         self.comments, self.tokens_seen = [], []
 
@@ -53,6 +53,7 @@ class Base(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.policy = json.load(open(os.path.join(ROOT, "provision-policy.json")))
         self.policy["parCompanyId"] = PAR
+        self.policy["setupProfileWired"] = True
         self.n = 0
 
     def runner(self, api, steps=None, **policy):
@@ -105,7 +106,9 @@ class IntakeTests(Base):
         self.assertIn("only operator or account manager", self.go(self.runner(api, Steps()))["message"])
         api = FakeApi(me={"id": "a1", "companyId": "other", "name": "Operator", "role": "general", "status": "idle"})
         self.assertIn("PAR company", self.go(self.runner(api, Steps()))["message"])
-        api = FakeApi(me={"id": "a1", "companyId": PAR, "name": "Account Manager", "role": "general", "status": "idle"})
+        api = FakeApi(me={"id": "a1", "companyId": PAR, "name": "Operator", "role": "engineer", "title": "Developer", "status": "idle"})
+        self.assertIn("only operator or account manager", self.go(self.runner(api, Steps()))["message"])  # a name alone is not a role
+        api = FakeApi(me={"id": "a1", "companyId": PAR, "name": "Ann", "role": "general", "title": "Account Manager", "status": "idle"})
         self.assertEqual(self.go(self.runner(api, Steps()))["status"], "done")
 
     def test_issue_must_exist_and_belong_to_requester(self):
@@ -125,7 +128,7 @@ class IntakeTests(Base):
     def test_one_open_request_per_crm_company_and_no_repeat_after_done(self):
         r = self.runner(FakeApi(), Steps())
         pr.write_json(os.path.join(self.dir, "results", "p-20261024-000000-aaaaaa.json"),
-                      {"id": "p-20261024-000000-aaaaaa", "status": "running", "crm_company_id": "crm-1"})
+                      {"id": "p-20261024-000000-aaaaaa", "status": "running", "crm_company_id": "crm-1", "updated": pr.now()})
         self.assertIn("still open", self.go(r)["message"])
         pr.write_json(os.path.join(self.dir, "results", "p-20261024-000000-aaaaaa.json"),
                       {"id": "p-20261024-000000-aaaaaa", "status": "done", "crm_company_id": "crm-1", "company_id": "c9"})
@@ -145,6 +148,73 @@ class IntakeTests(Base):
         res = self.go(self.runner(FakeApi(), Boom()))
         self.assertEqual(res["status"], "failed")
         self.assertIn("undo file", res["message"])
+
+    def test_requested_agents_below_policy_minimum_still_counts_the_minimum(self):
+        agents = {PAR: [{"status": "idle"}] * 56}
+        res = self.go(self.runner(FakeApi(agents=agents), Steps()), agents=1)
+        self.assertEqual(res["message"], "refused: maxAgentsTotal 60 would be exceeded (current 56, request adds 5)")
+
+    def test_client_profile_refused_at_intake_until_setup_is_wired(self):
+        api = FakeApi()
+        res = self.go(self.runner(api, Steps(), setupProfileWired=False))
+        self.assertIn("PAR-5157", res["message"])
+        self.assertEqual(res["status"], "refused")
+        self.assertEqual(self.go(self.runner(api, Steps(), setupProfileWired=False), profile="internal", model_key=False, crm_company_id="crm-3")["status"], "done")
+
+    def test_plan_and_modules_are_validated(self):
+        r = self.runner(FakeApi(), Steps())
+        self.assertIn("plan", self.go(r, plan="x; rm -rf /")["message"])
+        self.assertIn("modules", self.go(r, modules=["crm", "--apply"])["message"])
+
+    def test_unverified_requests_get_no_comment_on_any_issue(self):
+        api = FakeApi()
+        res = self.go(self.runner(api, Steps()), token="bad", issue="PAR-1")
+        self.assertEqual(res["status"], "refused")
+        self.assertEqual(api.comments, [])
+        api = FakeApi(issue={"id": "i", "companyId": PAR, "assigneeAgentId": "someone-else"})
+        self.go(self.runner(api, Steps()))
+        self.assertEqual(api.comments, [])
+
+    def test_kill_switch_comments_once_identity_is_proven(self):
+        api = FakeApi()
+        self.go(self.runner(api, Steps(), enabled=False))
+        self.assertEqual(len(api.comments), 1)
+
+    def test_bad_file_never_kept_and_symlink_is_ignored(self):
+        r = self.runner(FakeApi(), Steps())
+        with open(os.path.join(self.dir, "incoming", "p-20261024-000000-bbbbbb.json"), "w") as fh:
+            json.dump({"id": "other", "token": "good"}, fh)
+        r.process("p-20261024-000000-bbbbbb.json")
+        self.assertEqual(os.listdir(os.path.join(self.dir, "incoming")), [])
+        self.assertEqual(os.listdir(os.path.join(self.dir, "work")), [])
+        secret = os.path.join(self.dir, "secret.json")
+        json.dump({"id": "p-20261024-000000-cccccc", "kind": "company", "token": "good"}, open(secret, "w"))
+        os.symlink(secret, os.path.join(self.dir, "incoming", "p-20261024-000000-cccccc.json"))
+        self.assertIsNone(r.process("p-20261024-000000-cccccc.json"))
+        self.assertEqual(r.result("p-20261024-000000-cccccc"), None)
+
+    def test_final_result_is_never_overwritten_and_replay_is_ignored(self):
+        r = self.runner(FakeApi(), Steps())
+        rid = self.file(r)
+        self.assertEqual(r.process(rid + ".json")["status"], "done")
+        before = r.result(rid)
+        with open(os.path.join(self.dir, "incoming", rid + ".json"), "w") as fh:
+            json.dump({"id": rid, "kind": "company", "token": "good"}, fh)
+        self.assertIsNone(r.process(rid + ".json"))
+        self.assertEqual(r.result(rid), before)
+
+    def test_stale_running_result_does_not_block_forever(self):
+        r = self.runner(FakeApi(), Steps())
+        old = {"id": "p-20261024-000000-aaaaaa", "status": "running", "crm_company_id": "crm-1", "updated": "2026-10-20T00:00:00Z"}
+        pr.write_json(os.path.join(self.dir, "results", old["id"] + ".json"), old)
+        self.assertEqual(self.go(r)["status"], "done")
+
+    def test_crash_in_intake_writes_a_failed_result(self):
+        api = FakeApi()
+        api.get = lambda path: (_ for _ in ()).throw(ValueError("boom")) if path == "/api/companies" else FakeApi.get(api, path)
+        res = self.go(self.runner(api, Steps()))
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("boom", res["message"])
 
     def test_bad_file_is_set_aside(self):
         r = self.runner(FakeApi(), Steps())
@@ -173,7 +243,7 @@ class CapacityTests(Base):
         agents = {PAR: [{"status": "idle"}] * 50, "c2": [{"status": "idle"}] * 8}
         api = FakeApi(companies=[{"id": PAR}, {"id": "c2"}], agents=agents)
         res = self.go(self.runner(api, Steps()), agents=4)
-        self.assertEqual(res["message"], "refused: maxAgentsTotal 60 would be exceeded (current 58, request adds 4)")
+        self.assertEqual(res["message"], "refused: maxAgentsTotal 60 would be exceeded (current 58, request adds 5)")  # agents=4 is raised to the policy minimum of 5
 
     def test_agent_limit_allows_exactly_the_limit_and_skips_terminated(self):
         agents = {PAR: [{"status": "idle"}] * 55 + [{"status": "terminated"}] * 9}

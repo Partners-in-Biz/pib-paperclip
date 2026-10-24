@@ -8,10 +8,12 @@ Per request file: prove who asked (the run's token against GET /api/agents/me, t
 requester role, issue ownership, one open request per CRM company, capacity gate), then run the steps (provision_steps.py).
 Every file write is read back. Nothing here prints or stores a token or a key.
 """
+import calendar
 import fcntl
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -81,11 +83,22 @@ def write_json(path, obj, mode=0o644):
 
 
 def load_json(path):
+    """Read a regular file only: a symlink or special file (agents can write the spool) reads as nothing."""
     try:
-        with open(path) as fh:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd) as fh:
+            fd = None
             return json.load(fh)
     except (OSError, ValueError):
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def load_policy(path=POLICY):
@@ -118,6 +131,9 @@ class Runner:
         r = {"id": rid, "status": status, "message": message, "updated": now(), "name": req.get("name"), "issue": req.get("issue"),
              "crm_company_id": req.get("crm_company_id"), "profile": req.get("profile")}
         r.update(extra)
+        old = self.result(rid)
+        if old and old.get("status") not in OPEN:
+            raise RuntimeError("result %s is already final (%s); not overwriting it" % (rid, old.get("status")))
         write_json(self.path("results", rid + ".json"), r)
         return r
 
@@ -141,8 +157,8 @@ class Runner:
             raise Refused("refused: only agents of the PAR company may request a company")
         if str(me.get("status") or "").lower() in ("terminated", "paused"):
             raise Refused("refused: the requesting agent is %s" % me.get("status"))
-        who = " ".join(str(me.get(k) or "") for k in ("role", "title", "name")).lower()
-        if not any(a.lower() in who for a in self.policy["allowedRequesters"]):
+        held = {str(me.get(k) or "").strip().lower() for k in ("role", "title")}  # not the name: anyone can name an agent "Operator"
+        if not held & {a.strip().lower() for a in self.policy["allowedRequesters"]}:
             raise Refused("refused: only %s may request a company" % " or ".join(self.policy["allowedRequesters"]))
         return me
 
@@ -172,6 +188,13 @@ class Runner:
             raise Refused("refused: crm_company_id is missing or malformed")
         if req["profile"] == "client" and not req.get("model_key"):
             raise Refused("refused: a client company needs the client's own model key (task 2.2); file again with --model-key once it is supplied")
+        if req["profile"] == "client" and not self.policy.get("setupProfileWired"):
+            raise Refused("refused: the Setup New company run with profile client is not wired yet (waits on PAR-5157, task 2.1); nothing was created")
+        if req.get("plan") is not None and not re.match(r"^[a-z0-9_-]{1,30}$", str(req["plan"])):
+            raise Refused("refused: plan must be lower-case letters, digits, - or _")
+        mods = req.get("modules") or []
+        if not isinstance(mods, list) or len(mods) > 30 or not all(isinstance(m, str) and re.match(r"^[a-z][a-z0-9-]{1,30}$", m) for m in mods):
+            raise Refused("refused: modules must be module keys (lower-case letters, digits, -)")
         n = req.get("agents")
         if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > self.policy.get("maxAgentsPerRequest", 10)):
             raise Refused("refused: agents must be a whole number from 1 to %d" % self.policy.get("maxAgentsPerRequest", 10))
@@ -182,10 +205,18 @@ class Runner:
             r = load_json(os.path.join(d, n)) if n.endswith(".json") else None
             if not r or r.get("id") == req["id"] or r.get("crm_company_id") != req["crm_company_id"]:
                 continue
-            if r.get("status") in OPEN:
+            if r.get("status") in OPEN and not self.stale(r):
                 raise Refused("refused: request %s for this company is still open (%s)" % (r["id"], r["status"]))
             if r.get("status") == "done":
                 raise Refused("refused: this CRM company is already provisioned by request %s (company %s)" % (r["id"], r.get("company_id")))
+
+    def stale(self, r):
+        """A running result nobody has updated for staleRunningSeconds belongs to a killed run; it no longer blocks."""
+        try:
+            age = time.time() - calendar.timegm(time.strptime(r["updated"], "%Y-%m-%dT%H:%M:%SZ"))
+        except (KeyError, ValueError, TypeError):
+            return True
+        return age > self.policy.get("staleRunningSeconds", 7200)
 
     def capacity(self, req):
         """The gate. Counts the whole box (PAR included): companies not archived, agents not terminated."""
@@ -196,7 +227,7 @@ class Runner:
         agents = 0
         for c in companies:
             agents += sum(1 for a in self.api.get("/api/companies/%s/agents" % c["id"]) if str(a.get("status") or "").lower() != "terminated")
-        adds = req.get("agents") or p["agentsPerNewCompany"]
+        adds = max(req.get("agents") or 0, p["agentsPerNewCompany"])  # the requester can ask for more, never for less than the policy
         if agents + adds > p["maxAgentsTotal"]:
             raise Refused("refused: maxAgentsTotal %d would be exceeded (current %d, request adds %d)" % (p["maxAgentsTotal"], agents, adds))
         return {"companies": len(companies), "agents": agents, "adds": adds}
@@ -207,22 +238,26 @@ class Runner:
         req = load_json(src)
         rid = (req or {}).get("id") if isinstance(req, dict) else None
         if not rid or not ID_RE.match(rid) or fname != rid + ".json":
-            os.rename(src, self.path("work", "bad-" + re.sub(r"[^A-Za-z0-9._-]", "_", fname)))
+            self.drop(src)  # never kept: it may hold a token
             return None
         token = req.pop("token", None)
-        os.unlink(src)  # the token now lives only in memory; the result file below never holds it
+        self.drop(src)  # the token now lives only in memory; no result file ever holds it
+        if self.result(rid):
+            return None  # a replayed id never overwrites an earlier result
+        verified = [False]
         try:
-            self.kill_switch()
-            self.check_request(req)
             me = self.prove_identity(token)
             req["requester"] = {"id": me["id"], "name": me.get("name")}
             self.check_issue(req, me)
+            verified[0] = True  # only now may the runner write on the issue
+            self.kill_switch()
+            self.check_request(req)
             self.check_open_and_done(req)
             gate = self.capacity(req)
         except Refused as e:
-            return self.finish(rid, req, "refused", str(e))
-        except RuntimeError as e:
-            return self.finish(rid, req, "failed", "intake could not complete: %s" % e)
+            return self.finish(rid, req, "refused", str(e), comment=verified[0])
+        except Exception as e:
+            return self.finish(rid, req, "failed", "intake could not complete: %s" % e, comment=verified[0])
         finally:
             token = None
         self.save_result(rid, req, "running", "accepted; capacity %(companies)d companies, %(agents)d agents, request adds %(adds)d" % gate)
@@ -234,9 +269,21 @@ class Runner:
             return self.finish(rid, req, "failed", str(e), **getattr(e, "extra", {}))
         return self.finish(rid, req, "done", out.pop("message", "provisioned"), **out)
 
-    def finish(self, rid, req, status, message, **extra):
-        r = self.save_result(rid, req, status, message, **extra)
-        self.comment(req, r)
+    @staticmethod
+    def drop(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def finish(self, rid, req, status, message, comment=True, **extra):
+        try:
+            r = self.save_result(rid, req, status, message, **extra)
+        except RuntimeError as e:  # the result for this id is already final: leave it
+            sys.stderr.write("provision-runner: %s\n" % e)
+            return None
+        if comment:
+            self.comment(req, r)
         return r
 
     def comment(self, req, r):
@@ -262,7 +309,10 @@ class Runner:
         for fname in sorted(os.listdir(self.path("incoming"))):
             if fname.startswith(".") or not fname.endswith(".json"):
                 continue
-            self.process(fname)
+            try:
+                self.process(fname)
+            except Exception as e:  # one bad request never stops the others
+                sys.stderr.write("provision-runner: %s: %s\n" % (fname, e))
             n += 1
         return n
 

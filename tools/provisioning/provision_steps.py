@@ -75,6 +75,8 @@ def step_create_company(c):
     back = c.api.get("/api/companies/" + cid)  # read back: the host picked the prefix
     if back.get("name") != c.req["name"] or not back.get("issuePrefix"):
         raise StepError("the created company did not read back with its name and issue prefix")
+    if not re.match(r"^[A-Z0-9]{2,10}$", str(back["issuePrefix"])):
+        raise StepError("the host returned an issue prefix that is not safe to pass to the server scripts")
     c.st["prefix"] = back["issuePrefix"]
 
 
@@ -95,10 +97,7 @@ def step_create_ceo(c):
 
 def step_setup_run(c):
     """The Setup New company run headless (bootstrap-runner + bootstrap-client bundle, board token). The profile is a parameter."""
-    profile = c.req["profile"]
-    if profile == "client" and not c.p.get("setupProfileWired"):
-        raise StepError("the Setup New company run with profile client is not wired yet: it waits on PAR-5157 (task 2.1). "
-                        "Set setupProfileWired to true in the policy once 2.1 is deployed")
+    profile = c.req["profile"]  # profile client is refused at intake until setupProfileWired (PAR-5157)
     cmd = c.p.get("setupRunnerCommand")
     if not cmd:
         raise StepError("the policy has no setupRunnerCommand (the headless Setup runner bundle)")
