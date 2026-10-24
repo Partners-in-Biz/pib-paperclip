@@ -4,8 +4,9 @@
  */
 import type { Experiment, PlaybookChange, Program } from "./store.js";
 
-export function programLabel(program: Pick<Program, "clientName" | "clientRef">): string {
-  return program.clientRef ? program.clientName ?? program.clientRef : "PiB's own social";
+/** `ownName` is the company's own-work name from its preferences (PiB keeps "PiB"). */
+export function programLabel(program: Pick<Program, "clientName" | "clientRef">, ownName = "Your company"): string {
+  return program.clientRef ? program.clientName ?? program.clientRef : `${ownName}'s own social`;
 }
 
 export function programPrefix(program: Pick<Program, "clientName" | "clientRef">): string {
@@ -34,9 +35,9 @@ export function changeLines(c: Pick<PlaybookChange, "id" | "diff" | "reason">): 
   return [`### Playbook change: ${c.diff}`, `- Why: ${c.reason}`, `- changeId: \`${c.id}\``, ""];
 }
 
-export function approvalIssueDescription(program: Program, lines: string[], growthPath: string | null): string {
+export function approvalIssueDescription(program: Program, lines: string[], growthPath: string | null, ownName?: string): string {
   return [
-    `The Social agent's weekly review for **${programLabel(program)}** has items for you. Experiments change one thing at a time on real posts; playbook changes edit the rules the agent follows when it plans.`,
+    `The Social agent's weekly review for **${programLabel(program, ownName)}** has items for you. Experiments change one thing at a time on real posts; playbook changes edit the rules the agent follows when it plans.`,
     "",
     ...lines,
     growthPath

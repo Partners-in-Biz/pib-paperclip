@@ -33,6 +33,7 @@ import {
   type GrowthEnv, type GrowthActor, growthEnv, programOut, experimentOut, changeOut,
   wrapKitEnvWithConfig, wrapKitEnvForMeasure, socialKitEnv, issuePort,
 } from "./host.js";
+import { ownSocialName } from "../preferences.js";
 // Import engine functions and types used locally (E.* references in old code)
 import {
   activeQuestions, SCORE_WINDOW, postLift, GrowthError,
@@ -88,12 +89,12 @@ export function targetOfRow(row: { client_kind?: string | null; client_ref?: str
 
 /** The program for a scope, created on first use with the kit starter playbook. */
 export async function ensureProgram(env: GrowthEnv, companyId: string, target: { scope: ClientScope; name: string | null }): Promise<Program> {
-  return kitEnsureProgram(socialKitEnv(env), companyId, target);
+  return kitEnsureProgram(socialKitEnv(env, undefined, target.scope ? undefined : await ownSocialName(env.ctx, companyId)), companyId, target);
 }
 
 /** The program named by `client` / `clientKind` + `clientRef` (own work when left out). Unknown clients are refused. */
 export async function programForParams(env: GrowthEnv, actor: GrowthActor, params: Params): Promise<Program> {
-  return kitProgramForParams(socialKitEnv(env), actor, params);
+  return kitProgramForParams(socialKitEnv(env, undefined, await ownSocialName(env.ctx, actor.companyId)), actor, params);
 }
 
 // Local helpers for programScope and programCtx (used by service functions)

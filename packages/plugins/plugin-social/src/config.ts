@@ -11,6 +11,7 @@ import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
 import { pluginUiBase,
   buildKeyring,
   jevConfigSchema,
+  readPreferences,
   requirePublicBaseUrl,
   SecretResolver,
   secretField,
@@ -25,8 +26,9 @@ import {
   bridgeRedirectUri,
   type SocialPlatform,
 } from "./platforms.js";
+import { DEFAULT_TIMEZONE, SOCIAL_PREFERENCES, validTimezone } from "./preferences.js";
 
-export const DEFAULT_TIMEZONE = "Africa/Johannesburg";
+export { DEFAULT_TIMEZONE };
 export const DEFAULT_GRAPH_VERSION = "v21.0";
 export const DEFAULT_BLUESKY_PDS = "https://bsky.social";
 /** Where the client approval page answers unless the settings say otherwise (the service serves under /a/; ops/approval-server). */
@@ -195,6 +197,12 @@ export function buildInstanceConfigSchema(): JsonSchema {
         description: `Where clients open their post approval links, ending in /a (the approval service answers under /a/). Must start with https://. Default ${DEFAULT_APPROVAL_BASE}. The service is installed once on the server (plugin-social/ops/approval-server).`,
         // Empty is allowed (the default applies); anything else must be https, the one thing a link to a client cannot do without.
         pattern: "^$|^https://",
+      },
+      ownerCompany: {
+        type: "boolean",
+        title: "This is the instance's own company",
+        description: "On for the one company that runs this instance. It keeps the old \"PiB\" wording for its own work in Growth Lab titles; every other company is named after itself. Company owners edit time zone, agent replies and the name on the Social page.",
+        default: false,
       },
       allowAgentReplies: {
         type: "boolean",
@@ -456,7 +464,16 @@ export async function loadSocialConfig(ctx: PluginContext, companyId: string): P
     ctx.logger.info("Social config could not be read", { companyId, error: error instanceof Error ? error.message : String(error) });
     raw = {};
   }
-  return socialConfigFrom(ctx, companyId, raw, await pluginUiBase(ctx));
+  const config = socialConfigFrom(ctx, companyId, raw, await pluginUiBase(ctx));
+  // Company preferences win over the old host-form values (kit precedence). A failed read keeps what the host form said.
+  try {
+    const prefs = await readPreferences(ctx, companyId, SOCIAL_PREFERENCES);
+    if (validTimezone(prefs.timezone)) config.timezone = prefs.timezone;
+    if (typeof prefs.allowAgentReplies === "boolean") config.allowAgentReplies = prefs.allowAgentReplies;
+  } catch (error) {
+    ctx.logger.info("Social preferences could not be read", { companyId, error: error instanceof Error ? error.message : String(error) });
+  }
+  return config;
 }
 
 /** Public R2 host of the configured media domain (used to trust media URLs). */
