@@ -6,6 +6,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decisionConfig, readConfig, SecretResolver, TAX_CODES, type DecisionClientConfig, type R2Config, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
 import type { PaymentSettings } from "./pay/settings.js";
+import { withPreferences } from "./preferences.js";
 
 export interface DunningStage {
   daysAfterDue: number;
@@ -86,12 +87,22 @@ export const DEFAULT_DUNNING_STAGES: DunningStage[] = [
   },
 ];
 
+/** The one place settings are read: the saved Billing settings with the company's preferences laid over them. */
 export async function billingSettings(ctx: PluginContext, companyId: string): Promise<BillingSettings> {
+  return withPreferences(ctx, companyId, await savedSettings(ctx, companyId));
+}
+
+async function savedSettings(ctx: PluginContext, companyId: string): Promise<BillingSettings> {
   try {
     return (await readConfig(ctx, companyId)) as BillingSettings;
   } catch {
     return {};
   }
+}
+
+/** True when the company has saved Billing settings (preferences alone do not count: sender and EFT details still need the form). */
+export async function hasSavedSettings(ctx: PluginContext, companyId: string): Promise<boolean> {
+  return Object.keys(await savedSettings(ctx, companyId)).length > 0;
 }
 
 export function isTaxCode(value: unknown): value is TaxCode {

@@ -12,6 +12,7 @@ export type TopTab = "overview" | "invoices" | "quotes" | "recurring" | "costs" 
 export type View =
   | "overview"
   | "reports"
+  | "preferences"
   | "invoices"
   | "payments"
   | "credit-notes"
@@ -26,7 +27,7 @@ export type View =
   | "time";
 
 export const VIEW_IDS: readonly View[] = [
-  "overview", "reports", "invoices", "payments", "credit-notes", "reminders", "quotes", "recurring", "retainers", "repeating", "costs", "bills", "expenses", "time",
+  "overview", "reports", "preferences", "invoices", "payments", "credit-notes", "reminders", "quotes", "recurring", "retainers", "repeating", "costs", "bills", "expenses", "time",
 ];
 
 export interface SectionDef {
@@ -38,7 +39,7 @@ export interface SectionDef {
 
 /** Each top tab's sections, the first being where the tab opens. */
 export const TAB_SECTIONS: Record<TopTab, SectionDef[]> = {
-  overview: [{ view: "overview", label: "Summary" }, { view: "reports", label: "Reports", ownOnly: true }],
+  overview: [{ view: "overview", label: "Summary" }, { view: "reports", label: "Reports", ownOnly: true }, { view: "preferences", label: "Preferences", ownOnly: true }],
   invoices: [
     { view: "invoices", label: "Invoices" },
     { view: "payments", label: "Payments" },
@@ -64,6 +65,7 @@ export const TOP_TABS: Array<{ id: TopTab; label: string; ownOnly?: boolean }> =
 const TAB_OF: Record<View, TopTab> = {
   overview: "overview",
   reports: "overview",
+  preferences: "overview",
   invoices: "invoices",
   payments: "invoices",
   "credit-notes": "invoices",

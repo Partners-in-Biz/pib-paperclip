@@ -12,6 +12,7 @@ import { BillingContext, Muted, SectionNav, money, useCall, type BillingApi } fr
 import { CreditNotesSection, PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
 import { RemindersTab, ReportsTab } from "./reports.js";
+import { PreferencesSection } from "./preferences.js";
 import { RetainersTab } from "./retainers.js";
 import { TimeTab } from "./time.js";
 import { draftsToSend, isOverdue, waitingOnPerson } from "./series.js";
@@ -196,6 +197,7 @@ export function BillingPage({ context }: PluginPageProps) {
       {!scope && section === "overview" ? <GetStarted status={setupStatus} moduleName="Billing" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
       {loaded && section === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setView} onOpenInvoice={openInvoiceTab} onOpenQuote={openQuoteTab} /> : null}
       {loaded && section === "reports" && !scope ? <ReportsTab /> : null}
+      {loaded && section === "preferences" && !scope ? <PreferencesSection /> : null}
       {loaded && section === "invoices" ? <InvoicesTab openId={openInvoice} setOpenId={setOpenInvoice} onCreate={() => setCreating("invoice")} /> : null}
       {loaded && section === "payments" ? <PaymentsTab onOpenInvoice={openInvoiceTab} /> : null}
       {loaded && section === "credit-notes" ? <CreditNotesSection onOpenInvoice={openInvoiceTab} /> : null}

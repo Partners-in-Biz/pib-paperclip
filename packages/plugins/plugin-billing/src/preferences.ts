@@ -1,0 +1,90 @@
+/**
+ * Company preferences for Billing: the choices a company owner or admin edits
+ * on the Billing page without an instance admin. They are merged over the saved
+ * Billing settings at one point (`billingSettings` in config.ts), so every
+ * reader of settings sees them. The sender and EFT details are not here yet.
+ *
+ * Defaults are what Billing did before this existed, so a company that never
+ * opens the panel (and the saved settings it already has, which are read as the
+ * fallback) behaves exactly as before.
+ */
+import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import { definePreferences, describePreferences, readPreferences, savePreferences, TAX_CODES, type PreferenceValue, type PreferenceValues } from "@partnersinbiz/pib-plugin-kit";
+import { BillingError } from "./domain.js";
+import { requiredCompany } from "./util.js";
+
+export const PREFERENCES_LOAD_ACTION = "billing.preferences-load";
+export const PREFERENCES_SAVE_ACTION = "billing.preferences-save";
+
+export const BILLING_PREFERENCES = definePreferences({
+  id: "billing",
+  fields: {
+    defaultCurrency: { type: "string", label: "Default currency", help: "Three-letter code, e.g. ZAR.", max: 3, default: "ZAR", legacy: "defaultCurrency" },
+    reportingCurrency: { type: "string", label: "Book (reporting) currency", help: "Reports and journals convert foreign invoices to this currency.", max: 3, default: "ZAR", legacy: "reportingCurrency" },
+    vatRegistered: { type: "bool", label: "VAT registered", help: "Off when the business does not charge VAT: new lines are out of scope.", default: true, legacy: "vatRegistered" },
+    defaultTaxRate: { type: "int", label: "Default VAT rate (%)", min: 0, max: 100, default: 15, legacy: "defaultTaxRate" },
+    defaultTaxCode: { type: "enum", label: "Default VAT code for new lines", help: "Empty: follows the VAT rate.", options: ["", ...Object.keys(TAX_CODES)], default: "", legacy: "defaultTaxCode" },
+    pricesIncludeVat: { type: "bool", label: "Prices include VAT", help: "Off: VAT is added to line prices. On: line prices already include it.", default: false, legacy: "pricesIncludeVat" },
+    defaultDueDays: { type: "int", label: "Days until an invoice is due", help: "0: no due date unless one is set.", min: 0, max: 365, default: 0, legacy: "defaultDueDays" },
+    invoiceNotes: { type: "text", label: "Footer notes", help: "Printed at the bottom of invoices (terms, thank-you note).", max: 2000, default: "", legacy: "invoiceNotes" },
+  },
+});
+
+const CURRENCY_FIELDS = ["defaultCurrency", "reportingCurrency"] as const;
+/** Empty text means "not set": the code that reads settings treats a missing value, not "", as unset. */
+const EMPTY_IS_UNSET = new Set(["defaultTaxCode", "invoiceNotes"]);
+
+/** Preferences laid over the saved settings; a preference wins. Pure. */
+export function mergePreferences<T extends object>(settings: T, prefs: PreferenceValues): T {
+  const out: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
+  for (const [id, value] of Object.entries(prefs)) {
+    if (EMPTY_IS_UNSET.has(id) && value === "") delete out[id];
+    else out[id] = value;
+  }
+  return out as T;
+}
+
+/** Saved settings with the company's preferences on top. A failed preferences read leaves the settings as they are. */
+export async function withPreferences<T extends object>(ctx: PluginContext, companyId: string, settings: T): Promise<T> {
+  try {
+    return mergePreferences(settings, await readPreferences(ctx, companyId, BILLING_PREFERENCES));
+  } catch {
+    return settings;
+  }
+}
+
+async function load(ctx: PluginContext, context: PluginPerformActionContext) {
+  const companyId = requiredCompany(context);
+  return { fields: describePreferences(BILLING_PREFERENCES), values: await readPreferences(ctx, companyId, BILLING_PREFERENCES) };
+}
+
+/** Currency codes are checked here: the kit checks length only. Returns the patch with codes upper-cased. */
+export function checkedPatch(raw: unknown): Record<string, PreferenceValue | null> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new BillingError("Nothing to save");
+  const patch = { ...(raw as Record<string, PreferenceValue | null>) };
+  for (const id of CURRENCY_FIELDS) {
+    const value = patch[id];
+    if (value === undefined || value === null) continue;
+    const code = typeof value === "string" ? value.trim().toUpperCase() : "";
+    if (!/^[A-Z]{3}$/.test(code)) throw new BillingError(`${BILLING_PREFERENCES.fields[id]!.label} must be a three-letter currency code`);
+    patch[id] = code;
+  }
+  return patch;
+}
+
+async function save(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  requiredCompany(context);
+  let patch: Record<string, PreferenceValue | null>;
+  try {
+    patch = checkedPatch(params.patch);
+  } catch (error) {
+    if (error instanceof BillingError) return { ok: false as const, error: error.message };
+    throw error;
+  }
+  return savePreferences(ctx, context, BILLING_PREFERENCES, patch);
+}
+
+export const PREFERENCES_ACTIONS: Record<string, (ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) => Promise<unknown>> = {
+  [PREFERENCES_LOAD_ACTION]: (ctx, context) => load(ctx, context),
+  [PREFERENCES_SAVE_ACTION]: save,
+};
