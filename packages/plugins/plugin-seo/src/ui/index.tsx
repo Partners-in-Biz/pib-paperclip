@@ -195,7 +195,7 @@ export function SeoPage({ context }: PluginPageProps) {
     <Button type="button" disabled={Boolean(client && !client.known)} onClick={() => setCreating(true)}>+ New sprint</Button>
   ) : null;
 
-  const body = off ? <ModuleOffBanner /> : (
+  const body = off ? <ModuleOffBanner companyId={context.companyId} /> : (
     <>
       {/* What is wrong with the agent comes first: its work stops until it is fixed. */}
       {!scope && !sprintId ? <SeoAgentBox hire={data?.hire ?? null} stuck={stuck - stuckRuns} refresh={refresh} onMessage={setMessage} /> : null}

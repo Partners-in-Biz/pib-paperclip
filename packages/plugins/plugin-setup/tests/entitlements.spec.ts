@@ -242,7 +242,21 @@ describe("backfill (the plan's 1.4)", () => {
     const route = (await handleApiRoute(env.ctx, apiInput(CLIENT))) as { status: number; body: { modules: Record<ModuleKey, boolean>; updatedAt: string | null } };
     expect(route.status).toBe(200);
     expect(on(route.body.modules)).toEqual(["cockpit", "memory"]);
-    expect(Object.keys(route.body).sort()).toEqual(["modules", "updatedAt"]);
+    expect(Object.keys(route.body).sort()).toEqual(["enabled", "entitled", "modules", "updatedAt"]);
+  });
+  it("tells a module switched off apart from one that is not in the plan", async () => {
+    const env = setup();
+    await backfillEntitlements(env.ctx, clock);
+    await setEntitlements(env.ctx, { companyId: CLIENT, plan: "starter", userId: "peet" }, clock);
+    await saveModules(env.ctx, { companyId: CLIENT, modules: { mailbox: false }, userId: "client-admin" }, clock);
+    const route = (await handleApiRoute(env.ctx, apiInput(CLIENT))) as { body: { modules: Record<ModuleKey, boolean>; enabled: Record<ModuleKey, boolean>; entitled: Record<ModuleKey, boolean> } };
+    // mailbox: in the plan, switched off. seo: not in the plan (its switch stays at the default).
+    expect(route.body.entitled.mailbox).toBe(true);
+    expect(route.body.enabled.mailbox).toBe(false);
+    expect(route.body.entitled.seo).toBe(false);
+    expect(route.body.modules.mailbox).toBe(false);
+    expect(route.body.modules.seo).toBe(false);
+    expect(route.body.modules.crm).toBe(true);
   });
 });
 

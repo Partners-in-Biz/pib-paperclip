@@ -4,7 +4,7 @@ import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
 import { JOBS } from "./manifest.js";
-import { ForbiddenError, SetupError } from "./modules.js";
+import { effectiveModules, ForbiddenError, SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { approveStarterPack, bootstrapCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
 import { registerTemplateTools } from "./template-tools.js";
@@ -158,10 +158,19 @@ export async function handleApiRoute(ctx: PluginContext, input: PluginApiRequest
   }
   if (input.routeKey !== "modules") return { status: 404, body: { error: "Not found" } };
   try {
-    // The same shape as before; `modules` is now the saved choice AND the company's entitlements, so a plugin
-    // reading it never shows a module the company did not buy (1.3 extends this route).
+    // `modules` stays the saved choice AND the entitlements (older kit copies read only it). `enabled` is the
+    // company's own switch and `entitled` is its plan, so a page can tell "off in Setup" from "not in your plan".
     const view = await moduleView(ctx, input.companyId);
-    return { status: 200, body: { modules: view.ready || view.choice ? view.modules : null, updatedAt: view.updatedAt } };
+    const known = view.ready || view.choice;
+    return {
+      status: 200,
+      body: {
+        modules: known ? view.modules : null,
+        enabled: known ? effectiveModules(view.choice?.modules ?? null) : null,
+        entitled: known ? view.entitled : null,
+        updatedAt: view.updatedAt,
+      },
+    };
   } catch (error) {
     ctx.logger.info("Setup modules route failed", { error: message(error) });
     return { status: 500, body: { error: message(error) } };

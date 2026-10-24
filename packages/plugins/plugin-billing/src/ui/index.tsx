@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, ModuleStateBanner, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
 import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
 import { Overview } from "./overview.js";
@@ -107,10 +107,7 @@ export function BillingPage({ context }: PluginPageProps) {
   if (enabled === false) {
     return (
       <Page title="Billing" description="Invoices, quotes, payments, bills, expenses, time and retainers." accent="billing">
-        <p style={{ margin: 0, fontSize: 14, color: tokens.fg, lineHeight: 1.5 }}>
-          This module is switched off for this company. Turn it on in{" "}
-          <a {...navigation.linkProps("/setup")} style={{ color: tokens.primary, fontWeight: 600 }}>Setup</a>.
-        </p>
+        <ModuleStateBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} load={moduleState} setupLinkProps={navigation.linkProps("/setup")} />
       </Page>
     );
   }
