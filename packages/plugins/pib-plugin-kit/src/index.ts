@@ -49,6 +49,7 @@ export * from "./growth/engine.js";
 export * from "./growth/types.js";
 export * from "./growth/tools.js";
 export * from "./drive.js";
+export * from "./preferences.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
