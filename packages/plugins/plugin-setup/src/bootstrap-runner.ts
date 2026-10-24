@@ -15,7 +15,7 @@
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { defaultsFromSchema, missingHandlerError, needsSettingsError, ownerGrants, SKILL_SYNC_ACTIONS, type BootstrapOptions, type OwnerGrant, type StepId, type StepItem, type StepStatus } from "./bootstrap.js";
 import { mergeMissing, planCopy, previewValue } from "./copy.js";
-import { claudeAgents, findKeySecret, hasKeyEntry, isBound, isReadableConfig, keySecretMatches, MODEL_KEY_SECRET_NAME, ownerSecretSteps, parseAgents, withKeyEnv, type SecretLite } from "./model-key.js";
+import { claudeAgents, findKeySecret, hasKeyEntry, isBound, hasBareEnvString, isReadableConfig, keySecretMatches, MODEL_KEY_SECRET_NAME, ownerSecretSteps, parseAgents, withKeyEnv, type SecretLite } from "./model-key.js";
 import { hiringLine, pickHiringAgent, toHiringCandidates, type HiringPick } from "./hiring.js";
 import { MODULES, type ModuleKey, type SetupStatus } from "./kit-setup.js";
 import { WIKI_PLUGIN } from "./memory.js";
@@ -235,6 +235,10 @@ export async function stepModelKey(env: RunnerEnv): Promise<StepOutcome> {
   for (const agent of agents) {
     if (!isReadableConfig(agent.adapterConfig)) {
       items.push({ key: agent.id, label: agent.name, status: "failed", detail: "The agent list returned no settings for this agent (empty or hidden), so the key was not bound. A board member with access to agent settings can bind it." });
+      continue;
+    }
+    if (hasBareEnvString(agent.adapterConfig)) {
+      items.push({ key: agent.id, label: agent.name, status: "failed", detail: "An env entry of this agent is a legacy plain string that cannot be written back safely, so the key was not bound. Set the key by hand in the agent's settings." });
       continue;
     }
     if (isBound(agent.adapterConfig, secret.id)) {

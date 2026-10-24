@@ -101,7 +101,12 @@ export function isReadableConfig(config: Record<string, unknown> | null): config
 
 /** The agents this step binds: `claude_local`, not terminated. */
 export function claudeAgents(agents: AgentLite[]): AgentLite[] {
-  return agents.filter((agent) => agent.adapterType === "claude_local" && agent.status !== "terminated");
+  return agents.filter((agent) => agent.adapterType === "claude_local" && agent.status !== "terminated" && agent.status !== "archived");
+}
+
+/** An env entry the read view gives as a bare string (a legacy value the host cannot restore on write). */
+export function hasBareEnvString(config: Record<string, unknown>): boolean {
+  return Object.values(rec(config.env)).some((value) => typeof value === "string");
 }
 
 export function ownerSecretSteps(): string[] {

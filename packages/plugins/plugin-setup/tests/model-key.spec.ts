@@ -7,7 +7,7 @@ import { allModulesOn } from "../src/modules.js";
 
 const CO = "co-client";
 const REF = { type: "secret_ref", secretId: "sec-1", version: "latest" };
-const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: `Agent ${id}`, adapterType: "claude_local", status: "idle", adapterConfig: { model: "m", env: { KEEP: "1" } }, ...extra });
+const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, name: `Agent ${id}`, adapterType: "claude_local", status: "idle", adapterConfig: { model: "m", env: { KEEP: { type: "plain", value: "1" } } }, ...extra });
 
 function env(patch: { profile?: "client" | "pib"; catalog?: unknown; agents?: unknown[] | null; failBind?: string; config?: Record<string, unknown> } = {}) {
   const saves: Array<{ target: string; config: Record<string, unknown> }> = [];
@@ -68,7 +68,7 @@ describe("stepModelKey", () => {
     const out = await stepModelKey(e);
     expect(out.status).toBe("done");
     expect(saves).toEqual([{ target: "crm-id", config: { enabled: true, hostingProfile: "client", modelKeySecretName: "ANTHROPIC_API_KEY", modelKeySecretId: "sec-1" } }]);
-    expect(binds).toEqual([{ agentId: "a1", env: { KEEP: "1", ANTHROPIC_API_KEY: REF } }]);
+    expect(binds).toEqual([{ agentId: "a1", env: { KEEP: { type: "plain", value: "1" }, ANTHROPIC_API_KEY: REF } }]);
   });
 
   it("is repeatable: bound agents and saved profiles change nothing", async () => {
@@ -106,11 +106,25 @@ describe("stepModelKey", () => {
     expect(binds.map((b) => b.agentId)).toEqual(["a3"]);
   });
 
+  it("replaces a plain key entry and says so", async () => {
+    const plain = agent("a1", { adapterConfig: { model: "m", env: { ANTHROPIC_API_KEY: { type: "plain", value: "***REDACTED***" } } } });
+    const out = await stepModelKey(env({ agents: [plain] }).e);
+    expect(itemOf(out.items, "a1").detail).toContain("Replaced a plain ANTHROPIC_API_KEY");
+  });
+
+  it("skips an agent with a bare string env entry and an archived agent", async () => {
+    const { e, binds } = env({ agents: [agent("a1", { adapterConfig: { model: "m", env: { OLD: "x" } } }), agent("a2", { status: "archived" })] });
+    const out = await stepModelKey(e);
+    expect(itemOf(out.items, "a1").status).toBe("failed");
+    expect(out.items.find((item) => item.key === "a2")).toBeUndefined();
+    expect(binds).toEqual([]);
+  });
+
   it("reports two matching secrets and uses the first", async () => {
     const { e, binds } = env({ catalog: [{ id: "sec-1", name: "ANTHROPIC_API_KEY", key: "a", status: "active" }, { id: "sec-2", name: "anthropic-api-key", key: "b", status: "active" }] });
     const out = await stepModelKey(e);
     expect(itemOf(out.items, "secret-duplicate").detail).toContain("2 secrets");
-    expect(binds[0]!.env).toEqual({ KEEP: "1", ANTHROPIC_API_KEY: REF });
+    expect(binds[0]!.env).toEqual({ KEEP: { type: "plain", value: "1" }, ANTHROPIC_API_KEY: REF });
   });
 
   it("tells a pib company how to reset a client setting", async () => {
