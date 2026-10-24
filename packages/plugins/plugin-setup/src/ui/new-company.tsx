@@ -465,7 +465,7 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
   }, [companyId]);
 
   const me = assignableUser(host.userId);
-  const modules = effectiveModules(data.load?.modules ?? null) as Record<ModuleKey, boolean>;
+  const modules = effectiveModules(data.load?.modules ?? null, data.load?.entitled) as Record<ModuleKey, boolean>;
   const grantsNow = state?.run?.grants ?? [];
   const agentLikes: AgentLike[] | null = team.agents ? team.agents.map(toAgentLike) : null;
   const matureWarning = matureCompanyWarning({ agents: agentLikes, runStatus: state?.status ?? "created" });

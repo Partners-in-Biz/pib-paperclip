@@ -1,5 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { BootstrapOptions, BootstrapRunState, OwnerGrant, RunStatus, StepId, StepRecord } from "./bootstrap.js";
+import type { EntitlementRow } from "./entitlements.js";
 import type { ModuleKey, SetupStatus } from "./kit-setup.js";
 import { NAMESPACE } from "./namespace.js";
 
@@ -11,6 +12,7 @@ const T = {
   hires: `${NAMESPACE}.template_hires`,
   approvals: `${NAMESPACE}.starter_pack_approvals`,
   imports: `${NAMESPACE}.starter_pack_imports`,
+  entitlements: `${NAMESPACE}.entitlements`,
 };
 
 export interface ChoiceRow {
@@ -78,6 +80,46 @@ export async function saveChoice(ctx: PluginContext, row: ChoiceRow): Promise<vo
     `INSERT INTO ${T.choices} (company_id, modules, updated_at, updated_by) VALUES ($1, $2::jsonb, $3, $4)
      ON CONFLICT (company_id) DO UPDATE SET modules = EXCLUDED.modules, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
     [row.companyId, JSON.stringify(row.modules), row.updatedAt, row.updatedBy],
+  );
+}
+
+function toEntitlement(row: Raw): EntitlementRow {
+  return {
+    companyId: String(row.company_id),
+    module: String(row.module) as ModuleKey,
+    state: String(row.state) as EntitlementRow["state"],
+    plan: row.plan == null ? null : String(row.plan),
+    until: row.until == null ? null : iso(row.until),
+    updatedBy: row.updated_by == null ? null : String(row.updated_by),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+export async function getEntitlements(ctx: PluginContext, companyId: string): Promise<EntitlementRow[]> {
+  const rows = await ctx.db.query<Raw>(`SELECT company_id, module, state, plan, until, updated_by, updated_at FROM ${T.entitlements} WHERE company_id = $1 ORDER BY module`, [companyId]);
+  return rows.map(toEntitlement);
+}
+
+export async function companiesWithEntitlements(ctx: PluginContext): Promise<Set<string>> {
+  const rows = await ctx.db.query<Raw>(`SELECT company_id, module FROM ${T.entitlements}`);
+  return new Set(rows.map((row) => String(row.company_id)));
+}
+
+/** Writes one company's row for a module (insert or replace). */
+export async function saveEntitlement(ctx: PluginContext, row: EntitlementRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${T.entitlements} (company_id, module, state, plan, until, updated_by, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, module) DO UPDATE SET state = EXCLUDED.state, plan = EXCLUDED.plan, until = EXCLUDED.until, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+    [row.companyId, row.module, row.state, row.plan, row.until, row.updatedBy, row.updatedAt],
+  );
+}
+
+/** The backfill: never overwrites a row somebody already set. */
+export async function insertEntitlementIfMissing(ctx: PluginContext, row: EntitlementRow): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${T.entitlements} (company_id, module, state, plan, until, updated_by, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, module) DO NOTHING`,
+    [row.companyId, row.module, row.state, row.plan, row.until, row.updatedBy, row.updatedAt],
   );
 }
 

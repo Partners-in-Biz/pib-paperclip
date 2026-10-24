@@ -109,7 +109,7 @@ export function SetupPage({ context }: PluginPageProps) {
 
   useEffect(() => {
     if (!data.load) return;
-    setDraft(effectiveModules(data.load.modules));
+    setDraft(effectiveModules(data.load.modules, data.load.entitled));
   }, [data.load?.updatedAt, companyId, data.load === null]);
 
   // Scroll to the section or role the address names, once its rows have settled.
@@ -134,7 +134,7 @@ export function SetupPage({ context }: PluginPageProps) {
   const views = enabledViews(data);
   const counted = pageSummary(data.views, data.load);
   const teamCount = teamSummary(team.roles.map((role) => team.states[role.key]));
-  const dirty = !!draft && !!data.load && JSON.stringify(draft) !== JSON.stringify(effectiveModules(saved));
+  const dirty = !!draft && !!data.load && JSON.stringify(draft) !== JSON.stringify(effectiveModules(saved, data.load?.entitled));
 
   async function doSaveModules() {
     if (!draft || !companyId) return;
@@ -272,6 +272,7 @@ export function SetupPage({ context }: PluginPageProps) {
       {tab === "modules" && draft ? (
         <ModulesStep
           draft={draft}
+          entitled={data.load?.entitled}
           installed={data.installed}
           firstVisit={firstVisit}
           dirty={dirty}
@@ -338,8 +339,10 @@ function installedReport(installed: Record<string, PluginRecordLite> | null) {
 // Modules
 // ---------------------------------------------------------------------------
 
-export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChange, onSave, onCopy, onNewCompany }: {
+export function ModulesStep({ draft, entitled, installed, firstVisit, dirty, busy, onChange, onSave, onCopy, onNewCompany }: {
   draft: ModuleChoice;
+  /** What the company bought; a module missing here is locked. Undefined: nothing is locked. */
+  entitled?: Partial<Record<ModuleKey, boolean>>;
   installed: Record<string, PluginRecordLite> | null;
   firstVisit: boolean;
   dirty: boolean;
@@ -380,6 +383,7 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
               description={MODULES[key].description}
               installed={isInstalled}
               enabled={draft[key]}
+              locked={!!entitled && entitled[key] !== true}
               onToggle={(next) => onChange({ ...draft, [key]: next })}
               hint={key === "crm" && hint ? hint : null}
               module={key}

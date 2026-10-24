@@ -21,7 +21,7 @@ export interface FakeCompany {
   requireBoardApprovalForNewAgents?: boolean;
 }
 
-export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string>; companies?: Record<string, FakeCompany>; wakeFails?: boolean } = {}) {
+export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string>; companies?: Record<string, FakeCompany>; wakeFails?: boolean; members?: Record<string, Array<{ principalId: string; membershipRole: string | null; status?: string; principalType?: string }>> } = {}) {
   const wakes: Array<{ issueId: string; companyId: string; reason?: string }> = [];
   const store: Store = {};
   const db = createFakeDb(store, { namespace: NAMESPACE });
@@ -57,7 +57,15 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
         state.set(stateKey(key), value);
       },
     },
+    access: {
+      members: {
+        list: async ({ companyId }: { companyId: string }) =>
+          (options.members?.[companyId] ?? []).map((member) => ({ principalType: "user", status: "active", ...member, companyId })),
+      },
+    },
     companies: {
+      list: async (input: { limit?: number; offset?: number } = {}) =>
+        Object.keys(options.companies ?? {}).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 100)).map((id) => ({ id, ...options.companies![id] })),
       get: async (companyId: string) => {
         if (options.companies?.[companyId]) return { id: companyId, ...options.companies[companyId] };
         return options.prefixes?.[companyId] ? { id: companyId, issuePrefix: options.prefixes[companyId] } : null;

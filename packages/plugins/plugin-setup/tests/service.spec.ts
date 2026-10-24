@@ -29,7 +29,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.5.16");
+    expect(manifest.version).toBe("0.6.0");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -98,7 +98,7 @@ describe("module choice", () => {
   });
 
   it("wires the action to board users only, with the hourly job", async () => {
-    const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} } });
+    const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "user-9", membershipRole: "admin" }] } });
     registerSetup(ctx);
     const save = actions.get("setup.save-modules")!;
     await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/board user/);
@@ -222,7 +222,7 @@ describe("setup.report-statuses (the page reports what it checked live)", () => 
   });
 
   it("serves the one count on setup.load and takes reports from board users only", async () => {
-    const { ctx, actions } = fakeCtx({ savedConfigs: { [A]: {} } });
+    const { ctx, actions } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "u1", membershipRole: "owner" }] } });
     registerSetup(ctx);
     await actions.get("setup.save-modules")!({ modules: ONLY_CRM, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "u1", agentId: null } });
     const report = actions.get("setup.report-statuses")!;
