@@ -78,8 +78,8 @@ class StepApi(ti.FakeApi):
             if self.invite_no_url:
                 del made["inviteUrl"]
             return made
-        if path == "/api/plugins/tools/execute" and body["tool"] == "crm:get-company":
-            return {"data": {"custom": {"hosted_company_id": "new-co" if self.crm_ok else "x"}}}
+        if path == "/api/plugins/tools/execute" and body["tool"] == "partnersinbiz.crm:get-company":
+            return {"data": {"hostedCompanyId": "new-co" if self.crm_ok else "x"}}
         return super().post(path, body, timeout)
 
 
@@ -439,9 +439,9 @@ class StepTests(ti.Base):
     def test_crm_record_written_and_read_back(self):
         _, api, _ = self.run_req()
         tools = [b["tool"] for p, b in api.posts if p == "/api/plugins/tools/execute"]
-        self.assertEqual(tools, ["crm:define-field", "crm:update-company", "crm:get-company"])
-        upd = [b for p, b in api.posts if p == "/api/plugins/tools/execute" and b["tool"] == "crm:update-company"][0]
-        self.assertEqual(upd["parameters"], {"companyRecordId": "crm-1", "custom": {"hosted_company_id": "new-co"}})
+        self.assertEqual(tools, ["partnersinbiz.crm:update-company", "partnersinbiz.crm:get-company"])
+        upd = [b for p, b in api.posts if p == "/api/plugins/tools/execute" and b["tool"] == "partnersinbiz.crm:update-company"][0]
+        self.assertEqual(upd["parameters"], {"companyRecordId": "crm-1", "hostedCompanyId": "new-co"})
 
     def test_crm_readback_mismatch_fails(self):
         res, _, _ = self.run_req(api=StepApi(crm_ok=False))

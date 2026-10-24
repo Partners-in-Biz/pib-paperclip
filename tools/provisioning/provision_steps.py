@@ -335,13 +335,12 @@ def step_crm_record(c):
 
     def tool(name, params):
         return c.api.post("/api/plugins/tools/execute", {"tool": name, "parameters": params, "runContext": ctx})
-    try:
-        tool("crm:define-field", {"recordType": "company", "fieldKey": "hosted_company_id", "label": "Hosted company id"})
-    except RuntimeError:
-        pass  # already defined
-    tool("crm:update-company", {"companyRecordId": c.req["crm_company_id"], "custom": {"hosted_company_id": c.st["company_id"]}})
-    back = tool("crm:get-company", {"companyRecordId": c.req["crm_company_id"]})
-    if c.st["company_id"] not in json.dumps(back):
+    # Plugin tools are registered under the plugin key (partnersinbiz.crm:<tool>), and CRM 0.31 (PAR-5160) has a first-class
+    # hostedCompanyId on a company record, so no custom field is defined (live proof PAR-5235, 2026-10-24).
+    upd = tool("partnersinbiz.crm:update-company", {"companyRecordId": c.req["crm_company_id"], "hostedCompanyId": c.st["company_id"]})
+    back = tool("partnersinbiz.crm:get-company", {"companyRecordId": c.req["crm_company_id"]})
+    # update-company answers with the record and its hosted fields; get-company's client summary may leave them out.
+    if c.st["company_id"] not in json.dumps(upd) and c.st["company_id"] not in json.dumps(back):
         raise StepError("hosted_company_id did not read back on CRM company %s" % c.req["crm_company_id"])
 
 
