@@ -18,6 +18,8 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    // The preferences-save action checks that the signed-in person is an owner or admin of the company (ctx.access.members.list).
+    "access.members.read",
     // The mailbox.delegate ask effect checks that the agent it grants is an active agent of this company.
     "agents.read",
     "issues.read",

@@ -42,6 +42,7 @@ import {
   rememberPluginUiBase,
   valueAtPath,
   type MailAddress,
+  type PreferenceValue,
   type MailSendRequested,
   type RolesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
@@ -91,6 +92,7 @@ import type { DomainReport } from "./domain-health.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { isPrivateMail, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
 import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
+import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
 
@@ -133,6 +135,8 @@ const plugin = definePlugin({
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
+    ctx.actions.register("mailbox.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    ctx.actions.register("mailbox.preferences-save", (params, context) => preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>));
     ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("mailbox.create-draft", (params, context) =>
       createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent", drafter(context)),

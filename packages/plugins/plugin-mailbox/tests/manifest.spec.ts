@@ -29,8 +29,8 @@ describe("manifest", () => {
   });
 
   it("declares the Gmail job, the OAuth route and the capabilities it uses", () => {
-    expect(manifest.version).toBe("0.7.1");
-    for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "issue.comments.create", "ui.page.register", "agents.read", "webhooks.receive"]) {
+    expect(manifest.version).toBe("0.8.0");
+    for (const cap of ["jobs.schedule", "http.outbound", "secrets.read-ref", "events.emit", "events.subscribe", "api.routes.register", "plugin.state.read", "plugin.state.write", "issues.create", "issues.wakeup", "issues.read", "issues.update", "issue.comments.create", "ui.page.register", "agents.read", "webhooks.receive", "access.members.read"]) {
       expect(manifest.capabilities).toContain(cap);
     }
     expect(manifest.jobs).toEqual([
@@ -71,7 +71,7 @@ describe("manifest", () => {
 
 describe("config", () => {
   it("parses defaults, the assignee and the rate", () => {
-    expect(parseMailboxConfig({})).toMatchObject({ saved: false, labelPrefix: "PiB", sendRatePerMinute: 20, googleClientId: DEFAULT_GOOGLE_CLIENT_ID, triageAssignee: null });
+    expect(parseMailboxConfig({})).toMatchObject({ saved: false, labelPrefix: "Mail", sendRatePerMinute: 20, googleClientId: DEFAULT_GOOGLE_CLIENT_ID, triageAssignee: null });
     expect(parseMailboxConfig({ labelPrefix: " /Ops/ ", sendRatePerMinute: 5 })).toMatchObject({ saved: true, labelPrefix: "Ops", sendRatePerMinute: 5 });
     expect(parseTriageAssignee("user:abc")).toEqual({ userId: "abc" });
     expect(parseTriageAssignee("agent:xyz")).toEqual({ agentId: "xyz" });
