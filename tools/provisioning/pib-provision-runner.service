@@ -1,0 +1,10 @@
+[Unit]
+Description=PiB provisioning runner (one request file at a time)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/pib-ops/provision-runner.py
+# CEO hires take about 2 minutes per company; the steps have their own timeouts.
+TimeoutStartSec=1h
+Nice=10
+# The path unit re-fires while incoming/ is not empty; a second instance exits at once on the lock.

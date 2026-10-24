@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "parCompanyId": "b2b8f471-edba-4d05-abce-f15e99a94d9a",
+  "apiBase": "http://127.0.0.1:3100",
+  "boardTokenFile": "/etc/pib-provision/board-token",
+  "allowedRequesters": ["operator", "account manager"],
+  "requireIssueAssignee": true,
+  "profiles": ["client", "internal"],
+  "defaultProfile": "client",
+  "maxHostedCompanies": 3,
+  "maxAgentsTotal": 60,
+  "agentsPerNewCompany": 5,
+  "maxAgentsPerRequest": 10
+}
