@@ -260,7 +260,7 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
   const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
 
-  const body = off ? <ModuleOffBanner /> : loadError ? (
+  const body = off ? <ModuleOffBanner companyId={context.companyId} /> : loadError ? (
     <EmptyState
       tone="bad"
       title={scope ? "This client's workspace could not open" : "Social could not load"}
