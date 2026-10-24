@@ -16,6 +16,8 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
 import { COMPANY_OS_INSTRUCTION, COMPANY_OS_SKILL } from "./asking.js";
+import { MODEL_KEY_MARKER, adapterPreferenceFor, hireRefusal, hostingFromConfig, modelKeyHireText, type Hosting } from "./model-key.js";
+import { readConfig } from "./config.js";
 import { runProfileForRole, runProfileHireText, runProfileRows, type RunProfile } from "./run-profile.js";
 
 export interface HireSkill {
@@ -149,7 +151,8 @@ export function hireSkills(role: HireRole): HireSkill[] {
   return role.skills.some((s) => s.key === COMPANY_OS_HIRE_SKILL.key) ? role.skills : [...role.skills, COMPANY_OS_HIRE_SKILL];
 }
 
-export function hireTaskDraft(role: HireRole): { title: string; description: string } {
+export function hireTaskDraft(role: HireRole, hosting?: Hosting): { title: string; description: string } {
+  const preference = adapterPreferenceFor(role.adapterPreference, hosting);
   const profile = role.runProfile ?? runProfileForRole(role.roleKey);
   const skillLines = hireSkills(role).map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
   const setupLines = role.pluginSetup.map((line) => `- ${line}`).join("\n");
@@ -163,13 +166,13 @@ export function hireTaskDraft(role: HireRole): { title: string; description: str
 | **Title** | ${role.title} |
 | **Role** | \`${role.role}\` |
 | **Reports to** | ${role.suggestedManager ?? "the right manager for this work (your call)"} |
-| **Adapter** | ${role.adapterPreference.map((a) => `\`${a}\``).join(", then ")} (first one that has a working model key) |
+| **Adapter** | ${preference.map((a) => `\`${a}\``).join(", then ")} (${hosting?.profile === "client" ? "the company's own key" : "first one that has a working model key"}) |
 | **Budget** | ${money(role.budgetMonthlyCents)} |
-${runProfileRows(profile, role.adapterPreference).join("\n")}
+${runProfileRows(profile, preference).join("\n")}
 | **Start** | paused, until its model key is checked |
 
-${runProfileHireText(profile, role.adapterPreference)}
-
+${runProfileHireText(profile, preference)}
+${hosting?.profile === "client" ? `\n${modelKeyHireText(hosting)}\n` : ""}
 **What it does:** ${role.capabilities}
 
 ## Skills to attach
@@ -309,9 +312,14 @@ export async function startHire(
   role: HireRole,
   input: { title?: string; description?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; actorUserId: string | null },
 ): Promise<HireRecord> {
-  const draft = hireTaskDraft(role);
+  const hosting = hostingFromConfig(typeof ctx.config?.get === "function" ? await readConfig(ctx, companyId) : {});
+  const refusal = hireRefusal(hosting);
+  if (refusal) throw new Error(refusal);
+  const draft = hireTaskDraft(role, hosting);
   const title = input.title?.trim() || draft.title;
-  const description = input.description?.trim() || draft.description;
+  // A description the caller prefilled (Setup does) may have been drafted without the hosting settings: add the key section.
+  const supplied = input.description?.trim();
+  const description = supplied ? (hosting.profile === "client" && !supplied.includes(MODEL_KEY_MARKER) ? `${supplied}\n\n${modelKeyHireText(hosting)}` : supplied) : draft.description;
   const assigneeAgentId = input.assigneeAgentId || null;
   const assigneeUserId = assigneeAgentId ? null : input.assigneeUserId || null;
   const issue = await ctx.issues.create({

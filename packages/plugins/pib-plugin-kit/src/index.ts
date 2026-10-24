@@ -36,6 +36,7 @@ export * from "./escalate-model.js";
 export * from "./escalate.js";
 export * from "./redact.js";
 export * from "./company.js";
+export * from "./model-key.js";
 export * from "./run-profile.js";
 export * from "./role-drift.js";
 export * from "./grant-check.js";
