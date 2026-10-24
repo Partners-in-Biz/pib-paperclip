@@ -1,4 +1,4 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { normalizeToolResult, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -92,12 +92,13 @@ import { nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
-import { messagingSetup } from "./messaging.js";
+import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
 import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
+import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { identityChanged, listSenderIdentities, preflightCampaign, recordChannelConsent, removeSenderIdentity, setSenderIdentity, suppressPhone } from "./sender-tools.js";
 import { composeMessage, sendMessagingStep } from "./sms.js";
 import { handleWebhook } from "./webhook.js";
@@ -194,6 +195,12 @@ const plugin = definePlugin({
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
+    });
+    ctx.actions.register("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    ctx.actions.register("campaigns.preferences-save", async (params, context) => {
+      const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
+      if (result.ok && context.companyId) forgetMessagingSetup(context.companyId);
+      return result;
     });
     ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));

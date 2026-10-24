@@ -29,6 +29,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { readCampaignPreferences } from "./preferences.js";
 import { parseSendWindows, normalizePhone, type MessagingChannel, type SendWindows } from "./channels.js";
 
 // ---------------------------------------------------------------------------
@@ -297,6 +298,9 @@ export interface MessagingSetup {
 
 const CACHE_MS = 5 * 60_000;
 const cache = new Map<string, { at: number; value: MessagingSetup }>();
+
+/** A saved preference (the timezone) must reach the send window now, not in five minutes. */
+export const forgetMessagingSetup = (companyId: string) => void cache.delete(companyId);
 let providerOverride: ((config: MessagingConfig, companyId: string) => MessagingProvider) | null = null;
 
 /** Tests: use this provider instead of Twilio (null puts Twilio back). Clears the cache. */
@@ -432,6 +436,7 @@ export async function messagingSetup(ctx: PluginContext, companyId: string, opti
     raw = {};
   }
   const config = messagingConfigFrom(raw);
+  config.timezone = text((await readCampaignPreferences(ctx, companyId).catch(() => null))?.timezone) ?? config.timezone;
   let provider: MessagingProvider | null = null;
   let tokenProblem: string | null = null;
   if (providerOverride) {
