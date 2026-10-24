@@ -1,5 +1,5 @@
 /**
- * The learned SEO playbook per scope (one CRM client, or Partners in Biz's
+ * The learned SEO playbook per scope (one CRM client, or the company's
  * own sites), shared by every sprint in that scope so what the loop learns
  * carries across sprints for the same client.
  *
@@ -33,6 +33,7 @@ import {
   type ChangeSpec,
 } from "../engine/playbook.js";
 import { scopeParamValue, sprintPagePath, sprintScope } from "../engine/scope.js";
+import { companyDisplayName } from "../preferences.js";
 import { actorId, actorLabel, bool, companyInfo, reqStr, SeoError, str, type Actor, type CompanyInfo, type Env, type Params } from "./common.js";
 import { requireSprint } from "./context.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
@@ -56,7 +57,7 @@ interface Target {
   sprint: db.Sprint | null;
 }
 
-/** From `sprintId` (or `optimizationId`), else `client` ("own" for Partners in Biz's own sites). */
+/** From `sprintId` (or `optimizationId`), else `client` ("own" for the company's own sites). */
 async function targetFor(env: Env, companyId: string, params: Params, opts: { fromOptimization?: boolean } = {}): Promise<Target> {
   const requested = scopeParam(params);
   let sprint: db.Sprint | null = null;
@@ -71,11 +72,11 @@ async function targetFor(env: Env, companyId: string, params: Params, opts: { fr
   if (sprint) {
     const scope = sprintScope(sprint);
     if (requested !== undefined && !sameClient(requested, scope)) {
-      throw new SeoError(`Sprint ${sprint.id} belongs to ${scopeParamValue(scope) ?? "Partners in Biz's own sites"}, not ${scopeParamValue(requested) ?? "own"}.`);
+      throw new SeoError(`Sprint ${sprint.id} belongs to ${scopeParamValue(scope) ?? "the company's own sites"}, not ${scopeParamValue(requested) ?? "own"}.`);
     }
     return { scope, clientName: sprint.clientName, sprint };
   }
-  if (requested === undefined) throw new SeoError('Pass sprintId, or client ("own" for Partners in Biz\'s own sites, "company:<id>" or "contact:<id>").');
+  if (requested === undefined) throw new SeoError('Pass sprintId, or client ("own" for the company\'s own sites, "company:<id>" or "contact:<id>").');
   const clientName = requested ? (await requireClient(env, companyId, requested)).name : null;
   const sprints = (await db.listSprints(env.ctx.db, companyId, { scope: requested })).filter((s) => s.status !== "archived");
   return { scope: requested, clientName, sprint: sprints[0] ?? null };
@@ -90,7 +91,7 @@ export async function ensurePlaybook(env: Env, companyId: string, scope: ClientS
     return found;
   }
   const id = randomUUID();
-  const playbook = seoStarterPlaybook(playbookTitle(scope, clientName));
+  const playbook = seoStarterPlaybook(playbookTitle(scope, clientName, await companyDisplayName(env.ctx, companyId)));
   const inserted = await env.playbooks.insertPlaybook({ id, companyId, scopeKey: key, clientKind: scope?.kind ?? null, clientRef: scope?.id ?? null, clientName: scope ? clientName : null, playbook });
   const created = await env.playbooks.findPlaybook(companyId, key);
   if (!created) throw new SeoError("The playbook could not be created");
@@ -100,8 +101,8 @@ export async function ensurePlaybook(env: Env, companyId: string, scope: ClientS
   return created;
 }
 
-function scopeLabel(scope: ClientScope, clientName: string | null): string {
-  return scope ? clientName ?? "client" : "Partners in Biz";
+function scopeLabel(scope: ClientScope, clientName: string | null, ownName: string): string {
+  return scope ? clientName ?? "client" : ownName;
 }
 
 /** The sprint's Playbook tab. */
@@ -200,7 +201,7 @@ export async function refreshPlaybookItem(env: Env, info: CompanyInfo, sprint: d
   if (sprint.autopilotMode === "full") return; // the agent decides them
   const item = playbookChangesItem({
     playbookPath: playbookPath(info, sprint),
-    scopeLabel: scopeLabel(sprintScope(sprint), sprint.clientName),
+    scopeLabel: scopeLabel(sprintScope(sprint), sprint.clientName, await companyDisplayName(env.ctx, sprint.companyId)),
     diffs: pending.map((c) => c.diff),
   });
   await addNeedsYou(env, info, sprint, item, { reopen: true });

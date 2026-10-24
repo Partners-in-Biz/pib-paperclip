@@ -73,6 +73,7 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    "access.members.read",
     "issues.read",
     "issues.create",
     "issues.update",
