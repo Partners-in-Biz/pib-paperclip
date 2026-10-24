@@ -35,13 +35,13 @@ export interface ProfileField {
 }
 
 export const PROFILE_FIELDS: ProfileField[] = [
-  { key: "legalName", label: "Legal name", group: "identity", kind: "text", max: 200, hint: "As registered, for invoices, quotes and contracts.", placeholder: "Partners in Biz (Pty) Ltd" },
-  { key: "tradingName", label: "Trading name", group: "identity", kind: "text", max: 200, hint: "The name clients know, for posts and emails.", placeholder: "Partners in Biz" },
+  { key: "legalName", label: "Legal name", group: "identity", kind: "text", max: 200, hint: "As registered, for invoices, quotes and contracts.", placeholder: "Your company (Pty) Ltd" },
+  { key: "tradingName", label: "Trading name", group: "identity", kind: "text", max: 200, hint: "The name clients know, for posts and emails.", placeholder: "Your company name" },
   { key: "vatNumber", label: "VAT number", group: "identity", kind: "vat", max: 20, hint: "10 digits starting with 4. Leave empty when not VAT registered.", placeholder: "4123456789" },
   { key: "address", label: "Address", group: "identity", kind: "long", max: 500, hint: "Postal or physical address for invoices and email footers." },
   { key: "website", label: "Website", group: "online", kind: "url", max: 300, hint: "The main website.", placeholder: "https://example.co.za" },
   { key: "bookingLink", label: "Booking link", group: "online", kind: "url", max: 300, hint: "Where clients book a call or meeting; agents point leads here.", placeholder: "https://cal.com/…" },
-  { key: "senderName", label: "Sender name", group: "email", kind: "text", max: 120, hint: "The name email goes out under.", placeholder: "Peet at Partners in Biz" },
+  { key: "senderName", label: "Sender name", group: "email", kind: "text", max: 120, hint: "The name email goes out under.", placeholder: "Alex at Your company" },
   { key: "senderEmail", label: "Sender email", group: "email", kind: "email", max: 200, hint: "The address replies go to.", placeholder: "hello@example.co.za" },
   { key: "whatWeSell", label: "What we sell", group: "offer", kind: "long", max: 1000, hint: "Services or products, with prices or ranges when they are public." },
   { key: "audience", label: "Audience", group: "offer", kind: "long", max: 1000, hint: "Who the ideal clients are: industry, size, region, the problem they have." },
