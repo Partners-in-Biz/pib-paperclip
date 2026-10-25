@@ -1,18 +1,18 @@
 /**
- * Skills for client websites and client apps: WordPress sites (PiB Connector
+ * Skills for client websites and client apps: WordPress sites (Connector
  * and SFTP deploys of our own plugins) and iOS releases on a Mac build host.
  */
 
-export const CLIENT_SITES_SKILL = `# Client websites: WordPress, the PiB Connector and SFTP deploys
+export const CLIENT_SITES_SKILL = `# Client websites: WordPress, the Connector and SFTP deploys
 
 A client can have several websites. The CRM keeps them (\`list-client-sites\`, \`save-client-site\`): address, platform, SEO plugin, hosting, notes, and how you reach each one:
 - **repo:** the code is in the site's Paperclip project workspace (normal git flow).
-- **connector:** the PiB Connector WordPress plugin. Signed, logged SEO changes through the CRM's \`wp-*\` tools.
+- **connector:** the Connector WordPress plugin. Signed, logged SEO changes through the CRM's \`wp-*\` tools.
 - **sftp:** file access for deploying **our own** WordPress plugins. The login is env on the site's Paperclip project, so only runs in that project have it.
 
 Read the site's \`notes\` first. House rules on every WordPress site: **deactivate plugins, never delete them**; never edit wp-config.php or the database; theme and plugin template files only as **markup edits** under the routine below (never logic); keep Yoast or Rank Math installed (the Connector writes into them).
 
-## The PiB Connector (SEO and small settings)
+## The Connector (SEO and small settings)
 - \`wp-health\` first: WordPress and PHP versions, SEO plugin, sitemap provider, whether search engines are allowed, plugin updates waiting.
 - Page SEO: \`wp-seo\` op get, decide, then op set with a one-line \`reason\`. Only the fields you send change. It also does categories and tags (\`termId\`), archives and the shop (\`postTypeArchive\`) and the share image (\`ogImage\`); op list audits many pages (\`missing: ["title","description","ogImage"]\`).
 - Schema: \`wp-schema\` with stable ids (\`localbusiness\`, \`faq-home\`); it joins the SEO plugin's graph.

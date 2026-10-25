@@ -37,8 +37,8 @@ async function loadManifests(): Promise<Manifest[]> {
  */
 const SCRUBBED_PLUGINS: Array<(typeof PLUGINS)[number]> = ["crm"];
 
-/** Product and protocol names a scrubbed plugin may keep: what a client really sees (the WordPress plugin, the signed-request headers, the canary company's stored name). */
-const BRAND_KEEP = ["PiB Connector", "X-PiB-", "PiB Canary Co"];
+/** Product and protocol names a scrubbed plugin may keep: what a client really sees (the signed-request headers). */
+const BRAND_KEEP = ["X-PiB-"];
 
 /** The upstream LLM Wiki tools the manual may name (its manifest reads files at import time). */
 const WIKI_TOOLS = ["wiki_search", "wiki_read_page", "wiki_write_page", "wiki_propose_patch", "wiki_list_sources", "wiki_read_source", "wiki_append_log", "wiki_update_index", "wiki_list_backlinks", "wiki_list_pages"];
@@ -147,7 +147,6 @@ const PIB_WORDING = /Peet|Partners in Biz|\bPiB\b/;
  * line. There is no permanent exemption: the list must be empty when the last text PR has merged.
  */
 const PENDING: Array<(typeof PLUGINS)[number]> = [
-  "crm",
 ];
 
 interface WordingHit {
@@ -163,7 +162,7 @@ function wordingHits(plugin: string, skills: Skill[], pibOnly: string[], extra: 
     ...skills.filter((s) => !pibOnly.includes(s.skillKey)).flatMap((s) => [{ file: `${s.skillKey} (markdown)`, text: s.markdown ?? "" }, ...(s.files ?? []).map((f) => ({ file: `${s.skillKey}/${f.path}`, text: f.content }))]),
     ...extra,
   ];
-  return docs.flatMap((d) => d.text.split(/\r?\n/).flatMap((text, i) => (PIB_WORDING.test(text) ? [{ plugin, file: d.file, line: i + 1, text: text.trim().slice(0, 120) }] : [])));
+  return docs.flatMap((d) => d.text.split(/\r?\n/).flatMap((text, i) => (PIB_WORDING.test(BRAND_KEEP.reduce((t, k) => t.split(k).join(""), text)) ? [{ plugin, file: d.file, line: i + 1, text: text.trim().slice(0, 120) }] : [])));
 }
 
 describe("shared skill text names no owner company", async () => {

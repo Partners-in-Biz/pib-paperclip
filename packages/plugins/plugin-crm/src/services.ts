@@ -110,7 +110,7 @@ export const SERVICES = [
     role: "operator",
     aliases: /\bweb ?(site|design|build|dev)|\bwordpress\b|\bshopify\b|\bwix\b|\bredesign\b|e-?commerce|online store|web store/i,
     start: [
-      "Register the site (`save-client-site`) and link its project; a WordPress site is paired with the PiB Connector.",
+      "Register the site (`save-client-site`) and link its project; a WordPress site is paired with the Connector.",
       "Hand the build or care work to the Delivery Lead with the client's project and the `development` branch rule.",
     ],
     evidence: "the registered site and the hand-off issue",
