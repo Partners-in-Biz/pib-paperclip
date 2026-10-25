@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-crm-telephony",
-  "version": "0.3.15",
+  "version": "0.3.16",
   "private": true,
   "type": "module",
   "description": "Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts.",
