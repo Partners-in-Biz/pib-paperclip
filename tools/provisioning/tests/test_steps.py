@@ -1,4 +1,5 @@
 """Step-by-step tests for provision_steps. Server commands and the Paperclip API are faked; nothing real is touched."""
+import copy
 import json
 import os
 import sys
@@ -33,9 +34,39 @@ class Clock:
         self.t += n
 
 
+def ref(name):
+    return {"type": "secret_ref", "secretId": name, "version": "latest"}
+
+
+def default_configs():
+    par, new = ti.PAR, "new-co"
+    return {
+        ("pl-social", par): {"platforms": {"x": {"clientId": "X-ID", "clientSecret": ref("par-x")}, "tiktok": {"clientId": "TT-ID", "clientSecret": ref("par-tt")}},
+                             "google": {"clientId": "G-ID", "clientSecret": ref("par-g")}, "other": 1},
+        ("pl-seo", par): {"google": {"clientId": "G-ID", "clientSecret": ref("par-g")}},
+        ("pl-social", new): {"platforms": {"x": {"clientSecret": ref("new-x")}, "tiktok": {"clientSecret": ref("new-tt")}}, "google": {"clientSecret": ref("new-g")}},
+        ("pl-seo", new): {"google": {"clientSecret": ref("new-g")}},
+    }
+
+
+def copied_configs():
+    """The settings after the client-ids step ran in an earlier request (a resumed request keeps them: the host stores them)."""
+    cfgs = default_configs()
+    for (pl, cid), cfg in list(cfgs.items()):
+        if cid == "new-co":
+            for path, value in ps.client_id_paths(cfgs[(pl, ti.PAR)]):
+                cur = cfg
+                for part in path[:-1]:
+                    cur = cur[part]
+                cur[path[-1]] = value
+    return cfgs
+
+
 class StepApi(ti.FakeApi):
-    def __init__(self, hires=5, crm_ok=True, tasks=None, catalog=None, catalog_error=None, bound=True, invite_error=None, invite_rows=None, invite_no_url=False, **kw):
+    def __init__(self, hires=5, crm_ok=True, tasks=None, catalog=None, catalog_error=None, bound=True, invite_error=None, invite_rows=None, invite_no_url=False, configs=None, **kw):
         super().__init__(**kw)
+        # plugin settings per (plugin id, company id); the default has PAR hold client IDs and the new company only the relinked secrets
+        self.configs = copy.deepcopy(default_configs() if configs is None else configs)
         self.posts, self.hires, self.crm_ok = [], hires, crm_ok
         # invites: the host returns the link once, on creation; the list never holds a token. invite_rows maps a state to the rows the list answers.
         self.invite_error, self.invite_rows, self.invite_no_url, self.invite_posts = invite_error, invite_rows or {}, invite_no_url, []
@@ -48,6 +79,13 @@ class StepApi(ti.FakeApi):
 
     def get(self, path):
         self.gets.append(path)
+        if path == "/api/plugins":
+            return [{"id": "pl-social", "pluginKey": "partnersinbiz.social"}, {"id": "pl-seo", "pluginKey": "partnersinbiz.seo"}, {"id": "pl-x", "pluginKey": "other.plugin"}]
+        if path.startswith("/api/plugins/") and "/config?companyId=" in path:
+            ref, cid = path[len("/api/plugins/"):].split("/config?companyId=")
+            if (ref, cid) not in self.configs:
+                raise RuntimeError("GET %s -> HTTP 404" % path)
+            return {"data": {"configJson": copy.deepcopy(self.configs[(ref, cid)])}}
         if path == "/api/companies/new-co/secrets/catalog":
             if self.catalog_error:
                 raise RuntimeError("GET %s -> HTTP %d" % (path, self.catalog_error))
@@ -67,6 +105,9 @@ class StepApi(ti.FakeApi):
 
     def post(self, path, body, timeout=60):
         self.posts.append((path, body))
+        if path.startswith("/api/plugins/") and path.endswith("/config"):
+            self.configs[(path.split("/")[3], body["companyId"])] = copy.deepcopy(body["configJson"])
+            return {}
         if path == "/api/companies":
             return {"id": "new-co", "name": body["name"]}
         if path == "/api/companies/new-co/invites":
@@ -307,7 +348,7 @@ class StepTests(ti.Base):
         self.policy.update(stepTimeouts={"hires": 60}, maxHostedCompanies=2)
         res, api, _ = self.run_req(api=StepApi(tasks=[hire(1), hire(2, "blocked")]))
         self.assertEqual(res["status"], "needs_owner")
-        api2 = StepApi(companies=[{"id": ti.PAR, "status": "active"}, {"id": "new-co", "status": "active"}])  # the owner acted: hire tasks are done now
+        api2 = StepApi(configs=copied_configs(), companies=[{"id": ti.PAR, "status": "active"}, {"id": "new-co", "status": "active"}])  # the owner acted: hire tasks are done now
         res2, api2, cmds2 = self.run_req(api=api2)
         self.assertEqual(res2["status"], "done", res2["message"])  # not refused as open, not refused by maxHostedCompanies 2
         self.assertEqual([p for p, _ in api2.posts if p == "/api/companies"], [])
@@ -454,7 +495,7 @@ class StepTests(ti.Base):
         self.assertEqual(res["step"], "verify")
         n_created = lambda a: len([1 for p, _ in a.posts if p == "/api/companies"])  # noqa: E731
         self.assertEqual(n_created(api), 1)
-        res2, api2, cmds2 = self.run_req(api=StepApi())
+        res2, api2, cmds2 = self.run_req(api=StepApi(configs=copied_configs()))
         self.assertEqual(res2["status"], "done", res2["message"])
         self.assertEqual(n_created(api2), 0)  # reused new-co
         self.assertEqual(len(cmds2.calls), 1)  # only --verify ran again
@@ -528,7 +569,7 @@ class StepTests(ti.Base):
         self.assertEqual(api.invite_posts, [])
         # the owner revoked it: the resume makes one fresh invite
         old["id"] = res["id"]
-        res2, api2, _ = self.run_req(api=StepApi())
+        res2, api2, _ = self.run_req(api=StepApi(configs=copied_configs()))
         self.assertEqual(res2["status"], "done", res2["message"])
         self.assertEqual(len(api2.invite_posts), 1)
         self.assertEqual(res2["invite_id"], "inv-1")
@@ -556,7 +597,7 @@ class StepTests(ti.Base):
         self.assertEqual(res["company_id"], "new-co")
         self.assertNotIn("owner-invite", res["steps_done"])
         self.assertIsNone(res.get("invite_id"))
-        res2, api2, cmds2 = self.run_req(api=StepApi())  # the host is back: resumes this company, only the invite is made
+        res2, api2, cmds2 = self.run_req(api=StepApi(configs=copied_configs()))  # the host is back: resumes this company, only the invite is made
         self.assertEqual(res2["status"], "done", res2["message"])
         self.assertEqual([p for p, _ in api2.posts if p == "/api/companies"], [])
         self.assertEqual(cmds2.calls, [])
@@ -577,6 +618,73 @@ class StepTests(ti.Base):
             self.assertEqual(body, {"allowedJoinTypes": "human", "humanRole": "owner"})
         self.assertEqual(ps.INVITE_BODY, {"allowedJoinTypes": "human", "humanRole": "owner"})
         self.assertNotIn("admin", json.dumps(ps.INVITE_BODY))
+
+
+    def test_client_ids_are_copied_next_to_the_relinked_secrets_and_nothing_else(self):
+        res, api, cmds = self.run_req()
+        self.assertEqual(res["status"], "done", res["message"])
+        soc = api.configs[("pl-social", "new-co")]
+        self.assertEqual(soc["platforms"]["x"], {"clientId": "X-ID", "clientSecret": ref("new-x")})  # the secret stays the new company's own
+        self.assertEqual(soc["platforms"]["tiktok"]["clientId"], "TT-ID")
+        self.assertEqual(soc["google"]["clientId"], "G-ID")
+        self.assertNotIn("other", soc)  # only client IDs move; no other PAR setting
+        self.assertEqual(api.configs[("pl-seo", "new-co")]["google"]["clientId"], "G-ID")
+        self.assertFalse(any(k == "pl-x" for k, _ in api.configs))  # not a partnersinbiz plugin
+        self.assertIn("client IDs copied from PAR", res["message"])
+        self.assertNotIn("X-ID", res["message"])  # names only
+
+    def test_no_secret_value_is_ever_written_by_the_client_id_step(self):
+        api = StepApi()
+        api.configs[("pl-social", ti.PAR)]["platforms"]["x"]["clientSecret"] = "PLAIN-SECRET-VALUE"
+        res, api, _ = self.run_req(api=api)
+        for path, body in api.posts:
+            self.assertNotIn("PLAIN-SECRET-VALUE", json.dumps(body))
+        self.assertEqual(api.configs[("pl-social", "new-co")]["platforms"]["x"]["clientSecret"], ref("new-x"))
+
+    def test_an_existing_client_id_in_the_new_company_is_kept(self):
+        api = StepApi()
+        api.configs[("pl-social", "new-co")]["platforms"]["x"]["clientId"] = "OWN-ID"
+        res, api, _ = self.run_req(api=api)
+        self.assertEqual(api.configs[("pl-social", "new-co")]["platforms"]["x"]["clientId"], "OWN-ID")
+
+    def test_the_step_runs_after_copy_secrets_and_before_the_hires(self):
+        names = [n for n, _ in ps.STEPS]
+        self.assertEqual(names.index("client-ids"), names.index("copy-secrets") + 1)
+
+    def test_plugin_with_no_saved_par_settings_is_skipped(self):
+        api = StepApi()
+        del api.configs[("pl-seo", ti.PAR)]
+        res, api, _ = self.run_req(api=api)
+        self.assertNotIn("clientId", api.configs[("pl-seo", "new-co")]["google"])  # nothing to copy from
+        self.assertEqual(res["step"], "verify")  # and the check still flags a client secret with no client ID
+        self.assertIn("partnersinbiz.seo: google.clientId is empty", res["message"])
+
+    def test_client_id_step_is_idempotent(self):
+        res, api, _ = self.run_req()
+        before = len(api.posts)
+        c = types.SimpleNamespace(api=api, p=self.policy, st={"company_id": "new-co"})
+        ps.step_client_ids(c)
+        self.assertEqual(len(api.posts), before)
+        self.assertIn("nothing to copy", c.st["note_client_ids"])
+
+    def test_verify_fails_when_a_client_secret_has_no_client_id(self):
+        api = StepApi()
+        del api.configs[("pl-social", ti.PAR)]["platforms"]["x"]["clientId"]  # PAR itself has a secret and no ID: nothing to copy, so the new company stays short
+        res, api, _ = self.run_req(api=api)
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["step"], "verify")
+        self.assertIn("partnersinbiz.social: platforms.x.clientId is empty but its clientSecret is set", res["message"])
+
+    def test_verify_passes_when_every_secret_has_its_id(self):
+        res, api, _ = self.run_req()
+        c = types.SimpleNamespace(api=api, p=self.policy, st={"company_id": "new-co"})
+        self.assertEqual(ps.check_client_ids(c), [])
+
+    def test_helpers(self):
+        cfg = {"platforms": {"a": {"clientId": "1", "clientSecret": "s"}, "b": {"clientSecret": ref("x")}, "c": {"clientId": "  "}}, "google": {"clientSecret": "s"}}
+        self.assertEqual(ps.client_id_paths(cfg), [(("platforms", "a", "clientId"), "1")])
+        self.assertEqual(sorted(ps.missing_client_ids(cfg)), [("google", "clientId"), ("platforms", "b", "clientId")])
+        self.assertEqual(ps.client_id_plan({"platforms": {"a": {"clientId": "1"}}}, {"platforms": {"a": {"clientId": "9"}}}), [])
 
 
 if __name__ == "__main__":
