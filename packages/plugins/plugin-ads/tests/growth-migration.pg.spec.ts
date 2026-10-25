@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { experimentsMigration } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../src/namespace.js";
@@ -21,7 +22,7 @@ describe.skipIf(!available)("growth migration (006)", () => {
   });
 
   it("006_growth.sql text equals the experimentsMigration helper output", () => {
-    const migrationPath = new URL("../migrations/006_growth.sql", import.meta.url).pathname;
+    const migrationPath = fileURLToPath(new URL("../migrations/006_growth.sql", import.meta.url));
     const migrationText = readFileSync(migrationPath, "utf8");
     const helperOutput = experimentsMigration(NAMESPACE);
     expect(migrationText.trim()).toBe(helperOutput.trim());
@@ -94,7 +95,7 @@ describe.skipIf(!available)("growth migration (006)", () => {
       );
 
       // Read and apply migration 006
-      const migrationPath = new URL("../migrations/006_growth.sql", import.meta.url).pathname;
+      const migrationPath = fileURLToPath(new URL("../migrations/006_growth.sql", import.meta.url));
       const migrationText = readFileSync(migrationPath, "utf8");
       await pgPrev.client.query(migrationText);
 
