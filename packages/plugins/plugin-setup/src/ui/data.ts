@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { errorText } from "@partnersinbiz/pib-plugin-ui";
 import type { DriveBinding } from "../drive-checklist.js";
 import { MODULES, setupSummary, type ModuleKey, type SetupStatus, type SetupSummary } from "../kit-setup.js";
 import { effectiveModules, ORDERED_MODULES } from "../modules.js";
@@ -228,7 +229,7 @@ export function useSetupData(companyId: string | null | undefined, options: { li
       }
     } catch (err) {
       if (mine !== token.current) return;
-      setError(err instanceof Error ? err.message : "Could not load setup");
+      setError(errorText(err));
       setLoading(false);
     }
   }, [companyId, loadAction, checkPlugins, wantLive]);

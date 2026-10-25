@@ -96,6 +96,12 @@ export const setupLinkStyle: CSSProperties = {
 // Page
 // ---------------------------------------------------------------------------
 
+/** The page body while there is no view: a failed load shows only the message above, never a placeholder. */
+export function emptyViewText(state: { loading: boolean; error: string | null }): string {
+  if (state.error) return "";
+  return state.loading ? "Loading the Cockpit…" : "Nothing to show yet.";
+}
+
 export function CockpitPage({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const location = useHostLocation();
@@ -186,7 +192,7 @@ export function CockpitPage({ context }: PluginPageProps) {
         <FlowsPanel view={view.flows} linkFor={linkFor} focus={location.hash} />
       ) : view ? (
         <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} />
-      ) : <Muted>{data.loading ? "Loading the Cockpit…" : "Nothing to show yet."}</Muted>}
+      ) : emptyViewText(data) ? <Muted>{emptyViewText(data)}</Muted> : null}
     </Shell>
   );
 }
