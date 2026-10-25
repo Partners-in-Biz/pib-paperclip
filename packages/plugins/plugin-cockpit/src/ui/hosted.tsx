@@ -3,7 +3,7 @@
  * runs, done issues and agents, read from `hosted-usage.load`. Counts and cost only. Any other
  * company gets `allowed: false` and sees no tab, no sidebar row and a "not available" page.
  */
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Field, Select, TriangleAlert, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { HostedUsageList, HostedUsageListed } from "../hosted-usage.js";
@@ -85,22 +85,49 @@ export function HostedBody({ rows, months, month, onMonth }: { rows: HostedUsage
 
 export type HostedState = { status: "loading" } | { status: "error"; error: string } | { status: "ready"; list: HostedUsageList };
 
-/** Loads the last six months once; `reload` after a refresh. */
+const NOT_AVAILABLE: HostedState = { status: "ready", list: { allowed: false, rows: [] } };
+
+/** What was loaded and for which company. */
+export interface HostedHeld {
+  companyId: string;
+  state: HostedState;
+}
+
+/** The state to show for `companyId`: anything held for another company counts as still loading, never as that company's data. */
+export function hostedStateFor(held: HostedHeld | null, companyId: string | null | undefined): HostedState {
+  if (!companyId) return NOT_AVAILABLE;
+  return held && held.companyId === companyId ? held.state : { status: "loading" };
+}
+
+/**
+ * Loads the last six months for `companyId`; `reload` after a refresh. Every company calls it (the
+ * answer is the gate: only the owner gets `allowed`). A response is kept only while its company is
+ * still the current one, and a state held for another company is never shown.
+ */
 export function useHostedUsage(companyId: string | null | undefined, refreshKey = 0): { state: HostedState; reload: () => Promise<void> } {
   const load = usePluginAction("hosted-usage.load");
-  const [state, setState] = useState<HostedState>({ status: "loading" });
+  const [held, setHeld] = useState<HostedHeld | null>(null);
+  const current = useRef(companyId);
+  current.current = companyId;
   const reload = useCallback(async () => {
     if (!companyId) return;
+    let state: HostedState;
     try {
-      setState({ status: "ready", list: (await load({})) as HostedUsageList });
+      state = { status: "ready", list: (await load({})) as HostedUsageList };
     } catch (err) {
-      setState({ status: "error", error: errorText(err) });
+      state = { status: "error", error: errorText(err) };
     }
+    if (current.current === companyId) setHeld({ companyId, state });
   }, [load, companyId]);
   useEffect(() => {
     void reload();
   }, [reload, refreshKey]);
-  return { state, reload };
+  return { state: hostedStateFor(held, companyId), reload };
+}
+
+/** Whether the owner-only entries (tab, sidebar row) show for this state. */
+export function hostedAllowed(state: HostedState): boolean {
+  return state.status === "ready" && state.list.allowed;
 }
 
 /** The view for a loaded state: the table when allowed, the "not available" page when not. */

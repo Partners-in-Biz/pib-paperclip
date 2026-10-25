@@ -2,7 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { HostedUsageListed } from "../src/hosted-usage.js";
-import { HostedView, formatUsd, monthLabel, monthOptions } from "../src/ui/hosted.js";
+import type { HostedHeld } from "../src/ui/hosted.js";
+import { HostedView, hostedAllowed, hostedStateFor, formatUsd, monthLabel, monthOptions } from "../src/ui/hosted.js";
 import { createEnv, registerCockpit } from "../src/register.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 
@@ -46,5 +47,30 @@ describe("hosted-usage.load", () => {
     registerCockpit(fake.ctx, createEnv(fake.ctx, fixedClock(NOW.toISOString()).now));
     const out = (await fake.actions.get("hosted-usage.load")!({}, { companyId: "company-a", actor: { type: "user", userId: "u" } })) as { allowed: boolean; rows: unknown[] };
     expect(out).toEqual({ allowed: false, rows: [] });
+  });
+});
+
+describe("the gate follows the company", () => {
+  const owner: HostedHeld = { companyId: "owner", state: { status: "ready", list: { allowed: true, rows: [row()] } } };
+  const client: HostedHeld = { companyId: "client", state: { status: "ready", list: { allowed: false, rows: [] } } };
+
+  it("shows the entries only for the company the answer was for", () => {
+    expect(hostedAllowed(hostedStateFor(owner, "owner"))).toBe(true);
+    expect(hostedAllowed(hostedStateFor(client, "client"))).toBe(false);
+  });
+
+  it("never shows the owner's answer after switching to a client company", () => {
+    const state = hostedStateFor(owner, "client");
+    expect(state).toEqual({ status: "loading" });
+    expect(hostedAllowed(state)).toBe(false);
+    const html = render(state);
+    expect(html).not.toContain("Acme Hosting");
+    expect(html).not.toContain("<table");
+  });
+
+  it("is not available when no company is selected, and loading with nothing held", () => {
+    expect(hostedAllowed(hostedStateFor(owner, null))).toBe(false);
+    expect(render(hostedStateFor(null, null))).toContain("Not available");
+    expect(hostedStateFor(null, "owner")).toEqual({ status: "loading" });
   });
 });

@@ -22,7 +22,7 @@ import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { MaintenancePanel } from "./maintenance.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
-import { HostedView, useHostedUsage } from "./hosted.js";
+import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
 
 export { ClientsNav, FinanceNav, HostedClientsNav, MarketingNav } from "./nav.js";
 
@@ -116,7 +116,7 @@ export function CockpitPage({ context }: PluginPageProps) {
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
   const hosted = useHostedUsage(companyId);
-  const hostedAllowed = hosted.state.status === "ready" && hosted.state.list.allowed;
+  const showHosted = hostedAllowed(hosted.state);
   const moved = movedTabTarget(location.search);
 
   // Follow the address (a `/cockpit?tab=memory` link while the page is open).
@@ -181,7 +181,7 @@ export function CockpitPage({ context }: PluginPageProps) {
           { id: "notifications", label: "Notifications", icon: Megaphone },
           { id: "maintenance", label: "Maintenance", icon: Wrench },
           // Owner company only: other companies get no tab (a `?tab=hosted` link there shows "not available").
-          ...(hostedAllowed ? [{ id: "hosted", label: "Hosted clients", icon: Building2 }] : []),
+          ...(showHosted ? [{ id: "hosted", label: "Hosted clients", icon: Building2 }] : []),
         ]}
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
