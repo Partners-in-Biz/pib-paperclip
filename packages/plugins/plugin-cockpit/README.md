@@ -315,6 +315,8 @@ Read-only, owner company only (the company whose issue prefix is the owner's). R
 
 Src-only: no migration, no new capability, `coreReadTables` unchanged.
 
+0.14.2 adds the UI: action `hosted-usage.load` (same result as the tool), a "Hosted clients" tab on the Cockpit page (`?tab=hosted`) and a "Hosted clients" sidebar row (slot `pib-nav-hosted`), both shown only when the read says `allowed`. Any other company sees neither; the tab address shows "Not available". Spend is notional USD and agents is a snapshot from the last recompute. Slots are not capabilities, so the release is src-only.
+
 ## Develop
 
 ```bash

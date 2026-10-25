@@ -73,7 +73,7 @@ describe("manifest and migration", () => {
       "issue.documents.read",
     ]) expect(manifest.capabilities).toContain(capability);
     expect(manifest.ui?.slots?.map((slot) => [slot.type, slot.displayName])).toEqual([
-      ["page", "Cockpit"], ["sidebar", "Cockpit"], ["sidebar", "Clients"], ["sidebar", "Marketing"], ["sidebar", "Finance"], ["dashboardWidget", "Company today"],
+      ["page", "Cockpit"], ["sidebar", "Cockpit"], ["sidebar", "Clients"], ["sidebar", "Marketing"], ["sidebar", "Finance"], ["sidebar", "Hosted clients"], ["dashboardWidget", "Company today"],
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
