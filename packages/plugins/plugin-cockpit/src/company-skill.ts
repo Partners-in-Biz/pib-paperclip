@@ -12,7 +12,7 @@ export const COMPANY_SKILL_KEY = "company-os";
 export const COMPANY_SKILL_SLUG = "pib-company-os";
 
 export const COMPANY_SKILL_DESCRIPTION =
-  "How this company runs on Paperclip and the PiB modules: who keeps what, clients, hand-offs, approvals, where knowledge lives, house rules and the main flows. Read it before your first task in a session and whenever work crosses modules.";
+  "How this company runs on Paperclip and its modules: who keeps what, clients, hand-offs, approvals, where knowledge lives, house rules and the main flows. Read it before your first task in a session and whenever work crosses modules.";
 
 const MODULE_TOOLS: Partial<Record<ModuleKey, string>> = {
   cockpit: "partnersinbiz.cockpit",
@@ -144,9 +144,9 @@ ${APPROVALS}
 `;
 
 export function companySkillBody(flows: string = COMPANY_FLOWS): string {
-  return `# PiB company operating manual
+  return `# Company operating manual
 
-You work for this company inside **Paperclip**. Paperclip holds the work: issues (tasks), projects, routines, agents, approvals and the org chart. The **PiB modules** are Paperclip plugins; each keeps one part of the business. Your role's own skill has the detailed procedure for your module. This manual is the map and the rules everyone shares.
+You work for this company inside **Paperclip**. Paperclip holds the work: issues (tasks), projects, routines, agents, approvals and the org chart. The **modules** are Paperclip plugins; each keeps one part of the business. Your role's own skill has the detailed procedure for your module. This manual is the map and the rules everyone shares.
 
 ## The modules
 ${moduleTable()}
@@ -164,14 +164,14 @@ Roles are staffed in **Setup → Team**. If your role's tools or skills are miss
 ## Clients
 - A client is a **CRM company** (or a **CRM contact** for a sole trader). Refer to it everywhere as \`company:<crm id>\` or \`contact:<crm id>\`: every tool that takes \`client\` wants that, never a name.
 - The **CRM is the source of truth** for clients: look them up there first, create or update them there. Other modules pick clients from it and follow its changes.
-- **PiB's own work has no client.** Pages show own work by default; a client's work lives in its **client workspace** (\`?client=company:<id>\` on the CRM, Social, SEO, Campaigns and Billing pages).
-- **Never mix clients**: data, accounts, copy, files and evidence for one client never go to another client or into PiB's own work.
-- **Brand, audience and sender details**: ours from \`company-profile\` (Cockpit), a client's from \`get-client-profile\` (CRM). Fill empty fields you learn with \`update-company-profile\` / \`update-client-profile\`; changing a set value is the owner's call.
+- **The company's own work has no client.** Pages show own work by default; a client's work lives in its **client workspace** (\`?client=company:<id>\` on the CRM, Social, SEO, Campaigns and Billing pages).
+- **Never mix clients**: data, accounts, copy, files and evidence for one client never go to another client or into the company's own work.
+- **Names, brand, audience and sender details**: never assume the company's or the owner's name; call \`company-profile\` (Cockpit) for it and the owner's name and title. The company's own details come from \`company-profile\` (Cockpit), a client's from \`get-client-profile\` (CRM). Fill empty fields you learn with \`update-company-profile\` / \`update-client-profile\`; changing a set value is the owner's call.
 
 ## How work moves
 - **Everything is an issue.** Woken on assigned issues or by a routine. Do the work in the same run and leave the issue in a clear state: \`done\` (with evidence), \`in_review\` (with a real reviewer or approval), or \`blocked\` with an \`unblockDescriptor\` (who must do what; a block with none is flagged after a day). \`WAITING-ON-OWNER\`:\`references/owner-checks.md\`.
 - **A run ends with your turn** (30 min max) and kills what you started. Detach builds/tests (\`setsid nohup … > <log> 2>&1 < /dev/null &\`), poll. Servers (\`next start\`) never exit: detach, curl within 20s, cap commands with \`timeout 60\`. Never end a turn to "wait" or leave an issue \`in_progress\` without a comment.
-- **Hand-offs**: when another role owns the next step, create an issue for that agent: title \`Hand-off: <what> (<client or own>)\`, the context and links, and what "done" means, and always a \`projectId\` (the client's project, or **PiB Platform** for own platform work; a task with no project has no repository and a code agent cannot work on it). Don't do their work.
+- **Hand-offs**: when another role owns the next step, create an issue for that agent: title \`Hand-off: <what> (<client or own>)\`, the context and links, and what "done" means, and always a \`projectId\` (the client's project, or the company's own platform project (pick it from that projects list) for own platform work; a task with no project has no repository and a code agent cannot work on it). Don't do their work.
 - **People are asked only for** money, legal, one-time grants (a login consent, a key, DNS) and real judgement: through the module's approval step, or \`ask-owner\`. Never ask a person to do what an agent can do.
 - **Outward-facing work** (posts, emails, invoices, quotes, pull requests) goes through its module's approval step (a Reviewer checks first, if staffed). Never send, publish, pay or merge outside it.
 - If you are stuck, say exactly what you need on the issue; the **Operator** (who reviews the company every morning) routes it.

@@ -3,7 +3,7 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
 export const MAILBOX_DRAFT_SKILL = `# Mailbox
 
-The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plugin sends and receives mail through it. You read, draft and (when allowed) send on the mailboxes delegated to you.
+The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every plugin here sends and receives mail through it. You read, draft and (when allowed) send on the mailboxes delegated to you.
 
 ## Start here
 - \`list-mailboxes\`: every account, its Gmail status, which one is the default sender, the client a mailbox belongs to (\`client\`), and your delegation on it (\`mayRead\`, \`mayDraft\`, \`maySend\`). Use its \`accountId\` in the other tools. The Operator already has read and draft on the company's own mailboxes.
@@ -28,7 +28,7 @@ The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plu
 - \`create-email-template\` and \`list-email-templates\` keep reusable copy.
 
 ## Where inbound mail goes
-New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a plugin sent, then Jev or keyword rules) and labelled \`PiB/<Category>\` in Gmail. Then:
+New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a plugin sent, then Jev or keyword rules) and labelled \`<prefix>/<Category>\` in Gmail (the company's own label prefix; a message's \`labels\` show the exact names, e.g. \`<prefix>/Lead\`). Then:
 
 | Mail | Who acts | What happens |
 |---|---|---|
@@ -39,7 +39,7 @@ New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a pl
 | Invoice or bill from a known supplier | Billing | Drafted as a supplier bill to complete. |
 | Bank statement | Bookkeeper | Accounting opens "Bank statement received" with the message id, attachment ids and mailbox: \`get-attachment\`, then \`partnersinbiz.accounting:import-statement\`, then reconcile. |
 | Newsletter, notification, personal, other | Nobody | Labelled only. |
-| Spam or phishing (\`PiB/Suspicious\`) | Nobody | Never open its links, reply or act on it. |
+| Spam or phishing (\`<prefix>/Suspicious\`) | Nobody | Never open its links, reply or act on it. |
 
 Never answer a legal threat or a money question you cannot check: ask the owner.
 

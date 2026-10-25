@@ -10,6 +10,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { BillingSettings } from "../config.js";
 import { PayFastProvider, payfastReadiness, type Readiness } from "./payfast.js";
 import { MockProvider } from "./mock.js";
+import { PaypalProvider, paypalReadiness } from "./paypal.js";
 import { StripeProvider } from "./stripe.js";
 import { PROVIDER_LABELS, REAL_PROVIDERS, type PaymentProvider, type ProviderKey } from "./types.js";
 
@@ -20,6 +21,7 @@ export interface PaymentSettings {
   clearingAccountCode?: string;
   stripe?: { enabled?: boolean; secretKey?: unknown; webhookSecret?: unknown };
   payfast?: { enabled?: boolean; sandbox?: boolean; merchantId?: string; merchantKey?: unknown; passphrase?: unknown; returnUrl?: string; cancelUrl?: string };
+  paypal?: { enabled?: boolean; sandbox?: boolean; clientId?: unknown; clientSecret?: unknown; webhookId?: unknown; returnUrl?: string; cancelUrl?: string };
   mock?: { enabled?: boolean };
 }
 
@@ -50,7 +52,7 @@ function publicBase(settings: BillingSettings): string | null {
 }
 
 /** `https://paperclip.example/api/plugins/partnersinbiz.billing/webhooks/stripe`, or null until the public address is saved. */
-export function webhookUrl(settings: BillingSettings, key: "stripe" | "payfast"): string | null {
+export function webhookUrl(settings: BillingSettings, key: "stripe" | "payfast" | "paypal"): string | null {
   const base = publicBase(settings);
   return base ? `${base}/api/plugins/${WEBHOOK_PLUGIN}/webhooks/${key}` : null;
 }
@@ -80,6 +82,11 @@ export function providerState(settings: BillingSettings, key: ProviderKey): Prov
     if (missing.length) return { key, label: PROVIDER_LABELS.stripe, enabled: false, switchedOn: true, blocker: `Missing: ${missing.join(", ")}.`, code: "missing" };
     return { key, label: PROVIDER_LABELS.stripe, enabled: true, switchedOn: true, blocker: null, code: "ok" };
   }
+  if (key === "paypal") {
+    const y = p.paypal ?? {};
+    const readiness = paypalReadiness(y.enabled, has(y.clientId), has(y.clientSecret), has(y.webhookId), publicBase(settings));
+    return { key, label: PROVIDER_LABELS.paypal, enabled: readiness.ready, switchedOn: y.enabled === true, blocker: readiness.blocker, code: readiness.code };
+  }
   const f = p.payfast ?? {};
   const readiness = payfastReadiness({ enabled: f.enabled, merchantId: f.merchantId, merchantKey: has(f.merchantKey), hasPassphrase: has(f.passphrase) }, publicBase(settings));
   return { key, label: PROVIDER_LABELS.payfast, enabled: readiness.ready, switchedOn: f.enabled === true, blocker: readiness.blocker, code: readiness.code };
@@ -105,6 +112,22 @@ export async function buildProvider(ctx: PluginContext, companyId: string, setti
     // not resolved here: that would spend one of the host's 30 secret resolves a minute on every link.
     const secretKey = await secrets.get("payments.stripe.secretKey");
     return secretKey ? new StripeProvider({ secretKey, webhookSecret: "" }) : null;
+  }
+  if (key === "paypal") {
+    // Link creation needs client id/secret. The webhook id is for verifying deliveries (`buildVerifier`), so it is not
+    // resolved here: that would spend one of the host's 30 secret resolves a minute on every link.
+    const clientId = await secrets.get("payments.paypal.clientId");
+    const clientSecret = await secrets.get("payments.paypal.clientSecret");
+    const y = p.paypal ?? {};
+    if (!clientId || !clientSecret) return null;
+    return new PaypalProvider({
+      clientId,
+      clientSecret,
+      webhookId: "",
+      sandbox: y.sandbox === true,
+      returnUrl: y.returnUrl?.trim() || null,
+      cancelUrl: y.cancelUrl?.trim() || null,
+    });
   }
   const merchantKey = await secrets.get("payments.payfast.merchantKey");
   const passphrase = await secrets.get("payments.payfast.passphrase");
@@ -148,12 +171,28 @@ async function webhookSecretFor(secrets: SecretResolver, companyId: string, conf
  * switched on for links: a payment already in flight is still confirmed after the owner switches a
  * provider off, as long as its secrets are saved.
  */
-export async function buildVerifier(ctx: PluginContext, companyId: string, settings: BillingSettings, key: "stripe" | "payfast", overrides: { fetchImpl?: typeof fetch; resolveAddresses?: (host: string) => Promise<string[]>; nowMs?: number } = {}): Promise<PaymentProvider | null> {
+export async function buildVerifier(ctx: PluginContext, companyId: string, settings: BillingSettings, key: "stripe" | "payfast" | "paypal", overrides: { fetchImpl?: typeof fetch; resolveAddresses?: (host: string) => Promise<string[]>; nowMs?: number } = {}): Promise<PaymentProvider | null> {
   const p = paymentSettings(settings);
   const secrets = new SecretResolver(ctx, companyId, settings as Record<string, unknown>);
   if (key === "stripe") {
     const webhookSecret = await webhookSecretFor(secrets, companyId, "payments.stripe.webhookSecret", p.stripe?.webhookSecret, overrides.nowMs ?? Date.now());
     return webhookSecret ? new StripeProvider({ secretKey: "", webhookSecret, ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {}) }) : null;
+  }
+  if (key === "paypal") {
+    const clientId = await secrets.get("payments.paypal.clientId");
+    const clientSecret = await secrets.get("payments.paypal.clientSecret");
+    const webhookId = await webhookSecretFor(secrets, companyId, "payments.paypal.webhookId", p.paypal?.webhookId, overrides.nowMs ?? Date.now());
+    const y = p.paypal ?? {};
+    if (!clientId || !clientSecret || !webhookId) return null;
+    return new PaypalProvider({
+      clientId,
+      clientSecret,
+      webhookId,
+      sandbox: y.sandbox === true,
+      returnUrl: y.returnUrl?.trim() || null,
+      cancelUrl: y.cancelUrl?.trim() || null,
+      ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {}),
+    });
   }
   const merchantKey = await secrets.get("payments.payfast.merchantKey");
   const passphrase = await secrets.get("payments.payfast.passphrase");

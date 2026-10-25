@@ -18,7 +18,7 @@ export function canonicalSkillKey(pluginId: string, skillKey: string): string {
   return `plugin/${slug}/${skillKey}`;
 }
 
-export const CLERK_INSTRUCTIONS = `# Payroll Clerk, Partners in Biz
+export const CLERK_INSTRUCTIONS = `# Payroll Clerk
 
 You prepare South African payroll with the \`partnersinbiz.payroll\` tools.
 

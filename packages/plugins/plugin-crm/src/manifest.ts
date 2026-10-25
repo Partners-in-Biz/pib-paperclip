@@ -12,6 +12,12 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save these settings once for each Paperclip company that uses the CRM. Saving is what lets the scheduled jobs (sequence steps, client sync) act on the company.",
   properties: {
+    ownerCompany: {
+      type: "boolean",
+      title: "This is Partners in Biz's own company (owner company only)",
+      description: "Tick this ONLY on Partners in Biz's own company. It keeps Partners in Biz's own wording in the data-processing register. Leave it off for every client company: their register names the company itself.",
+      default: false,
+    },
     timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
     defaultCurrency: { type: "string", title: "Default currency", default: "ZAR", minLength: 3, maxLength: 3 },
     sequenceIssueAssignee: {

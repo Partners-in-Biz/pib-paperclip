@@ -7,22 +7,28 @@ import { createHash } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT, DRIVE_BINDING_SET_EVENT, parseDriveBindingEvent, type DriveBinding } from "./drive-checklist.js";
-import { moduleOfPlugin, MODULES, SETUP_EVENTS, type ModulesPayload, type SetupStatus, type SetupSummary } from "./kit-setup.js";
+import { listAllCompanies } from "./access.js";
+import { ENTITLEMENT_STATES, entitledModules, isPlan, planModules, type EntitlementRow, type EntitlementState } from "./entitlements.js";
+import { MODULE_KEYS, moduleOfPlugin, MODULES, SETUP_EVENTS, type ModuleKey, type ModulesPayload, type SetupStatus, type SetupSummary } from "./kit-setup.js";
 import { currentGrants, grantsMarkdown } from "./bootstrap.js";
 import {
   clearFinishIssue,
+  companiesWithEntitlements,
   getChoice,
+  getEntitlements,
   getFinishIssue,
   getRun,
   listChoices,
   listStatuses,
+  insertEntitlementIfMissing,
   saveChoice,
+  saveEntitlement,
   saveFinishIssue,
   upsertStatus,
 } from "./db.js";
 import { finishSetupContent, finishSetupSummary, type InstalledPlugin } from "./finish-issue.js";
 import { memoryStatus, parseWikiSnapshot, WIKI_PLUGIN } from "./memory.js";
-import { normalizeModules, type ModuleChoice } from "./modules.js";
+import { effectiveModules, normalizeEntitledModules, SetupError, type ModuleChoice } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { parseSetupStatus } from "./status.js";
 
@@ -112,9 +118,10 @@ export async function saveModules(
   input: { companyId: string; modules: unknown; userId: string | null },
   clock: Clock = systemClock,
 ): Promise<{ modules: ModuleChoice; updatedAt: string; issue: RefreshResult | null }> {
-  const modules = normalizeModules(input.modules);
-  const updatedAt = clock.now().toISOString();
+  const { entitled } = await moduleView(ctx, input.companyId, clock);
   const previous = await getChoice(ctx, input.companyId);
+  const modules = normalizeEntitledModules(input.modules, entitled, previous?.modules);
+  const updatedAt = clock.now().toISOString();
   await saveChoice(ctx, { companyId: input.companyId, modules, updatedAt, updatedBy: input.userId ?? previous?.updatedBy ?? null });
   try {
     await emitModules(ctx, input.companyId, modules, updatedAt);
@@ -134,25 +141,28 @@ export async function saveModules(
 /** Events are at-most-once: re-send every saved choice (hourly job). */
 export async function reemitModules(ctx: PluginContext): Promise<{ emitted: number; skipped: number; failed: number }> {
   const result = { emitted: 0, skipped: 0, failed: 0 };
-  for (const choice of await listChoices(ctx)) {
-    if (!(await configSaved(ctx, choice.companyId))) {
+  // Companies with a saved choice, and companies with entitlements but no choice yet (they get exactly their entitlements).
+  const companyIds = [...new Set([...(await listChoices(ctx)).map((choice) => choice.companyId), ...(await companiesWithEntitlements(ctx))])].sort();
+  for (const companyId of companyIds) {
+    if (!(await configSaved(ctx, companyId))) {
       result.skipped += 1;
       continue;
     }
     try {
-      await emitModules(ctx, choice.companyId, choice.modules, choice.updatedAt);
+      const view = await moduleView(ctx, companyId);
+      await emitModules(ctx, companyId, view.modules, view.updatedAt ?? new Date().toISOString());
       result.emitted += 1;
     } catch (error) {
       result.failed += 1;
-      ctx.logger.info("Module switch re-emit failed", { companyId: choice.companyId, error: message(error) });
+      ctx.logger.info("Module switch re-emit failed", { companyId, error: message(error) });
     }
     // The setup count too (the Cockpit's copy of it), for the same reason.
     try {
-      const summary = await storedSummary(ctx, choice.companyId);
-      const issue = await getFinishIssue(ctx, choice.companyId);
-      if (summary) await emitSummary(ctx, choice.companyId, summary, issue?.issueId ?? null);
+      const summary = await storedSummary(ctx, companyId);
+      const issue = await getFinishIssue(ctx, companyId);
+      if (summary) await emitSummary(ctx, companyId, summary, issue?.issueId ?? null);
     } catch (error) {
-      ctx.logger.info("Setup summary re-emit failed", { companyId: choice.companyId, error: message(error) });
+      ctx.logger.info("Setup summary re-emit failed", { companyId: companyId, error: message(error) });
     }
   }
   return result;
@@ -289,10 +299,10 @@ export async function emitSummary(ctx: PluginContext, companyId: string, summary
 
 /** The company's setup count from what is stored now (the same count the issue, the sidebar and the Cockpit show). */
 export async function storedSummary(ctx: PluginContext, companyId: string): Promise<SetupSummary | null> {
-  const choice = await getChoice(ctx, companyId);
+  const { choice, modules } = await moduleView(ctx, companyId);
   if (!choice) return null;
   const statuses = Object.fromEntries((await listStatuses(ctx, companyId)).map((row) => [row.pluginKey, row.status]));
-  return finishSetupSummary({ modules: choice.modules, statuses, installed: await readInstalled(ctx) });
+  return finishSetupSummary({ modules, statuses, installed: await readInstalled(ctx) });
 }
 
 export function fingerprint(title: string, description: string): string {
@@ -327,9 +337,9 @@ export async function refreshFinishIssue(
   options: { allowCreate: boolean },
   clock: Clock = systemClock,
 ): Promise<RefreshResult> {
-  const choice = await getChoice(ctx, companyId);
+  const { choice, modules } = await moduleView(ctx, companyId, clock);
   if (!choice) return { action: "skipped", reason: "no module choice saved" };
-  const result = await refreshIssue(ctx, companyId, choice, options, clock);
+  const result = await refreshIssue(ctx, companyId, { ...choice, modules }, options, clock);
   // The Cockpit lists the same count (and the issue once) on Waiting on you and in the daily brief.
   await emitSummary(ctx, companyId, result.summary!, "issueId" in result && result.action !== "closed" ? result.issueId : null, clock);
   return result;
@@ -437,8 +447,8 @@ export async function weeklyFinishSetup(ctx: PluginContext, clock: Clock = syste
 
 export async function loadSetup(ctx: PluginContext, companyId: string, params: Record<string, unknown> = {}) {
   if (params.installed) await rememberInstalled(ctx, params.installed);
-  const [choice, statuses, issue, saved, installed, run, drive] = await Promise.all([
-    getChoice(ctx, companyId),
+  const [view, statuses, issue, saved, installed, run, drive] = await Promise.all([
+    moduleView(ctx, companyId),
     listStatuses(ctx, companyId),
     getFinishIssue(ctx, companyId),
     configSaved(ctx, companyId),
@@ -446,8 +456,12 @@ export async function loadSetup(ctx: PluginContext, companyId: string, params: R
     getRun(ctx, companyId).catch(() => null),
     readDriveBinding(ctx, companyId),
   ]);
+  const choice = view.choice;
   return {
     modules: choice?.modules ?? null,
+    // What the company may use (the page shows the rest locked) and its plan label.
+    entitled: view.entitled,
+    plan: view.plan,
     updatedAt: choice?.updatedAt ?? null,
     updatedBy: choice?.updatedBy ?? null,
     statuses: Object.fromEntries(statuses.map((row) => [row.pluginKey, { status: row.status, receivedAt: row.receivedAt }])),
@@ -459,11 +473,142 @@ export async function loadSetup(ctx: PluginContext, companyId: string, params: R
     bootstrap: run ? { status: run.status, updatedAt: run.updatedAt } : null,
     // The one setup count (kit setupSummary): the sidebar badge and the Cockpit show it as it is.
     summary: choice
-      ? finishSetupSummary({ modules: choice.modules, statuses: Object.fromEntries(statuses.map((row) => [row.pluginKey, row.status])), installed })
+      ? finishSetupSummary({ modules: view.modules, statuses: Object.fromEntries(statuses.map((row) => [row.pluginKey, row.status])), installed })
       : null,
   };
 }
 
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// ---------------------------------------------------------------------------
+// Entitlements (what the company bought)
+// ---------------------------------------------------------------------------
+
+const BACKFILL_STATE = { scopeKind: "instance" as const, namespace: "setup", stateKey: "entitlements-backfilled" };
+
+export interface ModuleView {
+  choice: Awaited<ReturnType<typeof getChoice>>;
+  /** What the company may use now. */
+  entitled: Record<ModuleKey, boolean>;
+  plan: string | null;
+  /** Saved choice AND entitlement. */
+  modules: ModuleChoice;
+  /** False until the one-time backfill has run: nothing is locked yet. */
+  ready: boolean;
+  /** The newest change to either (null: nothing stored). */
+  updatedAt: string | null;
+}
+
+/**
+ * The company's switches as everything else must read them. Until the one-time backfill has run
+ * (it entitles every company that existed before entitlements to everything), nobody is locked
+ * out: a failed backfill must never switch a module off for PAR or PARA.
+ */
+export async function moduleView(ctx: PluginContext, companyId: string, clock: Clock = systemClock): Promise<ModuleView> {
+  const [choice, rows, ready] = await Promise.all([getChoice(ctx, companyId), getEntitlements(ctx, companyId), entitlementsReady(ctx)]);
+  const entitled = ready ? entitledModules(rows, clock.now()) : (Object.fromEntries(MODULE_KEYS.map((key) => [key, true])) as Record<ModuleKey, boolean>);
+  const stamps = [choice?.updatedAt, ...rows.map((row) => row.updatedAt)].filter((stamp): stamp is string => !!stamp).sort();
+  return {
+    choice,
+    entitled,
+    plan: rows.find((row) => row.plan)?.plan ?? null,
+    ready,
+    modules: effectiveModules(choice?.modules ?? null, entitled),
+    updatedAt: stamps.length ? stamps[stamps.length - 1]! : null,
+  };
+}
+
+export async function entitlementsReady(ctx: PluginContext): Promise<boolean> {
+  return (await ctx.state.get(BACKFILL_STATE)) != null;
+}
+
+/**
+ * Plan 1.4: the first start after the migration entitles every existing company to every module
+ * (plan `pib`), so nothing changes for PAR or PARA. Runs once (a marker in plugin state); it never
+ * overwrites a row someone set, and a company created later gets none. Throws on failure: the
+ * caller logs it and the hourly job retries.
+ */
+export async function backfillEntitlements(ctx: PluginContext, clock: Clock = systemClock): Promise<{ companies: number; alreadyDone: boolean }> {
+  if (await entitlementsReady(ctx)) return { companies: 0, alreadyDone: true };
+  const at = clock.now().toISOString();
+  let companies = 0;
+  // Every module of every company, row by row: ON CONFLICT DO NOTHING makes a retry after a part-way
+  // failure complete the company instead of skipping it because it already has some rows.
+  for (const company of await listAllCompanies(ctx)) {
+    for (const module of MODULE_KEYS) {
+      await insertEntitlementIfMissing(ctx, { companyId: company.id, module, state: "entitled", plan: "pib", until: null, updatedBy: "backfill", updatedAt: at });
+    }
+    companies += 1;
+  }
+  await ctx.state.set(BACKFILL_STATE, { at, companies });
+  return { companies, alreadyDone: false };
+}
+
+/**
+ * Sets what a company bought: a plan label (its modules entitled, the others off) and/or a state
+ * per module (`entitled`, `trial` with an end time, `off`). Cockpit is always entitled. The caller
+ * has already been checked as an operator-company owner or admin.
+ */
+export async function setEntitlements(
+  ctx: PluginContext,
+  input: { companyId: string; plan?: unknown; modules?: unknown; until?: unknown; userId: string },
+  clock: Clock = systemClock,
+): Promise<{ plan: string | null; entitled: Record<ModuleKey, boolean>; modules: ModuleChoice; updatedAt: string; emitted: boolean; note: string | null }> {
+  // The host scopes companies.get to the company the action runs for, and the operator runs this from its own
+  // page, so a client target cannot be looked up here: a denied lookup is not "unknown", only a clean null is.
+  let known: unknown = true;
+  try {
+    known = await ctx.companies.get(input.companyId);
+  } catch (error) {
+    ctx.logger.info("Entitlement target could not be looked up (out of invocation scope)", { companyId: input.companyId, error: message(error) });
+  }
+  if (!known) throw new SetupError("Unknown company");
+  const hasPlan = input.plan !== undefined && input.plan !== null;
+  const hasModules = input.modules !== undefined && input.modules !== null;
+  if (!hasPlan && !hasModules) throw new SetupError("Give a plan, a module → state map, or both");
+  if (hasPlan && !isPlan(input.plan)) throw new SetupError("plan must be starter, growth, business or pib");
+  if (hasModules && (typeof input.modules !== "object" || Array.isArray(input.modules))) throw new SetupError("modules must be an object of module → entitled, trial or off");
+  const until = input.until == null ? null : typeof input.until === "string" && !Number.isNaN(Date.parse(input.until)) ? new Date(input.until).toISOString() : (() => { throw new SetupError("until must be an ISO date"); })();
+
+  const existing = await getEntitlements(ctx, input.companyId);
+  const states = new Map<ModuleKey, { state: EntitlementState; until: string | null }>(existing.map((row) => [row.module, { state: row.state, until: row.until }]));
+  const plan = hasPlan ? (input.plan as string) : (existing.find((row) => row.plan)?.plan ?? null);
+  if (hasPlan) {
+    const included = new Set(planModules(input.plan as never));
+    for (const key of MODULE_KEYS) states.set(key, { state: included.has(key) ? "entitled" : "off", until: null });
+  }
+  if (hasModules) {
+    for (const [key, value] of Object.entries(input.modules as Record<string, unknown>)) {
+      if (!(MODULE_KEYS as readonly string[]).includes(key)) throw new SetupError(`Unknown module ${key}`);
+      if (typeof value !== "string" || !(ENTITLEMENT_STATES as readonly string[]).includes(value)) throw new SetupError(`modules.${key} must be entitled, trial or off`);
+      if (value === "off" && key === "cockpit") throw new SetupError("Cockpit is always entitled");
+      if (value === "trial" && !until) throw new SetupError("A trial needs an until date");
+      states.set(key as ModuleKey, { state: value as EntitlementState, until: value === "trial" ? until : null });
+    }
+  }
+  const updatedAt = clock.now().toISOString();
+  for (const key of MODULE_KEYS) {
+    const next = states.get(key) ?? { state: "off" as const, until: null };
+    const row: EntitlementRow = { companyId: input.companyId, module: key, state: next.state, plan, until: next.until, updatedBy: input.userId, updatedAt };
+    await saveEntitlement(ctx, row);
+  }
+  const view = await moduleView(ctx, input.companyId, clock);
+  let emitted = true;
+  try {
+    await emitModules(ctx, input.companyId, view.modules, updatedAt);
+  } catch (error) {
+    // The host may refuse an event for a company other than the one the action runs for; the hourly re-emit catches up.
+    emitted = false;
+    ctx.logger.info("Module switch emit failed", { companyId: input.companyId, error: message(error) });
+  }
+  try {
+    await refreshFinishIssue(ctx, input.companyId, { allowCreate: false }, clock);
+  } catch (error) {
+    ctx.logger.info("Finish setup refresh failed", { companyId: input.companyId, error: message(error) });
+  }
+  // `entitled` is what the stored rows grant; `modules` is what is switched on now (nothing is locked before the backfill has run).
+  const note = emitted ? null : "Saved. The other plugins pick the new plan up with the hourly re-send (the host did not accept the switch event for this company now).";
+  return { plan, entitled: entitledModules(await getEntitlements(ctx, input.companyId), clock.now()), modules: view.modules, updatedAt, emitted, note };
 }

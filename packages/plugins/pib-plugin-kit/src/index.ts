@@ -1,4 +1,6 @@
 export * from "./skills.js";
+export * from "./pib-only-skills.js";
+export * from "./tokens.js";
 export * from "./memory.js";
 export * from "./asking.js";
 export * from "./writing.js";
@@ -31,10 +33,12 @@ export * from "./flows.js";
 export * from "./done-checks.js";
 export * from "./approvals.js";
 export * from "./known-companies.js";
+export * from "./claim-guard.js";
 export * from "./escalate-model.js";
 export * from "./escalate.js";
 export * from "./redact.js";
 export * from "./company.js";
+export * from "./model-key.js";
 export * from "./run-profile.js";
 export * from "./role-drift.js";
 export * from "./grant-check.js";
@@ -48,6 +52,7 @@ export * from "./growth/engine.js";
 export * from "./growth/types.js";
 export * from "./growth/tools.js";
 export * from "./drive.js";
+export * from "./preferences.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

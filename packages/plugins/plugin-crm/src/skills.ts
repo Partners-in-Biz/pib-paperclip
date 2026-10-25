@@ -42,7 +42,7 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 7. **Offboarding.** Set lifecycle \`churned\` (that stops their sequences), move open deals to lost, then open a hand-off issue for each module that still works for them (stop the SEO sprint, disconnect or pause social, end the retainer). Log it.
 
 ## Services, the brand kit and proposals
-- **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
+- **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, platform, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
 - **Brand kit** (\`update-client-profile\`): logoKey (an R2 key inside this company's folder, such as social/<company id>/logo.png: the CRM keeps the key only), primaryColor, secondaryColor, accentColor (hex), fonts, toneExamples (short pieces in their voice). Use them for anything made for the client.
 - **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
@@ -113,7 +113,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 
 ## Every marketing email (sequences, campaigns, follow-ups you write)
 - **POPIA:** email only people who agreed to hear from us, or existing clients about similar services we sell them. Never bought lists, never a client's leads.
-- **Who we are:** say it is Partners in Biz and who is writing; use the sender the sequence or Mailbox sets.
+- **Who we are:** say which company it is and who is writing; use the sender the sequence or Mailbox sets.
 - **Opt-out:** every email says how to stop, e.g. "Reply STOP and we won't email again."
 - **An opt-out is final:** the moment someone asks to stop, by any channel, \`set-email-status\` unsubscribed. Never re-add or re-enroll them; only a person can allow email again.
 - No claims we cannot back up, no pressure, no guarantees.
@@ -161,9 +161,9 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: "wp-sites",
     displayName: "Client websites (WordPress)",
     slug: "pib-wp-sites",
-    description: "Client websites: the PiB Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
+    description: "Client websites: the Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
     markdown: withFrontmatter(
-      { name: "pib-wp-sites", description: "Work on client WordPress sites: PiB Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, wp-verify, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
+      { name: "pib-wp-sites", description: "Work on client WordPress sites: Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, wp-verify, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
       CLIENT_SITES_SKILL,
     ),
   },

@@ -16,6 +16,9 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
 import { COMPANY_OS_INSTRUCTION, COMPANY_OS_SKILL } from "./asking.js";
+import { MODEL_KEY_MARKER, adapterPreferenceFor, hireRefusal, hostingFromConfig, modelKeyHireText, type Hosting } from "./model-key.js";
+import { readConfig } from "./config.js";
+import { renderTokens } from "./tokens.js";
 import { runProfileForRole, runProfileHireText, runProfileRows, type RunProfile } from "./run-profile.js";
 
 export interface HireSkill {
@@ -149,8 +152,11 @@ export function hireSkills(role: HireRole): HireSkill[] {
   return role.skills.some((s) => s.key === COMPANY_OS_HIRE_SKILL.key) ? role.skills : [...role.skills, COMPANY_OS_HIRE_SKILL];
 }
 
-export function hireTaskDraft(role: HireRole): { title: string; description: string } {
-  const profile = role.runProfile ?? runProfileForRole(role.roleKey);
+export function hireTaskDraft(role: HireRole, hosting?: Hosting): { title: string; description: string } {
+  const preference = adapterPreferenceFor(role.adapterPreference, hosting);
+  const base = role.runProfile ?? runProfileForRole(role.roleKey);
+  // A client company runs on its own Anthropic key: the Hermes option is not offered.
+  const profile = hosting?.profile === "client" ? { ...base, hermes: undefined } : base;
   const skillLines = hireSkills(role).map((s) => `- \`${s.slug}\` — ${s.purpose} (skill key \`${s.key}\`)`).join("\n");
   const setupLines = role.pluginSetup.map((line) => `- ${line}`).join("\n");
   const description = `The ${role.pluginName} plugin needs an agent. Please hire it the way we hire every agent, so it sits in the right place in the org chart.
@@ -163,13 +169,13 @@ export function hireTaskDraft(role: HireRole): { title: string; description: str
 | **Title** | ${role.title} |
 | **Role** | \`${role.role}\` |
 | **Reports to** | ${role.suggestedManager ?? "the right manager for this work (your call)"} |
-| **Adapter** | ${role.adapterPreference.map((a) => `\`${a}\``).join(", then ")} (first one that has a working model key) |
+| **Adapter** | ${preference.map((a) => `\`${a}\``).join(", then ")} (${hosting?.profile === "client" ? "the company's own key" : "first one that has a working model key"}) |
 | **Budget** | ${money(role.budgetMonthlyCents)} |
-${runProfileRows(profile, role.adapterPreference).join("\n")}
+${runProfileRows(profile, preference).join("\n")}
 | **Start** | paused, until its model key is checked |
 
-${runProfileHireText(profile, role.adapterPreference)}
-
+${runProfileHireText(profile, preference)}
+${hosting?.profile === "client" ? `\n${modelKeyHireText(hosting)}\n` : ""}
 **What it does:** ${role.capabilities}
 
 ## Skills to attach
@@ -197,7 +203,7 @@ It comments here when that is done. Do not grant plugin tool access by hand; the
 - The agent exists with the skills above, reporting to the right manager.
 - The ${role.pluginName} plugin has commented that it linked the agent.
 - The agent is resumed once its adapter has a working model key.`;
-  return { title: `Hire: ${role.displayName} (${role.pluginName} agent)`, description };
+  return { title: renderTokens(`Hire: ${role.displayName} (${role.pluginName} agent)`), description: renderTokens(description) };
 }
 
 function summarize(agent: Record<string, unknown>): HireAgentSummary {
@@ -303,15 +309,41 @@ async function comment(ctx: PluginContext, companyId: string, issueId: string, b
 }
 
 /** Opens the hire task and remembers it. The assignee is woken when it is an agent. */
+/**
+ * A prefilled hire description for a client company. Every plugin's preview and Setup draft it without the hosting
+ * settings, so it still offers Hermes. An unedited draft is rebuilt for the client; an edited one is kept, with its
+ * adapter row, run-profile rows and config block swapped where they are still found, and the key section added.
+ */
+function clientDescription(role: HireRole, supplied: string, hosting: Hosting): string {
+  if (supplied.includes(MODEL_KEY_MARKER)) return supplied;
+  if (supplied === hireTaskDraft(role).description.trim()) return hireTaskDraft(role, hosting).description;
+  const base = role.runProfile ?? runProfileForRole(role.roleKey);
+  const client = { ...base, hermes: undefined };
+  const preference = adapterPreferenceFor(role.adapterPreference, hosting);
+  let text = supplied;
+  const swap = (from: string, to: string) => {
+    if (from && text.includes(from)) text = text.replace(from, () => to);
+  };
+  swap(runProfileRows(base, role.adapterPreference).join("\n"), runProfileRows(client, preference).join("\n"));
+  swap(runProfileHireText(base, role.adapterPreference), runProfileHireText(client, preference));
+  text = text.replace(/^\| \*\*Adapter\*\* \|.*$/m, () => "| **Adapter** | `claude_local` (the company's own key) |");
+  return `${text}\n\n${modelKeyHireText(hosting)}`;
+}
+
 export async function startHire(
   ctx: PluginContext,
   companyId: string,
   role: HireRole,
   input: { title?: string; description?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; actorUserId: string | null },
 ): Promise<HireRecord> {
-  const draft = hireTaskDraft(role);
+  const hosting = hostingFromConfig(typeof ctx.config?.get === "function" ? await readConfig(ctx, companyId) : {});
+  const refusal = hireRefusal(hosting);
+  if (refusal) throw new Error(refusal);
+  const draft = hireTaskDraft(role, hosting);
   const title = input.title?.trim() || draft.title;
-  const description = input.description?.trim() || draft.description;
+  // A description the caller prefilled (Setup does) may have been drafted without the hosting settings: add the key section.
+  const supplied = input.description?.trim();
+  const description = supplied ? (hosting.profile === "client" ? clientDescription(role, supplied, hosting) : supplied) : draft.description;
   const assigneeAgentId = input.assigneeAgentId || null;
   const assigneeUserId = assigneeAgentId ? null : input.assigneeUserId || null;
   const issue = await ctx.issues.create({

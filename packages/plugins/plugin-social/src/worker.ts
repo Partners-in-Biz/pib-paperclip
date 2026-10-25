@@ -122,6 +122,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
+import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
   myAccountsAction,
   myPostsAction,
@@ -326,6 +327,18 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 type ActionHandler = (ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) => Promise<unknown>;
 
+/** False only for a signed-in user whose active role is verified as viewer; anything unverifiable keeps the button (the server still decides). */
+async function canPostHere(ctx: PluginContext, v: Viewer): Promise<boolean> {
+  if (v.isAgent || !v.userId || v.userId === "local-board") return true;
+  try {
+    const members = await ctx.access.members.list({ companyId: v.companyId });
+    const role = members.find((m) => m.principalType === "user" && m.principalId === v.userId && m.status === "active")?.membershipRole;
+    return role !== "viewer";
+  } catch {
+    return true;
+  }
+}
+
 const ACTIONS: Record<string, ActionHandler> = {
   "social.load": async (ctx, v, p) => {
     // The page reports /_plugins/<installation uuid>/ui/ so redirect URIs can use it.
@@ -333,7 +346,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
     // The own page shows the agent card, so it also links a hire whose agent has appeared.
     if (!p.client && !v.isAgent && spaceOf(p) === "company") await tryLinkSocialHire(ctx, v.companyId);
-    return loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
+    const snapshot = await loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
+    return { ...snapshot, canPost: await canPostHere(ctx, v) };
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),
@@ -465,7 +479,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.activate-agent": (ctx, v) => resyncAgent(ctx, v.companyId, requireUser(v, "re-sync the Social agent")),
   "social.sync-skills": async (ctx, v) => {
     requireUser(v, "sync skills");
-    return { results: await bootstrap!.skills.force(v.companyId) };
+    return { results: [...(await bootstrap!.skills.force(v.companyId)), ...(await bootstrap!.ownSkills.force(v.companyId))] };
   },
   // My Social: personal accounts and posts
   "my-social.accounts": (ctx, v) => myAccountsAction(ctx, v),
@@ -606,6 +620,9 @@ const plugin = definePlugin({
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
+    ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
+    ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {

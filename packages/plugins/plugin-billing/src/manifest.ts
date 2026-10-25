@@ -129,19 +129,10 @@ const instanceConfigSchema: JsonSchema = {
       properties: {
         publicBaseUrl: text("Public address of Paperclip", "For example https://paperclip.partnersinbiz.online (https only). The webhook addresses you give the provider are built from it."),
         clearingAccountCode: { type: "string", title: "Chart account for provider money", default: "1020", description: "Provider money sits here until the provider pays it out to the bank. Accounting 0.4 adds account 1020 for it. Categorise each payout bank line to this account." },
-        stripe: {
-          type: "object",
-          title: "Stripe (card payments)",
-          properties: {
-            enabled: { type: "boolean", title: "Accept card payments through Stripe", default: false },
-            secretKey: secretField("Secret key (sk_live_... or sk_test_...)", "Stored as a Paperclip secret. Creates the payment links."),
-            webhookSecret: secretField("Webhook signing secret (whsec_...)", "Stored as a Paperclip secret. Verifies Stripe's notifications."),
-          },
-        },
         payfast: {
           type: "object",
           title: "PayFast (South Africa)",
-          description: "PayFast ITN is received as form posts on the plugin webhook route. Enable only after merchant credentials are set (Merchant ID, Merchant Key, and passphrase when used).",
+          description: "PayFast ITN is received as form posts on the plugin webhook route. Enable only after merchant credentials are set (Merchant ID, Merchant Key, and passphrase when used). ZAR only.",
           properties: {
             enabled: { type: "boolean", title: "Accept payments through PayFast", default: false },
             sandbox: { type: "boolean", title: "Use the PayFast sandbox (test mode)", default: false },
@@ -149,6 +140,20 @@ const instanceConfigSchema: JsonSchema = {
             merchantKey: secretField("Merchant key", "Stored as a Paperclip secret."),
             passphrase: secretField("Passphrase", "The one set in PayFast's integration settings. Stored as a Paperclip secret. Leave empty when you set none there."),
             returnUrl: text("Thank-you page address (optional)", "Where PayFast sends the customer after paying."),
+            cancelUrl: text("Cancel page address (optional)"),
+          },
+        },
+        paypal: {
+          type: "object",
+          title: "PayPal",
+          description: "PayPal Orders v2 checkout and signed webhooks. Enable only after the app client id, client secret and webhook id are set. Does not take ZAR (use PayFast for rand).",
+          properties: {
+            enabled: { type: "boolean", title: "Accept payments through PayPal", default: false },
+            sandbox: { type: "boolean", title: "Use the PayPal sandbox (test mode)", default: false },
+            clientId: secretField("Client id", "Stored as a Paperclip secret."),
+            clientSecret: secretField("Client secret", "Stored as a Paperclip secret."),
+            webhookId: secretField("Webhook id", "The id of the webhook endpoint registered in the PayPal app. Stored as a Paperclip secret."),
+            returnUrl: text("Thank-you page address (optional)", "Where PayPal sends the customer after approving."),
             cancelUrl: text("Cancel page address (optional)"),
           },
         },
@@ -195,7 +200,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.9.3",
+  version: "0.11.1",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -227,6 +232,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
     "ui.page.register",
     "ui.sidebar.register",
+    // 0.10: company preferences. Saving checks the caller is an owner or admin of the company (ctx.access.members.list). A new capability: a stop-first deploy.
+    "access.members.read",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
@@ -241,6 +248,11 @@ const manifest: PaperclipPluginManifestV1 = {
       endpointKey: "payfast",
       displayName: "PayFast payment notifications (ITN)",
       description: "POST /api/plugins/partnersinbiz.billing/webhooks/payfast: PayFast's ITN. Checked by signature, source address and a server confirmation. Host accepts form-urlencoded bodies.",
+    },
+    {
+      endpointKey: "paypal",
+      displayName: "PayPal payment notifications",
+      description: "POST /api/plugins/partnersinbiz.billing/webhooks/paypal: PayPal's signed webhook events (PAYMENT.CAPTURE.COMPLETED, DENIED, REFUNDED). A delivery that fails verify-webhook-signature records nothing.",
     },
   ],
   jobs: [

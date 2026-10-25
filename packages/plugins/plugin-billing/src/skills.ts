@@ -3,7 +3,7 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
 export const INVOICE_DRAFT_SKILL = `# Billing: quotes, invoices and getting paid
 
-You run PiB's billing with the \`partnersinbiz.billing:*\` tools: quotes, invoices, retainers, getting paid, overdue follow-up, supplier bills and time. **You draft and ask; a person approves every email and every change to money.** Money is an integer in cents (R 1,500.00 = \`150000\`) plus a currency (ZAR unless the client pays in another).
+You run the company's billing with the \`partnersinbiz.billing:*\` tools: quotes, invoices, retainers, getting paid, overdue follow-up, supplier bills and time. **You draft and ask; a person approves every email and every change to money.** Money is an integer in cents (R 1,500.00 = \`150000\`) plus a currency (ZAR unless the client pays in another).
 
 ## Only a person can
 
@@ -51,7 +51,7 @@ None of these is opened for the canary (test) client (an id starting \`canary-\`
 3. \`request-invoice-send\`. When a person marks the approval done, the Mailbox emails it with the PDF, it becomes \`sent\` and its journal goes to Accounting. Asking again returns the open issue.
 
 - Numbers are automatic (LUM-001; quotes Q-LUM-001; credit notes CN-LUM-001). Sender, bank details, VAT number and due days come from Billing settings; never type them into lines.
-- VAT codes per line: \`za_std_15\` (15%), \`za_zero\`, \`za_exempt\`, \`za_out_of_scope\` (when PiB is not VAT registered), \`za_export_zero\` (exports), \`za_capital_15\`. Leave \`taxCode\` out to use the document's default. \`set-invoice-tax\` is a legacy flat rate that wipes the codes: only when a person asks.
+- VAT codes per line: \`za_std_15\` (15%), \`za_zero\`, \`za_exempt\`, \`za_out_of_scope\` (when the company is not VAT registered), \`za_export_zero\` (exports), \`za_capital_15\`. Leave \`taxCode\` out to use the document's default. \`set-invoice-tax\` is a legacy flat rate that wipes the codes: only when a person asks.
 
 ## 4. Retainers and repeating invoices
 
@@ -80,7 +80,7 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 ## 7. Supplier bills, expenses and time
 
 - A supplier invoice from a known supplier arrives by email: Billing drafts the bill and gives you "Complete the bill from …". Add each line with \`add-bill-line\` (cents, VAT code, category), then \`request-bill-approval\`. For other bills, \`create-bill\` first. You never approve or pay bills.
-- \`create-expense\` records something PiB already paid (posted at once): the total incl. VAT, \`vatMinor\`, category and \`paidFrom\`.
+- \`create-expense\` records something the company already paid (posted at once): the total incl. VAT, \`vatMinor\`, category and \`paidFrom\`.
 - Time: \`start-timer\` / \`stop-timer\` or \`log-time\` (client and hourly rate); \`bill-time\` puts unbilled entries on a draft invoice.
 
 ## 8. Which tool answers which question
@@ -106,7 +106,7 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 
 export const ONLINE_PAYMENTS_REFERENCE = `# Online payments: what you will see
 
-Billing takes card and instant-EFT payments through a hosted checkout page (Stripe, PayFast). Nothing here is yours to switch on or off: a person does that in Setup. You read the state and you tell the owner what is in the way.
+Billing takes card and instant-EFT payments through a hosted checkout page (PayFast or PayPal). Nothing here is yours to switch on or off: a person does that in Setup. You read the state and you tell the owner what is in the way.
 
 ## Links
 

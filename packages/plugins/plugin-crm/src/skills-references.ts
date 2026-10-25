@@ -46,7 +46,7 @@ export const NEW_CLIENT_REFERENCE = `# Starting a new client
 
 ## Who does what
 - **Account Manager:** the profile (\`update-client-profile\`: brand voice, audience, services from the fixed list, website, booking link, banned words, tone, then the brand kit and proposal references), the client's sites (\`save-client-site\`), a lead form when the client bought lead capture (\`create-lead-endpoint\`), ONE grant ask for everything the client must give (never one per item).
-- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with Peet's approval.
+- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with the owner's approval.
 - **The role that owns each service:** its onboarding step (below).
 
 ## The project: the contract between the ops tool and the CRM
@@ -76,13 +76,16 @@ ${serviceTable()}
 - While the Cockpit's first-win onboarding issue for the client is open, the services flagged then are covered by it and get no step of their own.
 - The daily \`services-check\` job gives the same step to customers whose services were set before this existed (up to 8 new steps per company a day), and saves older free-text profiles in the list. A step that was cancelled stays cancelled until the service is added again.
 
+## The platform service (a hosted company on our Paperclip)
+Its step is "Provision hosted company for <client>", for the Operator, with the request line prefilled: profile \`client\`, the plan label, the modules the plan gives, and the owner email from the company's first linked person. Set the plan from the signed quote first: \`update-company\` with \`hostedPlan\` (starter, growth or business; anything else is refused). When the hosted company exists, write its id with \`update-company\` \`hostedCompanyId\`; the client page then shows it.
+
 ## Working a step
 First open the module's client workspace: if the service already runs (a sprint set up by hand), log it on the client (\`log-activity\` with the link or id) and close. Otherwise do what starting means, then log the proof on the client and close. Closing is checked: proof must be logged on the client since the step opened. Removing a service cancels its open step.
 `;
 
 export const CANARY_REFERENCE = `# The canary client
 
-One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (PiB Canary Co), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
+One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (named for the canary), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
 
 ## Rules (every module and agent)
 - Everything outward is a draft or a dry run: no email, SMS, post, ad, invoice or payment request reaches a real person. A CRM sequence email to a canary contact is recorded as a dry run and never queued.

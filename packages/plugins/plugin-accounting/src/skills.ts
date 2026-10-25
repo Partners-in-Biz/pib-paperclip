@@ -14,9 +14,9 @@ export function canonicalSkillKey(pluginId: string, skillKey: string): string {
 
 export const SKILL_CANONICAL_KEY = canonicalSkillKey(PLUGIN_ID, SKILL_KEY);
 
-export const BOOKKEEPING_SKILL = `# Bookkeeping (Partners in Biz books)
+export const BOOKKEEPING_SKILL = `# Bookkeeping (your company's books)
 
-You keep Partners in Biz's own books with the \`partnersinbiz.accounting\` tools. These are PiB's books, never a client's: Accounting has no client workspace. Money is always whole cents (R1 = 100). Dates are YYYY-MM-DD.
+You keep your company's own books with the \`partnersinbiz.accounting\` tools. These are your company's books, never a client's: Accounting has no client workspace. Money is always whole cents (R1 = 100). Dates are YYYY-MM-DD.
 
 ## What only a person does
 
@@ -56,7 +56,7 @@ Accounting does not read PDFs: you do. \`pdf-statements\` with the issue's \`bat
 - **VAT:** when the company is not VAT-registered (Accounting settings, VAT category \`none\`), never pass a \`taxCode\`: post the full amount to the expense account. A VAT code is refused; a suggestion that carries one is accepted without it.
 - **category** from **Jev**: accept only when the account is obviously right (bank charges, a known software subscription). Bank charges, interest, salaries, insurance and transfers have no VAT.
 - No suggestion: \`suggest-categorisation\` asks again.
-- Transfers between PiB's own accounts: categorise to the other bank's account, no tax code.
+- Transfers between your company's own accounts: categorise to the other bank's account, no tax code.
 - A payout from Stripe or PayFast: categorise to account \`1020\` (Payment provider clearing), no tax code. Billing posts each confirmed payment to 1020 in full, and posts the provider's fee only when the provider's notification carries one. **Stripe's does not, so Billing posts no Stripe fee** (\`list-payment-links\` shows \`feeMinor\` empty). Once a Stripe payout is categorised, what it leaves on 1020 is Stripe's fee: make it a \`create-manual-journal\` Dr 6120 Bank charges / Cr 1020, no tax code, memo "Stripe fees, payout <date>", and it goes through the normal approval. Check the amount against the payout's detail in the Stripe Dashboard (Balances, Payouts) when you can, by asking the owner. If the left-over is negative, or far more than card fees (a few percent of the payout), do not post it: a payment or a refund is missing, so put it in your ask.
 - A note "Billing refused the match…": that invoice or bill is no longer suggested for the line. Do not force it; match it to something else, categorise it, or ask.
 
@@ -127,12 +127,12 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: SKILL_KEY,
     displayName: "Bookkeeping",
     slug: SKILL_SLUG,
-    description: "PiB's monthly bookkeeping cycle: import bank statements, match and reconcile, prepare the VAT201, run the month-end close. A person approves anything that posts or locks, after the Reviewer's pass.",
+    description: "Your company's monthly bookkeeping cycle: import bank statements, match and reconcile, prepare the VAT201, run the month-end close. A person approves anything that posts or locks, after the Reviewer's pass.",
     files: [{ path: "references/pdf-statements.md", content: PDF_REFERENCE }],
     markdown: withFrontmatter(
       {
         name: SKILL_SLUG,
-        description: "Keep Partners in Biz's books in the Accounting plugin: import bank statements from the Mailbox, match and categorise lines, prepare reconciliations and the VAT201, run the month-end close, draft manual journals. Never post, lock or approve without a person.",
+        description: "Keep your company's books in the Accounting plugin: import bank statements from the Mailbox, match and categorise lines, prepare reconciliations and the VAT201, run the month-end close, draft manual journals. Never post, lock or approve without a person.",
       },
       BOOKKEEPING_SKILL,
     ),

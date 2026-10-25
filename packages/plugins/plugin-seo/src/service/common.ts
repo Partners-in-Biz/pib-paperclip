@@ -3,13 +3,13 @@
  * clocks, fetchers), actors, errors, parameter parsing and per-company info.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
+import { createPibOnlySkillSyncer, createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
 import type { SiteFetcher } from "../checks/site.js";
 import { loadSeoConfig, type LoadedConfig } from "../config.js";
 import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/scope.js";
 import { localDate, localHour } from "../engine/time.js";
 import type { FetchLike } from "../integrations/google.js";
-import { SKILLS } from "../skills.js";
+import { PIB_ONLY_SKILL_DECLARATIONS, SKILLS } from "../skills.js";
 import { sqlAnnouncementStore, type AnnouncementStore } from "./announcement-store.js";
 import { sqlPlaybookStore, type PlaybookStore } from "./playbook-store.js";
 
@@ -58,13 +58,25 @@ export interface Env {
   announcements: AnnouncementStore;
 }
 
+/** The shared skill plus the own-company skill, which `createPibOnlySkillSyncer` only syncs for the instance's own company. */
+export function createSkillSyncers(ctx: PluginContext): Env["skills"] {
+  const shared = createSkillSyncer(ctx, SKILLS);
+  const own = createPibOnlySkillSyncer(ctx, PIB_ONLY_SKILL_DECLARATIONS);
+  return {
+    ...shared,
+    ensure: async (id) => [...(await shared.ensure(id)), ...(await own.ensure(id))],
+    force: async (id) => [...(await shared.force(id)), ...(await own.force(id))],
+    check: async (id) => [...(await shared.check(id)), ...(await own.check(id))],
+  };
+}
+
 export function createEnv(ctx: PluginContext, overrides: Partial<Omit<Env, "ctx">> = {}): Env {
   return {
     ctx,
     now: overrides.now ?? (() => new Date()),
     fetch: overrides.fetch ?? ((input, init) => fetch(input, init)),
     site: overrides.site ?? ((url, init) => safeFetch(ctx, url, init)),
-    skills: overrides.skills ?? createSkillSyncer(ctx, SKILLS),
+    skills: overrides.skills ?? createSkillSyncers(ctx),
     playbooks: overrides.playbooks ?? sqlPlaybookStore(ctx.db),
     announcements: overrides.announcements ?? sqlAnnouncementStore(ctx.db),
   };

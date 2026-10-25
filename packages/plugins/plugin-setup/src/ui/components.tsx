@@ -205,11 +205,13 @@ export function Card({ children, highlight, module }: { children: ReactNode; hig
   );
 }
 
-export function ModuleCard({ title, description, installed, enabled, onToggle, hint, module }: {
+export function ModuleCard({ title, description, installed, enabled, locked, onToggle, hint, module }: {
   title: string;
   description: string;
   installed: boolean | null;
   enabled: boolean;
+  /** Not in the company's plan: shown off, cannot be switched on. */
+  locked?: boolean;
   onToggle: (next: boolean) => void;
   hint?: string | null;
   module?: ModuleKey;
@@ -223,12 +225,13 @@ export function ModuleCard({ title, description, installed, enabled, onToggle, h
           <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <strong style={{ fontSize: 14 }}>{title}</strong>
+              {locked ? <Pill tone="warn" size="sm">Not in your plan</Pill> : null}
               {installed === null ? null : <Pill tone={installed ? "neutral" : "warn"} size="sm">{installed ? "Installed" : "Not installed"}</Pill>}
             </div>
             <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{description}</p>
           </div>
         </div>
-        <Switch checked={enabled} onChange={onToggle} label={`Use ${title}`} color={accent?.solid} />
+        <Switch checked={enabled && !locked} onChange={locked ? () => undefined : onToggle} disabled={locked} label={locked ? `${title} is not in your plan` : `Use ${title}`} color={accent?.solid} />
       </div>
       {hint ? <p style={{ margin: 0, fontSize: 12, color: tone("info").fg, lineHeight: 1.4 }}>{hint}</p> : null}
     </Card>

@@ -13,6 +13,7 @@ import { loadSocialConfig, type SocialConfig } from "../config.js";
 import { ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
+import { ownSocialName } from "../preferences.js";
 import { jevConfigFor } from "../triage.js";
 import { approvalIssueDescription, approvalIssueTitle, changeLines, experimentLines, verdictComment } from "./copy.js";
 import { socialApprovalIssues, socialScopes, type SocialApprovalIssuePort, type SocialScopeResolver } from "./ports.js";
@@ -133,12 +134,12 @@ export function changeOut(c: PlaybookChange) {
 }
 
 /** Helper to wrap an env for the kit service functions. Base env with UTC timezone. */
-function wrapKitEnv(env: GrowthEnv): any {
+function wrapKitEnv(env: GrowthEnv, ownName = "Your company"): any {
   return {
     ...env,
     issuePort: (companyId: string) => issuePort(env),
     starterPlaybook: (target: any) => {
-      const title = target.scope ? `${target.name ?? target.scope.id} social` : "PiB social";
+      const title = target.scope ? `${target.name ?? target.scope.id} social` : `${ownName} social`;
       return starterPlaybook(title).replace("(what we optimise, in one sentence)", DEFAULT_OBJECTIVE);
     },
     programOut,
@@ -154,7 +155,7 @@ function wrapKitEnv(env: GrowthEnv): any {
         companyId: program.companyId,
         projectId: await projectIdFor(env.ctx, program.companyId, scope),
         title: approvalIssueTitle(program, week),
-        description: approvalIssueDescription(program, lines, await socialPath(env.ctx, program.companyId, { tab: "growth" }, scope)),
+        description: approvalIssueDescription(program, lines, await socialPath(env.ctx, program.companyId, { tab: "growth" }, scope), program.clientRef ? undefined : await ownSocialName(env.ctx, program.companyId)),
         priority: "medium",
         originKind: ORIGIN_KIND,
         originId: `${SOCIAL_ORIGINS.growth}${program.id}:${week}`,
@@ -170,7 +171,7 @@ function wrapKitEnv(env: GrowthEnv): any {
 /** Wrap env for kit functions that need the company's timezone. */
 export async function wrapKitEnvWithConfig(env: GrowthEnv, companyId: string): Promise<any> {
   const config = await loadSocialConfig(env.ctx, companyId);
-  const baseEnv = wrapKitEnv(env);
+  const baseEnv = wrapKitEnv(env, await ownSocialName(env.ctx, companyId));
   return {
     ...baseEnv,
     timezone: () => config.timezone,
@@ -190,12 +191,12 @@ export function wrapKitEnvForMeasure(wrapped: any, comment: typeof verdictCommen
  * Call with config for functions that need timezone (e.g., proposeExperiment, measureExperiment).
  * Call without config for ensureProgram (which is used in scoring loops).
  */
-export function socialKitEnv(env: GrowthEnv, config?: SocialConfig): any {
+export function socialKitEnv(env: GrowthEnv, config?: SocialConfig, ownName?: string): any {
   if (config) {
     return {
-      ...wrapKitEnv(env),
+      ...wrapKitEnv(env, ownName),
       timezone: () => config.timezone,
     };
   }
-  return wrapKitEnv(env);
+  return wrapKitEnv(env, ownName);
 }

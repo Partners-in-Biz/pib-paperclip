@@ -18,6 +18,8 @@ import {
   createSkillSyncer,
   createWorkIssue,
   DRIVE_EVENTS,
+  HOSTED_TIERS,
+  isHostedTier,
   isModuleEnabled,
   linkAgent,
   MAIL_EVENTS,
@@ -50,7 +52,7 @@ import {
   tryLinkAccountManager,
   wireAgent,
 } from "./agent.js";
-import { asRecord, asStringList, table } from "./db.js";
+import { asRecord, asStringList, getHosted, setHosted, table, type HostedInfo } from "./db.js";
 import { runSalesDaily, runSalesWeekly } from "./sales.js";
 import {
   contactCompanyLinks,
@@ -215,7 +217,7 @@ import { registerPrivacy } from "./privacy.js";
 import { reemitSensitivity, sensitivityOf } from "./register.js";
 import { onReplyIssueUpdated } from "./support.js";
 import { startNewClient } from "./new-client.js";
-import { backfillServices, onServiceStepIssue, runServicesCheck } from "./service-onboarding.js";
+import { backfillServices, noteHostedPlan, onServiceStepIssue, runServicesCheck } from "./service-onboarding.js";
 import {
   findRecords,
   getClientProfileTool,
@@ -1141,6 +1143,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     ...base,
     found: true as const,
     care,
+    hosted: account ? await getHosted(ctx, account.id).catch(() => null) : null,
     agreements: agreementsAndGrowth.agreements,
     growth: agreementsAndGrowth.growth,
     company: account,
@@ -1591,9 +1594,31 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   for (const key of BILLING_KEYS) account[key] = result.columns[key] as string | null;
   account.custom = result.custom;
   await saveAccount(ctx, account);
+  const hosted = await applyHostedPatch(ctx, account, params);
   await insertFacts(ctx, account.companyId, "company", account.id, result.facts);
   if (account.lifecycle === "churned" && lifecycleBefore !== "churned") await offboardCompany(ctx, account);
-  return { ...account, refused: result.refused };
+  return { ...account, ...hosted, refused: result.refused };
+}
+
+/** `hostedPlan` (starter, growth or business; null clears) and `hostedCompanyId` on update-company. Anything else is refused. */
+async function applyHostedPatch(ctx: PluginContext, account: AccountDraft, params: Record<string, unknown>): Promise<HostedInfo> {
+  const accountId = account.id;
+  const patch: Partial<HostedInfo> = {};
+  if ("hostedPlan" in params) {
+    const plan = params.hostedPlan;
+    if (plan !== null && !isHostedTier(plan)) throw new CrmError(`hostedPlan must be one of ${HOSTED_TIERS.join(", ")}`);
+    patch.hostedPlan = plan;
+  }
+  if ("hostedCompanyId" in params) {
+    const id = params.hostedCompanyId;
+    if (id !== null && (typeof id !== "string" || !id.trim())) throw new CrmError("hostedCompanyId must be a company id or null");
+    patch.hostedCompanyId = id === null ? null : (id as string).trim();
+    const current = (await getHosted(ctx, accountId)).hostedCompanyId;
+    if (current && patch.hostedCompanyId && patch.hostedCompanyId !== current) throw new CrmError("This client already has a hosted company. Do not overwrite its id; clear it first with hostedCompanyId null if it is wrong.");
+  }
+  if (Object.keys(patch).length > 0) await setHosted(ctx, accountId, patch);
+  if (patch.hostedPlan) await noteHostedPlan(ctx, account.companyId, account, patch.hostedPlan);
+  return getHosted(ctx, accountId);
 }
 
 /** A company became churned: its people's running sequences stop, and it is logged. */

@@ -54,6 +54,7 @@ import { BANK_MATCHED_EVENT } from "./bank.js";
 import {
   billingSettings,
   emailEnabled,
+  hasSavedSettings,
   expenseCategories,
   ledgerEnabled,
   loadBilling,
@@ -61,6 +62,8 @@ import {
   r2Configured,
   reportingCurrency,
 } from "./config.js";
+import { FALLBACK_SENDER_NAME } from "./documents.js";
+import { PREFERENCES_ACTIONS } from "./preferences.js";
 import {
   approveBillAction,
   addBillLine,
@@ -201,6 +204,7 @@ type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params:
 
 /** Action key (UI) → handler. Tools reuse the same handlers. */
 const ACTIONS: Record<string, Handler> = {
+  ...PREFERENCES_ACTIONS,
   "billing.load": (ctx, context, params) => load(ctx, context, params),
   "billing.invoice-html": (ctx, context, params) => invoiceHtml(ctx, context, params),
   "billing.quote-html": (ctx, context, params) => quoteHtml(ctx, context, params),
@@ -638,13 +642,13 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   return {
     asOf: asAtDate(),
     futurePayments,
-    settingsSaved: Object.keys(settings).length > 0,
+    settingsSaved: await hasSavedSettings(ctx, companyId),
     defaults: {
       currency: settings.defaultCurrency ?? "ZAR",
       taxRate: Number(settings.defaultTaxRate ?? 0),
       // The code new lines get (out of scope when "VAT registered" is off).
       taxCode: settings.vatRegistered === false ? "za_out_of_scope" : settings.defaultTaxCode ?? null,
-      senderName: String(asObject(settings.sender).name ?? "Partners in Biz"),
+      senderName: String(asObject(settings.sender).name ?? FALLBACK_SENDER_NAME),
       pricesIncludeVat: Boolean(settings.pricesIncludeVat),
       reportingCurrency: reportingCurrency(settings),
       hourlyRateMinor: Math.max(0, Math.floor(Number(settings.defaultHourlyRateMinor ?? 0))),
@@ -660,7 +664,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       numbering: settings.numbering?.mode === "sequential" ? "sequential" : "client",
     },
     // Online payments: which providers are on and, for those that are not, why (no secret is read).
-    payments: { providers: providerStates(settings).map((p) => ({ key: p.key, label: p.label, enabled: p.enabled, blocker: p.blocker, webhookUrl: p.key === "stripe" || p.key === "payfast" ? webhookUrl(settings, p.key) : null })) },
+    payments: { providers: providerStates(settings).map((p) => ({ key: p.key, label: p.label, enabled: p.enabled, blocker: p.blocker, webhookUrl: p.key === "payfast" || p.key === "paypal" || p.key === "stripe" ? webhookUrl(settings, p.key) : null })) },
     taxCodes: Object.entries(TAX_CODES).map(([code, info]) => ({ code, label: info.label, rate: info.rate })),
     expenseCategories: expenseCategories(settings),
     client: scope ? await clientDetails(ctx, companyId, scope, [...invoices, ...quotes]) : null,

@@ -38,7 +38,7 @@ interface Fake {
   configs: Map<string, { saved: boolean; config: Record<string, unknown> }>;
 }
 
-function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; roles?: Partial<Record<TeamRoleKey, "ok" | "hiring" | "missing" | "attention">>; installed?: Record<string, RunnerPlugin> | null; modules?: Record<ModuleKey, boolean>; hires?: Array<{ templateKey: string; issueId: string; status: string }>; me?: string | null; starter?: { approved: boolean; importedAt: string | null }; configs?: Record<string, { saved: boolean; config: Record<string, unknown> }>; failures?: Record<string, string>; statuses?: RunnerEnv["statuses"]; ownerCompany?: boolean } = {}): Fake {
+function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; roles?: Partial<Record<TeamRoleKey, "ok" | "hiring" | "missing" | "attention">>; installed?: Record<string, RunnerPlugin> | null; modules?: Record<ModuleKey, boolean>; hires?: Array<{ templateKey: string; issueId: string; status: string }>; me?: string | null; starter?: { approved: boolean; importedAt: string | null }; configs?: Record<string, { saved: boolean; config: Record<string, unknown> }>; failures?: Record<string, string>; statuses?: RunnerEnv["statuses"]; ownerCompany?: boolean; hasRepository?: boolean } = {}): Fake {
   const out: Fake = { saves: [], actions: [], roleHires: [], templateHires: [], drafts: [], recorded: [], wiki: { n: 0 }, imports: { n: 0 }, configs: new Map(), env: undefined as unknown as RunnerEnv };
   for (const [key, value] of Object.entries(patch.configs ?? {})) out.configs.set(key, value);
   const failures = patch.failures ?? {};
@@ -59,6 +59,7 @@ function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; ro
     installed: patch.installed === undefined ? INSTALLED() : patch.installed,
     options: patch.options ?? {},
     ownerCompany: patch.ownerCompany,
+    hasRepository: patch.hasRepository,
     requireApproval: false,
     statuses: patch.statuses ?? {},
     starter: patch.starter ?? { approved: false, importedAt: null },
@@ -78,6 +79,8 @@ function fake(patch: { agents?: unknown[] | null; options?: BootstrapOptions; ro
       return action === "memory.import" ? { added: 12, duplicates: 1, skippedClient: 0, invalid: [] } : {};
     },
     fetchAgents: async () => agents,
+    fetchSecretCatalog: async () => [],
+    bindAgentKey: async () => {},
     loadTeam: async (roles) => Object.fromEntries(roles.map((role) => [role.key, roleState(role)])),
     hireOptions: async (role) => {
       if (failures[`options:${role.key}`]) throw new Error(failures[`options:${role.key}`]!);
@@ -117,7 +120,7 @@ describe("a fresh company with a CEO", () => {
   it("saves every setting, syncs every plugin's skills, opens a hire task per required role and per dev-chain template, and lists what only a person can do", async () => {
     const f = fake();
     const results = await runClientSteps(f.env);
-    expect(results.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
+    expect(results.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "model-key", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
 
     // Setup's own settings first (Q7-7), then each ready plugin's defaults.
     expect(f.saves[0]).toEqual({ target: SETUP_PLUGIN, config: { weeklyIssue: true } });
@@ -154,7 +157,7 @@ describe("a fresh company with a CEO", () => {
     expect(owner.status).toBe("needs_owner");
     expect((owner.grants as Array<{ id: string }>).map((grant) => grant.id)).toEqual(expect.arrayContaining(["plugin-secrets", "github-token", "resume-agents", "tools-grant", "starter-pack"]));
     // Every page step reported itself.
-    expect(f.recorded.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
+    expect(f.recorded.map((entry) => entry.id)).toEqual(["setup-settings", "plugin-settings", "model-key", "skills", "roles", "templates", "company-wiki", "starter-pack", "owner-list"]);
   });
 
   it("changes nothing the second time: settings saved, roles and templates already hiring", async () => {
@@ -446,6 +449,49 @@ describe("the team template pack", () => {
     expect(selectedTemplates({ templates: ["developer", "growth-marketing-lead", "nope"] }, allModulesOn()).map((template) => template.key)).toEqual(["developer", "growth-marketing-lead"]);
     expect(selectedTemplates({ templates: ["growth-marketing-lead", "wiki-maintainer"] }, { ...allModulesOn(), social: false, memory: false })).toEqual([]);
     expect(MODULE_KEYS).toContain("memory");
+  });
+
+  it("keeps the pib profile as it was, with or without a repository, and takes the pib profile when none is set", () => {
+    const today = ["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"];
+    for (const hasRepository of [false, true]) {
+      expect(selectedTemplates({}, allModulesOn(), true, hasRepository).map((template) => template.key)).toEqual(today);
+      expect(selectedTemplates({ hostingProfile: "pib" }, allModulesOn(), true, hasRepository).map((template) => template.key)).toEqual(today);
+    }
+  });
+
+  it("hires only the CEO from the pack under the client profile, and the dev team too once the company has a repository", () => {
+    const client = { hostingProfile: "client" as const };
+    expect(selectedTemplates(client, allModulesOn(), false).map((template) => template.key)).toEqual(["ceo"]);
+    expect(selectedTemplates(client, allModulesOn(), true).map((template) => template.key)).toEqual(["ceo"]);
+    expect(selectedTemplates(client, allModulesOn(), false, true).map((template) => template.key)).toEqual(["ceo", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
+    // Templates asked for by key win over the profile.
+    expect(selectedTemplates({ ...client, templates: ["developer"] }, allModulesOn()).map((template) => template.key)).toEqual(["developer"]);
+  });
+
+  it("opens hire tasks for the CEO and the required roles of the entitled modules only, under the client profile (CRM + Mailbox + Social)", async () => {
+    const modules = Object.fromEntries(MODULE_KEYS.map((key) => [key, ["cockpit", "crm", "mailbox", "social"].includes(key)])) as Record<ModuleKey, boolean>;
+    const installed = { ...INSTALLED(), "partnersinbiz.mailbox": plugin("partnersinbiz.mailbox", "mailbox") };
+    const options = { hostingProfile: "client" as const };
+    // No agent yet: the CEO's hire task is the only one, and it is assigned to the person.
+    const bare = fake({ agents: [], options, modules, installed });
+    const bareOut = await stepTemplates(bare.env);
+    expect(bareOut.items.map((item) => item.key)).toEqual(["ceo"]);
+    expect(bare.templateHires.map((hire) => hire.key)).toEqual(["ceo"]);
+    // With a head agent: no dev-team or marketing hire task, and the roles step hires the required kit roles.
+    const f = fake({ options, modules, installed });
+    const templates = await stepTemplates(f.env);
+    expect(templates.items.map((item) => item.key)).toEqual(["ceo"]);
+    expect(f.templateHires).toEqual([]);
+    const roles = await stepRoles(f.env);
+    expect(roles.items.map((item) => item.key).sort()).toEqual(["account-manager", "operator", "social"]);
+    expect(f.roleHires.map((hire) => hire.role).sort()).toEqual(["account-manager", "operator", "social"]);
+  });
+
+  it("opens the same hire tasks as before under the pib profile (the owner company)", async () => {
+    const f = fake({ agents: [], ownerCompany: true, options: { hostingProfile: "pib" } });
+    const out = await stepTemplates(f.env);
+    expect(out.items.map((item) => item.key)).toEqual(["ceo", "delivery-lead", "planner", "plan-critic", "senior-developer", "developer", "code-reviewer"]);
+    expect(out.items.map((item) => item.key)).toEqual(selectedTemplates({}, allModulesOn(), true).map((template) => template.key));
   });
 
   it("opens no Hire task for a pib template in a client company, and opens it in the owner company", async () => {

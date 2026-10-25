@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HANDOFF_EVENTS, signUnsubscribeToken } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { addressHash, addSuppression, isSuppressed, suppressedEmails } from "../src/db.js";
-import { checkUnsubscribeToken, claimedCompany, linkSecret, unsubscribeLinks } from "../src/links.js";
+import { checkUnsubscribeToken, claimedCompany, clearLinkCache, linkSecret, unsubscribeLinks } from "../src/links.js";
 import { suppressionPayload } from "../src/suppress.js";
 import { apiUrlFrom, maskEmail, readToken, tokenEmail } from "../src/unsubscribe-page/logic.js";
 import { boot, campaign, CO, enrollment, PAST, seed, seedIssue, step, UI_BASE } from "./helpers/harness.js";
@@ -292,5 +292,27 @@ describe("the landing page", () => {
     expect(tokenEmail(token)).toBe("a***@acme.test");
     expect(tokenEmail("garbage.sig")).toBeNull();
     expect(maskEmail("ada@acme.test")).toBe("a***@acme.test");
+  });
+});
+
+describe("the secret read behind an unsigned company claim", () => {
+  it("a failed read is not remembered as no secret, and a flood of made-up ids reads at most the cap", async () => {
+    clearLinkCache();
+    const secret = "s".repeat(40);
+    let calls = 0;
+    const ctx = {
+      logger: { info: () => undefined },
+      state: { get: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("host blip");
+        return secret;
+      } },
+    } as never;
+    const t = signUnsubscribeToken({ companyId: "co-a", email: "a@b.co", senderKey: "own" }, secret);
+    expect(await checkUnsubscribeToken(ctx, t)).toBeNull();
+    expect(await checkUnsubscribeToken(ctx, t)).toMatchObject({ companyId: "co-a" });
+    calls = 100;
+    for (let i = 0; i < 300; i += 1) await checkUnsubscribeToken(ctx, signUnsubscribeToken({ companyId: `made-up-${i}`, email: "a@b.co", senderKey: "own" }, secret), { "x-real-ip": `1.1.${i}.1` });
+    expect(calls - 100).toBeLessThanOrEqual(60);
   });
 });

@@ -17,6 +17,7 @@ import {
   GetStarted,
   LayoutDashboard,
   Page,
+  ModuleStateBanner,
   Stamp,
   Sun,
   Tabs,
@@ -26,7 +27,7 @@ import {
   usePluginSetupStatus,
 } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { pageAlerts } from "./alerts.js";
 import type { DirectoryPerson } from "./approver.js";
 import { ClerkBox } from "./clerk.js";
@@ -36,7 +37,7 @@ import { LeaveTab } from "./leave.js";
 import { OverviewTab } from "./overview.js";
 import { PayslipsTab } from "./payslips.js";
 import { RunsTab } from "./runs.js";
-import { AlertLines, Muted, Notice } from "./shared.js";
+import { AlertLines, Muted } from "./shared.js";
 import { StatutoryTab } from "./statutory.js";
 import { TAB_IDS, type Snapshot, type TabId } from "./types.js";
 
@@ -101,17 +102,15 @@ function usePeople(companyId: string | null | undefined): { people: DirectoryPer
 
 export function PayrollPage({ context }: PluginPageProps) {
   const enabled = useModuleEnabled(context.companyId);
-  if (enabled === false) return <ModuleOff />;
+  if (enabled === false) return <ModuleOff companyId={context.companyId} />;
   return <PayrollWorkspace context={context} />;
 }
 
-function ModuleOff() {
+function ModuleOff({ companyId }: { companyId: string | null | undefined }) {
   const hostNavigation = useHostNavigation();
   return (
     <Page title="Payroll" description="South African payroll for your staff." accent="payroll">
-      <Notice tone="info">
-        Payroll is switched off for this company. Turn it on in <a {...hostNavigation.linkProps("/setup")}>Setup</a>.
-      </Notice>
+      <ModuleStateBanner companyId={companyId} pluginKey={PLUGIN_ID} load={moduleState} setupLinkProps={hostNavigation.linkProps("/setup")} />
     </Page>
   );
 }

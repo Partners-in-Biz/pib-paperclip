@@ -57,7 +57,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       "Write down a change to how the system or an agent works (a skill, an instruction, a routine, a plugin, who does what) together with the number it should move: where it stands now, the target, who owns it and when to look again. The Cockpit measures the number again on that date and records improved, no change or worse with both numbers. The baseline is measured now for a metric it reads. Use it for every proposal in the weekly retro and every close-out review.",
     parametersSchema: schema(["title", "metricKey"], {
       title: { type: "string", maxLength: 160, description: "One line saying what changes, e.g. \"Developer skill: run the build before closing\"." },
-      kind: { type: "string", enum: [...IMPROVEMENT_KINDS], description: "What kind of change: skill, instruction, routine, plugin, agent or system (default system)." },
+      kind: { type: "string", enum: [...IMPROVEMENT_KINDS], description: "What kind of change: skill, instruction, routine, plugin, agent, template or system (default system)." },
       targetRef: { type: "string", maxLength: 120, description: "What is changed: a skill slug, an agent name, a routine, a plugin." },
       summary: { type: "string", maxLength: 600, description: "What exactly changes and why you expect it to move the number." },
       metricKey: METRIC_KEY,
@@ -167,7 +167,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       attachmentId: { type: "string", description: "The id of the image attachment on this issue." },
       sha256: { type: "string", description: "The SHA256 hash of the attachment (hex, case-insensitive)." },
       summary: { type: "string", maxLength: 300, description: "What the evidence shows (optional, max 300 chars, newlines collapsed to spaces)." },
-      notify: { type: "boolean", description: "For future use (accepted and stored nowhere yet; comment: wired in B3)." },
+      notify: { type: "boolean", description: "Set true to also push a confirmation to the owner's phone, once per issue and step. Quiet hours defer it, and the daily push cap applies. Once a push is sent, deferred or collapsed, later calls for the same issue and step do nothing; if the cap or the duplicate check stops it, or the owner has no push subscription, a later call may try again (an identical retry of the same attachment too). The result is in data.notify." },
     }),
   },
   {

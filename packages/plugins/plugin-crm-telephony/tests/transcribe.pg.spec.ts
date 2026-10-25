@@ -83,7 +83,7 @@ describe("transcribe step", () => {
     const ctx = makeMockCtx(fetchMock);
     const deps: TranscribeDeps = { audioUrl: vi.fn(async () => "https://r2.ex.com/audio.wav") };
     const step = makeTranscribeStep(deps);
-    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() });
+    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false });
 
     expect(result.state).toBe("transcribed");
     expect(capturedOpts.headers.Authorization).toBe("Token dg_test_key");
@@ -113,7 +113,7 @@ describe("transcribe step", () => {
 
     const deps: TranscribeDeps = { audioUrl: vi.fn(async () => "https://r2.ex.com/audio.wav") };
     const step = makeTranscribeStep(deps);
-    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() });
+    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false });
 
     expect(capturedUrl).toContain("language=af");
     const transcripts = await db.db.query<{ language: string }>(`SELECT language FROM ${NAMESPACE}.tel_transcripts WHERE recording_id = $1::uuid`, [recordingId]);
@@ -130,7 +130,7 @@ describe("transcribe step", () => {
     const step = makeTranscribeStep(deps);
 
     try {
-      await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() });
+      await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false });
       expect.fail("should throw");
     } catch (e: any) {
       expect(e.message).toContain("deepgram http 500");
@@ -148,7 +148,7 @@ describe("transcribe step", () => {
     const deps: TranscribeDeps = { audioUrl: vi.fn() };
     const step = makeTranscribeStep(deps);
 
-    await expect(step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() }))
+    await expect(step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false }))
       .rejects.toThrow("DEEPGRAM_API_KEY not set");
   });
 
@@ -161,7 +161,7 @@ describe("transcribe step", () => {
     const ctx = makeMockCtx(fetchMock);
     const deps: TranscribeDeps = { audioUrl: vi.fn() };
     const step = makeTranscribeStep(deps);
-    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() });
+    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false });
 
     expect(result.state).toBe("erased");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -177,8 +177,8 @@ describe("transcribe step", () => {
     const step = makeTranscribeStep(deps);
     const row = { id: recordingId, call_sid: callSid, company_id: companyId } as any;
 
-    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row, extendLease: vi.fn() });
-    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row, extendLease: vi.fn() });
+    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row, extendLease: vi.fn(), isErased: async () => false });
+    await step({ ctx: ctx.ctx, namespace: NAMESPACE, row, extendLease: vi.fn(), isErased: async () => false });
 
     const transcripts = await db.db.query<{ id: string }>(`SELECT id FROM ${NAMESPACE}.tel_transcripts WHERE recording_id = $1::uuid`, [recordingId]);
     expect(transcripts).toHaveLength(1);
@@ -192,7 +192,7 @@ describe("transcribe step", () => {
     const ctx = makeMockCtx(vi.fn(async () => ({ ok: true, json: async () => ({ results: {} }) })));
     const deps: TranscribeDeps = { audioUrl: vi.fn(async () => "https://r2.ex.com/audio.wav") };
     const step = makeTranscribeStep(deps);
-    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn() });
+    const result = await step({ ctx: ctx.ctx, namespace: NAMESPACE, row: { id: recordingId, call_sid: callSid, company_id: companyId } as any, extendLease: vi.fn(), isErased: async () => false });
 
     expect(result.state).toBe("transcribed");
     const transcripts = await db.db.query<{ text: string; segments: string }>(`SELECT text, segments FROM ${NAMESPACE}.tel_transcripts WHERE recording_id = $1::uuid`, [recordingId]);

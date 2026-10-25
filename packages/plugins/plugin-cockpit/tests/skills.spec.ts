@@ -34,7 +34,7 @@ describe("the company operating manual (company-os)", () => {
   const os = skill(COMPANY_SKILL_SLUG);
 
   it("is a Cockpit managed skill whose canonical key is the kit's COMPANY_OS_SKILL_KEY", () => {
-    expect(os).toMatchObject({ skillKey: "company-os", slug: "pib-company-os", displayName: "PiB company operating manual" });
+    expect(os).toMatchObject({ skillKey: "company-os", slug: "pib-company-os", displayName: "Company operating manual" });
     expect(COMPANY_SKILL_KEY).toBe("company-os");
     expect(canonicalSkillKey(PLUGIN_KEY, os.skillKey)).toBe(COMPANY_OS_SKILL_KEY);
     expect(LOCAL_OS_KEY).toBe(COMPANY_OS_SKILL_KEY);
@@ -53,7 +53,7 @@ describe("the company operating manual (company-os)", () => {
 
   it("has valid frontmatter, the memory and asking sections, and stays under 19,500 characters", () => {
     const markdown = os.markdown!;
-    const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# PiB company operating manual\n/.exec(markdown);
+    const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# Company operating manual\n/.exec(markdown);
     expect(match, markdown.slice(0, 300)).not.toBeNull();
     expect(match![3]!.length).toBeGreaterThan(80);
     expect(markdown).toContain(COMPANY_MEMORY_HEADING);
@@ -84,14 +84,14 @@ describe("the company operating manual (company-os)", () => {
 describe("hand-off issues always carry a project", () => {
   // A task with no project has no repository: it runs in the agent's empty home folder (2026-10-07, PAR-1553 and PAR-877 failed
   // at setup for the Code Reviewer this way). Both texts that teach the hand-off must say so.
-  it("the operating manual says to set projectId, with the PiB Platform case", () => {
+  it("the operating manual says to set projectId, with the own platform project case", () => {
     const body = companySkillBody();
     expect(body).toContain("always a `projectId`");
-    expect(body).toContain("PiB Platform");
+    expect(body).toContain("own platform project (pick it from that projects list)");
   });
-  it("the Operator skill says to set projectId, the PiB Platform case, and what to do when unsure", () => {
+  it("the Operator skill says to set projectId, the own platform project case, and what to do when unsure", () => {
     expect(OPERATOR_SKILL_BODY).toContain("**Always set `projectId`**");
-    expect(OPERATOR_SKILL_BODY).toContain("PiB Platform");
+    expect(OPERATOR_SKILL_BODY).toContain("own platform project (pick it from that projects list)");
     expect(OPERATOR_SKILL_BODY).toContain("instead of creating it without one");
   });
 });
@@ -418,5 +418,19 @@ describe("the Operator's references (Wave 3)", () => {
     expect(RETRO_REFERENCE).toContain("more than 3 days past its date");
     // Asking with an effect: the three keys that exist.
     for (const key of ["mailbox.delegate", "social.connect-account", "cockpit.grant-memory-tools"]) expect(ASKING_REFERENCE, key).toContain(key);
+  });
+});
+
+describe("the skill text names no owner company", () => {
+  it("carries no owner name, agency name or PiB in the company manual, the role skills, their references or the hire text", async () => {
+    const { findBrandLeaks } = await import("@partnersinbiz/pib-plugin-kit");
+    const { OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS } = await import("../src/hire.js");
+    const { ACCEPTANCE_INSTRUCTIONS } = await import("../src/acceptance-role.js");
+    const { ACCEPTANCE_SKILL_BODY } = await import("../src/acceptance-skill.js");
+    const texts = [companySkillBody(), OPERATOR_TEXT, REVIEWER_SKILL_BODY, ACCEPTANCE_SKILL_BODY, OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS, ACCEPTANCE_INSTRUCTIONS, ...SKILLS.map((s) => `${s.displayName}\n${s.description ?? ""}\n${s.markdown ?? ""}`)];
+    expect(texts.flatMap((t) => findBrandLeaks(t))).toEqual([]);
+  });
+  it("tells agents to call company-profile for names", () => {
+    expect(companySkillBody()).toContain("company-profile");
   });
 });

@@ -1,3 +1,5 @@
+import { withHelp } from "./help-page.js";
+import { snapshotPlaceholder } from "./placeholder.js";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
@@ -23,8 +25,12 @@ import {
   PageFrame,
   PageMessage,
   Pill,
+  PreferencesPanel,
+  type PreferencesLoadResult,
+  type PreferencesSaveResult,
   Select,
   Send,
+  Settings,
   Sheet,
   Tabs,
   TextArea,
@@ -91,7 +97,7 @@ interface WorkspaceClient {
 }
 
 interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null; series?: CampaignSeries; suppressed?: number }
-type TabId = "overview" | "campaigns";
+type TabId = "overview" | "campaigns" | "preferences";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
 function defaultAudience(scope: ClientScope): AudienceMode {
@@ -131,7 +137,9 @@ function Banner({ text, link, linkProps }: { text: string; link: { label: string
   );
 }
 
-export function CampaignsPage({ context }: PluginPageProps) {
+export const CampaignsPage = withHelp(CampaignsPageMain);
+
+function CampaignsPageMain({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
@@ -140,6 +148,8 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const load = usePluginAction("campaigns.load");
   const loadDetail = usePluginAction("campaigns.detail");
   const createCampaign = usePluginAction("campaigns.create-campaign");
+  const loadPreferences = usePluginAction("campaigns.preferences-load");
+  const savePreferences = usePluginAction("campaigns.preferences-save");
   const addStep = usePluginAction("campaigns.add-step");
   const launch = usePluginAction("campaigns.launch");
   const requestApproval = usePluginAction("campaigns.request-approval");
@@ -153,9 +163,11 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [detail, setDetail] = useState<CampaignDetailData | null>(null);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [abError, setAbError] = useState("");
   const [busy, setBusy] = useState(false);
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
-  const [tab, setTab] = useUrlTab<TabId>(["overview", "campaigns"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
+  const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns"] : ["overview", "campaigns", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
   // `?campaign=<id>` opens that campaign's detail, so an approval can link straight to what goes out.
   const openId = new URLSearchParams(location.search).get("campaign");
   // "Finish setting up Campaigns" on the overview until its required setup is done.
@@ -186,7 +198,11 @@ export function CampaignsPage({ context }: PluginPageProps) {
     if (!context.companyId) return;
     setSnapshot(null);
     setMessage("");
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    setLoadError("");
+    refresh().catch((error: unknown) => {
+      setLoadError(errorText(error));
+      setMessage(errorText(error));
+    });
   }, [context.companyId, scopeKey]);
 
   useEffect(() => {
@@ -201,7 +217,10 @@ export function CampaignsPage({ context }: PluginPageProps) {
         if (live) setDetail(result as CampaignDetailData);
       })
       .catch((error: unknown) => {
-        if (live) setMessage(errorText(error));
+        if (live) {
+          setLoadError(errorText(error));
+          setMessage(errorText(error));
+        }
       });
     return () => {
       live = false;
@@ -245,16 +264,20 @@ export function CampaignsPage({ context }: PluginPageProps) {
   function openAb(campaignId: string) {
     setSelectedCampaignId(campaignId);
     setAb(null);
+    setAbError("");
     setCreate("ab");
     abSuggestion({ campaignId })
       .then((result) => setAb(result as AbSuggestion))
-      .catch((error: unknown) => setMessage(errorText(error)));
+      .catch((error: unknown) => {
+        setAbError(errorText(error));
+        setMessage(errorText(error));
+      });
   }
 
   const approvalRequested = "Approval requested. It launches by itself once a person approves it.";
   const client = scope ? snapshot?.client ?? null : null;
   const clientName = client?.name ?? "this client";
-  const barName = client?.name ?? (snapshot ? "Unknown client" : "Loading…");
+  const barName = client?.name ?? (snapshot ? "Unknown client" : snapshotPlaceholder(loadError, "Loading…"));
   const q = search.trim().toLowerCase();
   const all = snapshot?.campaigns ?? [];
   const campaigns = useMemo(() => all.filter((c) => !q || c.name.toLowerCase().includes(q) || (STATUS_LABEL[c.status] ?? c.status).toLowerCase().includes(q)), [snapshot, q]);
@@ -298,7 +321,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
     <>
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       {gmail && gmail.status !== "done" ? (
-        <Banner text="PiB's own emails can't go out: Gmail isn't connected in the Mailbox." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
+        <Banner text="Emails can't go out: Gmail isn't connected in the Mailbox." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
       ) : null}
       {snapshot && snapshot.settingsSaved === false ? (
         <Banner text="Due emails won't go out until the Campaigns settings are saved once." link={{ label: "Open settings", href: settingsItem?.href ?? "/company/settings/instance/plugins" }} linkProps={linkProps} />
@@ -307,6 +330,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
           { id: "campaigns", label: "Campaigns", icon: Send, count: waitingCount || null, countTone: "warn" },
+          ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -324,13 +348,20 @@ export function CampaignsPage({ context }: PluginPageProps) {
             onAb={openAb}
             onOpen={openCampaign}
           />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{message ? "Campaigns could not load." : "Loading campaigns…"}</p>
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p>
+      ) : null}
+
+      {tab === "preferences" ? (
+        <PreferencesPanel
+          load={() => loadPreferences({}) as Promise<PreferencesLoadResult>}
+          save={(patch) => savePreferences({ patch }) as Promise<PreferencesSaveResult>}
+        />
       ) : null}
 
       {tab === "campaigns" ? (
         <div style={{ display: "grid", gap: 12 }}>
           {all.length > 5 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search campaigns…" /> : null}
-          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading campaigns…</p> : all.length === 0 ? (
+          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p> : all.length === 0 ? (
             <EmptyState
               title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
               icon={Send}
@@ -405,7 +436,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
               onAb: () => openAb(detail.campaign.id),
             }}
           />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading the campaign…</p>}
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
       </Sheet>
 
       <Modal
@@ -534,7 +565,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
             </p>
           </div>
         ) : (
-          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p>
+          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(abError, "Loading…")}</p>
         )}
       </Modal>
     </>
@@ -563,7 +594,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
     <Page
       title="Campaigns"
       accent="campaigns"
-      description="PiB's own email campaigns. A client's campaigns live in that client's workspace, opened from the CRM."
+      description="This company's own email campaigns. A client's campaigns live in that client's workspace, opened from the CRM."
       message={pageMessage}
       actions={headerAction}
     >

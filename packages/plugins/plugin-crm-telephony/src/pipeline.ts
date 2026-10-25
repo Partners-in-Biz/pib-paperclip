@@ -5,6 +5,17 @@ import { claimRecordings, releaseLease } from "./lease.js";
 export const MAX_ATTEMPTS = 6;
 
 /**
+ * Thrown when a step detects the row has been tombstoned (erased_at set).
+ * Signals to the pipeline that the row should be abandoned without incrementing attempts.
+ */
+export class ErasedError extends Error {
+  constructor(message = "Recording has been erased") {
+    super(message);
+    this.name = "ErasedError";
+  }
+}
+
+/**
  * Compute backoff seconds for a failed attempt.
  * attempts = failures so far (1-based): 60 * 2^(attempts-1), capped at 3600
  */
@@ -14,15 +25,32 @@ export function backoffSeconds(attempts: number): number {
   return Math.min(seconds, 3600);
 }
 
+/**
+ * Sanitize error message by redacting sensitive credentials.
+ * Removes Authorization headers, Bearer tokens, SIDs, API keys.
+ */
+export function sanitizeErrorMessage(msg: string, maxLen = 500): string {
+  return msg
+    .slice(0, maxLen)
+    .replace(/Authorization:\s*[^\s]+/gi, "Authorization: [redacted]")
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
+    .replace(/Basic\s+[^\s]+/gi, "Basic [redacted]")
+    .replace(/sk_test[_a-z0-9]+/gi, "[key redacted]")
+    .replace(/AC[0-9a-f]{20,}/gi, "[SID redacted]")
+    .replace(/[a-z]{2}[0-9]{32}/gi, "[SID redacted]");
+}
+
 export interface PipelineStepCtx {
   ctx: PluginContext;
   namespace: string;
   row: RecordingRow;
   extendLease(): Promise<boolean>;
+  isErased(): Promise<boolean>;
 }
 
 export interface StepResult {
   state: string;
+  error?: string;
   patch?: {
     r2Key?: string;
     bytes?: number;
@@ -90,6 +118,15 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       return result.rowCount > 0;
     };
 
+    // Check if row has been tombstoned (erased_at is set)
+    const isErased = async (): Promise<boolean> => {
+      const result = await ctx.db.query<{ cnt: string }>(
+        `SELECT 1 FROM ${namespace}.tel_recordings WHERE id = $1::uuid AND erased_at IS NOT NULL`,
+        [row.id],
+      );
+      return result.length > 0;
+    };
+
     try {
       // Extend lease before running the step
       let extended: boolean;
@@ -112,14 +149,24 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
         namespace,
         row,
         extendLease,
+        isErased,
       };
 
       const result = await step(stepCtx);
 
       // Success: update state and reset attempts
-      const updates = ["state = $1", "attempts = 0", "last_error = NULL", "lease_token = NULL", "lease_until = NULL", "updated_at = now()"];
+      const updates = ["state = $1", "attempts = 0", "lease_token = NULL", "lease_until = NULL", "updated_at = now()"];
       const params: unknown[] = [result.state];
       let idx = 1;
+
+      // Handle error field or reset last_error
+      if (result.error) {
+        const sanitized = sanitizeErrorMessage(result.error);
+        updates.push(`last_error = $${++idx}`);
+        params.push(sanitized);
+      } else {
+        updates.push("last_error = NULL");
+      }
 
       if (result.patch?.r2Key) {
         updates.push(`r2_key = $${++idx}`);
@@ -139,7 +186,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       const tokenIdx = ++idx;
       params.push(row.id, token);
 
-      const sql = `UPDATE ${namespace}.tel_recordings SET ${updates.join(", ")} WHERE id = $${idIdx}::uuid AND lease_token = $${tokenIdx}::uuid`;
+      const sql = `UPDATE ${namespace}.tel_recordings SET ${updates.join(", ")} WHERE id = $${idIdx}::uuid AND lease_token = $${tokenIdx}::uuid AND erased_at IS NULL`;
       const updateResult = await ctx.db.execute(sql, params);
       if (updateResult.rowCount === 0) {
         abandoned++;
@@ -149,16 +196,14 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       processed++;
       ctx.logger.debug(`recording ${row.recording_sid} ${row.state} -> ${result.state}`);
     } catch (err: any) {
+      // Handle erasure: no attempts increment, just abandon
+      if (err instanceof ErasedError) {
+        abandoned++;
+        continue;
+      }
+
       // Failure: increment attempts and schedule backoff
-      let errorMsg = String(err?.message || err || "Unknown error").slice(0, 500);
-      // Sanitize credentials: Authorization headers, Bearer tokens, SIDs, API keys
-      errorMsg = errorMsg
-        .replace(/Authorization:\s*[^\s]+/gi, "Authorization: [redacted]")
-        .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
-        .replace(/Basic\s+[^\s]+/gi, "Basic [redacted]")
-        .replace(/sk_test[_a-z0-9]+/gi, "[key redacted]")
-        .replace(/AC[0-9a-f]{20,}/gi, "[SID redacted]")
-        .replace(/[a-z]{2}[0-9]{32}/gi, "[SID redacted]");
+      const errorMsg = sanitizeErrorMessage(String(err?.message || err || "Unknown error"));
 
       const newAttempts = row.attempts + 1;
       const isFinal = newAttempts >= MAX_ATTEMPTS;
@@ -167,7 +212,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
 
       const params = [nextState, newAttempts, errorMsg, nextAttemptAt.toISOString(), row.id, token];
       const sql = `UPDATE ${namespace}.tel_recordings SET state = $1, attempts = $2, last_error = $3, lease_token = NULL, lease_until = NULL, updated_at = now(), next_attempt_at = $4
-                   WHERE id = $5::uuid AND lease_token = $6::uuid`;
+                   WHERE id = $5::uuid AND lease_token = $6::uuid AND erased_at IS NULL`;
 
       const updateResult = await ctx.db.execute(sql, params);
       if (updateResult.rowCount === 0) {

@@ -211,7 +211,7 @@ describe("the footer and the unsubscribe header", () => {
     const payload = s.outbox![0]!.payload as { text: string; html: string };
     const link = /https:\/\/paperclip\.test\/_plugins\/[0-9a-f-]+\/ui\/unsubscribe\.html\?t=([^\s<"]+)/.exec(payload.text);
     expect(link, payload.text).toBeTruthy();
-    expect(payload.text).toContain("You are getting this email from Partners in Biz. To stop getting these emails, unsubscribe here:");
+    expect(payload.text).toContain("You are getting this email from PiB. To stop getting these emails, unsubscribe here:");
     expect(payload.text).toContain("or reply STOP.");
     // The token names the company, the address and whose list; only this company's secret verifies it.
     const secret = await linkSecret(harness.ctx, CO, { create: false });

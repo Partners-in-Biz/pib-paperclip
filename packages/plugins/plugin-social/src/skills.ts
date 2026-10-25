@@ -8,17 +8,17 @@ import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 export const SKILL_KEY_PREFIX = "plugin/partnersinbiz-social";
 
 const PUBLISH_DESCRIPTION =
-  "Operate the Partners in Biz Social plugin: work in one scope (PiB's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, work the Jev-triaged social inbox, and run the Growth Lab (performance review, experiments, playbook). Use for any social posting, scheduling, inbox or performance task.";
+  "Operate the Social plugin: work in one scope (your company's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, work the Jev-triaged social inbox, and run the Growth Lab (performance review, experiments, playbook). Use for any social posting, scheduling, inbox or performance task.";
 
 export const SOCIAL_PUBLISH_BODY = `# Social publish
 
-You manage social posting for Partners in Biz (its own accounts) and its clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
+You manage social posting for your company (its own accounts) and its clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
 
 ## Scope
 
 Every account, post, media asset, feed and inbox item belongs to exactly one scope:
 
-- **Own work** (PiB's own socials): call the tools **without** a client.
+- **Own work** (your company's own socials): call the tools **without** a client.
 - **Client work**: a CRM company, or a CRM contact (a sole trader). Pass \`client: "company:<id>"\` or \`"contact:<id>"\` (or \`clientKind\` + \`clientRef\`) on every call. Take it from the issue you are working on (every Social issue states its scope), or from \`list-clients\`.
 - **Never mix scopes.** A post only uses accounts and media of its own scope; the tools refuse anything else. List tools return one scope at a time, so a client's accounts never show up in own work and the other way round.
 
@@ -98,7 +98,7 @@ list-clients, list-connected-accounts, connect-account, refresh-account, create-
 `;
 
 const CONTENT_DESCRIPTION =
-  "Write platform-native social copy for Partners in Biz clients: per-platform length limits, tone, hashtags, media specs and override rules for Facebook, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon and Dribbble.";
+  "Write platform-native social copy for your company and its clients: per-platform length limits, tone, hashtags, media specs and override rules for Facebook, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon and Dribbble.";
 
 export const SOCIAL_CONTENT_BODY = `# Social content
 
@@ -106,7 +106,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 
 ## Before you write
 
-1. Know who you write for: PiB itself (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
+1. Know who you write for: your own company (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
 2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
@@ -155,7 +155,7 @@ Posts need visuals: carousels, branded images, short videos. Make them yourself 
 ## Scope
 
 - Own work = no client. Client work = pass \`client\` (\`company:<id>\` or \`contact:<id>\`) from the issue.
-- Never reuse one client's copy, media or accounts for another client or for PiB's own posts. Each scope has its own playbook and experiments.
+- Never reuse one client's copy, media or accounts for another client or for your company's own posts. Each scope has its own playbook and experiments.
 
 ## Always
 
@@ -168,7 +168,7 @@ Posts need visuals: carousels, branded images, short videos. Make them yourself 
 
 export const PLATFORMS_REFERENCE = `# Platform reference
 
-Per-platform rules for Partners in Biz social copy. Limits are hard limits enforced by the platforms; guidance is what performs.
+Per-platform rules for social copy. Limits are hard limits enforced by the platforms; guidance is what performs.
 
 ## Facebook (Pages)
 - Text up to 63,206 characters; best results at 40-80 words. The first 2 lines show before "See more".
@@ -272,7 +272,7 @@ No policy set = a team member approves, as before. At least one of team member o
 8. The link is the client's. Never open it to answer, and never submit its form: the page records whoever answers as the client. (Where only the client approves, the link IS the approval.)
 
 ## The Reviewer
-\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the company's Reviewer can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
+\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
 Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.
@@ -285,7 +285,7 @@ Every Reviewer, team member and client verdict is stored with the post's type (o
 
 export const MEDIA_STUDIO_REFERENCE = `# Media studio (pib-media-studio)
 
-How to make carousels, branded images and short videos for a client (or for PiB's own accounts) without depending on any provider: slides are HTML/CSS rendered to PNG by Chromium, videos are stitched from slides with ffmpeg. This is the approach that already produced the PARA-4 content batch (carousels at 1080x1350, 9:16 MP4s, a safe-area template); its \`para4-asset-generator.zip\` (attached to issue PARA-4, Partners in Apps) is a working example: copy it when you start, change the copy and brand file, render again.
+How to make carousels, branded images and short videos for a client (or for your company's own accounts) without depending on any provider: slides are HTML/CSS rendered to PNG by Chromium, videos are stitched from slides with ffmpeg. Build one reusable generator (a template plus a brand file) and render again for each batch: change the copy and brand file, not the template.
 
 ## 0. Before you make anything
 - **One scope.** Everything you make belongs to one client or to own work. Never reuse another client's brand, copy or files.
@@ -375,7 +375,7 @@ You make the image or short video for one social post and hand it back. The Soci
 
 export const PLAN_ROUTINE_TITLE = "Weekly social review & plan";
 
-export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for PiB's own accounts and every active client (Growth Lab).
+export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for your company's own accounts and every active client (Growth Lab).
 
 Run procedure (details in the pib-social-content skill, "Weekly social review & plan"):
 1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts.
@@ -388,6 +388,26 @@ Run procedure (details in the pib-social-content skill, "Weekly social review & 
 export interface SocialSkill extends PluginManagedSkillDeclaration {
   markdown: string;
 }
+
+const OWN_NOTES_DESCRIPTION =
+  "Own-company notes for the Partners in Biz Social agent: the worked example of a content batch (PARA-4) and where its asset generator lives. Only the instance's own company receives this skill.";
+
+export const OWN_NOTES_BODY = `# Own notes (pib-social-own-notes)
+
+Facts for Partners in Biz's own Social work. They are not part of the shared skills.
+
+- The media-studio approach already produced the PARA-4 content batch (carousels at 1080x1350, 9:16 MP4s, a safe-area template). Its \`para4-asset-generator.zip\` (attached to issue PARA-4, Partners in Apps) is a working example: copy it when you start, change the copy and brand file, render again.
+`;
+
+export const PIB_ONLY_SKILLS: SocialSkill[] = [
+  {
+    skillKey: "social-own-notes",
+    displayName: "Social own notes",
+    slug: "pib-social-own-notes",
+    description: OWN_NOTES_DESCRIPTION,
+    markdown: withFrontmatter({ name: "pib-social-own-notes", description: OWN_NOTES_DESCRIPTION }, OWN_NOTES_BODY),
+  },
+];
 
 export const SKILLS: SocialSkill[] = [
   {

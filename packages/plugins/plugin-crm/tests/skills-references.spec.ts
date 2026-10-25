@@ -80,7 +80,7 @@ describe("the CRM skills and their references", () => {
     expect(LEAD_CAPTURE_REFERENCE).toMatch(/Never edit the live site by hand/);
     expect(CANARY_REFERENCE).toMatch(/draft or a dry run/);
     expect(CANARY_REFERENCE).toMatch(/@canary\.invalid/);
-    expect(NEW_CLIENT_REFERENCE).toMatch(/main only changes with Peet's approval/);
+    expect(NEW_CLIENT_REFERENCE).toMatch(/main only changes with the owner's approval/);
     expect(NEW_CLIENT_REFERENCE).toMatch(/never one per item/);
     // E-sign now exists, and what it is not is said in the guide: a basic electronic signature, never an advanced one.
     expect(records.markdown).not.toMatch(/no e-sign/i);

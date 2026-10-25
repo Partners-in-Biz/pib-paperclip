@@ -51,7 +51,7 @@ import { standingApproval } from "./standing-approval.js";
 import { loadStarterPack, parseImportResult, starterPackExport, type StarterPack } from "./starter-pack.js";
 import { loadPack, matchTemplate, offeredTemplates, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
 import { pickAdapter, renderHire, templateConfig } from "./templates-render.js";
-import { message, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
+import { message, moduleView, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
 
 const systemClock: Clock = { now: () => new Date() };
 
@@ -127,6 +127,7 @@ export function sanitizeOptions(raw: unknown): BootstrapOptions {
   if (typeof row.hiringAgentId === "string" && /^[0-9a-f-]{8,64}$/i.test(row.hiringAgentId)) out.hiringAgentId = row.hiringAgentId;
   // On unless the caller says false: the owner's standing yes (PAR-4701). Only an approved pack version is ever seeded.
   out.starterPack = typeof row.starterPack === "boolean" ? row.starterPack : true;
+  if (row.hostingProfile === "client" || row.hostingProfile === "pib") out.hostingProfile = row.hostingProfile;
   return out;
 }
 
@@ -256,7 +257,7 @@ export async function bootstrapCompany(
 
   // 1. modules (and, through saveModules, the Finish setup issue)
   const existing = await getChoice(ctx, input.companyId);
-  let modules: Record<string, boolean> | null = existing ? (existing.modules as Record<string, boolean>) : null;
+  let modules: Record<string, boolean> | null = existing ? ((await moduleView(ctx, input.companyId, clock)).modules as Record<string, boolean>) : null;
   let issueNote: { status: StepRecord["status"]; detail: string };
   if (options.modules !== undefined || !existing) {
     const saved = await saveModules(ctx, { companyId: input.companyId, modules: options.modules ?? {}, userId: input.userId }, clock);
@@ -397,7 +398,7 @@ export async function templateDraft(ctx: PluginContext, input: DraftInput) {
   const owner = await isOwnerCompany(ctx, input.companyId);
   if (template.scope === "pib" && !owner) throw new SetupError(`Template "${template.key}" is for the Partners in Biz company only.`);
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents) });
+  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents), ownerCompany: owner });
   return { key: template.key, kitRole: template.kitRole ?? null, provisioning: template.provisioning, title: draft.title, description: draft.description, payload: draft.payload, adapterType: draft.adapterType, warnings: draft.warnings };
 }
 
@@ -437,7 +438,7 @@ export async function startTemplateHire(
     if (issue && !CLOSED.has(String(issue.status))) return { hire: current, identifier: (issue as { identifier?: string | null }).identifier ?? null, staffed: null, existed: true, woke: false };
   }
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents });
+  const draft = renderHire(template, { vars, agents, ownerCompany: await isOwnerCompany(ctx, input.companyId) });
   const created = await createWorkIssue(ctx, {
     companyId: input.companyId,
     title: draft.title,
@@ -493,7 +494,7 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
     ownerCompany: owner,
     pack: { name: pack.pack, version: pack.version, updated: pack.updated },
     templates: templates.map((template) => {
-      const draft = renderHire(template, { vars, agents });
+      const draft = renderHire(template, { vars, agents, ownerCompany: owner });
       const adapterType = pickAdapter(template);
       const config = templateConfig(template, adapterType);
       return {
@@ -504,6 +505,8 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
         group: template.group,
         provisioning: template.provisioning,
         defaultOn: template.defaultOn,
+        // The `client` hosting profile's default: true, false, or "repo" (only when the company has a project with a repository).
+        defaultOnClient: template.defaultOnClient ?? template.defaultOn,
         kitRole: template.kitRole ?? null,
         reportsTo: template.reportsTo,
         adapterType,

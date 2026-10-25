@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the provisioning runner when a request lands in the spool
+
+[Path]
+DirectoryNotEmpty=/var/spool/pib-provision/incoming
+Unit=pib-provision-runner.service
+
+[Install]
+WantedBy=multi-user.target

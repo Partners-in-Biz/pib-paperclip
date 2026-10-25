@@ -41,6 +41,7 @@ import { activateGoals, businessReviews } from "./goals.js";
 import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
 import { recheckImprovements } from "./improvements.js";
 import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
+import { growthReviews } from "./growth-review-run.js";
 import { GROWTH_TOOL_SET, runGrowthTool } from "./growth-tools.js";
 import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
@@ -53,12 +54,14 @@ import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
+import { hostedUsageRollup, listHostedUsage, parseMonth } from "./hosted-usage.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
 import { parseSnapshot, teamSignature } from "./merge.js";
 import { NAMESPACE } from "./namespace.js";
 import { onDealWon, onInvoicePaid } from "./onboarding.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
+import { loadMaintenance } from "./maintenance.js";
 import { readProfile, saveProfileEdit } from "./profile.js";
 import { ProfileError } from "./profile-model.js";
 import { onLinkedFor, parseTeamInput, rebroadcastRoles, reemitRoles, roleViews, rolesPayload, saveTeam } from "./roles.js";
@@ -404,6 +407,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   // The company profile (Cockpit → Profile).
   ctx.actions.register("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
+  // Hosted clients (owner company only): `allowed: false` for any other company, so the UI hides the entry.
+  ctx.actions.register("hosted-usage.load", async (_params, context) => listHostedUsage(env, requiredCompany(context)));
+  ctx.actions.register("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
   ctx.actions.register("profile.save", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can edit the company profile here");
@@ -538,6 +544,12 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.businessReview, async () => {
     ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
+  });
+  ctx.jobs.register(JOBS.hostedUsageRollup, async () => {
+    ctx.logger.info("Hosted usage roll-up", await trackJob(ctx, JOBS.hostedUsageRollup, () => hostedUsageRollup(env)));
+  });
+  ctx.jobs.register(JOBS.growthReview, async () => {
+    ctx.logger.info("Weekly growth review", await trackJob(ctx, JOBS.growthReview, () => growthReviews(env)));
   });
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
@@ -687,6 +699,15 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
         actor: String(body.actor).trim(),
       });
       return { status: 201, body: row };
+    }
+    if (input.routeKey === "hosted-usage") {
+      const query = input.query && typeof input.query === "object" ? (input.query as Record<string, unknown>) : {};
+      for (const key of ["fromMonth", "toMonth"]) {
+        if (query[key] !== undefined && query[key] !== "" && !parseMonth(query[key])) return { status: 400, body: { error: `${key} must be YYYY-MM` } };
+      }
+      const list = await listHostedUsage(env, input.companyId, { fromMonth: query.fromMonth || undefined, toMonth: query.toMonth || undefined });
+      if (!list.allowed) return { status: 403, body: { error: "Hosted usage is only available in the owner company" } };
+      return { status: 200, body: { rows: list.rows } };
     }
     if (input.routeKey === "repairs-list") {
       const query = input.query && typeof input.query === "object" ? (input.query as Record<string, unknown>) : {};

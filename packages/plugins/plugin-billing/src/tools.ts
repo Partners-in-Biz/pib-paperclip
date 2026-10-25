@@ -325,10 +325,10 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "create-payment-link",
     displayName: "Create payment link",
     description:
-      "Make (or return) the hosted online payment link for a sent invoice that still owes money, for each payment provider the owner switched on (Stripe or PayFast). The link is for what the invoice owes now. It sends nothing: invoice and reminder emails already carry their links when a provider is on, so use this only to give a customer the link another way, with the owner's approval. Fails with the reason when no provider is on (EFT is then the way to pay). Never tell a customer an invoice is paid until invoice-detail shows paid.",
+      "Make (or return) the hosted online payment link for a sent invoice that still owes money, for each payment provider the owner switched on (PayFast or PayPal). The link is for what the invoice owes now. It sends nothing: invoice and reminder emails already carry their links when a provider is on, so use this only to give a customer the link another way, with the owner's approval. Fails with the reason when no provider is on (EFT is then the way to pay). Never tell a customer an invoice is paid until invoice-detail shows paid.",
     parametersSchema: schema(["invoiceId"], {
       invoiceId,
-      provider: oneOf(["stripe", "payfast"], "Only this provider's link. Leave out for every provider that is on."),
+      provider: oneOf(["payfast", "paypal"], "Only this provider's link. Leave out for every provider that is on."),
     }),
   },
   {
@@ -412,7 +412,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-expense",
     displayName: "Create expense",
-    description: "Record an expense PiB already paid (it is posted to the books at once). Amount is the total paid; vatMinor is the VAT on the receipt.",
+    description: "Record an expense the company already paid (it is posted to the books at once). Amount is the total paid; vatMinor is the VAT on the receipt.",
     parametersSchema: schema(["description", "amountMinor"], {
       description: str("What was bought."),
       amountMinor: int("Total paid in cents, VAT included."),
@@ -421,7 +421,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       incurredOn: date("Day of the expense. Default today"),
       vendor: str("Who was paid."),
       vatMinor: int("VAT on the receipt in cents (0 when none)."),
-      vatClaimable: bool("true when the receipt is a valid tax invoice and PiB is VAT registered. Leave out to let Billing decide."),
+      vatClaimable: bool("true when the receipt is a valid tax invoice and the company is VAT registered. Leave out to let Billing decide."),
       taxCode,
       paidFrom: oneOf(["bank", "card", "cash", "owner"], "Where the money came from: the business bank account, the business card, petty cash, or the owner's own pocket."),
     }),
@@ -429,7 +429,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-bill",
     displayName: "Create supplier bill",
-    description: "Draft a supplier's bill (money PiB owes). Add lines with add-bill-line, then request-bill-approval. You never pay bills.",
+    description: "Draft a supplier's bill (money the company owes). Add lines with add-bill-line, then request-bill-approval. You never pay bills.",
     parametersSchema: schema(["supplierName"], {
       supplierKind: oneOf(["company", "contact", "text"], "company or contact when the supplier is in the CRM (pass supplierRef too); text when it is not."),
       supplierRef: str("CRM id of the supplier company or contact."),

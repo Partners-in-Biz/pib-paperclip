@@ -1,16 +1,14 @@
 /**
  * Module switch from the Setup plugin. `null` while loading (render normally),
- * `false` only when the company switched SEO off.
+ * `false` when the company switched SEO off or it is not in its plan.
  */
 import { useEffect, useState } from "react";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
-import { EmptyState, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { ModuleStateBanner } from "@partnersinbiz/pib-plugin-ui";
 
 // Literal: namespace.ts imports node:crypto, which the browser bundle must not pull in.
 const PLUGIN_ID = "partnersinbiz.seo";
-
-export const MODULE_OFF_TEXT = "This module is switched off for this company. Turn it on in Setup.";
 
 export function useModuleEnabled(companyId: string | null | undefined): boolean | null {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -31,13 +29,8 @@ export function useModuleEnabled(companyId: string | null | undefined): boolean 
   return enabled;
 }
 
-export function ModuleOffBanner() {
+/** The page banner for a module that is off or not in the plan; the words live in `pib-plugin-ui`. */
+export function ModuleOffBanner({ companyId }: { companyId: string | null | undefined }) {
   const navigation = useHostNavigation();
-  return (
-    <EmptyState
-      title="SEO is switched off"
-      description={MODULE_OFF_TEXT}
-      action={<a {...navigation.linkProps("/setup")} style={{ fontSize: 13, color: tokens.fg }}>Open Setup</a>}
-    />
-  );
+  return <ModuleStateBanner companyId={companyId} pluginKey={PLUGIN_ID} load={moduleState} setupLinkProps={navigation.linkProps("/setup")} />;
 }

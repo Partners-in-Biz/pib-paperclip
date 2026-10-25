@@ -1,10 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { HANDOFF_EVENTS, signUnsubscribeToken } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { claimedCompany, handleUnsubscribeWebhook, oneClickReady, oneClickUrl, probeCompanies, probeUnsubscribeProxy, PROBE_EMAIL, PROBE_SENDER_PREFIX, proofIsFresh, PROXY_PROOF_MAX_AGE_MS, readProxyProof, TOKEN_HEADER, tokenFromDelivery, tokenFromWebhook } from "../src/unsubscribe.js";
+import { claimedCompany, handleUnsubscribeWebhook, oneClickReady, oneClickUrl, probeCompanies, probeUnsubscribeProxy, resetUnsubscribeGuard, PROBE_EMAIL, PROBE_SENDER_PREFIX, proofIsFresh, PROXY_PROOF_MAX_AGE_MS, readProxyProof, TOKEN_HEADER, tokenFromDelivery, tokenFromWebhook } from "../src/unsubscribe.js";
 import plugin from "../src/worker.js";
 import { CO } from "./helpers/memory.js";
 import { fakeSelfFetch, openGate } from "./helpers/proxy.js";
@@ -18,6 +18,8 @@ function delivery(over: Partial<PluginWebhookInput> = {}): PluginWebhookInput {
 }
 
 const token = (over: Partial<{ companyId: string; email: string; senderKey: string }> = {}, secret = SECRET) => signUnsubscribeToken({ companyId: CO, email: "Ann@Lead.co.za", senderKey: "own", ...over }, secret);
+
+beforeEach(() => resetUnsubscribeGuard());
 
 describe("where the token comes from", () => {
   const t = token();
@@ -92,6 +94,49 @@ describe("a one-click unsubscribe", () => {
     expect(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: b } }))).toBe("invalid");
     expect(store.suppressions.size).toBe(0);
     expect(host.emitted).toEqual([]);
+  });
+
+  it("a flood of tokens claiming made-up companies reads no more secrets than the cap, and none for companies with no settings", async () => {
+    const { env, host } = setup({ unsubscribe: { secret: SECRET } });
+    const saved = host.config;
+    host.ctx.config.get = (async (companyId: string) => (companyId === CO ? saved : {})) as never;
+    const read = vi.spyOn(host.ctx.config, "get");
+    for (let i = 0; i < 300; i += 1) {
+      const outcome = await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: token({ companyId: `made-up-${i}` }), "x-real-ip": `9.9.${i % 200}.1` } }));
+      expect(["unconfigured", "invalid"]).toContain(outcome);
+    }
+    expect(read.mock.calls.length).toBeLessThanOrEqual(60);
+  });
+
+  it("one visitor is stopped after its minute's allowance of uncached lookups, but a known company still works", async () => {
+    const { env, store, host } = setup({ unsubscribe: { secret: SECRET } });
+    const saved = host.config;
+    host.ctx.config.get = (async (companyId: string) => (companyId === CO ? saved : {})) as never;
+    const ip = { "x-real-ip": "7.7.7.7" };
+    expect(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: token(), ...ip } }))).toBe("suppressed");
+    const outcomes: string[] = [];
+    for (let i = 0; i < 40; i += 1) outcomes.push(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: token({ companyId: `made-up-${i}` }), ...ip } })));
+    expect(outcomes.slice(-5)).toEqual(Array(5).fill("unconfigured"));
+    // The real company is cached, so the same visitor can still unsubscribe another address.
+    expect(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: token({ email: "b@lead.co.za" }), ...ip } }))).toBe("suppressed");
+    expect(store.suppressions.size).toBe(2);
+  });
+
+  it("a failed settings read is not remembered as no secret", async () => {
+    const { env, host, store } = setup({ unsubscribe: { secret: SECRET } });
+    const real = host.ctx.config.get;
+    let fail = true;
+    host.ctx.config.get = (async (...args: unknown[]) => {
+      if (fail) {
+        fail = false;
+        throw new Error("host blip");
+      }
+      return (real as (...a: unknown[]) => unknown)(...args);
+    }) as never;
+    const t = token();
+    expect(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: t } }))).toBe("unconfigured");
+    expect(await handleUnsubscribeWebhook(env, delivery({ headers: { [TOKEN_HEADER]: t } }))).toBe("suppressed");
+    expect(store.suppressions.size).toBe(1);
   });
 
   it("does nothing until the company set an unsubscribe secret", async () => {

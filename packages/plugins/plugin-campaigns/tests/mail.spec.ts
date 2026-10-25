@@ -257,7 +257,7 @@ describe("campaign email delivery", () => {
       labels: ["PiB/Campaigns"],
     });
     // The footer says who sent it and how to stop, and nothing is sent as a mailbox that was not set up.
-    expect(adaMail.payload).toMatchObject({ text: expect.stringContaining("You are getting this email from Partners in Biz"), html: expect.stringContaining("reply STOP") });
+    expect(adaMail.payload).toMatchObject({ text: expect.stringContaining("You are getting this email from PiB"), html: expect.stringContaining("reply STOP") });
     expect((adaMail.payload as Record<string, unknown>).from).toBeUndefined();
     expect(ada.sending_key).toBe(adaMail.key);
     expect(emit).toHaveBeenCalledWith("mail.send.requested", CO, expect.objectContaining({ key: adaMail.key }));

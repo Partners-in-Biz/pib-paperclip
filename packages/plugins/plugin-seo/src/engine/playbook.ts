@@ -1,6 +1,6 @@
 /**
  * The learned SEO playbook: versioned markdown rules per scope (one client,
- * or Partners in Biz's own sites) that the SEO agent reads before it works a
+ * or the company's own sites) that the SEO agent reads before it works a
  * sprint. The optimization loop measures a change 14 days after approval; a
  * win or a loss drafts one playbook line, and a person (or the agent on full
  * autopilot) keeps or discards it. Same sections and edit rules as the Social
@@ -73,8 +73,9 @@ More qualified organic search traffic: better positions, impressions and clicks 
 `;
 }
 
-export function playbookTitle(scope: ClientScope, clientName: string | null): string {
-  return scope ? clientName ?? `${scope.kind} ${scope.id}` : "Partners in Biz";
+/** `ownName` is the company's own name for the own-sites playbook. */
+export function playbookTitle(scope: ClientScope, clientName: string | null, ownName: string): string {
+  return scope ? clientName ?? `${scope.kind} ${scope.id}` : ownName;
 }
 
 /** Agents keep or discard playbook changes only on full autopilot (as for approving optimizations). */

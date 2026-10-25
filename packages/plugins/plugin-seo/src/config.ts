@@ -9,8 +9,9 @@ import { jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResol
 import { AUTOPILOT_MODES, type AutopilotMode } from "./engine/sprint.js";
 import { DEFAULT_TIMEZONE, validTimezone } from "./engine/time.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { DEFAULT_DAILY_HOUR, readSeoPreferences } from "./preferences.js";
 
-export const DEFAULT_DAILY_HOUR = 6;
+export { DEFAULT_DAILY_HOUR };
 
 export const instanceConfigSchema: JsonSchema = {
   type: "object",
@@ -30,13 +31,13 @@ export const instanceConfigSchema: JsonSchema = {
     timezone: {
       type: "string",
       title: "Timezone",
-      description: "Sprint days, the daily run and audit days use this timezone.",
+      description: "Sprint days, the daily run and audit days use this timezone. Moved to the Preferences section on the SEO page: once set there, this field is ignored.",
       default: DEFAULT_TIMEZONE,
     },
     dailyHourLocal: {
       type: "integer",
       title: "Daily run hour",
-      description: "Local hour (0–23) after which the daily SEO run materialises tasks and pulls data.",
+      description: "Local hour (0–23) after which the daily SEO run materialises tasks and pulls data. Moved to the Preferences section on the SEO page: once set there, this field is ignored.",
       default: DEFAULT_DAILY_HOUR,
       minimum: 0,
       maximum: 23,
@@ -44,7 +45,7 @@ export const instanceConfigSchema: JsonSchema = {
     defaultAutopilotMode: {
       type: "string",
       title: "Default autopilot mode for new sprints",
-      description: "off: every task goes to the sprint owner. safe: the SEO agent works its tasks; anything that publishes, sends or changes the live site needs sign-off. full: the agent finishes its tasks without sign-off.",
+      description: "off: every task goes to the sprint owner. safe: the SEO agent works its tasks; anything that publishes, sends or changes the live site needs sign-off. full: the agent finishes its tasks without sign-off. Moved to the Preferences section on the SEO page: once set there, this field is ignored.",
       enum: [...AUTOPILOT_MODES],
       default: "safe",
     },
@@ -99,10 +100,19 @@ export interface LoadedConfig {
   raw: Record<string, unknown>;
 }
 
-/** Read config for one company. Always pass the company explicitly (jobs have no scope). */
+/**
+ * Read config for one company. Always pass the company explicitly (jobs have no scope).
+ * Timezone, daily hour and default autopilot come from the company's preferences (row, else the
+ * saved host-form value, else the default); a failed preferences read keeps the host-form values.
+ */
 export async function loadSeoConfig(ctx: PluginContext, companyId: string): Promise<LoadedConfig> {
   const raw = await readConfig(ctx, companyId);
-  return { config: parseSeoConfig(raw), secrets: new SecretResolver(ctx, companyId, raw), raw };
+  const parsed = parseSeoConfig(raw);
+  const prefs = await readSeoPreferences(ctx, companyId, parsed).catch((error: unknown) => {
+    ctx.logger.info("SEO preferences read failed; using the saved settings", { companyId, error: error instanceof Error ? error.message : String(error) });
+    return parsed;
+  });
+  return { config: { ...parsed, ...prefs }, secrets: new SecretResolver(ctx, companyId, raw), raw };
 }
 
 /**

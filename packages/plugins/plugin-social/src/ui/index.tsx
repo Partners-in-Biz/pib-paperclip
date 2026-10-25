@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { clientScopeFromSearch, formatClientParam, parseClientParam, withClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { PLUGIN_ID } from "../platforms.js";
@@ -42,6 +43,7 @@ import { CalendarView, PostDetail, PostsTab } from "./posts.js";
 import { GrowthTab } from "./growth.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module.js";
 import { RoutineSwitchOn, useWeeklyRoutine } from "./routine.js";
+import { PreferencesSection } from "./preferences.js";
 import { FeedsTab, InboxTab, MediaTab, OverviewTab, TemplatesTab } from "./tabs.js";
 import type { Post, RunAction, Snapshot } from "./types.js";
 
@@ -129,14 +131,16 @@ function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: 
 function SpaceSwitch({ me, linkProps }: { me: boolean; linkProps: ReturnType<typeof useHostNavigation>["linkProps"] }) {
   return (
     <Row>
-      <a {...linkProps("/social")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={!me} style={chipStyle(!me)}>Partners in Biz</SmallButton></a>
+      <a {...linkProps("/social")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={!me} style={chipStyle(!me)}>Company</SmallButton></a>
       <a {...linkProps("/mysocial")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={me} style={chipStyle(me)}>My Social</SmallButton></a>
     </Row>
   );
 }
 
 /** PiB's own social work and its clients' workspaces. */
-export function SocialPage(props: PluginPageProps) {
+export const SocialPage = withHelp(SocialPageMain);
+
+function SocialPageMain(props: PluginPageProps) {
   return <SocialWorkspace {...props} space="company" />;
 }
 
@@ -256,10 +260,10 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
 
   if (!context.companyId) return <Page title={me ? "My Social" : "Social"} description="Pick a company first." accent="social">{null}</Page>;
 
-  const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
+  const newPost = snapshot?.canPost === false ? null : <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
 
-  const body = off ? <ModuleOffBanner /> : loadError ? (
+  const body = off ? <ModuleOffBanner companyId={context.companyId} /> : loadError ? (
     <EmptyState
       tone="bad"
       title={scope ? "This client's workspace could not open" : "Social could not load"}
@@ -287,6 +291,7 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
         onChange={(id) => setTab(id as TabId)}
       />
       {tab === "overview" ? <OverviewTab snapshot={snapshot} posts={posts} run={run} onOpenPicker={setPickerId} onOpenPost={(p) => setDetailId(p.id)} tabLink={tabLink} /> : null}
+      {tab === "overview" && !me && !scopeKey ? <PreferencesSection /> : null}
       {tab === "posts" ? <PostsTab posts={posts} snapshot={snapshot} run={run} onOpen={(p) => setDetailId(p.id)} onNew={() => setComposer({ post: null })} /> : null}
       {tab === "calendar" ? <CalendarView posts={posts} snapshot={snapshot} onOpen={(p) => setDetailId(p.id)} /> : null}
       {tab === "accounts" ? <AccountsTab snapshot={snapshot} companyId={context.companyId} run={run} /> : null}
@@ -361,8 +366,8 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
     <Page
       title={me ? "My Social" : "Social"}
       description={me
-        ? "Your own social accounts, posts and inbox. Only you can see them: they are separate from Partners in Biz and from every client."
-        : "Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."}
+        ? "Your own social accounts, posts and inbox. Only you can see them: they are separate from the company's and from every client's."
+        : "This company's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."}
       message={message}
       accent="social"
       actions={off ? undefined : <Row><SpaceSwitch me={me} linkProps={navigation.linkProps} />{newPost}</Row>}

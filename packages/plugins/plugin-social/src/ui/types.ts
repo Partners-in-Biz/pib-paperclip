@@ -174,6 +174,8 @@ export interface Snapshot {
   scope: string | null;
   /** The client this page works for, null for own work. */
   client: ClientOption | null;
+  /** False when the signed-in user is a viewer: the page hides + New post. Absent from older workers, which means true. */
+  canPost?: boolean;
   config: {
     saved: boolean;
     publicBaseUrl: string | null;

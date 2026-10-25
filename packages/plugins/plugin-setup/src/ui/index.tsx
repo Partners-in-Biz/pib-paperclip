@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useHostLocation,
@@ -13,11 +14,12 @@ import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupSummary } from "../finish-issue.js";
 import { guidedOrder, PHASES, entryId, type GuideEntry } from "../guide.js";
 import { crmHint, effectiveModules, ORDERED_MODULES, type ModuleChoice } from "../modules.js";
+import { ownKeyItem } from "../own-key.js";
 import { isMemoryAction, memorySetupParams, WIKI_PLUGIN } from "../memory.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { guidedSteps, setupFocus, teamSummary, TEAM_ANCHOR, type TeamRoleState } from "../team.js";
-import { fetchCompanies, fetchPluginConfig, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
-import { Card, Chip, ItemLink, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
+import { fetchCompanies, fetchPluginConfig, fetchRecentRuns, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
+import { Card, Chip, ItemLink, ItemRow, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
 import { onSetupChanged, sharedRequest, useSetupData, viewsSummary, type LoadResult, type ModuleView, type SetupData } from "./data.js";
 import { runMemorySetup } from "./memory-client.js";
 import { NewCompanySection } from "./new-company.js";
@@ -70,7 +72,14 @@ export function pageSummary(views: ModuleView[], load: Pick<LoadResult, "modules
 // Page
 // ---------------------------------------------------------------------------
 
-export function SetupPage({ context }: PluginPageProps) {
+/** The "Loading…" line shows only while a load is pending: a failed load shows its message instead. */
+export function showLoadingLine(state: { loading: boolean; load: unknown; error: string | null }): boolean {
+  return state.loading && !state.load && !state.error;
+}
+
+export const SetupPage = withHelp(SetupPageMain);
+
+function SetupPageMain({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const data = useSetupData(companyId);
   const location = useHostLocation();
@@ -104,12 +113,13 @@ export function SetupPage({ context }: PluginPageProps) {
   const showTeam = teamWanted && team.roles.length > 0;
   const tabs = setupTabs({ firstVisit, showTeam, requested: focus.section ?? (focusModule ? "checklist" : null) });
   const tab = tabs.active;
+  const ownKey = useOwnKeyItem(companyId, tab === "checklist" && !firstVisit);
 
   const selectTab = (id: TabId) => navigation.navigate(`/setup?section=${id}`, { replace: true });
 
   useEffect(() => {
     if (!data.load) return;
-    setDraft(effectiveModules(data.load.modules));
+    setDraft(effectiveModules(data.load.modules, data.load.entitled));
   }, [data.load?.updatedAt, companyId, data.load === null]);
 
   // Scroll to the section or role the address names, once its rows have settled.
@@ -134,14 +144,18 @@ export function SetupPage({ context }: PluginPageProps) {
   const views = enabledViews(data);
   const counted = pageSummary(data.views, data.load);
   const teamCount = teamSummary(team.roles.map((role) => team.states[role.key]));
-  const dirty = !!draft && !!data.load && JSON.stringify(draft) !== JSON.stringify(effectiveModules(saved));
+  const dirty = !!draft && !!data.load && JSON.stringify(draft) !== JSON.stringify(effectiveModules(saved, data.load?.entitled));
 
   async function doSaveModules() {
     if (!draft || !companyId) return;
     setBusy("save");
     setMessage("");
     try {
-      await saveModules({ modules: draft, installed: installedReport(data.installed) });
+      const result = (await saveModules({ modules: draft, installed: installedReport(data.installed) })) as { ok?: boolean; error?: string } | undefined;
+      if (result && result.ok === false) {
+        setMessage(result.error || "Setup refused this change.");
+        return;
+      }
       let note = "Modules saved. The other plugins pick this up within a minute.";
       if (data.load && !data.load.settingsSaved) {
         try {
@@ -261,7 +275,7 @@ export function SetupPage({ context }: PluginPageProps) {
         />
       ) : null}
 
-      {data.loading && !data.load ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
+      {showLoadingLine(data) ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
 
       {tab === "team" && showTeam ? <TeamSection team={team} linkFor={linkFor} focusAnchor={focus.anchor} /> : null}
 
@@ -272,6 +286,7 @@ export function SetupPage({ context }: PluginPageProps) {
       {tab === "modules" && draft ? (
         <ModulesStep
           draft={draft}
+          entitled={data.load?.entitled}
           installed={data.installed}
           firstVisit={firstVisit}
           dirty={dirty}
@@ -297,6 +312,7 @@ export function SetupPage({ context }: PluginPageProps) {
             busy={busy}
             onAction={doAction}
             narrow={narrow}
+            ownKey={ownKey}
             open={openGroups}
             onOpenChange={(pluginKey, open) => setOpenGroups((prev) => ({ ...prev, [pluginKey]: open }))}
             onSetAll={(open) => setOpenGroups(Object.fromEntries(views.map((view) => [view.pluginKey, open])))}
@@ -338,8 +354,10 @@ function installedReport(installed: Record<string, PluginRecordLite> | null) {
 // Modules
 // ---------------------------------------------------------------------------
 
-export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChange, onSave, onCopy, onNewCompany }: {
+export function ModulesStep({ draft, entitled, installed, firstVisit, dirty, busy, onChange, onSave, onCopy, onNewCompany }: {
   draft: ModuleChoice;
+  /** What the company bought; a module missing here is locked. Undefined: nothing is locked. */
+  entitled?: Partial<Record<ModuleKey, boolean>>;
   installed: Record<string, PluginRecordLite> | null;
   firstVisit: boolean;
   dirty: boolean;
@@ -380,6 +398,7 @@ export function ModulesStep({ draft, installed, firstVisit, dirty, busy, onChang
               description={MODULES[key].description}
               installed={isInstalled}
               enabled={draft[key]}
+              locked={!!entitled && entitled[key] !== true}
               onToggle={(next) => onChange({ ...draft, [key]: next })}
               hint={key === "crm" && hint ? hint : null}
               module={key}
@@ -416,7 +435,26 @@ export function groupOpenByDefault(view: ModuleView, narrow: boolean, ordered: M
   return next?.pluginKey === view.pluginKey;
 }
 
-function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, onSetAll }: {
+/** The "bills on its own key" item for a client company; null until both reads settle, and for PiB's own company. */
+function useOwnKeyItem(companyId: string | null | undefined, enabled: boolean): SetupItem | null {
+  const [item, setItem] = useState<SetupItem | null>(null);
+  useEffect(() => {
+    setItem(null);
+    if (!companyId || !enabled) return;
+    let live = true;
+    void Promise.all([
+      fetchRecentRuns(companyId),
+      fetchPluginConfig(SETUP_PLUGIN, companyId).then((saved) => saved.config.ownerCompany === true, () => null),
+    ]).then(([runs, owner]) => {
+      if (live) setItem(ownKeyItem(runs, owner));
+    });
+    return () => { live = false; };
+  }, [companyId, enabled]);
+  return item;
+}
+
+function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, onSetAll, ownKey }: {
+  ownKey: SetupItem | null;
   data: SetupData;
   linkFor: LinkPropsFor;
   busy: string | null;
@@ -438,6 +476,7 @@ function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, 
         <span style={{ fontSize: 12.5, color: tokens.muted }}>Modules with steps left come first. Open one to see its steps.</span>
         <Button type="button" variant="secondary" onClick={() => onSetAll(!anyOpen)}>{anyOpen ? "Fold all" : "Open all"}</Button>
       </div>
+      {ownKey ? <Card><ItemRow item={ownKey} linkFor={linkFor} first /></Card> : null}
       {views.map((view) => (
         <ModuleChecklist
           key={view.pluginKey}

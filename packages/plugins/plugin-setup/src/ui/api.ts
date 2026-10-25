@@ -2,7 +2,10 @@
  * Host API calls from the Setup page (same-origin, board session cookie).
  */
 import { MODULES, type SetupStatus } from "../kit-setup.js";
+import { parseSecretCatalog, type SecretLite } from "../model-key.js";
+import { parseRuns, RUNS_LIMIT, type RunLite } from "../own-key.js";
 import { parseSetupStatus } from "../status.js";
+import { projectsHaveRepository } from "../templates.js";
 
 export interface PluginRecordLite {
   id: string;
@@ -156,4 +159,46 @@ export async function fetchCompanyInfo(companyId: string): Promise<CompanyInfoLi
   } catch {
     return null;
   }
+}
+
+/** The company's secrets by id, name and key (never a value). Null when they cannot be read. */
+export async function fetchSecretCatalog(companyId: string): Promise<SecretLite[] | null> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/secrets/catalog`, { credentials: "include", headers: { accept: "application/json" } });
+    const body = await readJson(res);
+    return res.ok ? parseSecretCatalog(body) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The company's latest runs that report a billing type, newest first (needs `company_scope:read`, which a board user has). Null when they cannot be read. */
+export async function fetchRecentRuns(companyId: string): Promise<RunLite[] | null> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/heartbeat-runs?limit=${RUNS_LIMIT}`, { credentials: "include", headers: { accept: "application/json" } });
+    return res.ok ? parseRuns(await readJson(res)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the company has a project with a repository. False when the projects cannot be read: the `client` profile then leaves the dev team out, and a repeat run can add it. */
+export async function fetchHasRepository(companyId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/projects`, { credentials: "include", headers: { accept: "application/json" } });
+    return res.ok ? projectsHaveRepository(await readJson(res)) : false;
+  } catch {
+    return false;
+  }
+}
+
+/** Sets one agent's adapter `env`. Only `env` is sent: the host merges adapter keys shallowly and replaces `env` whole. */
+export async function patchAgentEnv(agentId: string, env: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ adapterConfig: { env } }),
+  });
+  if (!res.ok) throw errorFrom(await readJson(res), `Could not update the agent (${res.status})`);
 }

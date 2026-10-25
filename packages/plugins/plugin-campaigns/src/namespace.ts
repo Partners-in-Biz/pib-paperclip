@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const PLUGIN_ID = "partnersinbiz.campaigns";
-export const PLUGIN_VERSION = "0.7.7";
+export const PLUGIN_VERSION = "0.8.6";
 export const NAMESPACE_SLUG = "campaigns";
 /** The managed project this plugin declares for PiB's own campaign work. */
 export const CAMPAIGNS_PROJECT_KEY = "campaigns";

@@ -19,7 +19,11 @@ import { Inbox } from "lucide-react";
 import { PluginThemeProvider, accentVars, resolveAccent, useResolvedAccent, type AccentInput } from "./theme.js";
 import { tokens, tone, type ToneInput } from "./tokens.js";
 import { useUiContributions, type UiContribution } from "./nav.js";
+import { HelpBannerSlot } from "./help-banner.js";
 
+export { HELP_BANNER_TEXT } from "./help-banner.js";
+export { HELP_FALLBACKS, HELP_PAGES, HELP_PLACEHOLDERS, fillHelp, helpBackTo, helpPageFor, helpTexts, helpTo, isHelpRequested, type HelpPageContent, type HelpVars } from "./help-content.js";
+export { HelpView, ModuleHelp } from "./help.js";
 export { breakAnywhere, fluidColumns, NARROW_QUERY, oneColumn, useIsNarrow, useMediaQuery, usePibBaseStyles };
 export {
   MODULE_ACCENT_HUES,
@@ -58,7 +62,10 @@ export * from "./url.js";
 export * from "./getstarted.js";
 export * from "./format.js";
 export * from "./compact.js";
+export { PreferencesPanel, PreferencesView, type PreferencesViewProps } from "./preferences.js";
+export * from "./preferences-logic.js";
 export * from "./richtext.js";
+export * from "./module-state.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {
@@ -157,6 +164,7 @@ export function PageFrame({ children, style, accent }: { children: ReactNode; st
         ...style,
       }}
     >
+      <HelpBannerSlot />
       {children}
     </main>
   );

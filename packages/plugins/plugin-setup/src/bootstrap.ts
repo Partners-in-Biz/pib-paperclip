@@ -28,6 +28,7 @@ export const STEP_IDS = [
   "modules",
   "setup-settings",
   "plugin-settings",
+  "model-key",
   "skills",
   "roles",
   "templates",
@@ -50,6 +51,7 @@ export const BOOTSTRAP_STEPS: readonly StepDef[] = [
   { id: "modules", title: "Choose the modules this company uses", where: "worker", summary: "Saves the module switches (every module on unless you chose otherwise) and tells the other plugins." },
   { id: "setup-settings", title: "Save Setup's own settings", where: "page", summary: "Setup's hourly and weekly jobs act only for a company whose Setup settings are saved." },
   { id: "plugin-settings", title: "Save every plugin's settings", where: "page", summary: "Fills in the defaults of each plugin that has none saved, and copies another company's settings when you chose one. Secrets are never copied." },
+  { id: "model-key", title: "Bind the company's own model key", where: "page", summary: "Client companies run on their own Anthropic key: the company secret ANTHROPIC_API_KEY is bound to every Claude agent, and the hosting profile is saved in each plugin's settings. PiB's own company keeps its subscription." },
   { id: "skills", title: "Put each plugin's skills in the company's library", where: "page", summary: "Runs each plugin's skill sync for this company." },
   { id: "roles", title: "Open a hire task for every team role", where: "page", summary: "One prefilled task per missing role of a switched-on module, assigned to the agent that does the hiring." },
   { id: "templates", title: "Open hire tasks for the dev team and the other template agents", where: "page", summary: "From the team template pack: the CEO, the dev team and the support agents you selected." },
@@ -94,6 +96,8 @@ export interface BootstrapOptions {
   hiringAgentId?: string | null;
   /** Seed memory with the starter pack (default on; only an approved version is seeded). */
   starterPack?: boolean;
+  /** `client` runs on the company's own model key; `pib` (the default) keeps PiB's lanes. */
+  hostingProfile?: "client" | "pib";
 }
 
 export interface BootstrapRunState {

@@ -7,15 +7,15 @@ import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { ADS_SKILL_KEY, ADS_SKILL_SLUG } from "./hire.js";
 
 const DESCRIPTION =
-  "Operate the Partners in Biz Paid ads plugin: read Meta and Google ads performance in one picture, work within each scope's monthly budget cap, handle anomaly alerts, and propose, check and run approved campaign and budget changes. You never spend money by yourself: every change is a proposal with the numbers that a Reviewer checks and a person approves. Use for any paid-ads reporting, budget, alert or change task.";
+  "Operate the Paid ads plugin: read Meta and Google ads performance in one picture, work within each scope's monthly budget cap, handle anomaly alerts, and propose, check and run approved campaign and budget changes. You never spend money by yourself: every change is a proposal with the numbers that a Reviewer checks and a person approves. Use for any paid-ads reporting, budget, alert or change task.";
 
 export const ADS_BODY = `# Paid ads
 
-You run paid advertising for Partners in Biz (its own ads) and its clients with the \`partnersinbiz.ads\` tools. The plugin reads Meta and Google Ads for you; you never see a token. **You never spend money by yourself.** Every campaign or budget change is a proposal with the numbers; a Reviewer checks it, a person approves it (a client's own yes too, where the scope asks for it), and only then can it run.
+You run paid advertising for your company (its own ads) and its clients with the \`partnersinbiz.ads\` tools. The plugin reads Meta and Google Ads for you; you never see a token. **You never spend money by yourself.** Every campaign or budget change is a proposal with the numbers; a Reviewer checks it, a person approves it (a client's own yes too, where the scope asks for it), and only then can it run.
 
 ## Scope
 
-Every account, number, cap and proposal belongs to one scope: PiB's own ads (leave \`client\` out) or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`, from the issue or the CRM). Never mix scopes. Money is **minor units** (15000 = 150.00) in the scope's currency; each amount also comes formatted. Never add different currencies.
+Every account, number, cap and proposal belongs to one scope: your company's own ads (leave \`client\` out) or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`, from the issue or the CRM). Never mix scopes. Money is **minor units** (15000 = 150.00) in the scope's currency; each amount also comes formatted. Never add different currencies.
 
 ## Read first, then decide
 
@@ -41,7 +41,7 @@ Look at the numbers, then: fine or expected, \`acknowledge-ad-alert\` with a one
 
 ## Changing ads: proposals only
 
-\`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (Meta only, made **paused**), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
+\`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (Meta only, made **paused**), \`create_ad_group\` (Google only, made paused), \`add_keywords\` (Google only), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
 
 1. **Copy first.** For a client, read \`partnersinbiz.crm:get-client-profile\` (voice, banned words) and put the banned words in the scope with \`set-ad-scope-rules\`. \`check-ad-creative\` catches banned words, lengths, claims platform policy rejects, https landing pages, special ad categories. It also scores the copy on the shared creative rubric (out of 100; 80 passes). A score under 80 is advisory: the gaps are in rubric.notes; only blockers (banned words, platform rejects, length, security) fail the check and stop the proposal from going to review. The check never replaces the Reviewer.
 2. **Review.** The proposal opens an issue: the Reviewer first (\`record-ad-review\`: pass, or changes with one line per problem; only the Reviewer's own call counts, so you cannot record or overwrite a verdict on your own proposal), then a person. On changes you get it back: \`get-ad-proposal\` (reviewNotes), then \`revise-ad-proposal\` with what the Reviewer asked to change; a revision that changes nothing leaves the request standing. Changed numbers cancel every earlier yes.
@@ -109,6 +109,8 @@ export const PLATFORMS_REFERENCE = `# What the platforms report, and what versio
 - **create_campaign**: Meta creates a campaign with an objective, a daily campaign budget and \`PAUSED\` status (special ad categories declared); Google creates a search campaign and its budget in one request, paused. Audiences, ad sets, creatives and ads are built in the platform in version 0.1. A created campaign is never switched on by the same change.
 - **change_budget**: the campaign's daily budget. Refused (with the reason) for a lifetime budget, a budget set on ad sets (Meta) and a budget shared by several campaigns (Google).
 - **pause_campaign / resume_campaign**: status only.
+- **create_ad_group** (Google only): creates an ad group in a campaign with a max CPC bid, paused. Keywords are added separately.
+- **add_keywords** (Google only): adds keywords to an ad group, each with a match type (exact, phrase, broad) and optional negative flag.
 
 ## Setup facts (the owner does these once)
 

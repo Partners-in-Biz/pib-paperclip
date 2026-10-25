@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ELON_AGENT_ID, DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval } from "../src/owner-route.js";
+import { DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval, routeFromImpact } from "../src/owner-route.js";
 import type { ApprovalRow, ProposalRow } from "../src/db.js";
 import { signoffState } from "../src/signoffs.js";
 
@@ -31,31 +31,55 @@ describe("owner-route", () => {
   describe("ownerRouteOf", () => {
     const scope = (threshold: number) => ({ currency: "ZAR", owner_threshold_minor: threshold } as any);
     [
-      ["<=threshold => elon", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01", endDate: "2026-01-10" }, "elon"],
-      [">threshold => peet", scope(50_000), { dailyBudgetMinor: 5_001, startDate: "2026-01-01", endDate: "2026-01-10" }, "peet_required"],
-      ["null => peet", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01" }, "peet_required"],
+      ["<=threshold => delegate", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01", endDate: "2026-01-10" }, "delegate"],
+      [">threshold => owner", scope(50_000), { dailyBudgetMinor: 5_001, startDate: "2026-01-01", endDate: "2026-01-10" }, "owner_required"],
+      ["null => owner", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01" }, "owner_required"],
     ].forEach(([desc, s, payload, route]) => {
       it(String(desc), () => expect(ownerRouteOf(s, { kind: "create_campaign", payload, impact: {} } as any).route).toBe(route));
     });
   });
 
   describe("isOwnerDelegateApproval", () => {
-    const elon = `agent:${ELON_AGENT_ID}`;
+    const agent = "agent:agent-am";
     [
-      ["Elon+owner+approved+no cap", elon, "owner", "approved", false, true],
-      ["Elon+over_cap", elon, "owner", "approved", true, false],
-      ["Elon+client", elon, "client", "approved", false, false],
+      ["agent+owner+approved+no cap", agent, "owner", "approved", false, true],
+      ["agent+over_cap", agent, "owner", "approved", true, false],
+      ["agent+client", agent, "client", "approved", false, false],
+      ["agent+rejected", agent, "owner", "rejected", false, false],
+      ["a person", "user:someone", "owner", "approved", false, false],
       ["other agent", "agent:other", "owner", "approved", false, false],
     ].forEach(([desc, decidedBy, role, decision, overCapAck, expected]) => {
-      it(String(desc), () => expect(isOwnerDelegateApproval({ decided_by: decidedBy, role: role as any, decision: decision as any, over_cap_ack: overCapAck } as any)).toBe(expected));
+      it(String(desc), () => expect(isOwnerDelegateApproval({ decided_by: decidedBy, role: role as any, decision: decision as any, over_cap_ack: overCapAck } as any, "agent-am")).toBe(expected));
     });
   });
 
-  it("signoffState: Elon counted, others not", () => {
+  it("signoffState: only the current delegate agent counts", () => {
     const now = new Date();
     const prop = { content_hash: "h", requires_signoffs: ["owner"] } as any;
     const a = (decidedBy: string): ApprovalRow => ({ id: "a", proposal_id: "p", role: "owner", decision: "approved", decided_by: decidedBy, content_hash: "h", over_cap_ack: false, note: null, evidence_ref: null, expires_at: new Date(Date.now() + 1e6).toISOString(), consumed_at: null, created_at: now.toISOString() });
-    expect(signoffState(prop, [a(`agent:${ELON_AGENT_ID}`)], now).complete).toBe(true);
-    expect(signoffState(prop, [a("agent:other")], now).complete).toBe(false);
+    expect(signoffState(prop, [a("agent:agent-am")], now, "agent-am").complete).toBe(true);
+    expect(signoffState(prop, [a("agent:other")], now, "agent-am").complete).toBe(false);
+    expect(signoffState(prop, [a("agent:agent-am")], now, null).complete).toBe(false);
+    expect(signoffState(prop, [a("agent:agent-am")], now).complete).toBe(false);
+  });
+});
+
+describe("routeFromImpact: rows stored before 0.3.9", () => {
+  const stored = (route: string) => ({ ownerRoute: { route, lifetimeMinor: 90_000, thresholdMinor: 50_000 } });
+
+  it("reads the old person-named codes as the role-based ones", () => {
+    expect(routeFromImpact(stored("peet_required"))).toEqual({ route: "owner_required", lifetimeMinor: 90_000, thresholdMinor: 50_000 });
+    expect(routeFromImpact(stored("elon"))?.route).toBe("delegate");
+  });
+
+  it("keeps the current codes and ignores unknown or missing ones", () => {
+    expect(routeFromImpact(stored("owner_required"))?.route).toBe("owner_required");
+    expect(routeFromImpact(stored("delegate"))?.route).toBe("delegate");
+    expect(routeFromImpact(stored("nobody"))).toBeNull();
+    expect(routeFromImpact({})).toBeNull();
+  });
+
+  it("an above-threshold spend still routes to the owner", () => {
+    expect(ownerRouteOf({ currency: "ZAR", owner_threshold_minor: null }, { kind: "change_budget", payload: {}, impact: { addedThisMonthMinor: 90_000 } } as any).route).toBe("owner_required");
   });
 });

@@ -232,6 +232,135 @@ export function diffAddedLines(diff: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Template changes
+// ---------------------------------------------------------------------------
+
+export const TEMPLATE_KEY_RE = /^[a-z0-9][a-z0-9-]*$/;
+/** A template change is measured on a placeholder window (rollout-pending): the real 7-day window starts when the change is applied (C7c). */
+export const TEMPLATE_RECHECK_DAYS = 30;
+
+/** First 16 hex of sha256 over the UTF-8 text. Same shape as Setup's render hash; Cockpit hashes the text it is handed and never renders. */
+export function templateTextHash(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
+}
+
+export function templateChangeRef(key: string, hash: string): string {
+  return `templatechange:${key}:${hash}`;
+}
+
+export function templateEvalFile(key: string): string {
+  return `packages/plugins/plugin-cockpit/evals/agents/${key}.json`;
+}
+
+export function templateSourceFile(key: string): string {
+  return `packages/plugins/plugin-setup/templates/agents/${key}.md`;
+}
+
+export function reviewTemplateProposal(input: { key: string; text: string; hash: string; diff: string; hasEval: boolean }): { hash: string } {
+  const { key, text, hash, diff, hasEval } = input;
+
+  // 1. Key must match pattern
+  if (!TEMPLATE_KEY_RE.test(key)) {
+    throw new SkillChangeError(`Template key "${key}" does not match pattern ${TEMPLATE_KEY_RE.source} (start with a letter or digit, then letters, digits or hyphens).`);
+  }
+
+  // 2. Hash must be 16 hex (not 64)
+  if (/^[0-9a-f]{64}$/i.test(hash)) {
+    throw new SkillChangeError("templateHash is a full 64-character sha256. Give the 16-character render hash (the first 16 hex characters).");
+  }
+
+  // 3. Hash must be valid 16 hex
+  if (!/^[0-9a-f]{16}$/i.test(hash)) {
+    throw new SkillChangeError("templateHash must be 16 hexadecimal characters (e.g., 1a2b3c4d5e6f7890).");
+  }
+
+  // 4. Text and diff must not be empty
+  if (!text.trim()) {
+    throw new SkillChangeError("text is empty: provide the rendered template text.");
+  }
+  if (!diff.trim()) {
+    throw new SkillChangeError("diff is empty: provide a diff showing the changes.");
+  }
+
+  // 5. Eval file must exist
+  if (!hasEval) {
+    throw new SkillChangeError(`No eval file for template "${key}": add ${templateEvalFile(key)} first (scenarios the change is gated on), then propose again.`);
+  }
+
+  // 6. Hash must match the text
+  const computed = templateTextHash(text);
+  if (computed !== hash.toLowerCase()) {
+    throw new SkillChangeError(`The hash you gave (${hash}) is not sha256(text)[:16] (${computed}). Send the exact rendered text the hash was made from.`);
+  }
+
+  // 7. Added lines must not contain secrets
+  const addedLines = diffAddedLines(diff);
+  for (const line of addedLines) {
+    if (looksLikeSecret(line)) {
+      throw new SkillChangeError(`An added line looks like it holds a secret (${line.slice(0, 40)}…): templates never carry a value.`);
+    }
+  }
+
+  return { hash: computed };
+}
+
+export interface TemplatePackageInput {
+  key: string;
+  reason: string;
+  evidence: string[];
+  diff: string;
+  date: string;
+  hash: string;
+  improvement: { id: string; metricKey: string; recheckAt: string } | null;
+  sourceIssue: string | null;
+}
+
+export function templatePullRequestPackage(input: TemplatePackageInput): PullRequestPackage {
+  const { key, reason, evidence, diff, date, hash, improvement, sourceIssue } = input;
+  const branch = `template/${key}/${date.replace(/-/g, "")}-${diffHash(diff)}`;
+  const reasonTrimmed = reason.replace(/\s+/g, " ").trim();
+  const title = `Template ${key}: ${reasonTrimmed.length > 60 ? `${reasonTrimmed.slice(0, 59)}…` : reasonTrimmed}`;
+  const checks = ["- ok: candidate text hash `" + hash + "` matches sha256", "- ok: eval file present at " + templateEvalFile(key)];
+  const evalGate = improvement ? `- Cockpit ledger: improvement id \`${improvement.id}\`, recheck ${improvement.recheckAt.slice(0, 10)}, recheck date is rollout-pending placeholder per C7c` : undefined;
+
+  const body = [
+    `## Why\n${reasonTrimmed}`,
+    "",
+    "## Evidence",
+    ...(evidence.length ? evidence.map((e) => `- ${e}`) : ["- (none given: a change with no evidence is a wish)"]),
+    ...(sourceIssue ? [`\nProposal: ${sourceIssue}`] : []),
+    "",
+    `## The change (\`agents/${key}.md\`)\n\`\`\`diff\n${diff.trim()}\n\`\`\``,
+    "",
+    "## Checks\n" + checks.join("\n"),
+    "",
+    `## Before merge\n1. \`partnersinbiz.cockpit:skill-eval\` plan mode template for \`${key}\`; run harness; record, gate.\n2. Put results in \`evals/results.json\`, verify hash, pnpm test green in both plugins.`,
+    "",
+    "## Rules\n- Into development, never main.\n- Code Reviewer reviews; Delivery Lead merges. Bump plugin-setup version.\n- A template change reaches every company's agents on next deploy.",
+    ...(evalGate ? ["", "## After it ships\n" + evalGate] : []),
+    "",
+    "## Rollback\nRevert and redeploy.",
+  ].join("\n");
+
+  const steps = [
+    "git switch development && git pull --ff-only && git switch -c " + branch,
+    `Edit ${templateSourceFile(key)}; re-render with template-preview; verify hash is ${hash}.`,
+    `Add eval results to evals/results.json; bump plugin-setup version.`,
+    "pnpm test, pnpm typecheck in both plugins, commit.",
+    `Push: gh pr create --base development --head ${branch}.`,
+  ];
+
+  return {
+    branch,
+    base: "development",
+    title,
+    body,
+    steps,
+    files: [templateSourceFile(key), templateEvalFile(key)],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The pull request package
 // ---------------------------------------------------------------------------
 

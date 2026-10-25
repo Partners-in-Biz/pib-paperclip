@@ -76,7 +76,7 @@ const instanceConfigSchema: JsonSchema = {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
       description:
-        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts empty and you or the Operator record only their own credentials.",
+        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts with only generic rows for the modules they use (no Partners in Biz entries), and you or the Operator record their own credentials.",
       default: false,
     },
     credentialChecks: {
@@ -275,6 +275,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "30 4 * * 1",
     },
     {
+      jobKey: JOBS.growthReview,
+      displayName: "Weekly growth review",
+      description: "Mondays 06:30 SAST: opens one growth review issue per scope owner (reconcile the ledger, one line per channel, goal proposals) and one hand-off per channel agent (performance review, at most two new experiments, pending playbook changes). Once a week per company.",
+      schedule: "30 4 * * 1",
+    },
+    {
       jobKey: JOBS.governor,
       displayName: "Agent governor",
       description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
@@ -292,6 +298,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
       schedule: "*/15 * * * *",
     },
+    {
+      jobKey: JOBS.hostedUsageRollup,
+      displayName: "Hosted usage roll-up",
+      description: "Daily at 04:30 SAST (02:30 UTC): for the owner company only, stores one row per hosted company and month with runs, notional spend (USD), done issues and agents. Counts and cost only; recomputes this month, and last month until 3 days after it ended.",
+      schedule: "30 2 * * *",
+    },
   ],
   apiRoutes: [
     // Read by the Cockpit page itself and the Setup plugin (kit contracts).
@@ -303,6 +315,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Governor rehearse: safely tests the quota governor with synthetic failures.
     { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     // Owner push: send critical push notifications from external systems to the owner.
+    // Hosted usage (owner company only; any other company gets 403).
+    { routeKey: "hosted-usage", method: "GET", path: "/hosted-usage", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
@@ -340,6 +354,7 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "sidebar", id: "pib-nav-clients", displayName: "Clients", exportName: "ClientsNav", order: 6 },
       { type: "sidebar", id: "pib-nav-marketing", displayName: "Marketing", exportName: "MarketingNav", order: 7 },
       { type: "sidebar", id: "pib-nav-finance", displayName: "Finance", exportName: "FinanceNav", order: 8 },
+      { type: "sidebar", id: "pib-nav-hosted", displayName: "Hosted clients", exportName: "HostedClientsNav", order: 9 },
       { type: "dashboardWidget", id: "cockpit-today", displayName: "Company today", exportName: "CompanyTodayWidget" },
     ],
   },

@@ -127,7 +127,7 @@ export function BelongsToSelect({ clients, value, onChange, disabled }: {
   const known = value === "" || clients.some((c) => c.client === value);
   return (
     <Select value={value} onChange={(event) => onChange(event.target.value)} aria-label="Belongs to" disabled={disabled}>
-      <option value="">Own work (Partners in Biz)</option>
+      <option value="">Own work</option>
       {!known ? <option value={value}>Current client</option> : null}
       {companies.length ? (
         <optgroup label="Companies">

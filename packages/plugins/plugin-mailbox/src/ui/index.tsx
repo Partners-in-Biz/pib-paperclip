@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useHostLocation,
   DataTable,
@@ -38,6 +39,7 @@ import {
   Send,
   Settings as SettingsIcon,
   Sparkles,
+  PreferencesPanel,
   StatusDot,
   Tabs,
   TextArea,
@@ -241,7 +243,7 @@ interface TriageStats {
 }
 interface NamedAgent { id: string; name: string; status: string }
 
-const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage"] as const;
+const TAB_IDS = ["overview", "inbox", "sent", "drafts", "mailboxes", "triage", "preferences"] as const;
 type TabId = (typeof TAB_IDS)[number];
 type CreateKind = "mailbox" | "delegation" | "draft" | "domain" | "client-map" | "account-client" | "esp-domain" | "esp-limits" | "esp-hold" | null;
 type Preview = { kind: "draft"; id: string } | { kind: "mail"; id: string } | { kind: "send"; key: string } | null;
@@ -453,7 +455,9 @@ function OneRow({ children }: { children: ReactNode }) {
   return <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", minWidth: 0 }}>{children}</div>;
 }
 
-export function MailboxPage({ context }: PluginPageProps) {
+export const MailboxPage = withHelp(MailboxPageMain);
+
+function MailboxPageMain({ context }: PluginPageProps) {
   const load = usePluginAction("mailbox.load");
   const connectStart = usePluginAction("mailbox.connect-start");
   const disconnect = usePluginAction("mailbox.disconnect");
@@ -478,8 +482,11 @@ export function MailboxPage({ context }: PluginPageProps) {
   const refreshSendingDomain = usePluginAction("mailbox.refresh-sending-domain");
   const setSendingDomain = usePluginAction("mailbox.set-sending-domain");
   const clearHold = usePluginAction("mailbox.clear-reputation-hold");
+  const loadPreferences = usePluginAction("mailbox.preferences-load");
+  const savePreferences = usePluginAction("mailbox.preferences-save");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
   const [sent, setSent] = useState<SendRequest[] | null>(null);
   const [stats, setStats] = useState<TriageStats | null>(null);
@@ -524,7 +531,13 @@ export function MailboxPage({ context }: PluginPageProps) {
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
-    setSnapshot((await load({ uiBase })) as Snapshot);
+    setLoadError("");
+    try {
+      setSnapshot((await load({ uiBase })) as Snapshot);
+    } catch (error) {
+      setLoadError(errorText(error));
+      throw error;
+    }
   }
   async function refreshInbox() {
     setInbox((await loadInbox({ category: category || undefined, needsReply: needsReplyOnly, limit: 150 })) as { messages: InboxMessage[]; clients: ClientOption[] });
@@ -660,7 +673,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   }
 
   const settings = snapshot?.settings;
-  const readiness = connectReadiness(settings);
+  const readiness = connectReadiness(settings, loadError);
   const missing = missingTechnical(settings);
 
   /** Shows the one-time technical setup (Mailboxes tab). */
@@ -768,7 +781,9 @@ export function MailboxPage({ context }: PluginPageProps) {
       tone={gmailAccounts.some((a) => a.status === "needs_reconnect") ? "bad" : gmailAccounts.length === 0 ? "warn" : undefined}
       strip={gmailAccounts.length === 0 || gmailAccounts.some((a) => a.status === "needs_reconnect")}
     >
-      {gmailAccounts.length === 0 ? (
+      {loadError && !snapshot ? (
+        <EmptyState compact icon={Mail} title="Mailboxes could not load" description={loadError} />
+      ) : gmailAccounts.length === 0 ? (
         <EmptyState
           compact
           icon={Mail}
@@ -933,6 +948,7 @@ export function MailboxPage({ context }: PluginPageProps) {
           { id: "drafts", label: "Drafts", icon: FileText, count: allDrafts.filter((row) => row.status === "draft").length || null, countTone: "warn" },
           { id: "mailboxes", label: "Mailboxes", icon: Mail, count: reconnects || null, countTone: reconnects ? "bad" : undefined },
           { id: "triage", label: "Sorting", icon: Sparkles },
+          { id: "preferences", label: "Preferences", icon: SettingsIcon },
         ]}
         active={tab}
         onChange={(id) => { setTab(id as TabId); setSearch(""); }}
@@ -991,7 +1007,9 @@ export function MailboxPage({ context }: PluginPageProps) {
               <RefreshButton narrow={narrow} onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))} />
             </OneRow>
           </Toolbar>
-          {inboxRows.length === 0 ? (
+          {loadError && !snapshot ? (
+            <EmptyState icon={Inbox} title="Mail could not load" description={loadError} />
+          ) : inboxRows.length === 0 ? (
             <EmptyState
               icon={Inbox}
               title="No mail here"
@@ -1059,7 +1077,9 @@ export function MailboxPage({ context }: PluginPageProps) {
               <RefreshButton narrow={narrow} onClick={() => void refreshSent().catch((error: unknown) => setMessage(errorText(error)))} />
             </OneRow>
           </Toolbar>
-          {(sent ?? []).length === 0 ? (
+          {loadError && !snapshot ? (
+            <EmptyState icon={Send} title="Sent mail could not load" description={loadError} />
+          ) : (sent ?? []).length === 0 ? (
             <EmptyState
               icon={Send}
               title={sentStatus ? "Nothing with this status" : "Nothing sent yet"}
@@ -1393,6 +1413,13 @@ export function MailboxPage({ context }: PluginPageProps) {
             <button type="button" onClick={() => setCreate("mailbox")} style={{ appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", color: tokens.primary, fontWeight: 600, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>Add it here</button>
           </Muted>
         </div>
+      ) : null}
+
+      {tab === "preferences" ? (
+        <PreferencesPanel
+          load={() => loadPreferences({}) as never}
+          save={(patch) => savePreferences({ patch }) as never}
+        />
       ) : null}
 
       {tab === "triage" ? (

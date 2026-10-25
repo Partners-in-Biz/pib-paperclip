@@ -434,7 +434,7 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
     }
   }
 
-  // Speed-to-lead: draft + Peet approval only. Never fails lead intake.
+  // Speed-to-lead: draft + owner approval only. Never fails lead intake.
   if (lead.email) {
     try {
       await onLeadStoredForSpeedToLead(ctx, {
