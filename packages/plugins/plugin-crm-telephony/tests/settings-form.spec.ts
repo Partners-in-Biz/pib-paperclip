@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toFormState, toSavePayload, describeSecretStatus, SECRET_LABELS } from "../src/ui/settings-form.js";
+import { toFormState, toSavePayload, validateForm, describeSecretStatus, SECRET_LABELS } from "../src/ui/settings-form.js";
 import type { TelephonySettings } from "../src/settings.js";
 
 const baseSettings: TelephonySettings = {
@@ -54,6 +54,30 @@ describe("Settings form utilities", () => {
     expect(payload.maxCallsPerDay).toBe(50);
     expect(payload.callerIds).toEqual(["+27123456789"]);
     expect(payload.voiceAllowedUserIds).toEqual(["user1"]);
+  });
+
+  it("blank numeric inputs stay undefined in the payload, never 0", () => {
+    const form = { ...toFormState(baseSettings), maxCallsPerDay: "", maxSmsPerDay: "  ", recordingRetentionDays: "" };
+    const payload = toSavePayload(form);
+    expect(payload.maxCallsPerDay).toBeUndefined();
+    expect(payload.maxSmsPerDay).toBeUndefined();
+    expect(payload.recordingRetentionDays).toBeUndefined();
+    expect(payload.maxWhatsappPerDay).toBe(75);
+  });
+
+  it("validateForm accepts the base settings", () => {
+    expect(validateForm(toFormState(baseSettings))).toEqual({});
+  });
+
+  it.each([
+    ["blank", "", "Required"],
+    ["zero", "0", "Must be a whole number 1-10000"],
+    ["fraction", "2.5", "Must be a whole number 1-10000"],
+    ["too large", "10001", "Must be a whole number 1-10000"],
+    ["not a number", "abc", "Must be a whole number 1-10000"],
+  ])("validateForm flags maxCallsPerDay %s", (_label, value, message) => {
+    const errors = validateForm({ ...toFormState(baseSettings), maxCallsPerDay: value });
+    expect(errors).toEqual({ maxCallsPerDay: message });
   });
 
   it("describeSecretStatus has all 12 secrets including ANTHROPIC_API_KEY", () => {
