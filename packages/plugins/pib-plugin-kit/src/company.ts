@@ -380,9 +380,9 @@ const SETUP_ISSUE_STATE = (companyId: string) => ({ scopeKind: "company" as cons
 export function companySetupIssueText(company: { name: string; prefix: string | null }): { title: string; description: string } {
   const prefix = company.prefix ? `/${company.prefix}` : "";
   return {
-    title: renderTokens(`Set up ${company.name}`, { company: company.name }),
+    title: renderTokens("Set up {{company}}", { company: company.name }),
     description: renderTokens([
-      `${company.name} is new. The PiB plugins are installed, and each plugin's skills are already in the company's skill library. Three one-time steps make the rest run by itself:`,
+      "{{company}} is new. The PiB plugins are installed, and each plugin's skills are already in the company's skill library. Three one-time steps make the rest run by itself:",
       "",
       `1. **Staff the team.** Open [Setup → Team](${prefix}${TEAM_SETUP_PATH}) and hire or pick an agent for each role. Roles are staffed only there.`,
       "2. **Save each plugin's settings once.** Open [Settings → Plugins](/company/settings/instance/plugins), open each PiB plugin and click Save Configuration. Until you do, the plugin's hourly jobs cannot act for this company, and its agents' skills stay as they are.",

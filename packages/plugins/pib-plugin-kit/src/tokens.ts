@@ -31,16 +31,37 @@ export const MERGE_FIELDS: readonly string[] = ["email", "first_name", "last_nam
 
 export type TokenName = keyof typeof TOKEN_DEFAULTS;
 
-/** `{{name}}`, `{{ name }}`, `{{include:name}}`: anything token-shaped. */
+/**
+ * `{{name}}`, `{{ name }}`, `{{include:name}}`: anything token-shaped. The
+ * fallback form `{{first_name|there}}` does not match, so a typo inside one is
+ * not checked.
+ */
 const TOKEN_RE = /\{\{\s*([A-Za-z_][\w.:-]*)\s*\}\}/g;
 
-export function renderTokens(text: string, values: Partial<Record<TokenName, string>> = {}): string {
+/**
+ * Skill text keeps `{{company}}` as it is for now: the CRM and Campaigns skills
+ * list it as an email merge field ("Merge tokens: `{{first_name}}`, `{{company}}`"),
+ * and rendering it would tell agents to write "this company" into client emails.
+ * A text child that scrubs a plugin picks one convention (rename the merge
+ * field, or drop the entry here) in its own PR.
+ */
+export const SKILL_KEPT_TOKENS: readonly TokenName[] = ["company"];
+
+let substitutions = 0;
+/** How many company tokens `renderTokens` has replaced in this process. The contract test pins it to 0 while no skill uses a token. */
+export function tokenSubstitutionCount(): number {
+  return substitutions;
+}
+
+export function renderTokens(text: string, values: Partial<Record<TokenName, string>> = {}, options: { keep?: readonly TokenName[] } = {}): string {
   const unknown = new Set<string>();
-  const out = text.replace(TOKEN_RE, (_match, name: string) => {
+  const out = text.replace(TOKEN_RE, (match, name: string) => {
     if (!Object.prototype.hasOwnProperty.call(TOKEN_DEFAULTS, name)) {
       if (!MERGE_FIELDS.includes(name)) unknown.add(name);
-      return _match;
+      return match;
     }
+    if (options.keep?.includes(name as TokenName)) return match;
+    substitutions += 1;
     const given = values[name as TokenName]?.trim();
     return given || TOKEN_DEFAULTS[name as TokenName];
   });
@@ -89,7 +110,8 @@ export const BRAND_ALLOWLIST: readonly string[] = [];
 
 /**
  * The owner company's names found in `text`: the owner's first names, the agency
- * name and "PiB", minus any phrase in the allowlist. Plugin ids and skill keys
+ * name and "PiB", minus any phrase in the allowlist. A rough lint: it matches
+ * "PiB-plugin" too and misses a phrase split by a line break or a no-break space. Plugin ids and skill keys
  * (`partnersinbiz.crm`, `pib-company-os`) are not matched.
  */
 export function findBrandLeaks(text: string, options: { allow?: readonly string[] } = {}): BrandLeak[] {

@@ -15,7 +15,7 @@
  * tool or team role.
  */
 import { describe, expect, it } from "vitest";
-import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, MERGE_FIELDS, WRITING_HEADING, findBrandLeaks, teamSkillKey } from "../src/index.js";
+import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, MERGE_FIELDS, SKILL_KEPT_TOKENS, WRITING_HEADING, findBrandLeaks, teamSkillKey, tokenSubstitutionCount } from "../src/index.js";
 
 type Tool = { name: string; description?: string; parametersSchema?: Record<string, unknown> };
 type Skill = { skillKey: string; markdown?: string };
@@ -105,9 +105,17 @@ describe("skills ↔ tools contract", async () => {
   });
 
   it("no company token or unknown {{token}} reaches a rendered skill", () => {
-    const stray = (md: string) => [...md.matchAll(/\{\{\s*([A-Za-z_][\w.:-]*)\s*\}\}/g)].map((m) => m[1]!).filter((n) => !MERGE_FIELDS.includes(n));
+    const stray = (md: string) => [...md.matchAll(/\{\{\s*([A-Za-z_][\w.:-]*)\s*\}\}/g)].map((m) => m[1]!).filter((n) => !MERGE_FIELDS.includes(n) && !(SKILL_KEPT_TOKENS as readonly string[]).includes(n));
     const withToken = [...skills, { plugin: "partnersinbiz.cockpit", key: "company-os (body)", md: companySkillBody() }].filter((s) => stray(s.md).length > 0).map((s) => `${s.plugin}/${s.key}: ${stray(s.md).join(", ")}`);
     expect(withToken).toEqual([]);
+  });
+
+  it("the renderer changes no skill text yet: rendered equals raw until a child scrubs it", () => {
+    // Every manifest above is loaded, so every skill went through withFrontmatter. A count above 0 means some skill
+    // text now uses {{owner}} or {{ownerTitle}}: that changes what agents read, so the PR must say so and a child must own it.
+    expect(tokenSubstitutionCount()).toBe(0);
+    const crm = skills.find((s) => s.plugin === "partnersinbiz.crm" && s.md.includes("Merge tokens"));
+    expect(crm?.md).toContain("`{{company}}`");
   });
 
   it("scrubbed plugins' skills name neither the owner nor the agency", () => {

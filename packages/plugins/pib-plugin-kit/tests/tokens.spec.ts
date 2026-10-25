@@ -34,10 +34,16 @@ describe("renderTokens", () => {
 
 describe("withFrontmatter renders tokens", () => {
   it("no {{ reaches a rendered skill", () => {
-    const md = withFrontmatter({ name: "pib-x", description: "For {{company}}" }, "Ask {{owner}} ({{ownerTitle}}) about {{company}}.");
+    const md = withFrontmatter({ name: "pib-x", description: "For {{owner}}" }, "Ask {{owner}} ({{ownerTitle}}).");
     expect(md).not.toContain("{{");
-    expect(md).toContain("Ask the company owner (owner) about this company.");
-    expect(md).toContain('description: "For this company"');
+    expect(md).toContain("Ask the company owner (owner).");
+    expect(md).toContain('description: "For the company owner"');
+  });
+
+  it("keeps {{company}} in skill text (the CRM and Campaigns email merge field)", () => {
+    const md = withFrontmatter({ name: "pib-x", description: "d" }, "Merge tokens: `{{first_name}}`, `{{company}}`. Ask {{owner}}.");
+    expect(md).toContain("`{{first_name}}`, `{{company}}`");
+    expect(md).toContain("Ask the company owner.");
   });
 
   it("throws on an unknown token in the body", () => {
@@ -46,6 +52,12 @@ describe("withFrontmatter renders tokens", () => {
 });
 
 describe("the other renderers use the same tokens", () => {
+  it("a company name that looks like a token does not break the setup issue", () => {
+    const text = companySetupIssueText({ name: "Acme {{x}}", prefix: null });
+    expect(text.title).toBe("Set up Acme {{x}}");
+    expect(text.description).toContain("Acme {{x}} is new.");
+  });
+
   it("the setup issue text renders with the company name", () => {
     const text = companySetupIssueText({ name: "Acme", prefix: "ACM" });
     expect(text.title).toBe("Set up Acme");

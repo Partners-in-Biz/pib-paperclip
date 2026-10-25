@@ -13,7 +13,7 @@ import { withCompanyMemory } from "./memory.js";
 import { withAskingSection } from "./asking.js";
 import { withWritingSection } from "./writing.js";
 import { rememberCompany } from "./known-companies.js";
-import { renderTokens } from "./tokens.js";
+import { SKILL_KEPT_TOKENS, renderTokens } from "./tokens.js";
 
 export interface SkillDeclarationLike {
   skillKey: string;
@@ -140,5 +140,5 @@ export function withFrontmatter(input: { name: string; description: string; memo
   if (input.asking !== false && input.memory !== false) content = withAskingSection(content);
   if (input.writing !== false && input.memory !== false) content = withWritingSection(content);
   // Throws on an unknown {{token}}, so a typo fails the plugin's tests and build instead of reaching an agent.
-  return renderTokens(`---\nname: ${input.name}\nslug: ${input.name}\ndescription: "${description}"\n---\n\n${content}`);
+  return renderTokens(`---\nname: ${input.name}\nslug: ${input.name}\ndescription: "${description}"\n---\n\n${content}`, {}, { keep: SKILL_KEPT_TOKENS });
 }
