@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useHostLocation,
@@ -76,7 +77,9 @@ export function showLoadingLine(state: { loading: boolean; load: unknown; error:
   return state.loading && !state.load && !state.error;
 }
 
-export function SetupPage({ context }: PluginPageProps) {
+export const SetupPage = withHelp(SetupPageMain);
+
+function SetupPageMain({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const data = useSetupData(companyId);
   const location = useHostLocation();
