@@ -272,7 +272,7 @@ No policy set = a team member approves, as before. At least one of team member o
 8. The link is the client's. Never open it to answer, and never submit its form: the page records whoever answers as the client. (Where only the client approves, the link IS the approval.)
 
 ## The Reviewer
-\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the company's Reviewer can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
+\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
 Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.

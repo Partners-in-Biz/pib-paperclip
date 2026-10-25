@@ -547,15 +547,15 @@ export const PLAYBOOKS: Record<string, Playbook> = {
 
   // --- Local service, professional services and online shop plans -------------
   "w0-gbp-claim": {
-    goal: "The business has one verified Google Business Profile that the owner controls, with your company added as a manager, so it shows in Google Maps and the local results.",
+    goal: "The business has one verified Google Business Profile that the owner controls, with the managing Google account added as a manager, so it shows in Google Maps and the local results.",
     steps: [
       "Search Google Maps and Google for the business name and phone number: is there a profile already (or a duplicate)? Note its link.",
       "Read the client profile (`partnersinbiz.crm:get-client-profile` with the sprint's client) and the site: the exact business name, address or service area, phone, hours, main category and services. That is the one name, address and phone (NAP) every listing uses; task `w0-nap` puts the same on the site.",
-      "Claiming and verifying needs the owner's Google account (Google sends a code by post, phone or video). Add one Needs you item with `needs-you-add` (kind grant, key `gbp_claim`): the profile link or https://business.google.com/create, the exact details to enter, the categories, and 'add your company as a manager'. Then `block-task` with that ask; the task comes back when the item is done.",
+      "Claiming and verifying needs the owner's Google account (Google sends a code by post, phone or video). Add one Needs you item with `needs-you-add` (kind grant, key `gbp_claim`): the profile link or https://business.google.com/create, the exact details to enter, the categories, and 'add the managing Google account as a manager' (the operator's account, not the Search Console service account: write the email the operator recorded for this client, or 'email to follow' if none, and the operator fills it in before the item goes out). Then `block-task` with that ask; the task comes back when the item is done.",
       "When it is done, check the profile is live on Google Maps and record it: `update-backlink` on the seeded Google Business Profile row (status live, url = the Maps link), or `add-backlink` (type citation) if there is no row.",
     ],
     tools: ["needs-you-add", "block-task", "list-backlinks", "update-backlink", "add-backlink", "partnersinbiz.crm:get-client-profile"],
-    done: "A verified profile exists, your company is a manager, and its Maps link is recorded on the Backlinks tab.",
+    done: "A verified profile exists, the managing Google account is a manager, and its Maps link is recorded on the Backlinks tab.",
     evidence: "The Maps link, the verification date and the name, address and phone used.",
   },
   "w0-nap": {
@@ -575,7 +575,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
     goal: "The shop's products show for free in Google Shopping: a verified Google Merchant Center account with a working product feed.",
     steps: [
       "Find out the shop platform (Shopify, WooCommerce and most others have a Google channel or plugin that builds the feed) and what the site already has.",
-      "The account needs the owner's Google account and business details. Add one Needs you item (`needs-you-add`, kind grant, key `merchant_center`) with the exact steps: create the account at https://merchants.google.com, verify and claim the site (the verification tag can go in through the repo: SEO scope), add your company as a user, and turn on free listings. Then `block-task`.",
+      "The account needs the owner's Google account and business details. Add one Needs you item (`needs-you-add`, kind grant, key `merchant_center`) with the exact steps: create the account at https://merchants.google.com, verify and claim the site (the verification tag can go in through the repo: SEO scope), add the managing Google account as a user (the operator's account, email as above), and turn on free listings. Then `block-task`.",
       "Once the account exists: connect the product feed (the platform's channel, or a feed file the site serves: `add-task` a code task if it needs code) and fix the feed errors Merchant Center lists (missing brand or GTIN, price or stock that differs from the page, image problems).",
       "Record it with `update-backlink` on the seeded Google Merchant Center row (status live, url = a product on Google Shopping).",
     ],
