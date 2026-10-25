@@ -15,6 +15,13 @@ import {
   reviewProposal,
   SkillChangeError,
   sourceFor,
+  TEMPLATE_KEY_RE,
+  templateChangeRef,
+  templateEvalFile,
+  templatePullRequestPackage,
+  templateSourceFile,
+  templateTextHash,
+  reviewTemplateProposal,
 } from "../src/skill-change-model.js";
 
 const SKILL = ["# Demo skill", "", "## Steps", "1. Read the brief.", "2. Do the work.", "3. Close the issue with evidence.", "", "## Never", "- Never approve money items.", "- Never send anything yourself.", "- Never write a secret anywhere.", ""].join("\n");
@@ -189,5 +196,67 @@ describe("the pull request package", () => {
     const bad = reviewProposal({ slug: "pib-demo", file: "SKILL.md", current: SKILL, diff: diff(["@@ @@", "-- Never send anything yourself.", "+- Send small things yourself."]) });
     const body = pullRequestPackage({ slug: "pib-demo", file: "SKILL.md", reason: "x", evidence: [], diff: d, date: "2026-10-04", review: bad, hash: null, improvement: null, sourceIssue: null }).body;
     expect(body).toContain("OWNER: It drops 1");
+  });
+});
+
+describe("template changes", () => {
+  const templateText = "# Developer Agent Template\n\nYou are a developer.\n\n## Guidelines\n- Do not commit without tests.\n";
+  const templateDiff = diff(["--- a/agents/developer.md", "+++ b/agents/developer.md", "@@ @@", " You are a developer.", "-## Guidelines", "+## Key rules", "- Do not commit without tests."]);
+  const h = templateTextHash(templateText);
+
+  it.each([
+    ["64-hex hash", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", /16-character render hash/],
+    ["invalid hex", "not-hex-at-all12", /16 hexadecimal characters/],
+    ["hash mismatch", "ffffffffffffffff", /not sha256\(text\)\[:16\]/],
+    ["missing eval", h, /No eval file.*developer/],
+    ["invalid key", h, /Invalid_Key!/],
+  ])("%s rejected", (name, hashVal, expectedErr) => {
+    const input = { key: name === "invalid key" ? "Invalid_Key!" : "developer", text: templateText, hash: hashVal, diff: templateDiff, hasEval: name !== "missing eval" };
+    expect(() => reviewTemplateProposal(input)).toThrow(expectedErr);
+  });
+
+  it("non-16-hex rejected", () => {
+    expect(() => reviewTemplateProposal({ key: "dev", text: templateText, hash: "abcdef0", diff: templateDiff, hasEval: true })).toThrow(/16 hexadecimal/);
+  });
+
+  it("missing eval file message has the key", () => {
+    expect(() => reviewTemplateProposal({ key: "my-template", text: templateText, hash: h, diff: templateDiff, hasEval: false })).toThrow(/my-template/);
+  });
+
+  it("valid key 9invalid accepted (starts with digit ok)", () => {
+    expect(() => reviewTemplateProposal({ key: "9invalid", text: templateText, hash: h, diff: templateDiff, hasEval: true })).not.toThrow();
+  });
+
+  it("secret-looking added line rejected", () => {
+    const secDiff = diff(["@@ @@", " You are a developer.", ["+Use API key ", "sk_", "live_", "A".repeat(24), " for auth."].join("")]);
+    expect(() => reviewTemplateProposal({ key: "developer", text: templateText, hash: h, diff: secDiff, hasEval: true })).toThrow(/secret/);
+  });
+
+  it("stable ref: hash is 16 lowercase hex and ref is consistent", () => {
+    expect(h).toMatch(/^[0-9a-f]{16}$/);
+    expect(h).toBe(h.toLowerCase());
+    expect(templateChangeRef("developer", h)).toBe(`templatechange:developer:${h}`);
+  });
+
+  it("stable ref + templateTextHash equals independently computed sha256[:16]", async () => {
+    const { createHash } = await import("node:crypto");
+    const independent = createHash("sha256").update(templateText, "utf8").digest("hex").slice(0, 16);
+    expect(h).toBe(independent);
+  });
+
+  it("valid proposal returns hash", () => {
+    const result = reviewTemplateProposal({ key: "developer", text: templateText, hash: h, diff: templateDiff, hasEval: true });
+    expect(result.hash).toBe(h.toLowerCase());
+  });
+
+  it("package branch prefix/files/body rollout-pending", () => {
+    const pkg = templatePullRequestPackage({ key: "developer", reason: "Fix it", evidence: ["PAR-999"], diff: templateDiff, date: "2026-10-04", hash: h, improvement: { id: "imp456", metricKey: "m", recheckAt: "2026-11-01T00:00:00.000Z" }, sourceIssue: null });
+    expect(pkg.branch).toMatch(/^template\/developer\/20261004/);
+    expect(pkg.files).toContain("packages/plugins/plugin-setup/templates/agents/developer.md");
+    expect(pkg.files).toContain("packages/plugins/plugin-cockpit/evals/agents/developer.json");
+    expect(pkg.body).toContain("rollout-pending");
+    expect(pkg.body).toContain("imp456");
+    expect(pkg.body).toContain("mode template");
+    expect(pkg.body).toContain("## The change");
   });
 });

@@ -5,11 +5,12 @@
  * back. Also the skill-policy action and the capability the eval harness needs.
  * The diff rules and the PR text are tested in skill-change-model.spec.ts.
  */
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { ownSkills } from "../src/evals.js";
-import { diffHash } from "../src/skill-change-model.js";
+import { diffHash, templateTextHash } from "../src/skill-change-model.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
@@ -186,6 +187,46 @@ d("propose-skill-change (Postgres)", () => {
     expect(other.error, other.content).toBeUndefined();
     expect((await ledger(w)).map((r) => r.company_id).sort()).toEqual([A, OTHER_COMPANY].sort());
     expect(other.data.improvement.deduped).toBe(false);
+  });
+
+  it("proposes template change (records 30-day recheck, dedupes, rejects 64-hex)", async () => {
+    const w = await make();
+    const text = "Candidate developer\n## Instructions\nDo it.";
+    const hash16 = templateTextHash(text);
+    const hash64 = createHash("sha256").update(text, "utf8").digest("hex");
+    const diff = ["--- a/template", "+++ b/template", "@@ @@", " ## Instructions", "+- Ask first."].join("\n");
+    const base = { diff, reason: "template: ask first", evidence: ["PAR-501"], metricKey: "manual", baselineValue: 8, targetValue: 2, direction: "lower" as const, kind: "template" as const, templateKey: "developer", candidateText: text };
+
+    const out = (await w.tools.get("propose-skill-change")!({ ...base, candidateHash: hash16 }, run)) as ToolResult;
+    expect(out.error).toBeUndefined();
+    expect(out.data.templateHash).toBe(hash16);
+    const rows = await ledger(w);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe("template");
+    expect(rows[0]!.source_ref).toBe(`templatechange:developer:${hash16}`);
+    expect(new Date(rows[0]!.recheck_at).toISOString().slice(0, 10)).toBe("2026-11-03");
+
+    const again = (await w.tools.get("propose-skill-change")!({ ...base, candidateHash: hash16 }, run)) as ToolResult;
+    expect(again.data.improvement.deduped).toBe(true);
+    expect(await ledger(w)).toHaveLength(1);
+
+    const badHash = (await w.tools.get("propose-skill-change")!({ ...base, candidateHash: hash64 }, run)) as ToolResult;
+    expect(badHash.error).toContain("16-character");
+    expect(await ledger(w)).toHaveLength(1);
+  });
+
+  it.each([
+    { name: "bad hash", params: (hash: string) => ({ candidateHash: createHash("sha256").update("text", "utf8").digest("hex") }), check: (e: string) => e.includes("16-character") },
+    { name: "unknown key", params: () => ({ templateKey: "no-such-template" }), check: (e: string) => e.includes("no-such-template") },
+    { name: "kind bogus", params: () => ({ kind: "bogus", skill: "pib-reviewer", file: "SKILL.md", diff: ADD() }), check: (e: string) => e.length > 0 },
+  ])("rejects template: $name", async ({ params, check }) => {
+    const w = await make();
+    const text = "Text";
+    const hash = templateTextHash(text);
+    const base = { diff: "--- a/template\n+++ b/template\n@@ @@\n+x", reason: "test", evidence: [], metricKey: "manual", baselineValue: 1, kind: "template" as const, templateKey: "developer", candidateText: text, candidateHash: hash };
+    const out = (await w.tools.get("propose-skill-change")!({ ...base, ...params(hash) }, run)) as ToolResult;
+    expect(check(out.error ?? "")).toBe(true);
+    expect(await ledger(w)).toEqual([]);
   });
 });
 
