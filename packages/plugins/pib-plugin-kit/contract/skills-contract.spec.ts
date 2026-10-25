@@ -150,7 +150,6 @@ const PENDING: Array<(typeof PLUGINS)[number]> = [
   "seo",
   "cockpit",
   "crm",
-  "social",
   "billing",
   "mailbox",
   "accounting",
