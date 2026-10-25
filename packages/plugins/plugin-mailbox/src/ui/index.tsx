@@ -483,6 +483,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   const savePreferences = usePluginAction("mailbox.preferences-save");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
   const [sent, setSent] = useState<SendRequest[] | null>(null);
   const [stats, setStats] = useState<TriageStats | null>(null);
@@ -527,7 +528,13 @@ export function MailboxPage({ context }: PluginPageProps) {
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
-    setSnapshot((await load({ uiBase })) as Snapshot);
+    setLoadError("");
+    try {
+      setSnapshot((await load({ uiBase })) as Snapshot);
+    } catch (error) {
+      setLoadError(errorText(error));
+      throw error;
+    }
   }
   async function refreshInbox() {
     setInbox((await loadInbox({ category: category || undefined, needsReply: needsReplyOnly, limit: 150 })) as { messages: InboxMessage[]; clients: ClientOption[] });
@@ -663,7 +670,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   }
 
   const settings = snapshot?.settings;
-  const readiness = connectReadiness(settings);
+  const readiness = connectReadiness(settings, loadError);
   const missing = missingTechnical(settings);
 
   /** Shows the one-time technical setup (Mailboxes tab). */

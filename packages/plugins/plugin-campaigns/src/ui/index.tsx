@@ -1,3 +1,4 @@
+import { snapshotPlaceholder } from "./placeholder.js";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   DataTable,
@@ -159,6 +160,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [detail, setDetail] = useState<CampaignDetailData | null>(null);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
   const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns"] : ["overview", "campaigns", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
@@ -192,7 +194,11 @@ export function CampaignsPage({ context }: PluginPageProps) {
     if (!context.companyId) return;
     setSnapshot(null);
     setMessage("");
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    setLoadError("");
+    refresh().catch((error: unknown) => {
+      setLoadError(errorText(error));
+      setMessage(errorText(error));
+    });
   }, [context.companyId, scopeKey]);
 
   useEffect(() => {
@@ -331,7 +337,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
             onAb={openAb}
             onOpen={openCampaign}
           />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{message ? "Campaigns could not load." : "Loading campaigns…"}</p>
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p>
       ) : null}
 
       {tab === "preferences" ? (
@@ -344,7 +350,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
       {tab === "campaigns" ? (
         <div style={{ display: "grid", gap: 12 }}>
           {all.length > 5 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search campaigns…" /> : null}
-          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading campaigns…</p> : all.length === 0 ? (
+          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p> : all.length === 0 ? (
             <EmptyState
               title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
               icon={Send}

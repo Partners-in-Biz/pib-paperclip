@@ -13,6 +13,13 @@ describe("connecting Gmail from the page", () => {
     expect(connectReadiness({ ...READY, saved: false }).ready).toBe(false);
     expect(connectReadiness(null).ready).toBe(false);
   });
+
+  it("shows the load error, not Loading, when the settings could not load", () => {
+    const refused = connectReadiness(null, "Viewer access is read-only");
+    expect(refused).toEqual({ ready: false, reason: "Viewer access is read-only" });
+    expect(refused.reason).not.toMatch(/Loading/);
+    expect(connectReadiness(null).reason).toMatch(/Loading/);
+  });
 });
 
 describe("sending a draft from the page", () => {
