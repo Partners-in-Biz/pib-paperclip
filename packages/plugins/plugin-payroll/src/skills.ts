@@ -6,7 +6,7 @@ export const SKILL_SLUG = "pib-payroll";
 
 export const PAYROLL_SKILL = `# Payroll (South Africa)
 
-Use the \`partnersinbiz.payroll\` tools to run Partners in Biz's own payroll (its own staff; Payroll has no client workspace). You prepare and check. A person approves, locks, pays and files. Money is whole cents in tool input and output (\`amountMinor\`, R1 = 100). Dates are YYYY-MM-DD.
+Use the \`partnersinbiz.payroll\` tools to run your company's own payroll (its own staff; Payroll has no client workspace). You prepare and check. A person approves, locks, pays and files. Money is whole cents in tool input and output (\`amountMinor\`, R1 = 100). Dates are YYYY-MM-DD.
 
 ## Hard rules
 
@@ -86,7 +86,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: SKILL_KEY,
     displayName: "Payroll",
     slug: SKILL_SLUG,
-    description: "PiB's monthly payroll cycle: prepare and calculate pay runs, send them for approval, payslips, EMP201 and EMP501. Never approve or handle personal details.",
+    description: "Your company's monthly payroll cycle: prepare and calculate pay runs, send them for approval, payslips, EMP201 and EMP501. Never approve or handle personal details.",
     markdown: withFrontmatter(
       { name: SKILL_SLUG, description: "Run the monthly South African payroll cycle with the Payroll tools: prepare, calculate, check variances, request approval, follow payslips, ready the EMP201 and EMP501, record leave. Never approve runs or handle ID, tax or bank details." },
       PAYROLL_SKILL,
