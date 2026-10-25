@@ -73,11 +73,11 @@ describe("manifest and migration", () => {
       "issue.documents.read",
     ]) expect(manifest.capabilities).toContain(capability);
     expect(manifest.ui?.slots?.map((slot) => [slot.type, slot.displayName])).toEqual([
-      ["page", "Cockpit"], ["sidebar", "Cockpit"], ["sidebar", "Clients"], ["sidebar", "Marketing"], ["sidebar", "Finance"], ["dashboardWidget", "Company today"],
+      ["page", "Cockpit"], ["sidebar", "Cockpit"], ["sidebar", "Clients"], ["sidebar", "Marketing"], ["sidebar", "Finance"], ["sidebar", "Hosted clients"], ["dashboardWidget", "Company today"],
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(6);
+    expect(manifest.apiRoutes).toHaveLength(7);
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
@@ -86,7 +86,7 @@ describe("manifest and migration", () => {
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "owner-push")).toMatchObject({ method: "POST", path: "/owner-push", auth: "board", companyResolution: { from: "body", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
-      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"], [JOBS.pushDigest, "0 4 * * *"], [JOBS.askDeadlines, "*/15 * * * *"], [JOBS.hostedUsageRollup, "30 2 * * *"],
+      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.growthReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"], [JOBS.pushDigest, "0 4 * * *"], [JOBS.askDeadlines, "*/15 * * * *"], [JOBS.hostedUsageRollup, "30 2 * * *"],
     ]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],
@@ -94,7 +94,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
-      "repairs-list", "governor-state", "watchdog-findings",
+      "repairs-list", "governor-state", "watchdog-findings", "hosted-usage-list",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
       "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",

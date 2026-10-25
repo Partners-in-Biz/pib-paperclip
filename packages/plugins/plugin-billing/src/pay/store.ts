@@ -87,8 +87,9 @@ export async function markLinkRemoteOff(ctx: PluginContext, id: string): Promise
   await ctx.db.execute(`UPDATE ${table(ctx, "payment_links")} SET remote_off_at = now() WHERE id = $1 AND remote_off_at IS NULL`, [id]);
 }
 
-export async function setLinkRefunded(ctx: PluginContext, id: string, refundedMinor: number): Promise<void> {
-  await ctx.db.execute(`UPDATE ${table(ctx, "payment_links")} SET refunded_minor = $2, updated_at = now() WHERE id = $1`, [id, refundedMinor]);
+/** Add to the link's cumulative refunded total (delta in minor units). Additive so concurrent refunds do not overwrite. */
+export async function setLinkRefunded(ctx: PluginContext, id: string, refundedMinorDelta: number): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "payment_links")} SET refunded_minor = refunded_minor + $2, updated_at = now() WHERE id = $1`, [id, refundedMinorDelta]);
 }
 
 // ── provider deliveries ──────────────────────────────────────────────────────

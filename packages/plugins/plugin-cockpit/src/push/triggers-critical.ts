@@ -18,7 +18,7 @@ import { readCriticalLevel, upsertCriticalLevel } from "./store.js";
  * Look up the assignable owner for a company.
  * Returns null if no owner is set or assignable.
  */
-async function resolveOwner(ctx: PluginContext, companyId: string): Promise<string | null> {
+export async function resolveOwner(ctx: PluginContext, companyId: string): Promise<string | null> {
   const roles = await getRoles(ctx, companyId);
   return assignableUser(roles?.ownerUserId ?? null);
 }

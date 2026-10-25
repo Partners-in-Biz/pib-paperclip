@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useHostLocation,
   DataTable,
@@ -454,7 +455,9 @@ function OneRow({ children }: { children: ReactNode }) {
   return <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", minWidth: 0 }}>{children}</div>;
 }
 
-export function MailboxPage({ context }: PluginPageProps) {
+export const MailboxPage = withHelp(MailboxPageMain);
+
+function MailboxPageMain({ context }: PluginPageProps) {
   const load = usePluginAction("mailbox.load");
   const connectStart = usePluginAction("mailbox.connect-start");
   const disconnect = usePluginAction("mailbox.disconnect");

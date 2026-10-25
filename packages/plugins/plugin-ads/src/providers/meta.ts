@@ -385,6 +385,14 @@ export const metaProvider: AdsProvider = {
     return { externalId: created.id, name: request.name };
   },
 
+  async createAdGroup() {
+    throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
+  },
+
+  async addKeywords() {
+    throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
+  },
+
   async accountCaps(env, token, account): Promise<AccountCaps> {
     const accountData = await get<{ spend_cap?: unknown; currency?: string }>(env, token, `/${actId(account.externalId)}`, { fields: "spend_cap,currency" }, "Meta account caps");
     const spendCapStr = str(accountData.spend_cap);
