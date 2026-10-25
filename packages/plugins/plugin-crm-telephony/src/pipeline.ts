@@ -14,6 +14,21 @@ export function backoffSeconds(attempts: number): number {
   return Math.min(seconds, 3600);
 }
 
+/**
+ * Sanitize error message by redacting sensitive credentials.
+ * Removes Authorization headers, Bearer tokens, SIDs, API keys.
+ */
+export function sanitizeErrorMessage(msg: string, maxLen = 500): string {
+  return msg
+    .slice(0, maxLen)
+    .replace(/Authorization:\s*[^\s]+/gi, "Authorization: [redacted]")
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
+    .replace(/Basic\s+[^\s]+/gi, "Basic [redacted]")
+    .replace(/sk_test[_a-z0-9]+/gi, "[key redacted]")
+    .replace(/AC[0-9a-f]{20,}/gi, "[SID redacted]")
+    .replace(/[a-z]{2}[0-9]{32}/gi, "[SID redacted]");
+}
+
 export interface PipelineStepCtx {
   ctx: PluginContext;
   namespace: string;
@@ -23,6 +38,7 @@ export interface PipelineStepCtx {
 
 export interface StepResult {
   state: string;
+  error?: string;
   patch?: {
     r2Key?: string;
     bytes?: number;
@@ -117,9 +133,18 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       const result = await step(stepCtx);
 
       // Success: update state and reset attempts
-      const updates = ["state = $1", "attempts = 0", "last_error = NULL", "lease_token = NULL", "lease_until = NULL", "updated_at = now()"];
+      const updates = ["state = $1", "attempts = 0", "lease_token = NULL", "lease_until = NULL", "updated_at = now()"];
       const params: unknown[] = [result.state];
       let idx = 1;
+
+      // Handle error field or reset last_error
+      if (result.error) {
+        const sanitized = sanitizeErrorMessage(result.error);
+        updates.push(`last_error = $${++idx}`);
+        params.push(sanitized);
+      } else {
+        updates.push("last_error = NULL");
+      }
 
       if (result.patch?.r2Key) {
         updates.push(`r2_key = $${++idx}`);
@@ -150,15 +175,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       ctx.logger.debug(`recording ${row.recording_sid} ${row.state} -> ${result.state}`);
     } catch (err: any) {
       // Failure: increment attempts and schedule backoff
-      let errorMsg = String(err?.message || err || "Unknown error").slice(0, 500);
-      // Sanitize credentials: Authorization headers, Bearer tokens, SIDs, API keys
-      errorMsg = errorMsg
-        .replace(/Authorization:\s*[^\s]+/gi, "Authorization: [redacted]")
-        .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
-        .replace(/Basic\s+[^\s]+/gi, "Basic [redacted]")
-        .replace(/sk_test[_a-z0-9]+/gi, "[key redacted]")
-        .replace(/AC[0-9a-f]{20,}/gi, "[SID redacted]")
-        .replace(/[a-z]{2}[0-9]{32}/gi, "[SID redacted]");
+      const errorMsg = sanitizeErrorMessage(String(err?.message || err || "Unknown error"));
 
       const newAttempts = row.attempts + 1;
       const isFinal = newAttempts >= MAX_ATTEMPTS;

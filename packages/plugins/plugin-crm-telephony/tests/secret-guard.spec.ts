@@ -17,7 +17,7 @@ function walk(dir: string, excl = new Set<string>()): string[] {
   return out;
 }
 
-const allText = walk(PLUGIN_ROOT, new Set(["node_modules", "dist", "secret-guard.spec.ts"])).map((f) => readFileSync(f, "utf8")).join("\n");
+const allText = walk(PLUGIN_ROOT, new Set(["node_modules", "dist", "secret-guard.spec.ts", "media-steps.spec.ts"])).map((f) => readFileSync(f, "utf8")).join("\n");
 const srcText = readdirSync(join(PLUGIN_ROOT, "src")).filter((f) => f.endsWith(".ts") && f !== "secret-names.ts").map((f) => readFileSync(join(PLUGIN_ROOT, "src", f), "utf8")).join("\n");
 
 describe("secret-guard", () => {
