@@ -84,7 +84,7 @@ describe("hire scope: a pib template is offered to the PiB company only", () => 
   });
 });
 
-// Stand-in for the kit's findBrandLeaks (PAR-5312 child A) until it lands: swap this for the kit helper then.
+// Stand-in for the kit's findBrandLeaks until it lands on development: swap this for the kit helper then.
 const brandLeaks = (text: string) => text.match(/\bPeet\b|\bElon\b|Partners in Biz|\bPiB\b|\bPAR-\d+/g) ?? [];
 
 describe("template notes never reach a hire task", () => {
@@ -123,6 +123,16 @@ describe("template notes never reach a hire task", () => {
       expect(draft.description, template.key).not.toContain("## Notes");
       expect(draft.instructions, template.key).not.toMatch(/pib-autonomy|pib-company-standards|pib-mistakes|pib-design-seo-gate/);
       expect(brandLeaks(draft.description), template.key).toEqual([]);
+    }
+  });
+
+  it("the operational guidance of the dropped notes reaches the CEO through the rendered Hire task", () => {
+    const vars = templateVars({ company: "Client Corp", prefix: "CLI", owner: "Jo Owner", ceo: { name: "Boss", urlKey: "boss" } });
+    const ceo = loadPack().templates.find((t) => t.key === "ceo");
+    expect(ceo).toBeDefined();
+    const draft = renderHire(ceo!, { vars, ownerCompany: false });
+    for (const phrase of ["claude-sonnet-5-5", "hermes_local", "tools:use", "dangerouslySkipPermissions", "engine `cli`"]) {
+      expect(draft.description, phrase).toContain(phrase);
     }
   });
 });

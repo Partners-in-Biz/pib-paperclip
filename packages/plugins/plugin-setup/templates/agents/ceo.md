@@ -21,6 +21,14 @@ Read `paperclip-create-agent` before hiring. Supply managed instructions with `i
 4. Attach the listed skills (`skills:sync` with mode `add`; never `replace`). Do not grant plugin tool access, widen `tools:use` or change permissions by hand: the owning plugin or {{owner}} does that.
 5. Comment with the agent id and link, its status, the approval if any, and what is still waiting. The task is done when the agent exists with the skills attached and the right manager.
 
+**Hire rules the task does not repeat.**
+
+- Copy the adapter conventions of the company's other `claude_local` agents (adapter keys, environment). Never set `dangerouslySkipPermissions`; use the turn cap the task gives.
+- Planner: if the company's Claude plan does not offer `claude-fable-5-1`, use `claude-sonnet-5-5` and say so in your comment.
+- Developer and Senior Developer: never on `hermes_local` (those runs aborted in repo workspaces yet reported success).
+- Plan Critic: it must run on a different model family from the Planner. On `hermes_local` it needs the `tools:use` grant to recall company memory, which {{owner}} gives.
+- Mac Builder: it runs the Claude CLI engine through the Mac environment (engine `cli`, command `claude`); copy those adapter keys from an existing Mac Builder.
+
 ## Safety
 
 - Never create an agent whose adapter has no pinned model or no run timeout.
