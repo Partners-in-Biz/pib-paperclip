@@ -6,6 +6,7 @@ import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
 import { handleRecordingStatus } from "./recording-intake.js";
 import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
+import { createMediaSteps } from "./media-steps.js";
 import { voiceTokenAction } from "./voice-token-action.js";
 import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
@@ -45,6 +46,7 @@ const plugin = definePlugin({
       };
 
       const steps = {
+        ...createMediaSteps(),
         twilio_deleted: makeTranscribeStep({ audioUrl: audioUrlStub }),
         transcribed: makeSummariseStep(),
         summarised: makeNoteStep(),

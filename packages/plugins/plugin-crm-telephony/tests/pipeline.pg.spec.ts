@@ -401,6 +401,56 @@ describe("media pipeline", () => {
     expect(result.processed).toBe(0);
   });
 
+  it("step returning {state:'dead', error} sets last_error on success", async () => {
+    const recordingId = randomUUID();
+    await seedRecording(recordingId);
+    const { ctx: mockCtx } = createMockCtx();
+
+    const steps: PipelineSteps = {
+      received: async () => {
+        return { state: "dead", error: "Recording no longer available" };
+      },
+    };
+
+    const result = await runMediaPipeline(mockCtx, { steps, namespace: NAMESPACE });
+    expect(result.processed).toBe(1);
+
+    const row = await db.db.query<{ state: string; last_error: string }>(
+      `SELECT state, last_error FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
+      [recordingId],
+    );
+    expect(row[0].state).toBe("dead");
+    expect(row[0].last_error).toBe("Recording no longer available");
+  });
+
+  it("step error without error field resets last_error", async () => {
+    const recordingId = randomUUID();
+    const prevError = "Previous error";
+    await seedRecording(recordingId);
+    // Set previous error
+    await db.db.execute(
+      `UPDATE ${NAMESPACE}.tel_recordings SET last_error = $1 WHERE id = $2::uuid`,
+      [prevError, recordingId],
+    );
+    const { ctx: mockCtx } = createMockCtx();
+
+    const steps: PipelineSteps = {
+      received: async () => {
+        return { state: "downloaded" };
+      },
+    };
+
+    const result = await runMediaPipeline(mockCtx, { steps, namespace: NAMESPACE });
+    expect(result.processed).toBe(1);
+
+    const row = await db.db.query<{ state: string; last_error: string | null }>(
+      `SELECT state, last_error FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
+      [recordingId],
+    );
+    expect(row[0].state).toBe("downloaded");
+    expect(row[0].last_error).toBeNull();
+  });
+
   it("sanitizes error messages: removes Authorization and Bearer tokens, AC SIDs", async () => {
     const recordingId = randomUUID();
     await seedRecording(recordingId);
