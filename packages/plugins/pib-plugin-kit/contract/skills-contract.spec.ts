@@ -18,10 +18,10 @@ import { describe, expect, it } from "vitest";
 import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, MERGE_FIELDS, SKILL_KEPT_TOKENS, WRITING_HEADING, findBrandLeaks, teamSkillKey, tokenSubstitutionCount } from "../src/index.js";
 
 type Tool = { name: string; description?: string; parametersSchema?: Record<string, unknown> };
-type Skill = { skillKey: string; markdown?: string };
+type Skill = { skillKey: string; markdown?: string; files?: Array<{ path: string; content: string }> };
 type Manifest = { id: string; tools?: Tool[]; skills?: Skill[]; jobs?: Array<{ jobKey: string }> };
 
-const PLUGINS = ["cockpit", "crm", "mailbox", "social", "seo", "campaigns", "billing", "accounting", "payroll", "partners", "setup"] as const;
+const PLUGINS = ["cockpit", "crm", "mailbox", "social", "seo", "campaigns", "billing", "accounting", "payroll", "partners", "setup", "ads"] as const;
 
 async function loadManifests(): Promise<Manifest[]> {
   const out: Manifest[] = [];
@@ -133,3 +133,84 @@ describe("skills ↔ tools contract", async () => {
     expect(leaks).toEqual([]);
   });
 });
+
+/**
+ * Wording the shared skill text must not carry: the owner company's people and names. The text reaches every company's
+ * agents, so a client's agent must never read "Peet" or "Partners in Biz". Facts that belong to the owner company go in a
+ * PiB-only skill (see `src/pib-only-skills.ts`); a plugin lists those keys in `PIB_ONLY_SKILLS` (exported from its
+ * `src/manifest.ts`, as skill declarations or plain keys) and the scan skips them.
+ */
+const PIB_WORDING = /Peet|Partners in Biz|\bPiB\b/;
+
+/**
+ * Plugins whose skill text is not cleaned yet, one per line so a text PR deletes its own line and a conflict is one
+ * line. There is no permanent exemption: the list must be empty when the last text PR has merged.
+ */
+const PENDING: Array<(typeof PLUGINS)[number]> = [
+  "seo",
+  "cockpit",
+  "crm",
+  "social",
+  "campaigns",
+  "billing",
+  "mailbox",
+  "accounting",
+  "payroll",
+  "ads",
+];
+
+interface WordingHit {
+  plugin: string;
+  file: string;
+  line: number;
+  text: string;
+}
+
+/** Every line of a plugin's skill markdown and skill files that names the owner company, outside PiB-only skills. */
+function wordingHits(plugin: string, skills: Skill[], pibOnly: string[], extra: Array<{ file: string; text: string }> = []): WordingHit[] {
+  const docs = [
+    ...skills.filter((s) => !pibOnly.includes(s.skillKey)).flatMap((s) => [{ file: `${s.skillKey} (markdown)`, text: s.markdown ?? "" }, ...(s.files ?? []).map((f) => ({ file: `${s.skillKey}/${f.path}`, text: f.content }))]),
+    ...extra,
+  ];
+  return docs.flatMap((d) => d.text.split(/\r?\n/).flatMap((text, i) => (PIB_WORDING.test(text) ? [{ plugin, file: d.file, line: i + 1, text: text.trim().slice(0, 120) }] : [])));
+}
+
+describe("shared skill text names no owner company", async () => {
+  const { companySkillBody } = await import("../../plugin-cockpit/src/company-skill.ts");
+  const scanned = new Map<string, WordingHit[]>();
+  for (const name of PLUGINS) {
+    const mod = (await import(`../../plugin-${name}/src/manifest.ts`)) as { default: Manifest; PIB_ONLY_SKILLS?: Array<string | Skill> };
+    const pibOnly = (mod.PIB_ONLY_SKILLS ?? []).map((s) => (typeof s === "string" ? s : s.skillKey));
+    const extra = name === "cockpit" ? [{ file: "company-os (body)", text: companySkillBody() }] : [];
+    scanned.set(name, wordingHits(name, mod.default.skills ?? [], pibOnly, extra));
+  }
+  const describeHits = (hits: WordingHit[]) => hits.map((h) => `${h.plugin} ${h.file}:${h.line} ${h.text}`);
+
+  it("every plugin that is not pending is clean", () => {
+    const hits = PLUGINS.filter((name) => !PENDING.includes(name)).flatMap((name) => scanned.get(name) ?? []);
+    expect(describeHits(hits)).toEqual([]);
+  });
+
+  it("a pending plugin that is already clean leaves PENDING", () => {
+    const clean = PENDING.filter((name) => (scanned.get(name) ?? []).length === 0);
+    expect(clean, "delete these from PENDING in the same PR").toEqual([]);
+  });
+
+  it("skills listed in PIB_ONLY_SKILLS are skipped, others are reported with plugin, file and line", () => {
+    const skills: Skill[] = [
+      { skillKey: "pib-x-own", markdown: "Ask Peet." },
+      { skillKey: "pib-x", markdown: "fine\nSend as Partners in Biz.", files: [{ path: "references/a.md", content: "ok\nok\nthe PiB team" }] },
+    ];
+    expect(wordingHits("x", skills, ["pib-x-own"])).toEqual([
+      { plugin: "x", file: "pib-x (markdown)", line: 2, text: "Send as Partners in Biz." },
+      { plugin: "x", file: "pib-x/references/a.md", line: 3, text: "the PiB team" },
+    ]);
+    expect(wordingHits("x", skills, ["pib-x-own", "pib-x"])).toEqual([]);
+  });
+
+  it("keeps skill keys, tool ids and namespaces out of the match", () => {
+    const skills: Skill[] = [{ skillKey: "pib-company-os", markdown: "Call partnersinbiz.crm:get-contact via the pib-plugin-kit." }];
+    expect(wordingHits("x", skills, [])).toEqual([]);
+  });
+});
+
