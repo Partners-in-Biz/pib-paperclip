@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { loadStatusText } from "./load-status.js";
 import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, ModuleStateBanner, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
 import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
@@ -62,7 +63,7 @@ export function BillingPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot>({ invoices: [] });
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // `?tab=` is a tab or a section (payments, reminders, bills…); every pre-0.4 value still opens the same place.
   const [view, setView] = useUrlTab<View>(VIEW_IDS, "overview", { path: "/billing", search: location.search, navigate: navigation.navigate });
   const { tab, section } = resolveView(view, Boolean(scope));
@@ -81,13 +82,12 @@ export function BillingPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || enabled === false) return;
     setLoaded(false);
-    setLoadFailed(false);
+    setLoadError(null);
     setMessage("");
     setOpenInvoice(null);
     setOpenQuote(null);
     refresh().catch((error: unknown) => {
-      setLoadFailed(true);
-      setMessage(errorText(error));
+      setLoadError(errorText(error));
     });
   }, [context.companyId, scopeKey, enabled === false]);
 
@@ -195,8 +195,7 @@ export function BillingPage({ context }: PluginPageProps) {
     <BillingContext.Provider value={api}>
       <Tabs tabs={tabs} active={tab} onChange={(id) => setView(viewForTab(id as TopTab))} />
       <SectionNav items={sections} active={section} onChange={(id) => setView(id as View)} />
-      {!loaded && !loadFailed ? <Muted>Loading…</Muted> : null}
-      {!loaded && loadFailed ? <Muted>Billing could not be loaded. Reload the page, or ask a company admin if it keeps happening.</Muted> : null}
+      {!loaded ? <Muted>{loadStatusText(loadError)}</Muted> : null}
       {!scope && section === "overview" ? <GetStarted status={setupStatus} moduleName="Billing" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
       {loaded && section === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setView} onOpenInvoice={openInvoiceTab} onOpenQuote={openQuoteTab} /> : null}
       {loaded && section === "reports" && !scope ? <ReportsTab /> : null}
@@ -220,7 +219,7 @@ export function BillingPage({ context }: PluginPageProps) {
       <WorkspacePage
         header={(
           <ClientWorkspaceBar
-            client={{ kind: scope.kind, id: scope.id, name: client?.name ?? (loaded ? "Unknown client" : "Loading…"), detail: client?.detail ?? null }}
+            client={{ kind: scope.kind, id: scope.id, name: client?.name ?? (loaded ? "Unknown client" : loadError ? "Client" : "Loading…"), detail: client?.detail ?? null }}
             active="billing"
             linkProps={navigation.linkProps}
             ownPath="/billing"
