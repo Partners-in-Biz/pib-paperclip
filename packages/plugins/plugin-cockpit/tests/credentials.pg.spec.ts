@@ -135,6 +135,21 @@ d("the credentials register (Postgres)", () => {
       expect(JSON.stringify(listed)).not.toMatch(/burned|paperclip|ssh|backup-age-key|PMStander|hermes|Nous/i);
     });
 
+    it("keeps PiB's rows out of a client company even when it ticks credentialSeed, and gives the owner company all 22", async () => {
+      const w = await make(CHECKS_CONFIG, SECRETS, { [B]: { healthIssue: true, credentialSeed: true } });
+      const MODULES_STATE = { scopeKind: "company" as const, scopeId: B, namespace: "pib-setup", stateKey: "modules" };
+      await w.ctx.state.set(MODULES_STATE, { companyId: B, modules: { social: false, billing: false }, updatedAt: "2026-10-25T00:00:00.000Z" });
+      expect(await seedCredentials(w.env, B)).toBe(2);
+      const rowsB = await listCredentials(w.ctx, B);
+      expect(rowsB.map((r) => r.seedKey).sort()).toEqual(["client-mailbox-gmail", "client-seo-google-access"]);
+      const text = JSON.stringify(rowsB);
+      expect(text).not.toMatch(/PMStander|pib-paperclip-backups|backup-age-key|covalonic|Partners.in.Biz|hermes/i);
+      // the owner company (prefix PAR) keeps the whole security table, unchanged
+      expect(await seedCredentials(w.env, A)).toBe(22);
+      expect((await listCredentials(w.ctx, A)).map((r) => r.seedKey).sort()).toEqual(CREDENTIAL_SEED.map((s) => s.seedKey).sort());
+      expect(JSON.stringify(await listCredentials(w.ctx, A))).toMatch(/PMStander/);
+    });
+
     it("keeps each company's own register apart: a credential B records is B's, and A's list is untouched", async () => {
       const w = await make(CHECKS_CONFIG, SECRETS, { [B]: { healthIssue: true } });
       await seedCredentials(w.env, A);
