@@ -62,6 +62,7 @@ export function BillingPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot>({ invoices: [] });
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
   // `?tab=` is a tab or a section (payments, reminders, bills…); every pre-0.4 value still opens the same place.
   const [view, setView] = useUrlTab<View>(VIEW_IDS, "overview", { path: "/billing", search: location.search, navigate: navigation.navigate });
   const { tab, section } = resolveView(view, Boolean(scope));
@@ -80,10 +81,14 @@ export function BillingPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || enabled === false) return;
     setLoaded(false);
+    setLoadFailed(false);
     setMessage("");
     setOpenInvoice(null);
     setOpenQuote(null);
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    refresh().catch((error: unknown) => {
+      setLoadFailed(true);
+      setMessage(errorText(error));
+    });
   }, [context.companyId, scopeKey, enabled === false]);
 
   // A deep link (the CRM deal drawer's "Draft a quote"): ?tab=quotes&new=1&client=company:<id>&dealId=<id>
@@ -190,7 +195,8 @@ export function BillingPage({ context }: PluginPageProps) {
     <BillingContext.Provider value={api}>
       <Tabs tabs={tabs} active={tab} onChange={(id) => setView(viewForTab(id as TopTab))} />
       <SectionNav items={sections} active={section} onChange={(id) => setView(id as View)} />
-      {!loaded ? <Muted>Loading…</Muted> : null}
+      {!loaded && !loadFailed ? <Muted>Loading…</Muted> : null}
+      {!loaded && loadFailed ? <Muted>Billing could not be loaded. Reload the page, or ask a company admin if it keeps happening.</Muted> : null}
       {!scope && section === "overview" ? <GetStarted status={setupStatus} moduleName="Billing" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
       {loaded && section === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setView} onOpenInvoice={openInvoiceTab} onOpenQuote={openQuoteTab} /> : null}
       {loaded && section === "reports" && !scope ? <ReportsTab /> : null}
