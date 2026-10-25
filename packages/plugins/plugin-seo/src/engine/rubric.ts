@@ -8,8 +8,8 @@ import { htmlToText } from "./claims.js";
 import type { PreviewChanges } from "./preview.js";
 
 /**
- * Tone is not scored here, so the kit counts it at 10 of 20 and a preview can reach at most 90 of 100 (80 once the
- * hook or format falls short). The kit's bar of 80 would then fail nearly all real copy, so the web bar is 70.
+ * Tone is not scored here, so the kit counts it at 10 of 20 and a preview can reach at most 80 of 100. The kit's bar of
+ * 80 would then pass only a perfect page, so the web bar is 70.
  */
 export const WEB_PASS_SCORE = 70;
 

@@ -27,7 +27,8 @@ describe("preview copy rubric", () => {
     const { WEB_PASS_SCORE } = await import("../src/engine/rubric.js");
     expect(WEB_PASS_SCORE).toBe(70);
     const r = scorePreviewCopy({ h1: "Why do 3 in 4 bakeries lose orders?", bodyHtml: "<p>Book a free call and we fix your listing.</p>" })!;
-    expect(r.pass).toBe(r.score >= 70);
+    expect(r.score).toBe(80);
+    expect(r.pass).toBe(true);
   });
 
   it("advises only: a failing score has no blockers of its own", () => {
