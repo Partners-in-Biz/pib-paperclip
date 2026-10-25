@@ -483,6 +483,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   const savePreferences = usePluginAction("mailbox.preferences-save");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [inbox, setInbox] = useState<{ messages: InboxMessage[]; clients: ClientOption[] } | null>(null);
   const [sent, setSent] = useState<SendRequest[] | null>(null);
   const [stats, setStats] = useState<TriageStats | null>(null);
@@ -527,7 +528,13 @@ export function MailboxPage({ context }: PluginPageProps) {
 
   async function refresh() {
     const uiBase = await resolvePluginUiBase(PLUGIN_KEY, import.meta.url);
-    setSnapshot((await load({ uiBase })) as Snapshot);
+    setLoadError("");
+    try {
+      setSnapshot((await load({ uiBase })) as Snapshot);
+    } catch (error) {
+      setLoadError(errorText(error));
+      throw error;
+    }
   }
   async function refreshInbox() {
     setInbox((await loadInbox({ category: category || undefined, needsReply: needsReplyOnly, limit: 150 })) as { messages: InboxMessage[]; clients: ClientOption[] });
@@ -663,7 +670,7 @@ export function MailboxPage({ context }: PluginPageProps) {
   }
 
   const settings = snapshot?.settings;
-  const readiness = connectReadiness(settings);
+  const readiness = connectReadiness(settings, loadError);
   const missing = missingTechnical(settings);
 
   /** Shows the one-time technical setup (Mailboxes tab). */
@@ -771,7 +778,9 @@ export function MailboxPage({ context }: PluginPageProps) {
       tone={gmailAccounts.some((a) => a.status === "needs_reconnect") ? "bad" : gmailAccounts.length === 0 ? "warn" : undefined}
       strip={gmailAccounts.length === 0 || gmailAccounts.some((a) => a.status === "needs_reconnect")}
     >
-      {gmailAccounts.length === 0 ? (
+      {loadError && !snapshot ? (
+        <EmptyState compact icon={Mail} title="Mailboxes could not load" description={loadError} />
+      ) : gmailAccounts.length === 0 ? (
         <EmptyState
           compact
           icon={Mail}
@@ -995,7 +1004,9 @@ export function MailboxPage({ context }: PluginPageProps) {
               <RefreshButton narrow={narrow} onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))} />
             </OneRow>
           </Toolbar>
-          {inboxRows.length === 0 ? (
+          {loadError && !snapshot ? (
+            <EmptyState icon={Inbox} title="Mail could not load" description={loadError} />
+          ) : inboxRows.length === 0 ? (
             <EmptyState
               icon={Inbox}
               title="No mail here"
@@ -1063,7 +1074,9 @@ export function MailboxPage({ context }: PluginPageProps) {
               <RefreshButton narrow={narrow} onClick={() => void refreshSent().catch((error: unknown) => setMessage(errorText(error)))} />
             </OneRow>
           </Toolbar>
-          {(sent ?? []).length === 0 ? (
+          {loadError && !snapshot ? (
+            <EmptyState icon={Send} title="Sent mail could not load" description={loadError} />
+          ) : (sent ?? []).length === 0 ? (
             <EmptyState
               icon={Send}
               title={sentStatus ? "Nothing with this status" : "Nothing sent yet"}

@@ -22,8 +22,9 @@ export function missingTechnical(settings: SettingsLike | null | undefined): str
 }
 
 /** Whether "Connect Gmail" can start the Google sign-in now, and if not, why (one short line). */
-export function connectReadiness(settings: SettingsLike | null | undefined): { ready: boolean; reason: string | null } {
-  if (!settings) return { ready: false, reason: "Loading the Mailbox settings…" };
+export function connectReadiness(settings: SettingsLike | null | undefined, loadError?: string | null): { ready: boolean; reason: string | null } {
+  // A failed load is final: show why, never "Loading" for data that will not arrive.
+  if (!settings) return { ready: false, reason: loadError || "Loading the Mailbox settings…" };
   if (!settings.saved || missingTechnical(settings).length > 0) return { ready: false, reason: "An admin first does the one-time technical setup." };
   return { ready: true, reason: null };
 }
