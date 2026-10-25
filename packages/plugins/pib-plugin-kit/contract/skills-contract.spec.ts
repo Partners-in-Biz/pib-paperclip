@@ -148,7 +148,6 @@ const PIB_WORDING = /Peet|Partners in Biz|\bPiB\b/;
  */
 const PENDING: Array<(typeof PLUGINS)[number]> = [
   "seo",
-  "cockpit",
   "crm",
   "social",
   "billing",

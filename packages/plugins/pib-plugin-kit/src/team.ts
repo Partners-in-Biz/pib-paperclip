@@ -217,7 +217,7 @@ export const TEAM_ROLES: TeamRole[] = [
     pluginKey: PIB_PLUGINS.seo,
     module: "seo",
     title: "SEO Specialist",
-    summary: "Works the 90-day SEO sprints: site checks, content, backlinks and changes through the site repo or, on WordPress, the PiB Connector.",
+    summary: "Works the 90-day SEO sprints: site checks, content, backlinks and changes through the site repo or, on WordPress, the Connector.",
     required: true,
     setupItemKey: "agent",
     skills: withOs(teamSkillKey(PIB_PLUGINS.seo, "seo-sprint")),
