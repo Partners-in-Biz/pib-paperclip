@@ -17,9 +17,6 @@ export const ACCEPTED_AUDIO = new Map<string, string>([
 /** 7 MB of audio is roughly 20 minutes of compressed speech and stays under the bridge's 10 MB body cap once base64-encoded. */
 export const MAX_AUDIO_BYTES = 7 * 1024 * 1024;
 
-/** Longest an xAI call may take before it is given up on. */
-export const REQUEST_TIMEOUT_MS = 60_000;
-
 export function baseMime(mimeType: unknown): string {
   return typeof mimeType === "string" ? mimeType.split(";")[0]!.trim().toLowerCase() : "";
 }
@@ -77,7 +74,6 @@ export async function transcribe(input: TranscribeInput, fetchImpl: FetchLike = 
 
   const res = await fetchImpl(XAI_STT_URL, {
     method: "POST",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${input.apiKey}` },
     body: form,
   });
@@ -96,7 +92,6 @@ export async function mintLiveToken(
 ): Promise<{ token: string; expiresAt: number }> {
   const res = await fetchImpl(XAI_CLIENT_SECRETS_URL, {
     method: "POST",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ expires_after: { seconds } }),
   });

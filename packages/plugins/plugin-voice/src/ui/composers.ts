@@ -55,9 +55,10 @@ function composerButtons(root: HTMLElement): HTMLButtonElement[] {
   );
 }
 
-const EXPLICIT_SEND = '[data-testid="task-chat-composer-send"], [data-testid="task-chat-composer-stop"]';
+const EXPLICIT_SEND = '[data-testid="task-chat-composer-send"]';
+const EXPLICIT_STOP = '[data-testid="task-chat-composer-stop"]';
 
-/** The real Send button, or null. Auto-send uses this: clicking a guessed control is worse than not sending. */
+/** The real Send button, or null. Never Stop: auto-send must not cancel a running agent. */
 export function findSendButton(root: HTMLElement): HTMLButtonElement | null {
   const explicit = root.querySelector<HTMLButtonElement>(EXPLICIT_SEND);
   if (explicit) return explicit;
@@ -67,7 +68,7 @@ export function findSendButton(root: HTMLElement): HTMLButtonElement | null {
 
 /** Where to place our buttons: in front of Send, or of the last control (Stop, an icon-only Send). */
 export function findAnchorButton(root: HTMLElement): HTMLButtonElement | null {
-  const send = findSendButton(root);
+  const send = findSendButton(root) ?? root.querySelector<HTMLButtonElement>(EXPLICIT_STOP);
   if (send) return send;
   const buttons = composerButtons(root);
   return buttons.length > 0 ? buttons[buttons.length - 1]! : null;

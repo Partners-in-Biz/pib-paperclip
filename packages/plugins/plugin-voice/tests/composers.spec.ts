@@ -143,3 +143,14 @@ describe("auto-send target", () => {
     expect(describeComposer(root!).sendButton).toBeNull();
   });
 });
+
+describe("auto-send never clicks Stop", () => {
+  it("returns null while only the host's Stop control is present, but still anchors on it", () => {
+    document.body.innerHTML =
+      '<div data-testid="chat-composer"><textarea></textarea><div class="row"><button data-testid="task-chat-composer-stop" id="stop">Stop</button></div></div>';
+    const [root] = findComposers(document);
+    expect(describeComposer(root!).sendButton).toBeNull();
+    const mount = ensureMount(root!);
+    expect(mount.nextElementSibling).toBe(document.getElementById("stop"));
+  });
+});
