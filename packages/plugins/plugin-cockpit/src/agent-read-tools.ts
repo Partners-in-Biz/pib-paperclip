@@ -6,6 +6,7 @@ import type { ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
 import { redactSecrets } from "./watch-model.js";
 import { GOVERNOR_NS, GOVERNOR_STATE_KEY } from "./governor.js";
+import { listHostedUsage } from "./hosted-usage.js";
 import { listRepairs } from "./repairs.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
@@ -114,6 +115,12 @@ export async function runAgentReadTool(env: Env, name: string, raw: unknown, run
       return toolOk(`Found ${findings.length} watchdog findings.`, { findings }) as ToolResult;
     }
 
+    if (name === "hosted-usage-list") {
+      const list = await listHostedUsage(env, companyId, { fromMonth: p.fromMonth, toMonth: p.toMonth });
+      if (!list.allowed) return toolOk("Hosted usage is only available in the owner company.", { allowed: false, rows: [] }) as ToolResult;
+      return toolOk(`Found ${list.rows.length} hosted usage rows.`, { allowed: true, rows: list.rows }) as ToolResult;
+    }
+
     return toolFail(`Unknown tool ${name}`) as ToolResult;
   } catch (error) {
     env.ctx.logger.info("Agent read tool failed", { name, error: message(error) });
@@ -121,4 +128,4 @@ export async function runAgentReadTool(env: Env, name: string, raw: unknown, run
   }
 }
 
-export const AGENT_READ_TOOL_NAMES = new Set<string>(["repairs-list", "governor-state", "watchdog-findings"]);
+export const AGENT_READ_TOOL_NAMES = new Set<string>(["repairs-list", "governor-state", "watchdog-findings", "hosted-usage-list"]);

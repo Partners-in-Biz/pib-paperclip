@@ -77,7 +77,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(6);
+    expect(manifest.apiRoutes).toHaveLength(7);
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
@@ -94,7 +94,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
-      "repairs-list", "governor-state", "watchdog-findings",
+      "repairs-list", "governor-state", "watchdog-findings", "hosted-usage-list",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
       "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",

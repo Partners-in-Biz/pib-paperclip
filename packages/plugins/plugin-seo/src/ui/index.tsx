@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CARRY, pageLocation, settleMessage, visibleMessage } from "./page-message.js";
 import {
@@ -119,7 +120,9 @@ function SeoAgentBox({ hire, stuck, refresh, onMessage }: { hire: HireView | nul
 
 const RUNNING = ["pre_launch", "active", "compounding"];
 
-export function SeoPage({ context }: PluginPageProps) {
+export const SeoPage = withHelp(SeoPageMain);
+
+function SeoPageMain({ context }: PluginPageProps) {
   const load = usePluginAction("seo.load");
   const reportRoutine = usePluginAction("seo.routine-report");
   const nav = useHostNavigation();

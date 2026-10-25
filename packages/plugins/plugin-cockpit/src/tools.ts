@@ -31,6 +31,7 @@ export const TOOL_NAMES = {
   repairsList: "repairs-list",
   governorState: "governor-state",
   watchdogFindings: "watchdog-findings",
+  hostedUsageList: "hosted-usage-list",
 } as const;
 
 const PROFILE_PROPERTIES: Record<string, JsonSchema> = Object.fromEntries(
@@ -169,6 +170,16 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       "List open watchdog findings: task issues that are not done or cancelled. Each has an identifier, title, first 500 characters of description (redacted for secrets), and the check type (chain_idle, orphan_blocker, or null if unknown). Limit capped at 100.",
     parametersSchema: schema([], {
       limit: { type: "integer", description: "Number of results (default 50, capped at 100)." },
+    }),
+  },
+  {
+    name: TOOL_NAMES.hostedUsageList,
+    displayName: "Hosted usage list",
+    description:
+      "Owner company only: per hosted company and month, the runs, notional spend (USD), done issues and agents, newest month first. Counts and cost only. Any other company gets allowed: false and no rows.",
+    parametersSchema: schema([], {
+      fromMonth: { type: "string", description: "First month to include, YYYY-MM (optional, default five months back)." },
+      toMonth: { type: "string", description: "Last month to include, YYYY-MM (optional, default this month)." },
     }),
   },
   ...MEMORY_TOOL_DECLARATIONS,

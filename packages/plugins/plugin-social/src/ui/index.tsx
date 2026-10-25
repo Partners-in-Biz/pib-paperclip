@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { clientScopeFromSearch, formatClientParam, parseClientParam, withClientParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { PLUGIN_ID } from "../platforms.js";
@@ -137,7 +138,9 @@ function SpaceSwitch({ me, linkProps }: { me: boolean; linkProps: ReturnType<typ
 }
 
 /** PiB's own social work and its clients' workspaces. */
-export function SocialPage(props: PluginPageProps) {
+export const SocialPage = withHelp(SocialPageMain);
+
+function SocialPageMain(props: PluginPageProps) {
   return <SocialWorkspace {...props} space="company" />;
 }
 

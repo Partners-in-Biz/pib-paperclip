@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { rememberCompany } from "@partnersinbiz/pib-plugin-kit";
 import { JOBS } from "../src/constants.js";
-import { hostedUsageRollup, monthsToCompute, sastMonth } from "../src/hosted-usage.js";
+import { handleApiRoute } from "../src/register.js";
+import { hostedUsageRollup, monthsToCompute, parseMonth, sastMonth } from "../src/hosted-usage.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
@@ -138,5 +139,58 @@ d("hosted usage roll-up (Postgres)", () => {
     await seed(w);
     expect(await hostedUsageRollup(w.env)).toEqual({ owner: false, companies: 0, rows: 0, failed: 0 });
     expect(await rows(w)).toHaveLength(0);
+  });
+
+  describe("read tool and route", () => {
+    const RUN = (companyId: string) => ({ companyId, agentId: AGENT, runId: "r", projectId: "p" }) as never;
+    const listed = async (w: Hybrid, companyId: string, params: Record<string, unknown> = {}) =>
+      (await w.tools.get("hosted-usage-list")!(params, RUN(companyId))) as { content?: string; data?: { allowed: boolean; rows: Array<Record<string, unknown>> } };
+    const insert = (w: Hybrid, hosted: string, name: string, month: string, runs: number) =>
+      w.client.query(`INSERT INTO ${NAMESPACE}.hosted_usage (owner_company_id, hosted_company_id, company_name, month, runs, notional_usd, done_issues, agents) VALUES ($1, $2, $3, $4::date, $5, 1.5, 2, 3)`, [OWNER, hosted, name, month, runs]);
+
+    it("parses months", () => {
+      expect(parseMonth("2026-10")).toBe("2026-10-01");
+      expect(parseMonth("2026-10-17")).toBe("2026-10-01");
+      expect(parseMonth("2026-13")).toBeNull();
+      expect(parseMonth("nope")).toBeNull();
+      expect(parseMonth(undefined)).toBeNull();
+    });
+
+    it("gives the owner the rows newest month first, with only the listed fields, and filters by month", async () => {
+      const w = await make();
+      await insert(w, DEMO, "Demo", "2026-08-01", 1);
+      await insert(w, DEMO, "Demo", "2026-10-01", 3);
+      await insert(w, OTHER, "Other", "2026-10-01", 4);
+      await insert(w, DEMO, "Demo", "2026-09-01", 2);
+      await insert(w, DEMO, "Demo", "2025-01-01", 9); // outside the default 6 months
+      const all = (await listed(w, OWNER)).data!;
+      expect(all.allowed).toBe(true);
+      expect(all.rows.map((r) => [r.month, r.companyName])).toEqual([["2026-10-01", "Demo"], ["2026-10-01", "Other"], ["2026-09-01", "Demo"], ["2026-08-01", "Demo"]]);
+      expect(Object.keys(all.rows[0]).sort()).toEqual(["agents", "companyName", "computedAt", "doneIssues", "hostedCompanyId", "month", "notionalUsd", "runs"]);
+      expect(all.rows[0]).toMatchObject({ hostedCompanyId: DEMO, runs: 3, notionalUsd: 1.5, doneIssues: 2, agents: 3 });
+      const filtered = (await listed(w, OWNER, { fromMonth: "2026-09", toMonth: "2026-09" })).data!;
+      expect(filtered.rows.map((r) => r.month)).toEqual(["2026-09-01"]);
+      const old = (await listed(w, OWNER, { fromMonth: "2025-01" })).data!;
+      expect(old.rows).toHaveLength(5);
+    });
+
+    it("gives a client company nothing, even when the table holds rows", async () => {
+      const w = await make();
+      await insert(w, DEMO, "Demo", "2026-10-01", 3);
+      expect((await listed(w, DEMO)).data).toEqual({ allowed: false, rows: [] });
+      expect((await listed(w, OTHER)).data).toEqual({ allowed: false, rows: [] });
+    });
+
+    it("serves the same rows on the route, 403 for a client company, 400 for a bad month", async () => {
+      const w = await make();
+      await insert(w, DEMO, "Demo", "2026-10-01", 3);
+      const call = (companyId: string, query: Record<string, unknown> = {}) =>
+        handleApiRoute(w.env, { routeKey: "hosted-usage", method: "GET", companyId, query } as never);
+      const ok = await call(OWNER);
+      expect(ok.status).toBe(200);
+      expect((ok.body as { rows: unknown[] }).rows).toHaveLength(1);
+      expect((await call(DEMO)).status).toBe(403);
+      expect((await call(OWNER, { fromMonth: "bad" })).status).toBe(400);
+    });
   });
 });
