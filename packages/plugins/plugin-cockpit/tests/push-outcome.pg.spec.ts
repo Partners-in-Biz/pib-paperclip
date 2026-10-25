@@ -1,6 +1,6 @@
 /**
  * Push notification outcome tests (Postgres).
- * Tests cover: notifyOwner return outcomes for sent, no_subscription, deferred, duplicate, capped, and critical.
+ * Tests cover: notifyOwner return outcomes for sent, no_subscription, deferred, duplicate, capped, collapsed, and critical.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -311,7 +311,7 @@ d("Push notification outcomes (Postgres)", () => {
     expect(deliverCalls).toHaveLength(0);
   });
 
-  it("i) silent collapse (notify false) -> outcome capped, deliver not called", async () => {
+  it("i) silent collapse (notify false) -> outcome collapsed, deliver not called", async () => {
     const now = new Date("2026-10-20T10:00:00Z"); // SAST 12:00
     const deliverCalls: any[] = [];
     const mockDeliver = async (ctx: any, companyId: string, subs: any[], payload: any) => {
@@ -355,7 +355,7 @@ d("Push notification outcomes (Postgres)", () => {
       { deliver: mockDeliver, now: () => now },
     );
 
-    expect(result.outcome).toBe("capped");
+    expect(result.outcome).toBe("collapsed");
     expect(deliverCalls).toHaveLength(0);
   });
 });

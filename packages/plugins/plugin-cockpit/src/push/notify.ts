@@ -130,7 +130,7 @@ export async function notifyOwner(
         return { outcome: "no_subscription" };
       }
     }
-    return { outcome: "capped" };
+    return { outcome: "collapsed" };
   }
 }
 
