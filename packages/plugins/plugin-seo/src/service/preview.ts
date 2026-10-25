@@ -9,6 +9,7 @@ import * as db from "../db.js";
 import { t } from "../db.js";
 import { checkClaims } from "../engine/claims.js";
 import { checkWhy } from "../engine/why.js";
+import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
@@ -125,7 +126,8 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });
-  const review = await routePreviewReview(env, sprint, { id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
+  const rubric = scorePreviewCopy(changes);
+  const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
   return {
     previewId: token,
@@ -136,6 +138,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     stats,
     reviewStatus: "pending",
     reviewIssueId: review,
+    ...(rubric ? { rubric } : {}),
     ...(built.notes.length > 0 ? { notes: built.notes } : {}),
     next: sprint.clientSignoff === "auto"
       ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
@@ -322,7 +325,7 @@ const REDESIGN_CHECKS = [
 async function routePreviewReview(
   env: Env,
   sprint: db.Sprint,
-  p: { id: string; key: string; pageUrl: string; title: string; stats: ReturnType<typeof previewStats>; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
+  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: ReturnType<typeof previewStats>; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
 ): Promise<string | null> {
   if (isRehearsalSprint(sprint)) return null;
   try {
@@ -338,6 +341,7 @@ async function routePreviewReview(
       `Review page (screenshots + figures): ${reviewUrl}`,
       `Text kept from the live page: ${p.stats.keptPct}% (${p.stats.liveWords} words live, +${p.stats.addedWords} added, -${p.stats.removedWords} removed).`,
       ...(p.notes.length ? ["", ...p.notes.map((n) => `Note: ${n}`)] : []),
+      ...(p.rubric ? ["", ...rubricLines(p.rubric)] : []),
       "",
       "## The client fact sheet (what the copy may claim)",
       sheet.facts.length > 0
