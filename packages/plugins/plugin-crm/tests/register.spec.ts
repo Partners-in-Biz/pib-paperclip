@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { findBrandLeaks } from "@partnersinbiz/pib-plugin-kit";
 import { REGISTER_DOC } from "../src/register-doc.generated.js";
 import { CLIENT_SENSITIVITY_EVENT, listRegister, parseRegisterDoc, REGISTER, reemitSensitivity, ruleOf, seedRegister, sensitivityOf, systemsNotCleared } from "../src/register.js";
 import { cleanPartyName, renderRegisterDoc, tokensIn } from "../src/register-render.js";
@@ -24,7 +25,7 @@ describe("the data-processing register file", () => {
   it("names every system the owner listed, each with its region, retention, agreement, safeguards and rule for sensitive clients", () => {
     const ids = REGISTER.rows.map((row) => row.id);
     for (const system of ["anthropic", "hermes-nous", "typesafe", "resend", "google", "cloudflare-r2", "hetzner", "github", "vercel", "firebase"]) expect(ids, system).toContain(system);
-    expect(REGISTER.version).toBe("2026-10-04b");
+    expect(REGISTER.version).toBe("2026-10-25");
     for (const row of REGISTER.rows) {
       expect(row.region.length, row.id).toBeGreaterThan(1);
       expect(row.retention.length, row.id).toBeGreaterThan(1);
@@ -88,7 +89,7 @@ describe("the register table", () => {
   it("is read through a tool that cannot change it, and can be narrowed to what a sensitive client must avoid", async () => {
     const { harness } = await bootCare();
     const all = await tool<Record<string, any>>(harness, "list-data-processing", {});
-    expect(all).toMatchObject({ version: "2026-10-04b", count: REGISTER.rows.length });
+    expect(all).toMatchObject({ version: "2026-10-25", count: REGISTER.rows.length });
     expect(all.agreementsUnverified).toBeGreaterThan(5);
     expect(all.systems.find((s: any) => s.id === "hetzner")).toMatchObject({ name: expect.stringMatching(/Hetzner/), sensitiveClients: expect.stringMatching(/^cleared/) });
     const avoid = await tool<Record<string, any>>(harness, "list-data-processing", { forSensitiveClient: true });
@@ -145,10 +146,14 @@ describe("client sensitivity", () => {
 describe("the register is worded per company", () => {
   // sha256 of docs/data-processing-register.md as it was before it became a template (origin/development at PAR-5299): Partners in Biz's text must not change.
   const PIB_TEXT_SHA256 = "fc0313a70839d8be0c962505af87446020c2cbfe08887471f069e593c71e1564";
+  const OLD_VERSION_LINE = "Version: 2026-10-04b";
 
   it("gives the owner company exactly the text it had before the file became a template (PAR unchanged, byte for byte)", () => {
     const text = renderRegisterDoc(REGISTER_DOC, { owner: true, name: "Anything" });
-    expect(createHash("sha256").update(text).digest("hex")).toBe(PIB_TEXT_SHA256);
+    // Only the version line moved with the template change; every other byte is what Partners in Biz had.
+    expect(text).toContain(`Version: ${REGISTER.version}`);
+    const asBefore = text.replace(`Version: ${REGISTER.version}`, OLD_VERSION_LINE);
+    expect(createHash("sha256").update(asBefore).digest("hex")).toBe(PIB_TEXT_SHA256);
     expect(text).not.toContain("{{");
   });
 
@@ -158,7 +163,13 @@ describe("the register is worded per company", () => {
       expect(text, name).toContain(`personal data for ${name}, what they get`);
       expect(text, name).not.toContain("{{");
       if (name === "Acme Ltd") expect(text).not.toMatch(/partners in biz|\bpib\b|partnersinbiz/i);
+      if (name === "Acme Ltd") expect(findBrandLeaks(text)).toEqual([]);
     }
+  });
+
+  it("says who holds the backup key per company: Peet for the owner company, the company's owner for a client", () => {
+    expect(renderRegisterDoc(REGISTER_DOC, { owner: true, name: null })).toContain("only Peet holds the key");
+    expect(renderRegisterDoc(REGISTER_DOC, { owner: false, name: "Acme Ltd" })).toContain("only the company's owner holds the key");
   });
 
   it("keeps the same systems, rules and agreements for every company, so only the wording differs", () => {
@@ -170,7 +181,7 @@ describe("the register is worded per company", () => {
   });
 
   it("uses only known tokens, and a hostile company name cannot add a column, a token or markup", () => {
-    expect(tokensIn(REGISTER_DOC).every((key) => key in { party_scope: 1, mail_domain: 1, resend_dkim: 1, resend_team: 1, github_hosts: 1, vercel_hosts: 1, firebase_users: 1, firebase_data: 1 })).toBe(true);
+    expect(tokensIn(REGISTER_DOC).every((key) => key in { party_scope: 1, mail_domain: 1, resend_dkim: 1, resend_team: 1, github_hosts: 1, vercel_hosts: 1, firebase_users: 1, firebase_data: 1, key_holder: 1 })).toBe(true);
     expect(() => renderRegisterDoc("x {{nope}}", { owner: false, name: "A" })).toThrow(/unknown token/);
     const evil = renderRegisterDoc(REGISTER_DOC, { owner: false, name: "Evil | Co {{party_scope}} <b>\n# x`" });
     expect(() => parseRegisterDoc(evil)).not.toThrow();
