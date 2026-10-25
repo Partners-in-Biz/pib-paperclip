@@ -90,15 +90,7 @@ export function findComposers(doc: ParentNode): HTMLElement[] {
  */
 export function ensureMount(root: HTMLElement): HTMLElement {
   const send = findAnchorButton(root);
-  let mount = root.querySelector<HTMLElement>(`[${MOUNT_ATTR}]`);
-  if (!mount) {
-    mount = root.ownerDocument.createElement("span");
-    mount.setAttribute(MOUNT_ATTR, "");
-    mount.style.display = "inline-flex";
-    mount.style.alignItems = "center";
-    mount.style.gap = "2px";
-    mount.style.flexShrink = "0";
-  }
+  const mount = root.querySelector<HTMLElement>(`[${MOUNT_ATTR}]`) ?? newMount(root.ownerDocument);
   if (send?.parentElement) {
     if (mount.nextElementSibling !== send || mount.parentElement !== send.parentElement) {
       send.parentElement.insertBefore(mount, send);
@@ -107,6 +99,69 @@ export function ensureMount(root: HTMLElement): HTMLElement {
     root.appendChild(mount);
   }
   return mount;
+}
+
+/**
+ * The New task dialog: a mic (no live voice) in its toolbar, before the "…"
+ * menu. The text goes into the field the person last used there (title or
+ * description), the description by default.
+ */
+export const TASK_DIALOG_ANCHOR = '[data-testid="new-issue-more-menu-trigger"]';
+
+export function findTaskDialogs(doc: ParentNode): HTMLElement[] {
+  const roots: HTMLElement[] = [];
+  for (const anchor of doc.querySelectorAll<HTMLElement>(TASK_DIALOG_ANCHOR)) {
+    const root = anchor.closest<HTMLElement>('[role="dialog"]') ?? anchor.parentElement;
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}
+
+function newMount(doc: Document): HTMLElement {
+  const mount = doc.createElement("span");
+  mount.setAttribute(MOUNT_ATTR, "");
+  mount.style.display = "inline-flex";
+  mount.style.alignItems = "center";
+  mount.style.gap = "2px";
+  mount.style.flexShrink = "0";
+  return mount;
+}
+
+export function ensureTaskDialogMount(root: HTMLElement): HTMLElement {
+  const anchor = root.querySelector<HTMLElement>(TASK_DIALOG_ANCHOR);
+  const mount = root.querySelector<HTMLElement>(`[${MOUNT_ATTR}]`) ?? newMount(root.ownerDocument);
+  if (anchor?.parentElement) {
+    if (mount.nextElementSibling !== anchor || mount.parentElement !== anchor.parentElement) {
+      anchor.parentElement.insertBefore(mount, anchor);
+    }
+  } else if (mount.parentElement !== root) {
+    root.appendChild(mount);
+  }
+  return mount;
+}
+
+function isField(el: Element | null): el is HTMLElement {
+  return !!el && !isOurs(el) && (el instanceof HTMLTextAreaElement || (el as HTMLElement).isContentEditable === true || el.getAttribute("contenteditable") === "true");
+}
+
+/** Last text field the person used, so a voice note lands where they were typing. */
+let lastField: HTMLElement | null = null;
+
+export function trackFieldFocus(doc: Document): () => void {
+  const onFocus = (event: FocusEvent) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('textarea, [contenteditable="true"]') : null;
+    if (isField(target)) lastField = target;
+  };
+  doc.addEventListener("focusin", onFocus, true);
+  return () => doc.removeEventListener("focusin", onFocus, true);
+}
+
+export function taskDialogEditable(root: HTMLElement, last: HTMLElement | null = lastField): HTMLElement | null {
+  if (last && last.isConnected && root.contains(last)) return last;
+  const description = root.querySelector<HTMLElement>('[contenteditable="true"]');
+  if (description && !isOurs(description)) return description;
+  const title = root.querySelector<HTMLTextAreaElement>("textarea");
+  return title && !isOurs(title) ? title : null;
 }
 
 /** How to join a transcript onto what is already typed. */

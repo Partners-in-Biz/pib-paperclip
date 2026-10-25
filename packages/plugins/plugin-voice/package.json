@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-voice",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Voice notes and live two-way voice with your agents, in every Paperclip chat box. Runs on Grok voice (xAI).",
