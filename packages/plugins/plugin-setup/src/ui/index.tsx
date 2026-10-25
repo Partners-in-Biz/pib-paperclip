@@ -13,11 +13,12 @@ import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupSummary } from "../finish-issue.js";
 import { guidedOrder, PHASES, entryId, type GuideEntry } from "../guide.js";
 import { crmHint, effectiveModules, ORDERED_MODULES, type ModuleChoice } from "../modules.js";
+import { ownKeyItem } from "../own-key.js";
 import { isMemoryAction, memorySetupParams, WIKI_PLUGIN } from "../memory.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { guidedSteps, setupFocus, teamSummary, TEAM_ANCHOR, type TeamRoleState } from "../team.js";
-import { fetchCompanies, fetchPluginConfig, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
-import { Card, Chip, ItemLink, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
+import { fetchCompanies, fetchPluginConfig, fetchRecentRuns, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
+import { Card, Chip, ItemLink, ItemRow, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
 import { onSetupChanged, sharedRequest, useSetupData, viewsSummary, type LoadResult, type ModuleView, type SetupData } from "./data.js";
 import { runMemorySetup } from "./memory-client.js";
 import { NewCompanySection } from "./new-company.js";
@@ -104,6 +105,7 @@ export function SetupPage({ context }: PluginPageProps) {
   const showTeam = teamWanted && team.roles.length > 0;
   const tabs = setupTabs({ firstVisit, showTeam, requested: focus.section ?? (focusModule ? "checklist" : null) });
   const tab = tabs.active;
+  const ownKey = useOwnKeyItem(companyId, tab === "checklist" && !firstVisit);
 
   const selectTab = (id: TabId) => navigation.navigate(`/setup?section=${id}`, { replace: true });
 
@@ -302,6 +304,7 @@ export function SetupPage({ context }: PluginPageProps) {
             busy={busy}
             onAction={doAction}
             narrow={narrow}
+            ownKey={ownKey}
             open={openGroups}
             onOpenChange={(pluginKey, open) => setOpenGroups((prev) => ({ ...prev, [pluginKey]: open }))}
             onSetAll={(open) => setOpenGroups(Object.fromEntries(views.map((view) => [view.pluginKey, open])))}
@@ -424,7 +427,26 @@ export function groupOpenByDefault(view: ModuleView, narrow: boolean, ordered: M
   return next?.pluginKey === view.pluginKey;
 }
 
-function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, onSetAll }: {
+/** The "bills on its own key" item for a client company; null until both reads settle, and for PiB's own company. */
+function useOwnKeyItem(companyId: string | null | undefined, enabled: boolean): SetupItem | null {
+  const [item, setItem] = useState<SetupItem | null>(null);
+  useEffect(() => {
+    setItem(null);
+    if (!companyId || !enabled) return;
+    let live = true;
+    void Promise.all([
+      fetchRecentRuns(companyId),
+      fetchPluginConfig(SETUP_PLUGIN, companyId).then((saved) => saved.config.ownerCompany === true, () => null),
+    ]).then(([runs, owner]) => {
+      if (live) setItem(ownKeyItem(runs, owner));
+    });
+    return () => { live = false; };
+  }, [companyId, enabled]);
+  return item;
+}
+
+function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, onSetAll, ownKey }: {
+  ownKey: SetupItem | null;
   data: SetupData;
   linkFor: LinkPropsFor;
   busy: string | null;
@@ -446,6 +468,7 @@ function Checklist({ data, linkFor, busy, onAction, narrow, open, onOpenChange, 
         <span style={{ fontSize: 12.5, color: tokens.muted }}>Modules with steps left come first. Open one to see its steps.</span>
         <Button type="button" variant="secondary" onClick={() => onSetAll(!anyOpen)}>{anyOpen ? "Fold all" : "Open all"}</Button>
       </div>
+      {ownKey ? <Card><ItemRow item={ownKey} linkFor={linkFor} first /></Card> : null}
       {views.map((view) => (
         <ModuleChecklist
           key={view.pluginKey}
