@@ -3,6 +3,7 @@
  */
 import { MODULES, type SetupStatus } from "../kit-setup.js";
 import { parseSecretCatalog, type SecretLite } from "../model-key.js";
+import { parseRuns, RUNS_LIMIT, type RunLite } from "../own-key.js";
 import { parseSetupStatus } from "../status.js";
 import { projectsHaveRepository } from "../templates.js";
 
@@ -166,6 +167,16 @@ export async function fetchSecretCatalog(companyId: string): Promise<SecretLite[
     const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/secrets/catalog`, { credentials: "include", headers: { accept: "application/json" } });
     const body = await readJson(res);
     return res.ok ? parseSecretCatalog(body) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The company's latest runs that report a billing type, newest first (needs `company_scope:read`, which a board user has). Null when they cannot be read. */
+export async function fetchRecentRuns(companyId: string): Promise<RunLite[] | null> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/heartbeat-runs?limit=${RUNS_LIMIT}`, { credentials: "include", headers: { accept: "application/json" } });
+    return res.ok ? parseRuns(await readJson(res)) : null;
   } catch {
     return null;
   }
