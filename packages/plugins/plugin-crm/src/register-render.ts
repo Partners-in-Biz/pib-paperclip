@@ -2,7 +2,7 @@
  * The data-processing register text for one company.
  *
  * `docs/data-processing-register.md` is a template: the few phrases that name Partners in Biz (its domain, its repositories, its older
- * platform) are `{{tokens}}`. The owner company (the `ownerCompany` setting, ticked on Partners in Biz's own company only) gets the
+ * platform, the person who holds the backup key) are `{{tokens}}`. The owner company (the `ownerCompany` setting, ticked on Partners in Biz's own company only) gets the
  * original wording back, byte for byte. Every other company gets the same table with its own name in place of ours and without our
  * internals, so an agent in a client company never reads "Partners in Biz" in its register.
  */
@@ -37,6 +37,7 @@ const TOKENS: Record<string, readonly [string, (party: string) => string]> = {
   github_hosts: ["the client and Partners in Biz repositories", (party) => `the code repositories of ${party}`],
   vercel_hosts: ["partnersinbiz.online and several client websites", (party) => `the websites of ${party}`],
   firebase_users: ["The older Partners in Biz platform and some client apps", (party) => `Some apps of ${party}`],
+  key_holder: ["Peet", () => "the company's owner"],
   firebase_data: ["app users, contact and lead records of the older platform", () => "app users, contact and lead records"],
 };
 
