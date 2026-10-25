@@ -200,7 +200,7 @@ export const CREDENTIALS_REFERENCE = `# Credentials and what only the owner can 
 
 ## The register
 
-${T(OPS_TOOL_NAMES.credentialList)} lists every credential the company depends on: name, system, where it lives, owner, when it expires, how to rotate it and when it was last checked. It holds **names and places only, never a value**: ${T(OPS_TOOL_NAMES.credentialRecord)} refuses text that looks like a secret, so say where a secret lives ("PAR company secret GITHUB_TOKEN"), never what it is. In Partners in Biz's own company only (the owner ticks "Load Partners in Biz's own credentials list" in its Cockpit settings) the Cockpit seeds the register from the server's security table: GitHub tokens, the Claude login, API keys, Cloudflare and storage tokens, Resend, Google and LinkedIn apps, the board token, the backup key, the SSH keys. A client company's register starts with only generic rows for the modules it uses and holds that client's own credentials only: never copy PiB's entries into it. Rows marked **burned** were published or leaked: they stay a warning until each is revoked and retired.
+${T(OPS_TOOL_NAMES.credentialList)} lists every credential the company depends on: name, system, where it lives, owner, when it expires, how to rotate it and when it was last checked. It holds **names and places only, never a value**: ${T(OPS_TOOL_NAMES.credentialRecord)} refuses text that looks like a secret, so say where a secret lives ("company secret GITHUB_TOKEN"), never what it is. In the owner company only (the owner ticks the owner credentials-list option in its Cockpit settings) the Cockpit seeds the register from the server's security table: GitHub tokens, the Claude login, API keys, Cloudflare and storage tokens, Resend, Google and LinkedIn apps, the board token, the backup key, the SSH keys. A client company's register starts with only generic rows for the modules it uses and holds that client's own credentials only: never copy another company's entries into it. Rows marked **burned** were published or leaked: they stay a warning until each is revoked and retired.
 
 Alerts come at **30 days** (warn) and **7 days** or past (bad) before an expiry, when a provider **refuses** a credential, and while exposed credentials are not replaced. Where a company secret is picked under Credential checks in the Cockpit settings (GitHub, Cloudflare, Resend), the daily job asks the provider once whether the credential still works and learns GitHub's and Cloudflare's own expiry date. With \`verify: true\`, credential-list checks right now.
 
@@ -372,7 +372,7 @@ What agents learn should end up in their skills, measured. Paperclip ships a bui
 
 ## What it cannot do here
 
-Every PiB skill belongs to a plugin, and the plugin puts its own text back at each sync. A change to the company's copy lasts until the next sync, and nothing measures it. So: **the coach proposes; the change lands in plugin source through a pull request; the Cockpit measures it.**
+Every skill belongs to a plugin, and the plugin puts its own text back at each sync. A change to the company's copy lasts until the next sync, and nothing measures it. So: **the coach proposes; the change lands in plugin source through a pull request; the Cockpit measures it.**
 
 ## One-time setup (the owner, once: put it on the brief with these links)
 
