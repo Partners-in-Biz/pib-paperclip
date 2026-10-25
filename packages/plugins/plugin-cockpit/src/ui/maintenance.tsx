@@ -2,9 +2,9 @@
  * Cockpit → Maintenance: the standing maintenance window, the weekly upkeep, the next planned
  * stop-first release and the last release notes. Read from `maintenance.load`.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Pill, TriangleAlert, Wrench, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, PageMessage, Pill, TriangleAlert, Wrench, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { MaintenanceView, ReleaseNote, ReleaseNotePhase } from "../maintenance.js";
 import { Card, Muted } from "./components.js";
 
@@ -35,7 +35,7 @@ export function formatWindow(startIso: string, endIso: string): string {
 
 const wrap = { overflowWrap: "anywhere", minWidth: 0 } as const;
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
       <span style={{ fontSize: 12, color: tokens.muted }}>{label}</span>
@@ -118,5 +118,11 @@ export function MaintenancePanel({ refreshKey = 0 }: { refreshKey?: number }) {
     return <EmptyState tone="bad" icon={TriangleAlert} title="Maintenance could not load" description={error} action={<Button type="button" variant="secondary" onClick={() => void reload()}>Try again</Button>} />;
   }
   if (!view) return <Muted>Loading maintenance…</Muted>;
-  return <MaintenanceBody view={view} />;
+  return (
+    <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+      {/* A failed refresh keeps the last view on screen with the error above it. */}
+      {error ? <PageMessage message={error} tone="bad" /> : null}
+      <MaintenanceBody view={view} />
+    </div>
+  );
 }
