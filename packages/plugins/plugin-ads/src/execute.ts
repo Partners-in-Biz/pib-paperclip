@@ -216,6 +216,17 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           cpcBidMinor: Number(p.payload.cpcBidMinor),
         });
         results.push({ what: `Created ad group "${created.name}" (paused)`, ok: true, externalId: created.externalId });
+      } else if (p.kind === "create_responsive_search_ad") {
+        if (t.account.platform !== "google") return refuse(rt, actor, p, "platform_unsupported", "Responsive search ads can only be created on Google.");
+        const x = p.payload;
+        const created = await t.provider.createResponsiveSearchAd(t.env, t.token, t.ref, String(x.adGroupExternalId), {
+          headlines: x.headlines as string[],
+          descriptions: x.descriptions as string[],
+          finalUrl: String(x.finalUrl),
+          ...(x.path1 ? { path1: String(x.path1) } : {}),
+          ...(x.path2 ? { path2: String(x.path2) } : {}),
+        });
+        results.push({ what: `Created responsive search ad "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else if (p.kind === "add_keywords") {
         if (t.account.platform !== "google") return refuse(rt, actor, p, "platform_unsupported", "Keywords can only be added on Google.");
         const added = await t.provider.addKeywords(t.env, t.token, t.ref, String(p.payload.adGroupExternalId), {
@@ -232,7 +243,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
         const conn = t.account.connection_id ? await getConnection(rt.ctx, rt.companyId, t.account.connection_id) : null;
         if (conn) await markNeedsReconnect(rt, conn, error.message);
       }
-      results.push({ what: t.target ? `${p.kind === "pause_campaign" ? "Pause" : "Resume"} "${t.target.campaignName}"` : p.kind === "create_campaign" ? `Create "${String(p.payload.name)}"` : p.kind === "create_ad_group" ? `Create ad group "${String(p.payload.name)}"` : p.kind === "add_keywords" ? "Add keywords" : "Change the budget", ok: false, error: errorMessage(error).slice(0, 300) });
+      results.push({ what: t.target ? `${p.kind === "pause_campaign" ? "Pause" : "Resume"} "${t.target.campaignName}"` : p.kind === "create_campaign" ? `Create "${String(p.payload.name)}"` : p.kind === "create_ad_group" ? `Create ad group "${String(p.payload.name)}"` : p.kind === "add_keywords" ? "Add keywords" : p.kind === "create_responsive_search_ad" ? "Create responsive search ad" : "Change the budget", ok: false, error: errorMessage(error).slice(0, 300) });
       break;
     }
   }

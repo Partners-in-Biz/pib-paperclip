@@ -63,6 +63,15 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
     lines.push(`Ad group: **${String(x.name)}**`);
     lines.push(`Max CPC bid: **${money(x.cpcBidMinor, currency)}**`);
     lines.push("It is created **paused**. Switching it on is a separate change.");
+  } else if (p.kind === "create_responsive_search_ad") {
+    const headlines = Array.isArray(x.headlines) ? x.headlines : [];
+    const descriptions = Array.isArray(x.descriptions) ? x.descriptions : [];
+    lines.push(`Ad group: ${String(x.adGroupExternalId)} on ${String(x.accountName)}`);
+    lines.push(`Headlines (${headlines.length}): ${headlines.map((h) => `"${String(h)}"`).join(", ")}`);
+    lines.push(`Descriptions (${descriptions.length}): ${descriptions.map((d) => `"${String(d)}"`).join(", ")}`);
+    lines.push(`Final URL: ${String(x.finalUrl)}`);
+    if (x.path1) lines.push(`Display path: /${String(x.path1)}${x.path2 ? `/${String(x.path2)}` : ""}`);
+    lines.push("It is created **paused**; Google reviews it before it can serve. The approval status is read back on the next sync.");
   } else if (p.kind === "add_keywords") {
     const keywords = Array.isArray(x.keywords) ? x.keywords : [];
     lines.push(`Ad group: ${String(x.adGroupExternalId)}`);
@@ -127,6 +136,7 @@ export function reviewerChecks(kind: ProposalKind): string[] {
   if (kind === "create_ad_creative") return [...common.slice(2), ...copy, "The creative is ready to use in ads but serves nothing until an ad is created to use it."];
   if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved."];
   if (kind === "create_ad_group") return [...common, "The max CPC bid is sensible for the campaign and client size.", "The ad group is created paused and a person switches it on in the ad platform."];
+  if (kind === "create_responsive_search_ad") return [...common, ...copy, "The final URL lands on the right page and every UTM tag is correct.", "The ad group named exists and its keywords fit these headlines.", "The ad is created paused and a person switches it on in the ad platform."];
   if (kind === "add_keywords") return [...common, "The keywords match the campaign's topic and intent.", "Negative keywords (marked) are sensible and won't block other good searches."];
   if (kind === "change_budget") return [...common, "The reason is real (performance, a plan), not a guess."];
   return [...common, kind === "resume_campaign" ? "The campaign is safe to switch on: its copy and landing page are still right." : "Pausing is right for this reason: look at the numbers on the issue."];

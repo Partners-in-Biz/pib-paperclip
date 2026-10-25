@@ -13,6 +13,7 @@
  * carries EU political advertising.
  */
 import { AdsError } from "../domain.js";
+import { validateResponsiveSearchAd } from "../rsa.js";
 import { microsToMinor, minorToMicros } from "../money.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
 import type { AccountRef, AccountCaps, AddKeywordsRequest, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
@@ -257,6 +258,44 @@ export const googleProvider: AdsProvider = {
       });
     }
     return out;
+  },
+
+  async createResponsiveSearchAd(env, token, account, adGroupExternalId, request) {
+    const copy = validateResponsiveSearchAd({ ...request });
+    const customer = digits(account.externalId);
+    const res = await call<{ results?: Array<{ resourceName?: string }> }>(
+      env,
+      token,
+      `customers/${customer}/adGroupAds:mutate`,
+      {
+        loginCustomerId: account.loginCustomerId,
+        body: {
+          operations: [
+            {
+              create: {
+                adGroup: `customers/${customer}/adGroups/${digits(adGroupExternalId)}`,
+                status: "PAUSED",
+                ad: {
+                  finalUrls: [copy.finalUrl],
+                  responsiveSearchAd: {
+                    headlines: copy.headlines.map((text) => ({ text })),
+                    descriptions: copy.descriptions.map((text) => ({ text })),
+                    ...(copy.path1 ? { path1: copy.path1 } : {}),
+                    ...(copy.path2 ? { path2: copy.path2 } : {}),
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+      "Google create responsive search ad",
+    );
+    const resourceName = res.results?.map((r) => r.resourceName).find(Boolean);
+    if (!resourceName) throw new ProviderError("Google did not return the new ad.");
+    // The resource name ends in "<adGroupId>~<adId>"; the ad id is what the policy read-back uses.
+    const adId = (resourceName.split("/").pop() ?? resourceName).split("~").pop() ?? resourceName;
+    return { externalId: adId, name: copy.headlines[0]! };
   },
 
   async createCampaign(env, token, account, req) {

@@ -449,6 +449,7 @@ export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
   }
   if (p.kind === "change_budget") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, newDailyBudgetMinor: x.newDailyBudgetMinor, reason: x.reason };
   if (p.kind === "create_ad_group") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, name: x.name, cpcBidMinor: x.cpcBidMinor, reason: x.reason };
+  if (p.kind === "create_responsive_search_ad") return { kind: p.kind, accountId: x.accountId, adGroupExternalId: x.adGroupExternalId, headlines: x.headlines, descriptions: x.descriptions, finalUrl: x.finalUrl, path1: x.path1, path2: x.path2, notes: x.notes, reason: x.reason };
   if (p.kind === "add_keywords") return { kind: p.kind, accountId: x.accountId, adGroupExternalId: x.adGroupExternalId, keywords: x.keywords, reason: x.reason };
   if (p.kind === "creative_check") return { kind: p.kind, platform: x.platform, name: x.name, creative: x.creative, specialAdCategories: x.specialAdCategories, notes: x.notes, reason: x.reason };
   if (p.kind === "create_ad_creative") return { kind: p.kind, accountId: x.accountId, name: x.name, pageId: x.pageId, imageHash: x.imageHash, videoId: x.videoId, link: x.link, headline: x.headline, body: x.body, cta: x.cta, notes: x.notes, reason: x.reason };
