@@ -9,20 +9,23 @@ const A = "pib-company";
 const B = "client-company";
 const COMPANIES = { [A]: { name: "Partners in Biz", issuePrefix: "PIB" }, [B]: { name: "Client Corp", issuePrefix: "CLI" } };
 const PIB = "pib-only";
+const NOTED = "noted-generic";
+const NOTE = "Live (2026-10-03): PAR-4062 history that only the PiB company should read.";
 const ownerCtx = () => fakeCtx({ companies: COMPANIES, savedConfigs: { [A]: { ownerCompany: true } } });
 const clientCtx = () => fakeCtx({ companies: COMPANIES, savedConfigs: { [B]: { ownerCompany: false } } });
 const keysFor = async (ctx: ReturnType<typeof fakeCtx>["ctx"], companyId: string) =>
-  (await templatesForOps(ctx, { companyId, key: "ceo", agents: [] })).templates.map((t: { key: string }) => t.key);
+  (await templatesForOps(ctx, { companyId, key: "ceo", agents: [] })).templates.map((t: { key: string }) => t.key).filter((key: string) => key !== NOTED);
 
 // The shipped pack has no pib template yet: remember what it ships, then add one (a defaultOn copy of the Developer) for the tests.
 const SHIPPED = loadPack().templates.map((t) => ({ key: t.key, scope: t.scope }));
 beforeAll(() => {
   const developer = loadPack().templates.find((t) => t.key === "developer")!;
   loadPack().templates.push({ ...developer, key: PIB, name: "PiB Only", scope: "pib", defaultOn: true });
+  loadPack().templates.push({ ...developer, key: NOTED, name: "Noted", scope: "generic", notes: [NOTE] });
 });
 afterAll(() => {
   const templates = loadPack().templates;
-  templates.splice(templates.findIndex((t) => t.key === PIB), 1);
+  for (const key of [PIB, NOTED]) templates.splice(templates.findIndex((t) => t.key === key), 1);
 });
 
 describe("hire scope: a pib template is offered to the PiB company only", () => {
@@ -77,5 +80,31 @@ describe("hire scope: a pib template is offered to the PiB company only", () => 
     const list = [{ key: "g1" }, { key: "g2", scope: "generic" as const }, { key: "p", scope: "pib" as const }];
     expect(offeredTemplates(list, false).map((t) => t.key)).toEqual(["g1", "g2"]);
     expect(offeredTemplates(list, true).map((t) => t.key)).toEqual(["g1", "g2", "p"]);
+  });
+});
+
+describe("template notes are PiB-only: a client company's hire task carries none", () => {
+  it("templateDraft renders the notes for the owner company and leaves them out for a client company", async () => {
+    const owner = await templateDraft(ownerCtx().ctx, { companyId: A, key: NOTED, agents: [] });
+    expect(owner.description).toContain("## Notes");
+    expect(owner.description).toContain(NOTE);
+    const client = await templateDraft(clientCtx().ctx, { companyId: B, key: NOTED, agents: [] });
+    expect(client.description).not.toContain("## Notes");
+    expect(client.description).not.toContain(NOTE);
+  });
+
+  it("the hire issue opened for a client company carries no notes, the owner company's does", async () => {
+    const owner = ownerCtx();
+    await startTemplateHire(owner.ctx, { companyId: A, key: NOTED, agents: [], userId: "user-1", assigneeUserId: "user-1" });
+    for (const issue of owner.issues.values()) expect(String(issue.description)).toContain("PAR-4062");
+    const client = clientCtx();
+    await startTemplateHire(client.ctx, { companyId: B, key: NOTED, agents: [], userId: "user-1", assigneeUserId: "user-1" });
+    expect(client.issues.size).toBe(1);
+    for (const issue of client.issues.values()) expect(String(issue.description)).not.toContain("PAR-4062");
+  });
+
+  it("fails closed: with no ownerCompany setting saved, no notes are rendered", async () => {
+    const draft = await templateDraft(fakeCtx({ companies: COMPANIES }).ctx, { companyId: A, key: NOTED, agents: [] });
+    expect(draft.description).not.toContain(NOTE);
   });
 });

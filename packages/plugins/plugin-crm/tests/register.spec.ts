@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { REGISTER_DOC } from "../src/register-doc.generated.js";
 import { CLIENT_SENSITIVITY_EVENT, listRegister, parseRegisterDoc, REGISTER, reemitSensitivity, ruleOf, seedRegister, sensitivityOf, systemsNotCleared } from "../src/register.js";
+import { cleanPartyName, renderRegisterDoc, tokensIn } from "../src/register-render.js";
 import { BOARD, bootCare, careSeed, CO, tool, toolRaw } from "./helpers/care.js";
 
 const DOC = readFileSync(new URL("../docs/data-processing-register.md", import.meta.url), "utf8");
@@ -137,5 +139,71 @@ describe("client sensitivity", () => {
     expect(emit.mock.calls.filter((call) => call[0] === CLIENT_SENSITIVITY_EVENT)).toHaveLength(1);
     await harness.performAction("crm.delete-company", { companyRecordId: "acme", confirm: true }, { companyId: CO, actor: BOARD });
     expect(store.client_sensitivity ?? []).toHaveLength(0);
+  });
+});
+
+describe("the register is worded per company", () => {
+  // sha256 of docs/data-processing-register.md as it was before it became a template (origin/development at PAR-5299): Partners in Biz's text must not change.
+  const PIB_TEXT_SHA256 = "fc0313a70839d8be0c962505af87446020c2cbfe08887471f069e593c71e1564";
+
+  it("gives the owner company exactly the text it had before the file became a template (PAR unchanged, byte for byte)", () => {
+    const text = renderRegisterDoc(REGISTER_DOC, { owner: true, name: "Anything" });
+    expect(createHash("sha256").update(text).digest("hex")).toBe(PIB_TEXT_SHA256);
+    expect(text).not.toContain("{{");
+  });
+
+  it("names the company in a client's register and leaves Partners in Biz out of it", () => {
+    for (const name of ["PiB Demo", "Acme Ltd"]) {
+      const text = renderRegisterDoc(REGISTER_DOC, { owner: false, name });
+      expect(text, name).toContain(`personal data for ${name}, what they get`);
+      expect(text, name).not.toContain("{{");
+      if (name === "Acme Ltd") expect(text).not.toMatch(/partners in biz|\bpib\b|partnersinbiz/i);
+    }
+  });
+
+  it("keeps the same systems, rules and agreements for every company, so only the wording differs", () => {
+    const owner = parseRegisterDoc(renderRegisterDoc(REGISTER_DOC, { owner: true, name: null }));
+    const client = parseRegisterDoc(renderRegisterDoc(REGISTER_DOC, { owner: false, name: "Acme Ltd" }));
+    const core = (doc: { rows: Array<{ id: string; name: string; agreement: string; sensitiveClients: string; region: string; retention: string }> }) => doc.rows.map((r) => [r.id, r.name, r.agreement, r.sensitiveClients, r.region, r.retention]);
+    expect(core(client)).toEqual(core(owner));
+    expect(systemsNotCleared(client.rows)).toEqual(systemsNotCleared());
+  });
+
+  it("uses only known tokens, and a hostile company name cannot add a column, a token or markup", () => {
+    expect(tokensIn(REGISTER_DOC).every((key) => key in { party_scope: 1, mail_domain: 1, resend_dkim: 1, resend_team: 1, github_hosts: 1, vercel_hosts: 1, firebase_users: 1, firebase_data: 1 })).toBe(true);
+    expect(() => renderRegisterDoc("x {{nope}}", { owner: false, name: "A" })).toThrow(/unknown token/);
+    const evil = renderRegisterDoc(REGISTER_DOC, { owner: false, name: "Evil | Co {{party_scope}} <b>\n# x`" });
+    expect(() => parseRegisterDoc(evil)).not.toThrow();
+    expect(parseRegisterDoc(evil).rows).toHaveLength(REGISTER.rows.length);
+    expect(cleanPartyName(null)).toBe("this company");
+    expect(cleanPartyName("   ")).toBe("this company");
+  });
+
+  it("seeds each company's table with its own wording: the owner company keeps ours, PiB Demo names PiB Demo, and a rename reseeds", async () => {
+    const owner = await bootCare({ config: { ownerCompany: true } });
+    await seedRegister(owner.harness.ctx, CO);
+    const ownerRows = await listRegister(owner.harness.ctx, CO);
+    expect(ownerRows.find((row) => row.id === "github")!.purpose).toContain("Hosts the client and Partners in Biz repositories");
+    expect(await seedRegister(owner.harness.ctx, CO)).toBe(0);
+
+    const demo = await bootCare();
+    demo.harness.ctx.companies.get = async () => ({ id: CO, name: "PiB Demo" }) as never;
+    expect(await seedRegister(demo.harness.ctx, CO)).toBe(REGISTER.rows.length);
+    const demoRows = await listRegister(demo.harness.ctx, CO);
+    expect(demoRows.find((row) => row.id === "github")!.purpose).toContain("the code repositories of PiB Demo");
+    expect(demoRows.find((row) => row.id === "vercel")!.purpose).toContain("the websites of PiB Demo");
+    expect(demoRows.map((row) => row.purpose + row.safeguards + (row.ownerAction ?? "")).join(" ")).not.toMatch(/partners in biz|partnersinbiz/i);
+    expect(await seedRegister(demo.harness.ctx, CO)).toBe(0);
+    demo.harness.ctx.companies.get = async () => ({ id: CO, name: "Demo Renamed" }) as never;
+    expect(await seedRegister(demo.harness.ctx, CO)).toBeGreaterThan(0);
+    expect((await listRegister(demo.harness.ctx, CO)).find((row) => row.id === "github")!.purpose).toContain("Demo Renamed");
+  });
+
+  it("list-data-processing reads the company's own wording", async () => {
+    const { harness } = await bootCare();
+    harness.ctx.companies.get = async () => ({ id: CO, name: "PiB Demo" }) as never;
+    const all = await tool<Record<string, any>>(harness, "list-data-processing", {});
+    expect(all.count).toBe(REGISTER.rows.length);
+    expect(all.systems.find((system: any) => system.id === "vercel").purpose).toContain("the websites of PiB Demo");
   });
 });

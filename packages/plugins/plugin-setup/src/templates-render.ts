@@ -67,7 +67,11 @@ function introFor(template: AgentTemplate): string {
   return `${lead}\n\n${how}`;
 }
 
-export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null }): HireDraft {
+/**
+ * `ownerCompany` is true only for Partners in Biz's own company. The template notes quote PiB's own live setup and issue history, so they
+ * are rendered into a hire task for the owner company only: absent or false (a client company) renders none.
+ */
+export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null; ownerCompany?: boolean }): HireDraft {
   const adapterType = pickAdapter(template);
   const instructions = renderInstructions(template, input.vars);
   const config = templateConfig(template, adapterType);
@@ -134,7 +138,7 @@ export function renderHire(template: AgentTemplate, input: { vars: TemplateVars;
     "```json",
     JSON.stringify(payload, null, 2),
     "```",
-    ...(template.notes.length ? ["", "## Notes", "", ...template.notes.map((note) => `- ${note}`)] : []),
+    ...(input.ownerCompany === true && template.notes.length ? ["", "## Notes", "", ...template.notes.map((note) => `- ${note}`)] : []),
     ...(warnings.length ? ["", "## Check first", "", ...warnings.map((warning) => `- ${warning}`)] : []),
     "",
     "## Done when",
