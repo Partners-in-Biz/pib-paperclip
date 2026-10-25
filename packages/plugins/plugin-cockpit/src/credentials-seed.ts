@@ -5,18 +5,28 @@
  * nobody recorded an expiry, not that there is none, so an unknown expiry is
  * left empty with a note.
  *
- * `CREDENTIAL_SEED` is Partners in Biz's own list: seeded only where the Cockpit
- * setting `credentialSeed` is ticked (these rows describe PiB's servers and
- * tokens, so no client company ever gets them). Every other company gets
- * `CLIENT_CREDENTIAL_TEMPLATE` instead: generic rows keyed by module, loaded
- * only for the modules the company has switched on. Once there, by `seed_key`: a re-run adds nothing and
- * never overwrites what a person changed. Remove a row from the register with
- * `credential-record` (status retired), not by editing this list.
+ * Every entry carries a `module` (in code, not in the table, so no migration):
+ * `platform` rows go to every company, a module row (`crm`, `mailbox`, `social`,
+ * `seo`, `campaigns`, `billing`) only to a company that has that module on, and
+ * `owner-only` rows only to the owner company (`isOwnerCompany`, and only where
+ * the Cockpit setting `credentialSeed` is ticked). `CREDENTIAL_SEED` is Partners
+ * in Biz's own list and every row is `owner-only`: it describes PiB's servers
+ * and tokens, so no client company ever gets it. `CLIENT_CREDENTIAL_TEMPLATE`
+ * holds the generic module rows for every other company. Stored rows carry no
+ * name tokens, so a company rename never leaves stale seeded text. Once there,
+ * by `seed_key`: a re-run adds nothing and never overwrites what a person
+ * changed. Remove a row from the register with `credential-record` (status
+ * retired), not by editing this list.
  */
 import type { ModuleKey } from "@partnersinbiz/pib-plugin-kit";
 import type { CredentialStatus, VerifyProvider } from "./credentials-model.js";
 
+/** The modules that have a credential row of their own. */
+export type SeedModule = Extract<ModuleKey, "crm" | "mailbox" | "social" | "seo" | "campaigns" | "billing">;
+
 export interface SeedCredential {
+  /** `platform`: every company. A module: only where it is on. `owner-only`: the owner company. */
+  module: SeedModule | "platform" | "owner-only";
   seedKey: string;
   name: string;
   system: string;
@@ -33,7 +43,7 @@ export interface SeedCredential {
 const GITHUB_TOKENS = "https://github.com/settings/personal-access-tokens";
 const GITHUB_CLASSIC = "https://github.com/settings/tokens";
 
-export const CREDENTIAL_SEED: SeedCredential[] = [
+const PIB_ROWS: Array<Omit<SeedCredential, "module">> = [
   {
     seedKey: "github-fine-grained-new",
     name: "GitHub fine-grained token for agents and Paperclip",
@@ -322,12 +332,14 @@ export const CREDENTIAL_SEED: SeedCredential[] = [
   },
 ];
 
+export const CREDENTIAL_SEED: SeedCredential[] = PIB_ROWS.map((row) => ({ ...row, module: "owner-only" }));
+
+/** A row any company can get: the platform's own, or a module's (seeded only while that module is on). Never `owner-only`. */
 export interface ClientSeedCredential extends SeedCredential {
-  /** The module the row belongs to: the row is seeded only while that module is on. */
-  module: ModuleKey;
+  module: SeedModule | "platform";
 }
 
-const clientRow = (module: ModuleKey, seedKey: string, name: string, system: string, livesIn: string, rotateHow: string): ClientSeedCredential => ({
+const clientRow = (module: SeedModule | "platform", seedKey: string, name: string, system: string, livesIn: string, rotateHow: string): ClientSeedCredential => ({
   module,
   seedKey,
   name,

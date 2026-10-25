@@ -12,7 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { configSaved, isModuleEnabled, MODULES, readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, isModuleEnabled, isOwnerCompany, MODULES, readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
 import { CLIENT_CREDENTIAL_TEMPLATE, CREDENTIAL_SEED, type SeedCredential } from "./credentials-seed.js";
 import {
@@ -101,17 +101,20 @@ export async function seedEnabled(ctx: PluginContext, companyId: string): Promis
 }
 
 /**
- * Adds the starting rows the company does not have yet (by seed key). Where
- * `credentialSeed` is ticked (PiB's own company) that is the security table;
- * every other company gets only the client template rows of the modules it has
- * switched on, so none of PiB's rows reach a client, whoever calls it.
- * Returns how many it added.
+ * Adds the starting rows the company does not have yet (by seed key). The
+ * owner company (`isOwnerCompany`) with `credentialSeed` ticked gets the
+ * security table, the `owner-only` rows, which are its whole register. Every
+ * other company gets the `platform` rows and the rows of the modules it has
+ * switched on, so none of PiB's rows reach a client, whoever calls it or
+ * whatever its setting says. Returns how many it added.
  */
 export async function seedCredentials(env: Env, companyId: string): Promise<number> {
   const rows: SeedCredential[] = [];
-  if (await seedEnabled(env.ctx, companyId)) rows.push(...CREDENTIAL_SEED);
+  if ((await seedEnabled(env.ctx, companyId)) && (await isOwnerCompany(env.ctx, companyId))) rows.push(...CREDENTIAL_SEED);
   else {
-    for (const row of CLIENT_CREDENTIAL_TEMPLATE) if (await isModuleEnabled(env.ctx, companyId, MODULES[row.module].plugins[0])) rows.push(row);
+    for (const row of CLIENT_CREDENTIAL_TEMPLATE) {
+      if (row.module === "platform" || (await isModuleEnabled(env.ctx, companyId, MODULES[row.module].plugins[0]))) rows.push(row);
+    }
   }
   const now = env.now().toISOString();
   let added = 0;

@@ -190,10 +190,15 @@ describe("the seed (the table in security.md)", () => {
     const pibKeys = new Set(CREDENTIAL_SEED.map((s) => s.seedKey));
     for (const s of CLIENT_CREDENTIAL_TEMPLATE) {
       expect(pibKeys.has(s.seedKey)).toBe(false);
-      expect(MODULE_KEYS).toContain(s.module);
+      if (s.module !== "platform") expect(MODULE_KEYS).toContain(s.module);
+      expect(s.module).not.toBe("owner-only");
       expect(s.status).toBe("active");
       expect(JSON.stringify(s)).not.toMatch(/hermes|claude|anthropic|nous|xai|paperclip|PMStander|partners-in-biz|\/root|\/home|\/etc/i);
     }
+  });
+
+  it("tags every PiB row owner-only, so a client company never gets one", () => {
+    expect(CREDENTIAL_SEED.every((s) => s.module === "owner-only")).toBe(true);
   });
 
   it("marks the credentials security.md says were exposed as burned, and nothing else", () => {
