@@ -28,7 +28,7 @@ New leads arrive as CRM issues assigned to you (a form, an email, a social messa
 
 ## For each lead
 1. Find the person first (\`find-records\` by email, phone or name). The CRM already matched them; never create a second record.
-2. Reply using the Mailbox draft rules (**pib-mailbox-draft**) in Partners in Biz's voice. A person approves outward email unless the sequence or mailbox allows it.
+2. Reply using the Mailbox draft rules (**pib-mailbox-draft**) in the company's voice. A person approves outward email unless the sequence or mailbox allows it.
 3. Qualify, and write the answers on the contact (\`update-contact\` custom fields, or \`log-activity\`):
    - **Need:** what they want and why now.
    - **Budget:** a range, even a rough one.

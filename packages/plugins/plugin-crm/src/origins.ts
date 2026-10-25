@@ -68,7 +68,7 @@ export const CRM_ORIGINS = {
   driveFileEsign: "crm:drive-file:esign:",
   /** `crm:drive-file:report:<report id>`: file a sent monthly report to Drive (Account Manager). */
   driveFileReport: "crm:drive-file:report:",
-  /** `crm:stl-ping:<approval id>`: 3-line speed-to-lead summary for Elon/CEO (never done-checked). */
+  /** `crm:stl-ping:<approval id>`: 3-line speed-to-lead summary for the CEO agent (never done-checked). */
   stlPing: "crm:stl-ping:",
 } as const;
 
