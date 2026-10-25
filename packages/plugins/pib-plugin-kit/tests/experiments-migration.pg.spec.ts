@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_AUTOPILOT, experimentsMigration, experimentsMigrationV1, experimentsScopeAlterMigration } from "../src/experiments.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
@@ -23,7 +24,7 @@ describe.skipIf(!available)("Growth Lab migrations", () => {
 
   describe("experimentsMigrationV1", () => {
     it("matches the text inside plugin-social 012 for CREATE TABLE blocks", () => {
-      const socialMigrationPath = new URL("../../plugin-social/migrations/012_social.sql", import.meta.url).pathname;
+      const socialMigrationPath = fileURLToPath(new URL("../../plugin-social/migrations/012_social.sql", import.meta.url));
       const socialMigration = readFileSync(socialMigrationPath, "utf8");
       const v1Output = experimentsMigrationV1(TEST_NAMESPACE);
 

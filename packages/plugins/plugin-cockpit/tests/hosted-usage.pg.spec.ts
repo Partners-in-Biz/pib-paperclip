@@ -66,7 +66,7 @@ d("hosted usage roll-up (Postgres)", () => {
     w.client.query(`INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, usage_json) VALUES ($1, $2, $3, 'succeeded', $4, $5::jsonb)`, [randomUUID(), companyId, AGENT, startedAt, usage === undefined ? null : JSON.stringify(usage)]);
   const issue = (w: Hybrid, companyId: string, status: string, completedAt: string | null) =>
     w.client.query(`INSERT INTO public.issues (id, company_id, title, status, completed_at) VALUES ($1, $2, 'A private title', $3, $4)`, [randomUUID(), companyId, status, completedAt]);
-  const rows = async (w: Hybrid) => (await w.client.query(`SELECT * FROM ${NAMESPACE}.hosted_usage ORDER BY hosted_company_id, month`)).rows as Array<Record<string, unknown>>;
+  const rows = async (w: Hybrid) => (await w.client.query(`SELECT *, month::text AS month_text FROM ${NAMESPACE}.hosted_usage ORDER BY hosted_company_id, month`)).rows as Array<Record<string, unknown>>;
 
   async function seed(w: Hybrid) {
     await run(w, DEMO, "2026-10-02T08:00:00Z", { costUsd: 1.5 });
@@ -109,7 +109,7 @@ d("hosted usage roll-up (Postgres)", () => {
     expect(oct).toMatchObject({ runs: 6, done_issues: 2 });
     expect(nov).toMatchObject({ runs: 0, done_issues: 0, agents: 2 });
     // September is no longer recomputed: its late run never got a row of its own.
-    expect(demo.map((r) => new Date(r.month as string).getUTCMonth())).not.toContain(8);
+    expect(demo.map((r) => String(r.month_text).slice(0, 7))).not.toContain("2026-09");
   });
 
   it("does not double count when the job runs twice (through the registered job as well)", async () => {
