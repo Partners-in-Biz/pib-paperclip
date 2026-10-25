@@ -85,7 +85,7 @@ First open the module's client workspace: if the service already runs (a sprint 
 
 export const CANARY_REFERENCE = `# The canary client
 
-One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (PiB Canary Co), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
+One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (named for the canary), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
 
 ## Rules (every module and agent)
 - Everything outward is a draft or a dry run: no email, SMS, post, ad, invoice or payment request reaches a real person. A CRM sequence email to a canary contact is recorded as a dry run and never queued.

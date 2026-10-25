@@ -37,8 +37,8 @@ async function loadManifests(): Promise<Manifest[]> {
  */
 const SCRUBBED_PLUGINS: Array<(typeof PLUGINS)[number]> = ["crm"];
 
-/** Product and protocol names a scrubbed plugin may keep: what a client really sees (the WordPress plugin, the signed-request headers, the canary company's stored name). */
-const BRAND_KEEP = ["PiB Connector", "X-PiB-", "PiB Canary Co"];
+/** Product and protocol names a scrubbed plugin may keep: what a client really sees (the signed-request headers). */
+const BRAND_KEEP = ["X-PiB-"];
 
 /** The upstream LLM Wiki tools the manual may name (its manifest reads files at import time). */
 const WIKI_TOOLS = ["wiki_search", "wiki_read_page", "wiki_write_page", "wiki_propose_patch", "wiki_list_sources", "wiki_read_source", "wiki_append_log", "wiki_update_index", "wiki_list_backlinks", "wiki_list_pages"];
