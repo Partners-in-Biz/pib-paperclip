@@ -325,10 +325,10 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "create-payment-link",
     displayName: "Create payment link",
     description:
-      "Make (or return) the hosted online payment link for a sent invoice that still owes money, for each payment provider the owner switched on (Stripe or PayFast). The link is for what the invoice owes now. It sends nothing: invoice and reminder emails already carry their links when a provider is on, so use this only to give a customer the link another way, with the owner's approval. Fails with the reason when no provider is on (EFT is then the way to pay). Never tell a customer an invoice is paid until invoice-detail shows paid.",
+      "Make (or return) the hosted online payment link for a sent invoice that still owes money, for each payment provider the owner switched on (PayFast or PayPal). The link is for what the invoice owes now. It sends nothing: invoice and reminder emails already carry their links when a provider is on, so use this only to give a customer the link another way, with the owner's approval. Fails with the reason when no provider is on (EFT is then the way to pay). Never tell a customer an invoice is paid until invoice-detail shows paid.",
     parametersSchema: schema(["invoiceId"], {
       invoiceId,
-      provider: oneOf(["stripe", "payfast"], "Only this provider's link. Leave out for every provider that is on."),
+      provider: oneOf(["payfast", "paypal"], "Only this provider's link. Leave out for every provider that is on."),
     }),
   },
   {

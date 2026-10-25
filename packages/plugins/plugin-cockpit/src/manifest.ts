@@ -292,6 +292,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
       schedule: "*/15 * * * *",
     },
+    {
+      jobKey: JOBS.hostedUsageRollup,
+      displayName: "Hosted usage roll-up",
+      description: "Daily at 04:30 SAST (02:30 UTC): for the owner company only, stores one row per hosted company and month with runs, notional spend (USD), done issues and agents. Counts and cost only; recomputes this month, and last month until 3 days after it ended.",
+      schedule: "30 2 * * *",
+    },
   ],
   apiRoutes: [
     // Read by the Cockpit page itself and the Setup plugin (kit contracts).
