@@ -402,3 +402,30 @@ describe.skipIf(!available)("running ad creatives and ads", () => {
     expect(await refusal(propose(w, CREATE_AD(accountId, { dailyBudgetMinor: 5000 })))).toMatchObject({ message: expect.stringMatching(/budget/i) });
   });
 });
+
+describe.skipIf(!available)("running approved ad groups and keywords", () => {
+  let w: World;
+  let accountId: string;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w, { platform: "google", connectionPlatform: "mock" }));
+  });
+
+  it("are refused without an approval and write nothing", async () => {
+    const g = await propose(w, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Brand", cpcBidMinor: 1500, reason: "Structure." });
+    const k = await propose(w, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "shoes", matchType: "exact" }], reason: "Terms." });
+    for (const id of [g.id, k.id]) expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId: "whatever" }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toEqual([]);
+  });
+
+  it("create the ad group and the keywords PAUSED, once each, and use the approval up", async () => {
+    const g = await approved(w, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Brand", cpcBidMinor: 1500, reason: "Structure." });
+    expect(await executeProposal(w.rt(), agent, { proposalId: g.id, approvalId: g.approvalId })).toMatchObject({ status: "executed" });
+    const k = await approved(w, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "shoes", matchType: "exact" }], reason: "Terms." });
+    expect(await executeProposal(w.rt(), agent, { proposalId: k.id, approvalId: k.approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("(paused)") }] });
+    expect(w.mock.writes.map((x) => [x.op, x.status])).toEqual([["adGroup", "paused"], ["keywords", "paused"]]);
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: k.id, approvalId: k.approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(2);
+  });
+});

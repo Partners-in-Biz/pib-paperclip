@@ -74,6 +74,8 @@ describe("create-preview", () => {
     expect(String(h.created[0]!.description)).toMatch(/review\?key=/);
     expect(String(h.created[0]!.description)).toMatch(/Text kept from the live page: \d+%/);
     const insert = h.executes.find((e) => /INSERT INTO plugin_seo_8099f8879a\.previews/.test(e.sql))!;
+    expect(out).toHaveProperty("rubric.score");
+    expect(String(h.created[0]!.description)).toMatch(/Creative score: \d+\/100, (passes|below the bar of 70)/);
     expect(String(insert.params[7])).toContain("new intro words");
     expect(String(insert.params[7])).toContain("auction lot listing word");
   });

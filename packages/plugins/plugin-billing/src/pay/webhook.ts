@@ -23,12 +23,13 @@ import { billingSettings } from "../config.js";
 import { applyProviderEvent, type ApplyOutcome } from "./confirm.js";
 import { remoteIpFrom } from "./crypto.js";
 import { PayFastProvider } from "./payfast.js";
+import { PaypalProvider } from "./paypal.js";
 import { buildVerifier } from "./settings.js";
 import { getLink, linkByProviderPayment } from "./store.js";
 import { StripeProvider, checkStripeSignatureShape } from "./stripe.js";
 import { WebhookRejected, type LocatedLink, type WebhookInput } from "./types.js";
 
-export const WEBHOOK_KEYS = ["stripe", "payfast"] as const;
+export const WEBHOOK_KEYS = ["stripe", "payfast", "paypal"] as const;
 export type WebhookKey = (typeof WEBHOOK_KEYS)[number];
 
 export function isWebhookKey(value: string): value is WebhookKey {
@@ -47,7 +48,12 @@ export function normaliseHeaders(headers: Record<string, string | string[] | und
 
 /** Which of our links a delivery names, read without any secret (a hint only: nothing is believed until it verifies). */
 export function locateLink(key: WebhookKey, input: WebhookInput): LocatedLink | null {
-  const reader = key === "stripe" ? new StripeProvider({ secretKey: "", webhookSecret: "" }) : new PayFastProvider({ merchantId: "", merchantKey: "", notifyUrl: "" });
+  const reader =
+    key === "stripe"
+      ? new StripeProvider({ secretKey: "", webhookSecret: "" })
+      : key === "paypal"
+        ? new PaypalProvider({ clientId: "", clientSecret: "", webhookId: "" })
+        : new PayFastProvider({ merchantId: "", merchantKey: "", notifyUrl: "" });
   return reader.locate(input);
 }
 
@@ -89,10 +95,33 @@ export async function handleBillingWebhook(ctx: PluginContext, input: Pick<Plugi
   if (!verifier) throw new WebhookRejected(`${key} is not set up for this company (secrets missing)`, "not_configured");
   let events;
   try {
-    events = await verifier.verify(delivery, { id: link.id, amountMinor: Number(link.amount_minor), currency: link.currency }, remoteIpFrom(delivery.headers));
+    events = await verifier.verify(
+      delivery,
+      { id: link.id, amountMinor: Number(link.amount_minor), currency: link.currency, refundedMinor: Number(link.refunded_minor) },
+      remoteIpFrom(delivery.headers),
+    );
   } catch (error) {
     if (error instanceof WebhookRejected) ctx.logger.warn("Payment webhook refused", { provider: key, code: error.code });
     throw error;
+  }
+  if (key === "paypal" && events.length === 0) {
+    let eventType: string | null = null;
+    let eventId: string | null = null;
+    try {
+      const parsed = JSON.parse(delivery.rawBody) as { event_type?: unknown; id?: unknown };
+      eventType = typeof parsed.event_type === "string" ? parsed.event_type : null;
+      eventId = typeof parsed.id === "string" ? parsed.id : null;
+    } catch {
+      // Body already passed locate; ignore parse failure for the warn.
+    }
+    if (eventType === "PAYMENT.CAPTURE.REFUNDED") {
+      ctx.logger.warn("PayPal refund webhook matched no capture or amount", {
+        provider: key,
+        eventId,
+        transmissionId: delivery.headers["paypal-transmission-id"] ?? null,
+      });
+      return { handled: false, outcomes: [], reason: "unmatched refund" };
+    }
   }
   const outcomes: ApplyOutcome[] = [];
   for (const event of events) {
