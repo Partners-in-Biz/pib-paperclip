@@ -76,7 +76,10 @@ export async function loadPreferencesAction(ctx: PluginContext, context: PluginP
 export async function savePreferencesAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const patch = params.patch && typeof params.patch === "object" && !Array.isArray(params.patch) ? (params.patch as Record<string, never>) : null;
   if (!patch) return { ok: false as const, error: "Nothing to save" };
-  if ("timezone" in patch && !validTimezone(patch.timezone)) return { ok: false as const, error: "Time zone is not a known name" };
+  // A blank time zone clears the choice, so the company falls back to the default.
+  const rawZone: unknown = patch.timezone;
+  if (typeof rawZone === "string" && !rawZone.trim()) (patch as Record<string, unknown>).timezone = null;
+  if ("timezone" in patch && patch.timezone !== null && !validTimezone(patch.timezone)) return { ok: false as const, error: "Time zone is not a known name" };
   return savePreferences(ctx, { companyId: companyOf(context), actor: context.actor }, SOCIAL_PREFERENCES, patch as PreferenceValues);
 }
 

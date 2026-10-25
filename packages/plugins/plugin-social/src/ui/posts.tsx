@@ -36,10 +36,10 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
-        <Button type="button" onClick={onNew}>+ New post</Button>
+        {snapshot.canPost === false ? null : <Button type="button" onClick={onNew}>+ New post</Button>}
       </Toolbar>
       {rows.length === 0 ? (
-        <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={<Button type="button" onClick={onNew}>+ New post</Button>} />
+        <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={snapshot.canPost === false ? undefined : <Button type="button" onClick={onNew}>+ New post</Button>} />
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {rows.map((post) => (
