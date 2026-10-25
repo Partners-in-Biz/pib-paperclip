@@ -43,7 +43,7 @@ export function publicLink(row: PaymentLinkRow) {
 function providerParam(params: Record<string, unknown>): ProviderKey | null {
   const value = optionalString(params, "provider");
   if (!value) return null;
-  if (!(REAL_PROVIDERS as string[]).includes(value)) throw new BillingError("provider is stripe or payfast");
+  if (!(REAL_PROVIDERS as string[]).includes(value)) throw new BillingError("provider is payfast or paypal");
   return value as ProviderKey;
 }
 
@@ -150,7 +150,7 @@ export async function paymentsStatusAction(ctx: PluginContext, context: PluginPe
   const { settings } = await loadBilling(ctx, companyId);
   const [attention, events] = await Promise.all([linksForCompany(ctx, companyId, ["needs_attention", "failed"], 20), recentEvents(ctx, companyId, 10)]);
   return {
-    providers: providerStates(settings).map((state) => ({ ...state, webhookUrl: state.key === "stripe" || state.key === "payfast" ? webhookUrl(settings, state.key) : null })),
+    providers: providerStates(settings).map((state) => ({ ...state, webhookUrl: state.key === "payfast" || state.key === "paypal" || state.key === "stripe" ? webhookUrl(settings, state.key) : null })),
     attention: attention.map(publicLink),
     events: events.map((e) => ({ key: e.key, provider: e.provider, kind: e.kind, result: e.result, detail: e.detail, at: iso(e.received_at) })),
   };
