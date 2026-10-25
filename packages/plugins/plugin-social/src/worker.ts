@@ -479,7 +479,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.activate-agent": (ctx, v) => resyncAgent(ctx, v.companyId, requireUser(v, "re-sync the Social agent")),
   "social.sync-skills": async (ctx, v) => {
     requireUser(v, "sync skills");
-    return { results: await bootstrap!.skills.force(v.companyId) };
+    return { results: [...(await bootstrap!.skills.force(v.companyId)), ...(await bootstrap!.ownSkills.force(v.companyId))] };
   },
   // My Social: personal accounts and posts
   "my-social.accounts": (ctx, v) => myAccountsAction(ctx, v),
