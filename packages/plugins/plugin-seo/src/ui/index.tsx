@@ -12,6 +12,7 @@ import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client"
 import { clientScopeFromSearch, parseClientParam, type ClientRef, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
+import { loadStatusText } from "./load-status.js";
 import { Button, ClientWorkspaceBar, GetStarted, Page, PageFrame, PageMessage, errorText, tokens, useIsNarrow, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { plural } from "../engine/plain.js";
@@ -140,6 +141,7 @@ export function SeoPage({ context }: PluginPageProps) {
   const [creating, setCreating] = useState(false);
   const [starting, setStarting] = useState<SprintSummary | null>(null);
   const request = useRef(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // Switched off in Setup: show the banner instead of loading (null = still checking, load as usual).
   const enabled = useModuleEnabled(context.companyId);
   const off = enabled === false;
@@ -155,7 +157,8 @@ export function SeoPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || off) return;
     setData(null);
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    setLoadError(null);
+    refresh().catch((error: unknown) => setLoadError(errorText(error)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context.companyId, scopeKey, off]);
 
@@ -231,7 +234,7 @@ export function SeoPage({ context }: PluginPageProps) {
       ) : null}
 
       {!data ? (
-        <p style={{ color: tokens.muted, fontSize: 13 }}>Loading…</p>
+        <p style={{ color: tokens.muted, fontSize: 13 }}>{loadStatusText(loadError)}</p>
       ) : sprintId ? (
         <SprintCockpit
           key={sprintId}
