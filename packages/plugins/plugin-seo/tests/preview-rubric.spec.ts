@@ -23,6 +23,13 @@ describe("preview copy rubric", () => {
     expect(rubricLines(flat)[0]).toContain(`${flat.score}/100`);
   });
 
+  it("passes at the web bar of 70, not the kit's 80", async () => {
+    const { WEB_PASS_SCORE } = await import("../src/engine/rubric.js");
+    expect(WEB_PASS_SCORE).toBe(70);
+    const r = scorePreviewCopy({ h1: "Why do 3 in 4 bakeries lose orders?", bodyHtml: "<p>Book a free call and we fix your listing.</p>" })!;
+    expect(r.pass).toBe(r.score >= 70);
+  });
+
   it("advises only: a failing score has no blockers of its own", () => {
     const r = scorePreviewCopy({ h1: "Welcome" })!;
     expect(r.pass).toBe(false);

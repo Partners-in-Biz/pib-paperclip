@@ -7,6 +7,12 @@ import { scoreCreative, type CreativeRubricResult } from "@partnersinbiz/pib-plu
 import { htmlToText } from "./claims.js";
 import type { PreviewChanges } from "./preview.js";
 
+/**
+ * Tone is not scored here, so the kit counts it at 10 of 20 and a preview can reach at most 90 of 100 (80 once the
+ * hook or format falls short). The kit's bar of 80 would then fail nearly all real copy, so the web bar is 70.
+ */
+export const WEB_PASS_SCORE = 70;
+
 export interface PreviewRubric {
   score: number;
   pass: boolean;
@@ -27,13 +33,13 @@ export function scorePreviewCopy(changes: PreviewChanges): PreviewRubric | null 
   const text = previewCopy(changes);
   if (!text) return null;
   const r = scoreCreative({ platform: "web", text });
-  return { score: r.score, pass: r.pass, parts: r.parts, notes: r.notes, blockers: r.blockers.map((b) => b.text) };
+  return { score: r.score, pass: r.score >= WEB_PASS_SCORE, parts: r.parts, notes: r.notes, blockers: r.blockers.map((b) => b.text) };
 }
 
 export function rubricLines(r: PreviewRubric): string[] {
   const p = r.parts;
   return [
-    `Creative score: ${r.score}/100, ${r.pass ? "passes" : "below the bar of 80"} (hook ${p.hook}, clarity ${p.clarity}, brand ${p.brand}, cta ${p.cta}, format ${p.format}). Advice only: tone is unscored here, so judge it yourself.`,
+    `Creative score: ${r.score}/100, ${r.pass ? "passes" : `below the bar of ${WEB_PASS_SCORE}`} (hook ${p.hook}, clarity ${p.clarity}, brand ${p.brand}, cta ${p.cta}, format ${p.format}). Advice only: tone is unscored and counts 10 of 20, so the score is capped and the bar is lowered to match. Judge tone yourself.`,
     ...r.blockers.map((b) => `Blocker: ${b}`),
     ...r.notes.map((n) => `Rubric note: ${n}`),
   ];
