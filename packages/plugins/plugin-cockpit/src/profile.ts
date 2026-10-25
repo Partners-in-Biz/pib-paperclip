@@ -94,8 +94,18 @@ export async function fillProfile(ctx: PluginContext, companyId: string, input: 
   return result;
 }
 
+/** Who the company and its owner are, with fallbacks so agent text never reads empty. */
+export function companyFacts(profile: CompanyProfile, companyName: string | null) {
+  const text = (value: string | undefined) => (value ?? "").trim();
+  return {
+    company: text(profile.tradingName) || text(profile.legalName) || (companyName ?? "").trim() || "this company",
+    owner: text(profile.ownerName) || "the company owner",
+    ownerTitle: text(profile.ownerTitle) || "owner",
+  };
+}
+
 /** What `company-profile` returns: the profile, what is missing and where people edit it. */
-export function profileSummary(stored: StoredProfile, link: (href: string) => string) {
+export function profileSummary(stored: StoredProfile, link: (href: string) => string, companyName: string | null = null) {
   const missing = missingFields(stored.profile);
   const coreMissing = CORE_PROFILE_FIELDS.filter((key) => missing.includes(key));
   const content = missing.length === 0
@@ -104,6 +114,7 @@ export function profileSummary(stored: StoredProfile, link: (href: string) => st
   return {
     content,
     data: {
+      ...companyFacts(stored.profile, companyName),
       profile: stored.profile,
       missing,
       filledByAgents: Object.entries(stored.filledBy).filter(([, v]) => v?.by === "agent").map(([key]) => key),
