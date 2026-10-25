@@ -25,6 +25,7 @@ function createMockDbClient(pgDb: PgDb): PluginDatabaseClient {
 function makeSettings(overrides?: Partial<TelephonySettings>): TelephonySettings {
   return {
     recordingEnabled: false,
+    whatsappFrom: null,
     whatsappEnabled: true,
     smsEnabled: false,
     maxCallsPerDay: 50,

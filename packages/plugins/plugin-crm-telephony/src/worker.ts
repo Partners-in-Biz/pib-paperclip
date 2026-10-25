@@ -14,6 +14,8 @@ import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
+import { syncTemplates, listPickerTemplates } from "./templates.js";
+import { normalizeE164 } from "./phone.js";
 import { runRetention, retentionEnabledCompanyIds } from "./retention.js";
 
 let ctx: PluginContext | null = null;
