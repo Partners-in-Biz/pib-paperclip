@@ -44,7 +44,7 @@ const channelParam = {
 const campaignFields: Record<string, JsonSchema> = {
   name: str("Short internal name, e.g. 'Spring website offer'."),
   description: str("Internal notes: the goal and who it is for. Not sent."),
-  fromName: str("Sender name to show, e.g. 'Peet at Partners in Biz'. Overrides the name on the sender identity (set-sender-identity). A client's campaign must have its own sender identity."),
+  fromName: str("Sender name to show, e.g. 'Sam at Acme Studio'. Overrides the name on the sender identity (set-sender-identity). A client's campaign must have its own sender identity."),
   fromLocal: str("Kept for compatibility; it does not choose the sending mailbox. The mailbox comes from the sender identity (set-sender-identity) or, for PiB's own campaigns, the Mailbox's default account."),
   replyTo: str("Address replies should go to. Overrides the reply-to on the sender identity."),
   audienceTags,

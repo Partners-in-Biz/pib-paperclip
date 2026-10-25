@@ -3,7 +3,7 @@ import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 
 export const MAILBOX_DRAFT_SKILL = `# Mailbox
 
-The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every PiB plugin sends and receives mail through it. You read, draft and (when allowed) send on the mailboxes delegated to you.
+The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every plugin here sends and receives mail through it. You read, draft and (when allowed) send on the mailboxes delegated to you.
 
 ## Start here
 - \`list-mailboxes\`: every account, its Gmail status, which one is the default sender, the client a mailbox belongs to (\`client\`), and your delegation on it (\`mayRead\`, \`mayDraft\`, \`maySend\`). Use its \`accountId\` in the other tools. The Operator already has read and draft on the company's own mailboxes.
