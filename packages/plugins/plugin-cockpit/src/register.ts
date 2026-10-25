@@ -53,7 +53,7 @@ import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
-import { hostedUsageRollup } from "./hosted-usage.js";
+import { hostedUsageRollup, listHostedUsage, parseMonth } from "./hosted-usage.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
 import { parseSnapshot, teamSignature } from "./merge.js";
@@ -693,6 +693,15 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
         actor: String(body.actor).trim(),
       });
       return { status: 201, body: row };
+    }
+    if (input.routeKey === "hosted-usage") {
+      const query = input.query && typeof input.query === "object" ? (input.query as Record<string, unknown>) : {};
+      for (const key of ["fromMonth", "toMonth"]) {
+        if (query[key] !== undefined && query[key] !== "" && !parseMonth(query[key])) return { status: 400, body: { error: `${key} must be YYYY-MM` } };
+      }
+      const list = await listHostedUsage(env, input.companyId, { fromMonth: query.fromMonth || undefined, toMonth: query.toMonth || undefined });
+      if (!list.allowed) return { status: 403, body: { error: "Hosted usage is only available in the owner company" } };
+      return { status: 200, body: { rows: list.rows } };
     }
     if (input.routeKey === "repairs-list") {
       const query = input.query && typeof input.query === "object" ? (input.query as Record<string, unknown>) : {};

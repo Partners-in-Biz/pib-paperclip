@@ -77,7 +77,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(6);
+    expect(manifest.apiRoutes).toHaveLength(7);
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });

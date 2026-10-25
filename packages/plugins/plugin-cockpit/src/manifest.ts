@@ -309,6 +309,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Governor rehearse: safely tests the quota governor with synthetic failures.
     { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     // Owner push: send critical push notifications from external systems to the owner.
+    // Hosted usage (owner company only; any other company gets 403).
+    { routeKey: "hosted-usage", method: "GET", path: "/hosted-usage", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
