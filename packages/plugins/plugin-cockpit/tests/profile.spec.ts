@@ -67,7 +67,7 @@ describe("profile tools and actions", () => {
     const s = setup();
     const empty = await s.tool("company-profile", {});
     expect(empty.error).toBeUndefined();
-    expect(empty.content).toMatch(/^Company profile: 0 of 12 fields set/);
+    expect(empty.content).toMatch(/^Company profile: 0 of 14 fields set/);
     expect(empty.data).toMatchObject({ href: "/PIB/cockpit?tab=profile", missing: expect.arrayContaining(["legalName", "brandVoice"]) });
 
     const filled = await s.tool("update-company-profile", { website: "partnersinbiz.online", brandVoice: "Plain, warm, South African English.", issueId: "PIB-3" });
@@ -86,6 +86,19 @@ describe("profile tools and actions", () => {
     const read = await s.tool("company-profile", {});
     expect(read.data.profile).toMatchObject({ legalName: "Partners in Biz (Pty) Ltd", website: "https://partnersinbiz.online", senderName: "Peet" });
     expect(read.data.filledByAgents).toEqual(["website", "brandVoice", "senderName"]);
+  });
+
+  it("company-profile returns company, owner and ownerTitle with fallbacks", async () => {
+    const s = setup();
+    const unset = await s.tool("company-profile", {});
+    expect(unset.data).toMatchObject({ company: "Company company-a", owner: "the company owner", ownerTitle: "owner" });
+
+    await s.actions.get("profile.save")!({ profile: { tradingName: "PiB Demo", ownerName: "Alex Smith", ownerTitle: "Founder" } }, user);
+    const set = await s.tool("company-profile", {});
+    expect(set.data).toMatchObject({ company: "PiB Demo", owner: "Alex Smith", ownerTitle: "Founder" });
+
+    await s.actions.get("profile.save")!({ profile: { ownerName: "", ownerTitle: "" } }, user);
+    expect((await s.tool("company-profile", {})).data).toMatchObject({ company: "PiB Demo", owner: "the company owner", ownerTitle: "owner" });
   });
 
   it("only board users save; the load action returns who filled what", async () => {
@@ -116,7 +129,7 @@ describe("the Profile tab", () => {
 
   it("renders every field in its group, marks agent-filled ones and what is still needed", () => {
     const html = render();
-    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 12 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
+    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 14 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
     expect(html).toContain("cheap\nguaranteed");
     // Phone-friendly: fields wrap to one column; no fixed widths.
     expect(html).toContain("minmax(min(260px, 100%), 1fr)");
