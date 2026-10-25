@@ -14,6 +14,7 @@ import { isCanaryCustomer } from "../canary.js";
 import type { BillingSettings } from "../config.js";
 import { asObject, type InvoiceRow } from "../db.js";
 import { MockProvider } from "./mock.js";
+import { paypalSupportsCurrency } from "./paypal.js";
 import { buildProvider, enabledProviderKeys } from "./settings.js";
 import { StripeProvider } from "./stripe.js";
 import { insertLink, linksForCompany, linksForInvoice, markLinkRemoteOff, retireStaleLinks, setLinkCreated, setLinkStatus, type PaymentLinkRow } from "./store.js";
@@ -94,6 +95,20 @@ export async function ensurePaymentLinks(
         result.problems.push(`${PROVIDER_LABELS[key]} is not ready`);
         continue;
       }
+      const currency = invoice.currency.toUpperCase();
+      // Skip insert for currency the provider cannot take — otherwise createLink fails and leaves a failed row.
+      if (key === "paypal" && !paypalSupportsCurrency(currency)) {
+        const message =
+          currency === "ZAR"
+            ? "PayPal links are not offered in ZAR. Ask for PayFast or EFT instead."
+            : `PayPal links are offered in USD, EUR or GBP only, and this invoice is in ${currency}. Ask for EFT instead.`;
+        result.problems.push(`${PROVIDER_LABELS[key]}: ${message}`);
+        continue;
+      }
+      if (key === "payfast" && currency !== "ZAR") {
+        result.problems.push(`${PROVIDER_LABELS[key]}: PayFast takes rand only, and this invoice is in ${currency}. Ask for EFT instead.`);
+        continue;
+      }
       const id = randomUUID();
       await insertLink(ctx, { id, companyId: invoice.company_id, invoiceId: invoice.id, provider: key, amountMinor: amount, currency: invoice.currency, createdBy: options.createdBy ?? null });
       try {
@@ -161,7 +176,8 @@ export async function housekeepPaymentLinks(ctx: PluginContext, companyId: strin
   let switchedOff = 0;
   const resolver = new SecretResolver(ctx, companyId, settings as Record<string, unknown>);
   for (const link of await linksForCompany(ctx, companyId, ["cancelled"], 30)) {
-    if (link.provider === "payfast" || !link.provider_ref || link.remote_off_at) continue;
+    // PayFast and PayPal have no reliable remote deactivate (ITN / order void); skip so we do not retry forever.
+    if (link.provider === "payfast" || link.provider === "paypal" || !link.provider_ref || link.remote_off_at) continue;
     if (await deactivateRemote(ctx, link, settings, resolver)) switchedOff += 1;
   }
   return { switchedOff };

@@ -53,7 +53,7 @@ const iso = (value: unknown): string | null => {
 const ago = (now: Date, hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
 
 /** A numeric field of a run's `usage_json`, 0 when missing or not a number (never a cast error). */
-const usage = (field: string) => `CASE WHEN r.usage_json ->> '${field}' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (r.usage_json ->> '${field}')::double precision ELSE 0 END`;
+export const usage = (field: string) => `CASE WHEN r.usage_json ->> '${field}' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (r.usage_json ->> '${field}')::double precision ELSE 0 END`;
 
 /** Runs since a time with the fields every aggregate needs. `$1` company, `$2` since. */
 const RUNS = `runs AS (

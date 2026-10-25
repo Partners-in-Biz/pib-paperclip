@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.13.18";
+export const VERSION = "0.14.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -26,6 +26,8 @@ export const JOBS = {
   pushDigest: "push-digest",
   /** Every 15 minutes: sweeps asks with expired deadlines, applies standing policy or escalates to owner. */
   askDeadlines: "ask-deadlines",
+  /** Daily at 02:30 UTC (04:30 SAST): one usage row per hosted company and month, written under the owner company. */
+  hostedUsageRollup: "hosted-usage-rollup",
 } as const;
 
 export const ROUTINES = {

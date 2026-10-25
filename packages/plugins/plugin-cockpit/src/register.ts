@@ -53,6 +53,7 @@ import { outwardGateFor } from "./outward-gate.js";
 import { CockpitError, message, readInstalled, rememberInstalled, type Env } from "./env.js";
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
+import { hostedUsageRollup } from "./hosted-usage.js";
 import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
 import { parseSnapshot, teamSignature } from "./merge.js";
@@ -540,6 +541,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.businessReview, async () => {
     ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
+  });
+  ctx.jobs.register(JOBS.hostedUsageRollup, async () => {
+    ctx.logger.info("Hosted usage roll-up", await trackJob(ctx, JOBS.hostedUsageRollup, () => hostedUsageRollup(env)));
   });
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));

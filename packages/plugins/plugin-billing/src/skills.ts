@@ -106,7 +106,7 @@ Work the weekly "Overdue invoices" issue (or \`list-open-invoices\`):
 
 export const ONLINE_PAYMENTS_REFERENCE = `# Online payments: what you will see
 
-Billing takes card and instant-EFT payments through a hosted checkout page (Stripe, PayFast). Nothing here is yours to switch on or off: a person does that in Setup. You read the state and you tell the owner what is in the way.
+Billing takes card and instant-EFT payments through a hosted checkout page (PayFast or PayPal). Nothing here is yours to switch on or off: a person does that in Setup. You read the state and you tell the owner what is in the way.
 
 ## Links
 

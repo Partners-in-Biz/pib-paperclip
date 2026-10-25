@@ -220,7 +220,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
   try {
     items.push(...(await paymentSetupItems(ctx, companyId, settings, settingsHref)));
   } catch (error) {
-    items.push({ key: "pay_stripe", title: "Online payments", required: false, status: "unknown", detail: `Could not check this: ${error instanceof Error ? error.message : String(error)}` });
+    items.push({ key: "pay_online", title: "Online payments", required: false, status: "unknown", detail: `Could not check this: ${error instanceof Error ? error.message : String(error)}` });
   }
 
   items.push(await probe("reminders", "Payment reminders", false, async () => {
