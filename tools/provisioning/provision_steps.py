@@ -6,13 +6,15 @@ needs_owner request that already made a company is resumed by the next request f
 same CRM company: finished steps are skipped. The runner only reads state until the hire-skills step (after apply); only that step touches a hire task, to attach skills, accept
 the skills card and close it (that wakes the CEO, which is intended).
 """
+import copy
 import json
 import os
 import re
 import subprocess
 import time
+import urllib.parse
 
-DEFAULT_TIMEOUTS = {"create-ceo": 300, "setup-run": 300, "copy-secrets": 300, "hires": 900, "apply": 300, "hire-skills": 120, "model-key": 300, "verify": 300}
+DEFAULT_TIMEOUTS = {"create-ceo": 300, "setup-run": 300, "copy-secrets": 300, "client-ids": 120, "hires": 900, "apply": 300, "hire-skills": 120, "model-key": 300, "verify": 300}
 SECRET_RE = re.compile(r"(sk-ant-[A-Za-z0-9_-]+|Bearer\s+\S+|[A-Fa-f0-9]{40,}|pcp_[A-Za-z0-9_-]{16,})")
 
 
@@ -165,6 +167,121 @@ def step_copy_secrets(c):
         undo = re.findall(r"\S+\.undo\S*", out)
         raise StepError("copy-company-secrets.py failed (exit %d); stop here. Undo file: %s\n%s" % (rc, undo[-1] if undo else "(none named in the output)", tail(out)),
                         undo_file=undo[-1] if undo else None)
+
+
+# --- OAuth client IDs (PAR-5368) ---
+# copy-company-secrets.py relinks the *Secret values, but a client ID is plain, non-secret settings text that PAR keeps in the plugin
+# settings. Without it every OAuth connect in the new company fails ("Add clientId and clientSecret"). Only these two shapes are copied:
+# Social `platforms.<name>.clientId`, and the Google `google.clientId` (Mailbox, SEO, Social). Never a key with "secret" in its name.
+GOOGLE_ID_PATH = ("google", "clientId")
+
+
+def _text(v):
+    return v.strip() if isinstance(v, str) else ""
+
+
+def client_id_paths(cfg):
+    """[(path tuple, value)] for each non-empty plain clientId a plugin settings object holds, in the two supported shapes."""
+    found = []
+    plat = cfg.get("platforms") if isinstance(cfg, dict) else None
+    for name, row in sorted((plat or {}).items()) if isinstance(plat, dict) else []:
+        if isinstance(row, dict) and _text(row.get("clientId")):
+            found.append((("platforms", name, "clientId"), row["clientId"]))
+    g = cfg.get("google") if isinstance(cfg, dict) else None
+    if isinstance(g, dict) and _text(g.get("clientId")):
+        found.append((GOOGLE_ID_PATH, g["clientId"]))
+    return found
+
+
+def _get_path(cfg, path):
+    for part in path:
+        if not isinstance(cfg, dict):
+            return None
+        cfg = cfg.get(part)
+    return cfg
+
+
+def client_id_plan(src_cfg, dst_cfg):
+    """[(path, value)] to copy: the source has a client ID there and the target has none (an existing target value is never overwritten)."""
+    return [(p, v) for p, v in client_id_paths(src_cfg) if not _text(_get_path(dst_cfg, p))]
+
+
+def missing_client_ids(cfg):
+    """[path tuple] of every settings object that holds a clientSecret (a value or a secret reference) but no clientId."""
+    out = []
+
+    def walk(node, path):
+        if not isinstance(node, dict):
+            return
+        sec = node.get("clientSecret")
+        if (_text(sec) or (isinstance(sec, dict) and sec)) and not _text(node.get("clientId")):
+            out.append(path + ("clientId",))
+        for k, v in node.items():
+            if k != "clientSecret":
+                walk(v, path + (k,))
+    walk(cfg, ())
+    return out
+
+
+def _dotted(path):
+    return ".".join(path)
+
+
+def _plugin_config(c, ref, company_id):
+    try:
+        body = c.api.get("/api/plugins/%s/config?companyId=%s" % (urllib.parse.quote(ref, safe=""), company_id))
+    except RuntimeError as ex:
+        if "HTTP 404" in str(ex):
+            return False, {}
+        raise
+    row = body.get("data", body) if isinstance(body, dict) else None
+    cfg = row.get("configJson") if isinstance(row, dict) else None
+    return (True, cfg) if isinstance(cfg, dict) else (False, {})
+
+
+def _pib_plugins(c):
+    rows = c.api.get("/api/plugins")
+    rows = rows.get("data", rows) if isinstance(rows, dict) else rows
+    return sorted([p for p in rows or [] if str(p.get("pluginKey", "")).startswith("partnersinbiz.")], key=lambda p: p["pluginKey"])
+
+
+def step_client_ids(c):
+    src, dst = c.p["parCompanyId"], c.st["company_id"]
+    copied = []
+    for plugin in _pib_plugins(c):
+        s_saved, s_cfg = _plugin_config(c, plugin["id"], src)
+        if not s_saved:
+            continue
+        d_saved, d_cfg = _plugin_config(c, plugin["id"], dst)
+        plan = client_id_plan(s_cfg, d_cfg)
+        if not plan:
+            continue
+        merged = copy.deepcopy(d_cfg)
+        for path, value in plan:
+            cur = merged
+            for part in path[:-1]:
+                cur = cur.setdefault(part, {})
+            cur[path[-1]] = value
+        c.api.post("/api/plugins/%s/config" % urllib.parse.quote(plugin["id"], safe=""), {"companyId": dst, "configJson": merged})
+        _, back = _plugin_config(c, plugin["id"], dst)
+        bad = [_dotted(p) for p, v in plan if _get_path(back, p) != v]
+        if bad:
+            raise StepError("client IDs: read-back of %s settings does not show %s" % (plugin["pluginKey"], ", ".join(bad)))
+        copied.append("%s: %s" % (plugin["pluginKey"], ", ".join(_dotted(p) for p, _ in plan)))
+    c.st["note_client_ids"] = ("client IDs copied from PAR (names only): " + "; ".join(copied)) if copied else "client IDs: nothing to copy (the new company already has every client ID PAR has)"
+
+
+def check_client_ids(c):
+    """Problem lines (paths only, never a value): a client secret with no client ID, or a client ID PAR has that the new company lacks."""
+    src, dst, bad = c.p["parCompanyId"], c.st["company_id"], []
+    for plugin in _pib_plugins(c):
+        d_saved, d_cfg = _plugin_config(c, plugin["id"], dst)
+        for path in missing_client_ids(d_cfg):
+            bad.append("FAIL %s: %s is empty but its clientSecret is set" % (plugin["pluginKey"], _dotted(path)))
+        s_saved, s_cfg = _plugin_config(c, plugin["id"], src)
+        for path, _ in (client_id_plan(s_cfg, d_cfg) if s_saved else []):
+            bad.append("FAIL %s: %s is set in PAR but missing here" % (plugin["pluginKey"], _dotted(path)))
+    return bad
 
 
 def _live_agents(c):
@@ -326,6 +443,9 @@ def step_verify(c):
     bad = [ln for ln in out.splitlines() if re.search(r"\b(WARN|FAIL)\b", ln)]
     if rc != 0 or bad:
         raise StepError("new-company.py --verify did not pass (exit %d):\n%s" % (rc, redact("\n".join(bad[:8]) or tail(out))))
+    ids = check_client_ids(c)
+    if ids:
+        raise StepError("OAuth client ID check did not pass:\n%s" % "\n".join(ids[:8]))
 
 
 def step_crm_record(c):
@@ -382,7 +502,7 @@ def step_owner_invite(c):
 
 
 STEPS = [("create-company", step_create_company), ("entitlements", step_entitlements), ("key-gate", step_key_gate), ("create-ceo", step_create_ceo),
-         ("setup-run", step_setup_run), ("copy-secrets", step_copy_secrets), ("hires", step_hires), ("link-agents", step_link_agents),
+         ("setup-run", step_setup_run), ("copy-secrets", step_copy_secrets), ("client-ids", step_client_ids), ("hires", step_hires), ("link-agents", step_link_agents),
          ("apply", step_apply), ("hire-skills", step_hire_skills), ("model-key", step_model_key), ("verify", step_verify), ("crm-record", step_crm_record),
          ("owner-invite", step_owner_invite)]
 
@@ -425,7 +545,7 @@ def run(runner, rid, req):
         st["steps_done"].append(name)
     url = (runner.policy.get("ownerListUrlTemplate") or "").replace("{prefix}", st["prefix"]).replace("{companyId}", st["company_id"])
     msg = "Company %s (%s) is provisioned and `new-company.py --verify` passed." % (req["name"], st["prefix"])
-    for k in ("note_entitlements", "note_key_gate", "note_hires", "note_model_key", "note_invite"):
+    for k in ("note_entitlements", "note_key_gate", "note_hires", "note_client_ids", "note_model_key", "note_invite"):
         if st.get(k):
             msg += "\n- " + st[k]
     if not url:

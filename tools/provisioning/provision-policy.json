@@ -44,6 +44,7 @@
     "create-ceo": 300,
     "setup-run": 300,
     "copy-secrets": 300,
+    "client-ids": 120,
     "hires": 900,
     "apply": 300,
     "model-key": 300,
