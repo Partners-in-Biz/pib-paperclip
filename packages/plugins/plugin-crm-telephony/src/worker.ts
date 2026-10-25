@@ -1,6 +1,8 @@
 import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
 import { readSettings, secretStatus } from "./settings.js";
+import { registerSettingsActions } from "./settings-actions.js";
+import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
 import { handleWaInbound, handleWaStatus } from "./whatsapp.js";
 import { handleRecordingStatus } from "./recording-intake.js";
@@ -27,7 +29,7 @@ export async function telephonyToolHandler(
   run: ToolRunContext,
 ) {
   const settings = await readSettings(pluginCtx, run.companyId);
-  const status = await secretStatus(pluginCtx, run.companyId, []);
+  const status = await secretStatus(pluginCtx, run.companyId, [...TELEPHONY_SECRET_NAMES]);
   return { data: { settings, secrets: status } };
 }
 
@@ -160,6 +162,9 @@ const plugin = definePlugin({
     ctx = pluginCtx;
 
     registerCrmProjection(pluginCtx, pluginCtx.db.namespace, { companies: false, contacts: true });
+
+    // Register settings actions
+    registerSettingsActions(pluginCtx);
 
     // Register call note ack listener
     registerNoteAck(pluginCtx);

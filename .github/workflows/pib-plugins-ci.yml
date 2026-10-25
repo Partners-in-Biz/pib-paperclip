@@ -61,6 +61,7 @@ jobs:
           - plugin-seo
           - plugin-setup
           - plugin-social
+          - plugin-voice
           - pib-wp-connector
     steps:
       - name: Check out

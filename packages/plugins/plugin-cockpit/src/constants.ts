@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.14.0";
+export const VERSION = "0.14.4";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -28,6 +28,8 @@ export const JOBS = {
   askDeadlines: "ask-deadlines",
   /** Daily at 02:30 UTC (04:30 SAST): one usage row per hosted company and month, written under the owner company. */
   hostedUsageRollup: "hosted-usage-rollup",
+  /** Mondays 06:30 SAST: one growth review issue per scope owner and one hand-off per channel agent. */
+  growthReview: "growth-review",
 } as const;
 
 export const ROUTINES = {
@@ -66,6 +68,7 @@ export const ORIGIN = {
   /** Acceptance requests (the run's trigger issue) and the failures a run opens for the owning role. */
   acceptance: `plugin:${COCKPIT_PLUGIN}:acceptance`,
   routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
+  growthReview: `plugin:${COCKPIT_PLUGIN}:growth-review`,
 } as const;
 
 /**
@@ -86,6 +89,8 @@ export const ORIGIN_ID = {
   acceptance: "cockpit:acceptance:",
   /** `cockpit:routine-failure:<routineKey>:<since>` for routine failures that need wake or escalation. */
   routineFailure: "cockpit:routine-failure:",
+  /** `cockpit:growth-review:<companyId>:<week>:owner:<agent>` and `...:handoff:<agent>` */
+  growthReview: "cockpit:growth-review:",
 } as const;
 
 /** The same kinds before 0.4.0 (no plugin part), still checked for issues opened then. */

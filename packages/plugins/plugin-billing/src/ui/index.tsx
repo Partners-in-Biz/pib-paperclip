@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { loadStatusText } from "./load-status.js";
@@ -52,7 +53,9 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
   );
 }
 
-export function BillingPage({ context }: PluginPageProps) {
+export const BillingPage = withHelp(BillingPageMain);
+
+function BillingPageMain({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
   // "Finish setting up Billing" on the overview until its required setup is done.

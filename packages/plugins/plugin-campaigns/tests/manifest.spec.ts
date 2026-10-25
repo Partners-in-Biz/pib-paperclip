@@ -25,10 +25,10 @@ describe("manifest 0.6", () => {
     expect(result.success ? [] : result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`)).toEqual([]);
   });
 
-  it("is version 0.8.5 everywhere", () => {
-    expect(manifest.version).toBe("0.8.5");
-    expect(PLUGIN_VERSION).toBe("0.8.5");
-    expect(pkg.version).toBe("0.8.5");
+  it("is version 0.8.6 everywhere", () => {
+    expect(manifest.version).toBe("0.8.6");
+    expect(PLUGIN_VERSION).toBe("0.8.6");
+    expect(pkg.version).toBe("0.8.6");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {

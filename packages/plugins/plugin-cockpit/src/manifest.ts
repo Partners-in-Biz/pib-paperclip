@@ -275,6 +275,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "30 4 * * 1",
     },
     {
+      jobKey: JOBS.growthReview,
+      displayName: "Weekly growth review",
+      description: "Mondays 06:30 SAST: opens one growth review issue per scope owner (reconcile the ledger, one line per channel, goal proposals) and one hand-off per channel agent (performance review, at most two new experiments, pending playbook changes). Once a week per company.",
+      schedule: "30 4 * * 1",
+    },
+    {
       jobKey: JOBS.governor,
       displayName: "Agent governor",
       description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
@@ -309,6 +315,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Governor rehearse: safely tests the quota governor with synthetic failures.
     { routeKey: "governor-rehearse", method: "POST", path: "/governor-rehearse", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     // Owner push: send critical push notifications from external systems to the owner.
+    // Hosted usage (owner company only; any other company gets 403).
+    { routeKey: "hosted-usage", method: "GET", path: "/hosted-usage", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [
@@ -346,6 +354,7 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "sidebar", id: "pib-nav-clients", displayName: "Clients", exportName: "ClientsNav", order: 6 },
       { type: "sidebar", id: "pib-nav-marketing", displayName: "Marketing", exportName: "MarketingNav", order: 7 },
       { type: "sidebar", id: "pib-nav-finance", displayName: "Finance", exportName: "FinanceNav", order: 8 },
+      { type: "sidebar", id: "pib-nav-hosted", displayName: "Hosted clients", exportName: "HostedClientsNav", order: 9 },
       { type: "dashboardWidget", id: "cockpit-today", displayName: "Company today", exportName: "CompanyTodayWidget" },
     ],
   },
