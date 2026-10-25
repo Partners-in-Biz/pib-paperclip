@@ -130,7 +130,7 @@ function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: 
 function SpaceSwitch({ me, linkProps }: { me: boolean; linkProps: ReturnType<typeof useHostNavigation>["linkProps"] }) {
   return (
     <Row>
-      <a {...linkProps("/social")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={!me} style={chipStyle(!me)}>Partners in Biz</SmallButton></a>
+      <a {...linkProps("/social")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={!me} style={chipStyle(!me)}>Company</SmallButton></a>
       <a {...linkProps("/mysocial")} style={{ textDecoration: "none" }}><SmallButton aria-pressed={me} style={chipStyle(me)}>My Social</SmallButton></a>
     </Row>
   );
@@ -257,7 +257,7 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
 
   if (!context.companyId) return <Page title={me ? "My Social" : "Social"} description="Pick a company first." accent="social">{null}</Page>;
 
-  const newPost = <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
+  const newPost = snapshot?.canPost === false ? null : <Button type="button" disabled={!snapshot} onClick={() => setComposer({ post: null })}>+ New post</Button>;
   const client = snapshot?.client ?? null;
 
   const body = off ? <ModuleOffBanner companyId={context.companyId} /> : loadError ? (
@@ -363,8 +363,8 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
     <Page
       title={me ? "My Social" : "Social"}
       description={me
-        ? "Your own social accounts, posts and inbox. Only you can see them: they are separate from Partners in Biz and from every client."
-        : "Partners in Biz's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."}
+        ? "Your own social accounts, posts and inbox. Only you can see them: they are separate from the company's and from every client's."
+        : "This company's own social accounts and posts. Client social work lives in each client's workspace (open it from the CRM)."}
       message={message}
       accent="social"
       actions={off ? undefined : <Row><SpaceSwitch me={me} linkProps={navigation.linkProps} />{newPost}</Row>}

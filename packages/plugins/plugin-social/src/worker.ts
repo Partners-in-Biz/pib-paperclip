@@ -327,6 +327,18 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 type ActionHandler = (ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) => Promise<unknown>;
 
+/** False only for a signed-in user whose active role is verified as viewer; anything unverifiable keeps the button (the server still decides). */
+async function canPostHere(ctx: PluginContext, v: Viewer): Promise<boolean> {
+  if (v.isAgent || !v.userId || v.userId === "local-board") return true;
+  try {
+    const members = await ctx.access.members.list({ companyId: v.companyId });
+    const role = members.find((m) => m.principalType === "user" && m.principalId === v.userId && m.status === "active")?.membershipRole;
+    return role !== "viewer";
+  } catch {
+    return true;
+  }
+}
+
 const ACTIONS: Record<string, ActionHandler> = {
   "social.load": async (ctx, v, p) => {
     // The page reports /_plugins/<installation uuid>/ui/ so redirect URIs can use it.
@@ -334,7 +346,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
     // The own page shows the agent card, so it also links a hire whose agent has appeared.
     if (!p.client && !v.isAgent && spaceOf(p) === "company") await tryLinkSocialHire(ctx, v.companyId);
-    return loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
+    const snapshot = await loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
+    return { ...snapshot, canPost: await canPostHere(ctx, v) };
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),
