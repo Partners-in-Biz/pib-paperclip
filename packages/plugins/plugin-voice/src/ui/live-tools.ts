@@ -3,8 +3,11 @@
  * with the signed-in person's session, so the voice can do exactly what that
  * person can do in the app, and every change is logged as theirs.
  *
- * Changes (posting a message, creating a task) take `confirmed: true`. Without
- * it the tool returns a preview and the voice must read it back and hear a yes.
+ * Changes (posting a message, creating a task) are two steps. The first call
+ * stores a pending action and returns a read-back and a `confirmationId`. The
+ * second call must carry that id, and it is accepted only after the person has
+ * spoken again since the read-back (`userTurn` has moved on). The stored action
+ * runs, not the arguments of the second call, and it is cleared after one use.
  */
 
 export interface ApiClient {
@@ -20,6 +23,14 @@ export interface ToolContext {
   pageIssueRef: string | null;
   /** Issues the voice posted to; their agent replies are read out. */
   watch: (issueId: string, ref: string) => void;
+  /** Count of finished spoken turns from the person; a confirmation needs a new one. */
+  userTurn: () => number;
+}
+
+interface PendingAction {
+  id: string;
+  turn: number;
+  run: () => Promise<unknown>;
 }
 
 interface AgentRow {
@@ -101,13 +112,13 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     name: "post_message",
-    description: "Post a message on a task as the person. This wakes the agent assigned to it. Call first without confirmed to get the preview, read it back, and only call again with confirmed true after a clear yes.",
+    description: "Post a message on a task as the person. This wakes the agent assigned to it. Call first to get a readBack and a confirmationId, read it back, and only after the person says yes call again with that confirmationId.",
     parameters: {
       type: "object",
       properties: {
         ref: { type: "string", description: "Task id like PAR-123. Omit to use the task on screen." },
         text: { type: "string", description: "The message, written as the person would write it." },
-        confirmed: { type: "boolean", description: "True only after the person said yes to the read-back." },
+        confirmationId: { type: "string", description: "The id from the preview, sent only after the person said yes to the read-back." },
       },
       required: ["text"],
     },
@@ -115,7 +126,7 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     name: "create_task",
-    description: "Create a new task and assign it to an agent. Call first without confirmed to get the preview, read it back, and only call again with confirmed true after a clear yes.",
+    description: "Create a new task and assign it to an agent. Call first to get a readBack and a confirmationId, read it back, and only after the person says yes call again with that confirmationId.",
     parameters: {
       type: "object",
       properties: {
@@ -123,7 +134,7 @@ export const TOOL_DEFINITIONS = [
         description: { type: "string", description: "What needs doing and what done looks like." },
         agent: { type: "string", description: "Agent name to assign it to." },
         project: { type: "string", description: "Project name, when the person names one." },
-        confirmed: { type: "boolean" },
+        confirmationId: { type: "string", description: "The id from the preview, sent only after the person said yes to the read-back." },
       },
       required: ["title", "agent"],
     },
@@ -169,6 +180,8 @@ export function matchByName<T extends { name: string }>(rows: T[], spoken: strin
 
 export class LiveTools {
   private agentCache: AgentRow[] | null = null;
+  private pending: PendingAction | null = null;
+  private seq = 0;
 
   constructor(private readonly ctx: ToolContext) {}
 
@@ -218,6 +231,22 @@ export class LiveTools {
     throw new Error("Which task? Ask for the task id, like PAR-123.");
   }
 
+  /** Returns the stored action when the id matches and the person spoke since the read-back. */
+  private takeConfirmed(id: unknown): PendingAction | { error: string } | null {
+    if (typeof id !== "string" || !id) return null;
+    const p = this.pending;
+    if (!p || p.id !== id) return { error: "That confirmation is not valid. Preview the change again and read it back." };
+    if (this.ctx.userTurn() <= p.turn) return { error: "Wait for the person to answer the read-back before confirming." };
+    this.pending = null;
+    return p;
+  }
+
+  private stage(readBack: string, run: () => Promise<unknown>): unknown {
+    const id = `c${++this.seq}`;
+    this.pending = { id, turn: this.ctx.userTurn(), run };
+    return { needsConfirmation: true, confirmationId: id, readBack };
+  }
+
   async run(name: string, args: Record<string, unknown>): Promise<unknown> {
     switch (name) {
       case "get_page_context": {
@@ -253,16 +282,21 @@ export class LiveTools {
         const ref = await this.resolveRef(args.ref);
         const text = typeof args.text === "string" ? args.text.trim() : "";
         if (!text) return { error: "The message is empty." };
+        const confirmed = this.takeConfirmed(args.confirmationId);
+        if (confirmed && "error" in confirmed) return confirmed;
+        if (confirmed) return confirmed.run();
         const issue = await this.ctx.api.get<IssueRow>(`/issues/${encodeURIComponent(ref)}`);
         const target = (await this.agentName(issue.assigneeAgentId)) ?? "nobody (no agent will wake)";
-        if (args.confirmed !== true) {
-          return { needsConfirmation: true, readBack: `Post to ${issue.identifier ?? ref} (${issue.title}), going to ${target}: "${text}"` };
-        }
-        await this.ctx.api.post(`/issues/${issue.id}/comments`, { body: text, clientRequestId: `voice-${Date.now()}` });
-        this.ctx.watch(issue.id, issue.identifier ?? ref);
-        return { posted: true, task: issue.identifier ?? ref, wakes: target };
+        return this.stage(`Post to ${issue.identifier ?? ref} (${issue.title}), going to ${target}: "${text}"`, async () => {
+          await this.ctx.api.post(`/issues/${issue.id}/comments`, { body: text, clientRequestId: `voice-${Date.now()}` });
+          this.ctx.watch(issue.id, issue.identifier ?? ref);
+          return { posted: true, task: issue.identifier ?? ref, wakes: target };
+        });
       }
       case "create_task": {
+        const confirmed = this.takeConfirmed(args.confirmationId);
+        if (confirmed && "error" in confirmed) return confirmed;
+        if (confirmed) return confirmed.run();
         const title = typeof args.title === "string" ? args.title.trim() : "";
         if (!title) return { error: "A task needs a title." };
         const agent = typeof args.agent === "string" ? matchByName(await this.agents(), args.agent) : null;
@@ -274,21 +308,20 @@ export class LiveTools {
           if (!project) return { error: `No project called ${args.project}.`, projects: projects.map((p) => p.name).slice(0, 20) };
         }
         const description = typeof args.description === "string" ? args.description.trim() : "";
-        if (args.confirmed !== true) {
-          return {
-            needsConfirmation: true,
-            readBack: `New task "${title}" for ${agent.name}${project ? ` in ${project.name}` : ""}${description ? `: ${clip(description, 300)}` : ""}`,
-          };
-        }
-        const created = await this.ctx.api.post<IssueRow>(`/companies/${this.ctx.companyId}/issues`, {
-          title,
-          description: description ? `${description}\n\n_Created by voice._` : "_Created by voice._",
-          status: "todo",
-          assigneeAgentId: agent.id,
-          ...(project ? { projectId: project.id } : {}),
-        });
-        this.ctx.watch(created.id, created.identifier ?? created.id);
-        return { created: true, task: created.identifier ?? created.id, assignee: agent.name };
+        return this.stage(
+          `New task "${title}" for ${agent.name}${project ? ` in ${project.name}` : ""}${description ? `: ${clip(description, 300)}` : ""}`,
+          async () => {
+            const created = await this.ctx.api.post<IssueRow>(`/companies/${this.ctx.companyId}/issues`, {
+              title,
+              description: description ? `${description}\n\n_Created by voice._` : "_Created by voice._",
+              status: "todo",
+              assigneeAgentId: agent.id,
+              ...(project ? { projectId: project.id } : {}),
+            });
+            this.ctx.watch(created.id, created.identifier ?? created.id);
+            return { created: true, task: created.identifier ?? created.id, assignee: agent.name };
+          },
+        );
       }
       default:
         return { error: `Unknown tool ${name}.` };

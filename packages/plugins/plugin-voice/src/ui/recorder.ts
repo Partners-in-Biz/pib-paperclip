@@ -15,6 +15,9 @@ export const RECORDING_TYPES = [
 /** Hard stop so a forgotten recording cannot grow past the upload cap. */
 export const MAX_RECORDING_MS = 10 * 60 * 1000;
 
+/** Stop a little under the server's 7 MiB upload cap. */
+export const MAX_RECORDING_BYTES = 6.5 * 1024 * 1024;
+
 /** Speech needs little: 48 kbps keeps ten minutes near 3.6 MB, well under the 7 MB upload cap. */
 export const RECORDING_BITS_PER_SECOND = 48_000;
 
@@ -50,16 +53,31 @@ export async function startRecording(onAutoStop?: () => void): Promise<ActiveRec
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
+  const releaseStream = () => {
+    for (const track of stream.getTracks()) track.stop();
+  };
   const type = pickRecordingType((t) => MediaRecorder.isTypeSupported(t));
   const options: MediaRecorderOptions = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND };
   if (type) options.mimeType = type;
-  const recorder = new MediaRecorder(stream, options);
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(stream, options);
+  } catch (err) {
+    releaseStream();
+    throw err;
+  }
   const chunks: Blob[] = [];
   const startedAt = Date.now();
   let settled = false;
 
+  let bytes = 0;
   recorder.addEventListener("dataavailable", (event) => {
-    if (event.data && event.data.size > 0) chunks.push(event.data);
+    if (event.data && event.data.size > 0) {
+      chunks.push(event.data);
+      bytes += event.data.size;
+      // Stop before the server's upload cap, whatever bitrate the browser picked.
+      if (bytes >= MAX_RECORDING_BYTES) onAutoStop?.();
+    }
   });
 
   const release = () => {
@@ -68,7 +86,13 @@ export async function startRecording(onAutoStop?: () => void): Promise<ActiveRec
 
   const timer = window.setTimeout(() => onAutoStop?.(), MAX_RECORDING_MS);
   // A timeslice keeps data flowing on Safari, which can otherwise drop a long single chunk.
-  recorder.start(1000);
+  try {
+    recorder.start(1000);
+  } catch (err) {
+    window.clearTimeout(timer);
+    releaseStream();
+    throw err;
+  }
 
   return {
     startedAt,

@@ -61,6 +61,7 @@ export class MicCapture {
   private processor: ScriptProcessorNode | null = null;
   private sink: GainNode | null = null;
   muted = false;
+  private stopped = false;
 
   constructor(
     private readonly context: AudioContext,
@@ -68,9 +69,15 @@ export class MicCapture {
   ) {}
 
   async start(): Promise<void> {
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
+    // Hung up while the permission prompt was open: release the mic at once.
+    if (this.stopped) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+    this.stream = stream;
     this.source = this.context.createMediaStreamSource(this.stream);
     this.processor = this.context.createScriptProcessor(4096, 1, 1);
     // A silent sink keeps the processor running without echoing the mic.
@@ -87,6 +94,7 @@ export class MicCapture {
   }
 
   stop(): void {
+    this.stopped = true;
     this.processor?.disconnect();
     this.source?.disconnect();
     this.sink?.disconnect();

@@ -36,7 +36,8 @@ function fakeApi(overrides: Partial<Record<string, unknown>> = {}) {
 
 function tools(pageIssueRef: string | null = null, api = fakeApi()) {
   const watch = vi.fn();
-  return { t: new LiveTools({ api: api.api, companyId: COMPANY, userId: "u1", pageIssueRef, watch }), watch, ...api };
+  const turn = { n: 0 };
+  return { t: new LiveTools({ api: api.api, companyId: COMPANY, userId: "u1", pageIssueRef, watch, userTurn: () => turn.n }), watch, turn, ...api };
 }
 
 describe("tool definitions", () => {
@@ -99,31 +100,57 @@ describe("reading", () => {
 });
 
 describe("changes need a spoken yes", () => {
-  it("post_message previews first and posts only when confirmed", async () => {
-    const { t, post, watch } = tools("PAR-12");
-    const preview = (await t.run("post_message", { text: "Send me the numbers" })) as { needsConfirmation: boolean; readBack: string };
+  it("post_message previews first and posts only after the person spoke again", async () => {
+    const { t, post, watch, turn } = tools("PAR-12");
+    const preview = (await t.run("post_message", { text: "Send me the numbers" })) as { needsConfirmation: boolean; readBack: string; confirmationId: string };
     expect(preview.needsConfirmation).toBe(true);
     expect(preview.readBack).toContain("SEO Specialist");
     expect(post).not.toHaveBeenCalled();
 
-    const done = await t.run("post_message", { text: "Send me the numbers", confirmed: true });
+    // The model confirms in the same turn: refused.
+    expect(await t.run("post_message", { text: "x", confirmationId: preview.confirmationId })).toMatchObject({ error: expect.stringContaining("answer") });
+    expect(post).not.toHaveBeenCalled();
+
+    turn.n++; // the person said yes
+    const done = await t.run("post_message", { text: "something else", confirmationId: preview.confirmationId });
     expect(done).toMatchObject({ posted: true, task: "PAR-12", wakes: "SEO Specialist" });
     expect(post).toHaveBeenCalledWith("/issues/i-1/comments", expect.objectContaining({ body: "Send me the numbers" }));
     expect(watch).toHaveBeenCalledWith("i-1", "PAR-12");
+
+    // One use only.
+    expect(await t.run("post_message", { text: "x", confirmationId: preview.confirmationId })).toMatchObject({ error: expect.stringContaining("not valid") });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a made-up confirmation id", async () => {
+    const { t, post, turn } = tools("PAR-12");
+    turn.n++;
+    expect(await t.run("post_message", { text: "hi", confirmationId: "c1" })).toMatchObject({ error: expect.stringContaining("not valid") });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a new preview replaces the old pending action", async () => {
+    const { t, post, turn } = tools("PAR-12");
+    const first = (await t.run("post_message", { text: "one" })) as { confirmationId: string };
+    await t.run("post_message", { text: "two" });
+    turn.n++;
+    expect(await t.run("post_message", { text: "one", confirmationId: first.confirmationId })).toMatchObject({ error: expect.stringContaining("not valid") });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("post_message needs a task when none is on screen", async () => {
     const { t } = tools(null);
-    await expect(t.run("post_message", { text: "hi", confirmed: true })).rejects.toThrow(/Which task/);
+    await expect(t.run("post_message", { text: "hi" })).rejects.toThrow(/Which task/);
   });
 
   it("create_task previews, then creates assigned to the matched agent and project", async () => {
-    const { t, post, watch } = tools();
-    const preview = await t.run("create_task", { title: "Fix the sitemap", agent: "kai", project: "hunt and gun" });
+    const { t, post, watch, turn } = tools();
+    const preview = (await t.run("create_task", { title: "Fix the sitemap", agent: "kai", project: "hunt and gun", description: "It 404s" })) as { confirmationId: string };
     expect(preview).toMatchObject({ needsConfirmation: true });
     expect(post).not.toHaveBeenCalled();
 
-    const created = await t.run("create_task", { title: "Fix the sitemap", agent: "kai", project: "hunt and gun", description: "It 404s", confirmed: true });
+    turn.n++;
+    const created = await t.run("create_task", { title: "ignored", confirmationId: preview.confirmationId });
     expect(created).toMatchObject({ created: true, task: "PAR-99", assignee: "Kai" });
     expect(post).toHaveBeenCalledWith(
       `/companies/${COMPANY}/issues`,
@@ -134,7 +161,7 @@ describe("changes need a spoken yes", () => {
 
   it("create_task refuses an unknown agent", async () => {
     const { t, post } = tools();
-    expect(await t.run("create_task", { title: "x", agent: "nobody", confirmed: true })).toMatchObject({ error: expect.stringContaining("nobody") });
+    expect(await t.run("create_task", { title: "x", agent: "nobody" })).toMatchObject({ error: expect.stringContaining("nobody") });
     expect(post).not.toHaveBeenCalled();
   });
 });
@@ -144,7 +171,7 @@ describe("instructions", () => {
     const text = buildInstructions({ personName: "Peet", companyName: "Partners in Biz", pageIssueRef: "PAR-12", now: new Date("2026-10-25T10:00:00Z") });
     expect(text).toContain("PAR-12");
     expect(text).toContain("Partners in Biz");
-    expect(text).toContain("confirmed true");
+    expect(text).toContain("confirmationId");
     expect(text).toContain("[Update]");
   });
 });
@@ -170,5 +197,13 @@ describe("helpers", () => {
     expect(pickRecordingType((t) => t.startsWith("audio/webm"))).toBe("audio/webm;codecs=opus");
     expect(pickRecordingType(() => false)).toBeNull();
     expect(formatElapsed(65_400)).toBe("1:05");
+  });
+});
+
+describe("recorder cap", () => {
+  it("stops under the server upload cap", async () => {
+    const { MAX_RECORDING_BYTES } = await import("../src/ui/recorder.js");
+    const { MAX_AUDIO_BYTES } = await import("../src/xai.js");
+    expect(MAX_RECORDING_BYTES).toBeLessThan(MAX_AUDIO_BYTES);
   });
 });

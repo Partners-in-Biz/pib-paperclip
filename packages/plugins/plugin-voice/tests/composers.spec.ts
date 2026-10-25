@@ -135,3 +135,11 @@ describe("issueRefFromPath", () => {
     expect(issueRefFromPath("/PAR/issues")).toBeNull();
   });
 });
+
+describe("auto-send target", () => {
+  it("is null when no real Send button exists", () => {
+    document.body.innerHTML = '<div data-testid="chat-composer"><textarea></textarea><div class="row"><button id="clip">+</button></div></div>';
+    const [root] = findComposers(document);
+    expect(describeComposer(root!).sendButton).toBeNull();
+  });
+});

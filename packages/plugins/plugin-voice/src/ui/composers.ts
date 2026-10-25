@@ -49,14 +49,27 @@ export function findEditable(root: HTMLElement): HTMLElement | null {
   return null;
 }
 
-export function findSendButton(root: HTMLElement): HTMLButtonElement | null {
-  const explicit = root.querySelector<HTMLButtonElement>(
-    '[data-testid="task-chat-composer-send"], [data-testid="task-chat-composer-stop"]',
-  );
-  if (explicit) return explicit;
-  const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).filter(
+function composerButtons(root: HTMLElement): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).filter(
     (b) => !isOurs(b) && !b.closest('[data-testid$="-attachments"]') && !b.closest('[role="dialog"]'),
   );
+}
+
+const EXPLICIT_SEND = '[data-testid="task-chat-composer-send"], [data-testid="task-chat-composer-stop"]';
+
+/** The real Send button, or null. Auto-send uses this: clicking a guessed control is worse than not sending. */
+export function findSendButton(root: HTMLElement): HTMLButtonElement | null {
+  const explicit = root.querySelector<HTMLButtonElement>(EXPLICIT_SEND);
+  if (explicit) return explicit;
+  const named = composerButtons(root).filter((b) => /^send\b/i.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));
+  return named.length > 0 ? named[named.length - 1]! : null;
+}
+
+/** Where to place our buttons: in front of Send, or of the last control (Stop, an icon-only Send). */
+export function findAnchorButton(root: HTMLElement): HTMLButtonElement | null {
+  const send = findSendButton(root);
+  if (send) return send;
+  const buttons = composerButtons(root);
   return buttons.length > 0 ? buttons[buttons.length - 1]! : null;
 }
 
@@ -75,7 +88,7 @@ export function findComposers(doc: ParentNode): HTMLElement[] {
  * replaces the row, the caller sees `isConnected === false` and asks again.
  */
 export function ensureMount(root: HTMLElement): HTMLElement {
-  const send = findSendButton(root);
+  const send = findAnchorButton(root);
   let mount = root.querySelector<HTMLElement>(`[${MOUNT_ATTR}]`);
   if (!mount) {
     mount = root.ownerDocument.createElement("span");

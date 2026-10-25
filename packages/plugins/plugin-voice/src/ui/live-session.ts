@@ -65,6 +65,7 @@ export class LiveSession {
   private idleTimer: number | null = null;
   private voiceLevel = 0;
   private closed = false;
+  private userTurns = 0;
 
   constructor(private readonly opts: LiveSessionOptions) {
     this.player = new Player(opts.audioContext);
@@ -78,6 +79,7 @@ export class LiveSession {
       userId: opts.userId,
       pageIssueRef: opts.pageIssueRef,
       watch: (issueId, ref) => this.watch(issueId, ref),
+      userTurn: () => this.userTurns,
     });
   }
 
@@ -119,6 +121,7 @@ export class LiveSession {
       this.fail("Microphone access was blocked. Allow the mic for this site and try again.");
       return;
     }
+    if (this.closed) return;
     this.pollTimer = window.setInterval(() => void this.pollReplies(), this.opts.replyPollMs ?? 10_000);
     this.bumpIdle();
   }
@@ -162,7 +165,13 @@ export class LiveSession {
     this.opts.onState("error");
   }
 
+  private lastBump = 0;
+
+  /** Called on every audio frame, so it re-arms the timer at most once a second. */
   private bumpIdle(): void {
+    const now = Date.now();
+    if (this.idleTimer !== null && now - this.lastBump < 1000) return;
+    this.lastBump = now;
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       this.addNote("Hung up after four quiet minutes.");
@@ -233,6 +242,7 @@ export class LiveSession {
         const text = typeof msg.transcript === "string" ? msg.transcript : "";
         const itemId = typeof msg.item_id === "string" ? msg.item_id : `you-${Date.now()}`;
         if (text.trim()) this.upsert(itemId, "you", text, type.endsWith("completed"));
+        if (type.endsWith("completed") && text.trim()) this.userTurns++;
         break;
       }
       case "response.created":

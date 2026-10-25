@@ -333,6 +333,24 @@ function LivePanel({
     onClose();
   };
 
+  // Escape hangs up; focus goes back to where it was when the panel closes.
+  const hangUpRef = useRef(hangUp);
+  hangUpRef.current = hangUp;
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        hangUpRef.current();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+
   const orbScale = 1 + Math.min(0.35, (state === "speaking" ? levels.voice : levels.mic) * 0.6);
   const live = state !== "ended" && state !== "error";
 
