@@ -41,6 +41,7 @@ import { activateGoals, businessReviews } from "./goals.js";
 import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
 import { recheckImprovements } from "./improvements.js";
 import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
+import { growthReviews } from "./growth-review-run.js";
 import { GROWTH_TOOL_SET, runGrowthTool } from "./growth-tools.js";
 import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
@@ -546,6 +547,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.hostedUsageRollup, async () => {
     ctx.logger.info("Hosted usage roll-up", await trackJob(ctx, JOBS.hostedUsageRollup, () => hostedUsageRollup(env)));
+  });
+  ctx.jobs.register(JOBS.growthReview, async () => {
+    ctx.logger.info("Weekly growth review", await trackJob(ctx, JOBS.growthReview, () => growthReviews(env)));
   });
   ctx.jobs.register(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));

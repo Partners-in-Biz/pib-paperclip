@@ -275,6 +275,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "30 4 * * 1",
     },
     {
+      jobKey: JOBS.growthReview,
+      displayName: "Weekly growth review",
+      description: "Mondays 06:30 SAST: opens one growth review issue per scope owner (reconcile the ledger, one line per channel, goal proposals) and one hand-off per channel agent (performance review, at most two new experiments, pending playbook changes). Once a week per company.",
+      schedule: "30 4 * * 1",
+    },
+    {
       jobKey: JOBS.governor,
       displayName: "Agent governor",
       description: "Every 15 minutes: monitors quota failures and pauses agents when thresholds are exceeded, then resumes them once the canary confirms recovery.",
