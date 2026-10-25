@@ -59,6 +59,7 @@ import { parseSnapshot, teamSignature } from "./merge.js";
 import { NAMESPACE } from "./namespace.js";
 import { onDealWon, onInvoicePaid } from "./onboarding.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
+import { loadMaintenance } from "./maintenance.js";
 import { readProfile, saveProfileEdit } from "./profile.js";
 import { ProfileError } from "./profile-model.js";
 import { onLinkedFor, parseTeamInput, rebroadcastRoles, reemitRoles, roleViews, rolesPayload, saveTeam } from "./roles.js";
@@ -404,6 +405,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   // The company profile (Cockpit → Profile).
   ctx.actions.register("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
+  ctx.actions.register("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
   ctx.actions.register("profile.save", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can edit the company profile here");
