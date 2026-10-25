@@ -25,10 +25,10 @@ describe("manifest 0.6", () => {
     expect(result.success ? [] : result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`)).toEqual([]);
   });
 
-  it("is version 0.8.3 everywhere", () => {
-    expect(manifest.version).toBe("0.8.3");
-    expect(PLUGIN_VERSION).toBe("0.8.3");
-    expect(pkg.version).toBe("0.8.3");
+  it("is version 0.8.4 everywhere", () => {
+    expect(manifest.version).toBe("0.8.4");
+    expect(PLUGIN_VERSION).toBe("0.8.4");
+    expect(pkg.version).toBe("0.8.4");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {
@@ -100,7 +100,7 @@ describe("the skill", () => {
   });
 
   it("teaches the rules that keep clients and recipients safe", () => {
-    for (const rule of [/never goes out from PiB's Gmail or number/, /opt-in only/i, /Never record an opt-in you did not see/i, /per sender/i, /Reply STOP to opt out/, /never repeated|never send.* again/i]) {
+    for (const rule of [/never goes out from the company's own Gmail or number/, /opt-in only/i, /Never record an opt-in you did not see/i, /per sender/i, /Reply STOP to opt out/, /never repeated|never send.* again/i]) {
       expect([CAMPAIGN_SKILL, ...(skill.files ?? []).map((file) => file.content)].join("\n")).toMatch(rule);
     }
     expect(CAMPAIGN_SKILL).toMatch(/Never mark an approval issue done/);
