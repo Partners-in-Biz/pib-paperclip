@@ -3,6 +3,7 @@
 Two buttons in every Paperclip chat box (board chat, task threads, task chat), on Grok voice (xAI):
 
 - **Mic: voice note.** Tap, talk, tap again. The recording goes to the plugin worker, which transcribes it with `grok-voice-transcribe-2.0`. The text lands in the chat box, where you check it and tap Send. Turn on "Send voice notes straight away" to skip the check.
+- **New task dialog: mic only.** A Voice chip sits in the dialog's toolbar, before the … menu. The note goes into the field you last used there (title or description), the description by default. It never creates the task by itself.
 - **Waveform: live talk.** A full-screen two-way call you can interrupt. The voice can read the task on screen, say what is waiting on you, find tasks, list agents, post a message to a task's agent and create a task. Changes need a spoken yes: it reads the message back first. When an agent replies on a task you posted to, the reply is read out.
 
 ## How it works

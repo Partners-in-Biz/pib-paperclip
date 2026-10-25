@@ -477,6 +477,7 @@ function adRow(r: Record<string, unknown>): AdRow {
   };
 }
 
+// No "IS DISTINCT FROM ads.x": the host SQL guard reads "from ads.x" as a table in another schema and refuses the whole statement. policy_status is NOT NULL, so <> is enough.
 export async function upsertAd(
   ctx: PluginContext,
   companyId: string,
@@ -488,7 +489,7 @@ export async function upsertAd(
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (account_id, external_id) DO UPDATE SET name = EXCLUDED.name, ad_set_external_id = EXCLUDED.ad_set_external_id, creative_external_id = EXCLUDED.creative_external_id,
        raw_status = EXCLUDED.raw_status, policy_feedback = EXCLUDED.policy_feedback, last_seen_at = now(),
-       policy_status = EXCLUDED.policy_status, policy_changed_at = CASE WHEN EXCLUDED.policy_status IS DISTINCT FROM ads.policy_status THEN now() ELSE ads.policy_changed_at END`,
+       policy_status = EXCLUDED.policy_status, policy_changed_at = CASE WHEN EXCLUDED.policy_status <> ads.policy_status THEN now() ELSE ads.policy_changed_at END`,
     [randomUUID(), companyId, accountId, a.externalId, a.name, a.adSetExternalId, a.creativeExternalId, a.rawStatus, a.policyStatus, a.feedback],
   );
 }

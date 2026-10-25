@@ -123,6 +123,22 @@ describe("Settings Actions", () => {
     expect(retrieved.settings.whatsappFrom).toBe("+27123456789");
   });
 
+  it("usMessagingServiceSid round-trips through save and get, per company", async () => {
+    ctx.config.get = vi.fn().mockResolvedValue({});
+    const sid = "MGd3200a283d8d4dd9827e5b6d5f5e5e5a";
+    const saved = await callAction("telephony.settings.save", { usMessagingServiceSid: sid }, userCtx("companyA"));
+    expect(saved.ok).toBe(true);
+
+    const a = await callAction("telephony.settings.get", {}, agentCtx("companyA"));
+    const b = await callAction("telephony.settings.get", {}, agentCtx("companyB"));
+    expect(a.settings.usMessagingServiceSid).toBe(sid);
+    expect(b.settings.usMessagingServiceSid).not.toBe(sid);
+
+    const bad = await callAction("telephony.settings.save", { usMessagingServiceSid: "MG123" }, userCtx("companyA"));
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.usMessagingServiceSid).toBeDefined();
+  });
+
   it("save ignores params.companyId, changes only context.companyId", async () => {
     ctx.config.get = vi.fn().mockResolvedValue({});
     await callAction("telephony.settings.save", { maxCallsPerDay: 85, companyId: "companyB" }, userCtx("companyA"));
@@ -154,7 +170,7 @@ describe("Settings Actions", () => {
   });
 
   it("missing companyId throws 'Company is required'", async () => {
-    expect(() => callAction("telephony.settings.get", {}, { actor: { type: "agent" } } as any)).rejects.toThrow(
+    await expect(() => callAction("telephony.settings.get", {}, { actor: { type: "agent" } } as any)).rejects.toThrow(
       "Company is required",
     );
   });

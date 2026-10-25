@@ -3,11 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   describeComposer,
   ensureMount,
+  ensureTaskDialogMount,
   findComposers,
+  findTaskDialogs,
   insertIntoEditable,
   issueRefFromPath,
   joinText,
   MOUNT_ATTR,
+  taskDialogEditable,
+  trackFieldFocus,
 } from "../src/ui/composers.js";
 
 /** Shapes copied from the host's ChatComposer, IssueChatThread and TaskChatComposer. */
@@ -152,5 +156,53 @@ describe("auto-send never clicks Stop", () => {
     expect(describeComposer(root!).sendButton).toBeNull();
     const mount = ensureMount(root!);
     expect(mount.nextElementSibling).toBe(document.getElementById("stop"));
+  });
+});
+
+/** Shape copied from the host's NewIssueDialog (title textarea, MarkdownEditor, toolbar, footer). */
+const NEW_TASK_DIALOG = `
+  <div role="dialog" id="dialog">
+    <textarea placeholder="Task title" id="title"></textarea>
+    <div contenteditable="true" id="description"></div>
+    <div class="toolbar">
+      <button data-slot="new-issue-compact-control">Todo</button>
+      <button data-slot="new-issue-compact-control" id="upload">Upload</button>
+      <button data-slot="new-issue-compact-control" data-issue-work-mode-chip="auto">Auto mode</button>
+      <button data-testid="new-issue-more-menu-trigger" id="more">…</button>
+    </div>
+    <div class="footer"><button>Discard Draft</button><button id="create">Create Task</button></div>
+  </div>`;
+
+describe("New task dialog", () => {
+  it("is found by its more-menu button and is not treated as a chat box", () => {
+    document.body.innerHTML = NEW_TASK_DIALOG;
+    expect(findTaskDialogs(document).map((r) => r.id)).toEqual(["dialog"]);
+    expect(findComposers(document)).toHaveLength(0);
+  });
+
+  it("puts the mic in the toolbar, before the more menu, once", () => {
+    document.body.innerHTML = NEW_TASK_DIALOG;
+    const [root] = findTaskDialogs(document);
+    const mount = ensureTaskDialogMount(root!);
+    expect(mount.nextElementSibling?.id).toBe("more");
+    expect(ensureTaskDialogMount(root!)).toBe(mount);
+    expect(root!.querySelectorAll(`[${MOUNT_ATTR}]`)).toHaveLength(1);
+  });
+
+  it("writes into the description by default", () => {
+    document.body.innerHTML = NEW_TASK_DIALOG;
+    const [root] = findTaskDialogs(document);
+    expect(taskDialogEditable(root!, null)?.id).toBe("description");
+  });
+
+  it("writes into the field last used in the dialog, and ignores fields elsewhere", () => {
+    document.body.innerHTML = `${NEW_TASK_DIALOG}<textarea id="outside"></textarea>`;
+    const [root] = findTaskDialogs(document);
+    const untrack = trackFieldFocus(document);
+    document.getElementById("title")!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(taskDialogEditable(root!)?.id).toBe("title");
+    document.getElementById("outside")!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(taskDialogEditable(root!)?.id).toBe("description");
+    untrack();
   });
 });

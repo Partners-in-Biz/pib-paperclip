@@ -5,6 +5,7 @@
 import { AdsError, minorField, objectParams, optionalString, requiredString, stringList } from "./domain.js";
 import { addDays, isDay, todayIn } from "./dates.js";
 import { getAccount, getCampaign, type AccountRow, type ScopeRow } from "./db.js";
+import { validateResponsiveSearchAd } from "./rsa.js";
 import { PROPOSAL_KINDS, type ProposalKind } from "./platforms.js";
 import type { SpendAddition } from "./budgets.js";
 import type { AdsRuntime } from "./runtime.js";
@@ -48,6 +49,8 @@ export interface Normalized {
   /** What it adds to spend this month (null: nothing, or not a spend change). */
   addition: SpendAddition | null;
   creative: Creative | null;
+  /** Further copy lines the precheck must read too (an RSA has up to 19 texts; `creative` carries only the first few). */
+  extraCopy?: Array<{ where: string; field: "headline" | "description"; text: string }>;
   specialAdCategories: string[];
 }
 
@@ -413,6 +416,43 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
       summary: `Add ${keywords.length} keyword${keywords.length === 1 ? "" : "s"} to ad group ${adGroupExternalId} on ${account.name}.`,
       addition: null,
       creative: null,
+      specialAdCategories: [],
+    };
+  }
+  if (kind === "create_responsive_search_ad") {
+    const account = await accountFor(rt, scope, requiredString(input, "accountId"));
+    if (account.platform !== "google") throw new AdsError("Responsive search ads can only be created on Google (use create_ad_creative and create_ad on Meta).");
+    const adGroupExternalId = requiredString(input, "adGroupExternalId", 100);
+    if (input.status !== undefined && input.status !== "PAUSED") throw new AdsError("Ads must be created PAUSED; once created, you can change the status in a separate proposal.");
+    const copy = validateResponsiveSearchAd(input);
+    return {
+      kind,
+      accountId: account.id,
+      platform: account.platform,
+      currency: account.currency,
+      payload: {
+        accountId: account.id,
+        accountName: account.name,
+        platform: account.platform,
+        adGroupExternalId,
+        headlines: copy.headlines,
+        descriptions: copy.descriptions,
+        finalUrl: copy.finalUrl,
+        path1: copy.path1 ?? null,
+        path2: copy.path2 ?? null,
+        status: "PAUSED",
+        creates: "responsive search ad, paused (Google reviews it before it can serve)",
+        notes: optionalString(input, "notes", 2000) ?? null,
+        reason,
+      },
+      title: `New responsive search ad "${copy.headlines[0]}"`,
+      summary: `Create a responsive search ad in ad group ${adGroupExternalId} on ${account.name} with ${copy.headlines.length} headlines and ${copy.descriptions.length} descriptions, landing on ${copy.finalUrl}. It is created paused; Google reviews it before it can serve.`,
+      addition: null,
+      creative: { headline: copy.headlines[0]!, primaryText: copy.descriptions[0]!, description: copy.descriptions[1] ?? null, callToAction: null, landingUrl: copy.finalUrl },
+      extraCopy: [
+        ...copy.headlines.slice(1).map((text, i) => ({ where: `headlines[${i + 1}]`, field: "headline" as const, text })),
+        ...copy.descriptions.slice(2).map((text, i) => ({ where: `descriptions[${i + 2}]`, field: "description" as const, text })),
+      ],
       specialAdCategories: [],
     };
   }

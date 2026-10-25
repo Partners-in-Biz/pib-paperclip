@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useHostContext, usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
-import { describeComposer, ensureMount, findComposers, insertIntoEditable, issueRefFromPath } from "./composers.js";
+import {
+  describeComposer,
+  ensureMount,
+  ensureTaskDialogMount,
+  findComposers,
+  findTaskDialogs,
+  insertIntoEditable,
+  issueRefFromPath,
+  taskDialogEditable,
+  trackFieldFocus,
+} from "./composers.js";
 import { buildInstructions } from "./live-instructions.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./live-tools.js";
@@ -111,13 +121,34 @@ const iconButton: CSSProperties = {
 
 type NoteState = "idle" | "recording" | "transcribing";
 
+/** "composer": a chat box (mic + live). "task-dialog": the New task dialog (mic only, never sends). */
+type MountKind = "composer" | "task-dialog";
+
+/** Matches the dialog's own toolbar chips (Upload, Auto mode). */
+const chipButton: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  height: 32,
+  padding: "0 10px",
+  borderRadius: 6,
+  border: "1px solid var(--border)",
+  background: "transparent",
+  color: "var(--muted-foreground)",
+  fontSize: 12,
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
 function ComposerButtons({
   root,
+  kind,
   status,
   onLive,
   onToast,
 }: {
   root: HTMLElement;
+  kind: MountKind;
   status: VoiceStatus;
   onLive: (root: HTMLElement) => void;
   onToast: (message: string) => void;
@@ -155,6 +186,11 @@ function ComposerButtons({
         onToast("No speech was heard in that note.");
         return;
       }
+      if (kind === "task-dialog") {
+        const field = taskDialogEditable(root);
+        if (!field || !insertIntoEditable(field, text)) onToast("Could not place the text in the task.");
+        return;
+      }
       const target = describeComposer(root);
       if (!target.editable || !insertIntoEditable(target.editable, text)) {
         onToast("Could not place the text in the chat box.");
@@ -170,7 +206,7 @@ function ComposerButtons({
       setState("idle");
       setElapsed(0);
     }
-  }, [onToast, root, transcribe]);
+  }, [kind, onToast, root, transcribe]);
 
   const toggle = useCallback(async () => {
     if (state === "transcribing") return;
@@ -214,14 +250,15 @@ function ComposerButtons({
         title={state === "recording" ? "Stop and transcribe" : "Voice note"}
         data-pib-voice="mic"
         style={{
-          ...iconButton,
+          ...(kind === "task-dialog" ? chipButton : iconButton),
           color: state === "recording" ? "var(--destructive)" : iconButton.color,
           animation: state === "recording" ? "pib-voice-pulse 1.2s ease-in-out infinite" : undefined,
         }}
       >
         {state === "transcribing" ? <Spinner /> : <MicIcon />}
+        {kind === "task-dialog" ? <span>{state === "recording" ? "Stop" : state === "transcribing" ? "Writing…" : "Voice"}</span> : null}
       </button>
-      {status.liveEnabled && state === "idle" ? (
+      {kind === "composer" && status.liveEnabled && state === "idle" ? (
         <button
           type="button"
           onClick={() => onLive(root)}
@@ -492,7 +529,7 @@ export function VoiceOverlay() {
   const host = useHostContext();
   const companyId = host.companyId;
   const { data } = usePluginData<VoiceStatus>("status", companyId ? { companyId } : {});
-  const [roots, setRoots] = useState<HTMLElement[]>([]);
+  const [roots, setRoots] = useState<Array<{ root: HTMLElement; kind: MountKind }>>([]);
   const [liveAudio, setLiveAudio] = useState<AudioContext | null>(null);
   const keys = useRef(new WeakMap<HTMLElement, string>());
   const nextKey = useRef(0);
@@ -500,7 +537,7 @@ export function VoiceOverlay() {
   const supported = voiceSupported();
   const enabled = supported && !!companyId && !!data?.configured;
 
-  // Follow the page: composers come and go as the person navigates.
+  // Follow the page: composers and the New task dialog come and go as the person navigates.
   useEffect(() => {
     if (!enabled) {
       setRoots([]);
@@ -509,17 +546,24 @@ export function VoiceOverlay() {
     let frame = 0;
     const scan = () => {
       frame = 0;
-      const found = findComposers(document);
-      for (const root of found) ensureMount(root);
-      setRoots((prev) => (prev.length === found.length && prev.every((r, i) => r === found[i]) ? prev : found));
+      const found = [
+        ...findComposers(document).map((root) => ({ root, kind: "composer" as const })),
+        ...findTaskDialogs(document).map((root) => ({ root, kind: "task-dialog" as const })),
+      ];
+      for (const { root, kind } of found) (kind === "composer" ? ensureMount : ensureTaskDialogMount)(root);
+      setRoots((prev) =>
+        prev.length === found.length && prev.every((r, i) => r.root === found[i]!.root && r.kind === found[i]!.kind) ? prev : found,
+      );
     };
     const observer = new MutationObserver(() => {
       if (!frame) frame = window.requestAnimationFrame(scan);
     });
     observer.observe(document.body, { childList: true, subtree: true });
+    const untrack = trackFieldFocus(document);
     scan();
     return () => {
       observer.disconnect();
+      untrack();
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [enabled]);
@@ -556,11 +600,11 @@ export function VoiceOverlay() {
 
   return (
     <>
-      {roots.map((root) => {
+      {roots.map(({ root, kind }) => {
         const key = keyFor(root);
         return createPortal(
-          <ComposerButtons root={root} status={data} onLive={openLive} onToast={showToast} />,
-          ensureMount(root),
+          <ComposerButtons root={root} kind={kind} status={data} onLive={openLive} onToast={showToast} />,
+          kind === "composer" ? ensureMount(root) : ensureTaskDialogMount(root),
           key,
         );
       })}

@@ -3,7 +3,7 @@
  * run, on a real Postgres, with a mock platform that records every write it is asked for.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { getAccount, getProposal, updateAccount, updateConnection, updateScope } from "../src/db.js";
+import { getAccount, getProposal, listProposals, updateAccount, updateConnection, updateScope } from "../src/db.js";
 import { AdsError } from "../src/domain.js";
 import { executeProposal } from "../src/execute.js";
 import { ProviderError } from "../src/providers/http.js";
@@ -427,5 +427,75 @@ describe.skipIf(!available)("running approved ad groups and keywords", () => {
     expect(w.mock.writes.map((x) => [x.op, x.status])).toEqual([["adGroup", "paused"], ["keywords", "paused"]]);
     expect(await refusal(executeProposal(w.rt(), agent, { proposalId: k.id, approvalId: k.approvalId }))).toMatchObject({ code: "not_approved" });
     expect(w.mock.writes).toHaveLength(2);
+  });
+});
+
+describe.skipIf(!available)("running approved responsive search ads", () => {
+  let w: World;
+  let accountId: string;
+  const RSA = (id: string, patch: Record<string, unknown> = {}) => ({
+    kind: "create_responsive_search_ad",
+    scopeKey: "own",
+    accountId: id,
+    adGroupExternalId: "ag-1",
+    headlines: ["Luxury shoes", "Free delivery", "Shop the sale"],
+    descriptions: ["Hand made shoes for every day.", "Order today, delivered in 3 days."],
+    finalUrl: "https://example.com/shoes?utm_source=google&utm_medium=cpc&utm_campaign=shoes",
+    path1: "shoes",
+    reason: "Search ad for the shoe range.",
+    ...patch,
+  });
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w, { platform: "google", connectionPlatform: "mock" }));
+  });
+
+  it("refuses bad copy when the proposal is written, so the Reviewer never sees it", async () => {
+    for (const [patch, message] of [
+      [{ headlines: ["a".repeat(31), "b", "c"] }, /too long/],
+      [{ headlines: ["a", "b"] }, /3 to 15/],
+      [{ descriptions: ["only one"] }, /2 to 4/],
+      [{ finalUrl: "https://example.com/shoes" }, /UTM/],
+      [{ status: "ACTIVE" }, /PAUSED/],
+    ] as const) {
+      expect(await refusal(propose(w, RSA(accountId, patch)))).toMatchObject({ message: expect.stringMatching(message) });
+    }
+    expect(await listProposals(w.ctx, COMPANY, {})).toHaveLength(0);
+  });
+
+  it("reads every headline and description for the client's banned words, not just the first few", async () => {
+    await updateScope(w.ctx, COMPANY, "own", { bannedWords: ["bargain"] });
+    const headlines = Array.from({ length: 8 }, (_, i) => `Shoe offer ${String.fromCharCode(65 + i)}`);
+    const descriptions = ["Hand made shoes for every day.", "Order today, delivered in 3 days.", "Sizes for every foot.", "Easy returns on all pairs."];
+    const clean = await propose(w, RSA(accountId, { headlines, descriptions }));
+    expect(clean.status).toBe("in_review");
+    for (const [patch, where] of [
+      [{ headlines: headlines.map((h, i) => (i === 6 ? "The bargain shoes" : h)), descriptions }, "headlines[6]"],
+      [{ headlines, descriptions: descriptions.map((d, i) => (i === 3 ? "Our bargain pairs, returns free." : d)) }, "descriptions[3]"],
+    ] as const) {
+      const p = await propose(w, RSA(accountId, patch));
+      expect(p.status).toBe("needs_changes");
+      expect((p.precheck as { findings: Array<{ rule: string; where: string }> }).findings).toEqual([expect.objectContaining({ rule: "banned_word", where })]);
+    }
+  });
+
+  it("is refused on a Meta account", async () => {
+    const meta = await syncedAccount(w);
+    expect(await refusal(propose(w, RSA(meta.accountId)))).toMatchObject({ message: expect.stringMatching(/only be created on Google/) });
+  });
+
+  it("is refused without an approval and writes nothing", async () => {
+    const p = await propose(w, RSA(accountId));
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: p.id, approvalId: "whatever" }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toEqual([]);
+  });
+
+  it("creates the ad PAUSED once and uses the approval up", async () => {
+    const p = await approved(w, RSA(accountId));
+    expect(await executeProposal(w.rt(), agent, { proposalId: p.id, approvalId: p.approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("(paused)") }] });
+    expect(w.mock.writes).toEqual([expect.objectContaining({ op: "responsive_search_ad", status: "paused", adGroupExternalId: "ag-1", headlineCount: 3, descriptionCount: 2 })]);
+    expect(await refusal(executeProposal(w.rt(), agent, { proposalId: p.id, approvalId: p.approvalId }))).toMatchObject({ code: "not_approved" });
+    expect(w.mock.writes).toHaveLength(1);
   });
 });
