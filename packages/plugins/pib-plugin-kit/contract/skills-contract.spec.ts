@@ -15,7 +15,7 @@
  * tool or team role.
  */
 import { describe, expect, it } from "vitest";
-import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, WRITING_HEADING, teamSkillKey } from "../src/index.js";
+import { ASKING_HEADING, COMPANY_LIBRARY_SKILLS, COMPANY_MEMORY_HEADING, COMPANY_OS_SKILL_KEY, TEAM_ROLES, MERGE_FIELDS, WRITING_HEADING, findBrandLeaks, teamSkillKey } from "../src/index.js";
 
 type Tool = { name: string; description?: string; parametersSchema?: Record<string, unknown> };
 type Skill = { skillKey: string; markdown?: string };
@@ -28,6 +28,14 @@ async function loadManifests(): Promise<Manifest[]> {
   for (const p of PLUGINS) out.push((await import(`../../plugin-${p}/src/manifest.ts`)).default as Manifest);
   return out;
 }
+
+/**
+ * Plugins whose skill text is scrubbed of the owner company's names (Peet, Elon,
+ * "Partners in Biz", "PiB"): the lint below asserts `findBrandLeaks` finds
+ * nothing in them. Starts empty. Each text child of the hosted-clients scrub
+ * adds its plugin here in the same PR, so the lint grows with the scope.
+ */
+const SCRUBBED_PLUGINS: Array<(typeof PLUGINS)[number]> = [];
 
 /** The upstream LLM Wiki tools the manual may name (its manifest reads files at import time). */
 const WIKI_TOOLS = ["wiki_search", "wiki_read_page", "wiki_write_page", "wiki_propose_patch", "wiki_list_sources", "wiki_read_source", "wiki_append_log", "wiki_update_index", "wiki_list_backlinks", "wiki_list_pages"];
@@ -94,5 +102,23 @@ describe("skills ↔ tools contract", async () => {
   it("skills stay within budget", () => {
     const tooBig = skills.filter((s) => s.md.length > 19_500).map((s) => `${s.plugin}/${s.key}: ${s.md.length} chars`);
     expect(tooBig).toEqual([]);
+  });
+
+  it("no company token or unknown {{token}} reaches a rendered skill", () => {
+    const stray = (md: string) => [...md.matchAll(/\{\{\s*([A-Za-z_][\w.:-]*)\s*\}\}/g)].map((m) => m[1]!).filter((n) => !MERGE_FIELDS.includes(n));
+    const withToken = [...skills, { plugin: "partnersinbiz.cockpit", key: "company-os (body)", md: companySkillBody() }].filter((s) => stray(s.md).length > 0).map((s) => `${s.plugin}/${s.key}: ${stray(s.md).join(", ")}`);
+    expect(withToken).toEqual([]);
+  });
+
+  it("scrubbed plugins' skills name neither the owner nor the agency", () => {
+    const leaks: string[] = [];
+    for (const name of SCRUBBED_PLUGINS) {
+      const id = manifests.find((m) => m.id === `partnersinbiz.${name}`)?.id;
+      expect(id, `${name} is a loaded plugin`).toBeTruthy();
+      const docs = skills.filter((s) => s.plugin === id);
+      if (name === "cockpit") docs.push({ plugin: id!, key: "company-os (body)", md: companySkillBody() });
+      for (const s of docs) for (const l of findBrandLeaks(s.md)) leaks.push(`${s.plugin}/${s.key}:${l.line} ${l.term}: ${l.excerpt}`);
+    }
+    expect(leaks).toEqual([]);
   });
 });

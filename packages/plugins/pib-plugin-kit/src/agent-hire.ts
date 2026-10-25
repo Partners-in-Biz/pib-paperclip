@@ -18,6 +18,7 @@ import { COMPANY_MEMORY_INSTRUCTION } from "./memory.js";
 import { COMPANY_OS_INSTRUCTION, COMPANY_OS_SKILL } from "./asking.js";
 import { MODEL_KEY_MARKER, adapterPreferenceFor, hireRefusal, hostingFromConfig, modelKeyHireText, type Hosting } from "./model-key.js";
 import { readConfig } from "./config.js";
+import { renderTokens } from "./tokens.js";
 import { runProfileForRole, runProfileHireText, runProfileRows, type RunProfile } from "./run-profile.js";
 
 export interface HireSkill {
@@ -202,7 +203,7 @@ It comments here when that is done. Do not grant plugin tool access by hand; the
 - The agent exists with the skills above, reporting to the right manager.
 - The ${role.pluginName} plugin has commented that it linked the agent.
 - The agent is resumed once its adapter has a working model key.`;
-  return { title: `Hire: ${role.displayName} (${role.pluginName} agent)`, description };
+  return { title: renderTokens(`Hire: ${role.displayName} (${role.pluginName} agent)`), description: renderTokens(description) };
 }
 
 function summarize(agent: Record<string, unknown>): HireAgentSummary {
