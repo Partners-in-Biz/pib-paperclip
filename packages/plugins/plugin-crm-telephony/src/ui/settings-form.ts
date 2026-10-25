@@ -55,15 +55,37 @@ export function toFormState(settings: TelephonySettings): SettingsFormState {
   };
 }
 
+// Same ranges the save action enforces; the server stays the authority.
+export const NUMERIC_LIMITS = {
+  maxCallsPerDay: { min: 1, max: 10000 },
+  maxSmsPerDay: { min: 1, max: 100000 },
+  maxWhatsappPerDay: { min: 1, max: 100000 },
+  recordingRetentionDays: { min: 1, max: 365 },
+} as const;
+
+// A blank input is "no value" (undefined), never 0, so the server cannot receive a silent zero.
+const parseNumber = (text: string): number | undefined => (text.trim() === "" ? undefined : Number(text));
+
+export function validateForm(form: SettingsFormState): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const key of Object.keys(NUMERIC_LIMITS) as (keyof typeof NUMERIC_LIMITS)[]) {
+    const { min, max } = NUMERIC_LIMITS[key];
+    const value = parseNumber(form[key]);
+    if (value === undefined) errors[key] = "Required";
+    else if (!Number.isInteger(value) || value < min || value > max) errors[key] = `Must be a whole number ${min}-${max}`;
+  }
+  return errors;
+}
+
 export function toSavePayload(form: SettingsFormState): Partial<TelephonySettings> {
   return {
     recordingEnabled: form.recordingEnabled,
     smsEnabled: form.smsEnabled,
     whatsappEnabled: form.whatsappEnabled,
-    maxCallsPerDay: Number(form.maxCallsPerDay) || 0,
-    maxSmsPerDay: Number(form.maxSmsPerDay) || 0,
-    maxWhatsappPerDay: Number(form.maxWhatsappPerDay) || 0,
-    recordingRetentionDays: Number(form.recordingRetentionDays) || 0,
+    maxCallsPerDay: parseNumber(form.maxCallsPerDay),
+    maxSmsPerDay: parseNumber(form.maxSmsPerDay),
+    maxWhatsappPerDay: parseNumber(form.maxWhatsappPerDay),
+    recordingRetentionDays: parseNumber(form.recordingRetentionDays),
     allowedHours: { start: form.allowedHoursStart, end: form.allowedHoursEnd, timezone: "Africa/Johannesburg" },
     callerIds: parseLines(form.callerIds),
     whatsappFrom: form.whatsappFrom.trim() || null,
