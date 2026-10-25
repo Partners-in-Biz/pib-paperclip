@@ -161,6 +161,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
   const [detail, setDetail] = useState<CampaignDetailData | null>(null);
   const [message, setMessage] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [abError, setAbError] = useState("");
   const [busy, setBusy] = useState(false);
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
   const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns"] : ["overview", "campaigns", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
@@ -213,7 +214,10 @@ export function CampaignsPage({ context }: PluginPageProps) {
         if (live) setDetail(result as CampaignDetailData);
       })
       .catch((error: unknown) => {
-        if (live) setMessage(errorText(error));
+        if (live) {
+          setLoadError(errorText(error));
+          setMessage(errorText(error));
+        }
       });
     return () => {
       live = false;
@@ -257,16 +261,20 @@ export function CampaignsPage({ context }: PluginPageProps) {
   function openAb(campaignId: string) {
     setSelectedCampaignId(campaignId);
     setAb(null);
+    setAbError("");
     setCreate("ab");
     abSuggestion({ campaignId })
       .then((result) => setAb(result as AbSuggestion))
-      .catch((error: unknown) => setMessage(errorText(error)));
+      .catch((error: unknown) => {
+        setAbError(errorText(error));
+        setMessage(errorText(error));
+      });
   }
 
   const approvalRequested = "Approval requested. It launches by itself once a person approves it.";
   const client = scope ? snapshot?.client ?? null : null;
   const clientName = client?.name ?? "this client";
-  const barName = client?.name ?? (snapshot ? "Unknown client" : "Loading…");
+  const barName = client?.name ?? (snapshot ? "Unknown client" : snapshotPlaceholder(loadError, "Loading…"));
   const q = search.trim().toLowerCase();
   const all = snapshot?.campaigns ?? [];
   const campaigns = useMemo(() => all.filter((c) => !q || c.name.toLowerCase().includes(q) || (STATUS_LABEL[c.status] ?? c.status).toLowerCase().includes(q)), [snapshot, q]);
@@ -425,7 +433,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
               onAb: () => openAb(detail.campaign.id),
             }}
           />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading the campaign…</p>}
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
       </Sheet>
 
       <Modal
@@ -554,7 +562,7 @@ export function CampaignsPage({ context }: PluginPageProps) {
             </p>
           </div>
         ) : (
-          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p>
+          <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(abError, "Loading…")}</p>
         )}
       </Modal>
     </>

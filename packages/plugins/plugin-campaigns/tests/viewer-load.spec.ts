@@ -11,3 +11,13 @@ describe("campaigns page when the load is refused", () => {
     expect(snapshotPlaceholder("")).toBe("Loading campaigns…");
   });
 });
+
+describe("campaigns detail, A/B and header placeholders", () => {
+  const refused = "Viewer access is read-only";
+  it("show the error in every view that waits for data", () => {
+    for (const loading of ["Loading the campaign…", "Loading…", "Loading campaigns…"]) {
+      expect(snapshotPlaceholder(refused, loading)).toBe(refused);
+      expect(snapshotPlaceholder("", loading)).toBe(loading);
+    }
+  });
+});
