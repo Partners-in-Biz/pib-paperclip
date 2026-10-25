@@ -154,9 +154,6 @@ const PENDING: Array<(typeof PLUGINS)[number]> = [
   "campaigns",
   "billing",
   "mailbox",
-  "accounting",
-  "payroll",
-  "ads",
 ];
 
 interface WordingHit {
