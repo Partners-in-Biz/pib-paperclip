@@ -3,6 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { OWN_SKILL_KEY, SKILL_KEY } from "../src/constants.js";
 import manifest, { PIB_ONLY_SKILLS } from "../src/manifest.js";
 import { createSkillSyncers } from "../src/service/common.js";
+import { seoGrowthToolsHost } from "../src/growth-host.js";
 
 const PREFIXES: Record<string, string> = { par: "PAR", client: "ACM" };
 
@@ -42,5 +43,13 @@ describe("own-company SEO skill", () => {
     await syncer.check("client");
     expect(resets.every((r) => r.key === SKILL_KEY)).toBe(true);
     expect(resets.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Growth Lab tool descriptions", () => {
+  it("name no owner company", () => {
+    const descriptions = seoGrowthToolsHost({} as never).descriptions ?? {};
+    expect(Object.keys(descriptions).length).toBeGreaterThan(0);
+    for (const text of Object.values(descriptions)) expect(text).not.toMatch(/Peet|Partners in Biz|\bPiB\b/);
   });
 });
