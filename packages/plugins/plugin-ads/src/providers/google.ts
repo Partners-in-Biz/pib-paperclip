@@ -358,7 +358,7 @@ export const googleProvider: AdsProvider = {
       return {
         create: {
           adGroup: `customers/${customer}/adGroups/${digits(adGroupExternalId)}`,
-          status: "ENABLED",
+          status: "PAUSED",
           negative: kw.negative ?? false,
           keyword: { text, matchType: kw.matchType.toUpperCase() },
         },

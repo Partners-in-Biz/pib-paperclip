@@ -204,13 +204,13 @@ export class MockAdsProvider implements AdsProvider {
   async createAdGroup(_env: unknown, _token: TokenBundle, account: AccountRef, campaignExternalId: string, request: CreateAdGroupRequest) {
     this.maybeFail("adGroup");
     const externalId = `mock-adg-${(this.seq += 1)}`;
-    this.writes.push({ op: "adGroup", accountExternalId: account.externalId, campaignExternalId, adGroupExternalId: externalId, name: request.name, cpcBidMinor: request.cpcBidMinor });
+    this.writes.push({ op: "adGroup", accountExternalId: account.externalId, campaignExternalId, adGroupExternalId: externalId, name: request.name, cpcBidMinor: request.cpcBidMinor, status: "paused" });
     return { externalId, name: request.name };
   }
 
   async addKeywords(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest) {
     this.maybeFail("keywords");
-    this.writes.push({ op: "keywords", accountExternalId: account.externalId, adGroupExternalId, keywordCount: request.keywords.length });
+    this.writes.push({ op: "keywords", accountExternalId: account.externalId, adGroupExternalId, keywordCount: request.keywords.length, status: "paused" });
     return { added: request.keywords.length };
   }
 

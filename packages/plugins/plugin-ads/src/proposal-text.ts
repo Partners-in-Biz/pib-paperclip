@@ -126,7 +126,7 @@ export function reviewerChecks(kind: ProposalKind): string[] {
   if (kind === "creative_check") return [...common.slice(2), ...copy];
   if (kind === "create_ad_creative") return [...common.slice(2), ...copy, "The creative is ready to use in ads but serves nothing until an ad is created to use it."];
   if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved."];
-  if (kind === "create_ad_group") return [...common, "The max CPC bid is sensible for the campaign and client size.", "The ad group is created paused and will need the campaign's approval to switch on."];
+  if (kind === "create_ad_group") return [...common, "The max CPC bid is sensible for the campaign and client size.", "The ad group is created paused and a person switches it on in the ad platform."];
   if (kind === "add_keywords") return [...common, "The keywords match the campaign's topic and intent.", "Negative keywords (marked) are sensible and won't block other good searches."];
   if (kind === "change_budget") return [...common, "The reason is real (performance, a plan), not a guess."];
   return [...common, kind === "resume_campaign" ? "The campaign is safe to switch on: its copy and landing page are still right." : "Pausing is right for this reason: look at the numbers on the issue."];

@@ -158,6 +158,7 @@ export interface KeywordInput {
 export interface AddKeywordsRequest {
   keywords: KeywordInput[];
 }
+
 export interface AdSetCap {
   externalId: string;
   campaignExternalId: string;

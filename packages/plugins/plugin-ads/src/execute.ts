@@ -221,7 +221,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
         const added = await t.provider.addKeywords(t.env, t.token, t.ref, String(p.payload.adGroupExternalId), {
           keywords: (p.payload.keywords as Array<{ text: string; matchType: "exact" | "phrase" | "broad"; negative?: boolean }>) ?? [],
         });
-        results.push({ what: `Added ${added.added} keyword${added.added === 1 ? "" : "s"}`, ok: true, externalId: String(p.payload.adGroupExternalId) });
+        results.push({ what: `Added ${added.added} keyword${added.added === 1 ? "" : "s"} (paused)`, ok: true, externalId: String(p.payload.adGroupExternalId) });
       } else {
         const status = p.kind === "pause_campaign" ? "paused" : "active";
         await t.provider.setCampaignStatus(t.env, t.token, t.ref, t.target!.campaignExternalId, status);
@@ -232,7 +232,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
         const conn = t.account.connection_id ? await getConnection(rt.ctx, rt.companyId, t.account.connection_id) : null;
         if (conn) await markNeedsReconnect(rt, conn, error.message);
       }
-      results.push({ what: t.target ? `${p.kind === "pause_campaign" ? "Pause" : "Resume"} "${t.target.campaignName}"` : p.kind === "create_campaign" ? `Create "${String(p.payload.name)}"` : "Change the budget", ok: false, error: errorMessage(error).slice(0, 300) });
+      results.push({ what: t.target ? `${p.kind === "pause_campaign" ? "Pause" : "Resume"} "${t.target.campaignName}"` : p.kind === "create_campaign" ? `Create "${String(p.payload.name)}"` : p.kind === "create_ad_group" ? `Create ad group "${String(p.payload.name)}"` : p.kind === "add_keywords" ? "Add keywords" : "Change the budget", ok: false, error: errorMessage(error).slice(0, 300) });
       break;
     }
   }

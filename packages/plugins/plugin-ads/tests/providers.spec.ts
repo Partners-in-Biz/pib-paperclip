@@ -502,7 +502,7 @@ describe("Google Ads: ad groups and keywords (Google only)", () => {
     });
     expect(added).toEqual({ added: 2 });
     const ops = JSON.parse(seen[0]!.body!).operations;
-    expect(ops[0].create).toMatchObject({ status: "ENABLED", negative: false, keyword: { text: "luxury shoes", matchType: "PHRASE" } });
+    expect(ops[0].create).toMatchObject({ status: "PAUSED", negative: false, keyword: { text: "luxury shoes", matchType: "PHRASE" } });
     expect(ops[1].create).toMatchObject({ negative: true, keyword: { text: "broken shoes", matchType: "BROAD" } });
   });
 
