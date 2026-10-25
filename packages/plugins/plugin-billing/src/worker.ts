@@ -664,7 +664,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       numbering: settings.numbering?.mode === "sequential" ? "sequential" : "client",
     },
     // Online payments: which providers are on and, for those that are not, why (no secret is read).
-    payments: { providers: providerStates(settings).map((p) => ({ key: p.key, label: p.label, enabled: p.enabled, blocker: p.blocker, webhookUrl: p.key === "stripe" || p.key === "payfast" ? webhookUrl(settings, p.key) : null })) },
+    payments: { providers: providerStates(settings).map((p) => ({ key: p.key, label: p.label, enabled: p.enabled, blocker: p.blocker, webhookUrl: p.key === "payfast" || p.key === "paypal" || p.key === "stripe" ? webhookUrl(settings, p.key) : null })) },
     taxCodes: Object.entries(TAX_CODES).map(([code, info]) => ({ code, label: info.label, rate: info.rate })),
     expenseCategories: expenseCategories(settings),
     client: scope ? await clientDetails(ctx, companyId, scope, [...invoices, ...quotes]) : null,

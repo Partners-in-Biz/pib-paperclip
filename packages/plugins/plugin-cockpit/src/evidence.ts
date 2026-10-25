@@ -8,8 +8,13 @@ import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
+import { notifyOwner, type NotifyOwnerDeps, type NotifyOutcome } from "./push/notify.js";
+import { sendPush } from "./push/send.js";
+import { resolveOwner } from "./push/triggers-critical.js";
 
 const T = `${NAMESPACE}.issue_evidence`;
+
+export type ConfirmOutcome = NotifyOutcome | "already_notified" | "error";
 
 type EvidenceRow = {
   id: string;
@@ -31,6 +36,7 @@ const newId = (): string => `evid${randomBytes(6).toString("hex")}`;
  * Records evidence (screenshot/attachment) for an issue step.
  * Validates attachment ownership, image type, and SHA256 match.
  * Posts a comment with the evidence summary.
+ * Optionally sends a confirmation push to the owner.
  * Returns toolOk/toolFail with the recorded evidence or error.
  */
 export async function recordEvidence(
@@ -42,6 +48,7 @@ export async function recordEvidence(
   step: string | null,
   summary: string | null,
   run: { runId: string | null; agentId: string | null },
+  opts?: { notify?: boolean; deliver?: NotifyOwnerDeps["deliver"] },
 ): Promise<ToolResult> {
   const ok = (content: string, data: unknown): ToolResult => toolOk(content, data) as ToolResult;
   const fail = (text: string): ToolResult => toolFail(text) as ToolResult;
@@ -116,6 +123,20 @@ export async function recordEvidence(
   // 8. Insert or do nothing (identical retry handling)
   const now = env.now().toISOString();
   const evidenceId = newId();
+  const originalFilename = attachment.filename || trimmedAttachmentId;
+
+  // Helper: Call confirmEvidencePush with constructed args
+  const pushConfirmation = async (): Promise<ConfirmOutcome> => {
+    return confirmEvidencePush(env, {
+      companyId,
+      issue: { id: issue.id, identifier: issue.identifier ?? null, title: issue.title ?? null },
+      step: trimmedStep,
+      summary: trimmedSummary,
+      evidenceId,
+      filename: originalFilename,
+      deliver: opts?.deliver,
+    });
+  };
 
   try {
     const result = await env.ctx.db.execute(
@@ -140,14 +161,18 @@ export async function recordEvidence(
 
     // If nothing returned, this is an identical retry
     if (result.rowCount === 0) {
-      return ok("Evidence already recorded for this step and attachment", {
+      const data: Record<string, unknown> = {
         recorded: false,
         reason: "identical retry",
-      });
+      };
+      if (opts?.notify === true) {
+        const outcome = await pushConfirmation();
+        data.notify = outcome;
+      }
+      return ok("Evidence already recorded for this step and attachment", data);
     }
 
     // 9. Post comment
-    const originalFilename = attachment.filename || trimmedAttachmentId;
     const commentBody = `**Evidence:** ${originalFilename}${trimmedSummary ? ` - ${trimmedSummary}` : ""}`;
 
     try {
@@ -161,12 +186,181 @@ export async function recordEvidence(
       return fail(`Failed to post evidence comment: ${message(error)}`);
     }
 
-    return ok("Evidence recorded and comment posted", {
+    // 10. Optionally push confirmation to owner
+    const data: Record<string, unknown> = {
       recorded: true,
       evidenceId,
       attachmentId: trimmedAttachmentId,
-    });
+    };
+    if (opts?.notify === true) {
+      const outcome = await pushConfirmation();
+      data.notify = outcome;
+    }
+
+    return ok("Evidence recorded and comment posted", data);
   } catch (error) {
     return fail(`Failed to record evidence: ${message(error)}`);
+  }
+}
+
+/**
+ * Confirm evidence recording by posting to owner's subscriptions.
+ * Atomically claims one row per (issue, step) to ensure single notification.
+ * If already claimed, returns "already_notified".
+ * Handles no_subscription by posting to PAR-1844, or returns the push outcome.
+ * Never throws; catches all errors and returns "error".
+ */
+export async function confirmEvidencePush(
+  env: Env,
+  args: {
+    companyId: string;
+    issue: { id: string; identifier?: string | null; title?: string | null };
+    step: string;
+    summary: string | null;
+    evidenceId: string;
+    filename: string;
+    deliver?: NotifyOwnerDeps["deliver"];
+  },
+): Promise<ConfirmOutcome> {
+  const now = env.now();
+  const nowIso = now.toISOString();
+  let claimed = false;
+  let deliveryAttempted = false;
+
+  // Helper: Release an atomic claim by setting inbox_posted_at to NULL
+  const releaseClaim = async (): Promise<void> => {
+    await env.ctx.db.execute(
+      `UPDATE ${T} SET inbox_posted_at = NULL WHERE company_id = $1 AND issue_id = $2 AND step = $3 AND inbox_posted_at IS NOT NULL`,
+      [args.companyId, args.issue.id, args.step],
+    ).catch(() => undefined);
+  };
+
+  // Helper: Post a no-subscription comment to PAR-1844 if it exists
+  const postNoSubscriptionComment = async (): Promise<boolean> => {
+    const commentText = `No push subscription for the owner, confirmation not delivered: ${args.issue.identifier ?? args.issue.id} ${args.step}${args.summary ? " - " + args.summary : ""}. Evidence: ${args.filename}`;
+    try {
+      const parIssue = await env.ctx.issues.get("PAR-1844", args.companyId).catch(() => null);
+      if (!parIssue) {
+        // PAR-1844 not found; treat as failure
+        return false;
+      }
+      await env.ctx.issues.createComment(parIssue.id, commentText, args.companyId);
+      return true;
+    } catch {
+      // If comment fails, return false
+      return false;
+    }
+  };
+
+  try {
+    // CLAIM: Atomically mark one row per (issue, step) as posted. ORDER BY sorts claimed rows first,
+    // so if any row is claimed, we pick it. WHERE inbox_posted_at IS NULL then fails (rowCount=0)
+    // and we return already_notified—preventing duplicate notifications.
+    const claimResult = await env.ctx.db.execute(
+      `UPDATE ${T} SET inbox_posted_at = $1 WHERE id = (SELECT id FROM ${T} WHERE company_id = $2 AND issue_id = $3 AND step = $4 ORDER BY (inbox_posted_at IS NULL), created_at, id LIMIT 1) AND inbox_posted_at IS NULL`,
+      [nowIso, args.companyId, args.issue.id, args.step],
+    );
+
+    // Check if any row was claimed (rowCount > 0 means a row was updated)
+    if ((claimResult.rowCount ?? 0) === 0) {
+      return "already_notified";
+    }
+
+    claimed = true;
+
+    // Construct identifier and title
+    const identifier = args.issue.identifier ?? args.issue.id;
+    const titleStr = `Confirmation: ${identifier} ${args.step}: ${args.summary ?? "evidence recorded"}`;
+    const title = Array.from(titleStr).slice(0, 120).join("");
+
+    // Get the public base URL and build the issue link
+    let publicBaseUrl = "https://paperclip.partnersinbiz.online";
+    try {
+      const config = await env.ctx.config.get(args.companyId);
+      if (config && typeof config === "object" && typeof (config as Record<string, unknown>).publicBaseUrl === "string") {
+        const configUrl = (config as Record<string, unknown>).publicBaseUrl as string;
+        if (configUrl) {
+          publicBaseUrl = configUrl;
+        }
+      }
+    } catch {
+      // Use default
+    }
+    publicBaseUrl = publicBaseUrl.replace(/\/+$/, "");
+    const prefix = identifier.includes("-") ? identifier.split("-")[0] : identifier;
+    const url = `${publicBaseUrl}/${prefix}/issues/${identifier}`;
+
+    // Resolve owner
+    const ownerUserId = await resolveOwner(env.ctx, args.companyId);
+    if (!ownerUserId) {
+      // No owner role found - try to post to PAR-1844
+      const posted = await postNoSubscriptionComment();
+      if (!posted) {
+        // PAR-1844 not found or comment failed; release the claim
+        await releaseClaim();
+        env.ctx.logger.warn("Failed to post no_subscription comment to PAR-1844", { issueId: args.issue.id, step: args.step });
+        return "no_subscription";
+      }
+      // Keep claim
+      return "no_subscription";
+    }
+
+    // Wrap deliver to track if delivery was attempted
+    const innerDeliver = args.deliver ?? (async (ctx, companyId, subs, payload) => {
+      await sendPush(ctx, companyId, subs, payload, { class: payload.class });
+    });
+    const wrappedDeliver: NotifyOwnerDeps["deliver"] = async (...a) => {
+      deliveryAttempted = true;
+      await innerDeliver(...a);
+    };
+
+    // Call notifyOwner
+    const result = await notifyOwner(
+      env.ctx,
+      {
+        companyId: args.companyId,
+        class: "confirmation",
+        title,
+        body: args.summary ?? args.step,
+        issueRef: `${identifier}:${args.step}`,
+        ownerUserId,
+        url,
+      },
+      { now: () => now, deliver: wrappedDeliver },
+    );
+
+    const outcome = result.outcome;
+
+    // Keep claim for: sent, deferred, collapsed
+    if (outcome === "sent" || outcome === "deferred" || outcome === "collapsed") {
+      return outcome;
+    }
+
+    if (outcome === "no_subscription") {
+      // Post to PAR-1844 if possible
+      const posted = await postNoSubscriptionComment();
+      if (!posted) {
+        // PAR-1844 not found or comment failed; release the claim
+        await releaseClaim();
+        env.ctx.logger.warn("Failed to post no_subscription comment to PAR-1844", { issueId: args.issue.id, step: args.step });
+      }
+      return "no_subscription";
+    }
+
+    // capped, duplicate: release the claim
+    if (outcome === "capped" || outcome === "duplicate") {
+      await releaseClaim();
+      return outcome;
+    }
+
+    // Unknown outcome: keep the claim and return it
+    return outcome;
+  } catch (error) {
+    // After an attempt some subscriptions may have been reached, so keep the claim rather than risk a double push
+    if (claimed && !deliveryAttempted) {
+      await releaseClaim();
+    }
+    env.ctx.logger.warn("confirmEvidencePush failed", { message: message(error) });
+    return "error";
   }
 }

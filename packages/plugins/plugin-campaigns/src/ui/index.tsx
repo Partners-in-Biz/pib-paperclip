@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { snapshotPlaceholder } from "./placeholder.js";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
@@ -136,7 +137,9 @@ function Banner({ text, link, linkProps }: { text: string; link: { label: string
   );
 }
 
-export function CampaignsPage({ context }: PluginPageProps) {
+export const CampaignsPage = withHelp(CampaignsPageMain);
+
+function CampaignsPageMain({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();

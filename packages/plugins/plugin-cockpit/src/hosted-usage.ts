@@ -131,3 +131,56 @@ export async function hostedUsageRollup(env: Env): Promise<RollupResult> {
   throwIfEveryCompanyFailed("Hosted usage roll-up", companies + failed, failed);
   return { owner: true, companies, rows, failed };
 }
+
+export interface HostedUsageListed {
+  hostedCompanyId: string;
+  companyName: string;
+  month: string;
+  runs: number;
+  notionalUsd: number;
+  doneIssues: number;
+  agents: number;
+  computedAt: string;
+}
+
+export type HostedUsageList = { allowed: false; rows: [] } | { allowed: true; rows: HostedUsageListed[] };
+
+/** `YYYY-MM` or `YYYY-MM-DD` to the first day of that month, or null when it is not a month. */
+export function parseMonth(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const m = /^(\d{4})-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?$/.exec(value.trim());
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+/**
+ * Owner only: the stored rows for the months `fromMonth`..`toMonth` (default the last 6 SAST
+ * months), newest month first. Any other company gets `allowed: false` and no rows.
+ */
+export async function listHostedUsage(env: Env, companyId: string, range: { fromMonth?: unknown; toMonth?: unknown } = {}): Promise<HostedUsageList> {
+  const { ctx } = env;
+  if (!(await isOwnerCompany(ctx, companyId))) return { allowed: false, rows: [] };
+  const now = env.now();
+  const from = parseMonth(range.fromMonth) ?? sastMonth(now, -5).month;
+  const to = parseMonth(range.toMonth) ?? sastMonth(now).month;
+  const found = await ctx.db.query<Record<string, unknown>>(
+    `SELECT hosted_company_id, company_name, to_char(month, 'YYYY-MM-DD') AS month, runs, notional_usd::double precision AS notional_usd,
+            done_issues, agents, computed_at
+       FROM ${NAMESPACE}.hosted_usage
+      WHERE owner_company_id = $1 AND month >= $2::date AND month <= $3::date
+      ORDER BY month DESC, company_name ASC, hosted_company_id ASC`,
+    [companyId, from, to],
+  );
+  return {
+    allowed: true,
+    rows: found.map((r) => ({
+      hostedCompanyId: String(r.hosted_company_id),
+      companyName: String(r.company_name ?? ""),
+      month: String(r.month),
+      runs: Number(r.runs) || 0,
+      notionalUsd: Number(r.notional_usd) || 0,
+      doneIssues: Number(r.done_issues) || 0,
+      agents: Number(r.agents) || 0,
+      computedAt: new Date(r.computed_at as string).toISOString(),
+    })),
+  };
+}

@@ -6,11 +6,23 @@
  * `skill-change-model.ts`.
  */
 import { skillContentHash } from "./eval-model.js";
+import { AGENT_EVALS } from "./eval-scenarios.js";
 import { ownSkills, type SkillInfo } from "./evals.js";
 import type { Env } from "./env.js";
 import { proposeImprovement } from "./improvements.js";
 import { ImprovementError } from "./improvements-model.js";
-import { diffHash, pullRequestPackage, reviewProposal, SkillChangeError, type ProposalReview, type PullRequestPackage } from "./skill-change-model.js";
+import {
+  diffHash,
+  pullRequestPackage,
+  reviewProposal,
+  SkillChangeError,
+  TEMPLATE_RECHECK_DAYS,
+  reviewTemplateProposal,
+  templateChangeRef,
+  templatePullRequestPackage,
+  type ProposalReview,
+  type PullRequestPackage,
+} from "./skill-change-model.js";
 
 export interface ChangeInput {
   skill: string;
@@ -25,12 +37,16 @@ export interface ChangeInput {
   targetValue?: number;
   recheckInDays: number;
   kind: string;
+  templateKey?: string;
+  candidateText?: string;
+  candidateHash?: string;
 }
 
 export interface ChangeResult {
   package: PullRequestPackage;
   review: ProposalReview | null;
   hash: { before: string; after: string } | null;
+  templateHash?: string;
   improvement: { id: string; metricKey: string; recheckAt: string; deduped: boolean };
   verified: boolean;
   next: string[];
@@ -45,7 +61,68 @@ function currentText(info: SkillInfo | undefined, file: string): string | null {
   return found.content;
 }
 
+async function proposeTemplateChange(env: Env, companyId: string, input: ChangeInput, actor: { agentId: string | null }): Promise<ChangeResult> {
+  const date = env.now().toISOString().slice(0, 10);
+  const key = input.templateKey;
+  const text = input.candidateText;
+  const hash = input.candidateHash;
+
+  if (!key || !text || !hash) throw new SkillChangeError(`Template proposal requires templateKey, candidateText, and candidateHash.`);
+
+  const hasEval = Object.hasOwn(AGENT_EVALS, key);
+  const verified = reviewTemplateProposal({ key, text, hash, diff: input.diff, hasEval });
+
+  const sourceRef = templateChangeRef(key, verified.hash);
+  let recorded;
+  try {
+    recorded = await proposeImprovement(
+      env,
+      companyId,
+      {
+        title: `Template ${key}: ${input.reason}`.slice(0, 160),
+        kind: "template",
+        targetRef: key,
+        summary: `${input.reason} A pull request changes the template; it is measured again after it ships (the check date is a placeholder until the change is applied).`.slice(0, 600),
+        metricKey: input.metricKey,
+        ...(input.direction ? { direction: input.direction } : {}),
+        ...(input.baselineValue !== undefined ? { baselineValue: input.baselineValue } : {}),
+        ...(input.targetValue !== undefined ? { targetValue: input.targetValue } : {}),
+        recheckInDays: TEMPLATE_RECHECK_DAYS,
+        sourceRef,
+        ...(input.sourceIssueId ? { sourceIssueId: input.sourceIssueId } : {}),
+      },
+      { agentId: actor.agentId, userId: null },
+    );
+  } catch (error) {
+    if (error instanceof ImprovementError) throw new SkillChangeError(`The change cannot be measured yet: ${error.message}`);
+    throw error;
+  }
+
+  const improvement = { id: recorded.improvement.id, metricKey: recorded.improvement.metricKey, recheckAt: recorded.improvement.recheckAt, deduped: recorded.deduped };
+  const pr = templatePullRequestPackage({
+    key,
+    reason: input.reason,
+    evidence: input.evidence,
+    diff: input.diff,
+    date,
+    hash: verified.hash,
+    improvement,
+    sourceIssue: input.sourceIssueId,
+  });
+
+  const next: string[] = [];
+  next.push(`Open the pull request into development: branch ${pr.branch}, edit packages/plugins/plugin-setup/templates/agents/${key}.md and the eval file, then follow the steps (they include the eval gate).`);
+  if (recorded.deduped) next.push("This exact change was already proposed and is still open in the ledger; no second entry was made.");
+  next.push(`Re-read the render hash with partnersinbiz.setup:template-preview after editing; it must equal ${hash}.`);
+
+  return { package: pr, review: null, hash: null, templateHash: hash, improvement, verified: true, next };
+}
+
 export async function proposeSkillChange(env: Env, companyId: string, input: ChangeInput, actor: { agentId: string | null }): Promise<ChangeResult> {
+  if (input.kind === "template") {
+    return proposeTemplateChange(env, companyId, input, actor);
+  }
+
   const date = env.now().toISOString().slice(0, 10);
   const info = ownSkills().find((s) => s.slug === input.skill);
   const current = currentText(info, input.file);
