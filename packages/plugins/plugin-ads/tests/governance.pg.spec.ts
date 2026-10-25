@@ -4,7 +4,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { evaluateCompany, resolveStaleAlerts } from "../src/evaluate.js";
-import { getProposal, listAlerts, listProposals, updateProposal } from "../src/db.js";
+import { getAccount, getProposal, listAlerts, listProposals, updateProposal } from "../src/db.js";
 import { AdsError } from "../src/domain.js";
 import { cancelProposal, createProposal, markDoneManually, recordClientRequest, recordReview, recordSignoff, reviseProposal, sweepProposals } from "../src/proposals.js";
 import { proposalDetail } from "../src/records.js";
@@ -713,6 +713,44 @@ describe.skipIf(!available)("who gets the work when roles are missing", () => {
     const issue = (await nobody.issues()).find((i) => i.id === q.approval_issue_id)!;
     expect(issue.assigneeAgentId).toBe(OPERATOR);
     expect(issue.description).toMatch(/No approver found/);
+  });
+});
+
+describe.skipIf(!available)("ad groups and keywords: Google only, non-spend kinds", () => {
+  let w: World;
+  let accountId: string;
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w));
+  });
+
+  it("create_ad_group is Google only (rejects Meta/default)", async () => {
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Test", cpcBidMinor: 1500 })).rejects.toThrow(/Google only/);
+  });
+
+  it("add_keywords is Google only (rejects Meta/default)", async () => {
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "x", matchType: "exact" }] })).rejects.toThrow(/Google only/);
+  });
+
+  it("create_ad_group validates name and cpcBidMinor", async () => {
+    await w.asHost(async () => {
+      const acct = await getAccount(w.ctx, COMPANY, accountId);
+      if (acct) await w.ctx.db.execute("UPDATE plugin_ads_caac8387d2.ad_accounts SET platform = $1 WHERE id = $2", ["google", acct.id]);
+    });
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "", cpcBidMinor: 1500 })).rejects.toThrow(/too short/);
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Test", cpcBidMinor: 0 })).rejects.toThrow(/must be more than zero/);
+  });
+
+  it("add_keywords validates keyword count and fields", async () => {
+    await w.asHost(async () => {
+      const acct = await getAccount(w.ctx, COMPANY, accountId);
+      if (acct) await w.ctx.db.execute("UPDATE plugin_ads_caac8387d2.ad_accounts SET platform = $1 WHERE id = $2", ["google", acct.id]);
+    });
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [] })).rejects.toThrow(/1 to 50/);
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: Array(51).fill({ text: "x", matchType: "exact" }) })).rejects.toThrow(/1 to 50/);
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "", matchType: "exact" }] })).rejects.toThrow(/not be empty/);
+    await expect(createProposal(w.rt(), { agentId: ADS_AGENT }, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "x", matchType: "invalid" }] })).rejects.toThrow(/must be exact, phrase or broad/);
   });
 });
 

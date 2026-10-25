@@ -7,12 +7,13 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountCaps, AccountRef, AdPolicyRow, AdsProvider, CampaignHealth, CampaignInfo, CreateCampaignRequest, CreateAdCreativeRequest, CreateAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountCaps, AccountRef, AddKeywordsRequest, AdPolicyRow, AdsProvider, CampaignHealth, CampaignInfo, CreateAdCreativeRequest, CreateAdGroupRequest, CreateAdRequest, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
-  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad";
+  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad" | "adGroup" | "keywords";
   accountExternalId: string;
   campaignExternalId?: string;
+  adGroupExternalId?: string;
   status?: "active" | "paused";
   dailyBudgetMinor?: number;
   lifetimeBudgetMinor?: number;
@@ -29,6 +30,8 @@ export interface MockWrite {
   cta?: string;
   adSetExternalId?: string;
   creativeExternalId?: string;
+  cpcBidMinor?: number;
+  keywordCount?: number;
 }
 
 /** A stable pseudo-random number in 0..1 from text, so the demo numbers are the same on every read. */
@@ -61,7 +64,7 @@ export class MockAdsProvider implements AdsProvider {
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health" | "adGroup" | "keywords", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
@@ -196,6 +199,19 @@ export class MockAdsProvider implements AdsProvider {
     const externalId = `mock-ad-${(this.seq += 1)}`;
     this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
     return { externalId, name: request.name };
+  }
+
+  async createAdGroup(_env: unknown, _token: TokenBundle, account: AccountRef, campaignExternalId: string, request: CreateAdGroupRequest) {
+    this.maybeFail("adGroup");
+    const externalId = `mock-adg-${(this.seq += 1)}`;
+    this.writes.push({ op: "adGroup", accountExternalId: account.externalId, campaignExternalId, adGroupExternalId: externalId, name: request.name, cpcBidMinor: request.cpcBidMinor, status: "paused" });
+    return { externalId, name: request.name };
+  }
+
+  async addKeywords(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest) {
+    this.maybeFail("keywords");
+    this.writes.push({ op: "keywords", accountExternalId: account.externalId, adGroupExternalId, keywordCount: request.keywords.length, status: "paused" });
+    return { added: request.keywords.length };
   }
 
   async accountCaps(_env: unknown, _token: TokenBundle, account: AccountRef): Promise<AccountCaps> {
