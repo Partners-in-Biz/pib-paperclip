@@ -71,6 +71,11 @@ export function pageSummary(views: ModuleView[], load: Pick<LoadResult, "modules
 // Page
 // ---------------------------------------------------------------------------
 
+/** The "Loading…" line shows only while a load is pending: a failed load shows its message instead. */
+export function showLoadingLine(state: { loading: boolean; load: unknown; error: string | null }): boolean {
+  return state.loading && !state.load && !state.error;
+}
+
 export function SetupPage({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const data = useSetupData(companyId);
@@ -267,7 +272,7 @@ export function SetupPage({ context }: PluginPageProps) {
         />
       ) : null}
 
-      {data.loading && !data.load ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
+      {showLoadingLine(data) ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
 
       {tab === "team" && showTeam ? <TeamSection team={team} linkFor={linkFor} focusAnchor={focus.anchor} /> : null}
 
