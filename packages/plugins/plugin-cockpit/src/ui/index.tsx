@@ -7,7 +7,7 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, Tabs, Workflow, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -19,6 +19,7 @@ import { dedupeKpis, visibleKpis } from "./kpis.js";
 import { runAlert, runStats } from "./series.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
+import { MaintenancePanel } from "./maintenance.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 
@@ -60,10 +61,10 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
-/** `?tab=flows`, `?tab=profile`, `?tab=memory` and `?tab=notifications` open those tabs; anything else is the overview. */
+/** `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
 export function tabFromSearch(search: string | null | undefined): TabId {
   const value = new URLSearchParams(search ?? "").get("tab");
   return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
@@ -112,6 +113,7 @@ export function CockpitPage({ context }: PluginPageProps) {
   const data = useCockpitData(companyId, { windowHours });
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
+  const [maintenanceTick, setMaintenanceTick] = useState(0);
   const moved = movedTabTarget(location.search);
 
   // Follow the address (a `/cockpit?tab=memory` link while the page is open).
@@ -136,7 +138,8 @@ export function CockpitPage({ context }: PluginPageProps) {
   const view = data.view;
   const memoryTab = tab === "memory";
   const profileTab = tab === "profile";
-  const pageTab = memoryTab || profileTab;
+  const maintenanceTab = tab === "maintenance";
+  const pageTab = memoryTab || profileTab || maintenanceTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
@@ -155,7 +158,7 @@ export function CockpitPage({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : void data.reload())}
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : void data.reload())}
               disabled={!pageTab && data.loading}
             >
               {!pageTab && data.loading ? "Loading…" : "Refresh"}
@@ -172,12 +175,15 @@ export function CockpitPage({ context }: PluginPageProps) {
           { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
           { id: "notifications", label: "Notifications", icon: Megaphone },
+          { id: "maintenance", label: "Maintenance", icon: Wrench },
         ]}
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
       />
       {tab === "notifications" ? (
         <NotificationsPage key={companyId} />
+      ) : maintenanceTab ? (
+        <MaintenancePanel key={companyId} refreshKey={maintenanceTick} />
       ) : memoryTab ? (
         <MemoryPanel key={companyId} agents={data.raw?.agents ?? []} linkFor={linkFor} settingsHref={settingsHref} refreshKey={memoryTick} />
       ) : profileTab ? (
