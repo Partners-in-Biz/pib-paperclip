@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval } from "../src/owner-route.js";
+import { DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval, routeFromImpact } from "../src/owner-route.js";
 import type { ApprovalRow, ProposalRow } from "../src/db.js";
 import { signoffState } from "../src/signoffs.js";
 
@@ -61,5 +61,25 @@ describe("owner-route", () => {
     expect(signoffState(prop, [a("agent:other")], now, "agent-am").complete).toBe(false);
     expect(signoffState(prop, [a("agent:agent-am")], now, null).complete).toBe(false);
     expect(signoffState(prop, [a("agent:agent-am")], now).complete).toBe(false);
+  });
+});
+
+describe("routeFromImpact: rows stored before 0.3.9", () => {
+  const stored = (route: string) => ({ ownerRoute: { route, lifetimeMinor: 90_000, thresholdMinor: 50_000 } });
+
+  it("reads the old person-named codes as the role-based ones", () => {
+    expect(routeFromImpact(stored("peet_required"))).toEqual({ route: "owner_required", lifetimeMinor: 90_000, thresholdMinor: 50_000 });
+    expect(routeFromImpact(stored("elon"))?.route).toBe("delegate");
+  });
+
+  it("keeps the current codes and ignores unknown or missing ones", () => {
+    expect(routeFromImpact(stored("owner_required"))?.route).toBe("owner_required");
+    expect(routeFromImpact(stored("delegate"))?.route).toBe("delegate");
+    expect(routeFromImpact(stored("nobody"))).toBeNull();
+    expect(routeFromImpact({})).toBeNull();
+  });
+
+  it("an above-threshold spend still routes to the owner", () => {
+    expect(ownerRouteOf({ currency: "ZAR", owner_threshold_minor: null }, { kind: "change_budget", payload: {}, impact: { addedThisMonthMinor: 90_000 } } as any).route).toBe("owner_required");
   });
 });

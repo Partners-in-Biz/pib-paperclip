@@ -109,10 +109,15 @@ export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold
   return routeForSpend(scope, lifetime);
 }
 
-/** Extract owner route from proposal impact object. */
+/** Route codes stored in a proposal's impact before 0.3.9 (named the person); they read as the role-based codes. */
+const LEGACY_ROUTES: Record<string, OwnerRoute["route"]> = { elon: "delegate", peet_required: "owner_required" };
+
+/** Extract owner route from proposal impact object. A row stored with a pre-0.3.9 code reads as its role-based equivalent. */
 export function routeFromImpact(impact: Record<string, unknown>): OwnerRoute | null {
-  const route = impact.ownerRoute as OwnerRoute | undefined;
-  return route && (route.route === "delegate" || route.route === "owner_required") ? route : null;
+  const route = impact.ownerRoute as (Omit<OwnerRoute, "route"> & { route?: string }) | undefined;
+  if (!route || typeof route.route !== "string") return null;
+  const code = LEGACY_ROUTES[route.route] ?? route.route;
+  return code === "delegate" || code === "owner_required" ? { ...route, route: code } : null;
 }
 
 /** An owner-delegate approval (within threshold): the current Account Manager agent's yes as owner, no cap override. No delegate (null) means none counts. */
