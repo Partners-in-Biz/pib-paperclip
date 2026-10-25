@@ -464,6 +464,22 @@ describe.skipIf(!available)("running approved responsive search ads", () => {
     expect(await listProposals(w.ctx, COMPANY, {})).toHaveLength(0);
   });
 
+  it("reads every headline and description for the client's banned words, not just the first few", async () => {
+    await updateScope(w.ctx, COMPANY, "own", { bannedWords: ["bargain"] });
+    const headlines = Array.from({ length: 8 }, (_, i) => `Shoe offer ${String.fromCharCode(65 + i)}`);
+    const descriptions = ["Hand made shoes for every day.", "Order today, delivered in 3 days.", "Sizes for every foot.", "Easy returns on all pairs."];
+    const clean = await propose(w, RSA(accountId, { headlines, descriptions }));
+    expect(clean.status).toBe("in_review");
+    for (const [patch, where] of [
+      [{ headlines: headlines.map((h, i) => (i === 6 ? "The bargain shoes" : h)), descriptions }, "headlines[6]"],
+      [{ headlines, descriptions: descriptions.map((d, i) => (i === 3 ? "Our bargain pairs, returns free." : d)) }, "descriptions[3]"],
+    ] as const) {
+      const p = await propose(w, RSA(accountId, patch));
+      expect(p.status).toBe("needs_changes");
+      expect((p.precheck as { findings: Array<{ rule: string; where: string }> }).findings).toEqual([expect.objectContaining({ rule: "banned_word", where })]);
+    }
+  });
+
   it("is refused on a Meta account", async () => {
     const meta = await syncedAccount(w);
     expect(await refusal(propose(w, RSA(meta.accountId)))).toMatchObject({ message: expect.stringMatching(/only be created on Google/) });

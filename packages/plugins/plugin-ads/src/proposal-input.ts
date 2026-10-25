@@ -49,6 +49,8 @@ export interface Normalized {
   /** What it adds to spend this month (null: nothing, or not a spend change). */
   addition: SpendAddition | null;
   creative: Creative | null;
+  /** Further copy lines the precheck must read too (an RSA has up to 19 texts; `creative` carries only the first few). */
+  extraCopy?: Array<{ where: string; field: "headline" | "description"; text: string }>;
   specialAdCategories: string[];
 }
 
@@ -447,6 +449,10 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
       summary: `Create a responsive search ad in ad group ${adGroupExternalId} on ${account.name} with ${copy.headlines.length} headlines and ${copy.descriptions.length} descriptions, landing on ${copy.finalUrl}. It is created paused; Google reviews it before it can serve.`,
       addition: null,
       creative: { headline: copy.headlines[0]!, primaryText: copy.descriptions[0]!, description: copy.descriptions[1] ?? null, callToAction: null, landingUrl: copy.finalUrl },
+      extraCopy: [
+        ...copy.headlines.slice(1).map((text, i) => ({ where: `headlines[${i + 1}]`, field: "headline" as const, text })),
+        ...copy.descriptions.slice(2).map((text, i) => ({ where: `descriptions[${i + 2}]`, field: "description" as const, text })),
+      ],
       specialAdCategories: [],
     };
   }

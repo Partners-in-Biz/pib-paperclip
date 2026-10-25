@@ -45,7 +45,7 @@ export interface ProposalActor {
 
 const hashOf = (kind: string, scopeKey: string, accountId: string | null, payload: Record<string, unknown>) => sha256(canonicalJson({ kind, scopeKey, accountId, payload })).slice(0, 40);
 
-/** Who must say yes: PiB's owner always; the client too when the scope asks for it and the change adds spend or is the client's copy. A pause needs only the owner. Ad groups and keywords need only the owner (non-spend). */
+/** Who must say yes: PiB's owner always; the client too when the scope asks for it and the change adds spend or is the client's copy. A pause needs only the owner. Ad groups and keywords need only the owner (non-spend). A responsive search ad follows the scope's sign-off like other ad copy: it is created paused, so it is not a spend kind. */
 export function signoffsFor(scope: Pick<ScopeRow, "signoffs">, kind: ProposalKind): Role[] {
   if (kind === "pause_campaign" || kind === "create_ad_group" || kind === "add_keywords") return ["owner"];
   return scope.signoffs === "owner_client" ? ["owner", "client"] : ["owner"];
@@ -82,7 +82,17 @@ async function computeImpact(rt: AdsRuntime, scope: ScopeRow, kind: ProposalKind
 function precheckOf(scope: ScopeRow, n: Normalized): Record<string, unknown> {
   if (!n.creative) return {};
   // The rehearsal platform is checked against Meta's rules.
-  const result = checkCreative({ platform: n.platform === "google" ? "google" : "meta", ...n.creative, specialAdCategories: n.specialAdCategories }, { bannedWords: scope.banned_words });
+  const platform = n.platform === "google" ? "google" : "meta";
+  const result = checkCreative({ platform, ...n.creative, specialAdCategories: n.specialAdCategories }, { bannedWords: scope.banned_words });
+  // A multi-text ad (RSA) carries more copy than `creative` holds: read every other line against the same rules.
+  for (const line of n.extraCopy ?? []) {
+    for (const f of checkCreative({ platform, [line.field]: line.text, specialAdCategories: n.specialAdCategories }, { bannedWords: scope.banned_words }).findings) {
+      result.findings.push({ ...f, where: line.where });
+    }
+  }
+  result.blockers = result.findings.filter((f) => f.level === "blocker").length;
+  result.warnings = result.findings.length - result.blockers;
+  result.ok = result.blockers === 0;
   return { ...result, bannedWordsChecked: scope.banned_words.length };
 }
 
