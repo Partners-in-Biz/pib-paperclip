@@ -305,7 +305,7 @@ describe("call note emission and acking", () => {
     const ctx = createMockCtx(mockEvents);
     const step = makeNoteStep();
     const row = { id: recordingId, call_sid: callSid, company_id: companyId, recording_sid: `rec_${Date.now()}` } as any;
-    const result = await step({ ctx, namespace: NAMESPACE, row, extendLease: vi.fn() });
+    const result = await step({ ctx, namespace: NAMESPACE, row, extendLease: vi.fn(), isErased: async () => false });
     expect(result.state).toBe("noted");
     expect(mockEvents.emit).toHaveBeenCalled();
   });
@@ -316,7 +316,7 @@ describe("call note emission and acking", () => {
     const ctx = createMockCtx(mockEvents);
     const step = makeNoteStep();
     const row = { id: recordingId, call_sid: callSid, company_id: companyId, recording_sid: `rec_${Date.now()}` } as any;
-    const result = await step({ ctx, namespace: NAMESPACE, row, extendLease: vi.fn() });
+    const result = await step({ ctx, namespace: NAMESPACE, row, extendLease: vi.fn(), isErased: async () => false });
     expect(result.state).toBe("erased");
     expect(mockEvents.emit).not.toHaveBeenCalled();
   });

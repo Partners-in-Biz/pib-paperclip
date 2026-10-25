@@ -5,6 +5,17 @@ import { claimRecordings, releaseLease } from "./lease.js";
 export const MAX_ATTEMPTS = 6;
 
 /**
+ * Thrown when a step detects the row has been tombstoned (erased_at set).
+ * Signals to the pipeline that the row should be abandoned without incrementing attempts.
+ */
+export class ErasedError extends Error {
+  constructor(message = "Recording has been erased") {
+    super(message);
+    this.name = "ErasedError";
+  }
+}
+
+/**
  * Compute backoff seconds for a failed attempt.
  * attempts = failures so far (1-based): 60 * 2^(attempts-1), capped at 3600
  */
@@ -34,6 +45,7 @@ export interface PipelineStepCtx {
   namespace: string;
   row: RecordingRow;
   extendLease(): Promise<boolean>;
+  isErased(): Promise<boolean>;
 }
 
 export interface StepResult {
@@ -106,6 +118,15 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       return result.rowCount > 0;
     };
 
+    // Check if row has been tombstoned (erased_at is set)
+    const isErased = async (): Promise<boolean> => {
+      const result = await ctx.db.query<{ cnt: string }>(
+        `SELECT 1 FROM ${namespace}.tel_recordings WHERE id = $1::uuid AND erased_at IS NOT NULL`,
+        [row.id],
+      );
+      return result.length > 0;
+    };
+
     try {
       // Extend lease before running the step
       let extended: boolean;
@@ -128,6 +149,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
         namespace,
         row,
         extendLease,
+        isErased,
       };
 
       const result = await step(stepCtx);
@@ -164,7 +186,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       const tokenIdx = ++idx;
       params.push(row.id, token);
 
-      const sql = `UPDATE ${namespace}.tel_recordings SET ${updates.join(", ")} WHERE id = $${idIdx}::uuid AND lease_token = $${tokenIdx}::uuid`;
+      const sql = `UPDATE ${namespace}.tel_recordings SET ${updates.join(", ")} WHERE id = $${idIdx}::uuid AND lease_token = $${tokenIdx}::uuid AND erased_at IS NULL`;
       const updateResult = await ctx.db.execute(sql, params);
       if (updateResult.rowCount === 0) {
         abandoned++;
@@ -174,6 +196,12 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
       processed++;
       ctx.logger.debug(`recording ${row.recording_sid} ${row.state} -> ${result.state}`);
     } catch (err: any) {
+      // Handle erasure: no attempts increment, just abandon
+      if (err instanceof ErasedError) {
+        abandoned++;
+        continue;
+      }
+
       // Failure: increment attempts and schedule backoff
       const errorMsg = sanitizeErrorMessage(String(err?.message || err || "Unknown error"));
 
@@ -184,7 +212,7 @@ export async function runMediaPipeline(ctx: PluginContext, opts?: PipelineOpts) 
 
       const params = [nextState, newAttempts, errorMsg, nextAttemptAt.toISOString(), row.id, token];
       const sql = `UPDATE ${namespace}.tel_recordings SET state = $1, attempts = $2, last_error = $3, lease_token = NULL, lease_until = NULL, updated_at = now(), next_attempt_at = $4
-                   WHERE id = $5::uuid AND lease_token = $6::uuid`;
+                   WHERE id = $5::uuid AND lease_token = $6::uuid AND erased_at IS NULL`;
 
       const updateResult = await ctx.db.execute(sql, params);
       if (updateResult.rowCount === 0) {

@@ -1,7 +1,8 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { PipelineStepCtx, PipelineSteps } from "./pipeline.js";
+import { ErasedError } from "./pipeline.js";
 import { readR2Config } from "./settings.js";
-import { r2Head, r2Put, recordingKey, type R2Config } from "./r2-store.js";
+import { r2Delete, r2Head, r2Put, recordingKey, type R2Config } from "./r2-store.js";
 import { sha256Hex } from "./sigv4.js";
 
 const MAX_RECORDING_BYTES = 200 * 1024 * 1024; // 200 MB
@@ -56,6 +57,10 @@ export function createMediaSteps(deps?: {
     const r2cfg = await readR2ConfigFn(sc.ctx, sc.row.company_id);
     if (!r2cfg) {
       throw new Error("R2 not configured for company");
+    }
+
+    if (await sc.isErased()) {
+      throw new ErasedError();
     }
 
     // Build download URL: append .wav if no extension
@@ -136,6 +141,11 @@ export function createMediaSteps(deps?: {
 
     await r2Put(r2cfg, key, bytes, sha, fetchFn);
 
+    if (await sc.isErased()) {
+      await r2Delete(r2cfg, key, fetchFn);
+      throw new ErasedError();
+    }
+
     return {
       state: "downloaded",
       patch: {
@@ -185,6 +195,10 @@ export function createMediaSteps(deps?: {
     const leaseOk = await sc.extendLease();
     if (!leaseOk) {
       throw new Error("lease lost");
+    }
+
+    if (await sc.isErased()) {
+      throw new ErasedError();
     }
 
     // Extract AccountSid from twilio_url

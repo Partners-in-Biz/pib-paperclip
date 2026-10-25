@@ -55,6 +55,12 @@ const manifest: PaperclipPluginManifestV1 = {
       description: "Process media files and transcriptions",
       schedule: "*/1 * * * *",
     },
+    {
+      jobKey: "retention",
+      displayName: "Retention and hard delete",
+      description: "Nightly purge of expired recordings, erasure tombstones and old transcript text",
+      schedule: "0 2 * * *",
+    },
   ],
   webhooks: [
     {

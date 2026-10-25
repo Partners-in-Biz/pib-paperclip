@@ -14,8 +14,7 @@ import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
-import { syncTemplates, listPickerTemplates } from "./templates.js";
-import { normalizeE164 } from "./phone.js";
+import { runRetention, retentionEnabledCompanyIds } from "./retention.js";
 
 let ctx: PluginContext | null = null;
 
@@ -195,6 +194,13 @@ const plugin = definePlugin({
       } catch (err) {
         pluginCtx.logger.debug(`note-sweep failed: ${err}`);
       }
+    });
+
+    pluginCtx.jobs.register("retention", async () => {
+      // Off by default: only companies with `retentionEnabled: true` in their config are touched.
+      const companyIds = await retentionEnabledCompanyIds(pluginCtx, NAMESPACE);
+      const result = await runRetention(pluginCtx, { namespace: NAMESPACE, companyIds });
+      pluginCtx.logger.debug(`retention: tombstoned=${result.tombstoned} purged=${result.purged} transcriptsTrimmed=${result.transcriptsTrimmed} skipped=${result.skipped} errors=${result.errors}`);
     });
 
     for (const tool of TELEPHONY_TOOLS) {
