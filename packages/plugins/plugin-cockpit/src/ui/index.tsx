@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   useHostLocation,
@@ -103,7 +104,9 @@ export function emptyViewText(state: { loading: boolean; error: string | null })
   return state.loading ? "Loading the Cockpit…" : "Nothing to show yet.";
 }
 
-export function CockpitPage({ context }: PluginPageProps) {
+export const CockpitPage = withHelp(CockpitPageMain);
+
+function CockpitPageMain({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const location = useHostLocation();
   const navigation = useHostNavigation();

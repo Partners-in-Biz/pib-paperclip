@@ -1,3 +1,4 @@
+import { withHelp } from "./help-page.js";
 import {
   useEffect,
   useMemo,
@@ -190,7 +191,9 @@ const NEXT_ACTION_OPTIONS = ["call", "email", "meet"] as const;
 const NEXT_ACTION_LABEL: Record<string, string> = { call: "Call", email: "Email", meet: "Meet" };
 
 /** `/crm` is the CRM list; `/crm?client=company:<id>` (or `contact:<id>`) is that client's workspace. */
-export function CrmPage(props: PluginPageProps) {
+export const CrmPage = withHelp(CrmPageMain);
+
+function CrmPageMain(props: PluginPageProps) {
   const location = useHostLocation();
   const client = clientScopeFromSearch(location.search);
   if (client) {
