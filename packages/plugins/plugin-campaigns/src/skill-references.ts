@@ -38,9 +38,9 @@ export const CHANNELS_REFERENCE = `# Channels: email, SMS, WhatsApp
 export const SENDERS_REFERENCE = `# Who a campaign goes out as, and how people unsubscribe
 
 ## Sender identities
-- A sender is \`own\` (PiB's marketing) or a client (\`company:<id>\` or \`contact:<id>\`). \`set-sender-identity\` gives a sender: \`fromAddress\` (an address the Mailbox sends from: a connected Gmail mailbox, or a send-only address on a verified sending domain of the email provider; the Mailbox refuses an address that is neither), \`fromName\`, \`replyTo\`, \`smsFrom\` and \`whatsappFrom\`. Omitted fields stay; an empty string clears one. \`remove-sender-identity\` removes it.
+- A sender is \`own\` (the company's own marketing) or a client (\`company:<id>\` or \`contact:<id>\`). \`set-sender-identity\` gives a sender: \`fromAddress\` (an address the Mailbox sends from: a connected Gmail mailbox, or a send-only address on a verified sending domain of the email provider; the Mailbox refuses an address that is neither), \`fromName\`, \`replyTo\`, \`smsFrom\` and \`whatsappFrom\`. Omitted fields stay; an empty string clears one. \`remove-sender-identity\` removes it.
 - The campaign's own \`fromName\` and \`replyTo\` override the identity's. \`fromLocal\` no longer chooses anything.
-- Own marketing without an identity uses the Mailbox's default account. A client's marketing without an identity is refused at approval, at launch and at every send: it must never go out as PiB's Gmail or number. Getting the client a sending account is one of two one-time jobs: a Google sign-in by the client (their Gmail), or their sending domain's DNS records added by the owner or their web host (the Setup page lists both). A send-only address has no inbox: give the identity a \`replyTo\` somebody reads, and replies to it are matched to the campaign step by that mailbox and the address the email went to.
+- Own marketing without an identity uses the Mailbox's default account. A client's marketing without an identity is refused at approval, at launch and at every send: it must never go out from the company's own Gmail or number. Getting the client a sending account is one of two one-time jobs: a Google sign-in by the client (their Gmail), or their sending domain's DNS records added by the owner or their web host (the Setup page lists both). A send-only address has no inbox: give the identity a \`replyTo\` somebody reads, and replies to it are matched to the campaign step by that mailbox and the address the email went to.
 - Changing an identity cancels the open approval of that sender's drafts, because the approver saw the old one.
 
 ## The footer and the unsubscribe
@@ -70,7 +70,7 @@ export const PRIVACY_REFERENCE = `# Consent, erasure and retention (POPIA)
 - A request limited to marketing only adds the opt-outs and stops the running campaigns.
 
 ## Consent
-- A withdrawn consent from the CRM or another plugin puts the person on the do-not-contact list of the sender the event names: PiB's own marketing for an event with no client, or that one client's list. A client's unsubscribe never silences PiB or another client. Record opt-ins only from what you saw, with evidence.
+- A withdrawn consent from the CRM or another plugin puts the person on the do-not-contact list of the sender the event names: the company's own marketing for an event with no client, or that one client's list. A client's unsubscribe never silences the company's own marketing or another client. Record opt-ins only from what you saw, with evidence.
 
 ## Webhook log
 - The host keeps the headers and body of every delivery to the plugin's public webhooks in its own log (an unsubscribe token contains the address). The server operator prunes that log (the README says how).
@@ -78,7 +78,7 @@ export const PRIVACY_REFERENCE = `# Consent, erasure and retention (POPIA)
 
 export const GROWTH_LAB_REFERENCE = `# Growth Lab for campaigns: what works, per scope
 
-Campaigns learns from its own A/B steps. The unit is a campaign step with an A and a B version (\`create-ab-variant\`); the metric is the reply rate of each step, counted 7 days after each send. Pass \`scope\` on every call: omit it for PiB's own campaigns, or \`client:company:<CRM id>\` / \`client:contact:<CRM id>\`. Product and book scopes are not run here. Never read or write another scope's playbook or experiments.
+Campaigns learns from its own A/B steps. The unit is a campaign step with an A and a B version (\`create-ab-variant\`); the metric is the reply rate of each step, counted 7 days after each send. Pass \`scope\` on every call: omit it for the company's own campaigns, or \`client:company:<CRM id>\` / \`client:contact:<CRM id>\`. Product and book scopes are not run here. Never read or write another scope's playbook or experiments.
 
 ## The loop
 
