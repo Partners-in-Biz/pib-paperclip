@@ -74,3 +74,45 @@ describe.skipIf(!available)("ad policy status", () => {
     expect(kpi).not.toBeUndefined();
   });
 });
+
+describe.skipIf(!available)("Google ad policy read-back", () => {
+  let w: World;
+  let accountId: string;
+
+  beforeEach(async () => {
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await w.account({ externalId: "ext-g" }));
+  });
+
+  const rsa = (policyStatus: "PENDING_REVIEW" | "DISAPPROVED" | "ACTIVE", feedback: string | null) => [
+    { externalId: "9001", name: "Luxury shoes", adSetExternalId: "ag-1", creativeExternalId: null, rawStatus: "PAUSED", policyStatus, feedback },
+  ];
+
+  it("follows a new ad from pending review to disapproved with Google's reason, and into the snapshot", async () => {
+    const account = (await getAccount(w.ctx, COMPANY, accountId))!;
+    w.mock.ads = rsa("PENDING_REVIEW", null);
+    const first = await syncAccount(w.rt(), account);
+    expect(first.ads).toBe(1);
+    expect(await listAds(w.ctx, COMPANY, { policyStatus: "PENDING_REVIEW" })).toMatchObject([{ external_id: "9001", ad_set_external_id: "ag-1" }]);
+    let kpi = (await cockpitSnapshot(w.ctx, COMPANY, w.rt())).kpis?.find((k) => k.key === "ads_policy");
+    expect(kpi).toMatchObject({ raw: 0, tone: "warn" });
+
+    w.mock.ads = rsa("DISAPPROVED", "TRADEMARKS (PROHIBITED)");
+    expect((await syncAccount(w.rt(undefined, new Date("2026-10-14T10:00:00Z")), account)).ads).toBe(1);
+    expect(await listAds(w.ctx, COMPANY, { policyStatus: "PENDING_REVIEW" })).toHaveLength(0);
+    expect(await listAds(w.ctx, COMPANY, { policyStatus: "DISAPPROVED" })).toMatchObject([{ policy_feedback: "TRADEMARKS (PROHIBITED)" }]);
+    kpi = (await cockpitSnapshot(w.ctx, COMPANY, w.rt())).kpis?.find((k) => k.key === "ads_policy");
+    expect(kpi).toMatchObject({ raw: 1, tone: "bad" });
+  });
+
+  it("clears the figure when the ad is approved", async () => {
+    const account = (await getAccount(w.ctx, COMPANY, accountId))!;
+    w.mock.ads = rsa("DISAPPROVED", "TRADEMARKS (PROHIBITED)");
+    await syncAccount(w.rt(), account);
+    w.mock.ads = rsa("ACTIVE", null);
+    await syncAccount(w.rt(undefined, new Date("2026-10-14T10:00:00Z")), account);
+    const kpi = (await cockpitSnapshot(w.ctx, COMPANY, w.rt())).kpis?.find((k) => k.key === "ads_policy");
+    expect(kpi).toMatchObject({ raw: 0, tone: "ok", hint: "All ads approved" });
+  });
+});

@@ -15,7 +15,7 @@
 import { AdsError } from "../domain.js";
 import { microsToMinor, minorToMicros } from "../money.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
-import type { AccountRef, AccountCaps, AddKeywordsRequest, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AccountCaps, AddKeywordsRequest, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_GOOGLE_VERSION = "v25";
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/adwords";
@@ -69,6 +69,16 @@ export function campaignStatusOf(raw: unknown): CampaignStatus {
   if (s === "PAUSED") return "paused";
   if (s === "REMOVED") return "archived";
   return "other";
+}
+
+/** Google's approval and review states, folded into the four the plugin stores. A disapproval always wins; a review still running is "pending". */
+export function adPolicyStatusOf(approval: unknown, review: unknown): AdPolicyStatus {
+  const a = str(approval).toUpperCase();
+  const r = str(review).toUpperCase();
+  if (a === "DISAPPROVED") return "DISAPPROVED";
+  if (r === "REVIEW_IN_PROGRESS" || r === "UNDER_APPEAL") return "PENDING_REVIEW";
+  if (a === "APPROVED" || a === "APPROVED_LIMITED" || a === "AREA_OF_INTEREST_ONLY") return "ACTIVE";
+  return "OTHER";
 }
 
 function customerStatus(raw: unknown): ProviderAdAccount["status"] {
@@ -220,8 +230,33 @@ export const googleProvider: AdsProvider = {
     return out;
   },
 
-  async listAds() {
-    return [];
+  async listAds(env, token, account) {
+    const rows = await gaql(
+      env,
+      token,
+      account.externalId,
+      "SELECT ad_group_ad.ad.id, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad_group, ad_group_ad.status, ad_group_ad.policy_summary.approval_status, ad_group_ad.policy_summary.review_status, ad_group_ad.policy_summary.policy_topic_entries FROM ad_group_ad WHERE ad_group_ad.status != 'REMOVED'",
+      account.loginCustomerId,
+      "Google ads policy",
+    );
+    const out: AdPolicyRow[] = [];
+    for (const r of rows) {
+      const ad = r.adGroupAd ?? {};
+      const id = str(ad.ad?.id);
+      if (!id) continue;
+      const policy = ad.policySummary ?? {};
+      const topics = ((policy.policyTopicEntries as Array<{ topic?: unknown; type?: unknown }> | undefined) ?? []).map((e) => `${str(e.topic)}${e.type ? ` (${str(e.type)})` : ""}`).filter((t) => t.trim());
+      out.push({
+        externalId: id,
+        name: str(ad.ad?.responsiveSearchAd?.headlines?.[0]?.text) || `Ad ${id}`,
+        adSetExternalId: str(ad.adGroup).split("/").pop() || null,
+        creativeExternalId: null,
+        rawStatus: str(ad.status),
+        policyStatus: adPolicyStatusOf(policy.approvalStatus, policy.reviewStatus),
+        feedback: topics.length > 0 ? topics.join("; ").slice(0, 500) : null,
+      });
+    }
+    return out;
   },
 
   async createCampaign(env, token, account, req) {
