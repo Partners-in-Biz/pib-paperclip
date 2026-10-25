@@ -193,11 +193,11 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
   const items = proposals.map((p) => proposalWaiting(p, names));
   const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
   for (const ad of disapproved.slice(0, 10)) {
-    const feedback = ad.policy_feedback ? ad.policy_feedback.slice(0, 200) : "No feedback provided by Meta";
+    const feedback = ad.policy_feedback ? ad.policy_feedback.slice(0, 200) : "No feedback provided by the platform";
     items.push({
       key: `ads-disapproved:${ad.id}`,
       title: `Disapproved ad: ${ad.name}`.slice(0, 160),
-      why: `Meta declined this ad. Feedback: ${feedback}`,
+      why: `The ad platform declined this ad. Feedback: ${feedback}`,
       href: ACCOUNTS,
       issueId: null,
       kind: "review",

@@ -535,3 +535,40 @@ describe("Meta: ad groups and keywords unsupported", () => {
     await expect(metaProvider.addKeywords(env(metaApp()), token, ref, "adg1", { keywords: [{ text: "test", matchType: "exact" }] })).rejects.toThrow(/Google Ads only/);
   });
 });
+
+describe("Google Ads: policy approval read-back", () => {
+  const gToken = { accessToken: GOOGLE_ACCESS };
+  const ref = { ...accountRef, externalId: "555-666-7777", loginCustomerId: "111-222-3333" };
+
+  it("reads the policy approval status back for every ad", async () => {
+    const row = (id: string, approval: string, review: string, extra: Record<string, unknown> = {}) => ({
+      adGroupAd: {
+        ad: { id, responsiveSearchAd: { headlines: [{ text: `Headline ${id}` }] } },
+        adGroup: "customers/5556667777/adGroups/222",
+        status: "PAUSED",
+        policySummary: { approvalStatus: approval, reviewStatus: review, ...extra },
+      },
+    });
+    const { fetchImpl, seen } = scripted([
+      [
+        /googleAds:search/,
+        {
+          body: {
+            results: [
+              row("1", "APPROVED", "REVIEWED"),
+              row("2", "DISAPPROVED", "REVIEWED", { policyTopicEntries: [{ topic: "TRADEMARKS", type: "PROHIBITED" }, { topic: "DESTINATION_NOT_WORKING", type: "LIMITED" }] }),
+              row("3", "UNKNOWN", "REVIEW_IN_PROGRESS"),
+              row("4", "UNKNOWN", "UNKNOWN"),
+              { adGroupAd: { ad: {} } },
+            ],
+          },
+        },
+      ],
+    ]);
+    const ads = await googleProvider.listAds(env(googleApp(), fetchImpl), gToken, ref);
+    expect(JSON.parse(seen[0]!.body!).query).toMatch(/FROM ad_group_ad/);
+    expect(ads.map((a) => [a.externalId, a.policyStatus])).toEqual([["1", "ACTIVE"], ["2", "DISAPPROVED"], ["3", "PENDING_REVIEW"], ["4", "OTHER"]]);
+    expect(ads[1]).toMatchObject({ name: "Headline 2", adSetExternalId: "222", rawStatus: "PAUSED", feedback: "TRADEMARKS (PROHIBITED); DESTINATION_NOT_WORKING (LIMITED)" });
+    expect(ads[0]!.feedback).toBeNull();
+  });
+});
