@@ -23,6 +23,8 @@ export const OPS_TOOL_NAMES = {
   goalList: "goal-list",
   credentialList: "credential-list",
   credentialRecord: "credential-record",
+  evidenceRecord: "evidence-record",
+  evidenceSave: "evidence-save",
 } as const;
 
 const METRIC_KEY: JsonSchema = { type: "string", maxLength: 120, description: METRIC_KEY_HELP };
@@ -152,6 +154,31 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       status: { type: "string", enum: ["active", "retired", "burned"], description: "active; retired once replaced and revoked; burned when it was published or leaked and must be rotated. Operator only." },
       notes: { type: "string", maxLength: 300, description: "Anything worth knowing." },
       markVerified: { type: "boolean", description: "True when you just confirmed it still works by hand. Operator only." },
+    }),
+  },
+  {
+    name: OPS_TOOL_NAMES.evidenceRecord,
+    displayName: "Record evidence",
+    description:
+      "Record an evidence attachment (screenshot or file) with an issue step for audit trail. The attachment must be uploaded by the calling agent and be an image. Redaction of screenshot content cannot be verified at record time; the summary is for the audit record. Posts a comment on the issue with the evidence.",
+    parametersSchema: schema(["issueId", "step", "attachmentId", "sha256"], {
+      issueId: { type: "string", description: "The issue this evidence is for (id or identifier such as PAR-123)." },
+      step: { type: "string", maxLength: 60, description: "The step name or description (e.g. \"screenshot-email-sent\", trimmed, max 60 chars)." },
+      attachmentId: { type: "string", description: "The id of the image attachment on this issue." },
+      sha256: { type: "string", description: "The SHA256 hash of the attachment (hex, case-insensitive)." },
+      summary: { type: "string", maxLength: 300, description: "What the evidence shows (optional, max 300 chars, newlines collapsed to spaces)." },
+      notify: { type: "boolean", description: "For future use (accepted and stored nowhere yet; comment: wired in B3)." },
+    }),
+  },
+  {
+    name: OPS_TOOL_NAMES.evidenceSave,
+    displayName: "Save evidence to Drive",
+    description:
+      "Save a screenshot (base64-encoded PNG) to Drive in the 05 Evidence subfolder. Name is auto-generated from the issue and step. Failures do not block the step; they are logged and do not throw. Returns success/failure status.",
+    parametersSchema: schema(["issueId", "step", "pngBase64"], {
+      issueId: { type: "string", description: "The issue this evidence is for (id or identifier such as PAR-123)." },
+      step: { type: "string", maxLength: 60, description: "The step name (e.g. \"login\", max 60 chars, sanitized)." },
+      pngBase64: { type: "string", maxLength: 1500000, description: "The PNG image as base64 (starts with iVBORw0KGgo, max 1.5 MB decoded)." },
     }),
   },
 ];

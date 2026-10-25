@@ -41,6 +41,7 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
       }
       if (action === "plan") {
         if (!skill) return fail("plan needs skill.");
+        const mode: "live" | "candidate" | "template" = p.mode === "template" ? "template" : p.mode === "candidate" ? "candidate" : "live";
         const plan = await planEval(env, companyId, {
           skill,
           scenarioIds: Array.isArray(p.scenarioIds) ? p.scenarioIds.filter((x): x is string => typeof x === "string") : undefined,
@@ -48,15 +49,21 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
           agentId: text(p.agentId, 100) ?? run.agentId,
           candidateMarkdown: typeof p.candidateMarkdown === "string" ? p.candidateMarkdown : undefined,
           candidateFiles: Array.isArray(p.candidateFiles) ? (p.candidateFiles as Array<{ path: string; content: string }>) : undefined,
+          templateKey: typeof p.templateKey === "string" ? p.templateKey : undefined,
+          templateText: typeof p.templateText === "string" ? p.templateText : undefined,
+          templateHash: typeof p.templateHash === "string" ? p.templateHash : undefined,
         });
+        const hashField = mode === "template" ? "templateHash" : "hash";
+        const hashValue = String((plan as Record<string, unknown>)[hashField] ?? "?");
         const n = (plan.requests as unknown[]).length;
-        return ok(`${n} harness request${n === 1 ? "" : "s"} for ${skill} (${mode}, text ${String(plan.hash)}). Make them, wait for the tasks to finish, then record.`, plan);
+        return ok(`${n} harness request${n === 1 ? "" : "s"} for ${skill} (${mode}, text ${hashValue}). Make them, wait for the tasks to finish, then record.`, plan);
       }
       if (action === "record") {
         if (!skill) return fail("record needs skill.");
         const items = Array.isArray(p.items) ? (p.items as Array<{ scenarioId?: unknown; issueId?: unknown }>).filter((i) => typeof i.scenarioId === "string" && typeof i.issueId === "string").map((i) => ({ scenarioId: String(i.scenarioId), issueId: String(i.issueId) })) : [];
         if (items.length === 0) return fail("record needs items: [{scenarioId, issueId}] for the finished harness tasks.");
-        const done = await recordEval(env, companyId, { skill, mode, candidateHash: text(p.candidateHash, 40), items });
+        const recordMode: "live" | "candidate" | "template" = p.mode === "template" ? "template" : mode;
+        const done = await recordEval(env, companyId, { skill, mode: recordMode, candidateHash: text(p.candidateHash, 40), templateKey: typeof p.templateKey === "string" ? p.templateKey : undefined, templateHash: text(p.templateHash, 64), items });
         const graded = done.recorded.filter((r) => r.state === "graded");
         const passed = graded.filter((r) => r.passed).length;
         const pending = done.recorded.filter((r) => r.state === "not-done").length;
@@ -74,8 +81,8 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
         if (!skill) return fail("baseline needs skill.");
         const operator = await operatorAgentId(env, companyId).catch(() => null);
         if (operator && run.agentId !== operator) return fail("Only the Operator records a baseline: it decides which version is the one to beat.");
-        const done = await baselineEval(env, companyId, skill);
-        return ok(`Recorded the baseline for ${skill} (${done.hash}). Commit it to evals/results.json.`, done);
+        const done = await baselineEval(env, companyId, skill, { mode: p.mode === "template" ? "template" : undefined, templateKey: typeof p.templateKey === "string" ? p.templateKey : undefined, templateHash: text(p.templateHash, 64) });
+        return ok(p.mode === "template" ? `Recorded the baseline for template ${String(p.templateKey)} (${done.hash}). Commit it to evals/agents/results.json.` : `Recorded the baseline for ${skill} (${done.hash}). Commit it to evals/results.json.`, done);
       }
       if (action === "gate") {
         const report = await gateEval(env, companyId, skill, text(p.candidateHash, 40));

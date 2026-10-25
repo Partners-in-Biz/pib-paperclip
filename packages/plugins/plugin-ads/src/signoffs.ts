@@ -1,5 +1,5 @@
 /**
- * Who has said yes to exactly these numbers (pure). An approval counts when a person gave it or when Elon (owner delegate) approves within threshold,
+ * Who has said yes to exactly these numbers (pure). An approval counts when a person gave it or when the owner's delegate (Account Manager agent) approves within threshold,
  * it is for the proposal's current content hash, it has not expired and it has not been used. Changing a proposal changes its hash, so every earlier yes stops counting.
  */
 import type { ApprovalRow, ProposalRow } from "./db.js";
@@ -20,9 +20,10 @@ export interface SignoffState {
   complete: boolean;
 }
 
-export function signoffState(proposal: Pick<ProposalRow, "content_hash" | "requires_signoffs">, approvals: ApprovalRow[], now: Date): SignoffState {
+/** `delegateAgentId` is the company's running Account Manager agent (`ownerDelegateAgentId`); null when there is none, so only a person's yes counts. */
+export function signoffState(proposal: Pick<ProposalRow, "content_hash" | "requires_signoffs">, approvals: ApprovalRow[], now: Date, delegateAgentId: string | null = null): SignoffState {
   const required = proposal.requires_signoffs.length ? proposal.requires_signoffs : (["owner"] as Role[]);
-  const forThis = approvals.filter((a) => a.content_hash === proposal.content_hash && (a.decided_by.startsWith("user:") || isOwnerDelegateApproval(a)));
+  const forThis = approvals.filter((a) => a.content_hash === proposal.content_hash && (a.decided_by.startsWith("user:") || isOwnerDelegateApproval(a, delegateAgentId)));
   const rejected = forThis.find((a) => a.decision === "rejected") ?? null;
   const valid: Partial<Record<Role, ApprovalRow>> = {};
   for (const a of forThis) {

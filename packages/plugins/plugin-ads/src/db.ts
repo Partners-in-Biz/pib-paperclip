@@ -413,6 +413,11 @@ export async function getCampaign(ctx: PluginContext, companyId: string, account
   return rows[0] ? campaignRow(rows[0]) : null;
 }
 
+/** Update a campaign's status (e.g., to 'paused' when the sweeper pauses it). */
+export async function updateCampaignStatus(ctx: PluginContext, companyId: string, campaignId: string, status: CampaignRow["status"]): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "campaigns")} SET status = $3, last_seen_at = now() WHERE company_id = $1 AND id = $2`, [companyId, campaignId, status]);
+}
+
 export async function listCampaigns(ctx: PluginContext, companyId: string, options: { accountId?: string; scopeKey?: ScopeKey; status?: string; limit?: number } = {}): Promise<Array<CampaignRow & { scope_key: string; platform: string; currency: string; account_name: string }>> {
   const params: unknown[] = [companyId];
   let where = "c.company_id = $1";
@@ -1168,4 +1173,113 @@ export async function clientName(ctx: PluginContext, companyId: string, scopeKey
     [companyId, id],
   );
   return rows[0]?.name ?? null;
+}
+
+// ── variants and ad daily ───────────────────────────────────────────────────
+
+export interface AdDailyInput {
+  accountId: string;
+  campaignExternalId: string;
+  adExternalId: string;
+  day: string;
+  spendMinor: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  frequency: number;
+  currency: string;
+}
+
+export async function recordAdDaily(ctx: PluginContext, companyId: string, row: AdDailyInput): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "ad_daily")} (company_id, account_id, campaign_external_id, ad_external_id, day, spend_minor, impressions, clicks, conversions, frequency, currency, synced_at)
+     VALUES ($1, $2, $3, $4, $5::date, $6::bigint, $7::bigint, $8::bigint, $9::numeric, $10::numeric, $11, now())
+     ON CONFLICT (account_id, ad_external_id, day) DO UPDATE SET spend_minor = EXCLUDED.spend_minor, impressions = EXCLUDED.impressions, clicks = EXCLUDED.clicks,
+       conversions = EXCLUDED.conversions, frequency = EXCLUDED.frequency, currency = EXCLUDED.currency, synced_at = now()`,
+    [companyId, row.accountId, row.campaignExternalId, row.adExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.frequency, row.currency],
+  );
+}
+
+export async function listAdDaily(ctx: PluginContext, companyId: string, accountId: string, campaignExternalId: string, since: string): Promise<AdDailyInput[]> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT account_id, campaign_external_id, ad_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, frequency, currency FROM ${table(ctx, "ad_daily")}
+     WHERE company_id = $1 AND account_id = $2 AND campaign_external_id = $3 AND day >= $4::date ORDER BY day`,
+    [companyId, accountId, campaignExternalId, since],
+  );
+  return rows.map((r) => ({
+    accountId: String(r.account_id),
+    campaignExternalId: String(r.campaign_external_id),
+    adExternalId: String(r.ad_external_id),
+    day: dayOf(r.day) ?? "",
+    spendMinor: toInt(r.spend_minor),
+    impressions: toInt(r.impressions),
+    clicks: toInt(r.clicks),
+    conversions: toNum(r.conversions),
+    frequency: toNum(r.frequency),
+    currency: String(r.currency),
+  }));
+}
+
+/** Load ad_daily rows for a campaign over a window for winner/fatigue computation. */
+export async function listAdDailyForCampaign(ctx: PluginContext, companyId: string, accountId: string, campaignExternalId: string, since: string): Promise<Array<{ account_id: string; campaign_external_id: string; ad_external_id: string; day: string; spend_minor: number; impressions: number; clicks: number; conversions: number; frequency: number }>> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT account_id, campaign_external_id, ad_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, frequency FROM ${table(ctx, "ad_daily")}
+     WHERE company_id = $1 AND account_id = $2 AND campaign_external_id = $3 AND day >= $4::date ORDER BY day`,
+    [companyId, accountId, campaignExternalId, since],
+  );
+  return rows.map((r) => ({
+    account_id: String(r.account_id),
+    campaign_external_id: String(r.campaign_external_id),
+    ad_external_id: String(r.ad_external_id),
+    day: dayOf(r.day) ?? "",
+    spend_minor: toInt(r.spend_minor),
+    impressions: toInt(r.impressions),
+    clicks: toInt(r.clicks),
+    conversions: toNum(r.conversions),
+    frequency: toNum(r.frequency),
+  }));
+}
+
+export async function createVariant(
+  ctx: PluginContext,
+  companyId: string,
+  v: { accountId: string; campaignExternalId: string; adExternalId: string; label: string; axisValues: Record<string, unknown>; creativeRef: string | null },
+): Promise<string> {
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "variants")} (id, company_id, account_id, campaign_external_id, ad_external_id, label, axis_values, creative_ref)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+    [id, companyId, v.accountId, v.campaignExternalId, v.adExternalId, v.label, json(v.axisValues), v.creativeRef],
+  );
+  return id;
+}
+
+export async function listVariants(ctx: PluginContext, companyId: string, options: { accountId?: string; campaignExternalId?: string; scopeKey?: ScopeKey; limit?: number } = {}): Promise<Array<{ id: string; account_id: string; campaign_external_id: string; ad_external_id: string; label: string; axis_values: Record<string, unknown>; creative_ref: string | null }>> {
+  const params: unknown[] = [companyId];
+  let where = "v.company_id = $1";
+  let fromClause = `${table(ctx, "variants")} v`;
+  if (options.scopeKey) {
+    fromClause += ` JOIN ${table(ctx, "ad_accounts")} a ON a.id = v.account_id`;
+    params.push(options.scopeKey);
+    where += ` AND a.scope_key = $${params.length}`;
+  }
+  if (options.accountId) {
+    params.push(options.accountId);
+    where += ` AND v.account_id = $${params.length}`;
+  }
+  if (options.campaignExternalId) {
+    params.push(options.campaignExternalId);
+    where += ` AND v.campaign_external_id = $${params.length}`;
+  }
+  params.push(Math.min(options.limit ?? 500, 1000));
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT v.id, v.account_id, v.campaign_external_id, v.ad_external_id, v.label, v.axis_values, v.creative_ref FROM ${fromClause} WHERE ${where} ORDER BY v.campaign_external_id, v.ad_external_id LIMIT $${params.length}`, params);
+  return rows.map((r) => ({
+    id: String(r.id),
+    account_id: String(r.account_id),
+    campaign_external_id: String(r.campaign_external_id),
+    ad_external_id: String(r.ad_external_id),
+    label: String(r.label),
+    axis_values: jsonObject(r.axis_values),
+    creative_ref: (r.creative_ref as string | null) ?? null,
+  }));
 }

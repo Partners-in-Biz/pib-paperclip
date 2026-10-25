@@ -19,6 +19,7 @@ import {
   parseClientParam,
   redeliver,
   registerCrmProjection,
+  registerDriveReplies,
   checkDoneOnUpdate,
   registerCompanyBootstrap,
   registerModuleWatch,
@@ -26,6 +27,7 @@ import {
   registerSkillSyncJob,
   rememberPluginUiBase,
   resolveCrmClient,
+  registerClientProjectWatch,
   retryOutbox,
   SETUP_EVENTS,
   SETUP_PLUGIN,
@@ -52,6 +54,7 @@ import { BANK_MATCHED_EVENT } from "./bank.js";
 import {
   billingSettings,
   emailEnabled,
+  hasSavedSettings,
   expenseCategories,
   ledgerEnabled,
   loadBilling,
@@ -59,6 +62,8 @@ import {
   r2Configured,
   reportingCurrency,
 } from "./config.js";
+import { FALLBACK_SENDER_NAME } from "./documents.js";
+import { PREFERENCES_ACTIONS } from "./preferences.js";
 import {
   approveBillAction,
   addBillLine,
@@ -123,6 +128,7 @@ import {
   customerDetails,
   customerNameOf,
   documentPdf,
+  invoiceHtmlOf,
   invoiceView,
   markSentAction,
   publicInvoice,
@@ -144,6 +150,8 @@ import {
   updateQuote,
   updateQuoteLine,
 } from "./invoices.js";
+import { registerCanaryCleanup } from "./canary-cleanup.js";
+import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
 import { clientNumbering, nextDocumentNumber, setClientNumbering } from "./numbering.js";
@@ -196,6 +204,7 @@ type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params:
 
 /** Action key (UI) → handler. Tools reuse the same handlers. */
 const ACTIONS: Record<string, Handler> = {
+  ...PREFERENCES_ACTIONS,
   "billing.load": (ctx, context, params) => load(ctx, context, params),
   "billing.invoice-html": (ctx, context, params) => invoiceHtml(ctx, context, params),
   "billing.quote-html": (ctx, context, params) => quoteHtml(ctx, context, params),
@@ -210,6 +219,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.mark-sent": markSentAction,
   "billing.retry-send": retrySend,
   "billing.cancel-invoice": cancelInvoice,
+  "billing.delete-draft-invoice": deleteDraftInvoice,
   "billing.document-pdf": documentPdf,
   "billing.create-quote": createQuote,
   "billing.add-quote-line": addQuoteLine,
@@ -220,6 +230,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.set-quote-status": setQuoteStatus,
   "billing.request-quote-send": requestQuoteSend,
   "billing.list-quotes": (ctx, context, params) => listQuotesAction(ctx, context, params),
+  "billing.delete-draft-quote": deleteDraftQuote,
   "billing.request-payment-check": requestPaymentCheck,
   "billing.request-reminder-send": (ctx, context, params) => requestReminderSend(ctx, context, params),
   // Money in through a provider (Q10-6): links are made at send time; these are for a person or agent who needs one, and for the page.
@@ -374,7 +385,9 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
+    registerDriveReplies(ctx);
     registerModuleWatch(ctx);
+    registerClientProjectWatch(ctx);
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
@@ -428,6 +441,8 @@ const plugin = definePlugin({
     // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.
     registerCompanyBootstrap(ctx, { syncer: skillSync });
     registerBillingErasure(ctx);
+    // CRM cleanup-canary emits company.deleted. Remove that canary client's invoices and quotes.
+    registerCanaryCleanup(ctx);
     // Every company's skills, not only the one a call comes from (Q7-2).
     registerSkillSyncJob(ctx, skillSync, { companyIds: () => billingCompanyIds(ctx), isEnabled: (companyId) => billingOn(ctx, companyId), plugin: PLUGIN_ID });
     ctx.jobs.register("privacy-retention", () => trackJob(ctx, "privacy-retention", () => privacyRetentionJob(ctx)));
@@ -468,6 +483,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "invoice-html": { action: "billing.invoice-html", message: "Invoice HTML generated" },
   "set-invoice-tax": { action: "billing.set-invoice-tax", message: "Invoice tax set" },
   "invoice-payments": { action: "billing.invoice-payments", message: "Payments listed" },
+  "delete-draft-invoice": { action: "billing.delete-draft-invoice", message: (d) => (d.voided ? `Draft invoice voided; number ${String(d.number)} is reserved` : `Draft invoice deleted`) },
   "create-quote": { action: "billing.create-quote", message: "Draft quote created. Add lines, then request-quote-send." },
   "add-quote-line": { action: "billing.add-quote-line", message: "Quote line added" },
   "remove-quote-line": { action: "billing.remove-quote-line", message: "Quote line removed" },
@@ -478,6 +494,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "set-quote-status": { action: "billing.set-quote-status", message: (d) => (d.status === "accepted" ? "Quote accepted (the CRM is told). Next: convert-quote." : "Quote status changed") },
   "convert-quote": { action: "billing.convert-quote", message: "Quote converted to a draft invoice. Check it, then request-invoice-send." },
   "quote-html": { action: "billing.quote-html", message: "Quote HTML generated" },
+  "delete-draft-quote": { action: "billing.delete-draft-quote", message: "Draft quote deleted" },
   "request-payment-check": { action: "billing.request-payment-check", message: (d) => (d.already ? "A payment check is already open for this invoice; your note was added" : "Payment check opened for a person") },
   "record-payment": { action: "billing.record-payment", message: (d) => (d.recorded ? "This payment is already recorded" : d.already ? "A person is already asked to record this payment" : "Asked a person to record the payment (decision issue)") },
   "create-credit-note": { action: "billing.create-credit-note", message: (d) => (d.already ? "A person is already asked for this credit note" : "Asked a person to issue the credit note (decision issue)") },
@@ -625,13 +642,13 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   return {
     asOf: asAtDate(),
     futurePayments,
-    settingsSaved: Object.keys(settings).length > 0,
+    settingsSaved: await hasSavedSettings(ctx, companyId),
     defaults: {
       currency: settings.defaultCurrency ?? "ZAR",
       taxRate: Number(settings.defaultTaxRate ?? 0),
       // The code new lines get (out of scope when "VAT registered" is off).
       taxCode: settings.vatRegistered === false ? "za_out_of_scope" : settings.defaultTaxCode ?? null,
-      senderName: String(asObject(settings.sender).name ?? "Partners in Biz"),
+      senderName: String(asObject(settings.sender).name ?? FALLBACK_SENDER_NAME),
       pricesIncludeVat: Boolean(settings.pricesIncludeVat),
       reportingCurrency: reportingCurrency(settings),
       hourlyRateMinor: Math.max(0, Math.floor(Number(settings.defaultHourlyRateMinor ?? 0))),
@@ -861,25 +878,7 @@ async function invoiceHtml(ctx: PluginContext, context: PluginPerformActionConte
   const companyId = requiredCompany(context);
   const invoice = await requireInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   const { settings } = await loadBilling(ctx, companyId);
-  const view = await invoiceView(ctx, invoice, settings);
-  return {
-    invoiceId: invoice.id,
-    html: buildInvoiceHtml({
-      kind: "Invoice",
-      number: invoice.number,
-      status: invoice.status,
-      currency: invoice.currency,
-      sender: view.sender,
-      customer: view.customer,
-      lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
-      taxRate: view.legacy ? Number(invoice.tax_rate ?? 0) : 0,
-      totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
-      payment: view.payment ?? null,
-      notes: view.notes ?? null,
-      issuedAt: invoice.sent_at == null ? null : String(iso(invoice.sent_at)),
-      dueAt: iso(invoice.due_at),
-    }),
-  };
+  return { invoiceId: invoice.id, html: await invoiceHtmlOf(ctx, invoice, settings) };
 }
 
 async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {

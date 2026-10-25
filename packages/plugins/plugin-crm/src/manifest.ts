@@ -12,6 +12,12 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save these settings once for each Paperclip company that uses the CRM. Saving is what lets the scheduled jobs (sequence steps, client sync) act on the company.",
   properties: {
+    ownerCompany: {
+      type: "boolean",
+      title: "This is Partners in Biz's own company (owner company only)",
+      description: "Tick this ONLY on Partners in Biz's own company. It keeps Partners in Biz's own wording in the data-processing register. Leave it off for every client company: their register names the company itself.",
+      default: false,
+    },
     timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
     defaultCurrency: { type: "string", title: "Default currency", default: "ZAR", minLength: 3, maxLength: 3 },
     sequenceIssueAssignee: {
@@ -65,13 +71,31 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     } as unknown as JsonSchema,
-    driveBrokerUrl: {
-      type: "string",
-      title: "Drive broker URL",
-      description: "The address of the partnersinbiz-web Drive broker API (default: https://partnersinbiz.online).",
-      default: "https://partnersinbiz.online",
+    driveServiceAccountJson: secretField("Drive service account key", "The whole JSON key file of a Google service account that is a Content manager of the company's Shared Drive. Drive calls go straight to Google with it. Use a service account with Drive access only, not the Search Console one.") as unknown as JsonSchema,
+    drive: {
+      type: "object",
+      title: "Drive settings",
+      properties: {
+        sharedDriveId: {
+          type: "string",
+          title: "Shared Drive ID",
+          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. It must be set for planning to work.",
+          default: "",
+        },
+        ownProjectId: {
+          type: "string",
+          title: "Own work project",
+          description: "The Paperclip project whose Drive folder holds the company's own files (saves from other plugins that name no client). Leave empty to refuse such saves.",
+          default: "",
+        },
+      },
+    } as unknown as JsonSchema,
+    emitClientProjects: {
+      type: "boolean",
+      title: "Emit client projects",
+      description: "Send each client's linked projects to the other plugins so they route work to the right project. Leave off until the links are typed.",
+      default: false,
     },
-    driveBrokerToken: secretField("Drive broker token", "Bearer token for the partnersinbiz-web Drive broker (admin role). The token must be bound to the correct organization because the broker infers the organization ID from the token's user when none is explicitly sent.") as unknown as JsonSchema,
   },
 };
 
@@ -222,6 +246,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Sales: weekly pipeline summary and CRM hygiene",
       description: "Mondays 08:00 SAST: the weekly pipeline summary for the Sales Lead and the CRM hygiene report for the CRM Data Steward, for companies with CRM records.",
       schedule: "0 6 * * 1",
+    },
+    {
+      jobKey: "own-metrics",
+      displayName: "Own marketing metrics for the Cockpit",
+      description: "Daily 05:40 SAST: emits our own website conversion and revenue by source (last 30 days) as an event for the Cockpit. Our own scope only; no client data.",
+      schedule: "40 3 * * *",
     },
   ],
   skills: SKILLS,

@@ -2,7 +2,7 @@
  * Starting a new client (audit Q1b-7): the CRM side.
  *
  * The CRM can only LINK a Paperclip project to a client (a plugin cannot
- * create projects or repos). The PiB procedure that creates the project, its
+ * create projects or repos). The ops procedure that creates the project, its
  * git workspace, the `development` branch policy and the agent guide is ops
  * tooling (`new-client-project.py` in `operations/vps`). What the CRM adds is
  * the contract between the two and the checklist:
@@ -105,7 +105,7 @@ export function newClientChecklist(state: NewClientState): ChecklistStep[] {
     owner: "Delivery Lead",
     how: "Open the project in Paperclip and add a workspace that is a git checkout (an issue that needs a worktree fails on a folder that is not a repo).",
   });
-  steps.push({ key: "branch-policy", title: "Work happens in the development branch", state: "unknown", owner: "Delivery Lead", how: "operations/vps ensure-dev-branch.sh and gh-rulesets.sh; the project's agent guide says agents branch from development and the Delivery Lead merges there. main only changes with Peet's approval.", detail: "The CRM cannot see the repo: check it and say so on the client." });
+  steps.push({ key: "branch-policy", title: "Work happens in the development branch", state: "unknown", owner: "Delivery Lead", how: "operations/vps ensure-dev-branch.sh and gh-rulesets.sh; the project's agent guide says agents branch from development and the Delivery Lead merges there. main only changes with the owner's approval.", detail: "The CRM cannot see the repo: check it and say so on the client." });
   steps.push({ key: "agent-guide", title: "The project's agent guide (AGENTS.md)", state: "unknown", owner: "Delivery Lead", how: "Write it from the client's profile and the repo: what the client does, how to build and test, the branch rule, who approves. Link it on the client.", detail: "The CRM cannot see the repo: check it and say so on the client." });
   if (services.some((service) => NEEDS_SITE.includes(service))) {
     steps.push({

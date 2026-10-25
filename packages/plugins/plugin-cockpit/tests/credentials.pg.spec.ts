@@ -103,29 +103,51 @@ d("the credentials register (Postgres)", () => {
       expect(new Date((await byKey(w, "resend-key")).expires_at).toISOString().slice(0, 10)).toBe("2027-01-31");
     });
 
-    it("seeds ONLY the company that ticked the setting: another company with saved settings gets an empty register, by the daily job and by a direct call", async () => {
+    it("gives another company only the template rows of its modules, never PiB's rows, by the daily job and by a direct call", async () => {
       // B is a client company with saved settings; only A (Partners in Biz) ticked credentialSeed
       const w = await make(CHECKS_CONFIG, SECRETS, { [B]: { healthIssue: true } });
       w.env.fetchImpl = fakeFetch({}).impl;
+      const asB = { agentId: OP_B, runId: "run-b", companyId: B, projectId: "" };
+      const MODULES_STATE = { scopeKind: "company" as const, scopeId: B, namespace: "pib-setup", stateKey: "modules" };
+      const templateKeys = async () => (await listCredentials(w.ctx, B)).map((c) => c.seedKey).sort();
+      const ALL = ["client-billing-payment-provider", "client-mailbox-gmail", "client-seo-google-access", "client-social-accounts"];
+      // every module on (nothing switched off): the whole template
       await w.jobs.get("credentials-check")!();
       expect(await listCredentials(w.ctx, A)).toHaveLength(22);
-      expect(await listCredentials(w.ctx, B)).toEqual([]);
+      expect(await templateKeys()).toEqual(ALL);
       expect(await seedCredentials(w.env, B)).toBe(0);
-      expect((await w.client.query(`SELECT 1 FROM ${NAMESPACE}.credentials WHERE company_id = $1`, [B])).rows).toHaveLength(0);
-      // an explicit false is the same, and so is the setting being absent
+      // a smaller plan: Starter has social and billing off, so those rows are not added for a new company
+      await w.client.query(`DELETE FROM ${NAMESPACE}.credentials WHERE company_id = $1`, [B]);
+      await w.ctx.state.set(MODULES_STATE, { companyId: B, modules: { social: false, billing: false }, updatedAt: "2026-10-25T00:00:00.000Z" });
+      expect(await seedCredentials(w.env, B)).toBe(2);
+      expect(await templateKeys()).toEqual(["client-mailbox-gmail", "client-seo-google-access"]);
+      // the setting only counts when it is a real true: no other value lets PiB's rows in
       w.configs[B] = { healthIssue: true, credentialSeed: false };
       expect(await seedCredentials(w.env, B)).toBe(0);
-      w.configs[B] = { healthIssue: true, credentialSeed: "yes" }; // only a real true counts
+      w.configs[B] = { healthIssue: true, credentialSeed: "yes" };
       expect(await seedCredentials(w.env, B)).toBe(0);
+      expect((await templateKeys()).some((k) => !k?.startsWith("client-"))).toBe(false);
       // none of PiB's data reaches B: not through the tool, not as the "exposed credentials" warning, not in anything B's agents can read
-      const asB = { agentId: OP_B, runId: "run-b", companyId: B, projectId: "" };
       const listed = (await w.tools.get("credential-list")!({}, asB)) as { content: string; data: { credentials: unknown[]; problems: Array<{ key: string }> } };
-      expect(listed.data.credentials).toEqual([]);
+      expect(listed.data.credentials).toHaveLength(2);
       expect(listed.data.problems).toEqual([]);
-      expect(listed.content).toContain("The register is empty");
-      expect(listed.content).toContain("never for a client company");
       expect(keys((await extraChecks(w.env, B, { fresh: true })).health)).not.toContain("credentials:burned");
-      expect(JSON.stringify(listed)).not.toMatch(/burned|paperclip|ssh|backup-age-key|PMStander/i);
+      expect(JSON.stringify(listed)).not.toMatch(/burned|paperclip|ssh|backup-age-key|PMStander|hermes|Nous/i);
+    });
+
+    it("keeps PiB's rows out of a client company even when it ticks credentialSeed, and gives the owner company all 22", async () => {
+      const w = await make(CHECKS_CONFIG, SECRETS, { [B]: { healthIssue: true, credentialSeed: true } });
+      const MODULES_STATE = { scopeKind: "company" as const, scopeId: B, namespace: "pib-setup", stateKey: "modules" };
+      await w.ctx.state.set(MODULES_STATE, { companyId: B, modules: { social: false, billing: false }, updatedAt: "2026-10-25T00:00:00.000Z" });
+      expect(await seedCredentials(w.env, B)).toBe(2);
+      const rowsB = await listCredentials(w.ctx, B);
+      expect(rowsB.map((r) => r.seedKey).sort()).toEqual(["client-mailbox-gmail", "client-seo-google-access"]);
+      const text = JSON.stringify(rowsB);
+      expect(text).not.toMatch(/PMStander|pib-paperclip-backups|backup-age-key|covalonic|Partners.in.Biz|hermes/i);
+      // the owner company (prefix PAR) keeps the whole security table, unchanged
+      expect(await seedCredentials(w.env, A)).toBe(22);
+      expect((await listCredentials(w.ctx, A)).map((r) => r.seedKey).sort()).toEqual(CREDENTIAL_SEED.map((s) => s.seedKey).sort());
+      expect(JSON.stringify(await listCredentials(w.ctx, A))).toMatch(/PMStander/);
     });
 
     it("keeps each company's own register apart: a credential B records is B's, and A's list is untouched", async () => {
@@ -144,13 +166,14 @@ d("the credentials register (Postgres)", () => {
       const w = await make({ healthIssue: true });
       w.env.fetchImpl = fakeFetch({}).impl;
       await w.jobs.get("credentials-check")!();
-      expect(await listCredentials(w.ctx, A)).toHaveLength(0);
+      const pibRows = async () => (await listCredentials(w.ctx, A)).filter((r) => !r.seedKey?.startsWith("client-")).length;
+      expect(await pibRows()).toBe(0);
       w.configs[A] = { healthIssue: true, credentialSeed: true };
       await w.jobs.get("credentials-check")!();
-      expect(await listCredentials(w.ctx, A)).toHaveLength(22);
+      expect(await pibRows()).toBe(22);
       w.configs[A] = { healthIssue: true };
       await w.jobs.get("credentials-check")!();
-      expect(await listCredentials(w.ctx, A)).toHaveLength(22);
+      expect(await pibRows()).toBe(22);
     });
 
     it("starts with the four exposed credentials as a warning, and nothing else red", async () => {

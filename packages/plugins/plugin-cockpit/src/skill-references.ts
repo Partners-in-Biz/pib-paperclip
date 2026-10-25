@@ -10,7 +10,7 @@
  * Tool names are built from the declarations, so a renamed tool cannot leave a
  * reference pointing at nothing (a test checks every name exists).
  */
-import { MEMORY_TOOLS } from "@partnersinbiz/pib-plugin-kit";
+import { CLARITY_PENALTY, CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, HOOK_MAX_WORDS, MEMORY_TOOLS, REVIEWER_TONE_CAP, UNSCORED_TONE } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_KEY } from "./constants.js";
 import { EVAL_TOOL_NAMES } from "./eval-tool-declarations.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
@@ -26,8 +26,11 @@ export const OPERATOR_REFERENCE_PATHS = {
   credentials: "references/credentials-and-custody.md",
   asking: "references/asking-with-an-effect.md",
   quality: "references/quality-gates.md",
+  stalls: "references/stalls.md",
   coach: "references/skill-coach.md",
 } as const;
+
+export const OWNER_CHECKS_REFERENCE_PATH = "references/owner-checks.md";
 
 // ---------------------------------------------------------------------------
 // Health checks
@@ -197,7 +200,7 @@ export const CREDENTIALS_REFERENCE = `# Credentials and what only the owner can 
 
 ## The register
 
-${T(OPS_TOOL_NAMES.credentialList)} lists every credential the company depends on: name, system, where it lives, owner, when it expires, how to rotate it and when it was last checked. It holds **names and places only, never a value**: ${T(OPS_TOOL_NAMES.credentialRecord)} refuses text that looks like a secret, so say where a secret lives ("PAR company secret GITHUB_TOKEN"), never what it is. In Partners in Biz's own company only (the owner ticks "Load Partners in Biz's own credentials list" in its Cockpit settings) the Cockpit seeds the register from the server's security table: GitHub tokens, the Claude login, API keys, Cloudflare and storage tokens, Resend, Google and LinkedIn apps, the board token, the backup key, the SSH keys. A client company's register starts empty and holds that client's own credentials only: never copy PiB's entries into it. Rows marked **burned** were published or leaked: they stay a warning until each is revoked and retired.
+${T(OPS_TOOL_NAMES.credentialList)} lists every credential the company depends on: name, system, where it lives, owner, when it expires, how to rotate it and when it was last checked. It holds **names and places only, never a value**: ${T(OPS_TOOL_NAMES.credentialRecord)} refuses text that looks like a secret, so say where a secret lives ("company secret GITHUB_TOKEN"), never what it is. In the owner company only (the owner ticks the owner credentials-list option in its Cockpit settings) the Cockpit seeds the register from the server's security table: GitHub tokens, the Claude login, API keys, Cloudflare and storage tokens, Resend, Google and LinkedIn apps, the board token, the backup key, the SSH keys. A client company's register starts with only generic rows for the modules it uses and holds that client's own credentials only: never copy another company's entries into it. Rows marked **burned** were published or leaked: they stay a warning until each is revoked and retired.
 
 Alerts come at **30 days** (warn) and **7 days** or past (bad) before an expiry, when a provider **refuses** a credential, and while exposed credentials are not replaced. Where a company secret is picked under Credential checks in the Cockpit settings (GitHub, Cloudflare, Resend), the daily job asks the provider once whether the credential still works and learns GitHub's and Cloudflare's own expiry date. With \`verify: true\`, credential-list checks right now.
 
@@ -221,8 +224,49 @@ You cannot confirm them, and a question to the owner cannot carry them. Put each
 `;
 
 // ---------------------------------------------------------------------------
+// Stalls: chain_idle and orphan_blocker findings
+// ---------------------------------------------------------------------------
+
+export const STALLS_REFERENCE = `# Acting on stalls and stuck blockers
+
+A **chain_idle** finding marks task work that is not done or cancelled: the thread is inactive and the issue is not moving. An **orphan_blocker** finding marks work blocked by an issue that no longer matters (done, cancelled, or blocked itself with no way out). Handle either within the same run.
+
+## Steps
+
+1. **List findings:** ${T(TOOL_NAMES.watchdogFindings)} (optional \`limit\`).
+2. **Read the issue.** \`GET /api/issues/{id}\` (Paperclip API) and the comments to understand what is blocking it and why.
+3. **Name the real blocker.** A chain_idle issue is inactive; is an agent ready but not running, a person must act, or the issue should not exist? An orphan_blocker issue points to a blocker that changed: is it done, cancelled, or no longer a valid reason to wait?
+4. **Decide and act.** Never patch another agent's issue fields directly; comment instead so the agent makes the change. For chain_idle and orphan_blocker findings:
+   - **Over-strict owner edge:** The blocked issue waits on an owner-only check that should not block (the owner-checks rule says so). Comment the issue's assignee with the exact fix: name the blocker issue (for example "Drop PAR-nnn from your blockedByIssueIds, since owner approvals do not block your work"). Their comment is the wake.
+   - **Agent is ready but not running:** Comment what to do next to wake it.
+   - **Person must act:** Call ${T(TOOL_NAMES.askOwner)} on the blocked issue. Set \`kind\` to \`decision\` or \`grant\`, set \`dueBy\` to a deadline, and list your recommended option first in \`options\`. If a yes can be carried out by the system, add \`effect\` with \`key\` and \`params\` so the answer does it. Include \`links\` and \`steps\`. Put it on the brief.
+5. **Record what was fixed:** Comment on the blocked issue with what you did to fix it (cleared the blocker, contacted the agent, asked the owner). No tool records the repair for chain_idle and orphan_blocker findings; your comment is the record.
+`;
+
+// ---------------------------------------------------------------------------
 // Asking with an effect
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Owner checks
+// ---------------------------------------------------------------------------
+
+export const OWNER_CHECKS_REFERENCE = `# Owner checks: they never block work
+
+An owner-only check is something only the company owner can do: a tap, a switch flip, an approval, a key, a consent. It is its own issue, assigned to the owner. It blocks nothing and shows as \`WAITING-ON-OWNER\`; the Operator reads that list every day.
+
+## The rule
+
+- An owner-only check is raised once, as a sibling issue assigned to the owner (use \`${T(TOOL_NAMES.askOwner)}\` when it is a question or grant tied to one of your issues).
+- You never add a blocker edge (\`blockedByIssueIds\`) whose blocker is assigned to the owner or has no assignee. An issue nobody owns is never a blocker either.
+- Your own issue keeps moving: finish everything that does not depend on the check, then hand over or close with a note that names the sibling owner issue.
+- If your issue truly cannot continue, set it \`blocked\` with an \`unblockDescriptor\` naming the owner and the exact action. Do not point blockedByIssueIds at the owner's issue.
+- The Delivery Lead raises owner asks once for the program; the Planner lists them as siblings in the plan, never as dependencies.
+
+## Example
+
+PAR-200 (build) needs the owner to tap approve in Stripe. Do: open PAR-201 "Tap approve in Stripe" assigned to the owner, finish the rest of PAR-200, mention PAR-201 in the closing comment. Don't: set PAR-200 blockedByIssueIds to [PAR-201].
+`;
 
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
 
@@ -252,9 +296,34 @@ Waiting on an answer: do what does not depend on it. Never poll, never comment t
 // Quality gates
 // ---------------------------------------------------------------------------
 
+const CREATIVE_TOTAL = Object.values(CREATIVE_RUBRIC_WEIGHTS).reduce((a, b) => a + b, 0);
+
+/** The creative bar, one text for the Operator's quality reference and the Reviewer's own file. */
+const CREATIVE_BAR_BODY = `A post, email or ad is scored on five parts, ${CREATIVE_TOTAL} points at most, and a post with your tone score tops out at ${CREATIVE_TOTAL - CREATIVE_RUBRIC_WEIGHTS.brand + REVIEWER_TONE_CAP}, not 100. It passes at ${CREATIVE_PASS_SCORE} or more **and** with no blocker: a high score never carries a blocker.
+
+| Part | Points | What earns it |
+|---|---|---|
+| Hook | ${CREATIVE_RUBRIC_WEIGHTS.hook} | The first line is ${HOOK_MAX_WORDS} words or fewer (half), and it asks a question, uses a number, or names a mistake or a myth (half). |
+| Clarity | ${CREATIVE_RUBRIC_WEIGHTS.clarity} | Starts at ${CREATIVE_RUBRIC_WEIGHTS.clarity}; each writing finding (filler, jargon, long sentences) takes off ${CLARITY_PENALTY}. |
+| Brand | ${CREATIVE_RUBRIC_WEIGHTS.brand} | Tone against the profile. Unscored tone counts ${UNSCORED_TONE}; a score you give yourself also counts ${UNSCORED_TONE}; yours as the Reviewer counts only with one sentence of reason, and is capped at ${REVIEWER_TONE_CAP}. |
+| CTA | ${CREATIVE_RUBRIC_WEIGHTS.cta} | Exactly one ask (${CREATIVE_RUBRIC_WEIGHTS.cta}); two or more asks get 5; no ask gets 0. |
+| Format | ${CREATIVE_RUBRIC_WEIGHTS.format} | Alt text on every image or video, or no media at all (5), text within the platform's limit (5), a valid https:// landing page (5). |
+
+**Blockers** fail the work whatever it scores: a word the brand profile bans, a claim about the business with no approved wording, media required by the playbook's media rule and missing, alt text missing when the rule requires it. A media rule set to warn is a note, not a blocker.
+
+How to review with it:
+1. Score each part from the text and the profile; write the score and the reason in the review comment. Tone is your judgement: one sentence says why, or it counts ${UNSCORED_TONE}.
+2. List every blocker with the line it comes from. One blocker is **CHANGES NEEDED** even at 95.
+3. Under ${CREATIVE_PASS_SCORE} is **CHANGES NEEDED** with the weakest part first and the corrected text.
+4. A Reviewer's tone score above ${REVIEWER_TONE_CAP} does not count. Do not argue a weak hook or a missing ask up with tone.
+`;
+
+export const CREATIVE_BAR_PATH = "references/creative-bar.md";
+export const CREATIVE_BAR_REFERENCE = `# The creative bar\n\n${CREATIVE_BAR_BODY}`;
+
 export const QUALITY_REFERENCE = `# Quality gates: proof, review, acceptance and skill checks
 
-Four things keep "done" honest. The Cockpit raises a health check for each; this is what to do.
+Five things keep "done" honest. The Cockpit raises a health check for each; this is what to do.
 
 ## Finished code with no proof
 
@@ -284,6 +353,10 @@ When the owner has staffed an Acceptance agent, journeys run on the canary clien
 
 A skill change can make agents worse and nobody sees it until a client does. Before one ships: ${T(EVAL_TOOL_NAMES.eval)} \`plan\` (mode candidate), make the harness runs it lists, \`record\`, \`gate\`. After it is deployed: \`plan\` (live), \`record\`, then \`baseline\`. A skill version that fails the gate does not ship; a regression after a deploy is reverted (the previous plugin version is one deploy away). The Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`.
 
+## The creative bar
+
+${CREATIVE_BAR_BODY}
+
 ## Pages
 
 Agents that build or test pages can screenshot one with \`pib-shot\`. A memory fact or guide that says agents cannot open a browser is out of date: supersede the fact (${T(MEMORY_TOOLS.update)} with \`status: "superseded"\`) and say in the retro which guide needs correcting.
@@ -299,7 +372,7 @@ What agents learn should end up in their skills, measured. Paperclip ships a bui
 
 ## What it cannot do here
 
-Every PiB skill belongs to a plugin, and the plugin puts its own text back at each sync. A change to the company's copy lasts until the next sync, and nothing measures it. So: **the coach proposes; the change lands in plugin source through a pull request; the Cockpit measures it.**
+Every skill belongs to a plugin, and the plugin puts its own text back at each sync. A change to the company's copy lasts until the next sync, and nothing measures it. So: **the coach proposes; the change lands in plugin source through a pull request; the Cockpit measures it.**
 
 ## One-time setup (the owner, once: put it on the brief with these links)
 
@@ -343,5 +416,6 @@ export const OPERATOR_FILES: Array<{ path: string; content: string }> = [
   { path: OPERATOR_REFERENCE_PATHS.credentials, content: CREDENTIALS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.asking, content: ASKING_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.quality, content: QUALITY_REFERENCE },
+  { path: OPERATOR_REFERENCE_PATHS.stalls, content: STALLS_REFERENCE },
   { path: OPERATOR_REFERENCE_PATHS.coach, content: COACH_REFERENCE },
 ];

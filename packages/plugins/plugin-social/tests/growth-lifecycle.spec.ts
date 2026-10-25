@@ -169,7 +169,7 @@ describe("experiment lifecycle (safe autopilot)", () => {
     const playbook = await getPlaybookRecord(w.env, AGENT, {});
     expect(playbook.playbookVersion).toBe(2);
     expect(playbook.playbook).toMatch(/## Rules we follow \(kept from experiments\)\n- Question hook \(beat "Statement hook" by \+100% median lift/);
-    expect(playbook.versions.map((v) => v.version)).toEqual([2, 1]);
+    expect(playbook.versions.map((v: any) => v.version)).toEqual([2, 1]);
     expect(w.db.experiments.find((e) => e.id === proposed.experimentId)!.playbookDecision).toBe("kept");
 
     // The issue closes once the last item on it is decided.

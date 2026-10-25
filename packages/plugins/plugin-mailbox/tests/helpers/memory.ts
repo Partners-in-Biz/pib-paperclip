@@ -695,6 +695,16 @@ export class MemoryStore implements GmailStore {
     const row = [...this.sends.values()].find((s) => s.company_id === companyId && s.provider === provider && s.provider_message_id === providerMessageId);
     return row ? { ...row } : null;
   }
+  async findSendByPibSendTag(companyId: string, pibSendTag: string) {
+    const { sendTagValue } = await import("../../src/esp/send.js");
+    const rows = [...this.sends.values()].filter((s) => s.company_id === companyId && s.status === "failed" && (s.provider === null || s.provider === "ses"));
+    for (const row of rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())) {
+      if (sendTagValue(row.key) === pibSendTag) {
+        return { ...row };
+      }
+    }
+    return null;
+  }
   async markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }) {
     const row = this.sends.get(key);
     if (!row) return;
@@ -708,6 +718,10 @@ export class MemoryStore implements GmailStore {
   async patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>) {
     const row = this.sends.get(key);
     if (row && row.company_id === companyId) row.delivery = { ...(row.delivery ?? {}), ...detail };
+  }
+  async updateSendProvider(companyId: string, key: string, provider: string, providerMessageId: string) {
+    const row = this.sends.get(key);
+    if (row && row.company_id === companyId) Object.assign(row, { provider, provider_message_id: providerMessageId });
   }
   async markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }) {
     const row = this.messages.get(id);

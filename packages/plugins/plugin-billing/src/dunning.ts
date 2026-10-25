@@ -15,7 +15,7 @@ import { invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
 import { isCanaryCustomer } from "./canary.js";
 import { dunningStages, emailEnabled, loadBilling, privateR2, type BillingSettings, type DunningStage, type PrivateR2 } from "./config.js";
 import { asObject, table } from "./db.js";
-import { docFileName, renderDocument } from "./documents.js";
+import { docFileName, FALLBACK_SENDER_NAME, renderDocument } from "./documents.js";
 import { dayText, daysPastDue } from "./domain.js";
 import { invoiceView, recipientsFor } from "./invoices.js";
 import { parseAddresses, queueMail, reminderEmail } from "./mail.js";
@@ -81,7 +81,7 @@ export function reminderVars(balance: InvoiceBalance, daysOverdue: number, setti
     // Customers read this: "10 Oct 2026", not 2026-10-10.
     dueDate: dayText(iso(invoice.due_at)),
     daysOverdue: String(daysOverdue),
-    businessName: typeof sender.name === "string" && sender.name ? sender.name : String(asObject(settings.sender).name ?? "Partners in Biz"),
+    businessName: typeof sender.name === "string" && sender.name ? sender.name : String(asObject(settings.sender).name ?? FALLBACK_SENDER_NAME),
   };
 }
 

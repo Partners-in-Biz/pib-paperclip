@@ -274,7 +274,7 @@ export async function setReportStatus(ctx: PluginContext, companyId: string, id:
 // Approvals (what waits for a person before it happens)
 // ---------------------------------------------------------------------------
 
-export const APPROVAL_KINDS = ["client_action", "client_reminder", "client_report", "feedback_request", "erasure", "esign_request", "esign_reminder", "esign_copy"] as const;
+export const APPROVAL_KINDS = ["client_action", "client_reminder", "client_report", "feedback_request", "erasure", "esign_request", "esign_reminder", "esign_copy", "speed_to_lead"] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export const APPROVAL_STATUSES = ["open", "approved", "refused", "sent", "failed", "dry_run", "erased"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
@@ -380,6 +380,34 @@ export async function approvalsOfSubject(ctx: PluginContext, companyId: string, 
     `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")} WHERE company_id = $1 AND kind = $2 AND subject_id = $3 ORDER BY seq LIMIT 50`,
     [companyId, kind, subjectId],
   );
+  return rows.map(mapApproval);
+}
+
+/** Approvals for one client and kind; optional status filter (json array of status strings). */
+export async function approvalsForClient(
+  ctx: PluginContext,
+  companyId: string,
+  kind: ApprovalKind,
+  client: ClientKey,
+  statuses?: ApprovalStatus[],
+  limit = 50,
+): Promise<ApprovalRecord[]> {
+  const cap = Math.max(1, Math.min(limit, 100));
+  const statusJson = statuses?.length ? JSON.stringify(statuses) : null;
+  const rows = statusJson
+    ? await ctx.db.query<ApprovalRow>(
+      `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")}
+       WHERE company_id = $1 AND kind = $2 AND client_kind = $3 AND client_ref = $4
+         AND status = ANY(ARRAY(SELECT jsonb_array_elements_text($5::jsonb)))
+       ORDER BY created_at DESC LIMIT ${cap}`,
+      [companyId, kind, client.kind, client.id, statusJson],
+    )
+    : await ctx.db.query<ApprovalRow>(
+      `SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")}
+       WHERE company_id = $1 AND kind = $2 AND client_kind = $3 AND client_ref = $4
+       ORDER BY created_at DESC LIMIT ${cap}`,
+      [companyId, kind, client.kind, client.id],
+    );
   return rows.map(mapApproval);
 }
 

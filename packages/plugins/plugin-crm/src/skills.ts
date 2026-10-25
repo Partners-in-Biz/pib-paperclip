@@ -1,6 +1,6 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
-import { CANARY_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
+import { CANARY_REFERENCE, DRIVE_REFERENCE, LEAD_CAPTURE_REFERENCE, NEW_CLIENT_REFERENCE, SERVICES_REFERENCE } from "./skills-references.js";
 import { CARE_REFERENCE_FILES, CLIENT_CARE_SECTION } from "./skills-care.js";
 import { GROWTH_REFERENCE_FILES, GROWTH_SECTION } from "./skills-growth.js";
 import { DATA_STEWARD_SKILL, DEAL_DESK_SKILL, INBOUND_QUALIFY_SKILL, SALES_LEAD_SKILL } from "./skills-sales.js";
@@ -42,13 +42,20 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 7. **Offboarding.** Set lifecycle \`churned\` (that stops their sequences), move open deals to lost, then open a hand-off issue for each module that still works for them (stop the SEO sprint, disconnect or pause social, end the retainer). Log it.
 
 ## Services, the brand kit and proposals
-- **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
+- **Services** are keys, not free text: seo, ads, social, campaigns, lead-capture, reporting, website, platform, development, bookkeeping, payroll, branding, support. Wording you send is mapped when it can be and kept as text otherwise (the tool says which). When a customer's services change the CRM tells the other modules and opens one step per added service for the role that owns it, in the client's own project; closing it needs proof logged on the client. A prospect's services open nothing. Table and rules: \`references/services.md\`.
 - **Brand kit** (\`update-client-profile\`): logoKey (an R2 key inside this company's folder, such as social/<company id>/logo.png: the CRM keeps the key only), primaryColor, secondaryColor, accentColor (hex), fonts, toneExamples (short pieces in their voice). Use them for anything made for the client.
 - **Proposals** start from the client's scopeTemplateRef and termsRef (references to the scope template and the standard terms). A proposal, quote or agreement the client signs online goes through \`create-sign-document\` and \`send-for-signature\` (see Documents to sign below); a signed copy that came by email or in person a person logs on the client.
 
 ## Files in Drive
-\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company. ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
-\`drive_folder_ensure\` creates (once) the standard Drive folder tree for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company (a client's project resolves to the client's folder). ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
+\`drive_folder_ensure\` creates (once) the standard Drive folder, with its sub-folders, for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
+
+## Binding a company's Shared Drive
+\`drive_binding_discover\`, \`drive_binding_set\`, \`drive_binding_status\`: bind the company's Shared Drive. Discover lists it from the read-only Drive connection; it auto-binds on exact match or returns candidates. Set with the ID. Status checks binding and access.
+
+## Project Drive folder kinds
+\`drive_project_kind_set\` and \`drive_project_kind_list\` organize projects by folder branch type (client, product, book, marketing, company). \`set\` works for any project, including own projects with no client link; pass projectId, kind, and optional scopeRef (e.g., for marketing campaigns). \`list\` (read-only) returns kinds for specified projects or all in the company; a client-linked project with no explicit kind defaults to "client".
 
 ## Starting a new client
 \`start-new-client\` (client, optionally projectId and services) links the project and returns what is still to do for the Delivery Lead and for you: project and git workspace, the development branch rule, the agent guide, website, lead form, brand kit, one step per service, one grant ask, billing. The project and repo are made by the ops tool new-client-project.py, which then calls \`crm.link-client-project\`. Details and the contract: \`references/new-client.md\`.
@@ -106,7 +113,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 
 ## Every marketing email (sequences, campaigns, follow-ups you write)
 - **POPIA:** email only people who agreed to hear from us, or existing clients about similar services we sell them. Never bought lists, never a client's leads.
-- **Who we are:** say it is Partners in Biz and who is writing; use the sender the sequence or Mailbox sets.
+- **Who we are:** say which company it is and who is writing; use the sender the sequence or Mailbox sets.
 - **Opt-out:** every email says how to stop, e.g. "Reply STOP and we won't email again."
 - **An opt-out is final:** the moment someone asks to stop, by any channel, \`set-email-status\` unsubscribed. Never re-add or re-enroll them; only a person can allow email again.
 - No claims we cannot back up, no pressure, no guarantees.
@@ -130,6 +137,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/services.md", content: SERVICES_REFERENCE },
       { path: "references/new-client.md", content: NEW_CLIENT_REFERENCE },
       { path: "references/canary.md", content: CANARY_REFERENCE },
+      { path: "references/drive.md", content: DRIVE_REFERENCE },
       ...CARE_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
       ...GROWTH_REFERENCE_FILES.map((file) => ({ path: file.path, content: file.content })),
     ],
@@ -153,9 +161,9 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: "wp-sites",
     displayName: "Client websites (WordPress)",
     slug: "pib-wp-sites",
-    description: "Client websites: the PiB Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
+    description: "Client websites: the Connector for WordPress SEO changes, pairing it over SFTP, and deploying our own WordPress plugins over SFTP with backup and rollback.",
     markdown: withFrontmatter(
-      { name: "pib-wp-sites", description: "Work on client WordPress sites: PiB Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, wp-verify, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
+      { name: "pib-wp-sites", description: "Work on client WordPress sites: Connector tools (wp-seo, wp-schema, wp-redirects, wp-robots, wp-sitemap, wp-verify, undo), pairing the Connector over SFTP, and the SFTP deploy routine for our own plugins (backup, upload, sha256 readback, live check, rollback)." },
       CLIENT_SITES_SKILL,
     ),
   },

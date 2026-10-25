@@ -156,4 +156,16 @@ describe.skipIf(!available)("billing approvals (postgres)", () => {
     const viaPage = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: invoice.id }, agentContext());
     expect(h.issues.get(viaPage.issueId)!.assigneeUserId).toBe("owner-1");
   });
+  it("opens the send approval in the client's own project, so the Reviewer's billing reads work", async () => {
+    await roles({});
+    await h.deliver("plugin.partnersinbiz.crm.client.projects.updated", COMPANY, { clientKind: "contact", clientRef: "ct-lumen", projectIds: ["proj-lumen"], updatedAt: new Date().toISOString() });
+    const issue = await sendRequest();
+    expect((issue as { projectId?: string }).projectId).toBe("proj-lumen");
+  });
+
+  it("a client with no linked project still gets its approval (no project, as before)", async () => {
+    await roles({});
+    const issue = await sendRequest();
+    expect((issue as { projectId?: string }).projectId ?? null).toBeNull();
+  });
 });

@@ -77,6 +77,10 @@ export interface Post extends Scoped {
   scheduledAt: string | null;
   publishedAt: string | null;
   firstComment: string | null;
+  /** The X post this draft replies to / quotes, and the team's internal note (never published). */
+  replyTo: { url: string; id: string; handle: string | null } | null;
+  quote: { url: string; id: string; handle: string | null } | null;
+  note: string | null;
   media: MediaRef[];
   overrides: Partial<Record<SocialPlatform, PlatformOverride>>;
   source: string;
@@ -164,10 +168,14 @@ export interface PlatformInfo {
 }
 
 export interface Snapshot {
+  /** Whose socials this is: the company's (and its clients') or the signed-in user's own. */
+  space: "company" | "me";
   /** The page's scope as sent to the worker ("company:<id>" / "contact:<id>"), null for own work. */
   scope: string | null;
   /** The client this page works for, null for own work. */
   client: ClientOption | null;
+  /** False when the signed-in user is a viewer: the page hides + New post. Absent from older workers, which means true. */
+  canPost?: boolean;
   config: {
     saved: boolean;
     publicBaseUrl: string | null;

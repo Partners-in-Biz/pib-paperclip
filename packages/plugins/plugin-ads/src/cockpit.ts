@@ -21,7 +21,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { agentSummary } from "./agent.js";
 import { addDays } from "./dates.js";
-import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, summaryRows, type ProposalRow } from "./db.js";
+import { clientNames, listAccounts, listAlerts, listAudit, listAds, listConnections, listProposals, listScopes, listVariants, summaryRows, type ProposalRow } from "./db.js";
 import { errorMessage, scopeLabelOf } from "./domain.js";
 import { derive, sumRows } from "./metrics.js";
 import { formatMoney } from "./money.js";
@@ -37,6 +37,7 @@ import { routeFromImpact } from "./owner-route.js";
 export const ADS_JOBS: Array<{ key: string; title: string; everyMinutes: number }> = [
   { key: "sync-insights", title: "Read ad numbers", everyMinutes: 180 },
   { key: "refresh-connections", title: "Keep sign-ins alive", everyMinutes: 60 },
+  { key: "sweep-caps", title: "Pause ads at their cap", everyMinutes: 60 },
   { key: "setup-status", title: "Report setup status", everyMinutes: 60 },
 ];
 
@@ -92,6 +93,34 @@ async function kpis(rt: AdsRuntime): Promise<CockpitKpi[]> {
   const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
   const pending = await listAds(ctx, companyId, { policyStatus: "PENDING_REVIEW" });
   out.push({ key: "ads_policy", label: "Ad policy reviews", value: String(disapproved.length), hint: disapproved.length === 0 ? "All ads approved" : `${pending.length} pending review`, raw: disapproved.length, tone: disapproved.length > 0 ? "bad" : pending.length > 0 ? "warn" : "ok", href: ACCOUNTS, group: "marketing" });
+  try {
+    const variants = await listVariants(ctx, companyId, { limit: 500 });
+    if (variants.length > 0) {
+      const today = todayIn(rt.config.timezone, rt.now());
+      const windowStart = addDays(today, -rt.config.variants.windowDays + 1);
+      const campaignMap = new Map<string, typeof variants>();
+      for (const v of variants) {
+        const key = `${v.account_id}:${v.campaign_external_id}`;
+        if (!campaignMap.has(key)) campaignMap.set(key, []);
+        campaignMap.get(key)!.push(v);
+      }
+
+      let winners = 0, fatigued = 0;
+      for (const [campaignKey, campaignVariants] of campaignMap) {
+        const [accId, campaignId] = campaignKey.split(":") as [string, string];
+        const { listAdDailyForCampaign } = await import("./db.js");
+        const adDaily = await listAdDailyForCampaign(ctx, companyId, accId, campaignId, windowStart);
+        const evaluated = (await import("./variants.js")).evaluateVariants(campaignVariants, adDaily, rt.config.variants, today);
+        winners += evaluated.filter((v) => v.winner).length;
+        fatigued += evaluated.filter((v) => v.fatigue).length;
+      }
+      out.push({ key: "ads_variants", label: "Ad variants", value: String(variants.length), hint: `${winners} winner${winners === 1 ? "" : "s"}${fatigued > 0 ? `, ${fatigued} fatigued` : ""}`, raw: variants.length, tone: "neutral", href: ADS, group: "marketing" });
+    } else {
+      out.push({ key: "ads_variants", label: "Ad variants", value: "0", hint: "None yet", raw: 0, tone: "neutral", href: ADS, group: "marketing" });
+    }
+  } catch (error) {
+    ctx.logger.info("Ads variants KPI failed", { error: errorMessage(error) });
+  }
   return out;
 }
 
@@ -127,14 +156,14 @@ async function healthChecks(rt: AdsRuntime, agentId: string | null): Promise<Hea
 function proposalWaiting(p: ProposalRow, names: Record<string, string>): WaitingItem {
   const label = scopeLabelOf(p.scope_key, names[p.scope_key]);
   const money = SPEND_KINDS.includes(p.kind) || p.origin.startsWith("budget_");
-  const peetRequired = routeFromImpact(p.impact)?.route === "peet_required";
+  const ownerRequired = routeFromImpact(p.impact)?.route === "owner_required";
   let missing = p.status === "in_review" && p.review_state !== "pending" ? "your yes" : p.status === "in_review" ? "the Reviewer, then your yes" : p.status === "approved" ? "to be run (or marked done)" : "changes by the ads agent";
 
-  if (peetRequired && (p.status === "in_review" || p.status === "approved")) {
+  if (ownerRequired && (p.status === "in_review" || p.status === "approved")) {
     const lifetimeRands = p.impact && typeof p.impact.lifetimeMinor === "number" ? (p.impact.lifetimeMinor / 100).toFixed(2) : "?";
     const thresholdRands = p.impact && typeof p.impact.thresholdMinor === "number" ? (p.impact.thresholdMinor / 100).toFixed(2) : "?";
     const why = `Lifetime budget R${lifetimeRands} exceeds the owner threshold R${thresholdRands}. `;
-    missing = `Peet's yes (above the owner threshold, Elon cannot sign it)`;
+    missing = `the owner's yes (above the owner threshold, the Account Manager cannot sign it)`;
     const whyText = why + (p.cap_state === "exceeds" ? "It also goes over the month's cap. " : "") + "Nothing changes in any ad platform until a person approves.";
     return {
       key: `ads-proposal:${p.id}`,

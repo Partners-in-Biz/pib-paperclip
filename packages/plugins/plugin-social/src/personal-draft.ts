@@ -27,6 +27,7 @@ import {
 } from "./service.js";
 import { mediaFromAssetIds } from "./media.js";
 import type { PostStatus } from "./platforms.js";
+import { targetFromParams } from "./post-target.js";
 
 /**
  * Create a draft in a board user's personal My Social queue.
@@ -47,6 +48,7 @@ export async function createPersonalDraftRecord(ctx: PluginContext, viewer: View
   // Personal drafts must not have a client (own work only)
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, null)) ?? [];
   const overrides = normalizeOverrides(params.overrides) ?? {};
+  const targetFields = targetFromParams(params);
 
   // Parse account IDs
   const accountIds: string[] = [];
@@ -107,6 +109,9 @@ export async function createPersonalDraftRecord(ctx: PluginContext, viewer: View
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
+    reply_to_url: targetFields.replyToUrl ?? null,
+    quote_url: targetFields.quoteUrl ?? null,
+    note: targetFields.note ?? null,
     scheduled_at: null, // Never schedule personal drafts
     client_kind: null,
     client_ref: null,

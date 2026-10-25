@@ -4,27 +4,31 @@
  * Never iterates companies itself: jobs take company ids from our own rows.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+import { createPibOnlySkillSyncer, createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { deleteJunkAccounts, flagLegacyTokens } from "./db.js";
 import { rememberCompany } from "./modules.js";
 import { healPlanRoutine } from "./routine-template.js";
-import { SKILLS } from "./skills.js";
+import { PIB_ONLY_SKILLS, SKILLS } from "./skills.js";
 
 /** After a repair that did not stick (the host has not loaded this release's manifest yet), wait this long before the next try. */
 const HEAL_RETRY_MS = 10 * 60_000;
 
 export function createCompanyBootstrap(ctx: PluginContext) {
   const skills = createSkillSyncer(ctx, SKILLS);
+  // Own-company notes: synced for the PAR company only (the kit wrapper does nothing for any other).
+  const ownSkills = createPibOnlySkillSyncer(ctx, PIB_ONLY_SKILLS);
   const cleaned = new Set<string>();
   // Next time (ms) the weekly routine's stored template may be checked for a company; Infinity once it is right.
   const routineCheckAt = new Map<string, number>();
   return {
     skills,
+    ownSkills,
     async ensure(companyId: string): Promise<void> {
       if (!companyId) return;
       await rememberCompany(ctx, companyId);
       try {
         await skills.ensure(companyId);
+        await ownSkills.ensure(companyId);
       } catch (error) {
         ctx.logger.info("Social skill sync skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
       }

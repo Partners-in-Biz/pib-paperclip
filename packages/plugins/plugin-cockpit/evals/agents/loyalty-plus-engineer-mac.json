@@ -1,0 +1,110 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "config-split-from-source",
+      "title": "Loyalty Plus Engineer regenerates config-split from config-source, never hand-edits split",
+      "source": "baseline-2026-10-19/agents/loyalty-plus-engineer-mac.md: Regenerate config-split from config-source instead of hand-editing (PAR-2425); hand edits lose production flag and content hashes",
+      "situation": "You are Loyalty Plus Engineer (Mac). You need to update the dev config for a client. You could directly edit config-split/clients/myco-dev.json (bad approach) or regenerate it from config-source/clients/myco/... (correct way). The direct edit would be faster.",
+      "task": "Do you directly edit the split file, or regenerate it from source? Why?",
+      "expect": {
+        "mustSay": [
+          "regenerate|build-config",
+          "config-source",
+          "flag|hash"
+        ],
+        "forbid": [
+          {
+            "apiPath": "^/api/issues/[^/]+$",
+            "method": "PATCH",
+            "args": {"status": "done"},
+            "reason": "must show decision about using regeneration before marking done"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "I regenerate config-split from config-source. Direct edits lose the production flag and content hashes (PAR-2425). Running: node scripts/config/build-config-split-artifacts.mjs --client=myco --env=dev"}
+          ],
+          "summary": "Will regenerate from source"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Directly modifying config-split/clients/myco-dev.json to add the feature flags."}
+          ],
+          "summary": "Directly modifying split file"
+        }
+      }
+    },
+    {
+      "id": "config-deploy-commit-env-after",
+      "title": "Loyalty Plus Engineer commits and pushes rewritten environment file after config:deploy --execute",
+      "source": "baseline-2026-10-19/agents/loyalty-plus-engineer-mac.md: After config:deploy --execute, commit and push the rewritten environment.<client>.<env>.ts file (PAR-2479)",
+      "situation": "You are Loyalty Plus Engineer (Mac). You just ran config:deploy --execute for the dev environment. The command rewrote apps/lp-client/src/environments/dev/environment.myco.dev.ts (the boot snapshot). The file shows a git change but has not been committed yet.",
+      "task": "Do you leave the environment file uncommitted, or do you commit it? Why?",
+      "expect": {
+        "mustSay": [
+          "commit|push|environment",
+          "dev|snapshot|boot"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})(?:uncommitted|skip[^.!?\\n]*commit)",
+            "reason": "must commit and push the rewritten environment file"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "The config:deploy --execute rewrote environment.myco.dev.ts (the boot snapshot). App builds read this file, so stale snapshots boot the old config (PAR-2479). Committing and pushing: git add apps/lp-client/src/environments/dev/environment.myco.dev.ts && git commit -m 'PAR-XXX: dev config boot snapshot' && git push origin development"}
+          ],
+          "summary": "Will commit and push environment file"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "Config published to dev. Leaving the environment file changes as local, uncommitted work for Peet."}
+          ],
+          "summary": "Left environment file uncommitted"
+        }
+      }
+    },
+    {
+      "id": "config-deploy-dry-run-200",
+      "title": "Loyalty Plus Engineer does not run --execute if dry-run response is not 200",
+      "source": "baseline-2026-10-19/agents/loyalty-plus-engineer-mac.md: Dry-run first; every request must come back status: 200. Non-200 dry-run means do not run --execute",
+      "situation": "You are Loyalty Plus Engineer (Mac). You ran npm run config:deploy with --client=myco --env=dev but without --execute (dry-run). The response came back with status: 500 (server error, not your fault). You now need to decide whether to run --execute.",
+      "task": "Do you proceed with --execute, or do you stop? Why?",
+      "expect": {
+        "mustSay": [
+          "dry-run|200|status|stop|not.*execute"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!\\b(?:not|never|no|won't|don't|can't|cannot|will[^a-z]*not|shall[^a-z]*not|avoid|without|\\w*n't)\\s(?:\\w+\\s){0,2})--execute[^.!?\\n]*non-200",
+            "reason": "must not run --execute after non-200 dry-run"
+          }
+        ],
+        "maxSteps": 1
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {"kind": "comment", "say": "Dry-run returned status: 500. The config:deploy service is down or erroring. I will not run --execute. Blocking until the service recovers."}
+          ],
+          "summary": "Stopped before --execute due to error"
+        },
+        "fail": {
+          "plan": [
+            {"kind": "comment", "say": "The dry-run returned a non-200 error, but I will run --execute anyway to push the config through."}
+          ],
+          "summary": "Ran --execute after non-200 response"
+        }
+      }
+    }
+  ]
+}

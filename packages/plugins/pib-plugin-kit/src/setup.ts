@@ -42,6 +42,20 @@ export const MODULES = {
 export type ModuleKey = keyof typeof MODULES;
 export const MODULE_KEYS = Object.keys(MODULES) as ModuleKey[];
 
+/** The sellable plans a hosted client can hold (one label per company). `pib` (everything) is ours and never sold. */
+export const HOSTED_TIERS = ["starter", "growth", "business"] as const;
+export type HostedTier = (typeof HOSTED_TIERS)[number];
+
+/** Tier -> sold modules. One table for Setup entitlements and the CRM's provisioning request. No prices. */
+const TIER_STARTER: readonly ModuleKey[] = ["crm", "mailbox"];
+const TIER_GROWTH: readonly ModuleKey[] = [...TIER_STARTER, "social", "seo", "campaigns"];
+const TIER_BUSINESS: readonly ModuleKey[] = [...TIER_GROWTH, "billing"];
+export const TIER_MODULES: Readonly<Record<HostedTier, readonly ModuleKey[]>> = { starter: TIER_STARTER, growth: TIER_GROWTH, business: TIER_BUSINESS };
+
+export function isHostedTier(value: unknown): value is HostedTier {
+  return typeof value === "string" && (HOSTED_TIERS as readonly string[]).includes(value);
+}
+
 /** Which module a plugin belongs to. */
 export function moduleOfPlugin(pluginKey: string): ModuleKey | null {
   for (const key of MODULE_KEYS) if ((MODULES[key].plugins as readonly string[]).includes(pluginKey)) return key;

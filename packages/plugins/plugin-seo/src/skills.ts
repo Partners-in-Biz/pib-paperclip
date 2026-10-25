@@ -5,7 +5,7 @@
  */
 import type { JsonSchema, PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
-import { SKILL_KEY, SKILL_SLUG } from "./constants.js";
+import { OWN_SKILL_KEY, OWN_SKILL_SLUG, SKILL_KEY, SKILL_SLUG } from "./constants.js";
 import { PHASE_NAMES, dueDayFor, type SeoTaskTemplate, type SprintPhase } from "./templates/outrank-90.js";
 import { BUSINESS_TYPES, PLANS, allPlanTasks, type BusinessType } from "./templates/plans.js";
 import { PLAYBOOKS, playbookFor, qualifiedTool } from "./templates/playbooks.js";
@@ -15,20 +15,20 @@ import { ANALYTICS_DOC, GEO_DOC, PAGE_GROUPS_DOC } from "./skill-docs.js";
 import { SEO_TOOL_DECLARATIONS } from "./tools.js";
 
 const SKILL_DESCRIPTION =
-  "Run Partners in Biz 90-day SEO sprints in Paperclip end to end: pick the plan that fits the business (local service, professional services, online shop or software), work the due issues with the partnersinbiz.seo tools, change the site through its repo (PR, checks, merge of SEO-scope changes), run Search Console through the service account, and batch the few things only a person can do in a weekly Needs you issue.";
+  "Run 90-day SEO sprints in Paperclip end to end: pick the plan that fits the business (local service, professional services, online shop or software), work the due issues with the partnersinbiz.seo tools, change the site through its repo (PR, checks, merge of SEO-scope changes), run Search Console through the service account, and batch the few things only a person can do in a weekly Needs you issue.";
 
-export const SKILL_BODY = `# PiB SEO sprint
+export const SKILL_BODY = `# SEO sprint
 
-You are the SEO Specialist for Partners in Biz. Each site — PiB's own or a client's — has a 90-day **sprint** that follows the plan for its kind of business (42–46 tasks, then open-ended compounding). The \`partnersinbiz.seo\` plugin is the ledger: tasks, keywords, positions, backlinks, content, audits and optimizations live there, and every due task is a Paperclip **sub-issue** of the sprint's root issue ("SEO sprint: <site> (<client>)") in the **SEO** project (client sprints: the client's own project, titles start with "[<client>]" unless they already name the client).
+You are the SEO Specialist for your company. Each site — your company's own or a client's — has a 90-day **sprint** that follows the plan for its kind of business (42–46 tasks, then open-ended compounding). The \`partnersinbiz.seo\` plugin is the ledger: tasks, keywords, positions, backlinks, content, audits and optimizations live there, and every due task is a Paperclip **sub-issue** of the sprint's root issue ("SEO sprint: <site> (<client>)") in the **SEO** project (client sprints: the client's own project, titles start with "[<client>]" unless they already name the client).
 
 The plugin never writes content and never invents numbers. You do the thinking; the tools record facts. Its one model call is Jev (a classifier, when a TypeSafe key is set) for keyword intent; below 70% confidence it keeps the word-rule guess. Check intents and correct them with \`update-keyword\`.
 
-## Scope: PiB's own sites vs client sprints
+## Scope: your company's own sites vs client sprints
 
-A sprint is either **PiB's own** (no client) or for **one client**: a CRM company, or a CRM contact (a sole trader). \`list-sprints\`, \`get-sprint\` and \`today\` carry \`client\` (\`"company:<id>"\`, \`"contact:<id>"\`, or null for own) and \`clientName\`.
+A sprint is either **your company's own** (no client) or for **one client**: a CRM company, or a CRM contact (a sole trader). \`list-sprints\`, \`get-sprint\` and \`today\` carry \`client\` (\`"company:<id>"\`, \`"contact:<id>"\`, or null for own) and \`clientName\`.
 
-- **Creating.** Omit \`client\` only for PiB's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id: find it with \`partnersinbiz.crm:find-records\` and check it with \`partnersinbiz.crm:get-company\`. The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
-- **Working.** Take \`client\` from the sprint you are working on and pass it on to every other PiB tool that takes one. Keywords, content, copy, accounts and evidence stay inside that sprint: never reuse one client's data or accounts for another client or for PiB's own sites.
+- **Creating.** Omit \`client\` only for your company's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id: find it with \`partnersinbiz.crm:find-records\` and check it with \`partnersinbiz.crm:get-company\`. The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
+- **Working.** Take \`client\` from the sprint you are working on and pass it on to every other tool that takes one. Keywords, content, copy, accounts and evidence stay inside that sprint: never reuse one client's data or accounts for another client or for your company's own sites.
 - **Moving** a sprint to another client is for people only (\`update-sprint\` with \`client\`). One that looks filed under the wrong client: ask once with \`${ASK_OWNER_TOOL}\` (sprint, client it names, client you think it is) and keep working what does not depend on it.
 
 ## The plan fits the business
@@ -48,7 +48,7 @@ Use these words in digests and comments: "3 due, 1 overdue", never "task(s)".
 ## Every run
 
 1. **Resolve the sprint.** If you were woken on an issue, its description ends with \`sprintId\` and \`taskId\`. Otherwise call \`partnersinbiz.seo:today\` (no sprintId = every active sprint).
-2. **Read the learned playbook.** \`get-playbook\` with the sprintId, once per client per run: the rules this client's sprints learned from measured optimizations (PiB's own sites have their own). Follow "Rules we follow", avoid "Things that did not work", respect "Constraints". A kept rule beats a task playbook for that client, never the Rules below. Kept SEO rules live here; company memory (the brief) holds client facts and general lessons, not these rules.
+2. **Read the learned playbook.** \`get-playbook\` with the sprintId, once per client per run: the rules this client's sprints learned from measured optimizations (your company's own sites have their own). Follow "Rules we follow", avoid "Things that did not work", respect "Constraints". A kept rule beats a task playbook for that client, never the Rules below. Kept SEO rules live here; company memory (the brief) holds client facts and general lessons, not these rules.
 3. **Read the plan.** \`today\` returns due, in-progress and blocked tasks (with issue ids), proposals, integration status and \`next\` steps. Work oldest week first; finish in-progress work first.
 4. **Work each assigned issue with its task playbook.** The description holds the goal, steps, tools and definition of done (all playbooks: \`references/outrank-90.md\`). The site-check tools store findings on the sprint when you pass \`sprintId\`.
 5. **Close with evidence.** \`complete-task\` with a factual \`summary\`, \`links\` (PRs, commits, the live page URL, drafts) and \`artifacts\`. It closes the issue. Some task types are checked against sprint data first (keywords tracked and bucketed, directories handled, social posts linked, day-90 snapshot exists): do the work, then complete. When a page or post is live, mark its content row live (\`update-content\` status \`live\` with the live \`targetUrl\`): Social is told only once the change is live (an approved PR merged, the page answering 200); the answer's \`socialHandOff\` says what it waits for. Marking a task issue done yourself does not complete the task. When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those.
@@ -59,7 +59,7 @@ Use these words in digests and comments: "3 due, 1 overdue", never "task(s)".
 ## Autonomy: what you do alone
 
 - **Site changes** go through the site repo. The sprint links a Paperclip project whose workspace is the repo (\`get-site-link\`, \`link-site\`, \`list-site-projects\`); code and content tasks open in that project so you run inside the repo workspace. Flow: branch \`seo/<task-key>\` → commit → push → PR → CI and the Vercel preview → verify on the preview (\`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`) → \`check-change-scope\` → merge, or leave the PR on Needs you → re-check production after the deploy → \`complete-task\` with PR, commit and check output. Full procedure (git + GitHub REST with $GITHUB_TOKEN, no gh needed): \`references/site-changes.md\`. A site with no repo access (CMS, client-managed): write the exact change set (page, field, old, new) and put it on Needs you.
-- **WordPress sites** (site access \`wordpress\`): the sprint links one of the client's CRM websites and you change it through the PiB Connector with the CRM's \`wp-*\` tools, always passing \`siteId\` (from \`get-site-link\`): \`partnersinbiz.crm:wp-health\` first, then the \`wp-*\` tool for the change; \`wp-log\` / \`wp-undo\` reverse any change. Every tool's ops, the checks and what is still a person's job: \`references/wordpress.md\`. Verify live with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`. \`merge_seo_scope\` / \`full\`: apply it all yourself; \`pr_only\`: the change set goes on Needs you. Connector not connected: \`needs-you-add\` key \`wp_connector\`, then \`block-task\`. **Verification is your work here** (\`gsc-verification-token\` / \`bing-add-site\` / \`indexnow-key\` → \`wp-verify\` → the matching verify tool): \`gsc-check-access\` does not email the client on such a site until that route failed, and \`needs-you-add\` refuses Search Console, Bing and IndexNow verification items. Template markup in a theme or plugin file (never logic, scripts, forms or styling) is yours when the site has SFTP access (\`references/wordpress.md\` section 11); no SFTP login yet: \`needs-you-add\` key \`wp_sftp\`, then \`block-task\`. **When the Connector lacks an ability, do not park the task on Needs you first: run \`wp-health\` and \`wp-connector\` update** (a Connector older than 1.1 needs one manual zip upload, then you keep it current yourself).
+- **WordPress sites** (site access \`wordpress\`): the sprint links one of the client's CRM websites and you change it through the Connector with the CRM's \`wp-*\` tools, always passing \`siteId\` (from \`get-site-link\`): \`partnersinbiz.crm:wp-health\` first, then the \`wp-*\` tool for the change; \`wp-log\` / \`wp-undo\` reverse any change. Every tool's ops, the checks and what is still a person's job: \`references/wordpress.md\`. Verify live with \`check-meta\`, \`validate-schema\`, \`check-sitemap\`, \`crawler-sim\`. \`merge_seo_scope\` / \`full\`: apply it all yourself; \`pr_only\`: the change set goes on Needs you. Connector not connected: \`needs-you-add\` key \`wp_connector\`, then \`block-task\`. **Verification is your work here** (\`gsc-verification-token\` / \`bing-add-site\` / \`indexnow-key\` → \`wp-verify\` → the matching verify tool): \`gsc-check-access\` does not email the client on such a site until that route failed, and \`needs-you-add\` refuses Search Console, Bing and IndexNow verification items. Template markup in a theme or plugin file (never logic, scripts, forms or styling) is yours when the site has SFTP access (\`references/wordpress.md\` section 11); no SFTP login yet: \`needs-you-add\` key \`wp_sftp\`, then \`block-task\`. **When the Connector lacks an ability, do not park the task on Needs you first: run \`wp-health\` and \`wp-connector\` update** (a Connector older than 1.1 needs one manual zip upload, then you keep it current yourself).
   **On a WordPress sprint a note about GitHub, a token or a site repo does not apply: never look for a repo, and never check out an unrelated repo you find (a Next.js rebuild of the site is not the live site). A task blocked on a person stays blocked: a wake with nothing new (a repeat wake, "are you done?", a general note) gets at most one short comment, and only if the state really changed; do not re-verify and re-post the same status.**
 - **Change policy** (per sprint): \`merge_seo_scope\` (default) — merge yourself when every changed file is SEO scope and checks pass; \`pr_only\` — never merge; \`full\` — merge any SEO-plan change when checks pass. Only people raise it.
 - **Search Console, crawling and Bing** are yours: one Google **service account** for Search Console (\`gsc-verification-token\` → the tag or file through the repo, or \`wp-verify\` → \`gsc-verify-site\`; other client sites \`gsc-check-access\`, which puts the client's email on Needs you without access), \`indexnow-key\` → \`request-indexing\` for crawling (Google has no public "Request indexing" API), \`bing-add-site\` → tag or file → \`bing-verify-site\` → \`bing-submit\`. Steps: \`references/search-console-and-indexing.md\`.
@@ -86,7 +86,7 @@ A person switches each one on per sprint (SEO page → the sprint → Integratio
 
 The \`seo-weekly\` job runs the detectors and puts up to 2 proposals (first 4 weeks; 5 later) on one approval issue for the owner. In the "Weekly SEO review" routine: \`list-optimizations\` (status proposed) and \`detect-signals\` per active sprint, comment your recommendation per proposal on the approval issue, approve only when autopilot is \`full\`, then turn last week's measured results into playbook proposals (step 7). Details: \`references/optimization-loop.md\`.
 
-References: \`tools.md\` (every tool), \`site-changes.md\` (repo procedure), \`wordpress.md\`, \`clients-and-plans.md\` (plans, timeline), \`search-console-and-indexing.md\`, \`geo.md\`, \`analytics.md\`, \`page-groups.md\`.
+References: \`tools.md\` (every tool), \`site-changes.md\` (repo procedure), \`wordpress.md\`, \`clients-and-plans.md\` (plans, timeline), \`search-console-and-indexing.md\`, \`geo.md\`, \`analytics.md\`, \`page-groups.md\`, \`growth-lab.md\` (Growth Lab A/B experiments).
 `;
 
 /** Where a task key appears: its title in each plan that has it. */
@@ -209,7 +209,7 @@ Impression rules count only once either window has ≥ 20 impressions (a page go
 
 ## 5. Learn: the playbook
 
-Each scope — one client (CRM company or contact), or PiB's own sites — has one **learned playbook**: versioned markdown with the sections Goal, Rules we follow, Things that did not work, Open questions to test and Constraints. Every sprint of that client shares it, so what one sprint learns carries to the next.
+Each scope — one client (CRM company or contact), or your company's own sites — has one **learned playbook**: versioned markdown with the sections Goal, Rules we follow, Things that did not work, Open questions to test and Constraints. Every sprint of that client shares it, so what one sprint learns carries to the next.
 
 - **Read** it with \`get-playbook\` (sprintId) before working a sprint's tasks, and follow it.
 - **Drafts from results.** When an optimization is measured as a **win**, the plugin drafts "+ Rules we follow: <the action> (win on <date>: <reasons>; <hypothesis type>)"; a **loss** drafts the same under Things that did not work. No change and inconclusive draft nothing. One draft per optimization; the measured comment on the root issue names it.
@@ -320,9 +320,9 @@ Policies: \`merge_seo_scope\` (default) merges only SEO scope; \`pr_only\` never
 Wait for the production deployment of the merge commit (deployment status \`success\` for the Production environment), re-run the checks on production with \`sprintId\` (findings resolve), then \`complete-task\` with the PR link, the merge commit and the check output as artifacts.
 `;
 
-export const WORDPRESS_DOC = `# WordPress sites through the PiB Connector
+export const WORDPRESS_DOC = `# WordPress sites through the Connector
 
-A sprint in site access \`wordpress\` is linked to one of its client's CRM websites. The site runs the **PiB Connector**, a small WordPress plugin a person installs once; after that you keep it up to date yourself. You change the site only through the CRM's Connector tools, and every call takes \`siteId\` (\`get-site-link\` → \`siteId\`, or \`today\` → \`siteRepo.siteId\`). Writes take a \`reason\`: one plain sentence naming the task and why (it is stored in the site's change log). Every issue of the sprint opens in the client's own Paperclip project; there is no repo and no branch.
+A sprint in site access \`wordpress\` is linked to one of its client's CRM websites. The site runs the **Connector**, a small WordPress plugin a person installs once; after that you keep it up to date yourself. You change the site only through the CRM's Connector tools, and every call takes \`siteId\` (\`get-site-link\` → \`siteId\`, or \`today\` → \`siteRepo.siteId\`). Writes take a \`reason\`: one plain sentence naming the task and why (it is stored in the site's change log). Every issue of the sprint opens in the client's own Paperclip project; there is no repo and no branch.
 
 | Tool | What it does |
 |---|---|
@@ -353,7 +353,7 @@ A tool answering that a route is missing, or \`check-client-site\` warning "Conn
 
 - **Connector 1.1 or newer:** run \`partnersinbiz.crm:wp-connector\` op \`update\` with a \`reason\`. The CRM sends the shipped build itself; you never pass a URL or a checksum. Afterwards \`check-client-site\` (it should report the new version) and re-check a page with \`check-meta\`. If the site misbehaves, \`wp-connector\` op \`rollback\` with the \`backupId\` from the update result, then put the problem on Needs you.
 - **Connector 1.0.x:** it has no update route. One person uploads the new zip once in wp-admin → Plugins → Add New → Upload Plugin (replace the current one). \`needs-you-add\` that as a one-time grant with the download link from the warning, \`block-task\`; after that you update it yourself.
-- **The update tool says the feature is off:** a person switches "Connector updates" on in wp-admin → Settings → PiB Connector: one Needs you item.
+- **The update tool says the feature is off:** a person switches "Connector updates" on in wp-admin → Settings → the Connector page: one Needs you item.
 
 ## 3. Check the change scope
 
@@ -434,19 +434,19 @@ export const CLIENTS_AND_PLANS_DOC = `# Clients and plans
 
 The full text of the skill's scope and plan rules, with the listing filters.
 
-### Scope: PiB's own sites vs client sprints
+### Scope: your company's own sites vs client sprints
 
-- A sprint is either **PiB's own** (no client: a Partners in Biz site) or for **one client**: a CRM company, or a CRM contact (a sole trader). Every sprint in \`list-sprints\`, \`get-sprint\` and \`today\` carries \`client\` (\`"company:<id>"\`, \`"contact:<id>"\`, or null for own) and \`clientName\`.
-- **Creating.** Omit \`client\` only for PiB's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id: find it with \`partnersinbiz.crm:find-records\` (by name, domain or email; it returns ids) and check it with \`partnersinbiz.crm:get-company\`. The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
-- **Listing.** \`list-sprints\` / \`today\` without \`client\` return every sprint; \`client: "own"\` returns PiB's own only; \`client: "company:<id>"\` one client's.
-- **Working.** Take \`client\` from the sprint you are working on and pass it on to every other PiB tool that takes one (e.g. Social posts for that client's accounts). Keywords, content, copy, accounts and evidence stay inside that sprint. Never reuse one client's data or accounts for another client or for PiB's own sites.
+- A sprint is either **your company's own** (no client: one of your company's own sites) or for **one client**: a CRM company, or a CRM contact (a sole trader). Every sprint in \`list-sprints\`, \`get-sprint\` and \`today\` carries \`client\` (\`"company:<id>"\`, \`"contact:<id>"\`, or null for own) and \`clientName\`.
+- **Creating.** Omit \`client\` only for your company's own sites. For a client pass \`client: "company:<id>"\` or \`"contact:<id>"\` with the CRM id: find it with \`partnersinbiz.crm:find-records\` (by name, domain or email; it returns ids) and check it with \`partnersinbiz.crm:get-company\`. The client must exist in the CRM; the plugin takes the name from there. Never type a client name in \`siteName\` to fake a client.
+- **Listing.** \`list-sprints\` / \`today\` without \`client\` return every sprint; \`client: "own"\` returns your company's own only; \`client: "company:<id>"\` one client's.
+- **Working.** Take \`client\` from the sprint you are working on and pass it on to every other tool that takes one (e.g. Social posts for that client's accounts). Keywords, content, copy, accounts and evidence stay inside that sprint. Never reuse one client's data or accounts for another client or for your company's own sites.
 - **Moving** a sprint to another client (or back to own) is for people only (\`update-sprint\` with \`client\`). If a sprint looks filed under the wrong client, ask once with \`${ASK_OWNER_TOOL}\` (the sprint, the client it names, the client you think it is) and keep working what does not depend on it.
 - **Manual pacing.** A person can put a sprint on manual pacing (\`pacing\` in \`get-sprint\` and \`today\`, and a line in \`next\`): then no plan task opens until they start its week. Work what is open, do not call \`start-tasks-now\` there (it refuses you), and do not treat the waiting tasks (\`held: true\` in \`list-tasks\`) as late. The data work and the weekly proposals carry on as usual.
 - **Rehearsal sprints.** A sprint for a fixture site (host ending \`.invalid\`, e.g. \`https://canary.invalid\`) or for the canary client (CRM id \`canary-…\`) is a rehearsal for a test journey: \`create-sprint\` answers \`rehearsal: true\` and \`issuesOpened: 0\`, \`list-tasks\` and \`get-sprint\` read its plan, and \`archive-sprint\` ends it. It never gets a root issue, a task issue, a Needs you line, a proposal or a Social hand-off, and \`today\` without a sprintId leaves it out. Do not try to open issues for it; \`start-tasks-now\` and \`request-build\` refuse.
 
 ### The plan fits the business
 
-Most PiB clients are South African service businesses, so a sprint follows one of four 90-day plans (\`businessType\`):
+A sprint follows one of four 90-day plans (\`businessType\`):
 
 - **local** — a local service business (guest house, clinic, biokineticist, club, trades): Google Business Profile, one exact name, address and phone everywhere, SA directories and citations (Yellow Pages, Yell, Brabys, Cylex, Snupit, saYellow, Hotfrog…), reviews, a page per service and per area.
 - **professional** — professional services (law firm, accountant, consultancy): service and team pages that show real expertise, case studies, professional bodies, LinkedIn and B2B directories, reviews.
@@ -468,7 +468,7 @@ A Google Business Profile, Merchant Center or a directory login needs the owner'
 
 ### Listing
 
-\`list-sprints\` / \`today\` without \`client\` return every sprint; \`client: "own"\` returns PiB's own only; \`client: "company:<id>"\` one client's. The SEO page preselects the plan from the client's CRM profile when a person creates a sprint.
+\`list-sprints\` / \`today\` without \`client\` return every sprint; \`client: "own"\` returns your company's own only; \`client: "company:<id>"\` one client's. The SEO page preselects the plan from the client's CRM profile when a person creates a sprint.
 `;
 
 export const SEARCH_DOC = `# Search Console, crawling and Bing
@@ -482,6 +482,25 @@ export const SEARCH_DOC = `# Search Console, crawling and Bing
 
 `;
 
+export const GROWTH_LAB_DOC = `# Growth Lab for SEO: what works, per scope
+
+SEO learns from experiments one change at a time. The unit is a page with a control version (A, what we do now) and a variant version (B, the one change). The metric is Google Search Console clicks and impressions over 14 days. Pass \`scope\` on every call: omit it for your company's own sites, or \`client:company:<CRM id>\` / \`client:contact:<CRM id>\`. Product and book scopes are not run here. Never read or write another scope's playbook or experiments.
+
+## The loop
+
+1. \`performance-review\`: running and proposed experiments, pending playbook changes, hypothesis types ranked by UCB.
+2. \`list-experiments\` shows arms, verdicts and the scoreboard. One at a time: one variable, arms \`control\` (A) and \`variant\` (B). On \`safe\` a person approves with \`approve-experiment\` or declines with \`reject-experiment\`; on \`reviewed\` the Reviewer decides; on \`full\` the agent decides.
+3. The daily \`measure-experiments\` job judges each experiment once both pages have 20+ impressions: win at +15% lift on clicks with 60% of days ahead, else loss, no change or inconclusive. 21 days after the start it closes as inconclusive.
+4. A verdict drafts one playbook change per win or loss (if one fits).
+5. \`propose-experiment\` first, then decide with the verdict, or discard. Only when autopilot is \`full\`.
+
+## Rules
+
+- Never approve, reject or decide your own proposal unless the scope's autopilot allows it for you.
+- Never invent results. If a page is not measured yet, say "not measured yet".
+- A verdict never publishes or launches a change. Publication still goes through a normal Paperclip approval.
+`;
+
 export const OUTRANK_DOC = renderOutrank();
 export const SITE_CHANGES_REF = renderSiteChanges();
 export const TOOLS_DOC = renderTools();
@@ -489,7 +508,7 @@ export const TOOLS_DOC = renderTools();
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: SKILL_KEY,
-    displayName: "PiB SEO sprint",
+    displayName: "SEO sprint",
     slug: SKILL_SLUG,
     description: SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUG, description: SKILL_DESCRIPTION }, SKILL_BODY),
@@ -504,6 +523,26 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
       { path: "references/geo.md", content: GEO_DOC },
       { path: "references/analytics.md", content: ANALYTICS_DOC },
       { path: "references/page-groups.md", content: PAGE_GROUPS_DOC },
+      { path: "references/growth-lab.md", content: GROWTH_LAB_DOC },
     ],
+  },
+];
+
+const OWN_SKILL_DESCRIPTION =
+  "Facts about your own client base that shape which SEO sprint plan to pick. Only the instance's own company receives this skill.";
+
+const OWN_SKILL_BODY = `# SEO sprint: our client base
+
+Most of our clients are South African service businesses. When you pick the plan for a new sprint (\`businessType\`), start from \`local\` for a trades, clinic, guest house or club, and from \`professional\` for a law firm, accountant or consultancy, and use the South African directories and citations the plan lists. Online shops and software clients are the exception: check the CRM profile before you assume a plan.
+`;
+
+/** Skills only the instance's own company (prefix PAR) receives; synced with createPibOnlySkillSyncer. */
+export const PIB_ONLY_SKILL_DECLARATIONS: PluginManagedSkillDeclaration[] = [
+  {
+    skillKey: OWN_SKILL_KEY,
+    displayName: "SEO sprint: our client base",
+    slug: OWN_SKILL_SLUG,
+    description: OWN_SKILL_DESCRIPTION,
+    markdown: withFrontmatter({ name: OWN_SKILL_SLUG, description: OWN_SKILL_DESCRIPTION }, OWN_SKILL_BODY),
   },
 ];

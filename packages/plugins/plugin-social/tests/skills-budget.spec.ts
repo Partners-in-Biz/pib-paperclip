@@ -67,9 +67,10 @@ describe("what the skills tell agents", () => {
 
   it("the media studio describes the production workflow without any provider dependency", () => {
     const media = reference("social-content", "references/media-studio.md");
-    for (const must of ["get-client-profile", "brand.json", "1080x1350", "1080x1920", "ffmpeg", "list-issue-attachments", "import-media-from-attachment", "para4-asset-generator.zip", "Never hotlink", "never required", "Attach each file to the issue"]) {
+    for (const must of ["get-client-profile", "brand.json", "1080x1350", "1080x1920", "ffmpeg", "list-issue-attachments", "import-media-from-attachment", "Never hotlink", "never required", "Attach each file to the issue"]) {
       expect(media, must).toContain(must);
     }
+    expect(media).not.toContain("para4");
     // The client's brand kit in the CRM profile comes first; the client's own site is only the fallback for what it lacks.
     for (const field of ["primaryColor", "secondaryColor", "accentColor", "fonts", "logoKey", "toneExamples", "missingBrand", "r2Key"]) expect(media, field).toContain(field);
     expect(media.indexOf("Use those first")).toBeGreaterThan(-1);

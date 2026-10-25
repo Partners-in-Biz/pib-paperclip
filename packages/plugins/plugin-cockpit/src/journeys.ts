@@ -13,12 +13,13 @@ import quoteToInvoice from "../journeys/quote-to-invoice.json" with { type: "jso
 import seoSprintDraft from "../journeys/seo-sprint-draft.json" with { type: "json" };
 import siteEvents from "../journeys/site-events.json" with { type: "json" };
 import socialDraftReview from "../journeys/social-draft-review.json" with { type: "json" };
+import supportCaseNps from "../journeys/support-case-nps.json" with { type: "json" };
 import { parseJourney, type Journey, type Trigger } from "./acceptance-model.js";
 
 /** Roles a failure can be routed to: the kit's team, the Operator, and the Acceptance agent itself. */
 export const JOURNEY_ROLES: readonly string[] = [...TEAM_ROLES.map((role) => role.key), "acceptance"];
 
-export const JOURNEYS: Journey[] = [leadCapture, quoteToInvoice, emailSequenceDryRun, socialDraftReview, seoSprintDraft, clientReport, esign, siteEvents].map((raw) => parseJourney(raw, JOURNEY_ROLES));
+export const JOURNEYS: Journey[] = [leadCapture, quoteToInvoice, emailSequenceDryRun, socialDraftReview, seoSprintDraft, clientReport, esign, siteEvents, supportCaseNps].map((raw) => parseJourney(raw, JOURNEY_ROLES));
 
 export function journeyByKey(key: string): Journey | null {
   return JOURNEYS.find((j) => j.key === key) ?? null;

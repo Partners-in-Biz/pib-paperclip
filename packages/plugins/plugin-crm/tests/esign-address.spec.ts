@@ -11,6 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Every test re-imports the whole module graph after `vi.resetModules()`. In the full suite, with all workers busy, that takes
+// longer than the 5 s default. A timed-out test keeps running and tells the kit the uuid while the next test is starting, so the
+// next test then finds an address it never reported. A generous limit keeps the tests apart.
+vi.setConfig({ testTimeout: 30_000 });
+
 const UUID = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
 const dirs: string[] = [];
 

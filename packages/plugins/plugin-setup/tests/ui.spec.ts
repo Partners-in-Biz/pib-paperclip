@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MODULES, type SetupStatus } from "../src/kit-setup.js";
 import { guidedOrder } from "../src/guide.js";
-import { allModulesOn } from "../src/modules.js";
+import { allModulesOn, effectiveModules } from "../src/modules.js";
 import { planCopy } from "../src/copy.js";
 import { CopyPreview, GuideStep, ModuleChecklist, ModulesStep, SetupProgressCard, checklistOrder, groupOpenByDefault, moduleAnchor, pageSummary, resolveModuleViews, setupTabs, sidebarLeft, sourceLine, viewsSummary } from "../src/ui/index.js";
 import { clearSharedRequests, reportableStatuses, sharedRequest, type LoadResult } from "../src/ui/data.js";
@@ -82,6 +82,30 @@ describe("setup UI render", () => {
     expect(html).toContain('role="switch"');
   });
 
+  it("shows a module that is not in the plan locked, off and disabled", () => {
+    const entitled = { crm: true, mailbox: true, cockpit: true, memory: true };
+    const html = renderToStaticMarkup(createElement(ModulesStep, {
+      draft: effectiveModules(null, entitled),
+      entitled,
+      installed,
+      firstVisit: true,
+      dirty: false,
+      busy: false,
+      onChange: () => undefined,
+      onSave: () => undefined,
+    }));
+    const locked = html.split("Not in your plan").length - 1;
+    expect(locked).toBe(Object.keys(MODULES).length - 4);
+    expect(html).toContain("Payroll is not in your plan");
+    expect(html).toMatch(/aria-label="Payroll is not in your plan"[^>]*disabled/);
+    expect(html).not.toContain("CRM is not in your plan");
+  });
+
+  it("resolves enabled views from the entitlements", () => {
+    const views = resolveModuleViews({ modules: null, entitled: { crm: true, cockpit: true, memory: true }, installed: null, live: {}, stored: {} });
+    expect(views.filter((view) => view.enabled).map((view) => view.module).sort()).toEqual(["cockpit", "crm", "memory"]);
+  });
+
   it("renders a module as one line that opens to its steps: steps left first, optional and done folded", () => {
     const view = { module: "crm" as const, pluginKey: "partnersinbiz.crm", enabled: true, installed: installed["partnersinbiz.crm"], status: crm, source: "live" as const, receivedAt: null, note: null };
     const html = renderToStaticMarkup(createElement(ModuleChecklist, { view, checking: false, linkFor, busy: null, open: true, onRecheck: () => undefined, onAction: () => undefined }));
@@ -148,7 +172,7 @@ describe("setup UI render", () => {
   });
 
   it("shows the widget until everything required is done, with the one count", () => {
-    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null };
+    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null, drive: null };
     const views = resolveModuleViews({ modules: load.modules, installed, live: { "partnersinbiz.crm": { ok: true, status: crm } }, stored: {} });
     const html = renderToStaticMarkup(createElement(SetupProgressCard, { data: { load, views }, linkFor }));
     expect(html).toContain("Setup progress");

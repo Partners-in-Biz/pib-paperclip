@@ -110,10 +110,22 @@ export const SERVICES = [
     role: "operator",
     aliases: /\bweb ?(site|design|build|dev)|\bwordpress\b|\bshopify\b|\bwix\b|\bredesign\b|e-?commerce|online store|web store/i,
     start: [
-      "Register the site (`save-client-site`) and link its project; a WordPress site is paired with the PiB Connector.",
+      "Register the site (`save-client-site`) and link its project; a WordPress site is paired with the Connector.",
       "Hand the build or care work to the Delivery Lead with the client's project and the `development` branch rule.",
     ],
     evidence: "the registered site and the hand-off issue",
+  },
+  {
+    key: "platform",
+    label: "Hosted platform",
+    module: null,
+    role: "operator",
+    aliases: /hosted (company|workspace|platform)|\bpib platform\b/i,
+    start: [
+      "Open the provisioning request below (`partnersinbiz.setup` provisioning, profile `client`) with the plan label and modules shown; do not change the module list by hand.",
+      "Once the hosted company exists, write its id back on this client: `update-company` with `hostedCompanyId`.",
+    ],
+    evidence: "the hosted company id (written on the client's Hosted company block)",
   },
   {
     key: "development",

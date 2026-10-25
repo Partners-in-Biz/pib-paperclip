@@ -318,6 +318,35 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
     issueId,
   });
 
+  // Jagter / sequence outreach reply: draft-only speed-to-lead (never auto-send).
+  // Dynamic import avoids a mail ↔ speed-to-lead cycle (speed-to-lead uses openIssueOnce).
+  if (plan.issue === "follow-up") {
+    const email =
+      (contact.emails.find((value) => value.includes("@")) ?? mail.from.email).trim().toLowerCase();
+    if (email.includes("@")) {
+      try {
+        const { onLeadStoredForSpeedToLead } = await import("./speed-to-lead.js");
+        await onLeadStoredForSpeedToLead(ctx, {
+          companyId,
+          contactId: contact.id,
+          leadKey: `reply:${mail.messageId}`,
+          source: "sequence_reply",
+          text: `${subject}\n\n${mail.snippet}`.trim(),
+          name: contact.name,
+          email,
+          langHint: typeof contact.custom.language === "string" ? contact.custom.language : null,
+          arrivedAt: mail.receivedAt ?? null,
+          threadId: mail.threadId || null,
+        });
+      } catch (error) {
+        ctx.logger.info("CRM speed-to-lead deferred", {
+          messageId: mail.messageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   return { matched: true, contactId: contact.id, enrollments: running.length, kind, confidence, acted: confident, issueId };
 }
 

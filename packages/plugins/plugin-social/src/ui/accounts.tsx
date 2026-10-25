@@ -281,9 +281,11 @@ function EditAccountModal({ account, snapshot, run, onClose }: { account: Accoun
       )}
     >
       {error ? <Banner tone="error" title="Not saved">{error}</Banner> : null}
-      <Field label="Belongs to">
-        <BelongsToSelect clients={clients ?? []} value={belongsTo} onChange={setBelongsTo} disabled={!clients} />
-      </Field>
+      {snapshot.space === "me" ? null : (
+        <Field label="Belongs to">
+          <BelongsToSelect clients={clients ?? []} value={belongsTo} onChange={setBelongsTo} disabled={!clients} />
+        </Field>
+      )}
       {clientsError ? <Muted style={{ color: tone("bad").fg }}>Could not load CRM clients: {clientsError}</Muted> : null}
       {moving ? (
         <Banner tone="warn" title={`Move to ${targetName}?`}>

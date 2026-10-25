@@ -14,8 +14,8 @@ import {
   WEEKLY_ROUTINE_KEY,
 } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
-import { SKILLS } from "./skills.js";
-import { SEO_TOOLS } from "./tools.js";
+import { PIB_ONLY_SKILL_DECLARATIONS, SKILLS } from "./skills.js";
+import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
 
 export const AGENT_INSTRUCTIONS = `# SEO Specialist — Partners in Biz
 
@@ -62,6 +62,9 @@ Procedure:
 6. Review measured optimizations (list-optimizations status measured) and note wins and losses in a post-digest on the sprint root issue. Each win or loss has a drafted playbook change: propose a clearer rule with partnersinbiz.seo:propose-playbook-change when one fits, and keep or discard pending changes with decide-playbook-change only when autopilot is full.
 7. Close this routine issue with a summary: proposals per sprint, your recommendations, results measured this week.`;
 
+/** Skills only the instance's own company receives; the kit contract test skips them. */
+export const PIB_ONLY_SKILLS = PIB_ONLY_SKILL_DECLARATIONS;
+
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
@@ -73,6 +76,7 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    "access.members.read",
     "issues.read",
     "issues.create",
     "issues.update",
@@ -104,7 +108,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "seo", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "issue_comments"] },
-  tools: SEO_TOOLS,
+  tools: [...SEO_TOOLS, ...GROWTH_TOOLS],
   jobs: [
     {
       jobKey: DAILY_JOB_KEY,
@@ -219,7 +223,7 @@ const manifest: PaperclipPluginManifestV1 = {
       ],
     },
   ],
-  skills: SKILLS,
+  skills: [...SKILLS, ...PIB_ONLY_SKILLS],
   ui: {
     slots: [
       { type: "page", id: "seo-page", displayName: "SEO", exportName: "SeoPage", routePath: "seo" },

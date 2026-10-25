@@ -35,6 +35,7 @@ import { createWorkIssue } from "./issues.js";
 import { knownCompanyIds, rememberCompany } from "./known-companies.js";
 import { skillVersion, type SkillDeclarationLike, type SkillSyncer, type SkillSyncResult } from "./skills.js";
 import { TEAM_SETUP_PATH } from "./team.js";
+import { renderTokens } from "./tokens.js";
 
 // ---------------------------------------------------------------------------
 // Which companies
@@ -379,16 +380,16 @@ const SETUP_ISSUE_STATE = (companyId: string) => ({ scopeKind: "company" as cons
 export function companySetupIssueText(company: { name: string; prefix: string | null }): { title: string; description: string } {
   const prefix = company.prefix ? `/${company.prefix}` : "";
   return {
-    title: `Set up ${company.name}`,
-    description: [
-      `${company.name} is new. The PiB plugins are installed, and each plugin's skills are already in the company's skill library. Three one-time steps make the rest run by itself:`,
+    title: renderTokens("Set up {{company}}", { company: company.name }),
+    description: renderTokens([
+      "{{company}} is new. The PiB plugins are installed, and each plugin's skills are already in the company's skill library. Three one-time steps make the rest run by itself:",
       "",
       `1. **Staff the team.** Open [Setup → Team](${prefix}${TEAM_SETUP_PATH}) and hire or pick an agent for each role. Roles are staffed only there.`,
       "2. **Save each plugin's settings once.** Open [Settings → Plugins](/company/settings/instance/plugins), open each PiB plugin and click Save Configuration. Until you do, the plugin's hourly jobs cannot act for this company, and its agents' skills stay as they are.",
       `3. **Check the owner.** In [Setup → Team](${prefix}${TEAM_SETUP_PATH}) make sure you are set as the owner: the owner receives the daily brief and every approval.`,
       "",
       "Setup shows what is still missing and links to each step. Close this issue when the Setup page says done.",
-    ].join("\n"),
+    ].join("\n"), { company: company.name }),
   };
 }
 

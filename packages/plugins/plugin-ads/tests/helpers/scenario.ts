@@ -31,6 +31,9 @@ export const CREATE_AD_CREATIVE = (accountId: string, extra: Record<string, unkn
 
 export const CREATE_AD = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_ad", scopeKey: "own", accountId, name: "Q4 ad", adSetExternalId: "as1", creativeExternalId: "cr1", reason: "Create ad from approved set and creative.", ...extra });
 
+export const CHANGE_BUDGET = (accountId: string, campaignExternalId: string, newDailyBudgetMinor: number, extra: Record<string, unknown> = {}) => ({ kind: "change_budget", scopeKey: "own", accountId, campaignExternalId, newDailyBudgetMinor, reason: "Adjusting spend", ...extra });
+
+export const PAUSE = (scopeKey: string, accountId: string, campaignExternalId: string, extra: Record<string, unknown> = {}) => ({ kind: "pause_campaign", scopeKey, targets: [{ accountId, campaignExternalId }], reason: "Pausing", ...extra });
 export async function propose(w: World, input: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null } = { agentId: ADS_AGENT }): Promise<ProposalRow> {
   const result = await createProposal(w.rt(), actor, input);
   return (await getProposal(w.ctx, COMPANY, result.proposalId))!;

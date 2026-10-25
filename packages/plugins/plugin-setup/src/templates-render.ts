@@ -42,9 +42,9 @@ export function pickAdapter(template: Pick<AgentTemplate, "adapterPreference" | 
 }
 
 /** The agent's AGENTS.md: the file, its shared blocks, the company's names, and (for hired agents) the memory and manual lines. */
-export function renderInstructions(template: AgentTemplate, vars: TemplateVars): string {
+export function renderInstructions(template: AgentTemplate, vars: TemplateVars, rawOverride?: string): string {
   const { files, blocks } = packSources();
-  const source = files[template.file];
+  const source = rawOverride !== undefined ? rawOverride : files[template.file];
   if (source === undefined) throw new Error(`The template ${template.key} has no instructions file`);
   const text = fillVariables(expandBlocks(source, blocks), vars).trim();
   return template.provisioning === "hire" ? withMemoryInstruction(text) : text;
@@ -67,7 +67,11 @@ function introFor(template: AgentTemplate): string {
   return `${lead}\n\n${how}`;
 }
 
-export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null }): HireDraft {
+/**
+ * The hire task never carries the template's `notes`: they are maintainer documentation (shown in the New company screen), and a hire task
+ * is text a client company's agent reads. `ownerCompany` is kept in the input for callers but changes nothing in the task.
+ */
+export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null; ownerCompany?: boolean }): HireDraft {
   const adapterType = pickAdapter(template);
   const instructions = renderInstructions(template, input.vars);
   const config = templateConfig(template, adapterType);
@@ -134,7 +138,6 @@ export function renderHire(template: AgentTemplate, input: { vars: TemplateVars;
     "```json",
     JSON.stringify(payload, null, 2),
     "```",
-    ...(template.notes.length ? ["", "## Notes", "", ...template.notes.map((note) => `- ${note}`)] : []),
     ...(warnings.length ? ["", "## Check first", "", ...warnings.map((warning) => `- ${warning}`)] : []),
     "",
     "## Done when",

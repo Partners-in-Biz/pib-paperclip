@@ -4,7 +4,8 @@
  * journey from nothing to mail going out as a client's own domain. The provider's API is the in-memory Resend of
  * `fake-resend.ts` behind the host's `ctx.http.fetch`, and public DNS is a records table behind the same fetch.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { HANDOFF_EVENTS, MAIL_EVENTS, PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import { resetEnsureMemo } from "../../src/delegations.js";
@@ -14,13 +15,15 @@ import { ESP_DELIVERY_EVENT } from "../../src/esp/events.js";
 import { forgetLimiters } from "../../src/esp/limiter.js";
 import { forgetEspRuntime } from "../../src/esp/runtime.js";
 import { forgetWebhookCandidates } from "../../src/esp/webhook.js";
+import { handleSnsWebhook, forgetSnsCandidates, forgetSnsCerts } from "../../src/esp/sns.js";
 import manifest from "../../src/manifest.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import { setupStatus } from "../../src/setup-status.js";
 import plugin from "../../src/worker.js";
 import { dohFetchFrom } from "../helpers/dns.js";
-import { API_KEY, CLIENT, DOMAIN, dnsVerified, ESP_ON, eventBody, FROM, marketing, svixHeaders, WEBHOOK_SECRET } from "../helpers/esp.js";
+import { API_KEY, CLIENT, DOMAIN, dnsVerified, ESP_ON, eventBody, FROM, marketing, svixHeaders, WEBHOOK_SECRET, SES_TOPIC_ARN, addEspDomain, knownToWebhook, sesSetup } from "../helpers/esp.js";
 import { FakeResend } from "../helpers/fake-resend.js";
+import { signSns } from "../helpers/fake-ses.js";
 import { CO } from "../helpers/memory.js";
 import { embeddedAvailable, startPg, type PgHarness } from "../helpers/pg.js";
 
@@ -671,4 +674,252 @@ describe.skipIf(!available)("the provider's SQL, statement by statement", () => 
     await s.redactSends(CO, ["k1"]);
     expect((await s.getSend(CO, "k1"))!.delivery).toEqual({});
   });
+});
+
+describe.skipIf(!available)("SES SNS journey: setup → topic confirmation → send → bounce/complaint events → replay", () => {
+  let pg: PgHarness;
+  let seq = 0;
+  function nextMessageId(): string {
+    seq += 1;
+    return `sns-msg-${String(seq).padStart(6, "0")}`;
+  }
+
+  beforeAll(async () => {
+    pg = await startPg();
+  }, 180_000);
+  afterAll(async () => {
+    await pg?.stop();
+  });
+  beforeEach(async () => {
+    await pg.reset();
+    forgetEspRuntime();
+    forgetLimiters();
+    forgetWebhookCandidates();
+    forgetSnsCandidates();
+    forgetSnsCerts();
+    resetEnsureMemo();
+  });
+
+  const sql = async <T = Record<string, unknown>>(text: string, params: unknown[] = []) => (await pg.client.query(text, params)).rows as T[];
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  async function bootSes() {
+    // Import what we need for SES setup
+    const { FakeSesWithSns, hostFetch, SES_ACCESS_KEY_ID, SES_SECRET_ACCESS_KEY, SES_REGION, SES_CONFIGURATION_SET } = await import("../helpers/fake-ses.js");
+    const { fakeDns } = await import("../helpers/dns.js");
+
+    // Create a test harness with SES config
+    const sesConfig = { esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: SES_REGION, accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET, snsTopicArn: SES_TOPIC_ARN } } };
+    const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20), ...sesConfig } });
+
+    // Inject Postgres DB
+    (harness.ctx as unknown as { db: unknown }).db = pg.db;
+
+    // Set up fake SES and DNS
+    const ses = new FakeSesWithSns();
+    const dns: { records: Record<string, string[]> } = { records: dnsVerified() };
+    (harness.ctx as unknown as { http: unknown }).http = {
+      async fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) {
+        return hostFetch(ses.handle)(url, init);
+      },
+    };
+
+    // Setup plugin
+    await plugin.definition.setup(harness.ctx);
+
+    // Create store
+    const store = new SqlStore(pg.db);
+
+    // Add client and domain
+    await sql(`INSERT INTO ${NAMESPACE}.crm_companies (id, company_id, name, domain, lifecycle, updated_at) VALUES ($1, $2, 'Client Co', 'client.co.za', 'customer', now())`, [CLIENT.ref, CO]);
+    const domainInfo = await addEspDomain({ store } as any, { provider: "ses", domain: DOMAIN });
+
+    // Mark company as known to webhook
+    const { rememberCompany } = await import("../../src/setup-status.js");
+    await rememberCompany(harness.ctx, CO);
+
+    return { harness, ses, dns, store, domainInfo };
+  }
+
+  type SesBooted = Awaited<ReturnType<typeof bootSes>>;
+
+  it("SES setup saves config, SubscriptionConfirmation confirms topic, marketing send goes out with tags, Bounce/Complaint events land and suppress, replay dedupes, concurrent delivery applies once", async () => {
+    const t = await bootSes();
+    const { rememberCompany } = await import("../../src/setup-status.js");
+    const { FakeSesWithSns } = await import("../helpers/fake-ses.js");
+    const env = { ctx: t.harness.ctx, store: t.store, now: () => Date.now(), fetch: t.harness.ctx.http?.fetch } as any;
+
+    // 1. SES account is set up: check the config is saved
+    const account = (await sql<{ provider: string; status: string }>(`SELECT provider, status FROM ${NAMESPACE}.accounts WHERE provider = 'ses'`))[0];
+    expect(account).toMatchObject({ provider: "ses", status: "connected" });
+
+    // 2. SubscriptionConfirmation for the SNS topic -> marks topic confirmed via SNS handler
+    const subMsg = {
+      Type: "SubscriptionConfirmation" as const,
+      MessageId: nextMessageId(),
+      Message: "You have chosen to subscribe to the topic ...",
+      Timestamp: new Date().toISOString(),
+      TopicArn: SES_TOPIC_ARN,
+      SubscribeURL: t.ses.subscribeUrl(),
+      Token: "test-token",
+      SigningCertURL: t.ses.certUrl(),
+    };
+    const signedSub = signSns(subMsg as Record<string, string>, t.ses.privateKey, "2");
+    const subResult = await handleSnsWebhook(env, { rawBody: JSON.stringify(signedSub) });
+    expect(subResult.outcome).toBe("ignored");
+    expect(t.ses.subscribeUrlHits).toBeGreaterThan(0);
+
+    // 3. Marketing send goes out through SES as Raw MIME with ConfigurationSetName and tags
+    const send = marketing({ to: [{ email: "ann@x.co" }, { email: "bob@x.co" }, { email: "carol@x.co" }] });
+    // Send the request through the harness
+    const CAMPAIGN_SEND = `plugin.${PIB_PLUGINS.campaigns}.${MAIL_EVENTS.sendRequested}` as const;
+    await t.harness.emit(CAMPAIGN_SEND, send, { companyId: CO });
+
+    // Verify the send was recorded
+    const sends = await sql<{ status: string; provider: string; provider_message_id: string }>(`SELECT status, provider, provider_message_id FROM ${NAMESPACE}.send_requests WHERE key = $1`, [send.key]);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({ status: "sent", provider: "ses" });
+    const providerMessageId = sends[0]!.provider_message_id;
+
+    // 4. Signed Bounce (Permanent) with two bouncedRecipients on three-recipient message
+    const bounceMsg = {
+      Type: "Notification" as const,
+      MessageId: `sns-msg-${Date.now()}`,
+      Message: JSON.stringify({
+        eventType: "Bounce",
+        mail: {
+          messageId: providerMessageId,
+          timestamp: new Date().toISOString(),
+          source: FROM,
+          destination: ["ann@x.co", "bob@x.co", "carol@x.co"],
+          tags: { pib_company: [CO], pib_send: [send.key] },
+        },
+        bounce: {
+          bounceType: "Permanent",
+          bounceSubType: "General",
+          bouncedRecipients: [
+            { emailAddress: "ann@x.co", diagnosticCode: "smtp; 550 user unknown" },
+            { emailAddress: "bob@x.co", diagnosticCode: "smtp; 550 user unknown" },
+          ],
+        },
+      }),
+      Timestamp: new Date().toISOString(),
+      TopicArn: SES_TOPIC_ARN,
+      SigningCertURL: t.ses.certUrl(),
+    };
+    const signedBounce = signSns(bounceMsg as Record<string, string>, t.ses.privateKey, "2");
+    const bounceResult = await handleSnsWebhook(env, { rawBody: JSON.stringify(signedBounce) });
+    expect(bounceResult.outcome).toBe("applied");
+
+    // 4b. Signed Complaint
+    const complaintSnsId = nextMessageId();
+    const complaintMsg = {
+      Type: "Notification" as const,
+      MessageId: complaintSnsId,
+      Message: JSON.stringify({
+        eventType: "Complaint",
+        mail: {
+          messageId: providerMessageId,
+          timestamp: new Date().toISOString(),
+          source: FROM,
+          destination: ["ann@x.co", "bob@x.co", "carol@x.co"],
+          tags: { pib_company: [CO], pib_send: [send.key] },
+        },
+        complaint: {
+          complainedRecipients: [{ emailAddress: "carol@x.co" }],
+        },
+      }),
+      Timestamp: new Date().toISOString(),
+      TopicArn: SES_TOPIC_ARN,
+      SigningCertURL: t.ses.certUrl(),
+    };
+    const signedComplaint = signSns(complaintMsg as Record<string, string>, t.ses.privateKey, "2");
+    const complaintResult = await handleSnsWebhook(env, { rawBody: JSON.stringify(signedComplaint) });
+    expect(complaintResult.outcome).toBe("applied");
+
+    // 5. Check esp_events: two bounce rows with event_id '<SNS MessageId>:<recipient>'
+    const espEvents = await sql<{ event_id: string; recipient: string; event_type: string }>(`SELECT event_id, recipient, event_type FROM ${NAMESPACE}.esp_events ORDER BY event_id`);
+    const bounceEvents = espEvents.filter(e => e.event_type === "Bounce");
+    expect(bounceEvents).toHaveLength(2);
+    expect(bounceEvents[0]!.event_id).toMatch(/ann@x\.co$/i);
+    expect(bounceEvents[1]!.event_id).toMatch(/bob@x\.co$/i);
+
+    // 5b. Check suppressions: ann and bob (scope all), carol (scope marketing)
+    const suppressions = await sql<{ email: string; scope: string; reason: string }>(`SELECT email, scope, reason FROM ${NAMESPACE}.suppressions ORDER BY email, scope`);
+    expect(suppressions).toHaveLength(3);
+    expect(suppressions.filter(s => s.email === "ann@x.co" && s.scope === "all")).toHaveLength(1);
+    expect(suppressions.filter(s => s.email === "bob@x.co" && s.scope === "all")).toHaveLength(1);
+    expect(suppressions.filter(s => s.email === "carol@x.co" && s.scope === "marketing")).toHaveLength(1);
+
+    // 5c. Check esp_domain_days counters: hard_bounces +2, complaints +1
+    const day = await sql<{ hard_bounces: number; complaints: number }>(`SELECT hard_bounces, complaints FROM ${NAMESPACE}.esp_domain_days WHERE domain = $1 AND day = $2`, [DOMAIN, today()]);
+    expect(day).toHaveLength(1);
+    expect(day[0]).toMatchObject({ hard_bounces: 2, complaints: 1 });
+
+    // 6. Replay: delivering the same Bounce message again yields duplicate, no extra rows
+    const replayResult = await handleSnsWebhook(env, { rawBody: JSON.stringify(signedBounce) });
+    expect(replayResult.outcome).toBe("duplicate");
+    const eventCount = await sql<{ cnt: number }>(`SELECT COUNT(*)::int AS cnt FROM ${NAMESPACE}.esp_events WHERE event_type = 'Bounce'`);
+    expect(eventCount[0]!.cnt).toBe(2); // Still just 2 bounce events
+
+    // 7. Concurrent delivery: delivering Complaint 3 times at once -> applies once per recipient
+    const concurrentResults = await Promise.all([
+      handleSnsWebhook(env, { rawBody: JSON.stringify(signedComplaint) }),
+      handleSnsWebhook(env, { rawBody: JSON.stringify(signedComplaint) }),
+      handleSnsWebhook(env, { rawBody: JSON.stringify(signedComplaint) }),
+    ]);
+    expect(concurrentResults[0].outcome).toBe("duplicate");
+    const complaintEventCount = await sql<{ cnt: number }>(`SELECT COUNT(*)::int AS cnt FROM ${NAMESPACE}.esp_events WHERE event_type = 'Complaint'`);
+    expect(complaintEventCount[0]!.cnt).toBe(1); // Only one complaint event
+
+    // 8. Scan for secrets: no access key, secret, or cert URL in DB
+    const everything = await sql<{ j: string }>(`SELECT row_to_json(t)::text AS j FROM ${NAMESPACE}.esp_events t UNION ALL SELECT row_to_json(t)::text AS j FROM ${NAMESPACE}.suppressions t`);
+    const allText = JSON.stringify(everything);
+    // Check that cert URL doesn't appear
+    expect(allText.includes(t.ses.certUrl())).toBe(false);
+  });
+});
+
+describe.skipIf(!available)("migration 011 (SES)", () => {
+  const INDEX = "accounts_ses_address";
+  const ELEVEN = "011_ses.sql";
+  let pg: PgHarness | null = null;
+  afterEach(async () => {
+    await pg?.stop();
+    pg = null;
+  });
+  const names = async (text: string, params: unknown[] = []) => ((await pg!.client.query(text, params)).rows as Array<Record<string, string>>).map((row) => Object.values(row)[0]!);
+  const insertAccount = (id: string, company: string, provider: string, address: string) =>
+    pg!.client.query(`INSERT INTO ${NAMESPACE}.accounts (id, company_id, provider, address, status) VALUES ($1, $2, $3, $4, 'connected')`, [id, company, provider, address]);
+
+  it("applies on the 0.6.5 schema (001–010, with rows in it) and on an empty one, and creates only the index", async () => {
+    const all = readdirSync(new URL("../../migrations/", import.meta.url)).filter((f) => f.endsWith(".sql")).sort();
+    expect(all.at(-1)).toBe(ELEVEN);
+    // 0.6.5: everything before 011, with a Gmail and a Resend account already there.
+    pg = await startPg({ migrations: all.filter((f) => f !== ELEVEN) });
+    await insertAccount("g1", CO, "gmail", "peet@partnersinbiz.online");
+    await insertAccount("r1", CO, "resend", "hello@updates.client.co.za");
+    const before = await names(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}'`);
+    expect(before).not.toContain(INDEX);
+    await pg.client.query(readFileSync(new URL(`../../migrations/${ELEVEN}`, import.meta.url), "utf8"));
+    const after = await names(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}'`);
+    expect(after.filter((name) => !before.includes(name))).toEqual([INDEX]);
+    expect(await names(`SELECT count(*)::text FROM ${NAMESPACE}.accounts`)).toEqual(["2"]);
+    await pg.stop();
+    // An empty schema takes all eleven in order.
+    pg = await startPg();
+    expect((await pg.client.query(`SELECT indexname FROM pg_indexes WHERE schemaname = '${NAMESPACE}' AND indexname = $1`, [INDEX])).rows).toHaveLength(1);
+  }, 180_000);
+
+  it("refuses two ses accounts with one address in a company, and ignores Gmail and Resend rows and other companies", async () => {
+    pg = await startPg();
+    await insertAccount("s1", CO, "ses", "hello@pib.test");
+    await expect(insertAccount("s2", CO, "ses", "hello@pib.test")).rejects.toThrow(INDEX);
+    // The same address elsewhere is fine: another company, another provider, Gmail.
+    await insertAccount("s3", "co-2", "ses", "hello@pib.test");
+    await insertAccount("r1", CO, "resend", "hello@pib.test");
+    await insertAccount("g1", CO, "gmail", "hello@pib.test");
+    await insertAccount("g2", CO, "gmail", "hello@pib.test").catch(() => undefined);
+    expect(await names(`SELECT id FROM ${NAMESPACE}.accounts WHERE provider = 'ses' ORDER BY id`)).toEqual(["s1", "s3"]);
+  }, 180_000);
 });

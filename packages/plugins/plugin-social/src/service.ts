@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
@@ -63,6 +63,13 @@ import {
   listPosts,
   listRssFeeds,
   listTemplates,
+  listPersonalAccounts,
+  listPersonalPosts,
+  listPersonalTemplates,
+  listPersonalMediaAssets,
+  listPersonalRssFeeds,
+  listPersonalInboxItems,
+  destinationsForPersonal,
   metricsForCompany,
   metricsForPost,
   postMedia,
@@ -108,15 +115,19 @@ import {
   type PostStatus,
   type SocialPlatform,
 } from "./platforms.js";
+import { spaceOf } from "./space.js";
 import { retryPost } from "./publish.js";
+import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
+import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
-import { scopeStats } from "./stats.js";
+import { emptyStats, scopeStats } from "./stats.js";
+import { parseTweetUrl, targetFromParams } from "./post-target.js";
 
 export interface Viewer {
   companyId: string;
@@ -191,18 +202,27 @@ export function postParams(params: Record<string, unknown>): Record<string, unkn
 }
 
 function postVisibility(params: Record<string, unknown>): AccountScope {
+  if (spaceOf(params) === "me") return "personal";
   const value = optionalString(params, "visibility") ?? "org";
   if (value !== "org" && value !== "personal") throw new SocialError("visibility must be org or personal");
   return value;
 }
 
-/** Validate and normalise the platform-keyed overrides object. */
-export function normalizeOverrides(value: unknown): Partial<Record<SocialPlatform, PlatformOverride>> | undefined {
+/** Validate and normalise the platform-keyed overrides object and reserved tags key. */
+export function normalizeOverrides(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new SocialError("overrides must be an object keyed by platform");
-  const out: Partial<Record<SocialPlatform, PlatformOverride>> = {};
+  const out: Record<string, unknown> = {};
   for (const [platform, raw] of Object.entries(value as Record<string, unknown>)) {
+    // Handle reserved tags key
+    if (platform === "tags") {
+      if (Array.isArray(raw)) {
+        const tags = raw.map((t) => String(t || "").toLowerCase().trim()).filter((t) => t && t.length > 0);
+        if (tags.length > 0) out.tags = Array.from(new Set(tags)).slice(0, 10); // dedupe, max 10
+      }
+      continue;
+    }
     if (!isSocialPlatform(platform)) throw new SocialError(`Unknown platform in overrides: ${platform}`);
     if (raw == null) continue;
     if (typeof raw !== "object" || Array.isArray(raw)) throw new SocialError(`overrides.${platform} must be an object`);
@@ -282,7 +302,14 @@ function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
   };
 }
 
+/** A reply / quote target for display: the link, the tweet id and the author handle. */
+export function targetOut(url: string | null | undefined): { url: string; id: string; handle: string | null } | null {
+  const ref = url ? parseTweetUrl(url) : null;
+  return ref ? { url: ref.url, id: ref.id, handle: ref.handle } : null;
+}
+
 export function postOut(row: PostRow, destinations: DestinationRow[] = [], accounts: Map<string, AccountRow> = new Map()) {
+  const tags = ((row.overrides as Record<string, unknown>)?.tags as string[] | undefined) ?? [];
   return {
     id: row.id,
     body: row.body,
@@ -293,8 +320,12 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     publishedAt: iso(row.published_at),
     ...scopeOut(row),
     firstComment: row.first_comment,
+    replyTo: targetOut(row.reply_to_url),
+    quote: targetOut(row.quote_url),
+    note: row.note ?? null,
     media: postMedia(row),
     overrides: postOverrides(row),
+    tags: tags.length > 0 ? tags : undefined,
     source: row.source ?? "manual",
     /** The SEO page this draft repurposes (its hand-off key), when it was drafted for one. */
     handoffKey: row.source === "repurpose" ? row.source_ref : null,
@@ -369,8 +400,12 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     );
   }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
-  const overrides = normalizeOverrides(params.overrides) ?? {};
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
+  const overrides = normalizeOverrides(overridesWithTags) ?? {};
   const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
+  const targetFields = targetFromParams(params);
   const row = {
     id: randomUUID(),
     company_id: viewer.companyId,
@@ -381,6 +416,9 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
+    reply_to_url: targetFields.replyToUrl ?? null,
+    quote_url: targetFields.quoteUrl ?? null,
+    note: targetFields.note ?? null,
     scheduled_at: scheduledAt,
     ...scopeColumns(target),
     source: handoff ? "repurpose" : viewer.isAgent ? "agent" : "manual",
@@ -396,6 +434,14 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   await attachAccounts(ctx, viewer, post, accounts);
   await writeExperimentTag(growth, viewer.companyId, row.id, tag);
   return getPostDetail(ctx, viewer, row.id);
+}
+
+/** Reply / quote / note changes of an update. Setting one of reply and quote clears the other, so a post never keeps both. */
+export function changedTarget(params: Record<string, unknown>) {
+  const fields = targetFromParams(params);
+  if (fields.replyToUrl && fields.quoteUrl === undefined) fields.quoteUrl = null;
+  if (fields.quoteUrl && fields.replyToUrl === undefined) fields.replyToUrl = null;
+  return fields;
 }
 
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
@@ -435,13 +481,17 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(params.overrides),
+    overrides: normalizeOverrides(overridesWithTags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
+    ...changedTarget(params),
   });
   // Any edit voids the client's open links: they were made for the old version.
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
@@ -538,6 +588,15 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only edit drafts in a personal queue that they created");
   }
+  // My Social has no review stage: the owner approves their own draft directly (nobody else can).
+  if (post.scope === "personal" && !viewer.isAgent && to === "approved") {
+    requireCanActOnPost(viewer, post, "approve");
+    if (post.status !== "draft" && post.status !== "review") throw new SocialError(`A ${post.status.replace("_", " ")} post cannot be approved`);
+    if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], "approved"))) {
+      throw new SocialError("The post changed while you were editing it. Reload and try again.");
+    }
+    return getPostDetail(ctx, viewer, post.id);
+  }
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
@@ -555,7 +614,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
   if (to === "review") {
     await routePostReview(ctx, viewer, post);
-    return getPostDetail(ctx, viewer, post.id);
+    // No Reviewer asked for: a low-risk post with a clean owner streak needs no click (autonomy ladder).
+    const inReview = await getPost(ctx, viewer.companyId, post.id);
+    const auto = inReview ? await tryAutoApprove(ctx, viewer, inReview) : null;
+    return { ...(await getPostDetail(ctx, viewer, post.id)), ...(auto ? { signoff: { completed: true, pending: [], message: auto.message } } : {}) };
   }
   // Back to draft: a link the client holds would only let them answer for a post that is no longer waiting.
   if (to === "draft" && post.status === "review") await supersedePendingLinks(ctx, viewer.companyId, post.id);
@@ -684,7 +746,18 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const verdict = requiredString(params, "verdict");
   if (verdict !== "pass" && verdict !== "changes") throw new SocialError('verdict must be "pass" or "changes"');
-  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null });
+  const toneScore = params.toneScore != null ? Number(params.toneScore) : null;
+  if (toneScore != null && (!Number.isInteger(toneScore) || toneScore < 0 || toneScore > 20)) {
+    throw new SocialError("toneScore must be a whole number from 0 to 20");
+  }
+  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `request-creative`: the hand-off issue for a post's image or video. */
+export async function requestCreativeRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const durationS = params.durationS != null ? Number(params.durationS) : null;
+  return requestCreative(ctx, viewer.companyId, post, { brief: optionalString(params, "brief"), format: optionalString(params, "format"), durationS });
 }
 
 /** A person records that the client approved outside the approval page. */
@@ -700,6 +773,12 @@ export async function recordClientApprovalRecord(ctx: PluginContext, viewer: Vie
 export async function reviewOutcomesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
   return reviewStats(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 90), 7), 365));
+}
+
+/** `media-compliance`: media and alt-text counts of published posts, and posts live with no Reviewer verdict. */
+export async function mediaComplianceRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return mediaCompliance(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 28), 1), 365));
 }
 
 // ── accounts ────────────────────────────────────────────────────────────────
@@ -718,7 +797,8 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
   const account = await requireAccount(ctx, viewer, requiredString(params, "accountId"));
   // "Belongs to": moving an account is refused while other-scope posts still target it.
   const requested = scopeInput(params);
-  const target = requested === undefined || sameClient(requested, scopeOfRow(account)) ? null : await resolveScope(ctx, viewer.companyId, requested);
+  if (account.scope === "personal" && requested !== undefined && requested !== null) throw new SocialError("A personal account stays in My Social; it cannot be moved to a client");
+  const target = requested === undefined || requested === null && account.scope === "personal" || sameClient(requested, scopeOfRow(account)) ? null : await resolveScope(ctx, viewer.companyId, requested);
   const meta: Record<string, unknown> = {};
   if (params.defaultSubreddit !== undefined) {
     if (account.platform !== "reddit") throw new SocialError("Only Reddit accounts have a default subreddit");
@@ -838,7 +918,8 @@ export async function createTemplateRecord(ctx: PluginContext, viewer: Viewer, p
     body: requiredString(params, "body"),
     platform: optionalString(params, "platform"),
   });
-  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform, scope: "org", owner_user_id: null });
+  const owner = spaceOf(params) === "me" ? requireUser(viewer, "save a personal template") : null;
+  await insertTemplate(ctx, { id: template.id, company_id: template.companyId, name: template.name, body: template.body, platform: template.platform, scope: owner ? "personal" : "org", owner_user_id: owner });
   return template;
 }
 
@@ -868,11 +949,14 @@ function feedOut(feed: Awaited<ReturnType<typeof listRssFeeds>>[number]) {
 export async function createRssFeedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const draft = createRssFeed({ companyId: viewer.companyId, url: requiredString(params, "url") });
   const accountIds = Array.from(new Set([...(stringList(params, "accountIds") ?? []), ...(optionalString(params, "accountId") ? [optionalString(params, "accountId")!] : [])]));
-  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  const owner = spaceOf(params) === "me" ? requireUser(viewer, "add a personal feed") : null;
+  const target = await scopeFromParams(ctx, viewer.companyId, owner ? { ...params, client: null } : params);
   const columns = scopeColumns(target);
   for (const id of accountIds) {
     const account = await requireAccount(ctx, viewer, id);
-    if (account.scope !== "org") throw new SocialError("RSS drafts can only target organisation accounts");
+    if (owner ? account.scope !== "personal" : account.scope !== "org") {
+      throw new SocialError(owner ? "A personal feed can only draft to your own accounts" : "RSS drafts can only target organisation accounts");
+    }
     assertAccountScope(columns, account);
   }
   await insertRssFeed(ctx, {
@@ -883,6 +967,8 @@ export async function createRssFeedRecord(ctx: PluginContext, viewer: Viewer, pa
     account_ids: accountIds,
     ...columns,
     created_by_user_id: viewer.userId,
+    scope: owner ? "personal" : "org",
+    owner_user_id: owner,
   });
   return {
     id: draft.id,
@@ -901,6 +987,7 @@ export async function listRssFeedsRecord(ctx: PluginContext, viewer: Viewer, par
 
 export async function setRssActiveRecord(ctx: PluginContext, viewer: Viewer, feedId: string, active: boolean) {
   const feed = await getRssFeed(ctx, viewer.companyId, feedId);
+  if (feed && feed.scope === "personal" && feed.owner_user_id !== viewer.userId) throw new SocialError("RSS feed was not found");
   if (!feed || !(await setRssFeedActive(ctx, viewer.companyId, feed.id, active))) throw new SocialError("RSS feed was not found");
   return { feedId, isActive: active };
 }
@@ -961,14 +1048,20 @@ export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, para
   return { ...item, ...scopeOut(scopeColumns(target)) };
 }
 
+function inboxVisible(viewer: Viewer, item: { scope: "org" | "personal"; owner_user_id: string | null }): boolean {
+  return item.scope === "org" || item.owner_user_id === viewer.userId;
+}
+
 export async function markInboxReadRecord(ctx: PluginContext, viewer: Viewer, itemId: string) {
+  const existing = await getInboxItem(ctx, viewer.companyId, itemId);
+  if (existing && !inboxVisible(viewer, existing)) throw new SocialError("Inbox item was not found");
   if (!(await setInboxItemStatus(ctx, viewer.companyId, itemId, "read"))) throw new SocialError("Inbox item was not found");
   return { itemId, status: "read" };
 }
 
 export async function replyInboxRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const item = await getInboxItem(ctx, viewer.companyId, requiredString(params, "itemId"));
-  if (!item) throw new SocialError("Inbox item was not found");
+  if (!item || !inboxVisible(viewer, item)) throw new SocialError("Inbox item was not found");
   const result = await replyToInboxItem(ctx, {
     companyId: viewer.companyId,
     item,
@@ -1065,31 +1158,34 @@ export async function listClientsRecord(ctx: PluginContext, viewer: Viewer) {
  * ("company:<id>" / "contact:<id>"); without it the page is own work.
  */
 export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
-  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  // `space: "me"` is the signed-in user's own socials: the same page and tabs, filled from their personal rows only.
+  const space = spaceOf(params);
+  const me = space === "me" ? requireUser(viewer, "open My Social") : null;
+  const target = await scopeFromParams(ctx, viewer.companyId, me ? { ...params, client: null } : params);
   const scope: ClientScope = target.scope;
   const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats, policy] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),
-    listAccounts(ctx, viewer.companyId, scope),
-    listPosts(ctx, viewer.companyId, { limit: 300, scope }),
-    destinationsForScope(ctx, viewer.companyId, scope),
-    listTemplates(ctx, viewer.companyId),
-    listMediaAssets(ctx, viewer.companyId, scope),
-    listRssFeeds(ctx, viewer.companyId, scope),
-    listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
+    me ? listPersonalAccounts(ctx, viewer.companyId, me) : listAccounts(ctx, viewer.companyId, scope),
+    me ? listPersonalPosts(ctx, viewer.companyId, me, { limit: 300 }) : listPosts(ctx, viewer.companyId, { limit: 300, scope }),
+    me ? destinationsForPersonal(ctx, viewer.companyId, me) : destinationsForScope(ctx, viewer.companyId, scope),
+    me ? listPersonalTemplates(ctx, viewer.companyId, me) : listTemplates(ctx, viewer.companyId),
+    me ? listPersonalMediaAssets(ctx, viewer.companyId, me) : listMediaAssets(ctx, viewer.companyId, scope),
+    me ? listPersonalRssFeeds(ctx, viewer.companyId, me) : listRssFeeds(ctx, viewer.companyId, scope),
+    me ? listPersonalInboxItems(ctx, viewer.companyId, me, 100) : listInboxItems(ctx, viewer.companyId, 100, undefined, scope),
     // Hire status (open task, candidates) is only shown on the own page.
     agentSummary(ctx, viewer.companyId, { hire: !scope }),
     listPendingPickers(ctx, viewer.companyId, viewer.userId),
     // Growth Lab experiments a post in this scope can be tagged with.
-    experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
+    me ? Promise.resolve([]) : experimentOptions(growthEnv(ctx), viewer.companyId, scope).catch(() => []),
     // Chart series (published per day, destination statuses, weekly lift).
-    scopeStats(ctx, viewer.companyId, scope),
+    me ? Promise.resolve(emptyStats()) : scopeStats(ctx, viewer.companyId, scope),
     // Who approves posts in this scope (the page shows it and a person can change it).
     getPolicy(ctx, viewer.companyId, scope),
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
   // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
-  const routine = scope ? null : await weeklyRoutine(ctx, viewer.companyId);
+  const routine = scope || me ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
   try {
     redirectUri = config.redirectUri();
@@ -1105,6 +1201,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     linkedinPagesConfigured = false;
   }
   return {
+    space,
     scope: scope ? formatClientParam(scope) : null,
     client: target.client ? clientOut(target.client) : null,
     config: {
@@ -1136,6 +1233,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     approvalPolicy: policyOut(policy),
     agent,
     pendingPickers: pickers
+      .filter((p) => (jsonObject(p.extra).accountScope === "personal") === Boolean(me))
       .filter((p) => sameClient(sessionScope(jsonObject(p.extra)).scope, scope))
       .map((p) => ({ pickerId: p.picker_id, platform: p.platform })),
     routine,

@@ -27,7 +27,8 @@ export async function createWorkIssue(
     } catch (error) {
       ctx.logger.info("Issue wakeup skipped", {
         issueId: issue.id,
-        error: error instanceof Error ? error.message : String(error),
+        stage: "wakeup",
+        reason: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -39,7 +40,7 @@ export async function wakeIssue(ctx: PluginContext, issueId: string, companyId: 
     await ctx.issues.requestWakeup(issueId, companyId, { reason, idempotencyKey: `wake:${issueId}:${Date.now()}` });
     return true;
   } catch (error) {
-    ctx.logger.info("Issue wakeup skipped", { issueId, error: error instanceof Error ? error.message : String(error) });
+    ctx.logger.info("Issue wakeup skipped", { issueId, stage: "wakeup", reason: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -61,7 +62,7 @@ export async function reopenApprovalForPerson(
   try {
     await ctx.issues.update(input.issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, input.companyId);
   } catch (error) {
-    ctx.logger.info("Could not hand the approval back to a person", { issueId: input.issueId, error: error instanceof Error ? error.message : String(error) });
+    ctx.logger.info("Could not hand the approval back to a person", { issueId: input.issueId, stage: "reopen", reason: error instanceof Error ? error.message : String(error) });
     return false;
   }
   try {
@@ -72,7 +73,7 @@ export async function reopenApprovalForPerson(
       input.companyId,
     );
   } catch (error) {
-    ctx.logger.info("Could not comment on the reopened approval", { issueId: input.issueId, error: error instanceof Error ? error.message : String(error) });
+    ctx.logger.info("Could not comment on the reopened approval", { issueId: input.issueId, stage: "reopen", reason: error instanceof Error ? error.message : String(error) });
   }
   return true;
 }

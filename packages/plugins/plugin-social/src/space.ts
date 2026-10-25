@@ -4,7 +4,17 @@
  * 'me' = personal rows owned by the viewer only (requires viewer.userId).
  */
 
+import { SocialError } from "./domain.js";
+
 export type Space = "company" | "me";
+
+/** The space an action or page asks for: `space: "me"` is the signed-in user's own socials, anything else is the company. */
+export function spaceOf(params: Record<string, unknown>): Space {
+  const value = params.space;
+  if (value === undefined || value === null || value === "" || value === "company") return "company";
+  if (value === "me") return "me";
+  throw new SocialError(`space must be 'company' or 'me', not '${String(value)}'`);
+}
 
 export interface Viewer {
   companyId: string;

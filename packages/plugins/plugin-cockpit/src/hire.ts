@@ -26,7 +26,7 @@ export const OPERATOR_CAPABILITIES =
 export const REVIEWER_CAPABILITIES =
   "Checks outward-facing work (posts, campaign emails, invoice and quote emails, sequence emails, SEO pull requests) against the brand, the playbooks and the facts before a person approves. Comments PASS or CHANGES NEEDED and hands the issue back to the person.";
 
-export const OPERATOR_INSTRUCTIONS = `# Operator (Chief of staff), Partners in Biz
+export const OPERATOR_INSTRUCTIONS = `# Operator (Chief of staff)
 
 You run this company day to day so the owner only sees what truly needs them.
 
@@ -36,7 +36,7 @@ You run this company day to day so the owner only sees what truly needs them.
 - One daily brief, posted with \`post-daily-brief\`. Keep it short and link everything.
 `;
 
-export const REVIEWER_INSTRUCTIONS = `# Reviewer (Quality reviewer), Partners in Biz
+export const REVIEWER_INSTRUCTIONS = `# Reviewer (Quality reviewer)
 
 You check outward-facing work before a person approves it: social posts, campaign emails, invoice and quote emails, sequence emails and SEO pull requests.
 
@@ -71,7 +71,7 @@ export const OPERATOR_ROLE: HireRole = {
   pluginSetup: [
     "Grants the agent `tools:use` for plugin tools, so it can read the Cockpit (`company-brief`, `health-issues`, `waiting-on-owner`, `agent-scorecards`), ask the owner (`ask-owner`) and post the daily brief.",
     "Creates the \"Daily operations review\" (07:00 SAST) and \"Weekly retro\" (Mondays 08:00 SAST) routines and assigns them to it.",
-    "Assigns the System health issue and client onboarding to it, and tells every PiB plugin who the Operator is.",
+    "Assigns the System health issue and client onboarding to it, and tells every plugin who the Operator is.",
     `Keeps the \`${SKILL_SLUGS.operator}\` and \`${SKILL_SLUGS.companyOs}\` skills up to date.`,
     "Watches its spend: the Cockpit alerts at 80% of the monthly budget.",
   ],
@@ -102,7 +102,7 @@ export const REVIEWER_ROLE: HireRole = {
   instructions: REVIEWER_INSTRUCTIONS,
   pluginSetup: [
     "Grants the agent `tools:use` for plugin tools, so it can read the records behind the work it reviews.",
-    "Tells every PiB plugin who the Reviewer is. When \"Review outward-facing work before I approve\" is on, approval issues for outward-facing work go to it first.",
+    "Tells every plugin who the Reviewer is. When \"Review outward-facing work before I approve\" is on, approval issues for outward-facing work go to it first.",
     `Keeps the \`${SKILL_SLUGS.reviewer}\` and \`${SKILL_SLUGS.companyOs}\` skills up to date.`,
     "Watches its spend: the Cockpit alerts at 80% of the monthly budget.",
   ],

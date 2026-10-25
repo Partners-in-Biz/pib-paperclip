@@ -39,13 +39,13 @@ describe.skipIf(!available)("schema", () => {
 
   it("creates every table the plugin reads and writes", async () => {
     const rows = (await pg.client.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = '${NAMESPACE}' ORDER BY 1`)).rows as Array<{ table_name: string }>;
-    expect(rows.map((r) => r.table_name)).toEqual(["ad_accounts", "ads", "alerts", "approvals", "audit", "budget_overrides", "campaigns", "connections", "crm_companies", "crm_contacts", "daily", "oauth_sessions", "proposals", "scopes", "spend_ledger"]);
+    expect(rows.map((r) => r.table_name)).toEqual(["ad_accounts", "ad_daily", "ads", "alerts", "approvals", "audit", "budget_overrides", "campaigns", "connections", "crm_companies", "crm_contacts", "daily", "growth_experiment_items", "growth_experiments", "growth_playbook_changes", "growth_playbook_versions", "growth_programs", "oauth_sessions", "proposals", "scopes", "spend_ledger", "variants"]);
   });
 
   it("only a person's yes can be stored as an approval", async () => {
     await insert(`INSERT INTO ${NAMESPACE}.proposals (id, company_id, scope_key, kind, status, title, content_hash) VALUES ('p1', 'c', 'own', 'pause_campaign', 'in_review', 't', 'h')`);
     await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a1', 'c', 'p1', 'owner', 'approved', 'user:u1', 'h', now())`);
-    // Agent is allowed when role=owner and decision=approved (for Elon delegate)
+    // Agent is allowed when role=owner and decision=approved (for the owner's delegate)
     await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a2', 'c', 'p1', 'owner', 'approved', 'agent:ag1', 'h', now())`);
     // Agent is rejected when decision is not approved (even with owner role)
     await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a3', 'c', 'p1', 'owner', 'rejected', 'agent:ag2', 'h', now())`)).rejects.toThrow(/approvals_person_or_delegate/);

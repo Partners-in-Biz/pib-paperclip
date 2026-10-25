@@ -12,9 +12,11 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { HealthCheck } from "@partnersinbiz/pib-plugin-kit/cockpit";
+import { escalate, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { FAILED_RUN } from "./merge.js";
 import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
+import type { StuckInput, UnblockInput } from "./ladder-model.js";
 import {
   blockedCheck,
   blockedOwnerCheck,
@@ -24,16 +26,38 @@ import {
   runStreakChecks,
   stalledCheck,
   unreadableCheck,
+  executionReconciliationDecisions,
+  executionReconciliationChecks,
   WATCH,
+  LADDER_CANDIDATES,
   type BlockedIssue,
   type RateRow,
+  type ReconciliationRun,
   type StalledIssue,
   type StormRow,
   type StreakRun,
   type WatchAgent,
 } from "./watch-model.js";
+import { recordRepair } from "./repairs.js";
 
 type Raw = Record<string, unknown>;
+
+export interface MarkerIssueRow {
+  id: string;
+  identifier: string | null;
+  title: string;
+  stuckIssueId: string;
+  level: number;
+  status: string;
+  originId: string;
+  description: string | null;
+  createdAt: string;
+}
+
+export interface LadderIssue {
+  stuck: StuckInput;
+  unblocks: UnblockInput[];
+}
 
 /** `'a', 'b'` for a fixed list of status words (constants only: never user text). */
 const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(", ");
@@ -117,9 +141,10 @@ export async function readStorms(ctx: PluginContext, companyId: string, now: Dat
 /**
  * Issues blocked for more than a day with nothing to wake them: no unblock
  * descriptor, no open blocker issue, no open question to the owner, and not
- * held by a person. The oldest `named` come back with the full count.
+ * held by a person. The oldest `limit` come back with the full count.
  */
-export async function readBlocked(ctx: PluginContext, companyId: string, now: Date): Promise<{ total: number; items: BlockedIssue[] }> {
+export async function readBlocked(ctx: PluginContext, companyId: string, now: Date, limit?: number): Promise<{ total: number; items: BlockedIssue[] }> {
+  const queryLimit = Math.trunc(limit ?? WATCH.named);
   const rows = await ctx.db.query<Raw>(
     `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total,
             (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
@@ -132,7 +157,7 @@ export async function readBlocked(ctx: PluginContext, companyId: string, now: Da
                          WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status NOT IN ('done', 'cancelled'))
         AND NOT EXISTS (SELECT 1 FROM ${NAMESPACE}.asks a WHERE a.company_id = i.company_id::text AND a.issue_id = i.id::text AND a.status = 'open')
       ORDER BY coalesce(i.blocked_transition_at, i.updated_at), i.id
-      LIMIT ${WATCH.named}`,
+      LIMIT ${queryLimit}`,
     [companyId, ago(now, WATCH.blockedHours)],
   );
   return {
@@ -185,6 +210,135 @@ export async function readStalled(ctx: PluginContext, companyId: string, now: Da
   };
 }
 
+/**
+ * Runs with error_code = 'execution_reconciliation_required' on open issues with
+ * an agent assignee, newer than the issue's latest succeeded run. Allows detection
+ * of second occurrence (older woken + newer run), clears on later success.
+ * Includes runs with null started_at (host cancels stale queued runs with finished_at=now).
+ */
+export async function readReconciliationRuns(ctx: PluginContext, companyId: string, now: Date): Promise<ReconciliationRun[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id,
+            coalesce(h.started_at, h.finished_at, h.created_at) AS run_time
+       FROM public.heartbeat_runs h
+       JOIN public.issues i ON i.company_id = h.company_id AND i.id::text = h.context_snapshot ->> 'issueId'
+      WHERE h.company_id = $1 AND h.error_code = 'execution_reconciliation_required'
+        AND i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL AND i.assignee_agent_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.heartbeat_runs h2
+          WHERE h2.company_id = h.company_id
+            AND h2.context_snapshot ->> 'issueId' = h.context_snapshot ->> 'issueId'
+            AND h2.status = 'succeeded' AND coalesce(h2.started_at, h2.created_at) > coalesce(h.started_at, h.finished_at, h.created_at))
+      ORDER BY coalesce(h.started_at, h.finished_at, h.created_at) DESC
+      LIMIT 500`,
+    [companyId],
+  );
+
+  return rows.map((r) => ({
+    issueId: String(r.id),
+    identifier: text(r.identifier),
+    title: text(r.title),
+    runId: String(r.run_id),
+    runTime: iso(r.run_time) ?? now.toISOString(),
+    error: text(r.error),
+    assigneeAgentId: text(r.assignee_agent_id),
+  }));
+}
+
+/**
+ * Run IDs that were woken (repairs action='wake').
+ */
+export async function readWokenRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await ctx.db.query<Raw>(
+      `SELECT detail FROM ${NAMESPACE}.repairs
+        WHERE company_id = $1 AND kind = 'reconciliation' AND action = 'wake'
+        ORDER BY created_at DESC LIMIT 500`,
+      [companyId],
+    );
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const detail = text(row.detail);
+      if (detail && detail.startsWith("run:")) ids.add(detail.slice(4));
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Run IDs that were escalated (repairs action='escalate').
+ */
+export async function readEscalatedRunIds(ctx: PluginContext, companyId: string): Promise<Set<string>> {
+  try {
+    const rows = await ctx.db.query<Raw>(
+      `SELECT detail FROM ${NAMESPACE}.repairs
+        WHERE company_id = $1 AND kind = 'reconciliation' AND action = 'escalate'
+        ORDER BY created_at DESC LIMIT 500`,
+      [companyId],
+    );
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const detail = text(row.detail);
+      if (detail && detail.startsWith("run:")) ids.add(detail.slice(4));
+    }
+    return ids;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Apply reconciliation actions: wake the assignee once, or escalate on second occurrence.
+ * Wraps each issue in its own try/catch to isolate failures.
+ */
+export async function applyReconciliation(
+  env: Env,
+  companyId: string,
+  decisions: Array<{ issueId: string; assigneeAgentId: string | null; action: "wake" | "escalate" | "none"; runId: string; error: string | null }>,
+): Promise<void> {
+  for (const d of decisions) {
+    if (d.action === "none" || !d.assigneeAgentId) continue;
+    try {
+      if (d.action === "wake") {
+        const reason = d.error ? `Execution reconciliation needed: ${d.error.slice(0, 120)}` : "Execution reconciliation needed";
+        const woken = await wakeIssue(env.ctx, d.issueId, companyId, reason);
+        if (woken) {
+          await recordRepair(env.ctx, companyId, {
+            kind: "reconciliation",
+            targetKind: "issue",
+            targetId: d.issueId,
+            action: "wake",
+            outcome: "woken",
+            detail: `run:${d.runId}`,
+            actor: "cockpit-watch",
+          });
+        }
+      } else if (d.action === "escalate") {
+        const reason = d.error ? `Execution reconciliation again: ${d.error.slice(0, 100)}` : "Execution reconciliation required again";
+        const result = await escalate(env.ctx, d.issueId, reason, {
+          companyId,
+          now: env.now(),
+        });
+        if ("id" in result && !("skipped" in result)) {
+          await recordRepair(env.ctx, companyId, {
+            kind: "reconciliation",
+            targetKind: "issue",
+            targetId: d.issueId,
+            action: "escalate",
+            outcome: "escalated",
+            detail: `run:${d.runId}`,
+            actor: "cockpit-watch",
+          });
+        }
+      }
+    } catch (error) {
+      env.ctx.logger.info("Reconciliation action failed", { companyId, issueId: d.issueId, action: d.action, error: message(error) });
+    }
+  }
+}
+
 /** Agents by id: name, status and link key. A failed lookup gives an empty map (names fall back to "An agent"). */
 async function watchAgents(env: Env, companyId: string): Promise<Map<string, WatchAgent>> {
   try {
@@ -194,6 +348,144 @@ async function watchAgents(env: Env, companyId: string): Promise<Map<string, Wat
     env.ctx.logger.info("Cockpit watch agent list failed", { companyId, error: message(error) });
     return new Map();
   }
+}
+
+/** Marker issues: parse 'escalate:<issueId>:L<level>' origin format. */
+function parseEscalationOrigin(originId: string): { issueId: string; level: number } | null {
+  const match = originId.match(/^escalate:([^:]+):L(\d+)$/);
+  if (!match) return null;
+  const level = Number(match[2]);
+  if (!Number.isInteger(level) || level < 1 || level > 4) return null;
+  return { issueId: match[1], level };
+}
+
+/**
+ * Escalation marker issues: every issue whose origin_id matches 'escalate:<issueId>:L<level>'.
+ * Parses level and stuck issue id in TypeScript; rejects malformed entries.
+ * Includes hidden_at IS NULL filter and orders by created_at.
+ */
+export async function readMarkerIssues(ctx: PluginContext, companyId: string): Promise<MarkerIssueRow[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT i.id, i.identifier, i.title, i.description, i.origin_id, i.status, coalesce(i.created_at, now()) AS created_at
+       FROM public.issues i
+      WHERE i.company_id = $1 AND i.hidden_at IS NULL AND i.origin_id LIKE 'escalate:%'
+      ORDER BY coalesce(i.created_at, now())`,
+    [companyId],
+  );
+  return rows
+    .map((r) => {
+      const originId = text(r.origin_id);
+      if (!originId) return null;
+      const parsed = parseEscalationOrigin(originId);
+      if (!parsed) return null;
+      return {
+        id: String(r.id),
+        identifier: text(r.identifier),
+        title: String(r.title ?? ""),
+        stuckIssueId: parsed.issueId,
+        level: parsed.level,
+        status: String(r.status),
+        originId,
+        description: text(r.description),
+        createdAt: iso(r.created_at) ?? new Date().toISOString(),
+      };
+    })
+    .filter((r): r is MarkerIssueRow => !!r);
+}
+
+/**
+ * Ladder issues: stuck issues with their open Unblock marker children.
+ * A stuck issue is either (a) blocked with no path per readBlocked, or
+ * (b) has an open marker issue as a child (even if readBlocked skips it).
+ * Marker issues themselves are never stuck issues; they appear as unblocks.
+ * For each stuck issue, loads blocker counts and status.
+ */
+export async function readLadderIssues(ctx: PluginContext, companyId: string, now: Date): Promise<LadderIssue[]> {
+  const [blocked, storms, markerRows] = await Promise.all([
+    readBlocked(ctx, companyId, now, LADDER_CANDIDATES),
+    readStorms(ctx, companyId, now),
+    readMarkerIssues(ctx, companyId),
+  ]);
+
+  const stormIssueIds = new Set(storms.map((s) => s.issueId));
+  const markerIssueIds = new Set(markerRows.map((m) => m.id));
+
+  // Candidate stuck issues: blocked issues + stuck issues that have open marker children
+  const candidateIds = new Set<string>();
+  for (const b of blocked.items) candidateIds.add(b.id);
+  for (const m of markerRows) {
+    if (!markerIssueIds.has(m.stuckIssueId)) {
+      candidateIds.add(m.stuckIssueId);
+    }
+  }
+
+  // Map candidates to their marker children and compute blocker counts
+  const markersByStuckId = new Map<string, MarkerIssueRow[]>();
+  for (const m of markerRows) {
+    const kids = markersByStuckId.get(m.stuckIssueId) ?? [];
+    kids.push(m);
+    markersByStuckId.set(m.stuckIssueId, kids);
+  }
+
+  const blockedByIssueId = new Map<string, BlockedIssue>();
+  for (const b of blocked.items) blockedByIssueId.set(b.id, b);
+
+  // Load marker descriptions for parsing blockedNoPath
+  const markerDescByStuckId = new Map<string, string[]>();
+  for (const m of markerRows) {
+    const kids = markerDescByStuckId.get(m.stuckIssueId) ?? [];
+    kids.push(m.originId);
+    markerDescByStuckId.set(m.stuckIssueId, kids);
+  }
+
+  // Load each candidate: status, blockedSince, identifier, blocker counts
+  const idArray = Array.from(candidateIds);
+  let rows: Raw[] = [];
+  if (idArray.length > 0) {
+    // Build the query with one parameter per candidate ID
+    const idParams = idArray.map((_, i) => `$${i + 2}`).join(", ");
+    rows = await ctx.db.query<Raw>(
+      `SELECT i.id, i.identifier, i.status, coalesce(i.blocked_transition_at, i.updated_at) AS blocked_since,
+              (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+                WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status NOT IN ('done', 'cancelled'))::text AS open_blockers,
+              (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+                WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status IN ('done', 'cancelled'))::text AS closed_blockers
+         FROM public.issues i
+        WHERE i.company_id = $1 AND i.id IN (${idParams})`,
+      [companyId, ...idArray],
+    );
+  }
+
+  const ladder: LadderIssue[] = [];
+  for (const r of rows) {
+    const id = String(r.id);
+    const markers = markersByStuckId.get(id) ?? [];
+    const blockedItem = blockedByIssueId.get(id);
+
+    const stuck: StuckInput = {
+      id,
+      identifier: text(r.identifier) || id,
+      status: String(r.status),
+      blockedSince: iso(r.blocked_since) ?? now.toISOString(),
+      openBlockers: num(r.open_blockers),
+      closedBlockers: num(r.closed_blockers),
+    };
+
+    const unblocks: UnblockInput[] = markers.map((m) => ({
+      id: m.id,
+      identifier: m.identifier || m.id,
+      title: m.title,
+      description: m.description ?? "",
+      status: m.status,
+      createdAt: m.createdAt,
+      blockedNoPath: !!blockedItem,
+      inStorm: stormIssueIds.has(m.id),
+    }));
+
+    ladder.push({ stuck, unblocks });
+  }
+
+  return ladder;
 }
 
 /** Assignees that count as "idle": paused, errored and unapproved agents have their own health entries. */
@@ -247,6 +539,16 @@ export async function watchChecks(env: Env, companyId: string): Promise<HealthCh
     const idle = items.filter((i) => IDLE_STATUSES.has(agents.get(i.assigneeAgentId)?.status ?? ""));
     const check = stalledCheck(idle, total - (items.length - idle.length), agents, now);
     return check ? [check] : [];
+  });
+  await rule("reconciliation", "execution reconciliation required", async () => {
+    const runs = await readReconciliationRuns(env.ctx, companyId, now);
+    const wakenRunIds = await readWokenRunIds(env.ctx, companyId);
+    const escalatedRunIds = await readEscalatedRunIds(env.ctx, companyId);
+    const markerIssueIds = new Set((await readMarkerIssues(env.ctx, companyId)).map((m) => m.stuckIssueId));
+    const decisions = executionReconciliationDecisions(runs, wakenRunIds, markerIssueIds, escalatedRunIds);
+    const checks = executionReconciliationChecks(decisions, runs, agents);
+    await applyReconciliation(env, companyId, decisions);
+    return checks;
   });
   return checks;
 }

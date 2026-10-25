@@ -23,8 +23,10 @@ import type { AccountRef } from "./providers/types.js";
 import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
+import { saveCreativeToDrive } from "./drive.js";
 import { syncAccount } from "./sync.js";
-import { isOwnerDelegateApproval, ownerRouteOf } from "./owner-route.js";
+import { isOwnerDelegateApproval, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
+import { assertPlatformCapsFor } from "./platformCaps.js";
 
 export interface ExecuteActor {
   userId?: string | null;
@@ -66,25 +68,26 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   // 2. the approval, the other sign-offs, the review
   const approval = await getApproval(rt.ctx, rt.companyId, input.approvalId);
   if (!approval || approval.proposal_id !== p.id) return refuse(rt, actor, p, "bad_approval", "That approval id is not an approval of this proposal.");
-  if (approval.role !== "owner" || approval.decision !== "approved" || !(approval.decided_by.startsWith("user:") || isOwnerDelegateApproval(approval))) {
+  const delegateAgentId = await ownerDelegateAgentId(rt.ctx, rt.companyId);
+  if (approval.role !== "owner" || approval.decision !== "approved" || !(approval.decided_by.startsWith("user:") || isOwnerDelegateApproval(approval, delegateAgentId))) {
     return refuse(rt, actor, p, "bad_approval", "That approval is not the owner's yes (a person, or the owner's delegate within the threshold).");
   }
   if (approval.consumed_at) return refuse(rt, actor, p, "approval_used", "That approval was already used. An approval runs one change, once; ask for a new one.");
   if (!approval.expires_at || Date.parse(approval.expires_at) <= rt.now().getTime()) return refuse(rt, actor, p, "approval_expired", "That approval is older than 72 hours. Ask the owner to approve again.");
   if (approval.content_hash !== p.content_hash) return refuse(rt, actor, p, "approval_stale", "The proposal changed after it was approved. The approval no longer covers these numbers.");
 
-  // Check if Elon's approval is still valid (threshold may have been lowered)
-  if (isOwnerDelegateApproval(approval)) {
+  // The delegate's approval is still valid only while the threshold still covers it
+  if (isOwnerDelegateApproval(approval, delegateAgentId)) {
     const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
     if (!scope) return refuse(rt, actor, p, "no_scope", "That scope is gone.");
     const route = ownerRouteOf(scope, p);
-    if (route.route === "peet_required") {
+    if (route.route === "owner_required") {
       await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
-      return refuse(rt, actor, p, "peet_required", "This proposal is above the owner threshold, so Elon's approval no longer covers it. Peet needs to approve it on the Ads page.");
+      return refuse(rt, actor, p, "owner_required", "This proposal is above the owner threshold, so the Account Manager's approval no longer covers it. The owner needs to approve it on the Ads page.");
     }
   }
 
-  const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now());
+  const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now(), delegateAgentId);
   if (!state.complete) return refuse(rt, actor, p, "signoff_missing", `Still needed before this can run: ${state.missing.join(", ")} sign-off.`);
   if (!reviewStands(p)) return refuse(rt, actor, p, "review_missing", "The Reviewer's check does not stand for these numbers.");
 
@@ -105,6 +108,14 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
     if (impact.state === "exceeds" && !approval.over_cap_ack) {
       return refuse(rt, actor, p, "over_cap", `This would take the month to about ${impact.projectedAfterMinor} (minor units) against a cap of ${impact.capMinor}, and the approver did not accept that. Propose a smaller change, or ask the owner to approve it over the cap.`);
     }
+  }
+
+  // 5b. the platform caps
+  try {
+    await assertPlatformCapsFor(rt, p.kind, p.payload);
+  } catch (error) {
+    if (error instanceof AdsError) return refuse(rt, actor, p, error.code, error.message);
+    throw error;
   }
 
   // 6. the numbers still match
@@ -181,6 +192,15 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           cta: String(payload.cta),
         });
         results.push({ what: `Created creative "${created.name}"`, ok: true, externalId: created.externalId });
+        await saveCreativeToDrive(rt.ctx, {
+          companyId: rt.companyId,
+          proposalId: p.id,
+          name: created.name,
+          platform: t.account.platform,
+          fields: { externalId: created.externalId, link: payload.link, headline: payload.headline, body: payload.body, cta: payload.cta, imageHash: payload.imageHash ?? null, videoId: payload.videoId ?? null },
+          savedAt: rt.now(),
+          driveSave: rt.driveSave,
+        });
       } else if (p.kind === "create_ad") {
         const payload = p.payload as Record<string, unknown>;
         const created = await t.provider.createAd(t.env, t.token, t.ref, {

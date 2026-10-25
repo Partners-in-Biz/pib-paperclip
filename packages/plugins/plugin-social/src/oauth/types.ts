@@ -78,6 +78,9 @@ export interface PublishRequest {
   subreddit?: string;
   boardId?: string;
   firstComment?: string;
+  /** Canonical x.com link of the post this one replies to / quotes. X only; other platforms refuse in validateDestination. */
+  replyToUrl?: string;
+  quoteUrl?: string;
   media: MediaRef[];
 }
 

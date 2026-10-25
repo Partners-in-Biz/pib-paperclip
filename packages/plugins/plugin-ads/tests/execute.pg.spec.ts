@@ -356,6 +356,15 @@ describe.skipIf(!available)("running ad creatives and ads", () => {
     expect(w.mock.writes).toHaveLength(1);
   });
 
+  it("copies the executed creative to Drive, and a Drive failure does not fail the run", async () => {
+    const saves: Array<{ kind: string; subfolder?: string }> = [];
+    const { id, approvalId } = await approved(w, CREATE_AD_CREATIVE(accountId));
+    const failing = async (_ctx: unknown, opts: { kind: string; subfolder?: string }) => { saves.push(opts); throw new Error("drive down"); };
+    const result = await executeProposal({ ...w.rt(), driveSave: failing as never }, agent, { proposalId: id, approvalId });
+    expect(result).toMatchObject({ status: "executed" });
+    expect(saves).toEqual([expect.objectContaining({ kind: "ads", subfolder: "02 Assets" })]);
+  });
+
   it("creates the ad from an ad set and creative", async () => {
     const { id, approvalId } = await approved(w, CREATE_AD(accountId));
     const result = await executeProposal(w.rt(), agent, { proposalId: id, approvalId });

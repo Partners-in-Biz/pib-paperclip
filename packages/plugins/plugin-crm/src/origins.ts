@@ -64,6 +64,12 @@ export const CRM_ORIGINS = {
   esign: "crm:esign:",
   /** `crm:esign-stale:<document id>`: a client has not signed after the reminders (Account Manager). */
   esignStale: "crm:esign-stale:",
+  /** `crm:drive-file:esign:<document id>`: file a signed copy to Drive (Account Manager). */
+  driveFileEsign: "crm:drive-file:esign:",
+  /** `crm:drive-file:report:<report id>`: file a sent monthly report to Drive (Account Manager). */
+  driveFileReport: "crm:drive-file:report:",
+  /** `crm:stl-ping:<approval id>`: 3-line speed-to-lead summary for the CEO agent (never done-checked). */
+  stlPing: "crm:stl-ping:",
 } as const;
 
 export const originFor = {
@@ -89,9 +95,12 @@ export const originFor = {
   feedbackLow: (feedbackId: string) => `${CRM_ORIGINS.feedbackLow}${feedbackId}`,
   esign: (documentId: string) => `${CRM_ORIGINS.esign}${documentId}`,
   esignStale: (documentId: string) => `${CRM_ORIGINS.esignStale}${documentId}`,
+  driveFileEsign: (documentId: string) => `${CRM_ORIGINS.driveFileEsign}${documentId}`,
+  driveFileReport: (reportId: string) => `${CRM_ORIGINS.driveFileReport}${reportId}`,
   siteDown: (siteId: string, episode: string) => `${CRM_ORIGINS.siteDown}${siteId}:${episode}`,
   siteTls: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteTls}${siteId}:${expiry}`,
   siteDomain: (siteId: string, expiry: string) => `${CRM_ORIGINS.siteDomain}${siteId}:${expiry}`,
+  stlPing: (approvalId: string) => `${CRM_ORIGINS.stlPing}${approvalId}`,
 };
 
 /** The ids issues had before 0.5.0 (a step issue's was the bare enrollment id). */
@@ -105,7 +114,7 @@ export const LEGACY_ORIGINS = {
 };
 
 /** Work the CRM hands to agents (not approvals or hires), old and new ids. */
-export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale):/;
+export const WORK_ORIGIN_RE = /^(lead|reply|send-failed|handoff|won|quote|step):|^crm:(lead-followup|reply|step|send-failed|won-client|quote-deal|sequence-refused|pipeline-check|pipeline-summary|duplicates|hygiene|client-lead|service-onboard|client-report|support-case|support-breach|client-action-stale|churn-risk|msg-failed|feedback-low|site-down|site-tls|site-domain|esign|esign-stale|drive-file):/;
 
 /** Lead follow-ups, old and new ids. */
 export function isLeadFollowUp(originId: string | null | undefined): boolean {

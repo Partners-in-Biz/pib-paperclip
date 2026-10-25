@@ -14,7 +14,7 @@
 import { decimalToMinor } from "../money.js";
 import { AdsError } from "../domain.js";
 import { FORM_HEADERS, ProviderError, expiresAtFrom, formBody, int, readJson, request, str } from "./http.js";
-import type { AccountRef, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
+import type { AccountRef, AccountCaps, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdSetRequest, CreateAdCreativeRequest, CreateAdRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
 export const DEFAULT_META_VERSION = "v25.0";
 const DAY_MS = 86_400_000;
@@ -391,5 +391,55 @@ export const metaProvider: AdsProvider = {
 
   async addKeywords() {
     throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
+  },
+
+  async accountCaps(env, token, account): Promise<AccountCaps> {
+    const accountData = await get<{ spend_cap?: unknown; currency?: string }>(env, token, `/${actId(account.externalId)}`, { fields: "spend_cap,currency" }, "Meta account caps");
+    const spendCapStr = str(accountData.spend_cap);
+    const spendCapMinor = spendCapStr && spendCapStr !== "0" ? int(spendCapStr) : null;
+    const adSetRows = await pages<Record<string, unknown>>(env, token, `/${actId(account.externalId)}/adsets`, { fields: "id,campaign_id,lifetime_budget,effective_status", limit: 200 }, "Meta ad sets");
+    const adSets = adSetRows
+      .filter((r) => {
+        const status = str(r.effective_status).toUpperCase();
+        return status !== "ARCHIVED" && status !== "DELETED";
+      })
+      .map((r) => ({
+        externalId: str(r.id),
+        campaignExternalId: str(r.campaign_id),
+        lifetimeBudgetMinor: r.lifetime_budget !== undefined && str(r.lifetime_budget) !== "0" ? int(r.lifetime_budget) : null,
+      }));
+    return { spendCapMinor, adSets };
+  },
+
+  async campaignHealth(env, token, account, campaignExternalIds): Promise<CampaignHealth[]> {
+    if (campaignExternalIds.length === 0) return [];
+    const campaignRows = await get<Page<Record<string, unknown>>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/campaigns`,
+      { fields: "id,effective_status", filtering: JSON.stringify([{ field: "id", operator: "IN", value: campaignExternalIds }]) },
+      "Meta campaign health",
+    );
+    const campaignMap = new Map<string, { status: CampaignStatus; rawStatus: string }>();
+    for (const row of campaignRows.data ?? []) {
+      const id = str(row.id);
+      if (id) campaignMap.set(id, { status: campaignStatus(row.effective_status), rawStatus: str(row.effective_status) });
+    }
+    const adRows = await pages<Record<string, unknown>>(
+      env,
+      token,
+      `/${actId(account.externalId)}/ads`,
+      { fields: "campaign_id,effective_status", filtering: JSON.stringify([{ field: "effective_status", operator: "IN", value: ["DISAPPROVED"] }]) },
+      "Meta disapproved ads",
+    );
+    const disapprovedCount = new Map<string, number>();
+    for (const row of adRows) {
+      const campaignId = str(row.campaign_id);
+      if (campaignId) disapprovedCount.set(campaignId, (disapprovedCount.get(campaignId) ?? 0) + 1);
+    }
+    return campaignExternalIds.map((id) => {
+      const info = campaignMap.get(id) ?? { status: "other" as const, rawStatus: "UNKNOWN" };
+      return { campaignExternalId: id, status: info.status, rawStatus: info.rawStatus, disapprovedAds: disapprovedCount.get(id) ?? 0 };
+    });
   },
 };

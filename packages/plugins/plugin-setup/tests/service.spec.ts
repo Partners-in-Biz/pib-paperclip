@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { describe, expect, it } from "vitest";
 import { PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
@@ -29,7 +29,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.5.1");
+    expect(manifest.version).toBe("0.7.5");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -47,6 +47,26 @@ describe("manifest and migration", () => {
     for (const statement of statements) validateMigrationStatement(statement, NAMESPACE);
   });
 
+  it("passes the host migration guard for every file in migrations/, with no unbalanced quote in a comment", () => {
+    const dir = new URL("../migrations/", import.meta.url);
+    const files = readdirSync(dir).filter((name) => name.endsWith(".sql")).sort();
+    expect(files).toContain("003_entitlements.sql");
+    for (const file of files) {
+      const sql = readFileSync(new URL(file, dir), "utf8");
+      // The host strips quoted text before comments: a lone quote in a comment swallows the next statement text (PAR-5153).
+      for (const line of sql.split("\n")) {
+        if (!line.trimStart().startsWith("--")) continue;
+        for (const quote of ["'", '"']) expect((line.split(quote).length - 1) % 2, `${file}: unbalanced ${quote} in a comment`).toBe(0);
+      }
+      for (const statement of splitSqlStatements(sql)) validateMigrationStatement(statement, NAMESPACE);
+    }
+  });
+
+  it("the guard rejects the apostrophe-in-comment trap that failed the 0.6.0 deploy", () => {
+    const trap = "-- entitled to everything (plan 'pib') by the plugin's first start\nCREATE TABLE plugin_setup_48494712db.t (state text CHECK (state IN ('entitled', 'off')))";
+    expect(() => validateMigrationStatement(trap, NAMESPACE)).toThrow(/DDL or backfill only/);
+  });
+
   it("passes the host migration guard with the New company tables (002), and 001 is untouched", () => {
     const sql = readFileSync(new URL("../migrations/002_bootstrap.sql", import.meta.url), "utf8");
     const statements = splitSqlStatements(sql);
@@ -61,7 +81,7 @@ describe("manifest and migration", () => {
 describe("module choice", () => {
   it("saves, emits modules.updated and serves GET /modules", async () => {
     const { ctx, emitted, store } = fakeCtx();
-    expect(await handleApiRoute(ctx, apiInput(A))).toEqual({ status: 200, body: { modules: null, updatedAt: null } });
+    expect(await handleApiRoute(ctx, apiInput(A))).toEqual({ status: 200, body: { modules: null, enabled: null, entitled: null, updatedAt: null } });
 
     const clock = fixedClock("2026-09-26T08:00:00.000Z");
     const result = await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "user-1" }, clock);
@@ -74,7 +94,7 @@ describe("module choice", () => {
     const res = await handleApiRoute(ctx, apiInput(A));
     expect(res.status).toBe(200);
     expect((res.body as { modules: Record<string, boolean> }).modules.seo).toBe(false);
-    expect((await handleApiRoute(ctx, apiInput(B))).body).toEqual({ modules: null, updatedAt: null });
+    expect((await handleApiRoute(ctx, apiInput(B))).body).toEqual({ modules: null, enabled: null, entitled: null, updatedAt: null });
     expect((await handleApiRoute(ctx, apiInput(A, "other"))).status).toBe(404);
   });
 
@@ -98,15 +118,15 @@ describe("module choice", () => {
   });
 
   it("wires the action to board users only, with the hourly job", async () => {
-    const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} } });
+    const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "user-9", membershipRole: "admin" }] } });
     registerSetup(ctx);
     const save = actions.get("setup.save-modules")!;
-    await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).rejects.toThrow(/board user/);
+    await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/board user/) });
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
     expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup].sort());
-    // The status feeds, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
-    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), "company.created", "company.updated", "project.created"].sort());
+    // The status feeds, the drive.binding feed, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
+    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created"].sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
     expect(load).toMatchObject({ modules: expect.objectContaining({ payroll: false }), updatedBy: "user-9", installed: { [PIB_PLUGINS.crm]: { id: "crm-uuid", status: "ready" } } });
   });
@@ -222,7 +242,7 @@ describe("setup.report-statuses (the page reports what it checked live)", () => 
   });
 
   it("serves the one count on setup.load and takes reports from board users only", async () => {
-    const { ctx, actions } = fakeCtx({ savedConfigs: { [A]: {} } });
+    const { ctx, actions } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "u1", membershipRole: "owner" }] } });
     registerSetup(ctx);
     await actions.get("setup.save-modules")!({ modules: ONLY_CRM, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "u1", agentId: null } });
     const report = actions.get("setup.report-statuses")!;

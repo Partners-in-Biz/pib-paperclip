@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HANDOFF_EVENTS, signUnsubscribeToken } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { addressHash, addSuppression, isSuppressed, suppressedEmails } from "../src/db.js";
-import { checkUnsubscribeToken, claimedCompany, linkSecret, unsubscribeLinks } from "../src/links.js";
+import { checkUnsubscribeToken, claimedCompany, clearLinkCache, linkSecret, unsubscribeLinks } from "../src/links.js";
 import { suppressionPayload } from "../src/suppress.js";
 import { apiUrlFrom, maskEmail, readToken, tokenEmail } from "../src/unsubscribe-page/logic.js";
 import { boot, campaign, CO, enrollment, PAST, seed, seedIssue, step, UI_BASE } from "./helpers/harness.js";
@@ -199,7 +199,7 @@ describe("the unsubscribe webhook", () => {
     expect(s.suppressions).toHaveLength(1);
   });
 
-  it("refuses a token that is missing, garbled, altered, signed by another secret or for another company, with one message and no change", async () => {
+  it("refuses a token that is missing, garbled, altered, signed by another secret or for another company, returning normally with a silent log and no change", async () => {
     const { s, token, harness } = await bootWithToken();
     const [body, signature] = token.split(".");
     const forged = Buffer.from(JSON.stringify({ c: CO, e: "bob@beta.test", s: "own" })).toString("base64url");
@@ -215,7 +215,13 @@ describe("the unsubscribe webhook", () => {
       { token: signUnsubscribeToken({ companyId: "co-other", email: "ada@acme.test", senderKey: "company:acme" }, "another-secret-with-enough-length") },
       { token: 42 },
     ];
-    for (const parsedBody of bad) await expect(post({ parsedBody }), JSON.stringify(parsedBody)).rejects.toThrow("This unsubscribe link is not valid.");
+    for (const parsedBody of bad) {
+      harness.logs.length = 0;
+      await expect(post({ parsedBody }), JSON.stringify(parsedBody)).resolves.toBeUndefined();
+      // Should have logged the refusal, with no token or email in the message or logs.
+      const refusal = harness.logs.find((l) => l.message === "Unsubscribe link refused");
+      expect(refusal, JSON.stringify(parsedBody)).toBeDefined();
+    }
     expect(s.suppressions).toHaveLength(0);
     expect(s.campaign_enrollments!.every((r) => r.status === "running")).toBe(true);
     // A token for a company that has no secret yet never starts one.
@@ -223,6 +229,43 @@ describe("the unsubscribe webhook", () => {
     expect(await checkUnsubscribeToken(harness.ctx, signUnsubscribeToken({ companyId: "co-other", email: "a@b.co", senderKey: "own" }, "x".repeat(32)))).toBeNull();
     expect(claimedCompany(token)).toBe(CO);
     expect(claimedCompany("x".repeat(3000) + ".y")).toBeNull();
+    // The logs should never contain the valid token or any addresses.
+    const allLogs = JSON.stringify(harness.logs);
+    expect(allLogs).not.toContain(token);
+    expect(allLogs).not.toContain("ada@acme.test");
+    expect(allLogs).not.toContain("bob@beta.test");
+  });
+
+  it("an old link still returns normally (tokens carry no expiry)", async () => {
+    const { s, token, harness } = await bootWithToken();
+    // Move the clock forward by a year, then try the token.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date().getTime() + 365 * 24 * 60 * 60 * 1000);
+    harness.logs.length = 0;
+    await post({ parsedBody: { token } });
+    vi.useRealTimers();
+    // Old links still work because tokens have no expiry.
+    expect(s.suppressions).toHaveLength(1);
+    expect(s.suppressions[0]).toMatchObject({ email: "ada@acme.test", sender_key: "company:acme" });
+  });
+
+  it("an already-used token still returns normally and records nothing new", async () => {
+    const { s, token, harness, emit } = await bootWithToken();
+    harness.logs.length = 0;
+    await post({ parsedBody: { token } });
+    const firstCount = s.suppressions!.length;
+    expect(harness.logs.filter((l) => l.message === "Unsubscribed through a link")).toHaveLength(1);
+    // Call again with the same token.
+    harness.logs.length = 0;
+    await post({ parsedBody: { token } });
+    // No new suppression was added.
+    expect(s.suppressions).toHaveLength(firstCount);
+    // The second log also says "Unsubscribed through a link".
+    const secondLog = harness.logs.find((l) => l.message === "Unsubscribed through a link");
+    expect(secondLog).toBeDefined();
+    // Both calls emit the announcement, but with the same key (idempotent downstream).
+    const announces = emit.mock.calls.filter(([name]) => name === HANDOFF_EVENTS.contactSuppressed).map((c) => (c[2] as { key: string }).key);
+    expect(announces).toEqual([announces[0], announces[0]]);
   });
 
   it("refuses an endpoint it does not have", async () => {
@@ -249,5 +292,27 @@ describe("the landing page", () => {
     expect(tokenEmail(token)).toBe("a***@acme.test");
     expect(tokenEmail("garbage.sig")).toBeNull();
     expect(maskEmail("ada@acme.test")).toBe("a***@acme.test");
+  });
+});
+
+describe("the secret read behind an unsigned company claim", () => {
+  it("a failed read is not remembered as no secret, and a flood of made-up ids reads at most the cap", async () => {
+    clearLinkCache();
+    const secret = "s".repeat(40);
+    let calls = 0;
+    const ctx = {
+      logger: { info: () => undefined },
+      state: { get: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("host blip");
+        return secret;
+      } },
+    } as never;
+    const t = signUnsubscribeToken({ companyId: "co-a", email: "a@b.co", senderKey: "own" }, secret);
+    expect(await checkUnsubscribeToken(ctx, t)).toBeNull();
+    expect(await checkUnsubscribeToken(ctx, t)).toMatchObject({ companyId: "co-a" });
+    calls = 100;
+    for (let i = 0; i < 300; i += 1) await checkUnsubscribeToken(ctx, signUnsubscribeToken({ companyId: `made-up-${i}`, email: "a@b.co", senderKey: "own" }, secret), { "x-real-ip": `1.1.${i}.1` });
+    expect(calls - 100).toBeLessThanOrEqual(60);
   });
 });

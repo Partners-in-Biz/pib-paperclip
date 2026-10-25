@@ -179,7 +179,7 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
   {
     name: "check-ad-creative",
     displayName: "Check ad copy",
-    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
+    description: "A first machine check of ad copy: the client's banned words, text longer than the platform accepts, claims platform policy rejects, a missing or insecure landing page, special ad categories. Also scores the copy on the shared creative rubric (out of 100; 80 passes). A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check. It does not clear the copy: propose it as a creative_check or inside a campaign proposal, and the Reviewer reads it against the brand profile.",
     parametersSchema: schema(["platform"], {
       client,
       platform: oneOf(["meta", "google"], "Which platform's rules."),
@@ -222,6 +222,12 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     displayName: "List proposals",
     description: "Proposals with status and what each waits for. Default: the open ones (needs changes, waiting for approval, approved).",
     parametersSchema: schema([], { client: clientOrAll, status: str("open (default), or one of needs_changes, in_review, approved, executing, executed, cleared, failed, rejected, cancelled, expired.") }),
+  },
+  {
+    name: "list-variants",
+    displayName: "List ad variants",
+    description: "Ad variants with winner and fatigue flags. Winner is the lowest-CPA ad in the campaign over the analysis window, among ads meeting minimum impressions and conversions. Fatigue is when CTR drops consistently over consecutive days, the total drop exceeds the threshold, and frequency exceeds the threshold on the last day.",
+    parametersSchema: schema([], { client, accountId: str("Optional: the ad account's id from list-ad-accounts to list variants for one account."), campaignExternalId: str("Optional: the campaign's platform id from list-ad-campaigns to list variants for one campaign.") }),
   },
   {
     name: "get-ad-proposal",

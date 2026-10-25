@@ -46,7 +46,7 @@ export const NEW_CLIENT_REFERENCE = `# Starting a new client
 
 ## Who does what
 - **Account Manager:** the profile (\`update-client-profile\`: brand voice, audience, services from the fixed list, website, booking link, banned words, tone, then the brand kit and proposal references), the client's sites (\`save-client-site\`), a lead form when the client bought lead capture (\`create-lead-endpoint\`), ONE grant ask for everything the client must give (never one per item).
-- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with Peet's approval.
+- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with the owner's approval.
 - **The role that owns each service:** its onboarding step (below).
 
 ## The project: the contract between the ops tool and the CRM
@@ -76,13 +76,16 @@ ${serviceTable()}
 - While the Cockpit's first-win onboarding issue for the client is open, the services flagged then are covered by it and get no step of their own.
 - The daily \`services-check\` job gives the same step to customers whose services were set before this existed (up to 8 new steps per company a day), and saves older free-text profiles in the list. A step that was cancelled stays cancelled until the service is added again.
 
+## The platform service (a hosted company on our Paperclip)
+Its step is "Provision hosted company for <client>", for the Operator, with the request line prefilled: profile \`client\`, the plan label, the modules the plan gives, and the owner email from the company's first linked person. Set the plan from the signed quote first: \`update-company\` with \`hostedPlan\` (starter, growth or business; anything else is refused). When the hosted company exists, write its id with \`update-company\` \`hostedCompanyId\`; the client page then shows it.
+
 ## Working a step
 First open the module's client workspace: if the service already runs (a sprint set up by hand), log it on the client (\`log-activity\` with the link or id) and close. Otherwise do what starting means, then log the proof on the client and close. Closing is checked: proof must be logged on the client since the step opened. Removing a service cancels its open step.
 `;
 
 export const CANARY_REFERENCE = `# The canary client
 
-One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (PiB Canary Co), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
+One internal test client for proving lead, qualify, quote, invoice and payment proof end to end without touching a real client. \`create-canary-client\` finds or creates it (asking again returns the same one). It has a company (named for the canary), a contact whose address ends @canary.invalid, and a canary lead form. Everything about it is flagged: its ids start with \`canary-\`, its records carry the tag and custom field \`canary\`, and the \`.invalid\` name can never exist, so no mail system can deliver to it.
 
 ## Rules (every module and agent)
 - Everything outward is a draft or a dry run: no email, SMS, post, ad, invoice or payment request reaches a real person. A CRM sequence email to a canary contact is recorded as a dry run and never queued.
@@ -98,4 +101,26 @@ One internal test client for proving lead, qualify, quote, invoice and payment p
 5. **Invoice:** convert the quote to an invoice as a draft; never send it.
 6. **Payment proof:** record the payment as a test payment in Billing; the CRM logs \`invoice.paid\` on the client.
 7. **Clean up:** \`cleanup-canary\` with \`confirm: true\`. It removes only the canary's own records (company, flagged contacts, deals, leads, forms, notes) and tells the other modules (\`company.deleted\`). Quotes and invoices other modules hold for it are theirs to remove. A record with the canary id that is not flagged is left alone.
+`;
+
+export const DRIVE_REFERENCE = `# Saving files to Drive
+
+Use these tools for every file that belongs on Google Drive. They find or make the right folder in the company's Shared Drive; you never choose a folder yourself.
+
+## Steps
+1. \`drive_folder_resolve\` with the project (\`entity_type: project\`, \`entity_id\`) or the CRM company. It returns the folder path and URL.
+2. On \`not_found\` only, call \`drive_folder_ensure\` for the same entity. It is safe to repeat. On \`needs_human_look\` stop and ask a person: do not retry or rename.
+3. Save with \`drive_file_save\`: \`projectId\`, \`fileKind\`, \`name\`, \`mimeType\`, and exactly one of \`contentBase64\` or \`path\` (max 5 MB; the tool takes no URL source, so download the file first and pass its path). Name it \`YYYY-MM-DD <what> v<n>.<ext>\`, for example \`2026-10-20 Athleet profile mock v01.png\`.
+4. Quote the returned URL in your issue comment. A \`duplicate: true\` result means the same file was already saved: quote its URL too.
+
+## Where files go
+A client has ONE folder, \`Clients/<Company (Contact)>\`, shared by all of that client's projects: a client project resolves to it. The sub-folders are \`Assets/Images\`, \`Assets/Video\`, \`Assets/Brand\`, \`Assets/Social\`, \`Deliverables\`, \`Contracts & Quotes\`, \`Meetings & Notes\` and \`Shared with client\`. A product project's folder is \`Products/<Product>\` with \`Brand\`, \`Design\`, \`Marketing assets/Images\`, \`Marketing assets/Video\`, \`App store\` and \`Shared externally\`. Book, company and marketing folders have no sub-folders.
+Pass \`subfolder\` to \`drive_file_save\` with one of those names exactly (reports and finished work go to \`Deliverables\`, meeting notes and evidence to \`Meetings & Notes\`, social images to \`Assets/Social\`). Leave it out and the file goes into the folder itself. If the folder has no such sub-folder you get \`invalid_subfolder\` with the ones it has: pick one of those. The old numbered names (\`02 Assets\`, \`04 Reports\`) are still accepted and translated, but use the names above.
+
+## Rules
+- Never pass or guess a Drive folder ID or a Shared Drive ID. The code takes the Shared Drive from the company's \`drive.sharedDriveId\` setting and the Drive credential from the CRM secret \`driveServiceAccountJson\`.
+- \`drive_not_bound\` means this company has no Shared Drive set. Report it once on the issue and stop: do not retry, do not save somewhere else.
+- \`not_configured\` (no Drive service account key) is reported the same way. Any other status (\`invalid_name\`, \`too_large\`, \`broker_error\`, and so on) comes with a hint: fix what it names once, then report.
+- No public links, no sharing changes. To share with a client, ask a person.
+- Never print or paste a token.
 `;

@@ -6,11 +6,14 @@
  */
 import type { JsonSchema, PluginContext } from "@paperclipai/plugin-sdk";
 import { isSecretRef, jevConfigSchema, oauthCallbackUrl, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { readSesTopicConfirmed } from "./esp/topic-state.js";
+import { mailboxPrefs } from "./preferences.js";
 import { DEFAULT_STEADY_CAP } from "./esp/warmup.js";
 
 /** Same Google Cloud Web client as SEO and YouTube. */
 export const DEFAULT_GOOGLE_CLIENT_ID = "430887310034-6hc826irms25pf22ou7qi22s70gbm79k.apps.googleusercontent.com";
-export const DEFAULT_LABEL_PREFIX = "PiB";
+/** Last resort when a company has no label prefix and no short name. The real default is the company's short name (preferences.ts). */
+export const DEFAULT_LABEL_PREFIX = "Mail";
 export const DEFAULT_SEND_RATE = 20;
 
 /** `autoDelegate` setting: who gets a default delegation on the company's own mailboxes (see delegations.ts). */
@@ -44,25 +47,24 @@ export const instanceConfigSchema: JsonSchema = {
     labelPrefix: {
       type: "string",
       title: "Gmail label prefix",
-      description: "Triage labels are added as <prefix>/<Category>, e.g. PiB/Lead.",
-      default: DEFAULT_LABEL_PREFIX,
+      description: "Moved to Preferences on the Mailbox page, where a company owner edits it. A value saved here is used until the company saves its own.",
     },
     fromName: {
       type: "string",
       title: "Sender name",
-      description: "Optional name shown next to the Gmail address on mail the plugins send, e.g. Partners in Biz.",
+      description: "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own.",
     },
     replyIssues: {
       type: "boolean",
       title: "Open reply issues",
-      description: "Mail from a client, a known lead or support that needs a reply opens one issue per thread for the agent who answers it. New leads go to the CRM instead.",
+      description: "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. Mail from a client, a known lead or support that needs a reply opens one issue per thread; new leads go to the CRM instead.",
       default: true,
     },
     triageIssueAssignee: {
       type: "string",
       title: "Assign reply issues to",
       description:
-        "Optional. An agent id, or user:<id> for a person. Empty: the Account Manager, else the Operator, else the owner.",
+        "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. An agent id, or user:<id> for a person.",
     },
     r2: {
       type: "object",
@@ -95,7 +97,7 @@ export const instanceConfigSchema: JsonSchema = {
       type: "string",
       title: "Mailbox access given without asking",
       description:
-        "Who gets read and draft access (never sending) on the company's own Gmail mailboxes automatically. operator: only the Operator (default). operator+roles: also the Account Manager (read and draft) and the Bookkeeper (read). off: nobody; access is given by hand or by answering an agent's ask. Access a person removes is never given back automatically.",
+        "Moved to Preferences on the Mailbox page. A value saved here is used until the company saves its own. operator: only the Operator (default). operator+roles: also the Account Manager (read and draft) and the Bookkeeper (read). off: nobody. Access a person removes is never given back automatically.",
       enum: ["operator", "operator+roles", "off"],
       default: "operator",
     },
@@ -126,13 +128,25 @@ export const instanceConfigSchema: JsonSchema = {
         "A second way to send, beside Gmail: a send-only account for each domain the provider is allowed to send as (a client's own domain, or PiB's). Off until it is switched on here AND the API key is saved. Sending also needs the webhook signing secret, so bounces and complaints are never missed. Gmail stays the default sender; nothing changes for mail that names no provider account.",
       properties: {
         enabled: { type: "boolean", title: "Switch the email provider on", description: "Off by default. With it on, the Mailbox can register sending domains and send from them once their DNS records are in place.", default: false },
-        provider: { type: "string", title: "Provider", enum: ["resend"], default: "resend" },
+        provider: { type: "string", title: "Provider", enum: ["resend", "ses"], default: "resend", description: "resend (default) or ses (Amazon SES). SES needs the keys and the configuration set in the SES block below." },
         apiKey: secretField("Resend API key", "A Paperclip secret holding a Resend API key with full access (it registers domains as well as sending): resend.com, API Keys, Create API Key."),
         webhookSecret: secretField("Resend webhook signing secret", "A Paperclip secret holding the signing secret (whsec_...) of the Resend webhook that points at this Paperclip: resend.com, Webhooks. Without it nothing is sent through the provider."),
         ratePerSecond: { type: "integer", title: "Requests per second", description: "Most requests per second the Mailbox makes to the provider (Resend allows 10 by default, shared by every key of the team).", default: 4, minimum: 1, maximum: 10 },
         steadyDailyCap: { type: "integer", title: "Daily cap once a domain is warmed up", description: "Most recipients one domain is handed to the provider per UTC day after its warm-up (the first 13 days ramp up from 50). A person can give one domain its own cap.", default: DEFAULT_STEADY_CAP, minimum: 1, maximum: 1000000 },
-        prefer: { type: "string", title: "Mail the provider takes when no sender is named", enum: ["gmail", "transactional"], default: "gmail", description: "gmail (default): mail that names no sender goes out from the default Gmail account. transactional: invoices, payslips and replies that name no sender go from the company's own provider account when it is ready (marketing always goes from the sender it names, or the client's own domain when the client has one)." },
+        prefer: { type: "string", title: "Mail the provider takes when no sender is named", enum: ["gmail", "transactional", "marketing"], default: "gmail", description: "gmail (default): mail that names no sender goes out from the default Gmail account. transactional: invoices, payslips and replies that name no sender go from the company's own provider account when it is ready (marketing always goes from the sender it names, or the client's own domain when the client has one). marketing: marketing mail (Campaigns, CRM sequences) always goes through the provider and never falls back to Gmail; everything else stays on Gmail. Set it last, after the provider is ready." },
         defaultFrom: { type: "string", title: "The company's own provider address", description: "The send-only address (on a domain you registered) that transactional mail uses when the setting above is transactional. Empty: the oldest ready company-owned provider account." },
+        ses: {
+          type: "object",
+          title: "Amazon SES (when the provider is ses)",
+          description: "The SES account the Mailbox sends through (SESv2). Keys are Paperclip secrets; the IAM user needs ses:SendEmail and ses:GetAccount (and the identity calls for domains).",
+          properties: {
+            region: { type: "string", title: "AWS region", default: "eu-north-1", description: "The region of the SES account, e.g. eu-north-1." },
+            accessKeyId: secretField("AWS access key id", "A Paperclip secret holding the IAM user's access key id."),
+            secretAccessKey: secretField("AWS secret access key", "A Paperclip secret holding the IAM user's secret access key."),
+            configurationSet: { type: "string", title: "Configuration set", description: "The SES configuration set every send names; it publishes the bounce, complaint and delivery events." },
+            snsTopicArn: { type: "string", title: "SNS topic ARN", description: "The SNS topic the configuration set publishes to (arn:aws:sns:<region>:<account>:<name>)." },
+          },
+        },
         batch: { type: "boolean", title: "Send messages that arrive together in one request", description: "Off by default. Up to 100 messages without attachments go in one provider request. A batch the provider did not answer is never sent again message by message, so a person checks the provider's log for those.", default: false },
       },
     },
@@ -167,17 +181,28 @@ export interface MailboxConfig {
 /** The `esp` settings. A secret's presence is read without resolving it (the host allows 30 secret resolves a minute per company). */
 export interface EspConfig {
   enabled: boolean;
-  provider: "resend";
-  hasApiKey: boolean;
+  provider: "resend" | "ses";
+  /** The provider can be used: Resend, the API key is saved; SES, both access keys are saved. */
+  hasCredentials: boolean;
+  /** Amazon SES settings (read whatever the provider is, so switching provider keeps them). */
+  ses: { region: string; hasAccessKeyId: boolean; hasSecretAccessKey: boolean; configurationSet: string | null; snsTopicArn: string | null; /** The topic is confirmed (read from company state by loadMailboxConfig; false until then). */ topicConfirmed: boolean };
   hasWebhookSecret: boolean;
   ratePerSecond: number;
   steadyDailyCap: number;
-  prefer: "gmail" | "transactional";
+  prefer: "gmail" | "transactional" | "marketing";
   defaultFrom: string | null;
   batch: boolean;
 }
 
 export const DEFAULT_ESP_RATE = 4;
+export const DEFAULT_SES_REGION = "eu-north-1";
+const SES_REGION = /^[a-z]{2}(-[a-z]+)+-\d$/;
+const SNS_ARN = /^arn:aws[a-z-]*:sns:([a-z0-9-]+):\d{12}:[A-Za-z0-9_-]{1,256}$/;
+
+/** The region an SNS topic ARN names, or null when it is not a topic ARN. */
+export function snsTopicRegion(arn: string | null): string | null {
+  return arn ? (SNS_ARN.exec(arn)?.[1] ?? null) : null;
+}
 
 function hasSecret(value: unknown): boolean {
   return typeof value === "string" ? value.trim().length > 0 : isSecretRef(value) && Boolean(value.secretId);
@@ -188,18 +213,27 @@ export function parseEspConfig(raw: Record<string, unknown>): EspConfig {
   const rate = Number(esp.ratePerSecond);
   const cap = Number(esp.steadyDailyCap);
   const from = typeof esp.defaultFrom === "string" ? esp.defaultFrom.trim().toLowerCase() : "";
+  const ses = (esp.ses && typeof esp.ses === "object" && !Array.isArray(esp.ses) ? esp.ses : {}) as Record<string, unknown>;
+  const region = typeof ses.region === "string" ? ses.region.trim().toLowerCase() : "";
+  const setting = (value: unknown, pattern: RegExp) => (typeof value === "string" && pattern.test(value.trim()) ? value.trim() : null);
+  const provider = esp.provider === "ses" ? "ses" : "resend";
+  const sesKeys = { hasAccessKeyId: hasSecret(ses.accessKeyId), hasSecretAccessKey: hasSecret(ses.secretAccessKey) };
   return {
     enabled: esp.enabled === true,
-    provider: "resend",
-    hasApiKey: hasSecret(esp.apiKey),
+    provider,
+    hasCredentials: provider === "ses" ? sesKeys.hasAccessKeyId && sesKeys.hasSecretAccessKey : hasSecret(esp.apiKey),
+    ses: { region: SES_REGION.test(region) ? region : DEFAULT_SES_REGION, ...sesKeys, configurationSet: setting(ses.configurationSet, /^[A-Za-z0-9_-]{1,64}$/), snsTopicArn: setting(ses.snsTopicArn, SNS_ARN), topicConfirmed: false },
     hasWebhookSecret: hasSecret(esp.webhookSecret),
     ratePerSecond: Number.isInteger(rate) && rate >= 1 && rate <= 10 ? rate : DEFAULT_ESP_RATE,
     steadyDailyCap: Number.isInteger(cap) && cap >= 1 && cap <= 1_000_000 ? cap : DEFAULT_STEADY_CAP,
-    prefer: esp.prefer === "transactional" ? "transactional" : "gmail",
+    prefer: esp.prefer === "transactional" || esp.prefer === "marketing" ? esp.prefer : "gmail",
     defaultFrom: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(from) ? from : null,
     batch: esp.batch === true,
   };
 }
+
+export const SES_SANDBOX_LIMIT = "SES is in the sandbox: 200 a day, 1 a second, verified recipients only; ask AWS for production access";
+export const SNS_CONFIRMATION_WAITING = "waiting for the SNS subscription: in the SNS console, use Request confirmation";
 
 export interface EspReadiness {
   /** Domains may be registered and checked (switched on, API key saved). */
@@ -211,15 +245,38 @@ export interface EspReadiness {
 }
 
 /** The address the provider's webhook points at: the host's public webhook route for this plugin. Null until the public base URL is saved. */
-export function espWebhookUrl(publicBaseUrl: string | null): string | null {
-  return publicBaseUrl ? `${publicBaseUrl.replace(/\/$/, "")}/api/plugins/partnersinbiz.mailbox/webhooks/resend` : null;
+export function espWebhookUrl(publicBaseUrl: string | null, provider: "resend" | "ses" = "resend"): string | null {
+  return publicBaseUrl ? `${publicBaseUrl.replace(/\/$/, "")}/api/plugins/partnersinbiz.mailbox/webhooks/${provider}` : null;
 }
 
 export function espReadiness(config: EspConfig): EspReadiness {
   const blockers: string[] = [];
   if (!config.enabled) blockers.push("The email provider is switched off in the Mailbox settings.");
-  if (!config.hasApiKey) blockers.push("The Resend API key is not saved as a Paperclip secret in the Mailbox settings.");
-  const domains = config.enabled && config.hasApiKey;
+  if (config.provider === "ses") {
+    if (!config.ses.hasAccessKeyId) blockers.push("The AWS access key id is not saved as a Paperclip secret in the Mailbox settings (Email provider, Amazon SES).");
+    if (!config.ses.hasSecretAccessKey) blockers.push("The AWS secret access key is not saved as a Paperclip secret in the Mailbox settings (Email provider, Amazon SES).");
+    const domains = config.enabled && config.hasCredentials;
+    // In fix order. Without a configuration set SES publishes no events, so bounces and complaints would be missed; the topic carries them to the webhook.
+    const missed = "until it is, nothing is sent through SES, because bounces and complaints would be missed.";
+    let sending = domains;
+    if (domains && !config.ses.configurationSet) {
+      blockers.push(`The SES configuration set is not saved in the Mailbox settings: ${missed}`);
+      sending = false;
+    }
+    if (domains && !config.ses.snsTopicArn) {
+      blockers.push(`The SNS topic ARN is not saved (or is not a valid arn:aws:sns:<region>:<account>:<name>) in the Mailbox settings: ${missed}`);
+      sending = false;
+    } else if (domains && snsTopicRegion(config.ses.snsTopicArn) !== config.ses.region) {
+      blockers.push(`The SNS topic is in ${snsTopicRegion(config.ses.snsTopicArn)} but the SES region is ${config.ses.region}: they must be the same region.`);
+      sending = false;
+    } else if (domains && config.ses.configurationSet && !config.ses.topicConfirmed) {
+      blockers.push(SNS_CONFIRMATION_WAITING);
+      sending = false;
+    }
+    return { domains, sending, blockers };
+  }
+  if (!config.hasCredentials) blockers.push("The Resend API key is not saved as a Paperclip secret in the Mailbox settings.");
+  const domains = config.enabled && config.hasCredentials;
   if (domains && !config.hasWebhookSecret) blockers.push("The Resend webhook signing secret is not saved: until it is, nothing is sent through the provider, because bounces and complaints would be missed.");
   return { domains, sending: domains && config.hasWebhookSecret, blockers };
 }
@@ -228,6 +285,10 @@ export function parseLabelPrefix(value: unknown): string {
   if (typeof value !== "string") return DEFAULT_LABEL_PREFIX;
   const cleaned = value.replace(/[\r\n\t]/g, " ").trim().replace(/^\/+|\/+$/g, "").slice(0, 40).trim();
   return cleaned || DEFAULT_LABEL_PREFIX;
+}
+
+export function parseFromName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.replace(/[\r\n]/g, " ").trim().slice(0, 120) : null;
 }
 
 export function parseTriageAssignee(value: unknown): TriageAssignee | null {
@@ -257,7 +318,7 @@ export function parseMailboxConfig(raw: Record<string, unknown>): MailboxConfig 
   const google = (raw.google && typeof raw.google === "object" ? raw.google : {}) as Record<string, unknown>;
   const rate = Number(raw.sendRatePerMinute);
   const base = typeof raw.publicBaseUrl === "string" && raw.publicBaseUrl.trim() ? raw.publicBaseUrl.trim() : null;
-  const fromName = typeof raw.fromName === "string" && raw.fromName.trim() ? raw.fromName.replace(/[\r\n]/g, " ").trim().slice(0, 120) : null;
+  const fromName = parseFromName(raw.fromName);
   return {
     autoDelegate: parseAutoDelegate(raw.autoDelegate),
     domainChecks: raw.domainChecks !== false,
@@ -317,7 +378,20 @@ export async function loadMailboxConfig(ctx: PluginContext, companyId: string): 
   } catch {
     raw = {};
   }
-  return { companyId, raw, config: parseMailboxConfig(raw), secrets: new SecretResolver(ctx, companyId, raw) };
+  const config = parseMailboxConfig(raw);
+  // The five person-facing settings come from the company's preferences (row, else the saved host value above, else a neutral default).
+  const prefs = await mailboxPrefs(ctx, companyId);
+  if (prefs) {
+    config.labelPrefix = parseLabelPrefix(prefs.labelPrefix);
+    config.fromName = parseFromName(prefs.fromName);
+    config.triageAssignee = parseTriageAssignee(prefs.triageIssueAssignee);
+    config.replyIssues = prefs.replyIssues !== false;
+    config.autoDelegate = parseAutoDelegate(prefs.autoDelegate);
+  }
+  // Whether the SNS topic is confirmed lives in company state: read only where SES is in use.
+  // The saved state must match the current topic ARN (changing the ARN resets the confirmation).
+  if (config.esp.provider === "ses" && config.esp.ses.snsTopicArn) config.esp.ses.topicConfirmed = await readSesTopicConfirmed(ctx, companyId, config.esp.ses.snsTopicArn);
+  return { companyId, raw, config, secrets: new SecretResolver(ctx, companyId, raw) };
 }
 
 /** `<publicBaseUrl>/_plugins/<installation uuid>/ui/oauth-callback.html`. */
@@ -362,6 +436,20 @@ export function validateMailboxConfig(raw: Record<string, unknown>): { ok: boole
       const cap = Number(block.steadyDailyCap);
       if (!Number.isInteger(cap) || cap < 1 || cap > 1_000_000) errors.push("The daily cap must be a whole number from 1 to 1000000");
     }
+    const ses = block.ses && typeof block.ses === "object" && !Array.isArray(block.ses) ? (block.ses as Record<string, unknown>) : {};
+    for (const [key, label] of [["accessKeyId", "AWS access key id"], ["secretAccessKey", "AWS secret access key"]] as const) {
+      if (typeof ses[key] === "string" && String(ses[key]).trim()) warnings.push(`The ${label} was typed as plain text. Pick a Paperclip secret instead.`);
+    }
+    if (typeof ses.region === "string" && ses.region.trim() && !SES_REGION.test(ses.region.trim().toLowerCase())) errors.push("The AWS region should look like eu-north-1");
+    const arn = typeof ses.snsTopicArn === "string" ? ses.snsTopicArn.trim() : "";
+    if (arn) {
+      const arnRegion = snsTopicRegion(arn);
+      const region = typeof ses.region === "string" && ses.region.trim() ? ses.region.trim().toLowerCase() : DEFAULT_SES_REGION;
+      if (!arnRegion) errors.push("The SNS topic ARN should look like arn:aws:sns:eu-north-1:123456789012:name");
+      else if (arnRegion !== region) errors.push(`The SNS topic is in ${arnRegion} but the AWS region is ${region}: they must be the same region`);
+    }
+    if (block.prefer != null && block.prefer !== "" && !["gmail", "transactional", "marketing"].includes(String(block.prefer))) errors.push("The mail the provider takes must be gmail, transactional or marketing");
+    if (block.provider != null && block.provider !== "" && block.provider !== "resend" && block.provider !== "ses") errors.push("The email provider must be resend or ses");
     if (typeof block.defaultFrom === "string" && block.defaultFrom.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(block.defaultFrom.trim())) errors.push("The company's own provider address is not an email address");
   }
   return { ok: errors.length === 0, errors, warnings };

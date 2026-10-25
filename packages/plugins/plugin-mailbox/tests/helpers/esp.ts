@@ -9,9 +9,13 @@ import { MockEmailProvider } from "../../src/esp/mock.js";
 import { forgetEspRuntime } from "../../src/esp/runtime.js";
 import { signSvix } from "../../src/esp/svix.js";
 import { forgetWebhookCandidates } from "../../src/esp/webhook.js";
+import { forgetSnsCandidates, forgetSnsCerts } from "../../src/esp/sns.js";
 import type { DnsRecord, EspDomainRow } from "../../src/esp/types.js";
 import { rememberCompany } from "../../src/setup-status.js";
+import type { EspAccountQuota } from "../../src/esp/types.js";
 import { fakeDns } from "./dns.js";
+import { markSesTopicConfirmed } from "../../src/esp/topic-state.js";
+import { FakeSes, FakeSesWithSns, hostFetch, SES_ACCESS_KEY_ID, SES_CONFIGURATION_SET, SES_REGION, SES_SECRET_ACCESS_KEY } from "./fake-ses.js";
 import { CO } from "./memory.js";
 import { setup } from "./setup.js";
 
@@ -60,22 +64,64 @@ export function espSetup(config: Record<string, unknown> = {}) {
   return { ...base, provider, dns };
 }
 
+/** The SNS topic of the SES setups below (same region as SES_REGION). */
+export const SES_TOPIC_ARN = "arn:aws:sns:eu-north-1:123456789012:pib-ses-events";
+
+/** Records the topic as confirmed in company state, as T2's webhook does. Sync in effect: the test state store writes at once. */
+export function confirmSesTopic(ctx: { state: Parameters<typeof markSesTopicConfirmed>[0]["state"] }, topicArn = SES_TOPIC_ARN, companyId = CO): Promise<void> {
+  return markSesTopicConfirmed(ctx, companyId, topicArn, Date.now());
+}
+
+/** Amazon SES switched on: both keys and the configuration set saved (literals; the runtime reads a secret reference the same way). */
+export const SES_ON = { esp: { enabled: true, provider: "ses", ratePerSecond: 10, ses: { region: SES_REGION, accessKeyId: SES_ACCESS_KEY_ID, secretAccessKey: SES_SECRET_ACCESS_KEY, configurationSet: SES_CONFIGURATION_SET, snsTopicArn: SES_TOPIC_ARN } } };
+
+/** The mock provider behind SES settings: `idempotentSends` and `batching` false like the real adapter, so the sender's SES rules run without HTTP. */
+export function sesMockSetup(config: Record<string, unknown> = {}, options: { idempotentSends?: boolean; batching?: boolean; quota?: EspAccountQuota } = {}) {
+  forgetEspRuntime();
+  forgetLimiters();
+  forgetWebhookCandidates();
+  forgetSnsCandidates();
+  forgetSnsCerts();
+  const base = setup({ ...SES_ON, ...config });
+  void confirmSesTopic(base.host.ctx);
+  const provider = new MockEmailProvider({ idempotentSends: false, batching: false, ...options });
+  const sns = new FakeSesWithSns();
+  base.env.esp = { provider: () => provider, fetch: hostFetch(sns.handle) };
+  base.env.dns = fakeDns(dnsVerified());
+  return { ...base, provider, sns };
+}
+
+/** SES with the real adapter over the fake SESv2 endpoint, reached through a stand-in for the host's guarded fetch. */
+export function sesSetup(config: Record<string, unknown> = {}) {
+  forgetEspRuntime();
+  forgetLimiters();
+  forgetWebhookCandidates();
+  forgetSnsCandidates();
+  forgetSnsCerts();
+  const base = setup({ ...SES_ON, ...config });
+  void confirmSesTopic(base.host.ctx);
+  const ses = new FakeSesWithSns();
+  base.env.esp = { fetch: hostFetch(ses.handle) };
+  base.env.dns = fakeDns(dnsVerified());
+  return { ...base, ses };
+}
+
 type EspCtx = ReturnType<typeof espSetup>;
 
 /** A sending domain and its send-only account in the state `add-sending-domain` leaves them (verified by default). */
-export async function addEspDomain(ctx: Pick<EspCtx, "store">, options: { domain?: string; address?: string; status?: EspDomainRow["status"]; client?: { kind: "company" | "contact"; ref: string } | null; replyTo?: string | null; firstSent?: string | null; lastSent?: string | null; id?: string; company?: string } = {}): Promise<{ domain: string; address: string; accountId: string }> {
+export async function addEspDomain(ctx: Pick<EspCtx, "store">, options: { provider?: "resend" | "ses"; domain?: string; address?: string; status?: EspDomainRow["status"]; client?: { kind: "company" | "contact"; ref: string } | null; replyTo?: string | null; firstSent?: string | null; lastSent?: string | null; id?: string; company?: string } = {}): Promise<{ domain: string; address: string; accountId: string }> {
   const domain = options.domain ?? DOMAIN;
   const address = options.address ?? `hello@${domain}`;
   const status = options.status ?? "verified";
   const accountId = options.id ?? `esp-${domain}`;
   const company = options.company ?? CO;
   const client = options.client === undefined ? CLIENT : options.client;
-  await ctx.store.insertEspAccount({ id: accountId, companyId: company, provider: "resend", address, status: status === "verified" ? "connected" : "pending", fromName: client ? "Client Co" : "Partners in Biz", replyTo: options.replyTo === undefined ? "team@client.co.za" : options.replyTo, clientKind: client?.kind ?? null, clientRef: client?.ref ?? null, createdBy: "user-1" });
+  await ctx.store.insertEspAccount({ id: accountId, companyId: company, provider: options.provider ?? "resend", address, status: status === "verified" ? "connected" : "pending", fromName: client ? "Client Co" : "Partners in Biz", replyTo: options.replyTo === undefined ? "team@client.co.za" : options.replyTo, clientKind: client?.kind ?? null, clientRef: client?.ref ?? null, createdBy: "user-1" });
   const now = new Date().toISOString();
   await ctx.store.upsertEspDomain({
     company_id: company,
     domain,
-    provider: "resend",
+    provider: options.provider ?? "resend",
     provider_domain_id: `dom-${domain}`,
     region: "eu-west-1",
     status,

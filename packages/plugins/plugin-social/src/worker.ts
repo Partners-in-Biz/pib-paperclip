@@ -1,4 +1,4 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -62,6 +62,8 @@ import {
   scorePostsJob,
   updateProgramRecord,
 } from "./growth/service.js";
+import { spaceOf } from "./space.js";
+import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob } from "./metrics.js";
@@ -107,7 +109,9 @@ import {
   requiredString,
   requireUser,
   retryPostRecord,
+  requestCreativeRecord,
   reviewOutcomesRecord,
+  mediaComplianceRecord,
   schedulePost,
   setApprovalPolicyRecord,
   setRssActiveRecord,
@@ -118,6 +122,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
+import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
   myAccountsAction,
   myPostsAction,
@@ -129,7 +134,7 @@ import {
 } from "./my-social.js";
 import { handleClientSummary } from "./routes.js";
 import { socialSetupStatus } from "./setup-status.js";
-import { SOCIAL_TOOLS } from "./tools.js";
+import { GROWTH_TOOL_DESCRIPTIONS, GROWTH_TOOL_KINDS, SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
 import { correctTriage } from "./triage.js";
 
@@ -226,6 +231,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return registerAsset(ctx, viewer.companyId, p);
     case "import-media-from-url":
       return importFromUrl(ctx, viewer.companyId, p);
+    case "store-rendered-asset":
+      return storeRenderedAsset(ctx, viewer, p);
     case "list-issue-attachments":
       return listIssueAttachments(ctx, viewer.companyId, p);
     case "import-media-from-attachment":
@@ -239,8 +246,12 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return requestClientApprovalRecord(ctx, viewer, p);
     case "record-review-verdict":
       return recordReviewVerdictRecord(ctx, viewer, p);
+    case "request-creative":
+      return requestCreativeRecord(ctx, viewer, p);
     case "review-outcomes":
       return reviewOutcomesRecord(ctx, viewer, p);
+    case "media-compliance":
+      return mediaComplianceRecord(ctx, viewer, p);
     case "create-rss-feed":
       return createRssFeedRecord(ctx, viewer, p);
     case "list-rss-feeds":
@@ -263,28 +274,36 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":
       return accountAnalyticsRecord(ctx, viewer, p);
-    // Growth Lab
-    case "performance-review":
-      return performanceReview(growthEnv(ctx), viewer, p);
-    case "get-playbook":
-      return getPlaybookRecord(growthEnv(ctx), viewer, p);
-    case "propose-playbook-change":
-      return proposePlaybookChange(growthEnv(ctx), viewer, p);
-    case "decide-playbook-change":
-      return decidePlaybookChange(growthEnv(ctx), viewer, p);
-    case "list-experiments":
-      return listExperimentsRecord(growthEnv(ctx), viewer, p);
-    case "propose-experiment":
-      return proposeExperiment(growthEnv(ctx), viewer, p);
-    case "approve-experiment":
-      return approveExperiment(growthEnv(ctx), viewer, p);
-    case "reject-experiment":
-      return rejectExperiment(growthEnv(ctx), viewer, p);
+    // Growth Lab (eight of its tools come from the kit factory, registered in setup)
     case "propose-feature-question":
       return proposeFeatureQuestion(growthEnv(ctx), viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
+}
+
+/** The kit's Growth Lab tools, run for Social: the module switch, the viewer and Social's service. */
+function socialGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<Viewer> {
+  const run = (fn: (env: ReturnType<typeof growthEnv>, viewer: Viewer, p: Record<string, unknown>) => Promise<unknown>) =>
+    (viewer: Viewer, p: Record<string, unknown>) => fn(growthEnv(ctx), viewer, p);
+  return {
+    kinds: GROWTH_TOOL_KINDS,
+    descriptions: GROWTH_TOOL_DESCRIPTIONS,
+    async actor(runContext) {
+      if (!(await socialOn(ctx, runContext.companyId))) throw new Error(MODULE_OFF_MESSAGE);
+      return toolViewer(ctx, runContext);
+    },
+    handlers: {
+      "performance-review": run(performanceReview),
+      "get-playbook": run(getPlaybookRecord),
+      "propose-playbook-change": run(proposePlaybookChange),
+      "decide-playbook-change": run(decidePlaybookChange),
+      "list-experiments": run(listExperimentsRecord),
+      "propose-experiment": run(proposeExperiment),
+      "approve-experiment": run(approveExperiment),
+      "reject-experiment": run(rejectExperiment),
+    },
+  };
 }
 
 function toolContent(name: string, data: unknown): string {
@@ -308,14 +327,27 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
 
 type ActionHandler = (ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) => Promise<unknown>;
 
+/** False only for a signed-in user whose active role is verified as viewer; anything unverifiable keeps the button (the server still decides). */
+async function canPostHere(ctx: PluginContext, v: Viewer): Promise<boolean> {
+  if (v.isAgent || !v.userId || v.userId === "local-board") return true;
+  try {
+    const members = await ctx.access.members.list({ companyId: v.companyId });
+    const role = members.find((m) => m.principalType === "user" && m.principalId === v.userId && m.status === "active")?.membershipRole;
+    return role !== "viewer";
+  } catch {
+    return true;
+  }
+}
+
 const ACTIONS: Record<string, ActionHandler> = {
   "social.load": async (ctx, v, p) => {
     // The page reports /_plugins/<installation uuid>/ui/ so redirect URIs can use it.
     await rememberPluginUiBase(ctx, p.uiBase);
     // `client` is the page's ?client= (company:<id> / contact:<id>); none = own work.
     // The own page shows the agent card, so it also links a hire whose agent has appeared.
-    if (!p.client && !v.isAgent) await tryLinkSocialHire(ctx, v.companyId);
-    return loadSnapshot(ctx, v, { client: p.client ?? null });
+    if (!p.client && !v.isAgent && spaceOf(p) === "company") await tryLinkSocialHire(ctx, v.companyId);
+    const snapshot = await loadSnapshot(ctx, v, { client: p.client ?? null, space: p.space });
+    return { ...snapshot, canPost: await canPostHere(ctx, v) };
   },
   "social.clients": (ctx, v) => listClientsRecord(ctx, v),
   "social.create-post": (ctx, v, p) => createPostRecord(ctx, v, p),
@@ -375,16 +407,17 @@ const ACTIONS: Record<string, ActionHandler> = {
       identifier: requiredString(p, "identifier"),
       appPassword: requiredString(p, "appPassword"),
       pdsUrl: optionalString(p, "pdsUrl") ?? null,
-      target: await scopeFromParams(ctx, v.companyId, p),
+      target: await scopeFromParams(ctx, v.companyId, spaceOf(p) === "me" ? { ...p, client: null } : p),
       reconnectAccountId: optionalString(p, "reconnectAccountId") ?? null,
+      personal: spaceOf(p) === "me",
     }),
   "social.disconnect-account": (ctx, v, p) => disconnectAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.update-account": (ctx, v, p) => updateAccountRecord(ctx, v, p),
   "social.refresh-account": (ctx, v, p) => refreshAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.media-presign": (ctx, v, p) =>
     presignUpload(ctx, v.companyId, { fileName: requiredString(p, "fileName"), mime: requiredString(p, "mime"), bytes: Number(p.bytes) }),
-  "social.create-media-asset": (ctx, v, p) => registerAsset(ctx, v.companyId, p),
-  "social.import-media": (ctx, v, p) => importFromUrl(ctx, v.companyId, p),
+  "social.create-media-asset": (ctx, v, p) => registerAsset(ctx, v.companyId, p, undefined, personalOwner(v, p)),
+  "social.import-media": (ctx, v, p) => importFromUrl(ctx, v.companyId, p, personalOwner(v, p)),
   "social.create-rss-feed": (ctx, v, p) => createRssFeedRecord(ctx, v, p),
   "social.set-rss-active": (ctx, v, p) => setRssActiveRecord(ctx, v, requiredString(p, "feedId"), p.active === true),
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
@@ -446,7 +479,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.activate-agent": (ctx, v) => resyncAgent(ctx, v.companyId, requireUser(v, "re-sync the Social agent")),
   "social.sync-skills": async (ctx, v) => {
     requireUser(v, "sync skills");
-    return { results: await bootstrap!.skills.force(v.companyId) };
+    return { results: [...(await bootstrap!.skills.force(v.companyId)), ...(await bootstrap!.ownSkills.force(v.companyId))] };
   },
   // My Social: personal accounts and posts
   "my-social.accounts": (ctx, v) => myAccountsAction(ctx, v),
@@ -568,6 +601,11 @@ export async function publishSetupStatuses(ctx: PluginContext): Promise<{ publis
   return result;
 }
 
+/** The user who owns media added from My Social (`space: "me"`); null for the company's own library. */
+function personalOwner(v: Viewer, p: Record<string, unknown>): string | null {
+  return spaceOf(p) === "me" ? requireUser(v, "add personal media") : null;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
@@ -575,11 +613,16 @@ const plugin = definePlugin({
     const ensure = (companyId: string) => bootstrap!.ensure(companyId);
 
     for (const tool of SOCIAL_TOOLS) {
+      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
+    registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
+    ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
+    ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {

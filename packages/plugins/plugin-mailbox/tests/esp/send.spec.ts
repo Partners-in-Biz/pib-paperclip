@@ -2,14 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { PIB_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import { ESP_RETRY_WINDOW_MS } from "../../src/esp/send.js";
 import { readEspState } from "../../src/esp/runtime.js";
-import { buildEspEmail, formatFrom, idempotencyKeyFor, maybeAcceptedAt } from "../../src/esp/send.js";
+import { buildEspEmail, formatFrom, idempotencyKeyFor, maybeAcceptedAt, sendTagValue } from "../../src/esp/send.js";
 import { handleSendRequested, performSend, retrySend } from "../../src/gmail/send.js";
 import { PLUGIN_ID } from "../../src/namespace.js";
 import { pickSender } from "../../src/pick-sender.js";
 import { loadMailboxConfig } from "../../src/config.js";
 import { CO } from "../helpers/memory.js";
 import { openGate } from "../helpers/proxy.js";
-import { addEspDomain, API_KEY, CLIENT, DOMAIN, espSetup, FROM, healthyCheck, invoice, marketing, results, sendEvent, WEBHOOK_SECRET } from "../helpers/esp.js";
+import { addEspDomain, API_KEY, CLIENT, DOMAIN, espSetup, FROM, healthyCheck, invoice, marketing, results, SES_ON, sendEvent, sesMockSetup, sesSetup, WEBHOOK_SECRET } from "../helpers/esp.js";
+import { SES_SECRET_ACCESS_KEY } from "../helpers/fake-ses.js";
 
 const DAY = 86_400_000;
 const OWN_DOMAIN = "mail.pib.test";
@@ -854,5 +855,289 @@ describe("sending through the email provider", () => {
       await handleSendRequested(t.env, sendEvent(invoice({ from: OWN_FROM, attachments: [{ url: "https://files.example.com/a.txt", filename: "a.txt", mime: "text/plain" }] }), `plugin.${PIB_PLUGINS.billing}.mail.send.requested`));
       expect(t.provider.calls).toEqual(["send"]);
     });
+  });
+});
+
+describe("sending through Amazon SES (a provider with no idempotency key)", () => {
+  const SES_SANDBOX = "SES is in the sandbox: 200 a day, 1 a second, verified recipients only; ask AWS for production access";
+
+  it("sends a marketing message as Raw MIME with the unsubscribe headers and both tags, and answers provider ses with an ses: message id", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.store.addSuppression(CO, "ann@x.co", "marketing", "unsubscribed", "partnersinbiz.crm", `company:${CLIENT.ref}`);
+    const result = await handleSendRequested(t.env, sendEvent(marketing({ to: [{ email: "ann@x.co" }, { email: "bea@x.co" }] })));
+    expect(result).toMatchObject({ status: "sent", provider: "ses", messageId: expect.stringMatching(/^ses:.+ses-test-id$/), permanent: false, suppressed: [{ email: "ann@x.co" }] });
+    expect(t.ses.sends).toHaveLength(1);
+    const request = t.ses.sends[0]!;
+    expect(request.body!.Destination.ToAddresses).toEqual(["bea@x.co"]);
+    expect(request.body!.ConfigurationSetName).toBe("pib-marketing");
+    expect(request.body!.EmailTags).toEqual([{ Name: "pib_company", Value: CO }, { Name: "pib_send", Value: "campaigns_step_e1_1" }]);
+    expect(request.mime).toContain("List-Unsubscribe: <https://paperclip.example.com/unsub?t=abc>");
+    expect(request.mime).toContain("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
+    expect(request.mime).not.toContain("ann@x.co");
+    expect(t.ses.signatureProblems).toEqual([]);
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.gmail.sent).toHaveLength(0);
+  });
+
+  it("puts no unsubscribe headers on a message that is not marketing", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses", domain: OWN_DOMAIN, client: null });
+    const result = await handleSendRequested(t.env, sendEvent(invoice({ from: OWN_FROM }), `plugin.${PIB_PLUGINS.billing}.mail.send.requested`));
+    expect(result).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.ses.sends[0]!.mime).not.toMatch(/List-Unsubscribe/i);
+  });
+
+  it("an unknown outcome is a PERMANENT failure that names SES and tells the person to look in the console; nothing is retried", async () => {
+    for (const scripted of [{ status: 500, message: "internal" }, { status: 0, throws: "socket hang up" }, { status: 200, body: {} }]) {
+      const t = sesSetup();
+      await addEspDomain(t, { provider: "ses" });
+      t.ses.errors.push(scripted);
+      const result = await handleSendRequested(t.env, sendEvent(marketing()));
+      expect(result).toMatchObject({ status: "failed", permanent: true });
+      expect(result!.error).toMatch(/SES did not confirm this message/);
+      expect(result!.error).toMatch(/SES console.*before sending it again.*twice/);
+      // One call, no second attempt, and the send is settled (a later delivery of the same request is answered, not re-sent).
+      expect(t.ses.sends).toHaveLength(1);
+      expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "failed", permanent: true });
+      expect(await handleSendRequested(t.env, sendEvent(marketing()))).toMatchObject({ status: "failed", permanent: true });
+      expect(t.ses.sends).toHaveLength(1);
+      // The message may have gone out, so it stays counted against the day.
+      expect(t.store.espDays.get(`${CO}:${DOMAIN}:${today()}`)!.sent).toBe(1);
+      expect(JSON.stringify(result)).not.toContain(SES_SECRET_ACCESS_KEY);
+    }
+  });
+
+  it("the mock with idempotentSends = true keeps the existing rule: the same key is retried and nothing fails for good", async () => {
+    const t = espSetup();
+    await addEspDomain(t);
+    t.provider.failNext({ kind: "unknown", error: "no answer" });
+    expect(await handleSendRequested(t.env, sendEvent(marketing()))).toBeNull();
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "retrying" });
+    expect(t.provider.idempotentSends).toBe(true);
+  });
+
+  it("the same unknown outcome from a non-idempotent mock fails for good without a retry mark", async () => {
+    const t = sesMockSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.provider.failNext({ kind: "unknown", error: "no answer" }, 1, { accepted: true });
+    const result = await handleSendRequested(t.env, sendEvent(marketing()));
+    expect(result).toMatchObject({ status: "failed", permanent: true });
+    expect(t.store.sends.get("campaigns:step:e1:1")!.delivery?.maybeAcceptedAt ?? null).toBeNull();
+    expect(t.provider.calls).toEqual(["send"]);
+  });
+
+  it("a 429 defers the send (nothing stored as sent) and pauses the company's limiter", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.ses.errors.push({ status: 429, type: "TooManyRequestsException", message: "Too many requests", headers: { "retry-after": "3" } });
+    expect(await handleSendRequested(t.env, sendEvent(marketing()))).toBeNull();
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "retrying" });
+    expect(t.ses.sends).toHaveLength(1);
+  });
+
+  it("SES's quota refusal defers the send, shows as the provider state, and holds the company's requests back", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.ses.errors.push({ status: 400, type: "LimitExceededException", message: "Daily message quota exceeded." });
+    expect(await handleSendRequested(t.env, sendEvent(marketing()))).toBeNull();
+    expect(await readEspState(t.host.ctx, CO)).toMatchObject({ ok: false, code: "quota" });
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "retrying" });
+  });
+
+  it("SES refusing the keys or pausing sending is a config problem with SES's own words", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.ses.errors.push({ status: 400, type: "SendingPausedException", message: "Sending paused" });
+    expect(await handleSendRequested(t.env, sendEvent(marketing()))).toBeNull();
+    expect(await readEspState(t.host.ctx, CO)).toMatchObject({ ok: false, code: "key_refused" });
+    expect(t.store.sends.get("campaigns:step:e1:1")!.error).toBe("Sending paused");
+  });
+
+  it("an unverified identity puts the domain back to pending; a rejected message fails for good", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { provider: "ses" });
+    t.ses.errors.push({ status: 400, type: "MessageRejected", message: "Email address is not verified. The following identities failed the check in region EU-NORTH-1: hello@updates.client.co.za" });
+    expect(await handleSendRequested(t.env, sendEvent(marketing()))).toMatchObject({ status: "failed", permanent: true });
+    expect(t.store.espDomains.get(`${CO}:${DOMAIN}`)).toMatchObject({ status: "pending" });
+    const u = sesSetup();
+    await addEspDomain(u, { provider: "ses" });
+    u.ses.errors.push({ status: 400, type: "BadRequestException", message: "Invalid parameter" });
+    const result = await handleSendRequested(u.env, sendEvent(marketing()));
+    expect(result).toMatchObject({ status: "failed", permanent: true });
+    expect(result!.error).toMatch(/refused the message: Invalid parameter/);
+  });
+
+  it("refuses marketing in the sandbox before any send call, with the one sentence; transactional mail is not refused", async () => {
+    const t = sesSetup();
+    t.ses.account.productionAccessEnabled = false;
+    await addEspDomain(t, { provider: "ses" });
+    await addEspDomain(t, { provider: "ses", domain: OWN_DOMAIN, client: null });
+    const result = await handleSendRequested(t.env, sendEvent(marketing()));
+    expect(result).toMatchObject({ status: "failed", permanent: true, error: `${SES_SANDBOX}.` });
+    expect(t.ses.sends).toHaveLength(0);
+    // Only GetAccount was asked, and the day's cap was not touched.
+    expect(t.ses.requests.map((r) => r.path)).toEqual(["/v2/email/account"]);
+    expect(t.store.espDays.get(`${CO}:${DOMAIN}:${today()}`)).toBeUndefined();
+    expect(await handleSendRequested(t.env, sendEvent(invoice({ from: OWN_FROM }), `plugin.${PIB_PLUGINS.billing}.mail.send.requested`))).toMatchObject({ status: "sent", provider: "ses" });
+  });
+
+  it("the same sandbox refusal with the mock reporting a quota, and none when it is out of the sandbox", async () => {
+    const quota = { maxSendRate: 14, max24HourSend: 50_000, sentLast24Hours: 0, productionAccessEnabled: false, sendingEnabled: true };
+    const sandbox = sesMockSetup({}, { quota });
+    await addEspDomain(sandbox, { provider: "ses" });
+    expect(await handleSendRequested(sandbox.env, sendEvent(marketing()))).toMatchObject({ status: "failed", error: expect.stringContaining(SES_SANDBOX) });
+    expect(sandbox.provider.calls).toEqual([]);
+    const live = sesMockSetup({}, { quota: { ...quota, productionAccessEnabled: true } });
+    await addEspDomain(live, { provider: "ses" });
+    expect(await handleSendRequested(live.env, sendEvent(marketing()))).toMatchObject({ status: "sent" });
+  });
+
+  it("builds no batcher for SES even with esp.batch on: five sends at once are five requests", async () => {
+    const t = sesSetup({ esp: { ...SES_ON.esp, batch: true } });
+    await addEspDomain(t, { provider: "ses" });
+    const sends = await Promise.all([1, 2, 3, 4, 5].map((n) => handleSendRequested(t.env, sendEvent(marketing({ key: `k${n}`, to: [{ email: `p${n}@x.co` }] })))));
+    expect(sends.every((r) => r?.status === "sent")).toBe(true);
+    expect(t.ses.sends).toHaveLength(5);
+  });
+
+  it("buildEspEmail adds the pib_send tag only when asked, and a long key is hashed to fit", () => {
+    const base = { companyId: CO, account: { address: FROM, from_name: null, reply_to: null }, fromName: null, request: marketing(), unsubscribeUrl: null, attachments: [] };
+    expect(buildEspEmail(base).email.tags).toEqual([{ name: "pib_company", value: CO }]);
+    expect(buildEspEmail({ ...base, sendTag: true }).email.tags).toEqual([{ name: "pib_company", value: CO }, { name: "pib_send", value: "campaigns_step_e1_1" }]);
+    expect(sendTagValue("k".repeat(300))).toMatch(/^h_[0-9a-f]{48}$/);
+  });
+});
+
+describe("esp.prefer = marketing: SES carries marketing only", () => {
+  const PREFER = { esp: { ...SES_ON.esp, prefer: "marketing" } };
+  const GMAIL = "peet@partnersinbiz.online";
+  const campaign = (overrides: Parameters<typeof marketing>[0] = {}) => marketing({ from: undefined, fromName: undefined, context: { plugin: PIB_PLUGINS.campaigns, kind: "campaign_step", id: "own" }, ...overrides });
+  const pick = async (t: ReturnType<typeof sesSetup>, request: Parameters<typeof pickSender>[3]) => pickSender(t.env, await loadMailboxConfig(t.env.ctx, CO), CO, request);
+
+  it("non-marketing mail goes to the default Gmail account, even with an SES account set up", async () => {
+    const t = sesSetup(PREFER);
+    await own(t, { provider: "ses" });
+    expect(await pick(t, invoice())).toMatchObject({ kind: "gmail", account: { address: GMAIL } });
+    expect(await handleSendRequested(t.env, sendEvent(invoice(), `plugin.${PIB_PLUGINS.billing}.mail.send.requested`))).toMatchObject({ status: "sent" });
+    expect(t.ses.sends).toHaveLength(0);
+    expect(t.gmail.sent).toHaveLength(1);
+  });
+
+  it("own marketing with no from goes from the SES owner account, and never to Gmail", async () => {
+    const t = sesSetup(PREFER);
+    await own(t, { provider: "ses" });
+    const result = await handleSendRequested(t.env, sendEvent(campaign()));
+    expect(result).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.ses.sends[0]!.mime).toContain(`<${OWN_FROM}>`);
+    expect(t.gmail.sent).toHaveLength(0);
+  });
+
+  it("esp.defaultFrom names the owner account when there are several", async () => {
+    const t = sesSetup({ esp: { ...PREFER.esp, defaultFrom: "news@b.test" } });
+    await own(t, { provider: "ses" });
+    await own(t, { provider: "ses", domain: "b.test", address: "news@b.test", id: "esp-b" });
+    expect((await pick(t, campaign())).account?.address).toBe("news@b.test");
+  });
+
+  it("with no SES account it fails for good with the reason and sends nothing from Gmail", async () => {
+    const t = sesSetup(PREFER);
+    const result = await handleSendRequested(t.env, sendEvent(campaign()));
+    expect(result).toMatchObject({ status: "failed", permanent: true, error: expect.stringMatching(/no connected Amazon SES sending account.*not sent from Gmail/) });
+    expect(t.gmail.sent).toHaveLength(0);
+    expect(t.ses.sends).toHaveLength(0);
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ status: "failed" });
+  });
+
+  it("an unready SES (topic not confirmed, or domain unverified) fails for good with the reason and never falls back to Gmail", async () => {
+    const t = sesSetup({ esp: { ...PREFER.esp, ses: { ...SES_ON.esp.ses, snsTopicArn: "arn:aws:sns:eu-north-1:123456789012:another-topic" } } });
+    await own(t, { provider: "ses" });
+    expect(await handleSendRequested(t.env, sendEvent(campaign()))).toMatchObject({ status: "failed", permanent: true, error: expect.stringMatching(/waiting for the SNS subscription/) });
+    const u = sesSetup(PREFER);
+    await own(u, { provider: "ses", status: "pending" });
+    expect(await handleSendRequested(u.env, sendEvent(campaign()))).toMatchObject({ status: "failed", permanent: true });
+    expect(t.gmail.sent).toHaveLength(0);
+    expect(u.gmail.sent).toHaveLength(0);
+    expect(t.ses.sends).toHaveLength(0);
+  });
+
+  it("a Gmail from on a verified SES domain is carried by the SES owner account and the From header keeps the address", async () => {
+    const t = sesSetup(PREFER);
+    await addEspDomain(t, { provider: "ses", domain: "partnersinbiz.online", address: "hello@partnersinbiz.online", client: null, replyTo: null });
+    const result = await handleSendRequested(t.env, sendEvent(campaign({ from: GMAIL, fromName: "Peet" })));
+    expect(result).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.ses.sends[0]!.mime).toContain(`From: Peet <${GMAIL}>`);
+    expect(t.ses.sends[0]!.mime).not.toContain("hello@partnersinbiz.online");
+    expect(t.store.sends.get("campaigns:step:e1:1")).toMatchObject({ from_address: "hello@partnersinbiz.online", provider: "ses" });
+    expect(result!.warnings ?? []).not.toEqual(expect.arrayContaining([expect.stringMatching(/No Reply-To/)]));
+    expect(t.gmail.sent).toHaveLength(0);
+  });
+
+  it("a Gmail from carried by SES drops the carrier's Reply-To, so replies land in Gmail", async () => {
+    const t = sesSetup(PREFER);
+    await addEspDomain(t, { provider: "ses", domain: "partnersinbiz.online", address: "hello@partnersinbiz.online", client: null, replyTo: "ops@partnersinbiz.online" });
+    expect(await handleSendRequested(t.env, sendEvent(campaign({ from: GMAIL })))).toMatchObject({ status: "sent", provider: "ses" });
+    expect(t.ses.sends[0]!.mime).not.toContain("ops@partnersinbiz.online");
+    expect(t.ses.sends[0]!.mime).not.toMatch(/^Reply-To:/mi);
+  });
+
+  it.each(["gmail", "transactional", "marketing"] as const)("a named Resend from, non-marketing, under provider = ses (prefer=%s) fails and never reaches SES", async (prefer) => {
+    const t = sesSetup({ esp: { ...SES_ON.esp, prefer } });
+    await addEspDomain(t, { provider: "resend", domain: "r.test", address: "hi@r.test", client: null, id: "esp-r" });
+    expect(await pick(t, invoice({ from: "hi@r.test" }))).toMatchObject({ kind: "failed" });
+    const result = await handleSendRequested(t.env, sendEvent(invoice({ from: "hi@r.test" })));
+    expect(result).toMatchObject({ status: "failed" });
+    expect(t.ses.sends).toHaveLength(0);
+  });
+
+  it("a Gmail from on a domain SES has not verified fails naming the domain", async () => {
+    const t = sesSetup(PREFER);
+    await own(t, { provider: "ses" });
+    const result = await handleSendRequested(t.env, sendEvent(campaign({ from: GMAIL })));
+    expect(result).toMatchObject({ status: "failed", permanent: true, error: expect.stringContaining("partnersinbiz.online is not verified at Amazon SES") });
+    expect(t.ses.sends).toHaveLength(0);
+    expect(t.gmail.sent).toHaveLength(0);
+  });
+
+  it("a from on a Resend account under provider = ses fails with the reason", async () => {
+    const t = sesSetup(PREFER);
+    await addEspDomain(t, { provider: "resend", domain: "r.test", address: "hi@r.test", client: null, id: "esp-r" });
+    const result = await handleSendRequested(t.env, sendEvent(campaign({ from: "hi@r.test" })));
+    expect(result).toMatchObject({ status: "failed", permanent: true, error: expect.stringMatching(/Resend|email provider account.*sends marketing through Amazon SES/) });
+    expect(t.ses.sends).toHaveLength(0);
+  });
+
+  it("an SES account is not used for named non-marketing mail under marketing; an account of another provider is never picked unnamed", async () => {
+    const t = sesSetup(PREFER);
+    await own(t, { provider: "ses" });
+    expect(await pick(t, invoice({ from: OWN_FROM }))).toMatchObject({ kind: "failed", problem: expect.stringMatching(/SES carries marketing mail only/) });
+    const u = sesSetup(PREFER);
+    await addEspDomain(u, { provider: "resend", domain: "r.test", address: "hi@r.test", client: null, id: "esp-r" });
+    expect((await pick(u, campaign())).kind).toBe("failed");
+  });
+
+  it("a client's marketing still goes from the client's own SES account", async () => {
+    const t = sesSetup(PREFER);
+    await addEspDomain(t, { provider: "ses" });
+    await own(t, { provider: "ses" });
+    expect(await pick(t, marketing({ from: undefined }))).toMatchObject({ kind: "esp", account: { address: FROM } });
+  });
+
+  it("provider = ses without an apiKey still picks the SES account (the hasCredentials gate)", async () => {
+    const t = sesSetup({ esp: { ...SES_ON.esp, prefer: "transactional" } });
+    await own(t, { provider: "ses" });
+    expect(await pick(t, invoice())).toMatchObject({ kind: "esp", account: { address: OWN_FROM } });
+  });
+
+  it("prefer = gmail leaves marketing with no from on Gmail, as before", async () => {
+    const t = sesSetup();
+    await own(t, { provider: "ses" });
+    expect(await pick(t, campaign())).toMatchObject({ kind: "gmail" });
+  });
+
+  it("an account of a provider that is not configured is never picked unnamed (transactional)", async () => {
+    const t = sesSetup({ esp: { ...SES_ON.esp, prefer: "transactional" } });
+    await own(t, { provider: "resend" });
+    expect(await pick(t, invoice())).toMatchObject({ kind: "gmail" });
   });
 });

@@ -18,10 +18,10 @@ export const ADS_AGENT_CAPABILITIES =
 /** Short AGENTS.md for the hire. The procedure lives in the skill. */
 export const ADS_HIRE_INSTRUCTIONS = `# Paid Ads Manager
 
-You run paid advertising for Partners in Biz (its own ads) and its clients through the Paid ads plugin tools (\`partnersinbiz.ads\`), with the CRM tools (\`partnersinbiz.crm\`) for the client's brand profile and for asking the client.
+You run paid advertising for the company (its own ads) and its clients through the Paid ads plugin tools (\`partnersinbiz.ads\`), with the CRM tools (\`partnersinbiz.crm\`) for the client's brand profile and for asking the client.
 
 - Follow the \`${ADS_SKILL_SLUG}\` skill. Read it before your first task.
-- One scope per task: PiB's own ads, or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`). Never mix scopes.
+- One scope per task: the company's own ads, or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`). Never mix scopes.
 - You never spend money by yourself. Every campaign or budget change is a proposal with the numbers; the Reviewer checks it, a person approves it (a client's own yes too, when the scope needs it), and only then \`execute-ad-change\` may run, with the approval id. Never change the budget caps or the switches: they are people's.
 - Never paste tokens, keys or secrets anywhere. You never see them.
 - Need a person (a login, a grant, a judgement call)? Ask once with \`${ASK_OWNER_TOOL}\`, never in a comment.
@@ -51,7 +51,7 @@ export const ADS_HIRE_ROLE: HireRole = {
   instructions: ADS_HIRE_INSTRUCTIONS,
   pluginSetup: [
     "Grants it access to plugin tools (`partnersinbiz.ads` and `partnersinbiz.crm`).",
-    "Creates the Ads project for PiB's own ads issues (a client's issues open in the client's own project).",
+    "Creates the Ads project for the company's own ads issues (a client's issues open in the client's own project).",
     "Sends it anomaly alerts (spend spikes, no delivery, cost per result over target) and the proposals it must revise.",
     "Checks it has the ads skill and the company operating manual, and says so here if one is missing.",
     "Budget: $30 a month to start. The Cockpit alerts at 80%, so raise it there if the agent needs more.",

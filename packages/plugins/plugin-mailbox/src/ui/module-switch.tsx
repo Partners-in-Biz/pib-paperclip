@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
-import { tokens } from "@partnersinbiz/pib-plugin-ui";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { ModuleStateBanner } from "@partnersinbiz/pib-plugin-ui";
 
 /** Null while loading; false only when the company switched the module off in Setup. */
 export function useModuleEnabled(companyId: string | null | undefined, pluginKey: string): boolean | null {
@@ -23,27 +23,8 @@ export function useModuleEnabled(companyId: string | null | undefined, pluginKey
   return enabled;
 }
 
-/** Small notice at the top of the page when the module is switched off. */
+/** The page banner for a module that is off or not in the plan; the words live in `pib-plugin-ui`. */
 export function ModuleOffBanner({ companyId, pluginKey }: { companyId: string | null | undefined; pluginKey: string }) {
-  const enabled = useModuleEnabled(companyId, pluginKey);
   const navigation = useHostNavigation();
-  if (enabled !== false) return null;
-  return (
-    <p
-      role="status"
-      style={{
-        margin: 0,
-        fontSize: 13,
-        padding: "10px 14px",
-        borderRadius: 10,
-        border: `1px solid ${tokens.border}`,
-        background: tokens.secondary,
-        color: tokens.secondaryFg,
-        lineHeight: 1.45,
-      }}
-    >
-      This module is switched off for this company. Turn it on in{" "}
-      <a {...navigation.linkProps("/setup")} style={{ color: "inherit", textDecoration: "underline" }}>Setup</a>.
-    </p>
-  );
+  return <ModuleStateBanner companyId={companyId} pluginKey={pluginKey} load={moduleState} setupLinkProps={navigation.linkProps("/setup")} />;
 }

@@ -32,10 +32,11 @@ import { accountManagerAssignee, adsAssignee, closeIssue, closeRunIssue, note, o
 import { scopePace } from "./pacing.js";
 import { ADS_ORIGINS, OPEN_PROPOSAL_STATUSES, PROPOSAL_KIND_LABELS, SPEND_KINDS, type ProposalKind } from "./platforms.js";
 import { normalizeProposal, type Normalized } from "./proposal-input.js";
+import { assertPlatformCapsFor } from "./platformCaps.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
 import type { AdsRuntime } from "./runtime.js";
 import { APPROVAL_TTL_MS, PROPOSAL_TTL_MS, reviewStands, signoffState, type Role } from "./signoffs.js";
-import { ELON_AGENT_ID, ownerRouteOf } from "./owner-route.js";
+import { ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
 
 export interface ProposalActor {
   userId?: string | null;
@@ -135,6 +136,7 @@ export async function createProposal(rt: AdsRuntime, actor: ProposalActor, input
   const n = await normalizeProposal(rt, scope, input);
   const id = randomUUID();
   const impact = await computeImpact(rt, scope, n.kind, n.addition, n.payload);
+  await assertPlatformCapsFor(rt, n.kind, { ...n.payload, accountId: n.accountId });
   const precheck = precheckOf(scope, n);
   const blockers = (precheck as { blockers?: number }).blockers ?? 0;
   const origin = typeof input.origin === "string" && ["agent", "budget_90", "budget_100", "alert", "human"].includes(input.origin) ? input.origin : actor.userId ? "human" : "agent";
@@ -196,7 +198,7 @@ async function startReview(rt: AdsRuntime, actor: ProposalActor, proposalId: str
 async function maybeOpenClientAsk(rt: AdsRuntime, p: ProposalRow, scope: ScopeRow): Promise<void> {
   if (!p.requires_signoffs.includes("client") || p.client_ask_issue_id || !reviewStands(p) || (p.status !== "in_review" && p.status !== "approved")) return;
   const approvals = await listApprovals(rt.ctx, rt.companyId, p.id);
-  if (signoffState(p, approvals, rt.now()).valid.client) return;
+  if (signoffState(p, approvals, rt.now(), await ownerDelegateAgentId(rt.ctx, rt.companyId)).valid.client) return;
   const name = await clientName(rt.ctx, rt.companyId, p.scope_key);
   const client = p.scope_key;
   const opened = await openIssueOnce(rt.ctx, {
@@ -228,7 +230,7 @@ export async function refreshProposal(rt: AdsRuntime, proposalId: string): Promi
   const p = (await getProposal(rt.ctx, rt.companyId, proposalId))!;
   if (!OPEN_PROPOSAL_STATUSES.includes(p.status)) return p;
   const scope = (await getScope(rt.ctx, rt.companyId, p.scope_key))!;
-  const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now());
+  const state = signoffState(p, await listApprovals(rt.ctx, rt.companyId, p.id), rt.now(), await ownerDelegateAgentId(rt.ctx, rt.companyId));
   if (state.rejected) {
     await updateProposal(rt.ctx, rt.companyId, p.id, { status: "rejected" });
     await closeIssue(rt.ctx, rt.companyId, p.approval_issue_id, "cancelled", `Refused by ${state.rejected.decided_by}${state.rejected.note ? `: ${state.rejected.note}` : ""}. Nothing was changed.`);
@@ -258,7 +260,7 @@ export async function refreshProposal(rt: AdsRuntime, proposalId: string): Promi
 /** A task for the ads agent: run the approved change with the approval id (or, with writes off, hand it to a person). */
 async function openRunIssue(rt: AdsRuntime, p: ProposalRow, scope: ScopeRow): Promise<void> {
   const approvals = await listApprovals(rt.ctx, rt.companyId, p.id);
-  const owner = signoffState(p, approvals, rt.now()).valid.owner;
+  const owner = signoffState(p, approvals, rt.now(), await ownerDelegateAgentId(rt.ctx, rt.companyId)).valid.owner;
   const canRun = rt.config.writesEnabled && scope.allow_writes;
   await openIssueOnce(rt.ctx, {
     companyId: rt.companyId,
@@ -291,7 +293,7 @@ export interface SignoffInput {
   via: "issue" | "page" | "tool";
 }
 
-/** A person's or Elon's (owner delegate) yes or no. */
+/** A person's or the owner's delegate's (the Account Manager agent) yes or no. */
 export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promise<{ proposal: ProposalRow; approvalId: string }> {
   const byAgent = !input.userId && !!input.agentId;
   if (!input.userId && !byAgent) throw new AdsError("Only a signed-in person can approve or refuse a change.");
@@ -303,9 +305,9 @@ export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promis
   if (!p.requires_signoffs.includes(input.role)) throw new AdsError(`This proposal does not need a ${input.role} sign-off.`);
   if (rt.now() > new Date(p.expires_at ?? 0)) throw new AdsError("This proposal expired. Ask for it again.");
 
-  // Agent checks: only Elon, only owner role, only approvals
+  // Agent checks: only the Account Manager, only owner role, only approvals
   if (byAgent) {
-    if (input.agentId !== ELON_AGENT_ID) throw new AdsError("Only a signed-in person can approve or refuse a change.", "not_a_person");
+    if (input.agentId !== (await ownerDelegateAgentId(rt.ctx, rt.companyId))) throw new AdsError("Only a signed-in person can approve or refuse a change.", "not_a_person");
     if (input.role !== "owner" || input.decision !== "approved") throw new AdsError("The owner's delegate can only approve, as owner.", "not_a_person");
   }
 
@@ -329,21 +331,21 @@ export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promis
     await updateProposal(rt.ctx, rt.companyId, p.id, { reviewState: "waived", reviewBy: `user:${input.userId}`, reviewNotes: "Approved by a person before the Reviewer's check finished." });
   }
 
-  // Check Elon's authority (owner route)
+  // Check the delegate's authority (owner route)
   if (byAgent) {
     const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
     if (!scope) throw new AdsError("That scope is gone.");
     const route = ownerRouteOf(scope, p);
-    if (route.route === "peet_required") {
+    if (route.route === "owner_required") {
       await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
       await audit(rt.ctx, rt.companyId, {
         actor: `agent:${input.agentId}`,
-        action: "proposal.peet_required",
+        action: "proposal.owner_required",
         scopeKey: p.scope_key,
         subject: p.id,
         detail: { lifetimeMinor: route.lifetimeMinor, thresholdMinor: route.thresholdMinor },
       });
-      throw new AdsError("This proposal's lifetime budget is above the owner threshold, so it needs Peet's sign-off. It is marked peet_required and shown in the cockpit.", "peet_required");
+      throw new AdsError("This proposal's lifetime budget is above the owner threshold, so it needs the owner's sign-off. It is marked owner_required and shown in the cockpit.", "owner_required");
     }
   }
 

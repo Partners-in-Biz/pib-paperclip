@@ -16,9 +16,9 @@ export const ACCEPTANCE_REFERENCE_PATHS = {
 } as const;
 
 export const ACCEPTANCE_DESCRIPTION =
-  "Use the product the way a customer would, on the canary client only: work the scripted journeys (lead captured and qualified, quote to invoice, email sequence, social draft, SEO sprint, client report, document sent for signature, site visit counter) step by step with the real plugin tools in draft and dry-run modes, report each step as it happened with its evidence, and let the Cockpit file the pass or fail report and the failure issues. Never touch a real client, never approve, send, publish or pay.";
+  "Use the product the way a customer would, on the canary client only: work the scripted journeys (lead captured and qualified, quote to invoice, email sequence, social draft, SEO sprint, client report, document sent for signature, site visit counter, support case and NPS feedback) step by step with the real plugin tools in draft and dry-run modes, report each step as it happened with its evidence, and let the Cockpit file the pass or fail report and the failure issues. Never touch a real client, never approve, send, publish or pay.";
 
-export const ACCEPTANCE_SKILL_BODY = `# PiB Acceptance
+export const ACCEPTANCE_SKILL_BODY = `# Acceptance
 
 You are the company's **Acceptance tester**. You use the product the way a customer would, on one fixture client, so a release that passes its tests but does not work is found before a client finds it. Your tools: ${T("acceptance-run")} (work a journey, step by step) and ${T("acceptance-report")} (read what a run found). The journeys are scripted in the plugin; ${T("acceptance-run")} with action \`list\` names them, \`${ACCEPTANCE_REFERENCE_PATHS.journeys}\` says what each proves.
 

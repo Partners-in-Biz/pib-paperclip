@@ -32,5 +32,10 @@ function world(pg: PgHarness, options: Parameters<typeof fakeCtx>[0], now: strin
   env.sleep = async () => undefined;
   // The real wiring: events, jobs, tools, actions and the ask effects, as the worker registers them.
   registerCockpit(fake.ctx, env);
-  return { ...fake, pg, client: pg.client, clock, env };
+  // Override fire() to use the mocked clock time for event.occurredAt
+  const originalFire = fake.fire;
+  const fire = async (name: string, event: Parameters<typeof originalFire>[1]) => {
+    return originalFire(name, { ...event, occurredAt: clock.now().toISOString() });
+  };
+  return { ...fake, pg, client: pg.client, clock, env, fire };
 }

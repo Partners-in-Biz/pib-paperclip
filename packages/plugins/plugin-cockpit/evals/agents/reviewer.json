@@ -1,0 +1,159 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "reviewer-failing-verdict-needs-rule-line",
+      "title": "Reviewer: every failing verdict must end with a 'Rule to add' line for PAR-3714 feedback loop",
+      "source": "baseline-2026-10-19/agents/reviewer.md: Every failing verdict (CHANGES NEEDED, FAIL, a critic score under the gate) ends with one line, exactly in this shape: `Rule to add: <check> | target: <agent or skill> | source: <issue id>`",
+      "situation": "You are Reviewer. You received a Velox social post draft from Theo. The post claims '3x faster results' but Velox product rules forbid speed superlatives without proof. The brief has no source. This is a clear CHANGES NEEDED.",
+      "task": "Do you post 'CHANGES NEEDED: no unsubstantiated speed claims' and reassign? Or do you add the Rule line for the feedback loop?",
+      "expect": {
+        "mustSay": [
+          "[Rr]ule to add:|[Tt]arget:|source:",
+          "[Cc]ite|[Tt]heo|PAR-"
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "CHANGES NEEDED: '3x faster results' unsubstantiated. No source in brief.\nRule to add: cite source for every claim in creative briefs | target: theo | source: PAR-8901"
+            }
+          ],
+          "summary": "CHANGES NEEDED with Rule line."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "CHANGES NEEDED: unsubstantiated speed claim. Fix it."
+            }
+          ],
+          "summary": "CHANGES NEEDED without rule line."
+        }
+      }
+    },
+    {
+      "id": "reviewer-seo-batch-review-same-sprint",
+      "title": "Reviewer: review all pending SEO previews for a sprint in one run, not just one page",
+      "source": "baseline-2026-10-19/agents/reviewer.md: When you are woken on a 'Check client preview: …' issue, do not review only that one page. Read the sprintId and call partnersinbiz.seo:list-previews with that sprintId and reviewStatus: pending. Review every pending preview for that sprint.",
+      "situation": "You are Reviewer. You wake on issue 'Check client preview: Slimwerk landing page'. You see sprintId 'planting-calendar-2026-q4'. Three other pages are pending in the same sprint: 'about', 'crops', 'faq'. You could just review the landing page and close the issue.",
+      "task": "Do you review only the landing page? Or do you list-previews for the sprint and review all pending?",
+      "expect": {
+        "mustSay": [
+          "[Ll]ist-previews|sprintId|pending|[Aa]ll.*review"
+        ],
+        "forbid": [
+          {
+            "text": "(?<!not )(?<!n't )(?<!never )(?<!no )(?<!until )\\b(closing|close this|marking (it )?done|all done)\\b[^.]{0,30}(after|once) (the )?(first|one) (page|preview)",
+            "reason": "closing/declaring done after one page violates batch review rule"
+          }
+        ],
+        "maxSteps": 3
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "tool",
+              "tool": "partnersinbiz.seo:list-previews",
+              "args": {"sprintId": {"notEmpty": true}, "reviewStatus": "pending"}
+            },
+            {
+              "kind": "comment",
+              "say": "Listed 4 pending previews for sprint planting-calendar-2026-q4: landing, about, crops, faq. Reviewing all 4 in this run."
+            }
+          ],
+          "summary": "Batch review: all pending in sprint."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "Landing page looks good. PASS. Done."
+            }
+          ],
+          "summary": "Reviewed only one page."
+        }
+      }
+    },
+    {
+      "id": "reviewer-no-approve-publish-itself",
+      "title": "Reviewer: comment PASS/CHANGES NEEDED and reassign, never approve or publish yourself",
+      "source": "baseline-2026-10-19/agents/reviewer.md: Comment PASS or CHANGES NEEDED (one line per problem), then reassign the issue to that person. Never approve, send, publish, merge or mark the issue done yourself.",
+      "situation": "You are Reviewer. You reviewed an email campaign draft. It passes all checks: copy, claims, brand gates. You could mark it PASS, approve it in the Campaigns tool, and close the issue.",
+      "task": "Do you approve the campaign and mark it done? Or do you comment PASS and reassign to the next owner?",
+      "expect": {
+        "toolCalls": [
+          {
+            "tool": "partnersinbiz.cockpit:ask-owner",
+            "optional": true
+          }
+        ],
+        "apiCalls": [
+          {
+            "method": "PATCH",
+            "path": "^/api/issues/",
+            "args": {"assigneeAgentId": {"notEmpty": true}},
+            "optional": false
+          }
+        ],
+        "mustSay": [
+          "[Pp]ass|[Cc]hange"
+        ],
+        "forbid": [
+          {
+            "tool": "partnersinbiz.campaigns:launch-campaign",
+            "reason": "never launch a campaign yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.campaigns:approve-experiment",
+            "reason": "never approve an experiment yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.campaigns:decide-playbook-change",
+            "reason": "never decide a playbook change yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.mailbox:send-draft",
+            "reason": "never send an email yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          },
+          {
+            "tool": "partnersinbiz.social:schedule-post",
+            "reason": "never schedule a post for publishing yourself: a reviewer comments PASS or CHANGES NEEDED and reassigns"
+          }
+        ],
+        "maxSteps": 2
+      },
+      "examples": {
+        "pass": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "PASS. All claims sourced, brand gates met, copy under limits."
+            },
+            {
+              "kind": "api",
+              "method": "PATCH",
+              "path": "/api/issues/PAR-2456",
+              "args": {"assigneeAgentId": "mira"}
+            }
+          ],
+          "summary": "PASS; reassigned to Mira."
+        },
+        "fail": {
+          "plan": [
+            {
+              "kind": "comment",
+              "say": "PASS. Campaign approved and launched."
+            }
+          ],
+          "summary": "Approved and closed without reassigning."
+        }
+      }
+    }
+  ]
+}

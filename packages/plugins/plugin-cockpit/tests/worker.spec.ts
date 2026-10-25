@@ -4,7 +4,8 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { COCKPIT_EVENTS, COCKPIT_PLUGIN, COCKPIT_ROUTE, COMPANY_OS_HIRE_SKILL, crmProjectionMigration, hireTaskDraft, PIB_PLUGINS, SETUP_STATUS_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief, postDailyBrief, runTool, weekKey } from "../src/brief.js";
 import { JOBS, ROUTINES } from "../src/constants.js";
-import { createEnv, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { createEnv, governorTick, handleApiRoute, onSetupStatusEvent, onSnapshotEvent, registerCockpit } from "../src/register.js";
+import { DEFAULT_PAUSE_ORDER } from "../src/governor-model.js";
 import { healthAlerts, healthIssueContent, refreshHealthIssue } from "../src/health.js";
 import { HIRE_ROLES, OPERATOR_ROLE, OPERATOR_SKILL_KEY, REVIEWER_ROLE, REVIEWER_SKILL_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
@@ -63,9 +64,9 @@ describe("manifest and migration", () => {
     expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
-      "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "approvals.read", "routines.managed", "skills.managed",
+      "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "agents.pause", "agents.resume", "agents.invoke", "approvals.read", "routines.managed", "skills.managed",
       "authorization.grants.read", "authorization.grants.write", "plugin.state.read", "plugin.state.write", "companies.read", "agent.tools.register",
-      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read",
+      "database.namespace.migrate", "database.namespace.read", "database.namespace.write", "secrets.read-ref", "issue.comments.read", "issue.attachments.read",
       // 0.5.0: goals mirrored to the host, and the members for the single-admin check
       "goals.read", "goals.create", "goals.update", "access.members.read",
       // 0.5.1: the harness task's output document, read by the Cockpit itself when it grades a golden scenario
@@ -76,10 +77,16 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toEqual([{ ...COCKPIT_ROUTE }, { ...SETUP_STATUS_ROUTE }]);
+    expect(manifest.apiRoutes).toHaveLength(6);
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-list")).toMatchObject({ method: "GET", path: "/repairs", auth: "board", companyResolution: { from: "query", key: "companyId" } });
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "governor-rehearse")).toMatchObject({ method: "POST", path: "/governor-rehearse", auth: "board", companyResolution: { from: "body", key: "companyId" } });
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "owner-push")).toMatchObject({ method: "POST", path: "/owner-push", auth: "board", companyResolution: { from: "body", key: "companyId" } });
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([
       [JOBS.reemitRoles, "10 * * * *"], [JOBS.healthAlerts, "20 * * * *"], [JOBS.memoryUpkeep, "30 1 * * *"],
-      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"],
+      [JOBS.closeoutSweep, "20 4 * * *"], [JOBS.improvementsRecheck, "40 4 * * *"], [JOBS.credentialsCheck, "50 3 * * *"], [JOBS.acceptanceNightly, "40 2 * * *"], [JOBS.businessReview, "30 4 * * 1"], [JOBS.governor, "*/15 * * * *"], [JOBS.pushDigest, "0 4 * * *"], [JOBS.askDeadlines, "*/15 * * * *"],
     ]);
     expect(manifest.routines?.map((r) => [r.routineKey, r.triggers?.[0]?.cronExpression, r.triggers?.[0]?.timezone])).toEqual([
       [ROUTINES.daily, "0 7 * * *", "Africa/Johannesburg"],
@@ -87,8 +94,9 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.tools?.map((t) => t.name)).toEqual([
       "company-brief", "health-issues", "waiting-on-owner", "agent-scorecards", "post-daily-brief", "ask-owner", "company-profile", "update-company-profile",
+      "repairs-list", "governor-state", "watchdog-findings",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
-      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record",
+      "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",
     ]);
     // Every tool parameter says what it is; fixed values are enums.
@@ -100,6 +108,13 @@ describe("manifest and migration", () => {
     }
     expect((manifest.tools!.find((t) => t.name === "ask-owner")!.parametersSchema as { properties: Record<string, { enum?: string[] }> }).properties.kind!.enum).toEqual(["decision", "grant", "money", "legal", "info"]);
     expect((manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.jev).toBeTruthy();
+    type GovernorSchema = { properties?: Record<string, { default?: unknown }> };
+    const governor = (manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties.governor as GovernorSchema | undefined;
+    expect(governor).toBeTruthy();
+    expect(governor?.properties?.enabled?.default).toBe(true);
+    expect(governor?.properties?.triggerFailures?.default).toBe(3);
+    expect(governor?.properties?.triggerAgents?.default).toBe(2);
+    expect(governor?.properties?.pauseOrder?.default).toEqual([...DEFAULT_PAUSE_ORDER]);
     expect(manifest.skills?.map((s) => s.slug)).toEqual(["pib-operator", "pib-reviewer", "pib-company-os", "pib-acceptance"]);
   });
 
@@ -125,6 +140,19 @@ describe("manifest and migration", () => {
     const kit = normal(crmProjectionMigration(NAMESPACE));
     expect(kit).toHaveLength(4);
     expect(normal(third).slice(0, 4)).toEqual(kit);
+  });
+
+  it("governor tick iterates companies and reads config, skipping disabled ones, never calling agents when idle", async () => {
+    const { env: envMixed } = setup({ savedConfigs: { [A]: { governor: { enabled: false } }, [B]: { governor: { enabled: true } } } });
+    // Set up roles for both companies so listRoles returns them
+    await saveTeam(envMixed, A, {}, "user-1");
+    await saveTeam(envMixed, B, {}, "user-2");
+    // Disabled company never touches ctx.agents (Proxy guard); enabled company B is idle (no failures), so never touches agents either.
+    const guarded = { ...envMixed, ctx: new Proxy(envMixed.ctx, { get: (target, key) => { if (key === "agents") throw new Error("governor touched ctx.agents when it shouldn't"); return Reflect.get(target, key); } }) };
+    const result = await governorTick(guarded);
+    expect(result.tried).toBe(2);
+    expect(result.disabled).toBe(1);
+    expect(result.idle).toBe(1);
   });
 
   it("skills carry unique pib- frontmatter and describe the boundaries", () => {
@@ -415,7 +443,7 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "acceptance-run", "skill-eval", "propose-skill-change"]);
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert"]);
     for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
@@ -501,5 +529,59 @@ describe("own routes", () => {
     expect(load.team.operator.agent.id).toBe("op");
     expect(load.installed).toEqual({ [PIB_PLUGINS.crm]: { id: "c", status: "ready" } });
     expect(HIRE_ROLES.operator).toBe(OPERATOR_ROLE);
+  });
+
+  it("repairs POST route validates fields and company scoping", async () => {
+    const { env } = setup();
+    const validInput = { companyId: A, kind: "agent", targetKind: "agent", targetId: "a1", action: "add-skill", outcome: "success", actor: "user" };
+
+    // Valid POST
+    const valid = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: validInput });
+    expect(valid.status).toBe(201);
+    expect((valid.body as any).id).toMatch(/^rep[a-f0-9]{12}$/);
+
+    // Missing required field
+    const missing = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: { ...validInput, kind: "" } });
+    expect(missing.status).toBe(400);
+    expect((missing.body as any).error).toMatch(/kind/);
+
+    // Unknown field
+    const unknown = await handleApiRoute(env, { ...apiInput("repairs-create", A), method: "POST", body: { ...validInput, extra: "field" } });
+    expect(unknown.status).toBe(400);
+    expect((unknown.body as any).error).toMatch(/Unknown field/);
+
+    // companyId mismatch: input.companyId is B but body.companyId is A
+    const mismatch = await handleApiRoute(env, { ...apiInput("repairs-create", B), method: "POST", body: validInput });
+    expect(mismatch.status).toBe(400);
+    expect((mismatch.body as any).error).toMatch(/companyId/);
+  });
+
+  it("repairs GET route lists with filtering and company isolation", async () => {
+    const { ctx, env } = setup();
+    const { recordRepair } = await import("../src/repairs.js");
+
+    // Create repairs for two companies
+    await recordRepair(ctx, A, { kind: "agent", targetKind: "agent", targetId: "a1", action: "fix", outcome: "success", actor: "user" });
+    await recordRepair(ctx, A, { kind: "grant", targetKind: "grant", targetId: "g1", action: "grant", outcome: "success", actor: "user" });
+    await recordRepair(ctx, B, { kind: "agent", targetKind: "agent", targetId: "a2", action: "fix", outcome: "success", actor: "user" });
+
+    const listA = await handleApiRoute(env, apiInput("repairs-list", A));
+    expect(listA.status).toBe(200);
+    expect((listA.body as any).rows).toHaveLength(2);
+    expect((listA.body as any).rows.every((r: any) => r.companyId === A)).toBe(true);
+
+    const listB = await handleApiRoute(env, apiInput("repairs-list", B));
+    expect((listB.body as any).rows).toHaveLength(1);
+    expect((listB.body as any).rows[0].companyId).toBe(B);
+
+    // Test kind filter
+    const filtered = await handleApiRoute(env, { ...apiInput("repairs-list", A), query: { companyId: A, kind: "agent" } });
+    expect((filtered.body as any).rows).toHaveLength(1);
+    expect((filtered.body as any).rows[0].kind).toBe("agent");
+
+    // Test invalid since date
+    const badSince = await handleApiRoute(env, { ...apiInput("repairs-list", A), query: { companyId: A, since: "not-a-date" } });
+    expect(badSince.status).toBe(400);
+    expect((badSince.body as any).error).toMatch(/since/);
   });
 });

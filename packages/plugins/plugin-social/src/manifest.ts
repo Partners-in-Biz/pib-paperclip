@@ -3,13 +3,13 @@ import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE, withMemoryInstruction } from "@partn
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
 import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_INSTRUCTIONS, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
-import { DESIRED_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS } from "./skills.js";
+import { DESIRED_SKILLS, PIB_ONLY_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.9.1",
+  version: "0.10.7",
   displayName: "Social",
   description:
     "Connect social accounts for PiB's own work or one CRM client at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft posts, approve them (a team member by default; a client can approve on a link) and publish on schedule with retries. Inbox triage; Growth Lab. " +
@@ -19,6 +19,7 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: buildInstanceConfigSchema(),
   capabilities: [
     "companies.read",
+    "access.members.read",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -192,7 +193,7 @@ const manifest: PaperclipPluginManifestV1 = {
       // No issueTemplate (see PLAN_ROUTINE_KEY): the host's own routine origin is what its dispatch and the Routines page expect.
     },
   ],
-  skills: SKILLS.map((skill) => ({
+  skills: [...SKILLS, ...PIB_ONLY_SKILLS].map((skill) => ({
     skillKey: skill.skillKey,
     displayName: skill.displayName,
     slug: skill.slug,
@@ -209,4 +210,5 @@ const manifest: PaperclipPluginManifestV1 = {
   },
 };
 
+export { PIB_ONLY_SKILLS };
 export default manifest;

@@ -4,6 +4,8 @@
  * scripts are removed so the preview is static, and agent-written body HTML is stripped of anything active.
  */
 
+import { PREVIEW_BASE, previewSlug } from "../service/preview-links.js";
+
 /** before = added above the page's existing content (default), after = added below it, replace = takes the place of ALL of it. */
 export type BodyMode = "before" | "after" | "replace";
 
@@ -233,10 +235,12 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     applied.push("css");
   }
 
+  const slug = previewSlug(pageUrl);
+  const decisionUrl = `${PREVIEW_BASE}/p/${slug}/${escapeHtml(opts.token)}/decision`;
   const banner =
     `<div id="pib-preview-bar" style="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#111827;color:#fff;font:14px/1.4 system-ui,sans-serif;padding:10px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between;box-shadow:0 -2px 12px rgba(0,0,0,.3)">` +
     `<span><strong>Proposed changes, not live.</strong> ${opts.clientName ? `For ${escapeHtml(opts.clientName)}. ` : ""}Nothing here is on the website yet.</span>` +
-    `<form method="post" action="/p/${escapeHtml(opts.token)}/decision" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0">` +
+    `<form method="post" action="${escapeHtml(decisionUrl)}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0">` +
     `<input name="note" placeholder="Comment (optional)" maxlength="1000" style="padding:6px 8px;border-radius:6px;border:0;min-width:200px;font:inherit">` +
     `<button name="decision" value="approved" style="background:#16a34a;color:#fff;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer">Approve</button>` +
     `<button name="decision" value="changes_requested" style="background:#f59e0b;color:#111;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer">Request changes</button>` +

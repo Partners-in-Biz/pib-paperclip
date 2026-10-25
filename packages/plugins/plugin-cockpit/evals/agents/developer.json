@@ -1,0 +1,71 @@
+{
+  "skill": "pib-operator",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "delegate-edits-to-implementer",
+      "title": "Developer delegates code edits to implementer, does not edit files directly",
+      "source": "baseline-2026-10-19/agents/developer.md: spawn subagent for every implementation step; developer plans only",
+      "situation": "You are Developer on a code ticket PAR-500 (add pagination to issue list). The code needs edits to server/routes/issues.ts (add limit/offset parameters), ui/pages/issues.tsx (add paging controls), and tests. You have identified the exact files and what each needs.",
+      "task": "Plan the work and delegate the edits. Do not edit files yourself.",
+      "expect": {
+        "mustSay": [
+          "[Dd]elegate|[Ss]ubagent|[Ii]mplementer"
+        ],
+        "mustNotSay": [
+          "[Ee]dit|[Ww]rite|directly"
+        ],
+        "maxSteps": 4,
+        "plainWriting": true
+      }
+    },
+    {
+      "id": "at-most-6-direct-calls",
+      "title": "Developer keeps direct tool calls to 6 or fewer per run",
+      "source": "baseline-2026-10-19/agents/developer.md: Hard limits v2 - at most 6 direct calls (Read, Edit, Write, Terminal count)",
+      "situation": "You are Developer on a ticket. You've planned the work and spawned 2 implementer tasks in parallel. You now need to: (1) read the current PR status, (2) read a code-explorer's diff, (3) run git fetch, (4) review test results, (5) write a comment, (6) check linting output.",
+      "task": "Complete the work checks within your direct call budget of 6 calls.",
+      "expect": {
+        "maxSteps": 6,
+        "mustSay": [
+          "Delegation:|direct"
+        ]
+      }
+    },
+    {
+      "id": "split-pr-if-over-400-lines",
+      "title": "Split PR if changes exceed ~400 lines; do not keep oversized PRs",
+      "source": "baseline-2026-10-19/agents/developer.md: ~400 lines per PR max; split before building if needed",
+      "situation": "You are Developer on ticket PAR-501. Midway through building, you realize the PR will have 520 changed lines (not counting lockfiles): 150 schema changes, 200 API edits, 170 UI updates. The ticket scope covers all three areas.",
+      "task": "Decide: do you commit this 520-line PR or split it?",
+      "expect": {
+        "mustSay": [
+          "[Ss]plit|child|separate"
+        ],
+        "mustNotSay": [
+          "merge.*400|push.*520"
+        ],
+        "maxSteps": 2
+      }
+    },
+    {
+      "id": "no-handoff-with-red-checks",
+      "title": "Before handing off to Code Reviewer, all local checks must pass",
+      "source": "baseline-2026-10-19/agents/developer.md: Athleet flow - before review, run lint/tsc/jest and paste results; no red checks",
+      "situation": "You are Developer. You've finished a ticket and are about to hand off to Code Reviewer. You run: `npm run lint` (PASS), `npx tsc --noEmit` (FAIL - 3 type errors), `npx jest` (PASS). A test-runner task reports the tsc failures.",
+      "task": "Can you hand off now or must you fix the tsc errors first?",
+      "expect": {
+        "mustSay": [
+          "[Ff]ix|type error|before hand"
+        ],
+        "forbid": [
+          {
+            "text": "hand.*off|move.*review|ready.*reviewer",
+            "reason": "cannot hand off with failing type checks"
+          }
+        ],
+        "maxSteps": 2
+      }
+    }
+  ]
+}

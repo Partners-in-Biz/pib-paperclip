@@ -6,6 +6,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { decisionConfig, readConfig, SecretResolver, TAX_CODES, type DecisionClientConfig, type R2Config, type TaxCode } from "@partnersinbiz/pib-plugin-kit";
 import type { PaymentSettings } from "./pay/settings.js";
+import { withPreferences } from "./preferences.js";
 
 export interface DunningStage {
   daysAfterDue: number;
@@ -86,12 +87,34 @@ export const DEFAULT_DUNNING_STAGES: DunningStage[] = [
   },
 ];
 
+/** The one place settings are read: the saved Billing settings with the company's preferences laid over them. */
 export async function billingSettings(ctx: PluginContext, companyId: string): Promise<BillingSettings> {
+  return withSenderName(ctx, companyId, await withPreferences(ctx, companyId, await savedSettings(ctx, companyId)));
+}
+
+/** A company with no sender name (saved or preferred) sends as its own company name, never as another company. */
+async function withSenderName(ctx: PluginContext, companyId: string, settings: BillingSettings): Promise<BillingSettings> {
+  const sender = settings.sender && typeof settings.sender === "object" ? settings.sender : {};
+  if (typeof sender.name === "string" && sender.name.trim()) return settings;
+  try {
+    const name = (await ctx.companies.get(companyId))?.name?.trim();
+    return name ? { ...settings, sender: { ...sender, name } } : settings;
+  } catch {
+    return settings;
+  }
+}
+
+async function savedSettings(ctx: PluginContext, companyId: string): Promise<BillingSettings> {
   try {
     return (await readConfig(ctx, companyId)) as BillingSettings;
   } catch {
     return {};
   }
+}
+
+/** True when the company has saved Billing settings (preferences alone do not count: the host form row is what the setup checks look for). */
+export async function hasSavedSettings(ctx: PluginContext, companyId: string): Promise<boolean> {
+  return Object.keys(await savedSettings(ctx, companyId)).length > 0;
 }
 
 export function isTaxCode(value: unknown): value is TaxCode {

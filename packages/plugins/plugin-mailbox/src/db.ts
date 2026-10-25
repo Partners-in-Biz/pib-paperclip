@@ -274,10 +274,14 @@ export interface GmailStore {
   setBackoff(companyId: string, email: string, untilIso: string | null): Promise<void>;
   clearRecipientHealth(companyId: string, email: string): Promise<void>;
   sendByProviderMessage(companyId: string, provider: string, providerMessageId: string): Promise<SendRow | null>;
+  /** Find a failed-unknown send by matching pib_send tag value. Searches recent failed sends with provider null or 'ses'. */
+  findSendByPibSendTag(companyId: string, pibSendTag: string): Promise<SendRow | null>;
   markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }): Promise<void>;
   setSendDelivery(companyId: string, key: string, status: string, detail: Record<string, unknown>): Promise<void>;
   /** Merges notes into a send's `delivery` detail WITHOUT touching its `delivery_status` (which only the provider's events move). A key set to null is cleared. */
   patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>): Promise<void>;
+  /** Update a send's provider and provider_message_id when reconciling failed-unknown sends with provider events. */
+  updateSendProvider(companyId: string, key: string, provider: string, providerMessageId: string): Promise<void>;
   /** A draft the email provider took: sent, with no Gmail ids. */
   markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }): Promise<void>;
   /** The provider events and soft-bounce rows about these addresses (erasure). */
@@ -1494,6 +1498,26 @@ export class SqlStore implements GmailStore {
     return rows[0] ? normaliseSend(rows[0]) : null;
   }
 
+  async findSendByPibSendTag(companyId: string, pibSendTag: string): Promise<SendRow | null> {
+    // Find recent failed sends with provider null or 'ses', then match by pib_send tag
+    // This is needed because pib_send tag is derived from the original key via sendTagValue() which is lossy
+    const rows = await this.db.query<SendRow>(
+      `SELECT ${SEND_COLUMNS} FROM ${this.t("send_requests")}
+       WHERE company_id = $1 AND status = 'failed' AND (provider IS NULL OR provider = 'ses')
+       ORDER BY created_at DESC LIMIT 100`,
+      [companyId],
+    );
+    // Import sendTagValue from send.ts to match the tag
+    const { sendTagValue } = await import('./esp/send.js');
+    for (const row of rows) {
+      const normalized = normaliseSend(row);
+      if (sendTagValue(normalized.key) === pibSendTag) {
+        return normalized;
+      }
+    }
+    return null;
+  }
+
   async markSendSentProvider(key: string, fields: { provider: string; providerMessageId: string; accountId: string; fromAddress: string; skipped?: SkippedRecipient[] }): Promise<void> {
     await this.db.execute(
       `UPDATE ${this.t("send_requests")} SET status = 'sent', permanent = false, error = NULL, provider = $2, provider_message_id = $3, account_id = $4, from_address = $5,
@@ -1513,6 +1537,13 @@ export class SqlStore implements GmailStore {
 
   async patchSendDelivery(companyId: string, key: string, detail: Record<string, unknown>): Promise<void> {
     await this.db.execute(`UPDATE ${this.t("send_requests")} SET delivery = delivery || $3::jsonb, updated_at = now() WHERE company_id = $1 AND key = $2`, [companyId, key, json(detail)]);
+  }
+
+  async updateSendProvider(companyId: string, key: string, provider: string, providerMessageId: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE ${this.t("send_requests")} SET provider = $3, provider_message_id = $4, updated_at = now() WHERE company_id = $1 AND key = $2`,
+      [companyId, key, provider, providerMessageId],
+    );
   }
 
   async markDraftSentProvider(companyId: string, id: string, fields: { context: SendContext; sendKey: string; fromAddress: string }): Promise<void> {

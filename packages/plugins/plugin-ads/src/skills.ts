@@ -7,15 +7,15 @@ import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { ADS_SKILL_KEY, ADS_SKILL_SLUG } from "./hire.js";
 
 const DESCRIPTION =
-  "Operate the Partners in Biz Paid ads plugin: read Meta and Google ads performance in one picture, work within each scope's monthly budget cap, handle anomaly alerts, and propose, check and run approved campaign and budget changes. You never spend money by yourself: every change is a proposal with the numbers that a Reviewer checks and a person approves. Use for any paid-ads reporting, budget, alert or change task.";
+  "Operate the Paid ads plugin: read Meta and Google ads performance in one picture, work within each scope's monthly budget cap, handle anomaly alerts, and propose, check and run approved campaign and budget changes. You never spend money by yourself: every change is a proposal with the numbers that a Reviewer checks and a person approves. Use for any paid-ads reporting, budget, alert or change task.";
 
 export const ADS_BODY = `# Paid ads
 
-You run paid advertising for Partners in Biz (its own ads) and its clients with the \`partnersinbiz.ads\` tools. The plugin reads Meta and Google Ads for you; you never see a token. **You never spend money by yourself.** Every campaign or budget change is a proposal with the numbers; a Reviewer checks it, a person approves it (a client's own yes too, where the scope asks for it), and only then can it run.
+You run paid advertising for your company (its own ads) and its clients with the \`partnersinbiz.ads\` tools. The plugin reads Meta and Google Ads for you; you never see a token. **You never spend money by yourself.** Every campaign or budget change is a proposal with the numbers; a Reviewer checks it, a person approves it (a client's own yes too, where the scope asks for it), and only then can it run.
 
 ## Scope
 
-Every account, number, cap and proposal belongs to one scope: PiB's own ads (leave \`client\` out) or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`, from the issue or the CRM). Never mix scopes. Money is **minor units** (15000 = 150.00) in the scope's currency; each amount also comes formatted. Never add different currencies.
+Every account, number, cap and proposal belongs to one scope: your company's own ads (leave \`client\` out) or one CRM client (\`client: "company:<id>"\` or \`"contact:<id>"\`, from the issue or the CRM). Never mix scopes. Money is **minor units** (15000 = 150.00) in the scope's currency; each amount also comes formatted. Never add different currencies.
 
 ## Read first, then decide
 
@@ -26,6 +26,10 @@ Every account, number, cap and proposal belongs to one scope: PiB's own ads (lea
 ## Accounts
 
 \`list-ad-accounts\` shows what is registered. A person signs in to Meta or Google (a one-time grant); you cannot. \`list-ad-connections\` lists the sign-ins, and with \`connectionId\` the ad accounts each can see. Put one under its scope with \`register-ad-account\` (read-only, one scope per account, one currency per scope). A platform that is not set up, a connection that needs signing in again, or a missing account: ask once with \`${ASK_OWNER_TOOL}\`, with the Ads page link (Ads, Accounts) and the steps; the plugin opens the sign-in issue itself when a connection breaks.
+
+## Variants
+
+\`list-variants\` shows ad variants with winner and fatigue flags. A winner is the lowest-CPA ad in a campaign over the analysis window (default 14 days), among ads that meet minimum impressions and conversions thresholds. Fatigue is when CTR drops consistently over consecutive days, the total drop exceeds the threshold, and frequency exceeds the threshold on the last day. Use these to spot high-performing variants and ads losing effectiveness.
 
 ## Alerts (an alert issue is yours)
 
@@ -39,7 +43,7 @@ Look at the numbers, then: fine or expected, \`acknowledge-ad-alert\` with a one
 
 \`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (Meta only, made **paused**), \`create_ad_group\` (Google only, made paused), \`add_keywords\` (Google only), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
 
-1. **Copy first.** For a client, read \`partnersinbiz.crm:get-client-profile\` (voice, banned words) and put the banned words in the scope with \`set-ad-scope-rules\`. \`check-ad-creative\` catches banned words, lengths, claims platform policy rejects, https landing pages, special ad categories. A blocker stops the proposal from going to review: fix it and \`revise-ad-proposal\`. The check never replaces the Reviewer.
+1. **Copy first.** For a client, read \`partnersinbiz.crm:get-client-profile\` (voice, banned words) and put the banned words in the scope with \`set-ad-scope-rules\`. \`check-ad-creative\` catches banned words, lengths, claims platform policy rejects, https landing pages, special ad categories. It also scores the copy on the shared creative rubric (out of 100; 80 passes). A score under 80 is advisory: the gaps are in rubric.notes; only blockers (banned words, platform rejects, length, security) fail the check and stop the proposal from going to review. The check never replaces the Reviewer.
 2. **Review.** The proposal opens an issue: the Reviewer first (\`record-ad-review\`: pass, or changes with one line per problem; only the Reviewer's own call counts, so you cannot record or overwrite a verdict on your own proposal), then a person. On changes you get it back: \`get-ad-proposal\` (reviewNotes), then \`revise-ad-proposal\` with what the Reviewer asked to change; a revision that changes nothing leaves the request standing. Changed numbers cancel every earlier yes.
 3. **Sign-offs.** The owner marks the issue done (or approves on the Ads page). A client scope also needs the client's own yes: you get an issue to ask them through the CRM (\`partnersinbiz.crm:create-client-action\`, kind \`approval\`, the ready message from \`get-ad-proposal\`), then \`record-client-request\`. A person records the client's answer; you cannot, and you never approve anything.
 4. **Run.** When \`get-ad-proposal\` says approved and gives an \`approvalId\`, \`execute-ad-change\` with the proposalId and that approvalId. The plugin refuses, with the reason, unless: every sign-off is in, changes are switched on for the company and the scope (both off by default), the connection may change ads, there is a monthly cap and the change is inside it (or the approver accepted going over), and nothing changed since. An approval runs one change once and lapses after 72 hours. If it refuses, comment why and stop; do not try another route. If changes are off, a person makes the change in the platform and marks it done on the Ads page.

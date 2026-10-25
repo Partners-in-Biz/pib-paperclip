@@ -7,6 +7,9 @@ import { formatMoneyMinor, renderDocumentPdf, type PdfDocumentSpec } from "@part
 import { taxLabel, type TaxGroup } from "./money.js";
 import type { TaxCode } from "@partnersinbiz/pib-plugin-kit";
 
+/** Sender name on a document when neither the sender settings nor the company name give one. Never another company's name. */
+export const FALLBACK_SENDER_NAME = "Workspace";
+
 export type DocKind = "invoice" | "quote" | "credit_note";
 
 export interface DocLineView {
@@ -161,7 +164,7 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
     number: view.number,
     details,
     parties: [
-      { heading: "From", lines: partyLines(view.sender, "Partners in Biz") },
+      { heading: "From", lines: partyLines(view.sender, FALLBACK_SENDER_NAME) },
       { heading: view.kind === "quote" ? "Prepared for" : "Bill to", lines: partyLines(view.customer, "Customer") },
     ],
     columns,
@@ -226,7 +229,7 @@ export function statementPdfSpec(view: StatementView): PdfDocumentSpec {
     number: null,
     details: [["Period", `${view.from} to ${view.to}`], ["Currency", view.currency]],
     parties: [
-      { heading: "From", lines: partyLines(view.sender, "Partners in Biz") },
+      { heading: "From", lines: partyLines(view.sender, FALLBACK_SENDER_NAME) },
       { heading: "Account", lines: partyLines(view.customer, "Customer") },
     ],
     columns: [

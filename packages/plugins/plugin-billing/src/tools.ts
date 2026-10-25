@@ -148,6 +148,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     description: "The payments recorded on an invoice (amount, method, reference, date, source).",
     parametersSchema: schema(["invoiceId"], { invoiceId }),
   },
+  {
+    name: "delete-draft-invoice",
+    displayName: "Delete draft invoice",
+    description: "Delete a draft invoice that was never sent or paid (drafts only; dangerous: no undo). For non-canary invoices with a number, void instead to keep the sequence gap-free.",
+    parametersSchema: schema(["invoiceId"], { invoiceId }),
+  },
 
   // ── Quotes ───────────────────────────────────────────────────────────────
   {
@@ -231,6 +237,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     name: "quote-html",
     displayName: "Quote HTML",
     description: "A printable HTML copy of a quote (large). Use quote-detail to read it.",
+    parametersSchema: schema(["quoteId"], { quoteId }),
+  },
+  {
+    name: "delete-draft-quote",
+    displayName: "Delete draft quote",
+    description: "Delete a draft quote that was never sent or accepted (drafts only; hard-delete; no undo). Quote numbers are not a statutory gap-free sequence, so voiding is not required.",
     parametersSchema: schema(["quoteId"], { quoteId }),
   },
 
@@ -400,7 +412,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-expense",
     displayName: "Create expense",
-    description: "Record an expense PiB already paid (it is posted to the books at once). Amount is the total paid; vatMinor is the VAT on the receipt.",
+    description: "Record an expense the company already paid (it is posted to the books at once). Amount is the total paid; vatMinor is the VAT on the receipt.",
     parametersSchema: schema(["description", "amountMinor"], {
       description: str("What was bought."),
       amountMinor: int("Total paid in cents, VAT included."),
@@ -409,7 +421,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
       incurredOn: date("Day of the expense. Default today"),
       vendor: str("Who was paid."),
       vatMinor: int("VAT on the receipt in cents (0 when none)."),
-      vatClaimable: bool("true when the receipt is a valid tax invoice and PiB is VAT registered. Leave out to let Billing decide."),
+      vatClaimable: bool("true when the receipt is a valid tax invoice and the company is VAT registered. Leave out to let Billing decide."),
       taxCode,
       paidFrom: oneOf(["bank", "card", "cash", "owner"], "Where the money came from: the business bank account, the business card, petty cash, or the owner's own pocket."),
     }),
@@ -417,7 +429,7 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
   {
     name: "create-bill",
     displayName: "Create supplier bill",
-    description: "Draft a supplier's bill (money PiB owes). Add lines with add-bill-line, then request-bill-approval. You never pay bills.",
+    description: "Draft a supplier's bill (money the company owes). Add lines with add-bill-line, then request-bill-approval. You never pay bills.",
     parametersSchema: schema(["supplierName"], {
       supplierKind: oneOf(["company", "contact", "text"], "company or contact when the supplier is in the CRM (pass supplierRef too); text when it is not."),
       supplierRef: str("CRM id of the supplier company or contact."),

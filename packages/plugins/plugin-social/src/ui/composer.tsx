@@ -25,7 +25,7 @@ const FIELD_LABEL: Record<keyof PlatformOverride, string> = {
 };
 
 /** Upload a file straight to R2 with a presigned PUT, then register it in `client`'s scope (null = own work). */
-export async function uploadToR2(run: RunAction, file: File, client: string | null, altText?: string): Promise<MediaAsset> {
+export async function uploadToR2(run: RunAction, file: File, scope: { client: string | null; space?: "me" }, altText?: string): Promise<MediaAsset> {
   if (!SOCIAL_MEDIA_MIME.includes(file.type)) throw new Error(`${file.name}: use JPEG, PNG, GIF, WebP, MP4 or MOV`);
   const presign = (await run("social.media-presign", { fileName: file.name, mime: file.type, bytes: file.size })) as {
     uploadUrl: string;
@@ -46,7 +46,7 @@ export async function uploadToR2(run: RunAction, file: File, client: string | nu
     height: dims?.height,
     durationS: dims?.durationS,
     altText: altText || undefined,
-    client,
+    ...scope,
   })) as MediaAsset;
 }
 
@@ -118,6 +118,9 @@ export function Composer({ snapshot, post, run, onClose }: {
   );
   const [mediaIds, setMediaIds] = useState<string[]>(post?.media.map((m) => m.assetId).filter((id): id is string => Boolean(id)) ?? []);
   const [firstComment, setFirstComment] = useState(post?.firstComment ?? "");
+  const [replyToUrl, setReplyToUrl] = useState(post?.replyTo?.url ?? "");
+  const [quoteUrl, setQuoteUrl] = useState(post?.quote?.url ?? "");
+  const [note, setNote] = useState(post?.note ?? "");
   // The proposed publish time: approval schedules the post for it.
   const [when, setWhen] = useState(post?.scheduledAt ? toLocalInput(new Date(post.scheduledAt)) : "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
@@ -160,7 +163,7 @@ export function Composer({ snapshot, post, run, onClose }: {
     for (const file of Array.from(files)) {
       setUploading(file.name);
       try {
-        const asset = await uploadToR2(run, file, snapshot.scope);
+        const asset = await uploadToR2(run, file, scopeParams(snapshot));
         setExtraAssets((prev) => [asset, ...prev]);
         setMediaIds((prev) => [...prev, asset.id]);
       } catch (e) {
@@ -189,6 +192,10 @@ export function Composer({ snapshot, post, run, onClose }: {
         accountIds: [...accountIds],
         mediaAssetIds: mediaIds,
         firstComment: firstComment || null,
+        // "" clears the reply, quote or note on an existing post.
+        replyToUrl: replyToUrl.trim(),
+        quoteUrl: quoteUrl.trim(),
+        note: note.trim(),
         overrides: cleanOverrides,
         // "" clears a proposed time on an existing post.
         ...(when ? { scheduledAt: new Date(when).toISOString() } : post ? { scheduledAt: "" } : {}),
@@ -217,15 +224,17 @@ export function Composer({ snapshot, post, run, onClose }: {
     <Modal
       open
       title={post ? "Edit post" : "New post"}
-      description="Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."
+      description={snapshot.space === "me" ? "Write once, then adjust per platform. Only you can approve, schedule or publish your posts." : "Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."}
       onClose={onClose}
       footer={(
         <>
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="button" variant="secondary" disabled={saving || !body.trim()} onClick={() => void save(false)}>Save draft</Button>
-          <Button type="button" disabled={saving || !body.trim() || accountIds.size === 0} onClick={() => void save(true)}>
-            {saving ? "Saving…" : "Save & send for review"}
-          </Button>
+          {snapshot.space === "me" ? null : (
+            <Button type="button" disabled={saving || !body.trim() || accountIds.size === 0} onClick={() => void save(true)}>
+              {saving ? "Saving…" : "Save & send for review"}
+            </Button>
+          )}
         </>
       )}
     >
@@ -285,6 +294,19 @@ export function Composer({ snapshot, post, run, onClose }: {
 
       <Field label="First comment (optional)">
         <TextArea value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} placeholder="Posted as the first comment or reply where the platform allows" />
+      </Field>
+
+      <Field label="Reply to an X post (optional)">
+        <Input value={replyToUrl} onChange={(e) => setReplyToUrl(e.target.value)} placeholder="https://x.com/handle/status/123…" disabled={Boolean(quoteUrl.trim())} />
+      </Field>
+      <Field label="Quote an X post (optional)">
+        <Input value={quoteUrl} onChange={(e) => setQuoteUrl(e.target.value)} placeholder="https://x.com/handle/status/123…" disabled={Boolean(replyToUrl.trim())} />
+      </Field>
+      {(replyToUrl.trim() || quoteUrl.trim()) && selectedPlatforms.some((p) => p !== "x") ? (
+        <Muted style={{ color: tone("warn").fg }}>Replies and quotes publish on X only. Deselect the other destinations before sending this for review.</Muted>
+      ) : null}
+      <Field label="Note (optional, internal, never published)">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="For example: HOLD until PAR-1234" />
       </Field>
 
       {selectedPlatforms.length ? (

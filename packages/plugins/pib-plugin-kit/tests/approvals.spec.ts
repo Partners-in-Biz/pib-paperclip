@@ -170,7 +170,7 @@ describe("the approver chain", () => {
 });
 
 describe("openApprovalIssue (the agent tool-call failure, reproduced)", () => {
-  const input = { companyId: "co-1", title: "Approve email sending: Niche 1", description: "Check the steps.", originKind: "plugin:partnersinbiz.crm", originId: "crm:sequence-email:s1", outward: true };
+  const input = { companyId: "co-1", title: "Approve email sending: Niche 1", description: "Check the steps.", originKind: "plugin:partnersinbiz.test", originId: "crm:sequence-email:s1", outward: true };
 
   it("assigns the approval to a person even with the frozen, ownerless roles copy and an agent as the actor", async () => {
     // Live 2026-10-01 16:04: copy = FIRST (owner null, reviewOutward false), actor = an agent in a tool call.
@@ -226,7 +226,7 @@ describe("openApprovalIssue (the agent tool-call failure, reproduced)", () => {
 
 describe("unroutedApprovalsCheck", () => {
   const now = Date.parse("2026-10-03T12:00:00.000Z");
-  const issue = (patch: Record<string, unknown>) => ({ companyId: "co-1", status: "todo", originKind: "plugin:partnersinbiz.crm", createdAt: "2026-10-03T09:00:00.000Z", ...patch });
+  const issue = (patch: Record<string, unknown>) => ({ companyId: "co-1", status: "todo", originKind: "plugin:partnersinbiz.test", createdAt: "2026-10-03T09:00:00.000Z", ...patch });
 
   function seeded(patches: Array<Record<string, unknown>>) {
     const fake = fakeCtx();

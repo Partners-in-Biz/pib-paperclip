@@ -259,6 +259,8 @@ describe.skipIf(!available)("billing graph (postgres)", () => {
     });
 
     it("hands the issue to the Operator after the last early close", async () => {
+      // Disable escalation to test fallback operator routing
+      h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9", escalation: { enabled: false } });
       const { issueId } = await openDrafts();
       for (let i = 1; i < DONE_CHECK_MAX_REOPENS; i += 1) expect((await closes(issueId)).status).toBe("todo");
       const issue = await closes(issueId);

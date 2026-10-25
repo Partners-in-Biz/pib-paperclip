@@ -21,6 +21,7 @@ import { seniorTried, startPreviewFix } from "./build.js";
 import { addNeedsYou, closeNeedsYouItems, closeSignoffItems } from "./needs-you.js";
 import { afterPreviewPassed, handleClientAnswer, isAutoSignoff } from "./client-signoff.js";
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
+import { exportToDrive } from "./drive-export.js";
 
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
@@ -109,6 +110,21 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb)`,
     [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats))],
   );
+  // Save preview to Drive (non-blocking, errors only log warnings)
+  const today = env.now().toISOString().split("T")[0]!;
+  const previewLabel = str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? "preview";
+  const driveName = `${today} SEO preview ${previewLabel.slice(0, 80).replace(/[/\\:*?"<>|]/g, "")} v01.html`;
+  void exportToDrive(env.ctx, {
+    companyId,
+    kind: "seo",
+    name: driveName,
+    mimeType: "text/html",
+    bytes: Buffer.from(withoutNul(built.html)),
+    subfolder: "03 Deliverables",
+    timeoutMs: 5000,
+  }).catch(() => {
+    // Suppress errors; exportToDrive never throws but we catch any unexpected issue
+  });
   const review = await routePreviewReview(env, sprint, { id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
   return {

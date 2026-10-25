@@ -32,6 +32,7 @@ import {
   type GoalProgress,
   type GoalRow,
   type GoalStatus,
+  type GrowthLedgerRow,
   type ReviewGoalRow,
 } from "./goals-model.js";
 import { linkFor } from "./health.js";
@@ -44,6 +45,7 @@ const T = {
   goals: `${NAMESPACE}.goals`,
   values: `${NAMESPACE}.goal_values`,
   reviews: `${NAMESPACE}.business_reviews`,
+  growthLedger: `${NAMESPACE}.growth_ledger`,
 };
 type Raw = Record<string, unknown>;
 
@@ -115,6 +117,28 @@ async function saveValue(ctx: PluginContext, companyId: string, goal: GoalRow, w
     [companyId, goal.id, week, value, at, source],
   );
   if (value !== null) await ctx.db.execute(`UPDATE ${T.goals} SET last_value = $3, last_value_at = $4 WHERE company_id = $1 AND id = $2`, [companyId, goal.id, value, at]);
+}
+
+/** Read growth ledger entries decided in the last 7 days for the company. */
+async function readGrowthLedger(ctx: PluginContext, companyId: string, now: Date): Promise<GrowthLedgerRow[]> {
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await ctx.db.query<Raw>(
+    `SELECT channel, scope_key, experiment_id, verdict, relative_change, items, playbook_decision, decided_at
+     FROM ${T.growthLedger}
+     WHERE company_id = $1 AND decided_at >= $2
+     ORDER BY decided_at DESC`,
+    [companyId, sevenDaysAgo],
+  );
+  return rows.map((r) => ({
+    channel: String(r.channel ?? ""),
+    scopeKey: String(r.scope_key ?? ""),
+    experimentId: String(r.experiment_id ?? ""),
+    verdict: r.verdict === null ? null : (String(r.verdict) as "win" | "loss" | "no_change" | "inconclusive"),
+    relativeChange: numOrNull(r.relative_change),
+    items: r.items === null ? null : Number(r.items),
+    playbookDecision: r.playbook_decision === null ? null : (String(r.playbook_decision) as "kept" | "discarded" | "pending"),
+    decidedAt: iso(r.decided_at) ?? "",
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +370,13 @@ export async function runBusinessReview(env: Env, companyId: string): Promise<Re
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
   const rows: ReviewGoalRow[] = views.map((v) => ({ goal: v.goal, progress: v.progress, note: v.note }));
-  const content = businessReviewContent({ weekLabel: mondayLabel(now), rows, proposedWaiting, cockpitHref: linkFor("/cockpit", prefix) });
+  let growthLedger: GrowthLedgerRow[] = [];
+  try {
+    growthLedger = await readGrowthLedger(env.ctx, companyId, now);
+  } catch (error) {
+    env.ctx.logger.info("Growth ledger: could not read for business review", { companyId, error: message(error) });
+  }
+  const content = businessReviewContent({ weekLabel: mondayLabel(now), rows, proposedWaiting, cockpitHref: linkFor("/cockpit", prefix), growthLedger });
   const route = routeFromRoles(await currentRoles(env, companyId), ["operator"]);
   try {
     const issue = await createWorkIssue(env.ctx, {

@@ -133,3 +133,14 @@ describe("unpinnedRunProfileCheck", () => {
     expect(agentRunProfileProblems(agent({ adapterConfig: { model: " ", timeoutSec: "3600" } }))).toEqual(["no model pinned (runs on the host default, Opus)"]);
   });
 });
+
+describe("hermes billing (PAR-4701)", () => {
+  it("a hermes_local config books the subscription, claude_local carries no billingType", async () => {
+    const { runProfileConfig, runProfileForRole, HERMES_BILLING_TYPE } = await import("../src/run-profile.js");
+    const profile = runProfileForRole("seo-specialist");
+    expect(profile.hermes).toBeTruthy();
+    expect(runProfileConfig(profile, "hermes_local").adapterConfig).toMatchObject({ billingType: HERMES_BILLING_TYPE, provider: profile.hermes!.provider });
+    expect(HERMES_BILLING_TYPE).toBe("subscription_included");
+    expect(runProfileConfig(profile, "claude_local").adapterConfig).not.toHaveProperty("billingType");
+  });
+});

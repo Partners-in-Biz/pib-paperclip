@@ -7,7 +7,7 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountRef, AddKeywordsRequest, AdPolicyRow, AdsProvider, CampaignInfo, CreateAdCreativeRequest, CreateAdGroupRequest, CreateAdRequest, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountCaps, AccountRef, AddKeywordsRequest, AdPolicyRow, AdsProvider, CampaignHealth, CampaignInfo, CreateAdCreativeRequest, CreateAdGroupRequest, CreateAdRequest, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
   op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad" | "adGroup" | "keywords";
@@ -59,13 +59,17 @@ export class MockAdsProvider implements AdsProvider {
   /** Fixed rows per account (tests). An account without any gets generated demo numbers. */
   insightRows: Record<string, InsightRow[]> = {};
   ads: AdPolicyRow[] = [];
+  accountCapsData: Record<string, AccountCaps> = {};
+  disapproved: Record<string, Record<string, number>> = {};
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "adGroup" | "keywords", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health" | "adGroup" | "keywords", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
+  /** Oldest `since` (in days back) that insights accepts; undefined means no limit. */
+  maxInsightsWindowDays?: number;
   private seq = 100;
 
   constructor(readonly platform: StoredPlatform = "meta", options: { demo?: boolean } = {}) {
@@ -121,6 +125,11 @@ export class MockAdsProvider implements AdsProvider {
   async insights(_env: unknown, _token: TokenBundle, account: AccountRef, range: { since: string; until: string }) {
     this.reads.push(`insights:${account.externalId}:${range.since}:${range.until}`);
     this.maybeFail("insights");
+    // Meta rejects a start date more than ~37 months back; `maxInsightsWindowDays` models that limit.
+    if (this.maxInsightsWindowDays !== undefined) {
+      const ageDays = (this.clock().getTime() - Date.parse(`${range.since}T00:00:00Z`)) / 86_400_000;
+      if (ageDays > this.maxInsightsWindowDays) throw new ProviderError(`since=${range.since} is older than ${this.maxInsightsWindowDays} days`);
+    }
     const fixed = this.insightRows[account.externalId];
     if (fixed) return fixed.filter((r) => r.day >= range.since && r.day <= range.until);
     const out: InsightRow[] = [];
@@ -203,5 +212,24 @@ export class MockAdsProvider implements AdsProvider {
     this.maybeFail("keywords");
     this.writes.push({ op: "keywords", accountExternalId: account.externalId, adGroupExternalId, keywordCount: request.keywords.length });
     return { added: request.keywords.length };
+  }
+
+  async accountCaps(_env: unknown, _token: TokenBundle, account: AccountRef): Promise<AccountCaps> {
+    this.maybeFail("caps");
+    return this.accountCapsData[account.externalId] ?? { spendCapMinor: 1_000_000_00, adSets: [] };
+  }
+
+  async campaignHealth(_env: unknown, _token: TokenBundle, account: AccountRef, campaignExternalIds: string[]): Promise<CampaignHealth[]> {
+    this.maybeFail("health");
+    const accountDisapproved = this.disapproved[account.externalId] ?? {};
+    return campaignExternalIds.map((campaignId) => {
+      const campaign = this.campaigns[account.externalId]?.find((c) => c.externalId === campaignId);
+      return {
+        campaignExternalId: campaignId,
+        status: campaign?.status ?? "other",
+        rawStatus: campaign?.rawStatus ?? "UNKNOWN",
+        disapprovedAds: accountDisapproved[campaignId] ?? 0,
+      };
+    });
   }
 }

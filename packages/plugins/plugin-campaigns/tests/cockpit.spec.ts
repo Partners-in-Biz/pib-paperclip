@@ -113,6 +113,8 @@ describe("Campaigns cockpit snapshot", () => {
       ["active_campaigns", "0"],
       ["campaign_enrolled", "0"],
       ["campaign_reply_rate", "–"],
+      ["experiments_running", "0"],
+      ["experiments_measured_30d", "0"],
       ["campaign_due_steps", "0"],
     ]);
     expect(snap.health.map((h) => [h.key, h.status])).toEqual([
@@ -120,6 +122,7 @@ describe("Campaigns cockpit snapshot", () => {
       ["job:redeliver-mail", "ok"],
       ["job:poll-messaging", "ok"],
       ["job:setup-status", "ok"],
+      ["job:measure-experiments", "ok"],
       ["outbox", "ok"],
       ["campaigns:sends", "ok"],
     ]);

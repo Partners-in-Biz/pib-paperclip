@@ -38,6 +38,17 @@ describe("tool surface", () => {
     expect(props("list-experiments").status!.items!.enum).toEqual([...EXPERIMENT_STATUSES]);
   });
 
+  it("keeps the eight Growth Lab tools, now built by the kit, under their names and client params", () => {
+    const names = ["performance-review", "get-playbook", "propose-playbook-change", "decide-playbook-change", "list-experiments", "propose-experiment", "approve-experiment", "reject-experiment"];
+    const all = SOCIAL_TOOLS.map((t) => t.name);
+    expect(all.filter((n) => names.includes(n))).toEqual(names);
+    expect(all.indexOf("performance-review")).toBe(all.indexOf("post-analytics") + 1);
+    expect(all[all.indexOf("reject-experiment") + 1]).toBe("propose-feature-question");
+    for (const n of ["performance-review", "get-playbook", "propose-playbook-change", "list-experiments", "propose-experiment"]) {
+      expect(Object.keys((tool(n).parametersSchema as Schema).properties!)).toEqual(expect.arrayContaining(["scope", "client", "clientKind", "clientRef"]));
+    }
+  });
+
   it("create-post and update-post share one override schema, defined once", () => {
     const create = (tool("create-post").parametersSchema as Schema).properties!;
     const update = (tool("update-post").parametersSchema as Schema).properties!;
@@ -46,9 +57,9 @@ describe("tool surface", () => {
     // One entry schema for every platform instead of twelve copies.
     expect((OVERRIDES as Schema).properties).toBeUndefined();
     expect(typeof (OVERRIDES as Schema).additionalProperties).toBe("object");
-    // Well under the ~1.1k tokens each used to cost (about 4 characters a token).
-    expect(JSON.stringify(tool("create-post").parametersSchema).length).toBeLessThan(3200);
-    expect(JSON.stringify(tool("update-post").parametersSchema).length).toBeLessThan(3200);
+    // Well under the ~1.1k tokens each used to cost (about 4 characters a token). 3450 = 3200 + replyToUrl, quoteUrl, note (PAR-4452).
+    expect(JSON.stringify(tool("create-post").parametersSchema).length).toBeLessThan(3450);
+    expect(JSON.stringify(tool("update-post").parametersSchema).length).toBeLessThan(3450);
   });
 
   it("create-post takes client and visibility; the confusing scope param is gone", () => {

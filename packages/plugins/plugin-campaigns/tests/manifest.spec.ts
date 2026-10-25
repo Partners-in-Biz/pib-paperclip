@@ -25,10 +25,10 @@ describe("manifest 0.6", () => {
     expect(result.success ? [] : result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`)).toEqual([]);
   });
 
-  it("is version 0.7.0 everywhere", () => {
-    expect(manifest.version).toBe("0.7.1");
-    expect(PLUGIN_VERSION).toBe("0.7.1");
-    expect(pkg.version).toBe("0.7.1");
+  it("is version 0.8.5 everywhere", () => {
+    expect(manifest.version).toBe("0.8.5");
+    expect(PLUGIN_VERSION).toBe("0.8.5");
+    expect(pkg.version).toBe("0.8.5");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {
@@ -42,6 +42,7 @@ describe("manifest 0.6", () => {
       ["redeliver-mail", "*/5 * * * *"],
       ["poll-messaging", "*/10 * * * *"],
       ["setup-status", "19 * * * *"],
+      ["measure-experiments", "37 3 * * *"],
     ]);
     expect(manifest.projects).toEqual([expect.objectContaining({ projectKey: "campaigns", displayName: "Campaigns" })]);
     // No new core tables are read: client project routing and approvals need none.
@@ -82,10 +83,10 @@ describe("the skill", () => {
     expect(skill.markdown!.length).toBeLessThanOrEqual(18_000);
     expect(skill.markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(skill.markdown).toContain(ASKING_HEADING);
-    expect(skill.files?.map((file) => file.path)).toEqual(["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md"]);
+    expect(skill.files?.map((file) => file.path)).toEqual(["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md", "references/growth-lab.md"]);
     for (const file of skill.files ?? []) expect(file.content.length, file.path).toBeGreaterThan(500);
     // The skill points at them.
-    for (const path of ["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md"]) expect(CAMPAIGN_SKILL).toContain(path);
+    for (const path of ["references/channels.md", "references/senders-and-unsubscribe.md", "references/privacy.md", "references/growth-lab.md"]) expect(CAMPAIGN_SKILL).toContain(path);
   });
 
   it("names only tools that exist (in the skill and in its references)", () => {
@@ -99,7 +100,7 @@ describe("the skill", () => {
   });
 
   it("teaches the rules that keep clients and recipients safe", () => {
-    for (const rule of [/never goes out from PiB's Gmail or number/, /opt-in only/i, /Never record an opt-in you did not see/i, /per sender/i, /Reply STOP to opt out/, /never repeated|never send.* again/i]) {
+    for (const rule of [/never goes out from the company's own Gmail or number/, /opt-in only/i, /Never record an opt-in you did not see/i, /per sender/i, /Reply STOP to opt out/, /never repeated|never send.* again/i]) {
       expect([CAMPAIGN_SKILL, ...(skill.files ?? []).map((file) => file.content)].join("\n")).toMatch(rule);
     }
     expect(CAMPAIGN_SKILL).toMatch(/Never mark an approval issue done/);
@@ -119,10 +120,10 @@ describe("migrations", () => {
     expect(sql).not.toMatch(/\bdrop\s+table\b/i);
   });
 
-  it("014 is the next migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
+  it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
-    expect(files.at(-1)).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(14);
+    expect(files[13]).toBe("014_campaigns.sql");
+    expect(files).toHaveLength(15);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.

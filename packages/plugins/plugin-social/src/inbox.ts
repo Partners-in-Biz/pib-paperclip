@@ -59,7 +59,9 @@ async function pollAccount(ctx: PluginContext, config: SocialConfig, row: Accoun
       destination_id: dest?.id ?? null,
       post_id: dest?.post_id ?? null,
       received_at: item.receivedAt,
-      // Inbox items belong to the account's scope.
+      // Inbox items belong to the account's scope (a personal account's items stay with its owner).
+      scope: row.scope,
+      owner_user_id: row.owner_user_id,
       client_kind: row.client_ref ? row.client_kind ?? "company" : null,
       client_ref: row.client_ref,
       client_name: row.client_ref ? row.client_name : null,

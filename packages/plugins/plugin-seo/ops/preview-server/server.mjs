@@ -5,14 +5,16 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
-import { chromiumEnv, domArgs, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
+import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
 
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
 const { Pool } = require("pg");
 
 const SCHEMA = "plugin_seo_8099f8879a";
 const PORT = Number(process.env.PORT ?? 3031);
-const CHROME = process.env.CHROME_PATH ?? "/home/paperclip/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome";
+// CHROME_PATH pins one binary; otherwise the newest Playwright Chromium is looked up on each run (findChrome in sweep.mjs).
+const CHROME_PATH = process.env.CHROME_PATH;
+const PLAYWRIGHT_DIR = process.env.PLAYWRIGHT_BROWSERS_DIR ?? "/home/paperclip/.cache/ms-playwright";
 const SHOTS = process.env.SHOTS_DIR ?? "/tmp/pib-preview-shots";
 // One private folder per Chromium run, removed when it ends (sweep.mjs); the service's /tmp is private, so nothing else cleans it.
 const PROFILES = process.env.PROFILES_DIR ?? "/tmp/pib-preview-profiles";
@@ -40,13 +42,15 @@ async function withChromium(run) {
 }
 const pool = new Pool({ connectionString: process.env.PREVIEW_DATABASE_URL, max: 4 });
 
+const PREVIEW_ORIGIN = process.env.PREVIEW_ORIGIN ?? "https://preview.partnersinbiz.online";
+
 const SECURITY = {
   "X-Robots-Tag": "noindex, nofollow, noarchive",
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-  "Content-Security-Policy": "default-src * data: blob:; script-src 'none'; style-src * 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'; base-uri *",
+  "Content-Security-Policy": `default-src * data: blob:; script-src 'none'; style-src * 'unsafe-inline'; frame-ancestors 'none'; form-action 'self' ${PREVIEW_ORIGIN}; base-uri *`,
 };
 
 const page = (text) => `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview</title><body style="font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;text-align:center"><p>${text}</p></body>`;
@@ -96,11 +100,12 @@ function wordsOf(html) {
 function renderedDom(url) {
   const run = async () => {
     await housekeeping();
+    const chrome = await findChrome(PLAYWRIGHT_DIR, CHROME_PATH);
     return withChromium(
       (dir) =>
         new Promise((resolve, reject) => {
           execFile(
-            CHROME,
+            chrome,
             domArgs(dir, url),
             { timeout: 60_000, maxBuffer: 40 * 1024 * 1024, env: chromiumEnv(dir) },
             (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
@@ -136,11 +141,12 @@ let shotQueue = Promise.resolve();
 function screenshot(url, file, mobile = false) {
   const run = async () => {
     await housekeeping();
+    const chrome = await findChrome(PLAYWRIGHT_DIR, CHROME_PATH);
     return withChromium(
       (dir) =>
         new Promise((resolve, reject) => {
           execFile(
-            CHROME,
+            chrome,
             shotArgs(dir, url, file, mobile),
             { timeout: 60_000, env: chromiumEnv(dir) },
             (error) => (error ? reject(error) : resolve()),
@@ -197,6 +203,11 @@ ${(() => {
 </div></body>`;
 }
 
+/** Rewrite form action from root-relative to absolute URL for backwards compatibility with stored previews. */
+function rewriteFormAction(html, previewOrigin) {
+  return html.replace(/action="\/p\/(?:[a-z0-9-]{1,30}\/)?([A-Za-z0-9_-]{20,64})\/decision"/g, `action="${previewOrigin}/p/$1/decision"`);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
@@ -217,9 +228,11 @@ const server = http.createServer(async (req, res) => {
       const { rows } = await pool.query(`SELECT html, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
       if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
-      if (key && key === rows[0].review_key) return send(res, 200, rows[0].html);
+      let html = rows[0].html;
+      html = rewriteFormAction(html, PREVIEW_ORIGIN);
+      if (key && key === rows[0].review_key) return send(res, 200, html);
       if (rows[0].review_status !== "passed") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
-      return send(res, 200, rows[0].html);
+      return send(res, 200, html);
     }
     if (req.method === "GET" && sub === "/review") {
       const row = await staff();

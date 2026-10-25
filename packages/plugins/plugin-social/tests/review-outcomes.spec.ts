@@ -106,14 +106,14 @@ describe("autonomy inputs", () => {
     ]);
   });
 
-  it("says plainly that auto-approval is off, and reads one scope only", async () => {
+  it("reports the ladder with nothing enabled when there is no streak, and reads one scope only", async () => {
     const w = approvalWorld();
     const stats = await reviewStats(w.ctx, "co", { kind: "company", id: "c1" }, 30);
     expect(stats).toMatchObject({ days: 30, scope: "company:c1", types: [], autonomy: { enabled: false } });
-    const q = w.ctx.fakeDb.queries.at(-1)!;
+    const q = w.ctx.fakeDb.queries.filter((x) => x.sql.includes("review_outcomes")).at(-1)!;
     expect(q.sql).toContain("client_ref = $4");
     expect(q.params).toEqual(["co", 30, "company", "c1"]);
     await reviewStats(w.ctx, "co", null, 90);
-    expect(w.ctx.fakeDb.queries.at(-1)!.sql).toContain("client_ref IS NULL");
+    expect(w.ctx.fakeDb.queries.filter((x) => x.sql.includes("review_outcomes")).at(-1)!.sql).toContain("client_ref IS NULL");
   });
 });
