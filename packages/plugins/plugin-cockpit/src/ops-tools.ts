@@ -109,6 +109,7 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
         typeof p.step === "string" ? p.step : null,
         typeof p.summary === "string" ? p.summary : null,
         { runId: run.runId ?? null, agentId: run.agentId ?? null },
+        { notify: p.notify === true },
       );
       return result;
     }
