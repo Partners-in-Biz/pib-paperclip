@@ -76,7 +76,7 @@ const instanceConfigSchema: JsonSchema = {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
       description:
-        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts empty and you or the Operator record only their own credentials.",
+        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts with only generic rows for the modules they use (no Partners in Biz entries), and you or the Operator record their own credentials.",
       default: false,
     },
     credentialChecks: {
