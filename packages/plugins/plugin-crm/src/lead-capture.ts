@@ -83,6 +83,7 @@ import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
 import { companyPrefix, crmLink, refOf, type ClientKind } from "./refs.js";
 import { teamAssignee } from "./routing.js";
 import { getSite } from "./sites.js";
+import { onClientLeadStoredForSpeedToLead } from "./speed-to-lead.js";
 import { clientLeadsWithoutIssue, clientProjectIds, companiesWithClientLeadsWithoutIssue, deleteClientLeadByKey, getClientProfile, insertClientLead, setClientLeadIssue, type ClientLead } from "./store.js";
 
 /** The webhook answers with this when something the visitor can fix is wrong. The host passes the message on in its 502 body. */
@@ -100,6 +101,9 @@ export const RATE = {
   ipPerMinute: 3,
   ipPerHour: 12,
   signedHourlyFactor: 5,
+  /** While the bot check cannot be answered the form stays open (a lost lead is worse), but on a much tighter cap. */
+  degradedIpPerHour: 1,
+  degradedSourcePerHour: 20,
 } as const;
 
 const ERROR_GENERIC = "Something went wrong on our side. Please try again later.";
@@ -195,6 +199,18 @@ async function overLimit(ctx: PluginContext, source: LeadSource, ipHash: string 
   return false;
 }
 
+/** The outcome written for a lead accepted while the bot check was down: only these rows use up the small allowance below, so a rejected retry or earlier normal traffic does not. */
+const UNVERIFIED = "unverified";
+
+/** True when this visitor (or the whole form) already used its small allowance for a bot check that could not be answered. */
+async function overDegradedLimit(ctx: PluginContext, source: LeadSource, ipHash: string | null, now: Date): Promise<boolean> {
+  const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
+  const perHour = Math.min(RATE.degradedSourcePerHour, source.rateLimitPerHour);
+  if ((await countHits(ctx, source.id, hourAgo, perHour, null, UNVERIFIED)) >= perHour) return true;
+  if (ipHash && (await countHits(ctx, source.id, hourAgo, RATE.degradedIpPerHour, ipHash, UNVERIFIED)) >= RATE.degradedIpPerHour) return true;
+  return false;
+}
+
 const TURNSTILE_VERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /**
@@ -212,8 +228,8 @@ const secretCache = new Map<string, { at: number; value: string | undefined }>()
  *   The lead is rejected, and the bad config is logged (warn level). The missing
  *   secret is never cached (every failed request re-checks).
  * - "unavailable": secret read throws, Cloudflare is unreachable, or fetch fails.
- *   The lead is stored (fail-open), the error is logged (warn level), and a
- *   structured event is included for alerting.
+ *   The lead is accepted only under a stricter rate limit (see RATE.degraded*),
+ *   the error is logged (warn level), and a structured event is included for alerting.
  */
 export async function verifyTurnstile(ctx: PluginContext, companyId: string, token: string | null, ip: string | null): Promise<"ok" | "failed" | "unavailable" | "misconfigured"> {
   let secret: string | undefined;
@@ -233,7 +249,7 @@ export async function verifyTurnstile(ctx: PluginContext, companyId: string, tok
         return "misconfigured";
       }
     } catch (error) {
-      ctx.logger.warn("CRM Turnstile secret could not be read; the check is skipped", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
+      ctx.logger.warn("CRM Turnstile secret could not be read; the check is rate-limited instead", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
       return "unavailable";
     }
   }
@@ -244,13 +260,13 @@ export async function verifyTurnstile(ctx: PluginContext, companyId: string, tok
     if (ip) form.set("remoteip", ip);
     const response = await ctx.http.fetch(TURNSTILE_VERIFY, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form.toString() });
     if (!response.ok) {
-      ctx.logger.warn("CRM Turnstile check returned non-OK; the request passes", { event: "turnstile_unavailable", reason: `http_${response.status}` });
+      ctx.logger.warn("CRM Turnstile check returned non-OK; the request passes under a stricter rate limit", { event: "turnstile_unavailable", reason: `http_${response.status}` });
       return "unavailable";
     }
     const body = asRecord(await response.json().catch(() => ({})));
     return body.success === true ? "ok" : "failed";
   } catch (error) {
-    ctx.logger.warn("CRM Turnstile check did not answer; the request passes", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
+    ctx.logger.warn("CRM Turnstile check did not answer; the request passes under a stricter rate limit", { event: "turnstile_unavailable", reason: error instanceof Error ? error.message : String(error) });
     return "unavailable";
   }
 }
@@ -323,10 +339,13 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     if (!signed && typeof body.t === "number" && Number.isFinite(body.t) && body.t < MIN_FILL_MS) return await dropped(ctx, source, ipHash, "too_fast");
 
     const settings = await leadsConfig(ctx, source.companyId);
+    let unverified = false;
     if (!signed && source.turnstileSiteKey) {
       const verdict = await verifyTurnstile(ctx, source.companyId, cleanText(body.turnstileToken, 4_000) || null, ip);
       if (verdict === "failed") throw new LeadRejected("Please complete the spam check and send again.", "bot_check");
       if (verdict === "misconfigured") throw new LeadRejected("This form is temporarily unavailable", "bot_check");
+      if (verdict === "unavailable" && (await overDegradedLimit(ctx, source, ipHash, now))) throw new LeadRejected("Too many submissions. Please try again in a few minutes.", "rate_limited");
+      unverified = verdict === "unavailable";
     }
 
     const parsed = parseSubmission(body, { extraBlockedDomains: settings.blockedDomains, allowReserved: source.canary });
@@ -338,7 +357,7 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     // A server may pass the visitor's own address, so the consent record names the visitor, not the web server.
     const visitorHash = signed && submission.visitorIp && /^[0-9a-f:.]{3,45}$/i.test(submission.visitorIp) ? hashIp(salt, submission.visitorIp.toLowerCase()) : ipHash;
     const result = await processSubmission(ctx, source, submission, { now, ipHash: visitorHash });
-    await recordHit(ctx, source.id, ipHash, result.status === "dropped" ? result.reason : result.status);
+    await recordHit(ctx, source.id, ipHash, result.status === "dropped" ? result.reason : unverified ? UNVERIFIED : result.status);
     return result;
   } catch (error) {
     if (error instanceof LeadRejected) {
@@ -423,6 +442,24 @@ async function processSubmission(ctx: PluginContext, source: LeadSource, sub: Su
       return null;
     });
     if (!issueId) status = "held";
+    // Draft-only speed-to-lead only once the client-lead issue opened (not while held).
+    // Held leads get STL from retryClientLeadIssues when the issue opens later.
+    if (issueId && sub.email) {
+      try {
+        await onClientLeadStoredForSpeedToLead(ctx, {
+          companyId,
+          client,
+          leadKey: key,
+          source: "form",
+          text: sub.message,
+          name: sub.name,
+          email: sub.email,
+          arrivedAt: info.now.toISOString(),
+        });
+      } catch (error) {
+        ctx.logger.info("CRM speed-to-lead deferred", { key, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   } else {
     const payload = {
       key,
@@ -540,6 +577,23 @@ export async function retryClientLeadIssues(ctx: PluginContext): Promise<number>
           opened += 1;
           // The capture said "held" while it waited; it is handed over now.
           await settleCapture(ctx, companyId, lead.key, null).catch(() => undefined);
+          // Speed-to-lead was skipped while held; draft-only path runs once the issue exists.
+          if (lead.email) {
+            try {
+              await onClientLeadStoredForSpeedToLead(ctx, {
+                companyId,
+                client: { kind: lead.clientKind, id: lead.clientRef },
+                leadKey: lead.key,
+                source: lead.source,
+                text: lead.message,
+                name: lead.name,
+                email: lead.email,
+                arrivedAt: lead.capturedAt,
+              });
+            } catch (error) {
+              ctx.logger.info("CRM speed-to-lead deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
         }
       } catch (error) {
         ctx.logger.info("CRM client lead issue still deferred", { key: lead.key, error: error instanceof Error ? error.message : String(error) });

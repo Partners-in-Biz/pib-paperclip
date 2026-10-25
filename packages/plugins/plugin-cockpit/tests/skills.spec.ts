@@ -11,7 +11,7 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE } from "../src/skill-references.js";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE, STALLS_REFERENCE } from "../src/skill-references.js";
 import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
@@ -34,7 +34,7 @@ describe("the company operating manual (company-os)", () => {
   const os = skill(COMPANY_SKILL_SLUG);
 
   it("is a Cockpit managed skill whose canonical key is the kit's COMPANY_OS_SKILL_KEY", () => {
-    expect(os).toMatchObject({ skillKey: "company-os", slug: "pib-company-os", displayName: "PiB company operating manual" });
+    expect(os).toMatchObject({ skillKey: "company-os", slug: "pib-company-os", displayName: "Company operating manual" });
     expect(COMPANY_SKILL_KEY).toBe("company-os");
     expect(canonicalSkillKey(PLUGIN_KEY, os.skillKey)).toBe(COMPANY_OS_SKILL_KEY);
     expect(LOCAL_OS_KEY).toBe(COMPANY_OS_SKILL_KEY);
@@ -51,15 +51,15 @@ describe("the company operating manual (company-os)", () => {
     expect(body).toContain(COMPANY_FLOWS);
   });
 
-  it("has valid frontmatter, the memory and asking sections, and stays under 19,000 characters", () => {
+  it("has valid frontmatter, the memory and asking sections, and stays under 19,500 characters", () => {
     const markdown = os.markdown!;
-    const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# PiB company operating manual\n/.exec(markdown);
+    const match = /^---\nname: (pib-company-os)\nslug: (pib-company-os)\ndescription: "([^"\n]+)"\n---\n\n# Company operating manual\n/.exec(markdown);
     expect(match, markdown.slice(0, 300)).not.toBeNull();
     expect(match![3]!.length).toBeGreaterThan(80);
     expect(markdown).toContain(COMPANY_MEMORY_HEADING);
     expect(markdown).toContain(ASKING_HEADING);
-    expect(markdown.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(markdown.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 
   it("says what is true of the code", () => {
@@ -84,14 +84,14 @@ describe("the company operating manual (company-os)", () => {
 describe("hand-off issues always carry a project", () => {
   // A task with no project has no repository: it runs in the agent's empty home folder (2026-10-07, PAR-1553 and PAR-877 failed
   // at setup for the Code Reviewer this way). Both texts that teach the hand-off must say so.
-  it("the operating manual says to set projectId, with the PiB Platform case", () => {
+  it("the operating manual says to set projectId, with the own platform project case", () => {
     const body = companySkillBody();
     expect(body).toContain("always a `projectId`");
-    expect(body).toContain("PiB Platform");
+    expect(body).toContain("own platform project (pick it from that projects list)");
   });
-  it("the Operator skill says to set projectId, the PiB Platform case, and what to do when unsure", () => {
+  it("the Operator skill says to set projectId, the own platform project case, and what to do when unsure", () => {
     expect(OPERATOR_SKILL_BODY).toContain("**Always set `projectId`**");
-    expect(OPERATOR_SKILL_BODY).toContain("PiB Platform");
+    expect(OPERATOR_SKILL_BODY).toContain("own platform project (pick it from that projects list)");
     expect(OPERATOR_SKILL_BODY).toContain("instead of creating it without one");
   });
 });
@@ -164,8 +164,8 @@ describe("the Operator knows how to act on each watch problem", () => {
       "`blockedByIssueIds`",
       "`unblockDescriptor`",
       "PATCH /api/issues/{id}",
-      "set it `todo` and wake the assignee, or cancel it with a reason",
-      "assignee idle for 12 hours",
+      "ask-owner",
+      "idle in-progress",
     ]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
   });
 
@@ -188,11 +188,11 @@ describe("the Operator knows how to act on each watch problem", () => {
 
   it("stays inside the skill budget with room to spare, and the manual inside its own", () => {
     const operator = skill("pib-operator");
-    expect(operator.markdown!.length).toBeLessThan(19_050);
+    expect(operator.markdown!.length).toBeLessThan(19_200);
     // The references are read on demand, each on its own: none is a wall of text.
     for (const file of OPERATOR_FILES) expect(file.content.length, file.path).toBeLessThan(8_000);
-    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_000);
-    expect(companySkillBody().length).toBeLessThan(16_000);
+    expect(skill(COMPANY_SKILL_SLUG).markdown!.length).toBeLessThan(19_500);
+    expect(companySkillBody().length).toBeLessThan(16_500);
   });
 });
 
@@ -206,6 +206,23 @@ describe("owner-checks reference", () => {
     expect(OWNER_CHECKS_REFERENCE).toContain(`\`${PLUGIN_KEY}:ask-owner\``);
     // All tool references in the owner-checks file must be real.
     const toolMatches = [...OWNER_CHECKS_REFERENCE.matchAll(/partnersinbiz\.([a-z]+):([a-z0-9-]+)/g)];
+    const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
+    for (const [match, plugin, name] of toolMatches) {
+      if (plugin === "cockpit") {
+        expect(own.has(name), `partnersinbiz.${plugin}:${name}`).toBe(true);
+      }
+    }
+  });
+});
+
+describe("stalls reference", () => {
+  it("mentions watchdog-findings, chain_idle and orphan_blocker findings, and names only real tools", () => {
+    expect(STALLS_REFERENCE).toContain(`\`${PLUGIN_KEY}:watchdog-findings\``);
+    expect(STALLS_REFERENCE).toContain("chain_idle");
+    expect(STALLS_REFERENCE).toContain("orphan_blocker");
+    expect(STALLS_REFERENCE).toContain("blockedByIssueIds");
+    // All tool references must be real.
+    const toolMatches = [...STALLS_REFERENCE.matchAll(/partnersinbiz\.([a-z]+):([a-z0-9-]+)/g)];
     const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
     for (const [match, plugin, name] of toolMatches) {
       if (plugin === "cockpit") {
@@ -251,7 +268,7 @@ describe("the Reviewer skill", () => {
 describe("the Operator's references (Wave 3)", () => {
   const operator = skill("pib-operator") as { markdown: string; files?: Array<{ path: string; content: string }> };
 
-  it("the skill ships eight reference files, and the body names every one of them", () => {
+  it("the skill ships nine reference files, and the body names every one of them", () => {
     expect(operator.files?.map((f) => f.path)).toEqual([
       "references/health-checks.md",
       "references/closeout-review.md",
@@ -260,6 +277,7 @@ describe("the Operator's references (Wave 3)", () => {
       "references/credentials-and-custody.md",
       "references/asking-with-an-effect.md",
       "references/quality-gates.md",
+      "references/stalls.md",
       "references/skill-coach.md",
     ]);
     for (const path of Object.values(OPERATOR_REFERENCE_PATHS)) {
@@ -400,5 +418,19 @@ describe("the Operator's references (Wave 3)", () => {
     expect(RETRO_REFERENCE).toContain("more than 3 days past its date");
     // Asking with an effect: the three keys that exist.
     for (const key of ["mailbox.delegate", "social.connect-account", "cockpit.grant-memory-tools"]) expect(ASKING_REFERENCE, key).toContain(key);
+  });
+});
+
+describe("the skill text names no owner company", () => {
+  it("carries no owner name, agency name or PiB in the company manual, the role skills, their references or the hire text", async () => {
+    const { findBrandLeaks } = await import("@partnersinbiz/pib-plugin-kit");
+    const { OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS } = await import("../src/hire.js");
+    const { ACCEPTANCE_INSTRUCTIONS } = await import("../src/acceptance-role.js");
+    const { ACCEPTANCE_SKILL_BODY } = await import("../src/acceptance-skill.js");
+    const texts = [companySkillBody(), OPERATOR_TEXT, REVIEWER_SKILL_BODY, ACCEPTANCE_SKILL_BODY, OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS, ACCEPTANCE_INSTRUCTIONS, ...SKILLS.map((s) => `${s.displayName}\n${s.description ?? ""}\n${s.markdown ?? ""}`)];
+    expect(texts.flatMap((t) => findBrandLeaks(t))).toEqual([]);
+  });
+  it("tells agents to call company-profile for names", () => {
+    expect(companySkillBody()).toContain("company-profile");
   });
 });

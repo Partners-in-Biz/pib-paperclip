@@ -81,8 +81,8 @@ export async function runEvalTool(env: Env, name: string, raw: unknown, run: Too
         if (!skill) return fail("baseline needs skill.");
         const operator = await operatorAgentId(env, companyId).catch(() => null);
         if (operator && run.agentId !== operator) return fail("Only the Operator records a baseline: it decides which version is the one to beat.");
-        const done = await baselineEval(env, companyId, skill);
-        return ok(`Recorded the baseline for ${skill} (${done.hash}). Commit it to evals/results.json.`, done);
+        const done = await baselineEval(env, companyId, skill, { mode: p.mode === "template" ? "template" : undefined, templateKey: typeof p.templateKey === "string" ? p.templateKey : undefined, templateHash: text(p.templateHash, 64) });
+        return ok(p.mode === "template" ? `Recorded the baseline for template ${String(p.templateKey)} (${done.hash}). Commit it to evals/agents/results.json.` : `Recorded the baseline for ${skill} (${done.hash}). Commit it to evals/results.json.`, done);
       }
       if (action === "gate") {
         const report = await gateEval(env, companyId, skill, text(p.candidateHash, 40));

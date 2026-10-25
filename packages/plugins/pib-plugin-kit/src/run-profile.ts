@@ -64,6 +64,7 @@ export const RUN_PROFILES: Record<TeamRoleKey, RunProfile> = {
   "revenue-lead": sonnet({ hermes: HERMES_FLASH_MODEL }),
   "seo-specialist": sonnet({ hermes: HERMES_FLASH_MODEL, maxConcurrentRuns: 6 }),
   social: sonnet(),
+  "creative-producer": sonnet(),
   bookkeeper: sonnet({ maxTurnsPerRun: 250 }),
   "payroll-clerk": sonnet(),
 };
@@ -77,11 +78,17 @@ export function runProfileForRole(roleKey: string | null | undefined): RunProfil
   return (RUN_PROFILES as Record<string, RunProfile>)[RUN_PROFILE_ALIASES[key] ?? key] ?? DEFAULT_RUN_PROFILE;
 }
 
+/**
+ * A Hermes agent runs on the company's subscription, not on metered API spend. Left unset the host books `unknown` and
+ * counts Hermes' own cost estimate, so every hermes_local hire carries this (PAR-4701).
+ */
+export const HERMES_BILLING_TYPE = "subscription_included";
+
 /** The adapter and runtime settings that carry the profile, as the host stores them. */
 export function runProfileConfig(profile: RunProfile, adapterType: "claude_local" | "hermes_local" | string = "claude_local"): { adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown> } {
   const hermes = adapterType === "hermes_local" && profile.hermes ? { provider: profile.hermes.provider, model: profile.hermes.model } : null;
   return {
-    adapterConfig: { model: hermes ? hermes.model : profile.model, ...(hermes ? { provider: hermes.provider } : {}), effort: profile.effort, timeoutSec: profile.timeoutSec, maxTurnsPerRun: profile.maxTurnsPerRun },
+    adapterConfig: { model: hermes ? hermes.model : profile.model, ...(hermes ? { provider: hermes.provider, billingType: HERMES_BILLING_TYPE } : {}), effort: profile.effort, timeoutSec: profile.timeoutSec, maxTurnsPerRun: profile.maxTurnsPerRun },
     runtimeConfig: { heartbeat: { maxConcurrentRuns: profile.maxConcurrentRuns } },
   };
 }
@@ -105,7 +112,7 @@ export function runProfileHireText(profile: RunProfile, adapterPreference: strin
   const adapter = adapterPreference[0] === "hermes_local" && profile.hermes ? "hermes_local" : "claude_local";
   const config = runProfileConfig(profile, adapter);
   return [
-    "**Set the run profile when you create the agent** (adapter settings `model`, `effort`, `timeoutSec`, `maxTurnsPerRun`, and the heartbeat's `maxConcurrentRuns`). The plugin cannot change an agent's settings after the hire, and an agent created without them runs on the host default model (Opus) with no time limit.",
+    "**Set the run profile when you create the agent** (adapter settings `model`, `effort`, `billingType` on Hermes, `timeoutSec`, `maxTurnsPerRun`, and the heartbeat's `maxConcurrentRuns`). The plugin cannot change an agent's settings after the hire, and an agent created without them runs on the host default model (Opus) with no time limit.",
     "",
     "```json",
     JSON.stringify(config, null, 2),

@@ -9,9 +9,10 @@ import {
   subscriptionToPayload,
   urlBase64ToUint8Array,
   waitForActivated,
-  PUSH_SW_URL,
+  resolvePushSwUrl,
 } from "./push-register.js";
 import type { DeviceInfo } from "../push/actions.js";
+import { testFeedback, type TestFeedbackInput } from "./test-feedback.js";
 
 interface DeviceResponse {
   devices: DeviceInfo[];
@@ -24,13 +25,7 @@ interface SubscribeResponse {
   createdAt: string;
 }
 
-interface TestResponse {
-  results: Array<{
-    label: string | null;
-    outcome: "sent" | "skipped_muted" | "error";
-    status?: string;
-  }>;
-}
+interface TestResponse extends TestFeedbackInput {}
 
 export function NotificationsPage() {
   const devicesAction = usePluginAction("cockpit.push.devices");
@@ -87,7 +82,8 @@ export function NotificationsPage() {
         setErr("Service Workers not available");
         return;
       }
-      const registration = await registerPushServiceWorker(navigator.serviceWorker, PUSH_SW_URL);
+      const swUrl = await resolvePushSwUrl(import.meta.url);
+      const registration = await registerPushServiceWorker(navigator.serviceWorker, swUrl);
       await waitForActivated(registration);
 
       // Subscribe to push
@@ -162,13 +158,12 @@ export function NotificationsPage() {
     setBusy(true);
     try {
       const res = (await testAction({})) as TestResponse;
-      const results = res.results || [];
-      if (results.length === 0) {
-        setErr("No devices to test");
+      const feedback = testFeedback(res);
+      if (feedback.tone === "bad") {
+        setErr(feedback.text);
         return;
       }
-      const outcomes = results.map((r) => `${r.label || "Device"}: ${r.outcome}${r.status ? ` (${r.status})` : ""}`).join(", ");
-      setMessage(`✓ Test sent: ${outcomes}`);
+      setMessage(feedback.text);
       setBusy(false);
     } catch (err) {
       setErr(err instanceof Error ? err.message : String(err));

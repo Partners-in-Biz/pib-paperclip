@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { boot, CO } from "./helpers/crm.js";
 import { listClientFiles } from "../src/drive/files-list.js";
+import { CLIENT_SUBFOLDERS, DRIVE_SUBFOLDERS, PRODUCT_SUBFOLDERS } from "../src/drive/convention.js";
 import type { DriveFile } from "../src/drive/store.js";
 
 const NOW = new Date().toISOString();
@@ -26,48 +27,72 @@ function driveFile(overrides: Partial<DriveFile> = {}): DriveFile {
 describe("listClientFiles", () => {
   it("groups files by subfolder and filters non-https URLs", () => {
     const files = [
-      driveFile({ subfolder: "03 Deliverables" }),
-      driveFile({ subfolder: "03 Deliverables", webUrl: "http://bad.com" }),
+      driveFile({ subfolder: "Deliverables" }),
+      driveFile({ subfolder: "Deliverables", webUrl: "http://bad.com" }),
     ];
     const groups = listClientFiles(files);
     expect(groups).toHaveLength(1);
-    expect(groups[0]!.label).toBe("03 Deliverables");
+    expect(groups[0]!.label).toBe("Deliverables");
   });
 
-  it("orders groups by subfolder number ascending, null subfolders last", () => {
+  it("orders groups in the drive's own order (DRIVE_SUBFOLDERS), null subfolders last", () => {
     const files = [
-      driveFile({ subfolder: "03 Deliverables" }),
-      driveFile({ subfolder: "01 Briefs" }),
+      driveFile({ subfolder: "Deliverables" }),
+      driveFile({ subfolder: "Assets/Images" }),
       driveFile({ subfolder: null }),
     ];
     const groups = listClientFiles(files);
     expect(groups).toHaveLength(3);
-    expect(groups[0]!.label).toBe("01 Briefs");
-    expect(groups[1]!.label).toBe("03 Deliverables");
+    expect(groups[0]!.label).toBe("Assets/Images");
+    expect(groups[1]!.label).toBe("Deliverables");
     expect(groups[2]!.label).toBe("Project root files");
   });
 
+  it("every standard sub-folder sorts at its index in DRIVE_SUBFOLDERS whatever order the files come in: the client folders first, then the product ones", () => {
+    const shuffled = [...DRIVE_SUBFOLDERS].reverse();
+    const files = [driveFile({ subfolder: null }), ...shuffled.map((subfolder) => driveFile({ subfolder }))];
+    const groups = listClientFiles(files);
+    expect(groups.map((group) => group.subfolder)).toEqual([...DRIVE_SUBFOLDERS, null]);
+    expect(groups.map((group) => group.subfolder).slice(0, CLIENT_SUBFOLDERS.length)).toEqual([...CLIENT_SUBFOLDERS]);
+    expect(groups.map((group) => group.subfolder).slice(CLIENT_SUBFOLDERS.length, DRIVE_SUBFOLDERS.length)).toEqual([...PRODUCT_SUBFOLDERS]);
+    // sortNumber is the index in DRIVE_SUBFOLDERS, and the root files come last
+    expect(groups.slice(0, -1).map((group) => group.sortNumber)).toEqual(DRIVE_SUBFOLDERS.map((_, index) => index));
+    expect(groups[groups.length - 1]!.sortNumber).toBeGreaterThan(groups[groups.length - 2]!.sortNumber);
+  });
+
+  it("old numbered names and any other unknown name come after every standard sub-folder, by name, and the root files are last; the order does not depend on the input order", () => {
+    const names = ["03 Deliverables", "Assets/Social", "invalid folder name", null, "01 Briefs", "Shared externally", "99 Archive"];
+    const expected = ["Assets/Social", "Shared externally", "01 Briefs", "03 Deliverables", "99 Archive", "invalid folder name", null];
+    for (const order of [names, [...names].reverse(), [names[4], names[0], names[6], names[3], names[5], names[2], names[1]]]) {
+      const groups = listClientFiles(order.map((subfolder) => driveFile({ subfolder })));
+      expect(groups.map((group) => group.subfolder)).toEqual(expected);
+    }
+    // A legacy name is its own group (the stored text is kept as it was); it is not merged into its alias
+    const merged = listClientFiles([driveFile({ subfolder: "04 Reports" }), driveFile({ subfolder: "Deliverables" })]);
+    expect(merged.map((group) => group.label)).toEqual(["Deliverables", "04 Reports"]);
+  });
+
   it("orders files by creation date (newest first) within each group", () => {
-    const older = driveFile({ name: "old.pdf", subfolder: "03 Deliverables", createdAt: "2026-10-19T00:00:00Z" });
-    const newer = driveFile({ name: "new.pdf", subfolder: "03 Deliverables" });
+    const older = driveFile({ name: "old.pdf", subfolder: "Deliverables", createdAt: "2026-10-19T00:00:00Z" });
+    const newer = driveFile({ name: "new.pdf", subfolder: "Deliverables" });
     const groups = listClientFiles([older, newer]);
     expect(groups[0]!.files[0]!.name).toBe("new.pdf");
     expect(groups[0]!.files[1]!.name).toBe("old.pdf");
   });
 
   it("excludes groups with no https URLs", () => {
-    const files = [driveFile({ subfolder: "03 Deliverables", webUrl: "http://bad.com" })];
+    const files = [driveFile({ subfolder: "Deliverables", webUrl: "http://bad.com" })];
     expect(listClientFiles(files)).toHaveLength(0);
   });
 
-  it("handles unknown subfolder strings by placing them in root group", () => {
+  it("handles unknown subfolder strings by placing them after the standard ones", () => {
     const files = [
       driveFile({ subfolder: "invalid folder name" }),
-      driveFile({ subfolder: "01 Briefs" }),
+      driveFile({ subfolder: "Meetings & Notes" }),
     ];
     const groups = listClientFiles(files);
     expect(groups).toHaveLength(2);
-    expect(groups[0]!.label).toBe("01 Briefs");
+    expect(groups[0]!.label).toBe("Meetings & Notes");
     expect(groups[1]!.label).toBe("invalid folder name");
   });
 });
@@ -108,7 +133,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f1",
         web_url: "https://drive.google.com/file/d/abc/view",
         source_plugin: "crm",
-        subfolder: "03 Deliverables",
+        subfolder: "Deliverables",
         created_at: NOW,
       },
       {
@@ -122,7 +147,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f2",
         web_url: "https://drive.google.com/file/d/def/view",
         source_plugin: "crm",
-        subfolder: "03 Deliverables",
+        subfolder: "Deliverables",
         created_at: NOW,
       },
     ];
@@ -148,7 +173,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f1",
         web_url: "https://drive.google.com/file/d/abc/view",
         source_plugin: "crm",
-        subfolder: "03 Deliverables",
+        subfolder: "Deliverables",
         created_at: NOW,
       },
       {
@@ -162,7 +187,7 @@ describe("drive-files data handler", () => {
         drive_file_id: "gd-f2",
         web_url: "http://example.com/file",
         source_plugin: "crm",
-        subfolder: "03 Deliverables",
+        subfolder: "Deliverables",
         created_at: NOW,
       },
     ];

@@ -29,7 +29,7 @@ import {
   type LineRow,
   type QuoteRow,
 } from "./db.js";
-import { docFileName, renderDocument, type DocKind, type DocView } from "./documents.js";
+import { docFileName, FALLBACK_SENDER_NAME, renderDocument, type DocKind, type DocView } from "./documents.js";
 import { BillingError, buildInvoiceHtml, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
@@ -47,7 +47,7 @@ import { actorLabel, currencyCode, integer, optionalBoolean, optionalDate, optio
 export function senderFrom(settings: BillingSettings, override: string | undefined): Record<string, unknown> {
   const base = settings.sender && typeof settings.sender === "object" ? { ...settings.sender } : {};
   if (override) base.name = override;
-  if (typeof base.name !== "string" || !base.name.trim()) base.name = "Partners in Biz";
+  if (typeof base.name !== "string" || !base.name.trim()) base.name = FALLBACK_SENDER_NAME;
   return base;
 }
 

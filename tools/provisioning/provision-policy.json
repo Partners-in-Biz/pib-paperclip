@@ -1,0 +1,54 @@
+{
+  "enabled": true,
+  "parCompanyId": "b2b8f471-edba-4d05-abce-f15e99a94d9a",
+  "apiBase": "http://127.0.0.1:3100",
+  "boardTokenFile": "/etc/pib-provision/board-token",
+  "allowedRequesters": [
+    "operator",
+    "account manager",
+    "operations manager"
+  ],
+  "requireIssueAssignee": true,
+  "profiles": [
+    "client"
+  ],
+  "maxHostedCompanies": 3,
+  "maxAgentsTotal": 60,
+  "agentsPerNewCompany": 5,
+  "maxAgentsPerRequest": 10,
+  "opsDir": "/root/pib-ops",
+  "setupPluginKey": "partnersinbiz.setup",
+  "entitlementsAction": "setup.set-entitlements",
+  "setupProfileWired": false,
+  "setupRunnerCommand": null,
+  "linkAgents": [
+    {
+      "plugin": "partnersinbiz.crm",
+      "roleMatch": "account manager",
+      "action": "link-agent"
+    },
+    {
+      "plugin": "partnersinbiz.seo",
+      "roleMatch": "seo",
+      "action": "link-agent"
+    },
+    {
+      "plugin": "partnersinbiz.social",
+      "roleMatch": "social",
+      "action": "link-agent"
+    }
+  ],
+  "crmProjectId": null,
+  "ownerListUrlTemplate": "",
+  "stepTimeouts": {
+    "create-ceo": 300,
+    "setup-run": 300,
+    "copy-secrets": 300,
+    "client-ids": 120,
+    "hires": 900,
+    "apply": 300,
+    "model-key": 300,
+    "verify": 300
+  },
+  "staleRunningSeconds": 7200
+}

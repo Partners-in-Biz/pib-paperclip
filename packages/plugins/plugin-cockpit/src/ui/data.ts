@@ -13,7 +13,7 @@ import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { pluginUiBaseFromModule } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { fetchModules } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import type { ModuleKey, SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
-import { fetchUiContributions } from "@partnersinbiz/pib-plugin-ui";
+import { errorText, fetchUiContributions } from "@partnersinbiz/pib-plugin-ui";
 import { pluginEnabled, setupMissingCount, type AgentLite, type ApprovalLite, type CockpitSnapshot, type HostActivityLite, type IssueLite, type RunLite } from "../merge.js";
 import { buildView, type CockpitView, type InstalledLite, type LoadResult } from "../view.js";
 import {
@@ -214,7 +214,7 @@ export function useCockpitData(companyId: string | null | undefined, options: { 
       if (fresh) sidebarCache.delete(companyId);
     } catch (err) {
       if (mine !== token.current) return;
-      setError(err instanceof Error ? err.message : "Could not load the Cockpit");
+      setError(errorText(err));
     } finally {
       if (mine === token.current) setLoading(false);
     }

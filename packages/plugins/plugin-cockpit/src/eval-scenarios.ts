@@ -13,6 +13,14 @@ import summarizer from "../evals/agents/summarizer.json" with { type: "json" };
 import crmDataSteward from "../evals/agents/crm-data-steward.json" with { type: "json" };
 import developer from "../evals/agents/developer.json" with { type: "json" };
 import seniorDeveloper from "../evals/agents/senior-developer.json" with { type: "json" };
+import afrikaansEditor from "../evals/agents/afrikaans-editor.json" with { type: "json" };
+import arjun from "../evals/agents/arjun.json" with { type: "json" };
+import steve from "../evals/agents/steve.json" with { type: "json" };
+import kai from "../evals/agents/kai.json" with { type: "json" };
+import ren from "../evals/agents/ren.json" with { type: "json" };
+import iris from "../evals/agents/iris.json" with { type: "json" };
+import mira from "../evals/agents/mira.json" with { type: "json" };
+import revenueLead from "../evals/agents/revenue-lead.json" with { type: "json" };
 import planner from "../evals/agents/planner.json" with { type: "json" };
 import codeReviewer from "../evals/agents/code-reviewer.json" with { type: "json" };
 import planCritic from "../evals/agents/plan-critic.json" with { type: "json" };
@@ -21,6 +29,18 @@ import releaseEngineer from "../evals/agents/release-engineer.json" with { type:
 import loyaltyPlusEngineerMac from "../evals/agents/loyalty-plus-engineer-mac.json" with { type: "json" };
 import productDesigner from "../evals/agents/product-designer.json" with { type: "json" };
 import pib from "../evals/agents/pib.json" with { type: "json" };
+import nadiaAgent from "../evals/agents/nadia.json" with { type: "json" };
+import theoAgent from "../evals/agents/theo.json" with { type: "json" };
+import reviewerAgent from "../evals/agents/reviewer.json" with { type: "json" };
+import acceptanceAgent from "../evals/agents/acceptance.json" with { type: "json" };
+import salesLead from "../evals/agents/sales-lead.json" with { type: "json" };
+import dealDesk from "../evals/agents/deal-desk.json" with { type: "json" };
+import seoSpecialist from "../evals/agents/seo-specialist.json" with { type: "json" };
+import outboundSocial from "../evals/agents/outbound-social-specialist.json" with { type: "json" };
+import bookkeeper from "../evals/agents/bookkeeper.json" with { type: "json" };
+import inboundQualifier from "../evals/agents/inbound-qualifier.json" with { type: "json" };
+import wikiMaintainer from "../evals/agents/wiki-maintainer.json" with { type: "json" };
+import operatorAgent from "../evals/agents/operator.json" with { type: "json" };
 import { SKILL_SLUGS, PLUGIN_KEY } from "./constants.js";
 import { parseResultsFile, parseScenarioFile, type ResultsFile, type Scenario, type ScenarioFile } from "./eval-model.js";
 import { ACCEPTANCE_TOOL_NAMES } from "./acceptance-tool-declarations.js";
@@ -38,6 +58,18 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "crm-data-steward": crmDataSteward,
   developer,
   "senior-developer": seniorDeveloper,
+  "afrikaans-editor": afrikaansEditor,
+  arjun,
+  steve,
+  kai,
+  ren,
+  iris,
+  mira,
+  "revenue-lead": revenueLead,
+  "sales-lead": salesLead,
+  "deal-desk": dealDesk,
+  "seo-specialist": seoSpecialist,
+  "outbound-social-specialist": outboundSocial,
   planner,
   "code-reviewer": codeReviewer,
   "plan-critic": planCritic,
@@ -46,6 +78,14 @@ export const AGENT_EVALS: Record<string, unknown> = {
   "loyalty-plus-engineer-mac": loyaltyPlusEngineerMac,
   "product-designer": productDesigner,
   pib,
+  nadia: nadiaAgent,
+  theo: theoAgent,
+  reviewer: reviewerAgent,
+  acceptance: acceptanceAgent,
+  bookkeeper,
+  "inbound-qualifier": inboundQualifier,
+  "wiki-maintainer": wikiMaintainer,
+  operator: operatorAgent,
 };
 
 /** Every tool this plugin registers, as agents name it. */

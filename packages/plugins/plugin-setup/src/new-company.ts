@@ -47,10 +47,11 @@ import {
 } from "./db.js";
 import { SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { standingApproval } from "./standing-approval.js";
 import { loadStarterPack, parseImportResult, starterPackExport, type StarterPack } from "./starter-pack.js";
 import { loadPack, matchTemplate, offeredTemplates, templateByKey, templateVars, type AgentLike, type AgentTemplate } from "./templates.js";
 import { pickAdapter, renderHire, templateConfig } from "./templates-render.js";
-import { message, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
+import { message, moduleView, refreshFinishIssue, saveModules, storedSummary, type Clock } from "./service.js";
 
 const systemClock: Clock = { now: () => new Date() };
 
@@ -124,7 +125,9 @@ export function sanitizeOptions(raw: unknown): BootstrapOptions {
   if (typeof row.includeOptionalRoles === "boolean") out.includeOptionalRoles = row.includeOptionalRoles;
   if (Array.isArray(row.templates)) out.templates = row.templates.filter((key): key is string => typeof key === "string" && !!templateByKey(key)).slice(0, 20);
   if (typeof row.hiringAgentId === "string" && /^[0-9a-f-]{8,64}$/i.test(row.hiringAgentId)) out.hiringAgentId = row.hiringAgentId;
-  if (typeof row.starterPack === "boolean") out.starterPack = row.starterPack;
+  // On unless the caller says false: the owner's standing yes (PAR-4701). Only an approved pack version is ever seeded.
+  out.starterPack = typeof row.starterPack === "boolean" ? row.starterPack : true;
+  if (row.hostingProfile === "client" || row.hostingProfile === "pib") out.hostingProfile = row.hostingProfile;
   return out;
 }
 
@@ -138,12 +141,17 @@ export function starterPackHash(pack: StarterPack): string {
   return createHash("sha256").update(JSON.stringify({ version: pack.version, facts: content })).digest("hex");
 }
 
+/** A person's approval row, else the standing approval for exactly this content hash. */
+async function approvalFor(ctx: PluginContext, version: number, hash: string) {
+  return (await getStarterApproval(ctx, version, hash).catch(() => null)) ?? standingApproval(version, hash);
+}
+
 export async function starterPackView(ctx: PluginContext, companyId?: string, options: { includeFacts?: boolean } = {}) {
   const pack = loadStarterPack();
   // The facts and the review notes are for a person to read before approving; an agent reading the state gets the counts only.
   const includeFacts = options.includeFacts !== false;
   const hash = starterPackHash(pack);
-  const approval = await getStarterApproval(ctx, pack.version, hash).catch(() => null);
+  const approval = await approvalFor(ctx, pack.version, hash);
   const imported = companyId ? await getStarterImport(ctx, companyId, pack.version, hash).catch(() => null) : null;
   return {
     name: pack.name,
@@ -180,7 +188,7 @@ export async function approveStarterPack(ctx: PluginContext, input: { userId: st
 export async function starterPackForImport(ctx: PluginContext, clock: Clock = systemClock) {
   const pack = loadStarterPack();
   const hash = starterPackHash(pack);
-  if (!(await getStarterApproval(ctx, pack.version, hash))) throw new SetupError("The starter pack needs the owner's OK first: open Setup -> New company -> Memory starter pack and approve this version.");
+  if (!(await approvalFor(ctx, pack.version, hash))) throw new SetupError("The starter pack needs the owner's OK first: open Setup -> New company -> Memory starter pack and approve this version.");
   return { version: pack.version, hash, data: starterPackExport(pack, clock.now().toISOString()) };
 }
 
@@ -249,7 +257,7 @@ export async function bootstrapCompany(
 
   // 1. modules (and, through saveModules, the Finish setup issue)
   const existing = await getChoice(ctx, input.companyId);
-  let modules: Record<string, boolean> | null = existing ? (existing.modules as Record<string, boolean>) : null;
+  let modules: Record<string, boolean> | null = existing ? ((await moduleView(ctx, input.companyId, clock)).modules as Record<string, boolean>) : null;
   let issueNote: { status: StepRecord["status"]; detail: string };
   if (options.modules !== undefined || !existing) {
     const saved = await saveModules(ctx, { companyId: input.companyId, modules: options.modules ?? {}, userId: input.userId }, clock);
@@ -390,7 +398,7 @@ export async function templateDraft(ctx: PluginContext, input: DraftInput) {
   const owner = await isOwnerCompany(ctx, input.companyId);
   if (template.scope === "pib" && !owner) throw new SetupError(`Template "${template.key}" is for the Partners in Biz company only.`);
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents) });
+  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents), ownerCompany: owner });
   return { key: template.key, kitRole: template.kitRole ?? null, provisioning: template.provisioning, title: draft.title, description: draft.description, payload: draft.payload, adapterType: draft.adapterType, warnings: draft.warnings };
 }
 
@@ -430,7 +438,7 @@ export async function startTemplateHire(
     if (issue && !CLOSED.has(String(issue.status))) return { hire: current, identifier: (issue as { identifier?: string | null }).identifier ?? null, staffed: null, existed: true, woke: false };
   }
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents });
+  const draft = renderHire(template, { vars, agents, ownerCompany: await isOwnerCompany(ctx, input.companyId) });
   const created = await createWorkIssue(ctx, {
     companyId: input.companyId,
     title: draft.title,
@@ -486,7 +494,7 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
     ownerCompany: owner,
     pack: { name: pack.pack, version: pack.version, updated: pack.updated },
     templates: templates.map((template) => {
-      const draft = renderHire(template, { vars, agents });
+      const draft = renderHire(template, { vars, agents, ownerCompany: owner });
       const adapterType = pickAdapter(template);
       const config = templateConfig(template, adapterType);
       return {
@@ -497,6 +505,8 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
         group: template.group,
         provisioning: template.provisioning,
         defaultOn: template.defaultOn,
+        // The `client` hosting profile's default: true, false, or "repo" (only when the company has a project with a repository).
+        defaultOnClient: template.defaultOnClient ?? template.defaultOn,
         kitRole: template.kitRole ?? null,
         reportsTo: template.reportsTo,
         adapterType,

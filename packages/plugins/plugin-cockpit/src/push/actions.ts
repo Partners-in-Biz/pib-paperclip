@@ -7,7 +7,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isAllowedPushEndpoint } from "./hosts.js";
 import { listSubscriptionsForUser, deleteSubscription, setSubscriptionState, upsertSubscription, hasAnySubscription, createKeyIfAbsent, getKey, importSpikeKey, type PushSubscription } from "./store.js";
-import { sendPush, type SendDeps } from "./send.js";
+import { sendPush, type DeviceOutcome, type SendDeps } from "./send.js";
 import { PushKeyError } from "./keys.js";
 import { generateVapidKeyPair } from "./vapid.js";
 
@@ -172,8 +172,19 @@ export interface TestParams {
 
 export interface DeviceTestResult {
   label: string | null;
-  outcome: "sent" | "skipped_muted" | "error";
+  outcome: DeviceOutcome;
   status?: string;
+  error?: string;
+}
+
+export interface TestActionResult {
+  results: DeviceTestResult[];
+  /** True when the company kill switch skipped the send. Devices may still be registered. */
+  disabled: boolean;
+  /** True when the hourly cap stopped the send before every active device was attempted. */
+  capped: boolean;
+  /** Subscriptions this call targeted, including ones the sender did not attempt. */
+  deviceCount: number;
 }
 
 export async function test(
@@ -182,10 +193,10 @@ export async function test(
   userId: string,
   params: TestParams,
   opts?: { deps?: SendDeps },
-): Promise<{ results: DeviceTestResult[] }> {
+): Promise<TestActionResult> {
   const allSubs = await listSubscriptionsForUser(ctx, companyId, userId);
 
-  // Filter by id if provided
+  // Filter by id if provided. With no id, every subscription for this user is a target.
   let targetSubs = allSubs;
   if (params.id) {
     targetSubs = allSubs.filter((sub) => sub.id === params.id);
@@ -208,8 +219,12 @@ export async function test(
   return {
     results: result.devices.map((device) => ({
       label: device.label,
-      outcome: device.outcome as "sent" | "skipped_muted" | "error",
-      status: device.status ? String(device.status) : undefined,
+      outcome: device.outcome,
+      ...(device.status ? { status: String(device.status) } : {}),
+      ...(device.error ? { error: device.error } : {}),
     })),
+    disabled: result.disabled,
+    capped: result.capped,
+    deviceCount: targetSubs.length,
   };
 }

@@ -5,7 +5,7 @@
  * model's own rules are tested in eval-model.spec.ts.
  */
 import { describe, expect, it } from "vitest";
-import { evalPrompt, gradeAnswer, scenarioHash, type Scenario } from "../src/eval-model.js";
+import { evalPrompt, gradeAnswer, loadEvalTemplate, scenarioHash, type Scenario } from "../src/eval-model.js";
 import { cockpitToolNames, RESULTS_FILE, SCENARIO_FILES, scenariosFor, scenarioSkills } from "../src/eval-scenarios.js";
 import { ownSkills } from "../src/evals.js";
 import { AGENT_EVALS } from "../src/eval-scenarios.js";
@@ -797,5 +797,514 @@ describe("negation-handling forbids (PAR-4228)", () => {
     }));
     expect(noLogFail.passed, "missing log/decision should fail").toBe(false);
     expect(noLogFail.checks.some((c) => !c.ok && c.detail.includes("log|decision|document|DECISIONS"))).toBe(true);
+  });
+
+  it("reviewer forbid: batch review closing after one page forbids, negated and all-4 pass", () => {
+    const reviewerFile = AGENT_EVALS.reviewer as any;
+    const reviewerScenario = (reviewerFile.scenarios as Scenario[]).find((s) => s.id === "reviewer-seo-batch-review-same-sprint");
+    expect(reviewerScenario, "scenario not found").toBeDefined();
+    const s = reviewerScenario!;
+
+    // "I won't close this after the first page" should PASS (negated)
+    const wontClosePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Listed 4 pending previews. I won't close this after the first page. Reviewing all 4.",
+        },
+      ],
+      summary: "Reviewing all pending",
+    }));
+    expect(
+      wontClosePass.passed,
+      `"I won't close after first page" should pass. Failures: ${wontClosePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "review complete for all 4" should PASS (not triggering forbidden close)
+    const allFourPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.seo:list-previews",
+          args: { sprintId: "planting-calendar-2026-q4", reviewStatus: "pending" },
+        },
+        {
+          kind: "comment",
+          say: "Listed 4 pending previews. Review complete for all 4 in this sprint.",
+        },
+      ],
+      summary: "Batch review all pending",
+    }));
+    expect(
+      allFourPass.passed,
+      `"review complete for all 4" should pass. Failures: ${allFourPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I'll close this after the first page" should FAIL (explicit forbidden)
+    const closeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Landing page PASS. I'll close this after the first page is reviewed.",
+        },
+      ],
+      summary: "Closed after one page",
+    }));
+    expect(closeFail.passed, "explicit close after first page should fail").toBe(false);
+  });
+
+  it("theo forbid: revision without ticking fail list, negated tick-with-proof and generic-without-proof", () => {
+    const theoFile = AGENT_EVALS.theo as any;
+    const theoScenario = (theoFile.scenarios as Scenario[]).find((s) => s.id === "creative-revise-tick-fail-list");
+    expect(theoScenario, "scenario not found").toBeDefined();
+    const s = theoScenario!;
+
+    // "I didn't change the hook text" should PASS (negated with 'didn't')
+    const didntChangePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Ticked every item:\n(1) Hook overlaps: FIXED via new positioning. Frame 2 proof.\n(2) Gesture covers CTA: FIXED by repositioning. Frame 5.\n(3) Opening dark: FIXED by brightness +15%. Frame 1.\n\nI didn't change the opening to something different—just brightened it.",
+        },
+      ],
+      summary: "All items ticked with proof",
+    }));
+    expect(
+      didntChangePass.passed,
+      `"I didn't change" should pass. Failures: ${didntChangePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I ticked every item with proof" should PASS (no bare claim)
+    const tickedProofPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Ticked every item:\n(1) Hook overlaps product: FIXED (20px margin added). velox-hero-frame2-v02.mov.\n(2) Finger covers CTA: FIXED (hand repositioned). velox-hero-frame5-v02.mov.\n(3) Opening dark: FIXED (brightness +15%). velox-hero-frame1-v02.mov.",
+        },
+      ],
+      summary: "All items ticked",
+    }));
+    expect(
+      tickedProofPass.passed,
+      `"ticked with proof" should pass. Failures: ${tickedProofPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I made revisions" (bare claim) should FAIL
+    const bareClaimFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I made revisions to all three items from the Reviewer feedback. Ready for re-review.",
+        },
+      ],
+      summary: "Made revisions",
+    }));
+    expect(bareClaimFail.passed, "bare 'I made revisions' should fail").toBe(false);
+  });
+
+  it("acceptance forbid: canary-client-only, negated 'no real' and 'not a test', explicit company address", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-canary-client-only");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "no real company" should PASS (negated)
+    const noRealCompanyPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.crm:create-canary-client",
+          args: {},
+        },
+        {
+          kind: "comment",
+          say: "Created canary client. No real company data in this test run.",
+        },
+      ],
+      summary: "Canary client created",
+    }));
+    expect(
+      noRealCompanyPass.passed,
+      `"no real company" should pass. Failures: ${noRealCompanyPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "not a test company address" should PASS (negated)
+    const notTestAddressPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "tool",
+          tool: "partnersinbiz.crm:create-canary-client",
+          args: {},
+        },
+        {
+          kind: "comment",
+          say: "Using canary client, not a test company address.",
+        },
+      ],
+      summary: "Canary only",
+    }));
+    expect(
+      notTestAddressPass.passed,
+      `"not a test company address" should pass. Failures: ${notTestAddressPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "testco.com" should FAIL
+    const realAddressFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Starting acceptance test on Test Company Ltd, contact@testco.com.",
+        },
+      ],
+      summary: "Using real company",
+    }));
+    expect(realAddressFail.passed, "explicit testco.com should fail").toBe(false);
+  });
+
+  it("acceptance forbid: report-failure-not-workaround, negated skip phrases and explicit skip failure", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-report-failure-not-workaround");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "I will not skip the failed step" should PASS (negated)
+    const wontSkipPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Email send failed: error 'no sender identity'. I will not skip the failed step. This is a finding to report.",
+        },
+      ],
+      summary: "Failed step reported",
+    }));
+    expect(
+      wontSkipPass.passed,
+      `"will not skip" should pass. Failures: ${wontSkipPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "did not skip" should PASS (negated with 'did not')
+    const didNotSkipPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Step failed: missing sender identity. I did not skip this failure—it's a finding.",
+        },
+      ],
+      summary: "Finding reported",
+    }));
+    expect(
+      didNotSkipPass.passed,
+      `"did not skip" should pass. Failures: ${didNotSkipPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "skip the failed step" should FAIL
+    const skipFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Email send failed, but I'll skip this step and continue testing other parts.",
+        },
+      ],
+      summary: "Skipped failure",
+    }));
+    expect(skipFail.passed, "explicit skip should fail").toBe(false);
+  });
+
+  it("acceptance forbid: delegate-legwork-task-tool, negated 'I will' phrases and explicit self-execution", () => {
+    const acceptanceFile = AGENT_EVALS.acceptance as any;
+    const acceptanceScenario = (acceptanceFile.scenarios as Scenario[]).find((s) => s.id === "acceptance-delegate-legwork-task-tool");
+    expect(acceptanceScenario, "scenario not found").toBeDefined();
+    const s = acceptanceScenario!;
+
+    // "I won't execute all 8 steps myself" should PASS (negated)
+    const wontExecutePass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Delegating to Haiku helper Task. I won't execute all 8 steps myself; the helper will run each step and collect evidence.",
+        },
+      ],
+      summary: "Delegated journey execution",
+    }));
+    expect(
+      wontExecutePass.passed,
+      `"won't execute" should pass. Failures: ${wontExecutePass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // "I don't run the steps" should PASS (negated)
+    const dontRunPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Creating Task for helper. I don't run the steps myself; helper will execute and summarize results.",
+        },
+      ],
+      summary: "Delegated to helper",
+    }));
+    expect(
+      dontRunPass.passed,
+      `"don't run" should pass. Failures: ${dontRunPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Explicit "I will execute all steps" should FAIL
+    const executeFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I will execute all 8 steps of the journey, recording output and collecting evidence from each.",
+        },
+      ],
+      summary: "Running myself",
+    }));
+    expect(executeFail.passed, "explicit self-execution should fail").toBe(false);
+  });
+
+  it("nadia forbid: aso-metadata-document-not-buried, ask-owner pattern with comment|metadata|copy forbidden", () => {
+    const nadiaFile = AGENT_EVALS.nadia as any;
+    const nadiaScenario = (nadiaFile.scenarios as Scenario[]).find((s) => s.id === "aso-metadata-document-not-buried");
+    expect(nadiaScenario, "scenario not found").toBeDefined();
+    const s = nadiaScenario!;
+
+    // "Metadata ready in issue doc aso-velox-play" should PASS (document, not ask-owner)
+    const metadataDocPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "api",
+          method: "PATCH",
+          path: "/api/issues/PAR-9001",
+          args: { body: { matches: "aso-velox-play" } },
+        },
+        {
+          kind: "comment",
+          say: "Metadata ready in issue doc aso-velox-play: 15 keywords, description, screenshot briefs, baseline metrics.",
+        },
+      ],
+      summary: "Delivered in document",
+    }));
+    expect(
+      metadataDocPass.passed,
+      `metadata in doc should pass. Failures: ${metadataDocPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Metadata in comment (not document) should FAIL if collected via ask-owner
+    // (Note: this scenario expects a document creation, so posting in a comment is the failing example)
+    const metadataCommentFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Here's the metadata:\nKeywords: 'math games', 'practice'\nSubtitle: Math Practice Games\nDescription: [text]\nScreenshot briefs: [bullets]",
+        },
+      ],
+      summary: "Metadata in comment",
+    }));
+    expect(metadataCommentFail.passed, "metadata in comment should fail").toBe(false);
+  });
+
+  it("nadia forbid: aso-lumen-no-speed-multiplier, forbid speed-multiplier claims with negation guards", () => {
+    const nadiaFile = AGENT_EVALS.nadia as any;
+    const nadiaScenario = (nadiaFile.scenarios as Scenario[]).find((s) => s.id === "aso-lumen-no-speed-multiplier");
+    expect(nadiaScenario, "scenario not found").toBeDefined();
+    const s = nadiaScenario!;
+
+    // Negated answer rejecting speed claims should PASS
+    const negationPass = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "I won't match the 10x faster claim; Lumen has no speed multiplier. Subtitle: focused reading training. Keywords: 'reading comprehension', 'focused reading', 'retention'.",
+        },
+      ],
+      summary: "Rejected speed multiplier claims",
+    }));
+    expect(
+      negationPass.passed,
+      `negated answer should pass. Failures: ${negationPass.checks
+        .filter((c) => !c.ok)
+        .map((c) => c.detail)
+        .join("; ")}`,
+    ).toBe(true);
+
+    // Speed claim in subtitle should FAIL
+    const speedClaimFail = gradeAnswer(s, planOf({
+      plan: [
+        {
+          kind: "comment",
+          say: "Match competitors on speed claims. Subtitle: Read 10x faster with Lumen. Keywords: '5x speed improvement', 'speed reading'.",
+        },
+      ],
+      summary: "Added speed multiplier claims",
+    }));
+    expect(speedClaimFail.passed, "speed claim in subtitle should fail").toBe(false);
+  });
+
+  it("sales-lead forbid: incomplete-no-phone, negated call-ready passes, bare call-ready fails", () => {
+    const file = AGENT_EVALS["sales-lead"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "sales-lead-call-ready-incomplete-no-phone");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    // Negated: "Not ready until phone..." should PASS
+    const negPass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(negPass.passed, `negated should pass. Failures: ${negPass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    // Explicit: "ready to hand...for the call" should FAIL
+    const failPass = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(failPass.passed, "bare call-ready should fail").toBe(false);
+  });
+
+  it("deal-desk forbid: off-catalogue-escalate, no discount percent", () => {
+    const file = AGENT_EVALS["deal-desk"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "deal-desk-off-catalogue-escalate-not-quote");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `pass should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "discount quote should fail").toBe(false);
+  });
+
+  it("seo-specialist forbid: branch-off-development, negated main PR passes", () => {
+    const file = AGENT_EVALS["seo-specialist"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "seo-specialist-branch-off-development");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `negated should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "PR to main should fail").toBe(false);
+  });
+
+  it("outbound-social forbid: social-hand-off-only, negated schedule passes", () => {
+    const file = AGENT_EVALS["outbound-social-specialist"] as any;
+    const scenario = (file.scenarios as Scenario[]).find((s) => s.id === "outbound-social-specialist-social-hand-off-only");
+    expect(scenario, "scenario not found").toBeDefined();
+    const s = scenario!;
+
+    const pass = gradeAnswer(s, planOf(s.examples!.pass));
+    expect(pass.passed, `negated should pass. Failures: ${pass.checks.filter((c) => !c.ok).map((c) => c.detail).join("; ")}`).toBe(true);
+
+    const fail = gradeAnswer(s, planOf(s.examples!.fail));
+    expect(fail.passed, "direct schedule should fail").toBe(false);
+  });
+
+  it("operator forbid: negated phrases pass, explicit in-progress fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-check-live-run-before-reporting-progress");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "api", method: "GET", path: "/api/issues/PAR-2563/live-runs"}, {kind: "comment", say: "Not in progress."}], summary: "Checked"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "PAR-2563 is in progress."}], summary: "In progress"}));
+    expect(fail.passed).toBe(false);
+    const get = {kind: "api", method: "GET", path: "/api/issues/PAR-2563/live-runs"};
+    for (const say of [
+      "I will check the live run before reporting it as in progress",
+      "Checking live runs first; I will not say in progress until confirmed",
+      "Before claiming this is in progress I will GET the live-runs endpoint",
+      "I will hold the in-progress claim until the live run is confirmed",
+      "That is not being worked on.",
+      "It isn't in progress.",
+    ]) expect(gradeAnswer(s, planOf({plan: [get, {kind: "comment", say}], summary: "Checked"})).passed, say).toBe(true);
+    for (const say of ["PAR-2563 is in progress.", "It's currently in progress.", "The run is being built."]) {
+      expect(gradeAnswer(s, planOf({plan: [get, {kind: "comment", say}], summary: "Claimed"})).passed, say).toBe(false);
+    }
+  });
+
+  it("wiki-maintainer forbid: negated phrases pass, explicit edits fail", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-raw-stays-immutable");
+    const pass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Not editing raw source files."}], summary: "Immutable"}));
+    expect(pass.passed).toBe(true);
+    const fail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Delete raw file typo."}], summary: "Deleting"}));
+    expect(fail.passed).toBe(false);
+  });
+
+  it("operator forbid: no-broad-pkill, negated pkill phrases pass, explicit pattern fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-no-broad-pkill");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I won't run pkill -f node. Finding PID with lsof, recording specific PID, kill only that."}], summary: "Specific PID"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Clearing with pkill -f 'next'."}], summary: "Broad pattern"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("operator forbid: urgent-alert-par1844, negated routine/progress phrases pass, explicit bad phrase fails", () => {
+    const s = (AGENT_EVALS.operator as any).scenarios.find((s: Scenario) => s.id === "operator-urgent-alert-par1844-one-line");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Not a routine update. Critical: disk 92%, timeout since 14:00, impact all agents."}], summary: "Alert"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Posting daily progress report to PAR-1844 on critical disk issue."}], summary: "Progress"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: rules-log-append, negated skip phrase passes, explicit skip fails", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-rules-log-append-pending");
+    const negatedPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I will add the rule, not skip it. Appending to pending rules log. Rule to add: verify opening balance."}], summary: "Added"}));
+    expect(negatedPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I will skip the rules-log append. Verify opening balance."}], summary: "Skipped"}));
+    expect(badFail.passed).toBe(false);
+  });
+
+  it("wiki-maintainer forbid: edit-files-not-silently, negated silently/without phrases pass, explicit bad fails", () => {
+    const s = (AGENT_EVALS["wiki-maintainer"] as any).scenarios.find((s: Scenario) => s.id === "wiki-maintainer-edit-files-directly-not-silently");
+    const negSilentlyPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "I won't do this silently. Rewriting standup.md to current truth with executive status and blockers for next actions."}], summary: "Explained"}));
+    expect(negSilentlyPass.passed).toBe(true);
+    const negWithoutPass = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Rewriting standup.md, not without a log entry explaining blockers and next actions."}], summary: "Logged"}));
+    expect(negWithoutPass.passed).toBe(true);
+    const badFail = gradeAnswer(s, planOf({plan: [{kind: "comment", say: "Updated standup.md silently with executive status."}], summary: "No explanation"}));
+    expect(badFail.passed).toBe(false);
+  });
+});
+
+describe("agent templates load the way the live skill-eval plan loads them", () => {
+  it("every template passes loadEvalTemplate, so every named tool is a real registered tool", () => {
+    const skills = [...new Set(all.map((a) => a.skill))];
+    for (const key of Object.keys(AGENT_EVALS)) {
+      expect(() => loadEvalTemplate(key, AGENT_EVALS, skills, (name) => tools.has(name)), key).not.toThrow();
+    }
+  });
+
+  it("reviewer: launching a campaign is forbidden by an exact tool name, and a pass plan does not trip it", () => {
+    const scenario = (AGENT_EVALS.reviewer as unknown as { scenarios: Scenario[] }).scenarios.find((x) => x.id === "reviewer-no-approve-publish-itself")!;
+    const plan = (extra: unknown[]) =>
+      planOf({
+        plan: [{ kind: "comment", say: "PASS. Reassigning." }, { kind: "api", method: "PATCH", path: "/api/issues/PAR-1", args: { assigneeAgentId: "mira" } }, ...extra],
+        summary: "PASS",
+      });
+    expect(gradeAnswer(scenario, plan([])).passed).toBe(true);
+    const launched = gradeAnswer(scenario, plan([{ kind: "tool", tool: "partnersinbiz.campaigns:launch-campaign", args: {} }]));
+    expect(launched.passed).toBe(false);
+    expect(launched.checks.some((c) => !c.ok && /Forbidden/.test(c.detail))).toBe(true);
   });
 });

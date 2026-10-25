@@ -42,6 +42,7 @@ import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
 import { recheckImprovements } from "./improvements.js";
 import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
 import { GROWTH_TOOL_SET, runGrowthTool } from "./growth-tools.js";
+import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
@@ -58,6 +59,7 @@ import { parseSnapshot, teamSignature } from "./merge.js";
 import { NAMESPACE } from "./namespace.js";
 import { onDealWon, onInvoicePaid } from "./onboarding.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
+import { loadMaintenance } from "./maintenance.js";
 import { readProfile, saveProfileEdit } from "./profile.js";
 import { ProfileError } from "./profile-model.js";
 import { onLinkedFor, parseTeamInput, rebroadcastRoles, reemitRoles, roleViews, rolesPayload, saveTeam } from "./roles.js";
@@ -71,6 +73,8 @@ import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
+import { riskTierCloseCheck } from "./register-w1c-done.js";
+import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -258,6 +262,15 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     });
   }
 
+  // CRM's own metrics into growth_metrics (website and revenue channels).
+  ctx.events.on(pluginEvent(PIB_PLUGINS.crm, OWN_METRICS_EVENT), async (event) => {
+    try {
+      await onOwnMetricsEvent(env, event);
+    } catch (error) {
+      ctx.logger.info("Cockpit own metrics handling failed", { error: message(error) });
+    }
+  });
+
   ctx.actions.register("cockpit.load", async (params, context) => {
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
@@ -392,6 +405,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   // The company profile (Cockpit → Profile).
   ctx.actions.register("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
+  ctx.actions.register("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
   ctx.actions.register("profile.save", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can edit the company profile here");
@@ -534,6 +548,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
   });
 
+  ctx.jobs.register(JOBS.askDeadlines, async () => {
+    ctx.logger.info(
+      "Ask deadline sweep",
+      await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),
+    );
+  });
+
   registerMemoryActions(env);
 
   // A person's reply answers an open question; **Learned:** lines in agents' and people's comments become company memory.
@@ -548,6 +569,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.info("Memory: could not read Learned lines from a comment", { issueId: event.entityId, error: message(error) });
     }
+    // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
+    await riskTierCloseCheck(env, event);
   });
   // One issue.updated handler (each extra subscription would deliver every event again):
   // an open question follows its issue, and an agent's close of an onboarding or
@@ -581,6 +604,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.info("Push: needs-you trigger failed", { issueId: event.entityId, error: message(error) });
     }
+    // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
+    await riskTierCloseCheck(env, event);
   });
 
   // "Needs you" push trigger fires when an issue is assigned to the owner.

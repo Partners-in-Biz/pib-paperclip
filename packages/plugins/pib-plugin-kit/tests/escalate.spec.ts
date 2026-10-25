@@ -489,7 +489,8 @@ describe("escalate", () => {
       }
 
       // The unblock issue should have been created
-      const unblockIssues = fake.issues.filter((i) => i.originKind === "plugin:pib-escalation");
+      const expectedOriginKind = `plugin:${fake.ctx.manifest.id}`;
+      const unblockIssues = fake.issues.filter((i) => i.originKind === expectedOriginKind);
       expect(unblockIssues).toHaveLength(1);
       const unblockId = unblockIssues[0].id;
 
@@ -512,7 +513,69 @@ describe("escalate", () => {
 
       expect(result2).toEqual({ id: unblockId, level: level1, created: false });
       // Still only one unblock issue
-      expect(fake.issues.filter((i) => i.originKind === "plugin:pib-escalation")).toHaveLength(1);
+      expect(fake.issues.filter((i) => i.originKind === expectedOriginKind)).toHaveLength(1);
+    });
+  });
+
+  describe("(i) originKind uses plugin's manifest id, not hard-coded", () => {
+    it("creates Unblock issue with originKind derived from manifest id", async () => {
+      const manifestId = "partnersinbiz.cockpit";
+      const fake = fakeCtx({
+        manifestId,
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: null, status: "ok" },
+        ],
+      });
+
+      const stuckIssue = await fake.ctx.issues.create({
+        companyId: "co-1",
+        title: "Stuck issue",
+        assigneeAgentId: "agent1",
+        status: "todo",
+      });
+
+      const result = await escalate(fake.ctx, stuckIssue.id, "blocked for 24h", {
+        companyId: "co-1",
+        now,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ created: true }));
+      const createdIssue = fake.issues.find((i) => i.id !== stuckIssue.id);
+      expect(createdIssue).toBeDefined();
+      // Verify originKind is derived from manifest id, not hard-coded "plugin:pib-escalation"
+      expect(createdIssue!.originKind).toBe(`plugin:${manifestId}`);
+      expect(createdIssue!.originKind).not.toBe("plugin:pib-escalation");
+    });
+
+    it("rejects originKind that doesn't match plugin's manifest id", async () => {
+      const manifestId = "partnersinbiz.cockpit";
+      const fake = fakeCtx({
+        manifestId,
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: null, status: "ok" },
+        ],
+      });
+
+      const stuckIssue = await fake.ctx.issues.create({
+        companyId: "co-1",
+        title: "Stuck issue",
+        assigneeAgentId: "agent1",
+        status: "todo",
+      });
+
+      // Directly try to create an issue with wrong originKind (simulating old hard-coded value)
+      await expect(
+        fake.ctx.issues.create({
+          companyId: "co-1",
+          title: "Wrong origin",
+          originKind: "plugin:pib-escalation",
+          originId: "test",
+        }),
+      ).rejects.toThrow(`Plugin may only use originKind values under plugin:${manifestId}`);
     });
   });
 });

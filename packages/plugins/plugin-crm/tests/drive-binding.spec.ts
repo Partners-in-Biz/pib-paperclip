@@ -1,54 +1,27 @@
-import { describe, it, expect } from "vitest";
-import { boot, CO, toolRaw, seed } from "./helpers/crm.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { boot, toolRaw, seed } from "./helpers/crm.js";
 import { DRIVE_TOOLS } from "../src/drive/tools.js";
+import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
+import { KEY_JSON, fakeGoogle } from "./support/fake-google-drive.js";
 
-// Test mock that simulates broker identity endpoint responses
-interface MockBrokerState {
-  identityCalls: Array<{ sharedDriveId?: string }>;
-  identityResponses: Map<string, { serviceAccountEmail?: string; isMember?: boolean; status?: number }>;
-  identityFail: boolean;
-}
+/** The service account email inside KEY_JSON: the status tool reports it from the key itself. */
+const SA_EMAIL = "drive-sa@proj.iam.gserviceaccount.com";
+const KEY_MATERIAL = /PRIVATE KEY|private_key|ya29/;
 
-function createMockBrokerWithIdentity(st: MockBrokerState) {
-  return async (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
-    if (!init.headers.Authorization?.startsWith("Bearer ")) return { status: 401, ok: false, text: async () => "{}" };
-
-    if (init.method === "GET" && url.includes("/workspace-broker/identity")) {
-      const sharedDriveId = new URL(url, "http://base").searchParams.get("shared_drive_id") || undefined;
-
-      st.identityCalls.push({ sharedDriveId });
-
-      if (st.identityFail) {
-        return { status: 404, ok: false, text: async () => JSON.stringify({ error: "Not found" }) };
-      }
-
-      // For calls without shared_drive_id, look up by empty string key in the responses map
-      const lookupKey = sharedDriveId || "";
-      const response = st.identityResponses.get(lookupKey);
-      if (response) {
-        if (response.status) {
-          return { status: response.status, ok: false, text: async () => JSON.stringify({ error: "Error" }) };
-        }
-        return { status: 200, ok: true, text: async () => JSON.stringify(response) };
-      }
-      return { status: 404, ok: false, text: async () => JSON.stringify({ error: "Not found" }) };
-    }
-
-    return { status: 404, ok: false, text: async () => "{}" };
-  };
-}
-
-async function setupBinding(config: Record<string, any> = {}, store?: Record<string, any>) {
+/** The status tool on the native path: the service account key in the settings, Google (faked, in memory) answering the Shared Drive identity call. */
+async function setupBinding(config: Record<string, any> = {}, store?: Record<string, any>, google = fakeGoogle()) {
   const baseStore = store || seed();
   const { harness } = await boot({ config, store: baseStore });
-  const state: MockBrokerState = {
-    identityCalls: [],
-    identityResponses: new Map(),
-    identityFail: false,
-  };
-  harness.ctx.http.fetch = createMockBrokerWithIdentity(state) as any;
-  return { harness, state };
+  const fetchSpy = vi.fn(google.fetchFn);
+  vi.stubGlobal("fetch", fetchSpy);
+  return { harness, google, fetchSpy };
 }
+
+/** The identity calls Google saw: GET /drive/v3/drives/<id>. */
+const identityCalls = (google: ReturnType<typeof fakeGoogle>) => google.calls.filter((c) => c.startsWith("GET /drive/v3/drives/"));
+
+beforeEach(() => clearServiceAccountTokenCache());
+afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive binding tools", () => {
   it("declares three binding tools with schemas and descriptions", () => {
@@ -62,36 +35,33 @@ describe("Drive binding tools", () => {
     expect(DRIVE_TOOLS[7].description).toContain("read-only");
   });
 
-  it("empty/new company: status shows not bound, tokenSet true, calls identity without shared_drive_id", async () => {
-    const { harness, state } = await setupBinding({ driveBrokerToken: "token" });
-
-    // Mock response for unbound identity call (no shared_drive_id parameter)
-    state.identityResponses.set("", {
-      serviceAccountEmail: "default-sa@project.iam.gserviceaccount.com",
-      isMember: false,
-    });
+  it("empty/new company: status shows not bound, tokenSet true, the service account email from the key, and Google is not asked", async () => {
+    const { harness, google, fetchSpy } = await setupBinding({ driveServiceAccountJson: KEY_JSON });
 
     const result = await toolRaw(harness, "drive_binding_status", {});
     expect(result.data?.bound).toBe(false);
     expect(result.data?.tokenSet).toBe(true);
     expect(result.data?.sharedDriveId).toBeUndefined();
-    expect(result.data?.serviceAccountEmail).toBe("default-sa@project.iam.gserviceaccount.com");
+    expect(result.data?.serviceAccountEmail).toBe(SA_EMAIL);
     expect(result.data?.serviceAccountIsMember).toBe(false);
-    expect(state.identityCalls).toHaveLength(1);
-    expect(state.identityCalls[0].sharedDriveId).toBeUndefined();
+    // Membership can only be asked of a Shared Drive: with none bound there is no call at all
+    expect(google.calls).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("empty company without token: status shows tokenSet false", async () => {
-    const { harness } = await setupBinding({});
+  it("empty company without a key: status shows tokenSet false", async () => {
+    const { harness, fetchSpy } = await setupBinding({});
     const result = await toolRaw(harness, "drive_binding_status", {});
     expect(result.data?.tokenSet).toBe(false);
     expect(result.data?.serviceAccountIsMember).toBe(false);
+    expect(result.data?.serviceAccountEmail).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("single exact match (case-insensitive, trimmed) auto-binds", async () => {
     const st = seed();
     // The Paperclip company is "PiB" (see boot function)
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st);
+    const { harness, google } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st);
 
     const drives = [
       { id: "drive-1", name: "  PiB  " },
@@ -104,15 +74,17 @@ describe("Drive binding tools", () => {
     expect(result.data?.sharedDriveId).toBe("drive-1");
     expect(result.data?.name).toBe("  PiB  ");
 
-    // Verify binding is stored by checking status
+    // Verify binding is stored by checking status, which now asks Google about the bound drive
     const statusAfter = await toolRaw(harness, "drive_binding_status", {});
     expect(statusAfter.data?.bound).toBe(true);
     expect(statusAfter.data?.sharedDriveId).toBe("drive-1");
+    expect(identityCalls(google)).toHaveLength(1);
+    expect(identityCalls(google)[0]).toContain("/drive/v3/drives/drive-1?");
   });
 
   it("several matches: sets nothing, returns candidates with reason 'several'", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st);
 
     const drives = [
       { id: "drive-1", name: "PiB" },
@@ -131,7 +103,7 @@ describe("Drive binding tools", () => {
 
   it("no matches: sets nothing, returns candidates with reason 'none'", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st);
 
     const drives = [
       { id: "drive-1", name: "Other Company" },
@@ -146,7 +118,7 @@ describe("Drive binding tools", () => {
 
   it("drive_binding_set rejects unknown ID", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st);
 
     // First discover to set candidates
     const drives = [{ id: "drive-1", name: "Test Company" }];
@@ -160,7 +132,7 @@ describe("Drive binding tools", () => {
 
   it("drive_binding_set accepts a listed ID and stores binding", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st);
 
     const drives = [
       { id: "drive-1", name: "Drive One" },
@@ -179,8 +151,8 @@ describe("Drive binding tools", () => {
     // For simplicity, we test that state is scoped to company
     const st1 = seed();
     const st2 = seed();
-    const { harness: h1 } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st1);
-    const { harness: h2 } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } }, st2);
+    const { harness: h1 } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st1);
+    const { harness: h2 } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } }, st2);
 
     // Bind in harness1
     const drives1 = [{ id: "drive-a", name: "Test Company" }];
@@ -191,47 +163,72 @@ describe("Drive binding tools", () => {
     expect(status2.data?.bound).toBe(false);
   });
 
-  it("token value never appears in errors or output", async () => {
-    const { harness } = await setupBinding({
-      driveBrokerToken: "secret-fake-token-12345",
-      drive: { sharedDriveId: "" },
-    });
+  it("key material never appears in errors or output (discover, set, status)", async () => {
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } });
 
     const drives = [{ id: "drive-1", name: "Other" }];
-    const result = await toolRaw(harness, "drive_binding_discover", { drives });
-    const jsonStr = JSON.stringify(result);
-    expect(jsonStr).not.toContain("secret-fake-token-12345");
+    const outputs = [
+      await toolRaw(harness, "drive_binding_discover", { drives }),
+      await toolRaw(harness, "drive_binding_set", { sharedDriveId: "drive-1" }),
+      await toolRaw(harness, "drive_binding_set", { sharedDriveId: "unlisted" }),
+      await toolRaw(harness, "drive_binding_status", {}),
+    ];
+    for (const result of outputs) expect(JSON.stringify(result)).not.toMatch(KEY_MATERIAL);
   });
 
-  it("status reports serviceAccountEmail and isMember from mocked identity", async () => {
-    const { harness, state } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "test-drive-123" } });
-
-    state.identityResponses.set("test-drive-123", {
-      serviceAccountEmail: "sa@project.iam.gserviceaccount.com",
-      isMember: true,
-    });
+  it("status reports serviceAccountEmail and isMember from Google's answer about the bound Shared Drive", async () => {
+    const { harness, google } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive-123" } });
 
     const result = await toolRaw(harness, "drive_binding_status", {});
-    expect(result.data?.serviceAccountEmail).toBe("sa@project.iam.gserviceaccount.com");
+    expect(result.data?.bound).toBe(true);
+    expect(result.data?.sharedDriveId).toBe("test-drive-123");
+    expect(result.data?.serviceAccountEmail).toBe(SA_EMAIL);
     expect(result.data?.serviceAccountIsMember).toBe(true);
-    expect(state.identityCalls).toHaveLength(1);
-    expect(state.identityCalls[0].sharedDriveId).toBe("test-drive-123");
+    expect(result.data?.identityError).toBeUndefined();
+    expect(identityCalls(google)).toHaveLength(1);
+    expect(identityCalls(google)[0]).toContain("/drive/v3/drives/test-drive-123?");
   });
 
-  it("status handles identity 404 with generic error message", async () => {
-    const { harness, state } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "test-drive" } });
-
-    state.identityFail = true;
+  it("status: a service account that is not in the Shared Drive is reported isMember false, with its email so a person can add it", async () => {
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive-123" } }, undefined, fakeGoogle({ member: false }));
 
     const result = await toolRaw(harness, "drive_binding_status", {});
+    expect(result.data?.serviceAccountIsMember).toBe(false);
+    expect(result.data?.serviceAccountEmail).toBe(SA_EMAIL);
+    expect(result.data?.identityError).toBeUndefined();
+  });
+
+  it("status handles a Google failure with a generic error message, still naming the account", async () => {
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive" } }, undefined, fakeGoogle({ filesStatus: 500 }));
+
+    const result = await toolRaw(harness, "drive_binding_status", {});
+    expect(result.error).toBeUndefined();
+    expect(result.data?.tokenSet).toBe(true);
+    expect(result.data?.serviceAccountIsMember).toBe(false);
     expect(result.data?.identityError).toBeTruthy();
-    expect(result.data?.identityError).toContain("404");
-    expect(result.data?.identityError).not.toContain("token");
+    expect(result.data?.identityError).toContain("Google Drive error");
+    expect(result.data?.identityError).not.toMatch(KEY_MATERIAL);
+  });
+
+  it("status says so when Google refuses the key, and when the stored key is not a service account key", async () => {
+    const refused = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive" } }, undefined, fakeGoogle({ tokenStatus: 400 }));
+    const r1 = await toolRaw(refused.harness, "drive_binding_status", {});
+    expect(r1.data?.tokenSet).toBe(true);
+    expect(r1.data?.serviceAccountIsMember).toBe(false);
+    expect(r1.data?.identityError).toContain("Google refused the Drive service account key");
+
+    const notJson = await setupBinding({ driveServiceAccountJson: "this is not json", drive: { sharedDriveId: "test-drive" } });
+    const r2 = await toolRaw(notJson.harness, "drive_binding_status", {});
+    expect(r2.data?.tokenSet).toBe(true);
+    expect(r2.data?.serviceAccountIsMember).toBe(false);
+    expect(r2.data?.identityError).toContain("service account key");
+    expect(r2.data?.serviceAccountEmail).toBeUndefined();
+    expect(JSON.stringify(r2)).not.toContain("this is not json");
   });
 
   it("config-pinned id is not overwritten by discover", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "config-pinned-drive" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "config-pinned-drive" } }, st);
 
     const drives = [
       { id: "drive-1", name: "Test Company" },
@@ -246,7 +243,7 @@ describe("Drive binding tools", () => {
 
   it("drive_binding_set refuses when config-pinned", async () => {
     const st = seed();
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "config-pinned-drive" } }, st);
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "config-pinned-drive" } }, st);
 
     const drives = [
       { id: "drive-1", name: "Drive One" },
@@ -258,50 +255,38 @@ describe("Drive binding tools", () => {
     expect(result.error).toContain("pinned");
   });
 
-  it("token value absent from identity error output", async () => {
-    const { harness, state } = await setupBinding({
-      driveBrokerToken: "secret-broker-token-xyz",
-      drive: { sharedDriveId: "test-drive" },
-    });
-
-    state.identityFail = true;
-
-    const result = await toolRaw(harness, "drive_binding_status", {});
-    const jsonStr = JSON.stringify(result);
-    expect(jsonStr).not.toContain("secret-broker-token-xyz");
+  it("key material absent from the status output when Google or the key fails", async () => {
+    const cases: Array<[string, Record<string, any>, ReturnType<typeof fakeGoogle>]> = [
+      ["Drive 500", { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive" } }, fakeGoogle({ filesStatus: 500 })],
+      ["Drive 401", { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive" } }, fakeGoogle({ filesStatus: 401 })],
+      ["token refused", { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "test-drive" } }, fakeGoogle({ tokenStatus: 400 })],
+      ["not a key", { driveServiceAccountJson: "secret-not-a-key-xyz", drive: { sharedDriveId: "test-drive" } }, fakeGoogle()],
+    ];
+    for (const [label, config, google] of cases) {
+      clearServiceAccountTokenCache();
+      const { harness } = await setupBinding(config, undefined, google);
+      const result = await toolRaw(harness, "drive_binding_status", {});
+      expect(result.data?.identityError, label).toBeTruthy();
+      expect(JSON.stringify(result), label).not.toMatch(KEY_MATERIAL);
+      expect(JSON.stringify(result), label).not.toContain("secret-not-a-key-xyz");
+    }
   });
 
-  it("unbound+token: status calls identity WITHOUT shared_drive_id param", async () => {
-    const { harness, state } = await setupBinding({ driveBrokerToken: "token" });
-
-    state.identityResponses.set("", {
-      serviceAccountEmail: "sa@project.iam.gserviceaccount.com",
-      isMember: false,
-    });
-
-    const result = await toolRaw(harness, "drive_binding_status", {});
-    expect(result.data?.bound).toBe(false);
-    expect(result.data?.sharedDriveId).toBeUndefined();
-    expect(result.data?.serviceAccountEmail).toBe("sa@project.iam.gserviceaccount.com");
-    expect(state.identityCalls).toHaveLength(1);
-    // The identity call should not include shared_drive_id when unbound
-    expect(state.identityCalls[0].sharedDriveId).toBe(undefined);
-  });
-
-  it("bound+no token: status returns sharedDriveId without fetch", async () => {
-    const { harness, state } = await setupBinding({ drive: { sharedDriveId: "test-drive-123" } });
+  it("bound + no key: status returns sharedDriveId without calling Google", async () => {
+    const { harness, google, fetchSpy } = await setupBinding({ drive: { sharedDriveId: "test-drive-123" } });
 
     const result = await toolRaw(harness, "drive_binding_status", {});
     expect(result.data?.bound).toBe(true);
     expect(result.data?.sharedDriveId).toBe("test-drive-123");
     expect(result.data?.tokenSet).toBe(false);
     expect(result.data?.serviceAccountIsMember).toBe(false);
-    // No identity calls made when no token
-    expect(state.identityCalls).toHaveLength(0);
+    // No identity calls made when no key
+    expect(identityCalls(google)).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("discover rejects empty drive id", async () => {
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } });
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } });
 
     const drives = [
       { id: "", name: "Invalid Drive" },
@@ -313,7 +298,7 @@ describe("Drive binding tools", () => {
   });
 
   it("discover rejects empty drive name", async () => {
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } });
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } });
 
     const drives = [
       { id: "drive-1", name: "" },
@@ -325,7 +310,7 @@ describe("Drive binding tools", () => {
   });
 
   it("discover rejects drives list exceeding 500 entries", async () => {
-    const { harness } = await setupBinding({ driveBrokerToken: "token", drive: { sharedDriveId: "" } });
+    const { harness } = await setupBinding({ driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: "" } });
 
     const drives = Array.from({ length: 501 }, (_, i) => ({
       id: `drive-${i}`,

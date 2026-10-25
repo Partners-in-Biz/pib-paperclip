@@ -1,5 +1,6 @@
 /**
- * Save sent client reports to Drive in the "04 Reports" subfolder.
+ * Save sent client reports to Drive. "04 Reports" is the old numbered name the producers still send; the CRM translates it to the
+ * drive's own "Deliverables" folder (LEGACY_SUBFOLDER_ALIASES). The kit's `subfolder` type lists only the numbered names until the producers migrate.
  * The CRM handles the upload via driveSave and replies with drive.file.saved or drive.file.failed.
  * Failures never delay or fail the send: fire-and-forget pattern.
  */

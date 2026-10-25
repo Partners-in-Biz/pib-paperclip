@@ -204,4 +204,23 @@ describe("done checks", () => {
     // Fourth call should post exactly one more comment (different from the third)
     expect(fake.comments.length).toBe(commentCountBefore4 + 1);
   });
+
+  it("runs a match rule on an issue with no origin", async () => {
+    const issue = { id: "i1", title: "Check spike: verify tool output", status: "done", originId: null, assigneeAgentId: "am", createdAt: "2026-09-28T00:00:00Z" };
+    const rule = (done: boolean): DoneCheckRule => ({ originPrefix: "", label: "Spike", match: (i) => /spike/i.test(i.title), check: async () => ({ done, missing: done ? undefined : ["No evidence yet"] }) });
+    expect(await runDoneCheck(simpleFakeCtx(issue).ctx, [rule(true)], event)).toBe("passed");
+    expect(await runDoneCheck(simpleFakeCtx(issue).ctx, [rule(false)], event)).toBe("reopened");
+  });
+
+  it("runs a match rule even on a foreign plugin-origin issue", async () => {
+    const issue = { id: "i1", title: "Urgent spike: fix production", status: "done", originKind: "plugin:partnersinbiz.crm", originId: "crm:someissue", assigneeAgentId: "am", createdAt: "2026-09-28T00:00:00Z" };
+    const rule = (done: boolean): DoneCheckRule => ({ originPrefix: "", label: "Spike", match: (i) => /spike/i.test(i.title), check: async () => ({ done, missing: done ? undefined : ["Need evidence"] }) });
+    expect(await runDoneCheck(simpleFakeCtx(issue).ctx, [rule(true)], event)).toBe("passed");
+  });
+
+  it("still skips a foreign-origin issue for plain origin rules", async () => {
+    const issue = { id: "i1", title: "Some work", status: "done", originKind: "plugin:partnersinbiz.crm", originId: "crm:work", assigneeAgentId: "am", createdAt: "2026-09-28T00:00:00Z" };
+    const rule = (done: boolean): DoneCheckRule => ({ originPrefix: "billing:drafts", label: "Billing drafts", check: async () => ({ done }) });
+    expect(await runDoneCheck(simpleFakeCtx(issue).ctx, [rule(false)], event)).toBe("skipped");
+  });
 });

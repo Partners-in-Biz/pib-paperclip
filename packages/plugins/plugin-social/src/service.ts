@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
@@ -117,7 +117,9 @@ import {
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
 import { retryPost } from "./publish.js";
+import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
+import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
@@ -125,6 +127,7 @@ import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
 import { emptyStats, scopeStats } from "./stats.js";
+import { parseTweetUrl, targetFromParams } from "./post-target.js";
 
 export interface Viewer {
   companyId: string;
@@ -205,13 +208,21 @@ function postVisibility(params: Record<string, unknown>): AccountScope {
   return value;
 }
 
-/** Validate and normalise the platform-keyed overrides object. */
-export function normalizeOverrides(value: unknown): Partial<Record<SocialPlatform, PlatformOverride>> | undefined {
+/** Validate and normalise the platform-keyed overrides object and reserved tags key. */
+export function normalizeOverrides(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) throw new SocialError("overrides must be an object keyed by platform");
-  const out: Partial<Record<SocialPlatform, PlatformOverride>> = {};
+  const out: Record<string, unknown> = {};
   for (const [platform, raw] of Object.entries(value as Record<string, unknown>)) {
+    // Handle reserved tags key
+    if (platform === "tags") {
+      if (Array.isArray(raw)) {
+        const tags = raw.map((t) => String(t || "").toLowerCase().trim()).filter((t) => t && t.length > 0);
+        if (tags.length > 0) out.tags = Array.from(new Set(tags)).slice(0, 10); // dedupe, max 10
+      }
+      continue;
+    }
     if (!isSocialPlatform(platform)) throw new SocialError(`Unknown platform in overrides: ${platform}`);
     if (raw == null) continue;
     if (typeof raw !== "object" || Array.isArray(raw)) throw new SocialError(`overrides.${platform} must be an object`);
@@ -291,7 +302,14 @@ function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
   };
 }
 
+/** A reply / quote target for display: the link, the tweet id and the author handle. */
+export function targetOut(url: string | null | undefined): { url: string; id: string; handle: string | null } | null {
+  const ref = url ? parseTweetUrl(url) : null;
+  return ref ? { url: ref.url, id: ref.id, handle: ref.handle } : null;
+}
+
 export function postOut(row: PostRow, destinations: DestinationRow[] = [], accounts: Map<string, AccountRow> = new Map()) {
+  const tags = ((row.overrides as Record<string, unknown>)?.tags as string[] | undefined) ?? [];
   return {
     id: row.id,
     body: row.body,
@@ -302,8 +320,12 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     publishedAt: iso(row.published_at),
     ...scopeOut(row),
     firstComment: row.first_comment,
+    replyTo: targetOut(row.reply_to_url),
+    quote: targetOut(row.quote_url),
+    note: row.note ?? null,
     media: postMedia(row),
     overrides: postOverrides(row),
+    tags: tags.length > 0 ? tags : undefined,
     source: row.source ?? "manual",
     /** The SEO page this draft repurposes (its hand-off key), when it was drafted for one. */
     handoffKey: row.source === "repurpose" ? row.source_ref : null,
@@ -378,8 +400,12 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     );
   }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
-  const overrides = normalizeOverrides(params.overrides) ?? {};
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
+  const overrides = normalizeOverrides(overridesWithTags) ?? {};
   const accounts = await loadAccounts(ctx, viewer, stringList(params, "accountIds") ?? []);
+  const targetFields = targetFromParams(params);
   const row = {
     id: randomUUID(),
     company_id: viewer.companyId,
@@ -390,6 +416,9 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
     media,
     overrides,
     first_comment: optionalString(params, "firstComment") ?? null,
+    reply_to_url: targetFields.replyToUrl ?? null,
+    quote_url: targetFields.quoteUrl ?? null,
+    note: targetFields.note ?? null,
     scheduled_at: scheduledAt,
     ...scopeColumns(target),
     source: handoff ? "repurpose" : viewer.isAgent ? "agent" : "manual",
@@ -405,6 +434,14 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   await attachAccounts(ctx, viewer, post, accounts);
   await writeExperimentTag(growth, viewer.companyId, row.id, tag);
   return getPostDetail(ctx, viewer, row.id);
+}
+
+/** Reply / quote / note changes of an update. Setting one of reply and quote clears the other, so a post never keeps both. */
+export function changedTarget(params: Record<string, unknown>) {
+  const fields = targetFromParams(params);
+  if (fields.replyToUrl && fields.quoteUrl === undefined) fields.quoteUrl = null;
+  if (fields.quoteUrl && fields.replyToUrl === undefined) fields.replyToUrl = null;
+  return fields;
 }
 
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
@@ -444,13 +481,17 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
+  // Merge tags into overrides if provided
+  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
+  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(params.overrides),
+    overrides: normalizeOverrides(overridesWithTags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
+    ...changedTarget(params),
   });
   // Any edit voids the client's open links: they were made for the old version.
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
@@ -573,7 +614,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
   if (to === "review") {
     await routePostReview(ctx, viewer, post);
-    return getPostDetail(ctx, viewer, post.id);
+    // No Reviewer asked for: a low-risk post with a clean owner streak needs no click (autonomy ladder).
+    const inReview = await getPost(ctx, viewer.companyId, post.id);
+    const auto = inReview ? await tryAutoApprove(ctx, viewer, inReview) : null;
+    return { ...(await getPostDetail(ctx, viewer, post.id)), ...(auto ? { signoff: { completed: true, pending: [], message: auto.message } } : {}) };
   }
   // Back to draft: a link the client holds would only let them answer for a post that is no longer waiting.
   if (to === "draft" && post.status === "review") await supersedePendingLinks(ctx, viewer.companyId, post.id);
@@ -702,7 +746,18 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const verdict = requiredString(params, "verdict");
   if (verdict !== "pass" && verdict !== "changes") throw new SocialError('verdict must be "pass" or "changes"');
-  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null });
+  const toneScore = params.toneScore != null ? Number(params.toneScore) : null;
+  if (toneScore != null && (!Number.isInteger(toneScore) || toneScore < 0 || toneScore > 20)) {
+    throw new SocialError("toneScore must be a whole number from 0 to 20");
+  }
+  return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `request-creative`: the hand-off issue for a post's image or video. */
+export async function requestCreativeRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const durationS = params.durationS != null ? Number(params.durationS) : null;
+  return requestCreative(ctx, viewer.companyId, post, { brief: optionalString(params, "brief"), format: optionalString(params, "format"), durationS });
 }
 
 /** A person records that the client approved outside the approval page. */
@@ -718,6 +773,12 @@ export async function recordClientApprovalRecord(ctx: PluginContext, viewer: Vie
 export async function reviewOutcomesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
   return reviewStats(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 90), 7), 365));
+}
+
+/** `media-compliance`: media and alt-text counts of published posts, and posts live with no Reviewer verdict. */
+export async function mediaComplianceRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const { scope } = await readScope(ctx, viewer, params);
+  return mediaCompliance(ctx, viewer.companyId, scope, Math.min(Math.max(positiveInt(params.days, "days", 28), 1), 365));
 }
 
 // ── accounts ────────────────────────────────────────────────────────────────

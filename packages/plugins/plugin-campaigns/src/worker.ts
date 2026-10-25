@@ -1,4 +1,4 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { normalizeToolResult, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -92,12 +92,13 @@ import { nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
-import { messagingSetup } from "./messaging.js";
+import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
 import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
+import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { identityChanged, listSenderIdentities, preflightCampaign, recordChannelConsent, removeSenderIdentity, setSenderIdentity, suppressPhone } from "./sender-tools.js";
 import { composeMessage, sendMessagingStep } from "./sms.js";
 import { handleWebhook } from "./webhook.js";
@@ -109,7 +110,9 @@ import {
   createWorkIssue,
   openApprovalIssue,
   registerClientProjectWatch,
+  GROWTH_TOOL_NAMES,
   registerCompanyBootstrap,
+  registerGrowthTools,
   registerConsentReceiver,
   registerEraseReceiver,
   senderKeyOf,
@@ -139,6 +142,8 @@ import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { onMailDelivery } from "./delivery.js";
 import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSendResult, openIssueOnce, redeliverMail, sendCampaignStep } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { campaignsGrowthStore, campaignsGrowthToolsHost } from "./growth-host.js";
+import { linkCampaignToExperiment, measureExperimentsJob } from "./growth-measure.js";
 import { eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
@@ -177,17 +182,25 @@ const plugin = definePlugin({
       if (event.companyId) await rememberDomainHealth(ctx, event.companyId, event.payload).catch(() => false);
     });
     for (const tool of CAMPAIGN_TOOLS) {
+      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, async (params, run) => {
         await skillSync?.ensure(run.companyId).catch(() => undefined);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
+    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx));
     ctx.actions.register("campaigns.load", async (params, context) => {
       if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
+    });
+    ctx.actions.register("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    ctx.actions.register("campaigns.preferences-save", async (params, context) => {
+      const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
+      if (result.ok && context.companyId) forgetMessagingSetup(context.companyId);
+      return result;
     });
     ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
@@ -207,6 +220,10 @@ const plugin = definePlugin({
       await catchUpApprovals(ctx);
       await catchUpStepIssues(ctx);
       await openDueSteps(ctx);
+    }));
+    ctx.jobs.register("measure-experiments", () => trackJob(ctx, "measure-experiments", async () => {
+      const summary = await measureExperimentsJob(ctx);
+      if (summary.experiments) ctx.logger.info("Growth experiments measured", summary);
     }));
     ctx.jobs.register("redeliver-mail", async () => {
       await trackJob(ctx, "redeliver-mail", async () => {
@@ -322,10 +339,22 @@ async function setSenderAndResetApprovals(ctx: PluginContext, companyId: string,
   return { ...result, approvalsReset: reset };
 }
 
+/** Ties the saved campaign to the Growth Lab experiment the call names. A refusal says the campaign itself was saved. */
+async function withExperiment<T extends { id?: unknown }>(ctx: PluginContext, companyId: string, body: Record<string, unknown>, saved: T): Promise<T> {
+  const experimentId = optionalString(body, "experimentId");
+  if (!experimentId) return saved;
+  try {
+    await linkCampaignToExperiment(ctx, campaignsGrowthStore(ctx), companyId, experimentId, String(saved.id ?? body.campaignId));
+  } catch (error) {
+    throw new CampaignError(`Campaign ${String(saved.id ?? body.campaignId)} was saved but not tied to the experiment: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return saved;
+}
+
 async function dispatch(ctx: PluginContext, name: string, body: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
-  if (name === "create-campaign") return createCampaignRecord(ctx, companyId, body, { agentId: run.agentId });
-  if (name === "update-campaign") return updateCampaignRecord(ctx, companyId, body);
+  if (name === "create-campaign") return withExperiment(ctx, companyId, body, await createCampaignRecord(ctx, companyId, body, { agentId: run.agentId }));
+  if (name === "update-campaign") return withExperiment(ctx, companyId, body, await updateCampaignRecord(ctx, companyId, body));
   if (name === "list-campaigns") return listCampaignsRecord(ctx, companyId, body);
   if (name === "add-campaign-step") return addStep(ctx, companyId, body);
   if (name === "launch-campaign") return launch(ctx, companyId, body);

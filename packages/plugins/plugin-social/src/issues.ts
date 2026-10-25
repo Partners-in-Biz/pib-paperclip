@@ -38,6 +38,8 @@ export const SOCIAL_ORIGINS = {
   clientLinkEmail: "client-link-email:",
   /** The first plan of a scope whose account just connected: `plan:<own|company:<id>|contact:<id>>` (Social agent). The weekly routine's issues are the host's own routine issues, not these. */
   plan: "plan:",
+  /** The Social agent's request for an image or video: `creative:<postId>` (Creative Producer, else the Social agent). */
+  creative: "creative:",
 } as const;
 
 /** The company's default person, then the Cockpit owner: who gets person-only work nobody else owns. */

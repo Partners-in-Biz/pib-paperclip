@@ -43,7 +43,7 @@ describe("a lead from our own form", () => {
     expect(activity.body).toMatch(/^New lead from a form \(Contact form\): I need a quote for SEO/);
     expect(activity.meta).toMatchObject({ source: "form", form: "Contact form", formId: source.id, consent: true, attribution: { utmSource: "google" } });
 
-    const issues = await crmIssues(booted.harness);
+    const issues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"));
     expect(issues).toHaveLength(1);
     expect(issues[0]!.originId).toMatch(/^crm:lead-followup:form:/);
     expect(issues[0]!.description).toContain("Phone: +27 82 123 4567");
@@ -82,7 +82,8 @@ describe("a lead from our own form", () => {
     const { source } = await makeSource(booted, {});
     expect(await post(booted, lead(source.key))).toMatchObject({ status: "stored" });
     expect(await post(booted, lead(source.key, { email: "JANE@smith-plumbing.test", name: "Jane" }), { "x-real-ip": ip(10) })).toMatchObject({ status: "duplicate" });
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    const followUps = async () => (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"));
+    expect(await followUps()).toHaveLength(1);
     expect(booted.store.lead_sources[0]).toMatchObject({ accepted_count: 1 });
     expect(booted.store.lead_hits.map((row) => row.outcome)).toEqual(["stored", "duplicate"]);
 
@@ -91,7 +92,7 @@ describe("a lead from our own form", () => {
     expect(booted.store.contacts.filter((row) => row.emails.includes("jane@smith-plumbing.test"))).toHaveLength(1);
     expect(booted.store.contacts.find((row) => row.emails.includes("jane@smith-plumbing.test"))!.phones).toEqual(["082 555 1212"]);
     expect(booted.store.activities.filter((row) => row.kind === "lead_captured")).toHaveLength(2);
-    expect(await crmIssues(booted.harness)).toHaveLength(2);
+    expect(await followUps()).toHaveLength(2);
   });
 
   it("a person who did not tick the marketing box and ticks it when they send again the same day has agreed: the repeat adds the consent, not a second lead", async () => {
@@ -102,7 +103,7 @@ describe("a lead from our own form", () => {
     expect(await post(booted, lead(source.key, { consent: true, consentText: "Yes email me" }), { "x-real-ip": ip(12) })).toMatchObject({ status: "duplicate" });
     expect(booted.store.consent_records).toHaveLength(1);
     expect(booted.store.consent_records[0]).toMatchObject({ granted: true, wording: "Yes email me", contact_id: booted.store.contacts.find((row) => row.emails.includes("jane@smith-plumbing.test"))!.id });
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    expect((await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:lead-followup:"))).toHaveLength(1);
     // A repeat that ticks again changes nothing: the record is already there.
     await post(booted, lead(source.key, { consent: true, consentText: "Yes email me" }), { "x-real-ip": ip(13) });
     expect(booted.store.consent_records).toHaveLength(1);
@@ -131,7 +132,7 @@ describe("a lead from a client's form", () => {
     expect(booted.store.client_leads[0]).toMatchObject({ client_kind: "company", client_ref: "acme", source: "form", name: "Jane Smith", email: "jane@smith-plumbing.test", message: "I need a quote for SEO", phone: "082 111 2222", item_id: source.id });
     expect(booted.store.client_leads[0]!.meta).toMatchObject({ sourceLabel: "Quote form", consent: true, attribution: { utmSource: "facebook", pageUrl: "https://acme.co.za/quote" } });
 
-    const issues = await crmIssues(booted.harness);
+    const issues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"));
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ projectId: "proj-acme", title: "Lead for Acme Plumbing: Jane Smith" });
     expect(issues[0]!.originId).toMatch(/^crm:client-lead:form:/);
@@ -139,6 +140,15 @@ describe("a lead from a client's form", () => {
     expect(issues[0]!.description).toContain("Acme Plumbing's lead, not ours");
     expect(issues[0]!.description).toContain("never added to our contacts");
     expect(booted.store.client_leads[0]!.issue_id).toBe(issues[0]!.id);
+
+    // Draft-only speed-to-lead: one care approval + draft enqueue; never a send.
+    // (CEO ping is skipped when no live CEO/Elon agent is seeded — that path is covered in speed-to-lead.spec.)
+    const stl = (booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead");
+    expect(stl).toHaveLength(1);
+    expect(stl[0]).toMatchObject({ client_kind: "company", client_ref: "acme" });
+    expect(stl[0]!.issue_id).toBeTruthy();
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
 
     expect(booted.store.consent_records[0]).toMatchObject({ sender_key: "company:acme", granted: true });
     expect(booted.store.lead_captures[0]).toMatchObject({ client_kind: "company", client_ref: "acme", contact_id: null });
@@ -161,15 +171,23 @@ describe("a lead from a client's form", () => {
     expect(booted.store.client_leads).toHaveLength(1);
     expect(booted.store.client_leads[0]!.issue_id).toBeNull();
     expect(await crmIssues(booted.harness)).toHaveLength(0);
+    // Held: no speed-to-lead approval or draft yet.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(0);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
     // Still unsaved: nothing opens.
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(0);
     booted.harness.setConfig({ timezone: "Africa/Johannesburg" });
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(1);
-    const [issue] = await crmIssues(booted.harness);
-    expect(booted.store.client_leads[0]!.issue_id).toBe(issue!.id);
+    const clientIssues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"));
+    expect(clientIssues).toHaveLength(1);
+    expect(booted.store.client_leads[0]!.issue_id).toBe(clientIssues[0]!.id);
+    // Once the issue opens, draft-only speed-to-lead runs for the held lead.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
     // Idempotent: another run opens nothing more.
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(0);
-    expect(await crmIssues(booted.harness)).toHaveLength(1);
+    expect((await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"))).toHaveLength(1);
   });
 
   it("opens the issue without the project when the client's project cannot take it, so the lead still reaches someone", async () => {
@@ -182,7 +200,7 @@ describe("a lead from a client's form", () => {
       return create(input);
     });
     expect(await post(booted, lead(source.key))).toMatchObject({ status: "stored" });
-    const [issue] = await crmIssues(booted.harness);
+    const [issue] = (await crmIssues(booted.harness)).filter((row) => String(row.originId ?? "").startsWith("crm:client-lead:"));
     expect(issue).toMatchObject({ title: "Lead for Acme Plumbing: Jane Smith", projectId: null });
     expect(booted.harness.logs.some((entry) => /opened without its project/.test(entry.message))).toBe(true);
   });
@@ -554,6 +572,35 @@ describe("Cloudflare Turnstile", () => {
     expect(booted.harness.logs.some((entry) => /returned non-OK/.test(entry.message) && entry.meta?.event === "turnstile_unavailable")).toBe(true);
   });
 
+  it("an unreachable Cloudflare allows one lead per visitor an hour, then rate-limits", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    expect(await post(booted, lead(source.key, { email: "d1@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(90) })).toMatchObject({ status: "stored" });
+    expect(String(await rejected(post(booted, lead(source.key, { email: "d2@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(90) })))).toMatch(/Too many submissions/);
+    expect(await post(booted, lead(source.key, { email: "d3@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(91) })).toMatchObject({ status: "stored" });
+  });
+
+  it("an unreachable Cloudflare: a rejected first try does not use up the visitor's one lead", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    await rejected(post(booted, lead(source.key, { email: "not-an-email", turnstileToken: "tok" }), { "x-real-ip": ip(92) }));
+    expect(await post(booted, lead(source.key, { email: "retry@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(92) })).toMatchObject({ status: "stored" });
+  });
+
+  it("an unreachable Cloudflare: 20 unverified leads an hour per form; normal traffic from before the outage does not count", async () => {
+    const booted = await bootLeads({ config: withTurnstile });
+    const { source } = await makeSource(booted, {});
+    vi.spyOn(booted.harness.ctx.http, "fetch").mockRejectedValue(new Error("network down"));
+    const earlier = new Date(Date.now() - 600_000).toISOString();
+    const seed = (outcome: string, n: number) => booted.store.lead_hits.push(...Array.from({ length: n }, (_, i) => ({ id: `${outcome}-${i}`, source_id: source.id, ip_hash: `h${outcome}${i}`, outcome, created_at: earlier })));
+    seed("stored", RATE.degradedSourcePerHour);
+    expect(await post(booted, lead(source.key, { email: "a@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(93) })).toMatchObject({ status: "stored" });
+    seed("unverified", RATE.degradedSourcePerHour);
+    expect(String(await rejected(post(booted, lead(source.key, { email: "b@smith-plumbing.test", turnstileToken: "tok" }), { "x-real-ip": ip(94) })))).toMatch(/Too many submissions/);
+  });
+
   it("a signed server request needs no token; a form with no secret saved is not checked", async () => {
     const booted = await bootLeads({ config: withTurnstile });
     const made = await makeSourceAsPerson(booted, { serverSecret: true });
@@ -703,7 +750,10 @@ describe("a visitor's message cannot fake a line of the issue", () => {
     const theirs = await makeSource(client, { client: "company:acme" });
     await post(client, lead(theirs.source.key, { message: forged }));
     for (const booted of [own, client]) {
-      const [issue] = await crmIssues(booted.harness);
+      const [issue] = (await crmIssues(booted.harness)).filter((row) => {
+        const id = String(row.originId ?? "");
+        return id.startsWith("crm:client-lead:") || id.startsWith("crm:lead-followup:");
+      });
       const description = issue!.description as string;
       expect(description).not.toMatch(/[\r\u0085\u2028\u2029]/);
       const lines = description.split("\n");

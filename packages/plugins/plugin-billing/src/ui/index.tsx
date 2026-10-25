@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, tokens, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
+import { loadStatusText } from "./load-status.js";
+import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, ModuleStateBanner, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
 import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
 import { Overview } from "./overview.js";
@@ -12,6 +13,7 @@ import { BillingContext, Muted, SectionNav, money, useCall, type BillingApi } fr
 import { CreditNotesSection, PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
 import { RemindersTab, ReportsTab } from "./reports.js";
+import { PreferencesSection } from "./preferences.js";
 import { RetainersTab } from "./retainers.js";
 import { TimeTab } from "./time.js";
 import { draftsToSend, isOverdue, waitingOnPerson } from "./series.js";
@@ -61,6 +63,7 @@ export function BillingPage({ context }: PluginPageProps) {
   const [snapshot, setSnapshot] = useState<Snapshot>({ invoices: [] });
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
   // `?tab=` is a tab or a section (payments, reminders, bills…); every pre-0.4 value still opens the same place.
   const [view, setView] = useUrlTab<View>(VIEW_IDS, "overview", { path: "/billing", search: location.search, navigate: navigation.navigate });
   const { tab, section } = resolveView(view, Boolean(scope));
@@ -79,10 +82,13 @@ export function BillingPage({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || enabled === false) return;
     setLoaded(false);
+    setLoadError(null);
     setMessage("");
     setOpenInvoice(null);
     setOpenQuote(null);
-    refresh().catch((error: unknown) => setMessage(errorText(error)));
+    refresh().catch((error: unknown) => {
+      setLoadError(errorText(error));
+    });
   }, [context.companyId, scopeKey, enabled === false]);
 
   // A deep link (the CRM deal drawer's "Draft a quote"): ?tab=quotes&new=1&client=company:<id>&dealId=<id>
@@ -106,10 +112,7 @@ export function BillingPage({ context }: PluginPageProps) {
   if (enabled === false) {
     return (
       <Page title="Billing" description="Invoices, quotes, payments, bills, expenses, time and retainers." accent="billing">
-        <p style={{ margin: 0, fontSize: 14, color: tokens.fg, lineHeight: 1.5 }}>
-          This module is switched off for this company. Turn it on in{" "}
-          <a {...navigation.linkProps("/setup")} style={{ color: tokens.primary, fontWeight: 600 }}>Setup</a>.
-        </p>
+        <ModuleStateBanner companyId={context.companyId} pluginKey={PLUGIN_KEY} load={moduleState} setupLinkProps={navigation.linkProps("/setup")} />
       </Page>
     );
   }
@@ -192,10 +195,11 @@ export function BillingPage({ context }: PluginPageProps) {
     <BillingContext.Provider value={api}>
       <Tabs tabs={tabs} active={tab} onChange={(id) => setView(viewForTab(id as TopTab))} />
       <SectionNav items={sections} active={section} onChange={(id) => setView(id as View)} />
-      {!loaded ? <Muted>Loading…</Muted> : null}
+      {!loaded ? <Muted>{loadStatusText(loadError)}</Muted> : null}
       {!scope && section === "overview" ? <GetStarted status={setupStatus} moduleName="Billing" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
       {loaded && section === "overview" ? <Overview snapshot={snapshot} scope={scope} call={call} go={setView} onOpenInvoice={openInvoiceTab} onOpenQuote={openQuoteTab} /> : null}
       {loaded && section === "reports" && !scope ? <ReportsTab /> : null}
+      {loaded && section === "preferences" && !scope ? <PreferencesSection /> : null}
       {loaded && section === "invoices" ? <InvoicesTab openId={openInvoice} setOpenId={setOpenInvoice} onCreate={() => setCreating("invoice")} /> : null}
       {loaded && section === "payments" ? <PaymentsTab onOpenInvoice={openInvoiceTab} /> : null}
       {loaded && section === "credit-notes" ? <CreditNotesSection onOpenInvoice={openInvoiceTab} /> : null}
@@ -215,7 +219,7 @@ export function BillingPage({ context }: PluginPageProps) {
       <WorkspacePage
         header={(
           <ClientWorkspaceBar
-            client={{ kind: scope.kind, id: scope.id, name: client?.name ?? (loaded ? "Unknown client" : "Loading…"), detail: client?.detail ?? null }}
+            client={{ kind: scope.kind, id: scope.id, name: client?.name ?? (loaded ? "Unknown client" : loadError ? "Client" : "Loading…"), detail: client?.detail ?? null }}
             active="billing"
             linkProps={navigation.linkProps}
             ownPath="/billing"
@@ -233,7 +237,7 @@ export function BillingPage({ context }: PluginPageProps) {
   return (
     <Page
       title="Billing"
-      description="PiB's invoices, quotes, payments, retainers, bills and time. Agents draft and ask; a person approves sending and money."
+      description="Invoices, quotes, payments, retainers, bills and time. Agents draft and ask; a person approves sending and money."
       message={pageMessage}
       actions={headerAction}
       accent="billing"

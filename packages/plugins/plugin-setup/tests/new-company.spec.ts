@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RUN_PROFILES, TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit";
 import { allModulesOn } from "../src/modules.js";
 import { PLUGIN_ID } from "../src/namespace.js";
+import { standingApproval } from "../src/standing-approval.js";
 import { isOwnerCompany, recordStep, sanitizeOptions, starterPackHash, toAgentLikes, templateDraft, startTemplateHire, templatesForOps } from "../src/new-company.js";
 import { handleApiRoute, registerSetup } from "../src/register.js";
 import { fixedClock, fakeCtx } from "./helpers/fake-ctx.js";
@@ -132,6 +133,7 @@ describe("setup.bootstrap-record", () => {
     const report = (stepId: string, status: string) => call("setup.bootstrap-record", { stepId, status, detail: stepId }, asUser(A));
     expect((await report("setup-settings", "done")).run.status).toBe("running");
     await report("plugin-settings", "done");
+    await report("model-key", "skipped");
     await report("skills", "done");
     await report("roles", "done");
     await report("templates", "done");
@@ -206,9 +208,9 @@ describe("setup.new-company", () => {
   it("reads the state of a company that was never touched", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asUser(A));
-    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 12 }, hires: [] });
-    expect(state.steps).toHaveLength(10);
-    expect(state.starterPack).toMatchObject({ approved: false, needsOwnerOk: true, version: 1 });
+    expect(state).toMatchObject({ run: null, status: "created", pack: { name: "pib-standard-team", version: 2, templates: 13 }, hires: [] });
+    expect(state.steps).toHaveLength(11);
+    expect(state.starterPack).toMatchObject({ approved: true, approvedBy: expect.stringContaining("standing-approval"), needsOwnerOk: true, version: 1, hash: starterPackHash(loadStarterPack()) });
     expect(state.starterPack.facts.length).toBe(loadStarterPack().facts.length);
     expect(state.starterPack.factCount).toBe(loadStarterPack().facts.length);
   });
@@ -216,7 +218,7 @@ describe("setup.new-company", () => {
   it("gives an agent the run state and the starter pack's counts, never the facts to read", async () => {
     const { call } = setup();
     const state = await call("setup.new-company", {}, asAgent(A));
-    expect(state).toMatchObject({ status: "created", starterPack: { approved: false, needsOwnerOk: true, factCount: loadStarterPack().facts.length, facts: [], excluded: [], reviewNotes: [] } });
+    expect(state).toMatchObject({ status: "created", starterPack: { approved: true, needsOwnerOk: true, factCount: loadStarterPack().facts.length, facts: [], excluded: [], reviewNotes: [] } });
     expect(JSON.stringify(state.starterPack)).not.toContain(loadStarterPack().facts[0]!.text);
   });
 });
@@ -312,9 +314,8 @@ describe("the starter pack approval", () => {
     await expect(call("setup.approve-starter-pack", { hash: starterPackHash(loadStarterPack()) }, asAgent(A))).rejects.toThrow(/board user/);
   });
 
-  it("hands out the import only after the owner approved this exact version", async () => {
+  it("hands out the import for the version the owner approved (standing yes or a click)", async () => {
     const { call } = setup();
-    await expect(call("setup.starter-pack-import", {}, asUser(A))).rejects.toThrow(/needs the owner's OK first/);
     const hash = starterPackHash(loadStarterPack());
     const approved = await call("setup.approve-starter-pack", { hash }, asUser(A, "owner-1"));
     expect(approved).toMatchObject({ approved: true, approvedBy: "owner-1", hash });
@@ -323,6 +324,14 @@ describe("the starter pack approval", () => {
     expect(body.data.facts).toHaveLength(loadStarterPack().facts.length);
     // Approval is of the pack, not of a company: the next company may use it too, and a changed pack would not be covered.
     expect((await call("setup.new-company", {}, asUser(B))).starterPack.approved).toBe(true);
+  });
+
+  it("covers only the exact pack hash: a changed pack or version is not approved", () => {
+    const pack = loadStarterPack();
+    const hash = starterPackHash(pack);
+    expect(standingApproval(pack.version, hash)).not.toBeNull();
+    expect(standingApproval(pack.version, starterPackHash({ ...pack, facts: pack.facts.map((fact, index) => (index === 0 ? { ...fact, text: `${fact.text} (edited)` } : fact)) }))).toBeNull();
+    expect(standingApproval(pack.version + 1, hash)).toBeNull();
   });
 
   it("hashes the facts, not the reviewer's notes", () => {
@@ -364,7 +373,7 @@ describe("GET /templates for the ops scripts", () => {
     const critic = result.templates.find((template: any) => template.key === "plan-critic");
     expect(critic.adapterType).toBe("hermes_local");
     expect(critic.profiles.hermes_local.adapterConfig).toMatchObject({ provider: "nous", model: "deepseek/deepseek-v4-flash-0731" });
-    expect(result.steps).toHaveLength(10);
+    expect(result.steps).toHaveLength(11);
     expect(result.skillSyncActions).toMatchObject({ "partnersinbiz.crm": "crm.sync-skills", "partnersinbiz.cockpit": "cockpit.load" });
     // No secret and no company data beyond its name and prefix.
     expect(JSON.stringify(result)).not.toMatch(/secret_ref|ghp_|github_pat_/);
@@ -381,8 +390,9 @@ describe("GET /templates for the ops scripts", () => {
 
 describe("options", () => {
   it("keeps ids and switches only", () => {
-    expect(sanitizeOptions(null)).toEqual({});
-    expect(sanitizeOptions({ copyFromCompanyId: "<script>", hiringAgentId: "../x", templates: "developer", includeOptionalRoles: "yes", starterPack: 1 })).toEqual({});
+    expect(sanitizeOptions(null)).toEqual({ starterPack: true });
+    expect(sanitizeOptions({ copyFromCompanyId: "<script>", hiringAgentId: "../x", templates: "developer", includeOptionalRoles: "yes", starterPack: 1 })).toEqual({ starterPack: true });
+    expect(sanitizeOptions({ starterPack: false }).starterPack).toBe(false);
     expect(sanitizeOptions({ templates: ["developer", 5, "nope", "planner"] }).templates).toEqual(["developer", "planner"]);
   });
 

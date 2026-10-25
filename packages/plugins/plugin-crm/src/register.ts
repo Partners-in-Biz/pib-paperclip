@@ -23,6 +23,7 @@ import { sendHandoff } from "./handoffs.js";
 import { parseClientRef, requireClient } from "./lookup.js";
 import { refOf } from "./refs.js";
 import { REGISTER_DOC } from "./register-doc.generated.js";
+import { registerDocFor, renderRegisterDoc } from "./register-render.js";
 
 /** The hand-off the Cockpit and Jev routing read. */
 export const CLIENT_SENSITIVITY_EVENT = "client.sensitivity";
@@ -84,7 +85,13 @@ export function ruleOf(row: Pick<RegisterRow, "sensitiveClients">): SensitiveRul
   return null;
 }
 
-export const REGISTER: RegisterDoc = parseRegisterDoc(REGISTER_DOC);
+/** The register as the owner company (Partners in Biz) reads it. Names, ids and rules are the same for every company, so this also answers the name-only questions below. */
+export const REGISTER: RegisterDoc = parseRegisterDoc(renderRegisterDoc(REGISTER_DOC, { owner: true, name: null }));
+
+/** The register for one company: the same systems, worded for that company. */
+export async function registerFor(ctx: PluginContext, companyId: string): Promise<RegisterDoc> {
+  return parseRegisterDoc(await registerDocFor(ctx, companyId));
+}
 
 /** The systems a client flagged sensitive must stay off: everything the register does not mark `cleared`. */
 export function systemsNotCleared(rows: readonly RegisterRow[] = REGISTER.rows): string[] {
@@ -116,6 +123,12 @@ function mapRow(row: RegisterDbRow): RegisterRow & { docVersion: string } {
   return { id: row.system_id, name: row.name, role: row.role, purpose: row.purpose, dataClasses: asStringList(row.data_classes), region: row.region, retention: row.retention, agreement: row.agreement, safeguards: row.safeguards, sensitiveClients: row.sensitive_clients, ownerAction: row.owner_action ?? null, docVersion: row.doc_version };
 }
 
+/** Whether a stored row already says what the file says (the wording differs per company, so the version alone is not enough). */
+function sameRow(a: RegisterRow, b: RegisterRow): boolean {
+  return a.name === b.name && a.role === b.role && a.purpose === b.purpose && a.region === b.region && a.retention === b.retention && a.agreement === b.agreement
+    && a.safeguards === b.safeguards && a.sensitiveClients === b.sensitiveClients && a.ownerAction === b.ownerAction && a.dataClasses.join("\u0000") === b.dataClasses.join("\u0000");
+}
+
 export async function listRegister(ctx: PluginContext, companyId: string): Promise<Array<RegisterRow & { docVersion: string }>> {
   const rows = await ctx.db.query<RegisterDbRow>(`SELECT ${COLUMNS_SQL} FROM ${table(ctx, "processing_register")} WHERE company_id = $1 ORDER BY system_id LIMIT 200`, [companyId]);
   return rows.map(mapRow);
@@ -125,12 +138,13 @@ export async function listRegister(ctx: PluginContext, companyId: string): Promi
  * Makes the company's register match the docs file: rows are added, changed (when the file's version differs) and removed. Safe to run
  * as often as you like. Returns how many rows it wrote.
  */
-export async function seedRegister(ctx: PluginContext, companyId: string, doc: RegisterDoc = REGISTER): Promise<number> {
+export async function seedRegister(ctx: PluginContext, companyId: string, given?: RegisterDoc): Promise<number> {
+  const doc = given ?? (await registerFor(ctx, companyId));
   const have = new Map((await listRegister(ctx, companyId)).map((row) => [row.id, row]));
   let written = 0;
   for (const row of doc.rows) {
     const current = have.get(row.id);
-    if (current && current.docVersion === doc.version && current.sensitiveClients === row.sensitiveClients && current.region === row.region) continue;
+    if (current && current.docVersion === doc.version && sameRow(current, row)) continue;
     await ctx.db.execute(
       `INSERT INTO ${table(ctx, "processing_register")} (company_id, system_id, name, role, purpose, data_classes, region, retention, agreement, safeguards, sensitive_clients, owner_action, doc_version, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, now())

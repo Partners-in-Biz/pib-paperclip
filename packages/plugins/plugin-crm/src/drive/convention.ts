@@ -3,7 +3,38 @@ import { type DriveEntityType, type EnsureBody } from "./broker.js";
 
 export type DriveBranch = "client" | "product" | "book" | "marketing" | "company";
 
-export const DRIVE_SUBFOLDERS = ["01 Briefs", "02 Assets", "03 Deliverables", "04 Reports", "05 Evidence", "99 Archive"] as const;
+/**
+ * The sub-folders of a client's folder: the pattern already in the Shared Drive (`02 Partners in Biz/Clients/<Company (Contact)>`,
+ * DRIVE-SAVING-RULES.md). A client has ONE folder, shared by all of its projects: there is no per-project folder level.
+ * Nested names ("Assets/Images") are paths below the folder.
+ */
+export const CLIENT_SUBFOLDERS = ["Assets/Images", "Assets/Video", "Assets/Brand", "Assets/Social", "Deliverables", "Contracts & Quotes", "Meetings & Notes", "Shared with client"] as const;
+
+/** The sub-folders of a product folder (`02 Partners in Biz/Products/<Product>`). */
+export const PRODUCT_SUBFOLDERS = ["Brand", "Design", "Marketing assets/Images", "Marketing assets/Video", "App store", "Shared externally"] as const;
+
+/** Every sub-folder name a save may ask for (the tool schema enum and the validation). Client names first: that is also the display order. */
+export const DRIVE_SUBFOLDERS = [...CLIENT_SUBFOLDERS, ...PRODUCT_SUBFOLDERS] as const;
+
+export type DriveSubfolder = (typeof DRIVE_SUBFOLDERS)[number];
+
+/**
+ * The numbered names the producer plugins (SEO, Social, Ads, Billing, Campaigns, Cockpit, CRM reports) still send in their
+ * `drive.save-requested` events. They are translated to the drive's own names until the producers are migrated.
+ * "99 Archive" has no alias: it stays invalid_subfolder.
+ */
+export const LEGACY_SUBFOLDER_ALIASES: Readonly<Record<string, DriveSubfolder>> = {
+  "01 Briefs": "Meetings & Notes",
+  "02 Assets": "Assets/Social",
+  "03 Deliverables": "Deliverables",
+  "04 Reports": "Deliverables",
+  "05 Evidence": "Meetings & Notes",
+};
+
+/** The drive's own name for a requested sub-folder: a legacy numbered name is translated, anything else is returned as given. */
+export function translateSubfolder(name: string): string {
+  return Object.prototype.hasOwnProperty.call(LEGACY_SUBFOLDER_ALIASES, name) ? LEGACY_SUBFOLDER_ALIASES[name]! : name;
+}
 
 export interface DriveFacts {
   entityType: DriveEntityType;
@@ -32,6 +63,21 @@ export function companyFolderName(companyName: string, contactName?: string): st
   return contactName ? `${cleaned} (${cleanFolderName(contactName)})` : cleaned;
 }
 
+/** A client project (client branch with a company link): its folder IS the company's folder. */
+function isClientProject(facts: DriveFacts): boolean {
+  return facts.entityType !== "crm_company" && !!facts.companyEntityId && !!facts.companyName && (facts.branch ?? "client") === "client";
+}
+
+/**
+ * The registry entity whose Drive folder a project saves into. A client project has no folder of its own: it uses the company's,
+ * so every project of one client shares it. Every other project (product, book, marketing, company, no client) has its own.
+ * `planFolders` plans exactly this folder as its last step.
+ */
+export function folderTarget(facts: DriveFacts): { entityType: DriveEntityType; entityId: string } {
+  if (isClientProject(facts)) return { entityType: "crm_company", entityId: facts.companyEntityId! };
+  return { entityType: facts.entityType, entityId: facts.entityId };
+}
+
 export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: string): FolderPlan {
   const branch = facts.branch ?? "client";
   const steps: Array<{
@@ -44,18 +90,11 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
   }> = [];
 
   if (facts.entityType === "crm_company") {
-    // Company folder (client branch only)
-    steps.push({ entity_type: "crm_company", entity_id: facts.entityId, name: companyFolderName(facts.name, facts.contactName) });
-  } else if (facts.companyEntityId && facts.companyName && branch === "client") {
-    // Client branch: company + project
-    steps.push({ entity_type: "crm_company", entity_id: facts.companyEntityId, name: companyFolderName(facts.companyName, facts.contactName) });
-    steps.push({
-      entity_type: "project",
-      entity_id: facts.entityId,
-      name: cleanFolderName(facts.name),
-      parent_entity_id: facts.companyEntityId,
-      subfolders: [...DRIVE_SUBFOLDERS],
-    });
+    // A client's folder, asked for by the company itself
+    steps.push({ entity_type: "crm_company", entity_id: facts.entityId, name: companyFolderName(facts.name, facts.contactName), subfolders: [...CLIENT_SUBFOLDERS] });
+  } else if (isClientProject(facts)) {
+    // Client branch: ONE step, the company's folder. The project's folder is the company's (no per-project level).
+    steps.push({ entity_type: "crm_company", entity_id: facts.companyEntityId!, name: companyFolderName(facts.companyName!, facts.contactName), subfolders: [...CLIENT_SUBFOLDERS] });
   } else if (branch === "product") {
     // Product branch: root -> project
     steps.push({
@@ -69,7 +108,7 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
       name: cleanFolderName(facts.name),
       parent_entity_id: "root:products",
       parent_entity_type: "root",
-      subfolders: [...DRIVE_SUBFOLDERS],
+      subfolders: [...PRODUCT_SUBFOLDERS],
     });
   } else if (branch === "book") {
     // Book branch: root -> project
@@ -84,7 +123,6 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
       name: cleanFolderName(facts.name),
       parent_entity_id: "root:books",
       parent_entity_type: "root",
-      subfolders: [...DRIVE_SUBFOLDERS],
     });
   } else if (branch === "company") {
     // Company branch: root -> project (named area)
@@ -99,7 +137,6 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
       name: cleanFolderName(facts.name),
       parent_entity_id: "root:company",
       parent_entity_type: "root",
-      subfolders: [...DRIVE_SUBFOLDERS],
     });
   } else if (branch === "marketing") {
     // Marketing branch: root -> scope -> campaign
@@ -123,15 +160,14 @@ export function planFolders(facts: DriveFacts, siblings: Sibling[], runId?: stri
       name: cleanFolderName(facts.name),
       parent_entity_id: `root:marketing:${scopeKey}`,
       parent_entity_type: "root",
-      subfolders: [...DRIVE_SUBFOLDERS],
     });
   } else {
-    // Fallback for client branch without company link
+    // Fallback for client branch without company link (Own projects): the client pattern
     steps.push({
       entity_type: "project",
       entity_id: facts.entityId,
       name: cleanFolderName(facts.name),
-      subfolders: [...DRIVE_SUBFOLDERS],
+      subfolders: [...CLIENT_SUBFOLDERS],
     });
   }
 

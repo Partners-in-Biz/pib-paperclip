@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
+import { DRIVE_ID, KEY_JSON, fakeGoogle } from "./support/fake-google-drive.js";
 
 // Mock the drive/tools module before importing
 vi.mock("../src/drive/tools.js", async (importOriginal) => {
@@ -52,9 +54,9 @@ function seedStore(): Store {
   return {};
 }
 
-async function boot() {
+async function boot(config: Record<string, unknown> = {}) {
   const store = seedStore();
-  const harness = createTestHarness({ manifest, config: { timezone: "Africa/Johannesburg" } });
+  const harness = createTestHarness({ manifest, config: { timezone: "Africa/Johannesburg", ...config } });
   harness.seed({ companies: [{ id: HOST_COMPANY, issuePrefix: "PIB", name: "PiB" } as never] });
   (harness.ctx as unknown as { db: ReturnType<typeof fakeDb> }).db = fakeDb(store);
   await plugin.definition.setup(harness.ctx);
@@ -65,6 +67,8 @@ describe("drive-folder data handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it("happy path with both companyId and crmCompanyId => calls createBrokerForCompany and resolve with correct params", async () => {
     const { harness } = await boot();
@@ -214,5 +218,58 @@ describe("drive-folder data handler", () => {
     );
 
     expect(result.folder?.name).toBe("SingleFolder");
+  });
+});
+
+describe("drive-folder data handler on the real native broker (only Google is faked)", () => {
+  const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
+  const FOLDER = "application/vnd.google-apps.folder";
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    clearServiceAccountTokenCache();
+    // Run the genuine createBrokerForCompany inside the handler instead of the stub above.
+    const actual = await vi.importActual<typeof import("../src/drive/tools.js")>("../src/drive/tools.js");
+    const { createBrokerForCompany } = await import("../src/drive/tools.js");
+    (createBrokerForCompany as any).mockImplementation(actual.createBrokerForCompany);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  const handler = (harness: Awaited<ReturnType<typeof boot>>["harness"]) =>
+    harness.getData<{ folder: { name: string; url: string } | null }>("drive-folder", { companyId: HOST_COMPANY, crmCompanyId: CRM_COMPANY });
+
+  it("returns the company folder Drive holds for the CRM company: its name and its Drive link", async () => {
+    const google = fakeGoogle();
+    google.files.push({ id: "cf1", name: "Acme (John Doe)", mimeType: FOLDER, parents: [DRIVE_ID], description: "Acme (John Doe)", appProperties: { pibEntityType: "crm_company", pibEntityId: CRM_COMPANY } });
+    google.files.push({ id: "cf2", name: "Other (Someone)", mimeType: FOLDER, parents: [DRIVE_ID], description: "Other (Someone)", appProperties: { pibEntityType: "crm_company", pibEntityId: "other" } });
+    vi.stubGlobal("fetch", google.fetchFn);
+    const { harness } = await boot(NATIVE);
+
+    expect(await handler(harness)).toEqual({ folder: { name: "Acme (John Doe)", url: "https://drive.google.com/drive/folders/cf1" } });
+    // Read-only: it looked the folder up and created nothing
+    expect(google.calls.every((c) => c.startsWith("GET"))).toBe(true);
+    expect(google.files).toHaveLength(2);
+  });
+
+  it("a company with no folder yet is {folder: null}, and the handler never creates one", async () => {
+    const google = fakeGoogle();
+    vi.stubGlobal("fetch", google.fetchFn);
+    const { harness } = await boot(NATIVE);
+
+    expect(await handler(harness)).toEqual({ folder: null });
+    expect(google.files).toHaveLength(0);
+  });
+
+  it("an unconfigured Drive (no key, or no Shared Drive) never calls Google, and Google refusing the service account: both are {folder: null}", async () => {
+    const unconfigured = fakeGoogle();
+    vi.stubGlobal("fetch", unconfigured.fetchFn);
+    expect(await handler((await boot({})).harness)).toEqual({ folder: null });
+    expect(await handler((await boot({ driveServiceAccountJson: KEY_JSON })).harness)).toEqual({ folder: null });
+    expect(unconfigured.calls).toHaveLength(0);
+
+    clearServiceAccountTokenCache();
+    vi.stubGlobal("fetch", fakeGoogle({ filesStatus: 403 }).fetchFn);
+    expect(await handler((await boot(NATIVE)).harness)).toEqual({ folder: null });
   });
 });

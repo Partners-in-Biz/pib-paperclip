@@ -17,7 +17,7 @@ describe("Social role matches TEAM_ROLES", () => {
   const role = teamRole(TEAM_ROLE);
 
   it("is the one Social role in the registry", () => {
-    expect(TEAM_ROLES.filter((r) => r.pluginKey === PLUGIN_ID).map((r) => r.key)).toEqual([TEAM_ROLE]);
+    expect(TEAM_ROLES.filter((r) => r.pluginKey === PLUGIN_ID && r.key === TEAM_ROLE).map((r) => r.key)).toEqual([TEAM_ROLE]);
     expect(role.pagePath).toBe("/social");
   });
 

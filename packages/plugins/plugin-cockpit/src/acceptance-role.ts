@@ -29,7 +29,7 @@ export const ACCEPTANCE_RUN_PROFILE: RunProfile = { model: CLAUDE_SONNET_MODEL, 
 export const ACCEPTANCE_CAPABILITIES =
   "Uses the product the way a customer would, on the canary client only: works the scripted journeys (lead captured and qualified, quote to invoice, email sequence, social draft, SEO sprint, client report, document sent for signature, site visit counter) with the real plugin tools in draft and dry-run modes, attaches evidence and files a pass or fail report. A failure opens an issue for the role that owns it.";
 
-export const ACCEPTANCE_INSTRUCTIONS = `# Acceptance (Acceptance tester), Partners in Biz
+export const ACCEPTANCE_INSTRUCTIONS = `# Acceptance (Acceptance tester)
 
 You use the product the way a customer would, so a release that passes its unit tests but does not work is found before a client finds it.
 

@@ -1,6 +1,6 @@
 # Paid ads
 
-Paperclip plugin `partnersinbiz.ads`. Version 0.3.5.
+Paperclip plugin `partnersinbiz.ads`. Version 0.3.12.
 
 Reads Meta and Google Ads performance into one picture for PiB's own ads and for each client's, keeps monthly budget caps with pacing, raises anomaly alerts, and turns every campaign or budget change into a **proposal with the numbers** that goes to the Reviewer, then a person (and the client, through the CRM, where the scope asks). It is the governed-spend module the audit asked for (Q1a-7, Q9-4, Q10-14), not a port of the old 91-route Ads manager.
 
@@ -52,7 +52,7 @@ Two facts checked against the platforms' docs on 2026-10-04: Google retired deve
 
 ## Jobs
 
-`sync-insights` (every 3 h at :11: read, then alerts and pause requests, per company with saved settings), `refresh-connections` (hourly: renew tokens, flag a sign-in that must be redone, resolve old alerts, link a hire), `setup-status` (hourly at :23: expire proposals, publish setup status and the Cockpit snapshot, sync the skill for every company).
+`sync-insights` (every 3 h at :11: read, then alerts and pause requests, per company with saved settings), `refresh-connections` (hourly: renew tokens, flag a sign-in that must be redone, resolve old alerts, link a hire), `sweep-caps` (hourly at :05: pause ACTIVE campaigns at/over lifetime or scope monthly cap using fresh insights, check for disapproved ads), `setup-status` (hourly at :23: expire proposals, publish setup status and the Cockpit snapshot, sync the skill for every company).
 
 Reading rules: every sync re-reads everything since the last **good** read plus the 3 days before it (platforms restate recent days), so an outage is backfilled and the month-to-date stays whole: after a 6-day gap a read covers 9 days. A first sync reads 30 days, or back to the start of the month if that is longer. A gap over 90 days reads 90 and is audited (`sync.gap_truncated`); the oldest days are then missing. A failed read, and a short one (an agent asking for `days: 1`, the look after a change), never count as the last good read. A page that holds more answers than the adapter follows (Meta 40 pages, Google 20) fails the read instead of passing a part off as the whole. A day we hold that the platform no longer returns is set to zero and the ledger records the drop, but only when the platform returned something for the window: an empty answer for every day never wipes real spend. The agent tool `sync-ad-account` reads at most 10 accounts per call; the job reads up to 40. A new sign-in takes over the accounts of an old one when it is the same person (Meta) or the old one needs signing in again (Google does not say who signed in); an account the new sign-in cannot see stays where it is. An agent can register accounts but cannot bring back one a person removed, and cannot move a scope to another currency while it has a cap (a person can; the cap is cleared and set again, because it was an amount in the old currency).
 
@@ -73,3 +73,7 @@ Kit: `MODULES.ads` and `PIB_PLUGINS.ads`; `TEAM_ROLES` entry `ads-manager` (see 
 ## Tests
 
 `pnpm test` (218 tests: pure maths, adapters against a scripted `fetch`, and the services on a real embedded Postgres with the host's SQL rules). Fixtures build secret-shaped values (token prefixes) at runtime or use obvious fakes; GitHub push protection rejects real-looking keys. The test world echoes every plugin issue update back as an `issue.updated` event by actor `plugin`, as the live host does. `pnpm typecheck && pnpm build`.
+
+## Uninstall or disable runbook
+
+Before uninstalling or disabling the plugin (its auto-pause stops with it), the ads agent should: (1) list every ACTIVE campaign with `list-ad-campaigns`; (2) pause each one on the platform by `propose-ad-change` kind `pause_campaign` → get approval → `execute-ad-change`, or directly on the platform UI; (3) verify with `list-ad-campaigns` that every one shows status `paused`, or check their status on the platform UI; (4) only then disable or uninstall. After reinstall, nothing is re-activated automatically: each campaign stays paused until a person resumes it.

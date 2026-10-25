@@ -9,6 +9,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { errorText } from "@partnersinbiz/pib-plugin-ui";
+import type { DriveBinding } from "../drive-checklist.js";
 import { MODULES, setupSummary, type ModuleKey, type SetupStatus, type SetupSummary } from "../kit-setup.js";
 import { effectiveModules, ORDERED_MODULES } from "../modules.js";
 import { memoryStatus, WIKI_PLUGIN, type WikiSnapshot } from "../memory.js";
@@ -19,12 +21,16 @@ import { fetchMemoryLive } from "./memory-client.js";
 
 export interface LoadResult {
   modules: Partial<Record<ModuleKey, boolean>> | null;
+  /** What the company bought; a module missing here is shown locked (older workers do not send it: nothing is locked). */
+  entitled?: Partial<Record<ModuleKey, boolean>>;
+  plan?: string | null;
   updatedAt: string | null;
   updatedBy: string | null;
   statuses: Record<string, { status: SetupStatus; receivedAt: string }>;
   finishIssueId: string | null;
   settingsSaved: boolean;
   installed: Record<string, { id: string; status?: string | null }> | null;
+  drive: DriveBinding | null;
   /** The one setup count from the stored statuses (older workers do not send it). */
   summary?: SetupSummary | null;
   /** Where the New company bootstrap stands (older workers do not send it). */
@@ -49,11 +55,12 @@ export interface ModuleView {
 /** Pure: pick the status to show for each module (team items link to Setup → Team). */
 export function resolveModuleViews(input: {
   modules: Partial<Record<ModuleKey, boolean>> | null;
+  entitled?: Partial<Record<ModuleKey, boolean>> | null;
   installed: Record<string, PluginRecordLite> | null;
   live: Record<string, LiveResult | undefined>;
   stored: LoadResult["statuses"];
 }): ModuleView[] {
-  const enabled = effectiveModules(input.modules);
+  const enabled = effectiveModules(input.modules, input.entitled);
   const views: ModuleView[] = [];
   for (const module of ORDERED_MODULES) {
     for (const pluginKey of MODULES[module].plugins as readonly string[]) {
@@ -214,7 +221,7 @@ export function useSetupData(companyId: string | null | undefined, options: { li
       setLoad(result);
       setLoading(false);
       if (wantLive) {
-        const enabled = effectiveModules(result.modules);
+        const enabled = effectiveModules(result.modules, result.entitled);
         const keys = ORDERED_MODULES.filter((module) => enabled[module])
           .flatMap((module) => [...MODULES[module].plugins] as string[])
           .filter((key) => !plugins || plugins[key]?.status === "ready");
@@ -222,7 +229,7 @@ export function useSetupData(companyId: string | null | undefined, options: { li
       }
     } catch (err) {
       if (mine !== token.current) return;
-      setError(err instanceof Error ? err.message : "Could not load setup");
+      setError(errorText(err));
       setLoading(false);
     }
   }, [companyId, loadAction, checkPlugins, wantLive]);
@@ -241,6 +248,6 @@ export function useSetupData(companyId: string | null | undefined, options: { li
     return result?.ok ? result.status : null;
   }, [companyId, checkPlugins]);
 
-  const views = load ? resolveModuleViews({ modules: load.modules, installed, live, stored: load.statuses }) : [];
+  const views = load ? resolveModuleViews({ modules: load.modules, entitled: load.entitled, installed, live, stored: load.statuses }) : [];
   return { loading, error, load, installed, views, checking, reload: () => reload(true), recheck };
 }

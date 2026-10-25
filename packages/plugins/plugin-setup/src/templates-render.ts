@@ -67,7 +67,11 @@ function introFor(template: AgentTemplate): string {
   return `${lead}\n\n${how}`;
 }
 
-export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null }): HireDraft {
+/**
+ * The hire task never carries the template's `notes`: they are maintainer documentation (shown in the New company screen), and a hire task
+ * is text a client company's agent reads. `ownerCompany` is kept in the input for callers but changes nothing in the task.
+ */
+export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null; ownerCompany?: boolean }): HireDraft {
   const adapterType = pickAdapter(template);
   const instructions = renderInstructions(template, input.vars);
   const config = templateConfig(template, adapterType);
@@ -134,7 +138,6 @@ export function renderHire(template: AgentTemplate, input: { vars: TemplateVars;
     "```json",
     JSON.stringify(payload, null, 2),
     "```",
-    ...(template.notes.length ? ["", "## Notes", "", ...template.notes.map((note) => `- ${note}`)] : []),
     ...(warnings.length ? ["", "## Check first", "", ...warnings.map((warning) => `- ${warning}`)] : []),
     "",
     "## Done when",

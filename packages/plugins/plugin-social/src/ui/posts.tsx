@@ -5,6 +5,7 @@ import { ApprovalPolicyCard, PostApproval } from "./approvals.js";
 import { Thumb } from "./composer.js";
 import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
+import { PostTarget } from "./target.js";
 import type { ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
 
 const FILTERS = [
@@ -35,10 +36,10 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
-        <Button type="button" onClick={onNew}>+ New post</Button>
+        {snapshot.canPost === false ? null : <Button type="button" onClick={onNew}>+ New post</Button>}
       </Toolbar>
       {rows.length === 0 ? (
-        <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={<Button type="button" onClick={onNew}>+ New post</Button>} />
+        <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={snapshot.canPost === false ? undefined : <Button type="button" onClick={onNew}>+ New post</Button>} />
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {rows.map((post) => (
@@ -55,6 +56,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
                 </Row>
                 <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
               </Row>
+              <PostTarget post={post} compact />
               <div style={{ fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{post.body}</div>
               <Row>
                 {post.destinations.map((d) => (
@@ -113,6 +115,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         <Muted>{snapshot.space === "me" ? "My Social" : post.clientName ?? "Own work"}</Muted>
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
+      <PostTarget post={post} />
       <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
       {post.media.length ? (
         <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind }} />)}</Row>

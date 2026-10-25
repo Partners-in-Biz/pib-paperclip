@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useHostLocation, useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
-import { moduleEnabled } from "@partnersinbiz/pib-plugin-kit/setup-client";
-import { BookOpen, ChartColumn, Landmark, LayoutDashboard, Page, Settings, Tabs, errorText, useIsNarrow, useUrlTab, type TabItem, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { BookOpen, ChartColumn, Landmark, LayoutDashboard, ModuleStateBanner, Page, Settings, Tabs, errorText, useIsNarrow, useUrlTab, type TabItem, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
@@ -12,7 +12,7 @@ import { CutoverTab } from "./cutover.js";
 import { JournalsTab } from "./journals.js";
 import { OverviewTab, type LoadResult } from "./overview.js";
 import { ReportsTab } from "./reports.js";
-import { Banner, NoticeAction, NoticeLine, SectionNav } from "./shared.js";
+import { NoticeAction, NoticeLine, SectionNav } from "./shared.js";
 import { VatTab } from "./vat.js";
 import { isView, resolveView, TAB_SECTIONS, TOP_TABS, VIEW_IDS, viewForTab, type TopTab, type View } from "./views.js";
 
@@ -39,15 +39,11 @@ function useModuleEnabled(companyId: string | null | undefined): boolean | null 
   return enabled;
 }
 
-function ModuleOff() {
+function ModuleOff({ companyId }: { companyId: string | null | undefined }) {
   const nav = useHostNavigation();
   return (
     <Page title="Accounting" description="Partners in Biz's books." accent="accounting">
-      <Banner tone="info">
-        <span>
-          This module is switched off for this company. Turn it on in <a {...nav.linkProps("/setup")} style={{ fontWeight: 600 }}>Setup</a>.
-        </span>
-      </Banner>
+      <ModuleStateBanner companyId={companyId} pluginKey={PLUGIN_ID} load={moduleState} setupLinkProps={nav.linkProps("/setup")} />
     </Page>
   );
 }
@@ -90,7 +86,7 @@ export function AccountingPage({ context }: PluginPageProps) {
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId, enabled]);
 
-  if (enabled === false) return <ModuleOff />;
+  if (enabled === false) return <ModuleOff companyId={context.companyId} />;
 
   const o = data?.overview;
   const openLines = o ? (o.bankLines.unreconciled ?? 0) + (o.bankLines.matching ?? 0) : 0;

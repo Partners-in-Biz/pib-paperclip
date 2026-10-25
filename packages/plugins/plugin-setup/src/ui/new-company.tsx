@@ -10,14 +10,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useHostContext, usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, CircleAlert, CircleCheck, CircleDot, Field, Hourglass, KeyRound, LoaderCircle, Modal, Package, Pill, Rocket, SectionCard, Select, Sparkles, breakAnywhere, errorText, tokens, tone, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 import { BOOTSTRAP_STEPS, matureCompanyWarning, stepLabel, type BootstrapOptions, type OwnerGrant, type PlannedStep, type RunStatus, type StepStatus } from "../bootstrap.js";
+import { driveChecklist, type DriveBinding } from "../drive-checklist.js";
 import { runClientSteps } from "../bootstrap-runner.js";
 import { hiringLine, type HiringPick } from "../hiring.js";
 import { effectiveModules } from "../modules.js";
 import { SETUP_PLUGIN, type ModuleKey, type SetupStatus } from "../kit-setup.js";
 import type { starterPackView, loadNewCompany } from "../new-company.js";
 import { runProfileText, assignableUser, type TeamAgent } from "../team.js";
-import { loadPack, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike, type TemplateStaffing } from "../templates.js";
-import { fetchCompanies, fetchCompanyInfo, fetchInstalledPlugins, savePluginConfig, type CompanyLite, type CompanyInfoLite, type PluginRecordLite } from "./api.js";
+import { isDefaultOn, loadPack, templateStaffing, type AgentLike, type AgentTemplate, type TemplateHireLike, type TemplateStaffing } from "../templates.js";
+import { fetchCompanies, fetchCompanyInfo, fetchHasRepository, fetchInstalledPlugins, savePluginConfig, type CompanyLite, type CompanyInfoLite, type PluginRecordLite } from "./api.js";
 import { agentContext, buildRunnerEnv } from "./bootstrap-client.js";
 import { Card, Md, type LinkPropsFor } from "./components.js";
 import type { SetupData } from "./data.js";
@@ -27,6 +28,121 @@ export type NewCompanyState = Awaited<ReturnType<typeof loadNewCompany>>;
 export type StarterPackView = Awaited<ReturnType<typeof starterPackView>>;
 
 const muted = { margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.5 } as const;
+
+// ---------------------------------------------------------------------------
+// Drive Checklist Component
+// ---------------------------------------------------------------------------
+
+function DriveChecklistCard({ drive, onBind, binding }: {
+  drive: DriveBinding | null;
+  onBind?: (driveId: string) => Promise<void>;
+  binding?: boolean;
+}) {
+  const items = driveChecklist(drive);
+  const [selected, setSelected] = useState("");
+  const [binding_, setBinding] = useState(false);
+  const candidates = drive?.candidates ?? [];
+
+  const handleBind = async () => {
+    if (!selected || !onBind) return;
+    setBinding(true);
+    try {
+      await onBind(selected);
+    } finally {
+      setBinding(false);
+      setSelected("");
+    }
+  };
+
+  const showPicker = !drive?.bound && candidates.length > 1 && onBind;
+  const email = drive?.serviceAccountEmail;
+
+  return (
+    <SectionCard title="Google Drive" subtitle="Connect and share the company's Shared Drive with the service account." accent="setup">
+      <div style={{ display: "grid", gap: 12, boxSizing: "border-box", maxWidth: "100%" }}>
+        {items.map((item) => (
+          <div key={item.key} style={{ display: "grid", gap: 4, boxSizing: "border-box", maxWidth: "100%" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxSizing: "border-box", maxWidth: "100%" }}>
+              <Pill tone={item.status === "done" ? "ok" : "bad"} icon={item.status === "done" ? CircleCheck : CircleAlert} size="sm">
+                {item.status === "done" ? "Done" : "Pending"}
+              </Pill>
+              <span style={{ fontSize: 13, fontWeight: 500, minWidth: 0, flex: 1, boxSizing: "border-box" }}>{item.label}</span>
+            </div>
+            {item.detail && item.key === "drive-member" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap", boxSizing: "border-box", maxWidth: "100%" }}>
+                <span
+                  style={{
+                    fontSize: 13,
+                    minWidth: 0,
+                    flex: 1,
+                    boxSizing: "border-box",
+                    maxWidth: "100%",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-all",
+                    color: tokens.muted,
+                  }}
+                >
+                  {item.detail}
+                </span>
+                <button
+                  type="button"
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 12,
+                    background: tokens.border,
+                    border: "none",
+                    borderRadius: 4,
+                    cursor: "pointer",
+                    color: tokens.primary,
+                    flexShrink: 0,
+                    boxSizing: "border-box",
+                    whiteSpace: "nowrap",
+                  }}
+                  onClick={() => {
+                    try {
+                      if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(item.detail!).catch(() => {});
+                      }
+                    } catch {
+                      // Clipboard API missing or blocked; do nothing.
+                    }
+                  }}
+                  title={item.detail}
+                >
+                  Copy
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {showPicker && (
+          <div style={{ display: "grid", gap: 8, padding: "8px 0", borderTop: `1px solid ${tokens.border}`, boxSizing: "border-box", maxWidth: "100%" }}>
+            <Field label="Select a Shared Drive">
+              <Select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={binding_ || binding} style={{ maxWidth: "100%", minWidth: 0, width: "100%", boxSizing: "border-box", textOverflow: "ellipsis" }}>
+                <option value="">—</option>
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id} title={c.name}>
+                    {c.name.length > 50 ? `${c.name.slice(0, 47)}…` : c.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleBind}
+              disabled={!selected || binding_ || binding}
+              style={{ justifySelf: "start" }}
+            >
+              {binding_ || binding ? "Binding…" : "Use this drive"}
+            </Button>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Pieces
@@ -152,7 +268,7 @@ export function StarterPackCard({ pack, selected, onSelect, onApprove, busy, can
         {pack.importedAt ? <Pill size="sm" tone="ok">Seeded {pack.importedAt.slice(0, 10)}</Pill> : null}
       </div>
       <p style={muted}>
-        {pack.facts.length} company-wide lessons about how the platform and its tools behave, taken from the live company's memory with every client, price, person and issue number left out. A new company's memory starts empty; this pack is off until the owner reads it and approves this exact version.
+        {pack.facts.length} company-wide lessons about how the platform and its tools behave, taken from the live company's memory with every client, price, person and issue number left out. It is on for every new company, but only an exact version the owner approved is seeded; a changed pack waits for a new approval.
       </p>
       <details>
         <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Read the {pack.facts.length} facts</summary>
@@ -187,6 +303,8 @@ export interface NewCompanyViewProps {
   hiring: HiringPick | null;
   agents: readonly AgentLike[] | null;
   options: BootstrapOptions;
+  /** The company has a project with a repository: the `client` profile hires the dev team only then. */
+  hasRepository?: boolean;
   onOptions: (next: BootstrapOptions) => void;
   sources: CompanyLite[] | null;
   running: boolean;
@@ -205,6 +323,9 @@ export interface NewCompanyViewProps {
   onSaveSetup?: () => void;
   /** Shown before a first run on a company that already works (see `matureCompanyWarning`). */
   matureWarning?: string | null;
+  drive: DriveBinding | null;
+  onDriveBind?: (driveId: string) => Promise<void>;
+  driveBinding?: boolean;
 }
 
 const RUN_TONE: Record<RunStatus, ToneInput> = { created: "neutral", running: "info", partial: "warn", complete: "ok" };
@@ -214,7 +335,7 @@ const RUN_LABEL: Record<RunStatus, string> = { created: "Not run yet", running: 
 export function NewCompanyView(props: NewCompanyViewProps) {
   const pack = loadPack();
   const { state, options } = props;
-  const selected = useMemo(() => new Set(options.templates ?? pack.templates.filter((template) => template.defaultOn).map((template) => template.key)), [options.templates]);
+  const selected = useMemo(() => new Set(options.templates ?? pack.templates.filter((template) => isDefaultOn(template, options.hostingProfile ?? "pib", props.hasRepository ?? false)).map((template) => template.key)), [options.templates, options.hostingProfile, props.hasRepository]);
   const rows = Object.fromEntries(pack.templates.map((template) => [template.key, templateRowState(template, { agents: props.agents, hires: state?.hires ?? [], hiring: props.hiring })]));
   const status: RunStatus = state?.status ?? "created";
   return (
@@ -261,12 +382,20 @@ export function NewCompanyView(props: NewCompanyViewProps) {
               {(props.sources ?? []).map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
             </Select>
           </Field>
+          <Field label="Hosting profile">
+            <Select value={options.hostingProfile ?? "pib"} onChange={(event) => props.onOptions({ ...options, hostingProfile: event.target.value === "client" ? "client" : "pib" })}>
+              <option value="pib">PiB's own company: keeps today's lanes and the full team</option>
+              <option value="client">Client: its own Anthropic key (company secret ANTHROPIC_API_KEY); the CEO and the required roles, the dev team only with a repository</option>
+            </Select>
+          </Field>
           <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 13, alignSelf: "end", minHeight: 36 }}>
             <input type="checkbox" checked={options.includeOptionalRoles === true} onChange={(event) => props.onOptions({ ...options, includeOptionalRoles: event.target.checked })} />
             Also hire the optional roles (Reviewer, Payroll Clerk, sales roles)
           </label>
         </div>
       </SectionCard>
+
+      <DriveChecklistCard drive={props.drive} onBind={props.onDriveBind} binding={props.driveBinding} />
 
       <SectionCard title="Steps" subtitle="What the run does, in order. A step that failed shows why and can be tried again on its own." icon={Sparkles} accent="setup">
         <div style={{ display: "grid", gap: 8 }}>
@@ -296,7 +425,7 @@ export function NewCompanyView(props: NewCompanyViewProps) {
         />
       </SectionCard>
 
-      {state ? <StarterPackCard pack={state.starterPack} selected={options.starterPack === true} onSelect={(on) => props.onOptions({ ...options, starterPack: on })} onApprove={props.onApprove} busy={props.approving} canApprove={props.canApprove} /> : null}
+      {state ? <StarterPackCard pack={state.starterPack} selected={options.starterPack !== false} onSelect={(on) => props.onOptions({ ...options, starterPack: on })} onApprove={props.onApprove} busy={props.approving} canApprove={props.canApprove} /> : null}
     </div>
   );
 }
@@ -320,10 +449,13 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
   const templateDraft = usePluginAction("setup.template-draft");
   const starterImport = usePluginAction("setup.starter-pack-import");
   const approve = usePluginAction("setup.approve-starter-pack");
+  const driveBind = usePluginAction("setup.drive-bind");
   const [state, setState] = useState<NewCompanyState | null>(null);
+  const [driveBinding, setDriveBinding] = useState(false);
   const [options, setOptions] = useState<BootstrapOptions>({});
   const [sources, setSources] = useState<CompanyLite[] | null>(null);
   const [info, setInfo] = useState<CompanyInfoLite | null>(null);
+  const [hasRepository, setHasRepository] = useState(false);
   const [running, setRunning] = useState(false);
   const [busyStep, setBusyStep] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
@@ -339,15 +471,16 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
     void reload().catch((error: unknown) => setMessage(errorText(error)));
     void fetchCompanies().then((list) => setSources(list.filter((company) => company.id !== companyId))).catch(() => setSources([]));
     void fetchCompanyInfo(companyId).then(setInfo);
+    void fetchHasRepository(companyId).then(setHasRepository);
   }, [companyId]);
 
   const me = assignableUser(host.userId);
-  const modules = effectiveModules(data.load?.modules ?? null) as Record<ModuleKey, boolean>;
+  const modules = effectiveModules(data.load?.modules ?? null, data.load?.entitled) as Record<ModuleKey, boolean>;
   const grantsNow = state?.run?.grants ?? [];
   const agentLikes: AgentLike[] | null = team.agents ? team.agents.map(toAgentLike) : null;
   const matureWarning = matureCompanyWarning({ agents: agentLikes, runStatus: state?.status ?? "created" });
 
-  function envFor(fresh: NewCompanyState, runOptions: BootstrapOptions, installed: Record<string, PluginRecordLite> | null) {
+  function envFor(fresh: NewCompanyState, runOptions: BootstrapOptions, installed: Record<string, PluginRecordLite> | null, repository = hasRepository) {
     const statuses: Record<string, SetupStatus | null | undefined> = Object.fromEntries(data.views.filter((view) => view.status).map((view) => [view.pluginKey, view.status]));
     return buildRunnerEnv({
       companyId,
@@ -359,6 +492,7 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
       installed,
       options: { ...runOptions, ...(team.hiring?.agent ? { hiringAgentId: team.hiring.agent.id } : {}) },
       ownerCompany: fresh.ownerCompany,
+      hasRepository: repository,
       requireApproval: info?.requireApproval ?? null,
       statuses,
       starter: { approved: fresh.starterPack.approved, importedAt: fresh.starterPack.importedAt },
@@ -382,7 +516,10 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
       const report = installed ? Object.fromEntries(Object.values(installed).map((p) => [p.pluginKey, { id: p.id, status: p.status }])) : undefined;
       if (!only) await bootstrap({ options, ...(report ? { installed: report } : {}) });
       const fresh = (await loadState({})) as NewCompanyState;
-      const results = await runClientSteps(envFor(fresh, options, installed), only as never);
+      // Read again for every run: a repository added since the page opened must count.
+      const repository = await fetchHasRepository(companyId);
+      setHasRepository(repository);
+      const results = await runClientSteps(envFor(fresh, options, installed, repository), only as never);
       await reload();
       await onChanged();
       const failed = results.filter((entry) => entry.outcome.status === "failed").length;
@@ -434,6 +571,19 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
     }
   }
 
+  async function handleDriveBind(driveId: string) {
+    setDriveBinding(true);
+    try {
+      await driveBind({ sharedDriveId: driveId });
+      await reload();
+      setMessage("Drive binding request sent. Check the CRM to complete the setup.");
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setDriveBinding(false);
+    }
+  }
+
   return (
     <>
       <NewCompanyView
@@ -442,6 +592,7 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
         hiring={team.hiring}
         agents={agentLikes}
         options={options}
+        hasRepository={hasRepository}
         onOptions={setOptions}
         sources={sources}
         running={running}
@@ -459,6 +610,9 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
         previewBusy={previewBusy}
         canApprove={!!me}
         onSaveSetup={() => void saveSetupSettings()}
+        drive={data.load?.drive ?? null}
+        onDriveBind={handleDriveBind}
+        driveBinding={driveBinding}
       />
       <Modal
         open={confirmRun}

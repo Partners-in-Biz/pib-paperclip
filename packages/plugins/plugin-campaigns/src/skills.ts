@@ -1,10 +1,13 @@
 import type { PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
-import { CHANNELS_REFERENCE, PRIVACY_REFERENCE, SENDERS_REFERENCE } from "./skill-references.js";
+import { CHANNELS_REFERENCE, GROWTH_LAB_REFERENCE, PRIVACY_REFERENCE, SENDERS_REFERENCE } from "./skill-references.js";
 
 export const CAMPAIGN_SKILL = `# Campaigns
 
-Themed email, SMS and WhatsApp programs for PiB's own marketing or a client's, with the \`partnersinbiz.campaigns\` tools. You build and run them; a person approves every launch.
+Themed email, SMS and WhatsApp programs for your company's own marketing or a client's, with the \`partnersinbiz.campaigns\` tools. You build and run them; a person approves every launch.
+
+## Learning
+The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbook-change\`, \`decide-playbook-change\`, \`list-experiments\`, \`propose-experiment\`, \`approve-experiment\`, \`reject-experiment\`) keep a playbook per scope and test one change at a time on A/B steps. Read \`get-playbook\` before you write a campaign. Details: references/growth-lab.md.
 
 ## Scope
 - Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project.
@@ -20,13 +23,13 @@ Themed email, SMS and WhatsApp programs for PiB's own marketing or a client's, w
 - \`delivery\`: \`issue\` (a task per step, you send it), \`email\` (the Mailbox sends each email) or \`auto\` (every step goes out by itself on its channel; SMS and WhatsApp need it).
 
 ## Who it goes out as
-- Own marketing may use the Mailbox's default account. A **client's** campaign needs its own sender: \`set-sender-identity\` with \`client\`, \`fromAddress\` (a Gmail mailbox the client connected, or a send-only address on the client's sending domain: \`list-mailboxes\` shows both), \`fromName\`, \`replyTo\`, and \`smsFrom\` / \`whatsappFrom\` for texts. Without it the campaign cannot be approved or sent: it never goes out from PiB's Gmail or number. \`list-sender-identities\` shows what is set; \`remove-sender-identity\` removes one.
+- Own marketing may use the Mailbox's default account. A **client's** campaign needs its own sender: \`set-sender-identity\` with \`client\`, \`fromAddress\` (a Gmail mailbox the client connected, or a send-only address on the client's sending domain: \`list-mailboxes\` shows both), \`fromName\`, \`replyTo\`, and \`smsFrom\` / \`whatsappFrom\` for texts. Without it the campaign cannot be approved or sent: it never goes out from the company's own Gmail or number. \`list-sender-identities\` shows what is set; \`remove-sender-identity\` removes one.
 - The approver sees the real sender on the approval ("Sent as"). Details: references/senders-and-unsubscribe.md.
 
 ## Audience
 - \`audienceMode\`: \`tags\` (contacts with any of \`audienceTags\`), \`client_contacts\` (the people at the client company, narrowed by tags), \`client_contact\` (the client contact alone).
 - Tags mode with no tags means **all CRM contacts**. It launches only when the approval says "All contacts (N)" and a person approves. Prefer tags.
-- Unsubscribed and bounced addresses are never enrolled, emailed or given a step issue. The do-not-email list is **per sender**: someone who unsubscribed from a client's list can still get PiB's own or another client's mail; a hard bounce stops every sender.
+- Unsubscribed and bounced addresses are never enrolled, emailed or given a step issue. The do-not-email list is **per sender**: someone who unsubscribed from a client's list can still get the company's own or another client's mail; a hard bounce stops every sender.
 - \`enroll-contact\` adds one contact: only someone who fits the approved audience and agreed to hear from us.
 
 ## Writing the emails (POPIA)
@@ -79,7 +82,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - A/B: \`suggest-ab-winner\` (20 sends per variant, else inconclusive). A person picks the winner: ask with the suggestion, then \`declare-ab-winner\`.
 
 ## Never
-- Never mark an approval issue done, email or text a suppressed address, text anyone without a recorded opt-in, send a client's message as PiB, launch to all contacts without the approval saying so, invent numbers, or copy mailbox credentials or the Twilio token into an issue.
+- Never mark an approval issue done, email or text a suppressed address, text anyone without a recorded opt-in, send a client's message from the company's own account, launch to all contacts without the approval saying so, invent numbers, or copy mailbox credentials or the Twilio token into an issue.
 `;
 
 export const SKILLS: PluginManagedSkillDeclaration[] = [
@@ -87,15 +90,16 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     skillKey: "campaigns",
     displayName: "Campaigns",
     slug: "pib-campaigns",
-    description: "Build, get approved and run email campaigns for PiB or a client, within POPIA.",
+    description: "Build, get approved and run email campaigns for your company or a client, within POPIA.",
     markdown: withFrontmatter(
-      { name: "pib-campaigns", description: "Build, get approved and run themed email, SMS and WhatsApp campaigns for PiB or a client: sender identity, audience, POPIA-safe copy, opt-ins, launch on approval, step issues, replies and the per-sender do-not-contact lists." },
+      { name: "pib-campaigns", description: "Build, get approved and run themed email, SMS and WhatsApp campaigns for your company or a client: sender identity, audience, POPIA-safe copy, opt-ins, launch on approval, step issues, replies and the per-sender do-not-contact lists." },
       CAMPAIGN_SKILL,
     ),
     files: [
       { path: "references/channels.md", content: CHANNELS_REFERENCE },
       { path: "references/senders-and-unsubscribe.md", content: SENDERS_REFERENCE },
       { path: "references/privacy.md", content: PRIVACY_REFERENCE },
+      { path: "references/growth-lab.md", content: GROWTH_LAB_REFERENCE },
     ],
   },
 ];

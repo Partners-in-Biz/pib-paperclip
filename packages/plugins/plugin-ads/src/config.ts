@@ -279,3 +279,4 @@ export async function loadAdsConfig(ctx: PluginContext, companyId: string): Prom
 export function enabledPlatforms(config: AdsConfig): Array<AdPlatform | "mock"> {
   return ([...AD_PLATFORMS, "mock"] as const).filter((p) => config.platform(p).enabled);
 }
+

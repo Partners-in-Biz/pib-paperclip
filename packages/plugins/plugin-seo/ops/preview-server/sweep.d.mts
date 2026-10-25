@@ -9,3 +9,4 @@ export function makeProfile(root: string): Promise<{ dir: string; cleanup: () =>
 export function chromiumEnv(dir: string, base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export function domArgs(dir: string, url: string): string[];
 export function shotArgs(dir: string, url: string, file: string, mobile?: boolean): string[];
+export function findChrome(root: string, explicit?: string): Promise<string>;

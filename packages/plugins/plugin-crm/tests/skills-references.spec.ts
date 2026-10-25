@@ -80,7 +80,7 @@ describe("the CRM skills and their references", () => {
     expect(LEAD_CAPTURE_REFERENCE).toMatch(/Never edit the live site by hand/);
     expect(CANARY_REFERENCE).toMatch(/draft or a dry run/);
     expect(CANARY_REFERENCE).toMatch(/@canary\.invalid/);
-    expect(NEW_CLIENT_REFERENCE).toMatch(/main only changes with Peet's approval/);
+    expect(NEW_CLIENT_REFERENCE).toMatch(/main only changes with the owner's approval/);
     expect(NEW_CLIENT_REFERENCE).toMatch(/never one per item/);
     // E-sign now exists, and what it is not is said in the guide: a basic electronic signature, never an advanced one.
     expect(records.markdown).not.toMatch(/no e-sign/i);
@@ -216,7 +216,8 @@ describe("the guidance for documents to sign, attribution and site counters", ()
 
   it("the Drive reference carries the tool order and the no-Shared-Drive-ID rule", () => {
     expect(DRIVE_REFERENCE).toMatch(/drive_folder_resolve[\s\S]*drive_folder_ensure[\s\S]*drive_file_save/);
-    expect(DRIVE_REFERENCE).toMatch(/driveBrokerToken/);
+    expect(DRIVE_REFERENCE).toMatch(/driveServiceAccountJson/);
+    expect(DRIVE_REFERENCE).not.toMatch(/driveBrokerToken/);
     expect(DRIVE_REFERENCE).toMatch(/drive\.sharedDriveId/);
     expect(DRIVE_REFERENCE).toMatch(/drive_not_bound[^\n]*once[^\n]*stop/);
     expect(records.markdown).toMatch(/references\/drive\.md/);

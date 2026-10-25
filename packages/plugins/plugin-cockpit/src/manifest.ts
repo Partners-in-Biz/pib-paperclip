@@ -76,7 +76,7 @@ const instanceConfigSchema: JsonSchema = {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
       description:
-        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts empty and you or the Operator record only their own credentials.",
+        "Tick this ONLY on Partners in Biz's own company. It fills the credentials register with PiB's own 22 starting entries (the GitHub, Cloudflare, Resend and Claude tokens, the server keys and the backup key: names and where they live, never a value) and warns about the exposed ones. Leave it off for every client company: their register then starts with only generic rows for the modules they use (no Partners in Biz entries), and you or the Operator record their own credentials.",
       default: false,
     },
     credentialChecks: {
@@ -152,6 +152,19 @@ const instanceConfigSchema: JsonSchema = {
           title: "Enable edge watch",
           description: "When enabled, posts comments on issues when a new blocker edge is created.",
           default: true,
+        },
+      },
+    },
+    riskTierClose: {
+      type: "object",
+      title: "Risk-tier auto-close for low-tier issues (optional)",
+      description: "Automatically closes LOW-tier in_review issues when Code Reviewer and Dogfood Tester both give PASS verdicts.",
+      properties: {
+        enabled: {
+          type: "boolean",
+          title: "Enable risk-tier auto-close",
+          description: "When enabled, closes LOW-tier in_review issues with required PASS verdicts from role agents.",
+          default: false,
         },
       },
     },
@@ -272,6 +285,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Overnight push digest",
       description: "Every night at 04:00 UTC (06:00 SAST): for each company, if any push_log rows with status 'deferred' exist created since 22:00 SAST, sends one digest push titled \"N items waited overnight\" with url /cockpit, then marks those rows 'collapsed'. Idempotent.",
       schedule: "0 4 * * *",
+    },
+    {
+      jobKey: JOBS.askDeadlines,
+      displayName: "Ask deadline sweep",
+      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
+      schedule: "*/15 * * * *",
     },
   ],
   apiRoutes: [

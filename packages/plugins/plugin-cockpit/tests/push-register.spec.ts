@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  PUSH_SW_URL,
+  PUSH_SW_FILE,
+  buildPushSwUrl,
+  resolvePushSwUrl,
   registerPushServiceWorker,
   urlBase64ToUint8Array,
   subscriptionToPayload,
@@ -9,23 +11,47 @@ import {
 } from "../src/ui/push-register.js";
 
 describe("push-register", () => {
-  it("PUSH_SW_URL is correct", () => {
-    expect(PUSH_SW_URL).toBe("/_plugins/partnersinbiz.cockpit/ui/push-sw.js");
+  it("PUSH_SW_FILE is correct", () => {
+    expect(PUSH_SW_FILE).toBe("push-sw.js");
+  });
+
+  it("buildPushSwUrl builds the correct URL from installation ID base", () => {
+    const result = buildPushSwUrl("/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/");
+    expect(result).toBe("/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/push-sw.js");
+  });
+
+  it("buildPushSwUrl throws for plugin key path (not installation ID)", () => {
+    expect(() => buildPushSwUrl("/_plugins/partnersinbiz.cockpit/ui/")).toThrow(
+      /Invalid plugin UI base/
+    );
+  });
+
+  it("buildPushSwUrl throws for empty string", () => {
+    expect(() => buildPushSwUrl("")).toThrow(/Invalid plugin UI base/);
+  });
+
+  it("resolvePushSwUrl extracts UUID from a module URL", async () => {
+    const moduleUrl = "https://paperclip.partnersinbiz.online/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/index.js";
+    const result = await resolvePushSwUrl(moduleUrl);
+    expect(result).toBe("/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/push-sw.js");
+    expect(result).not.toContain("partnersinbiz.cockpit");
   });
 
   it("registerPushServiceWorker registers with updateViaCache none and calls update", async () => {
+    const swUrl = "/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/push-sw.js";
     const mockReg = { update: vi.fn().mockResolvedValue(undefined) };
     const mockSw = { register: vi.fn().mockResolvedValue(mockReg) };
-    const result = await registerPushServiceWorker(mockSw as any);
-    expect(mockSw.register).toHaveBeenCalledWith(PUSH_SW_URL, { updateViaCache: "none" });
+    const result = await registerPushServiceWorker(mockSw as any, swUrl);
+    expect(mockSw.register).toHaveBeenCalledWith(swUrl, { updateViaCache: "none" });
     expect(mockReg.update).toHaveBeenCalled();
     expect(result).toBe(mockReg);
   });
 
   it("registerPushServiceWorker swallows update() errors", async () => {
+    const swUrl = "/_plugins/c2a2e51a-a02d-4625-8521-0fcce839ea53/ui/push-sw.js";
     const mockReg = { update: vi.fn().mockRejectedValue(new Error("fail")) };
     const mockSw = { register: vi.fn().mockResolvedValue(mockReg) };
-    const result = await registerPushServiceWorker(mockSw as any);
+    const result = await registerPushServiceWorker(mockSw as any, swUrl);
     expect(result).toBe(mockReg);
   });
 

@@ -72,10 +72,20 @@ export interface AskRow {
   effectAnnouncedCount: number;
   effectResultAt: string | null;
   handedBackAt: string | null;
+  /** Hours to wait before applying default; deadline is askedAt + defaultAfterHours. */
+  defaultAfterHours: number | null;
+  /** The recommended answer (must be one of options if supplied). */
+  recommended: string | null;
+  /** When the default was applied (ISO string). */
+  defaultAppliedAt: string | null;
+  /** The policy class that was used to auto-answer. */
+  defaultPolicy: string | null;
+  /** The deadline for owner response (ISO string); derived from askedAt + defaultAfterHours. */
+  deadlineAt: string | null;
 }
 
 const COLUMNS =
-  "id, company_id, issue_id, issue_identifier, issue_title, agent_id, return_agent_id, run_id, question, options, why, kind, links, steps, client_ref, due_by, owner_user_id, status, comment_id, answer, answer_comment_id, answered_by_user_id, asked_count, asked_at, updated_at, closed_at, source, effect, effect_key, effect_status, effect_detail, effect_announced_at, effect_announced_count, effect_result_at, handed_back_at";
+  "id, company_id, issue_id, issue_identifier, issue_title, agent_id, return_agent_id, run_id, question, options, why, kind, links, steps, client_ref, due_by, owner_user_id, status, comment_id, answer, answer_comment_id, answered_by_user_id, asked_count, asked_at, updated_at, closed_at, source, effect, effect_key, effect_status, effect_detail, effect_announced_at, effect_announced_count, effect_result_at, handed_back_at, default_after_hours, recommended, default_applied_at, default_policy, deadline_at";
 
 function iso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -139,6 +149,11 @@ function rowFrom(raw: Record<string, unknown>): AskRow {
     effectAnnouncedCount: Number(raw.effect_announced_count ?? 0) || 0,
     effectResultAt: raw.effect_result_at == null ? null : iso(raw.effect_result_at),
     handedBackAt: raw.handed_back_at == null ? null : iso(raw.handed_back_at),
+    defaultAfterHours: raw.default_after_hours == null ? null : Number(raw.default_after_hours),
+    recommended: str(raw.recommended),
+    defaultAppliedAt: raw.default_applied_at == null ? null : iso(raw.default_applied_at),
+    defaultPolicy: str(raw.default_policy),
+    deadlineAt: raw.deadline_at == null ? null : iso(raw.deadline_at),
   };
 }
 
@@ -161,23 +176,54 @@ export async function getAsk(env: Env, companyId: string, id: string): Promise<A
   return rows[0] ? rowFrom(rows[0]) : null;
 }
 
+export async function listCompaniesWithDueAsks(env: Env, nowIso: string): Promise<string[]> {
+  const rows = await env.ctx.db.query<{ company_id: string }>(
+    `SELECT DISTINCT company_id FROM ${TABLE} WHERE status = 'open' AND default_applied_at IS NULL AND deadline_at IS NOT NULL AND deadline_at <= $1`,
+    [nowIso],
+  );
+  return rows.map((r) => String(r.company_id));
+}
+
+export async function listDueAsks(env: Env, companyId: string, nowIso: string): Promise<AskRow[]> {
+  const rows = await env.ctx.db.query<Record<string, unknown>>(
+    `SELECT ${COLUMNS} FROM ${TABLE} WHERE company_id = $1 AND status = 'open' AND default_applied_at IS NULL AND deadline_at IS NOT NULL AND deadline_at <= $2 ORDER BY deadline_at ASC`,
+    [companyId, nowIso],
+  );
+  return rows.map(rowFrom);
+}
+
 export async function insertAsk(env: Env, row: AskRow): Promise<void> {
   await env.ctx.db.execute(
-    `INSERT INTO ${TABLE} (id, company_id, issue_id, issue_identifier, issue_title, agent_id, return_agent_id, run_id, question, options, why, kind, links, steps, client_ref, due_by, owner_user_id, status, asked_at, updated_at, source, effect)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13::jsonb, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22::jsonb)`,
+    `INSERT INTO ${TABLE} (id, company_id, issue_id, issue_identifier, issue_title, agent_id, return_agent_id, run_id, question, options, why, kind, links, steps, client_ref, due_by, owner_user_id, status, asked_at, updated_at, source, effect, default_after_hours, recommended, default_applied_at, default_policy, deadline_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13::jsonb, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25, $26, $27)`,
     [
       row.id, row.companyId, row.issueId, row.issueIdentifier, row.issueTitle, row.agentId, row.returnAgentId, row.runId, row.question, JSON.stringify(row.options), row.why, row.kind,
       JSON.stringify(row.links), JSON.stringify(row.steps), row.clientRef, row.dueBy, row.ownerUserId, "open", row.askedAt, row.updatedAt, row.source, row.effect ? JSON.stringify(row.effect) : null,
+      row.defaultAfterHours, row.recommended, row.defaultAppliedAt, row.defaultPolicy, row.deadlineAt,
     ],
   );
 }
 
 /** Asking again on the same issue: the new question replaces the old one; the age counts from the first ask. */
-async function updateOpenAsk(env: Env, ask: AskRow, input: AskInput, agentId: string, runId: string | null, ownerUserId: string, now: string): Promise<void> {
+async function updateOpenAsk(env: Env, ask: AskRow, input: AskInput, agentId: string, runId: string | null, ownerUserId: string, now: string, defaultAfterHours?: number | null, recommended?: string | null, policyClass?: string | null): Promise<void> {
+  // Compute candidate deadline (only if defaultAfterHours supplied); NULL keeps existing deadline unchanged
+  let candidateDeadlineAt: string | null = null;
+  if (defaultAfterHours) {
+    const deadline = new Date(Date.parse(now) + defaultAfterHours * 3_600_000);
+    candidateDeadlineAt = deadline.toISOString();
+  }
+
+  // recommended: use new if supplied; else keep old only if it's still in the new options; else NULL.
+  // Final options are what will be stored (input.options, which may be empty).
+  const recommendedForUpdate = recommended ?? (ask.recommended && input.options.includes(ask.recommended) ? ask.recommended : null);
+
+  // FIRST DEADLINE WINS (atomic in SQL): deadline_at = COALESCE(deadline_at, $n) keeps existing if set.
+  // default_after_hours = CASE WHEN deadline_at IS NULL THEN COALESCE($m, default_after_hours) ELSE default_after_hours END
+  // (only set on first ask when supplied). Same logic for default_policy.
   await env.ctx.db.execute(
-    `UPDATE ${TABLE} SET question = $3, options = $4::jsonb, why = $5, kind = $6, links = $7::jsonb, steps = $8::jsonb, client_ref = $9, due_by = $10, owner_user_id = $11, agent_id = $12, run_id = $13, asked_count = $14, updated_at = $15, effect = $16::jsonb
+    `UPDATE ${TABLE} SET question = $3, options = $4::jsonb, why = $5, kind = $6, links = $7::jsonb, steps = $8::jsonb, client_ref = $9, due_by = $10, owner_user_id = $11, agent_id = $12, run_id = $13, asked_count = $14, updated_at = $15, effect = $16::jsonb, default_after_hours = CASE WHEN deadline_at IS NULL THEN COALESCE($17, default_after_hours) ELSE default_after_hours END, recommended = $18, default_policy = CASE WHEN deadline_at IS NULL THEN COALESCE($19, default_policy) ELSE default_policy END, deadline_at = COALESCE(deadline_at, $20)
       WHERE company_id = $1 AND id = $2 AND status = 'open'`,
-    [ask.companyId, ask.id, input.question, JSON.stringify(input.options), input.why, input.kind, JSON.stringify(input.links), JSON.stringify(input.steps), input.client ?? ask.clientRef, input.dueBy, ownerUserId, agentId, runId, ask.askedCount + 1, now, input.effect ? JSON.stringify(input.effect) : null],
+    [ask.companyId, ask.id, input.question, JSON.stringify(input.options), input.why, input.kind, JSON.stringify(input.links), JSON.stringify(input.steps), input.client ?? ask.clientRef, input.dueBy, ownerUserId, agentId, runId, ask.askedCount + 1, now, input.effect ? JSON.stringify(input.effect) : null, defaultAfterHours ?? null, recommendedForUpdate, policyClass ?? null, candidateDeadlineAt],
   );
 }
 
@@ -187,10 +233,53 @@ export async function setCommentId(env: Env, ask: Pick<AskRow, "companyId" | "id
 }
 
 /** Closes an open ask; false when it was already closed (another event got there first). */
-async function closeAsk(env: Env, ask: AskRow, patch: { status: Exclude<AskStatus, "open">; answer?: string | null; answerCommentId?: string | null; answeredByUserId?: string | null }, now: string): Promise<boolean> {
+async function closeAsk(
+  env: Env,
+  ask: AskRow,
+  patch: {
+    status: Exclude<AskStatus, "open">;
+    answer?: string | null;
+    answerCommentId?: string | null;
+    answeredByUserId?: string | null;
+    defaultAppliedAt?: string;
+    defaultPolicy?: string;
+  },
+  now: string,
+): Promise<boolean> {
+  const setClauses: string[] = [
+    "status = $3",
+    "answer = $4",
+    "answer_comment_id = $5",
+    "answered_by_user_id = $6",
+    "closed_at = $7",
+    "updated_at = $8",
+  ];
+  const values: unknown[] = [
+    ask.companyId,
+    ask.id,
+    patch.status,
+    patch.answer ?? null,
+    patch.answerCommentId ?? null,
+    patch.answeredByUserId ?? null,
+    now,
+    now,
+  ];
+
+  let paramCount = 9;
+  if (patch.defaultAppliedAt !== undefined) {
+    setClauses.push(`default_applied_at = $${paramCount}`);
+    values.push(patch.defaultAppliedAt);
+    paramCount += 1;
+  }
+  if (patch.defaultPolicy !== undefined) {
+    setClauses.push(`default_policy = $${paramCount}`);
+    values.push(patch.defaultPolicy);
+    paramCount += 1;
+  }
+
   const result = await env.ctx.db.execute(
-    `UPDATE ${TABLE} SET status = $3, answer = $4, answer_comment_id = $5, answered_by_user_id = $6, closed_at = $7, updated_at = $8 WHERE company_id = $1 AND id = $2 AND status = 'open'`,
-    [ask.companyId, ask.id, patch.status, patch.answer ?? null, patch.answerCommentId ?? null, patch.answeredByUserId ?? null, now, now],
+    `UPDATE ${TABLE} SET ${setClauses.join(", ")} WHERE company_id = $1 AND id = $2 AND status = 'open'`,
+    values,
   );
   return (result.rowCount ?? 0) > 0;
 }
@@ -279,9 +368,15 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
   const holder = issue.assigneeAgentId && !issue.assigneeUserId ? issue.assigneeAgentId : null;
   let ask: AskRow;
   if (existing) {
-    await updateOpenAsk(env, existing, input, agentId, run.runId ?? null, owner, now);
+    await updateOpenAsk(env, existing, input, agentId, run.runId ?? null, owner, now, input.defaultAfterHours, input.recommended, input.policyClass);
     ask = (await getAsk(env, companyId, existing.id)) ?? existing;
   } else {
+    // Calculate deadline if defaultAfterHours is supplied
+    let deadlineAt: string | null = null;
+    if (input.defaultAfterHours) {
+      const deadline = new Date(Date.parse(now) + input.defaultAfterHours * 3_600_000);
+      deadlineAt = deadline.toISOString();
+    }
     ask = {
       id: newAskId(),
       companyId,
@@ -318,6 +413,11 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
       effectAnnouncedCount: 0,
       effectResultAt: null,
       handedBackAt: null,
+      defaultAfterHours: input.defaultAfterHours,
+      recommended: input.recommended,
+      defaultAppliedAt: null,
+      defaultPolicy: input.policyClass,
+      deadlineAt,
     };
     try {
       await insertAsk(env, ask);
@@ -325,7 +425,7 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
       // Two asks at once on the same issue: the other one won; update it instead.
       const raced = await openAskForIssue(env, companyId, issue.id);
       if (!raced) throw error;
-      await updateOpenAsk(env, raced, input, agentId, run.runId ?? null, owner, now);
+      await updateOpenAsk(env, raced, input, agentId, run.runId ?? null, owner, now, input.defaultAfterHours, input.recommended, input.policyClass);
       ask = (await getAsk(env, companyId, raced.id)) ?? raced;
     }
   }
@@ -407,27 +507,75 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
 }
 
 /**
+ * Shared internal logic for applying an answer to an ask. Discriminated by source type.
+ * source.kind === "owner": records a person's reply (the original behavior)
+ * source.kind === "policy": closes via policy auto-answer
+ */
+type ApplyAnswerSource =
+  | { kind: "owner"; comment: { id: string; body: string; userId: string | null } }
+  | { kind: "policy"; policy: string; answer: string };
+
+async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Promise<boolean> {
+  let answer: string;
+  let answerCommentId: string | null;
+  let answeredByUserId: string | null;
+  const answeredAt = env.now().toISOString();
+
+  if (source.kind === "owner") {
+    answer = source.comment.body.trim().slice(0, ASK_LIMITS.answerChars);
+    if (!answer) return false;
+    answerCommentId = source.comment.id;
+    answeredByUserId = source.comment.userId;
+  } else {
+    answer = source.answer;
+    answerCommentId = null;
+    answeredByUserId = null;
+  }
+
+  const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
+  const closedIssue = !issue || CLOSED.has(String(issue.status));
+  // For owner path, preserve original status logic. For policy, always close with "answered"
+  const status = source.kind === "policy"
+    ? "answered"
+    : !issue || issue.status === "cancelled" ? "cancelled" : closedIssue ? "resolved" : "answered";
+
+  // Build patch: include policy fields only for policy source (keeps owner path byte-identical)
+  const patch: Parameters<typeof closeAsk>[2] = { status, answer, answerCommentId, answeredByUserId };
+  if (source.kind === "policy") {
+    patch.defaultAppliedAt = answeredAt;
+    patch.defaultPolicy = source.policy;
+  }
+
+  const closed = await closeAsk(env, ask, patch, answeredAt);
+  if (!closed) return false;
+
+  // An ask with an effect runs it for a person's yes (never for an agent's own comment: only a reply by a person gets here), and the agent is
+  // woken when the result is in, not before: otherwise it finds the grant still missing and asks again.
+  if (ask.effect && answeredByUserId && status !== "cancelled") {
+    await startEffect(env, { ...ask, status, answer, answeredByUserId, closedAt: answeredAt }, answeredAt);
+    return true;
+  }
+  if (!closedIssue) await handBack(env, ask, answer);
+  return true;
+}
+
+/**
  * Records a person's reply as the answer and hands the issue back. When the
  * person also closed the issue (a reply and a close in one step), the answer
  * is kept and the issue stays closed.
  */
 async function answerAsk(env: Env, ask: AskRow, comment: { id: string; body: string; userId: string | null }): Promise<boolean> {
-  const answer = comment.body.trim().slice(0, ASK_LIMITS.answerChars);
-  if (!answer) return false;
-  const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
-  const closedIssue = !issue || CLOSED.has(String(issue.status));
-  const status = !issue || issue.status === "cancelled" ? "cancelled" : closedIssue ? "resolved" : "answered";
-  const answeredAt = env.now().toISOString();
-  const closed = await closeAsk(env, ask, { status, answer, answerCommentId: comment.id, answeredByUserId: comment.userId }, answeredAt);
-  if (!closed) return false;
-  // An ask with an effect runs it for a person's yes (never for an agent's own comment: only a reply by a person gets here), and the agent is
-  // woken when the result is in, not before: otherwise it finds the grant still missing and asks again.
-  if (ask.effect && comment.userId && status !== "cancelled") {
-    await startEffect(env, { ...ask, status, answer, answeredByUserId: comment.userId, closedAt: answeredAt }, answeredAt);
-    return true;
-  }
-  if (!closedIssue) await handBack(env, ask, answer);
-  return true;
+  return applyAnswer(env, ask, { kind: "owner", comment });
+}
+
+/** Closes an open ask by applying a policy-driven auto-answer. Idempotent: second call on already-closed ask is a no-op returning the same shape as owner path. */
+export async function answerAskByPolicy(env: Env, companyId: string, askId: string, policy: string, answer: string): Promise<AskRow | null> {
+  const ask = await getAsk(env, companyId, askId);
+  if (!ask) return null;
+  if (ask.status !== "open") return null; // return null if already closed: caller must dedupe
+  const result = await applyAnswer(env, ask, { kind: "policy", policy, answer });
+  if (!result) return null; // closeAsk guard prevented the update
+  return getAsk(env, companyId, askId); // return the updated ask
 }
 
 // ---------------------------------------------------------------------------

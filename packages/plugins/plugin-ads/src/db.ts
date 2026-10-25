@@ -413,6 +413,11 @@ export async function getCampaign(ctx: PluginContext, companyId: string, account
   return rows[0] ? campaignRow(rows[0]) : null;
 }
 
+/** Update a campaign's status (e.g., to 'paused' when the sweeper pauses it). */
+export async function updateCampaignStatus(ctx: PluginContext, companyId: string, campaignId: string, status: CampaignRow["status"]): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "campaigns")} SET status = $3, last_seen_at = now() WHERE company_id = $1 AND id = $2`, [companyId, campaignId, status]);
+}
+
 export async function listCampaigns(ctx: PluginContext, companyId: string, options: { accountId?: string; scopeKey?: ScopeKey; status?: string; limit?: number } = {}): Promise<Array<CampaignRow & { scope_key: string; platform: string; currency: string; account_name: string }>> {
   const params: unknown[] = [companyId];
   let where = "c.company_id = $1";

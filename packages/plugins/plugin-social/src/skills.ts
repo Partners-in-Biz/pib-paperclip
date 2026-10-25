@@ -8,17 +8,17 @@ import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 export const SKILL_KEY_PREFIX = "plugin/partnersinbiz-social";
 
 const PUBLISH_DESCRIPTION =
-  "Operate the Partners in Biz Social plugin: work in one scope (PiB's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, work the Jev-triaged social inbox, and run the Growth Lab (performance review, experiments, playbook). Use for any social posting, scheduling, inbox or performance task.";
+  "Operate the Social plugin: work in one scope (your company's own work or one client), draft posts with media and per-platform overrides, send them for approval, schedule approved posts, retry failures, work the Jev-triaged social inbox, and run the Growth Lab (performance review, experiments, playbook). Use for any social posting, scheduling, inbox or performance task.";
 
 export const SOCIAL_PUBLISH_BODY = `# Social publish
 
-You manage social posting for Partners in Biz (its own accounts) and its clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
+You manage social posting for your company (its own accounts) and its clients with the \`partnersinbiz.social\` tools. The plugin talks to the real platforms (Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble). Tokens never reach you.
 
 ## Scope
 
 Every account, post, media asset, feed and inbox item belongs to exactly one scope:
 
-- **Own work** (PiB's own socials): call the tools **without** a client.
+- **Own work** (your company's own socials): call the tools **without** a client.
 - **Client work**: a CRM company, or a CRM contact (a sole trader). Pass \`client: "company:<id>"\` or \`"contact:<id>"\` (or \`clientKind\` + \`clientRef\`) on every call. Take it from the issue you are working on (every Social issue states its scope), or from \`list-clients\`.
 - **Never mix scopes.** A post only uses accounts and media of its own scope; the tools refuse anything else. List tools return one scope at a time, so a client's accounts never show up in own work and the other way round.
 
@@ -34,7 +34,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 ## Workflow for a post
 
 1. Decide the scope (own work, or the client from the issue / \`list-clients\`). \`list-connected-accounts\` in that scope → choose destination account ids. Only use accounts with status \`connected\`.
-2. Media: reuse \`list-media-assets\` (same scope), or \`import-media-from-url\` with the same client (public https image or MP4, stored on R2). A file you made yourself (a carousel slide, a branded image, a short video): attach it to your issue, \`list-issue-attachments\`, then \`import-media-from-attachment\` (an asset id comes back, never a link). How to make them: \`references/media-studio.md\` in the social-content skill. Pass asset ids as \`mediaAssetIds\` (order = carousel order). Do not paste raw URLs as media.
+2. Media: reuse \`list-media-assets\` (same scope), or \`import-media-from-url\` with the same client (public https image or MP4, stored on R2). A file you made yourself (a carousel slide, a branded image, a short video): attach it to your issue, \`list-issue-attachments\`, then \`import-media-from-attachment\` (asset id back). How to make them: \`references/media-studio.md\` in the social-content skill. Pass asset ids as \`mediaAssetIds\` (order = carousel order). Do not paste raw URLs as media.
 3. \`create-post\` with \`body\`, the scope (\`client\`, or nothing for own work), \`accountIds\`, \`mediaAssetIds\`, a proposed time \`scheduledAt\` (ISO with offset, e.g. \`2026-10-05T07:30:00+02:00\`; pick it from the playbook and the calendar), optional \`firstComment\` and \`overrides\`. Load the \`social-content\` skill to write platform-native copy.
 4. \`overrides\` is keyed by platform: \`{ "x": { "text": "…" }, "youtube": { "title": "…", "privacy": "unlisted" }, "reddit": { "subreddit": "smallbusiness", "title": "…" }, "pinterest": { "boardId": "…", "link": "https://…" }, "tiktok": { "privacy": "SELF_ONLY" } }\`. Fields: text, title, link, privacy, subreddit, boardId. Anything not overridden falls back to the main body.
 5. \`validate-post\` → fix every problem it lists (usually text too long for X/Bluesky/Threads/Mastodon, or missing media for Instagram/TikTok/YouTube/Pinterest).
@@ -43,14 +43,15 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (call \`get-approval-status\` to check where a personal post stands; only the post owner can approve). Migrations 016–017 add nullable columns and indexes for personal scope; rollback simply reverts to the prior plugin version.
+A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands; only the owner can approve).
 
 ## Approvals
 
 - \`request-review\` opens the post's review issue by the scope's policy (\`get-approval-policy\`). Sign-offs: the Reviewer's pass (a check), a team member's approval, the client's approval. The post is approved when every sign-off the policy needs is in **for its current version**: editing it makes earlier sign-offs stale. \`get-approval-status\` shows where one post stands.
-- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. The plugin comments on the issue and wakes you when the client answers. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
+- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
 - **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
-- \`review-outcomes\` gives first-pass rates per post type. They are inputs for a later autonomy policy; auto-approval is off.
+- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; a repeat call returns it. Attach the asset, then \`request-review\`.
+- \`review-outcomes\` gives first-pass rates and streaks per post type. Only a low-risk post with a team streak of 5 skips the team click.
 Full flow, statuses and edge cases: \`references/approvals.md\`.
 
 ## After scheduling
@@ -93,11 +94,11 @@ Each scope (own work, each client) has a Growth program: a goal ("engagement rat
 
 ## Tool list
 
-list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, review-outcomes, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
+list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, review-outcomes, media-compliance, request-creative, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, store-rendered-asset, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
 `;
 
 const CONTENT_DESCRIPTION =
-  "Write platform-native social copy for Partners in Biz clients: per-platform length limits, tone, hashtags, media specs and override rules for Facebook, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon and Dribbble.";
+  "Write platform-native social copy for your company and its clients: per-platform length limits, tone, hashtags, media specs and override rules for Facebook, Instagram, Threads, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon and Dribbble.";
 
 export const SOCIAL_CONTENT_BODY = `# Social content
 
@@ -105,11 +106,12 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 
 ## Before you write
 
-1. Know who you write for: PiB itself (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
+1. Know who you write for: your own company (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
 2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
 5. Use the first comment (\`firstComment\`) for extra hashtags or a link on Instagram, Facebook and LinkedIn when it keeps the caption clean.
+6. To draft an X reply or quote post, pass \`replyToUrl\` or \`quoteUrl\` (the x.com link of the post, not both) on \`create-post\` or \`create-personal-draft\`, with only X accounts as destinations; do not paste the link into the text. Put a hold or context line in \`note\` (for example "HOLD until PAR-1234"): it is internal and never published.
 
 ## Quick limits
 
@@ -148,10 +150,12 @@ For each scope with connected accounts (own work first, then each client):
 
 Posts need visuals: carousels, branded images, short videos. Make them yourself from the client's brand (their profile, and the colours, fonts and logo from their site): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
 
+**The media rule.** The scope's playbook can carry a \`media-rule\` block (\`get-playbook\` shows it; with none the default applies: LinkedIn, Instagram and Facebook posts need an image or a video, a video counts only up to 30 seconds, every image needs alt text, and question, thread and quote posts need no media). The Reviewer checks it when it records a verdict, and with \`enforce: block\` a post that misses it cannot pass. Write the post's media in the same pass as its copy. If you cannot make it yourself, or the Reviewer sends the post back for missing or weak media, call \`request-creative\`: the full route is in the \`pib-creative-studio\` skill.
+
 ## Scope
 
 - Own work = no client. Client work = pass \`client\` (\`company:<id>\` or \`contact:<id>\`) from the issue.
-- Never reuse one client's copy, media or accounts for another client or for PiB's own posts. Each scope has its own playbook and experiments.
+- Never reuse one client's copy, media or accounts for another client or for your company's own posts. Each scope has its own playbook and experiments.
 
 ## Always
 
@@ -164,7 +168,7 @@ Posts need visuals: carousels, branded images, short videos. Make them yourself 
 
 export const PLATFORMS_REFERENCE = `# Platform reference
 
-Per-platform rules for Partners in Biz social copy. Limits are hard limits enforced by the platforms; guidance is what performs.
+Per-platform rules for social copy. Limits are hard limits enforced by the platforms; guidance is what performs.
 
 ## Facebook (Pages)
 - Text up to 63,206 characters; best results at 40-80 words. The first 2 lines show before "See more".
@@ -268,10 +272,10 @@ No policy set = a team member approves, as before. At least one of team member o
 8. The link is the client's. Never open it to answer, and never submit its form: the page records whoever answers as the client. (Where only the client approves, the link IS the approval.)
 
 ## The Reviewer
-\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the company's Reviewer can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
+\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
-Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off, and turning it on is the owner's decision.
+Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.
 
 ## If something is off
 - "The client approval page is not reachable": a one-time setup for the owner (Setup → Social → Client approval page). Do not send the client anything; ask once with \`${ASK_OWNER_TOOL}\`.
@@ -281,7 +285,7 @@ Every Reviewer, team member and client verdict is stored with the post's type (o
 
 export const MEDIA_STUDIO_REFERENCE = `# Media studio (pib-media-studio)
 
-How to make carousels, branded images and short videos for a client (or for PiB's own accounts) without depending on any provider: slides are HTML/CSS rendered to PNG by Chromium, videos are stitched from slides with ffmpeg. This is the approach that already produced the PARA-4 content batch (carousels at 1080x1350, 9:16 MP4s, a safe-area template); its \`para4-asset-generator.zip\` (attached to issue PARA-4, Partners in Apps) is a working example: copy it when you start, change the copy and brand file, render again.
+How to make carousels, branded images and short videos for a client (or for your company's own accounts) without depending on any provider: slides are HTML/CSS rendered to PNG by Chromium, videos are stitched from slides with ffmpeg. Build one reusable generator (a template plus a brand file) and render again for each batch: change the copy and brand file, not the template.
 
 ## 0. Before you make anything
 - **One scope.** Everything you make belongs to one client or to own work. Never reuse another client's brand, copy or files.
@@ -331,13 +335,47 @@ Open the first and last slide as images and read the text at phone size. Fix ove
 ## 6. AI-generated images and video (optional, never required)
 If your run has an image or video generation tool or connection (for example Higgsfield or Seedance), use it for backgrounds or B-roll only and bring the result through steps 2-5. If it does not, write exact, paste-ready prompts in the issue for a person and carry on with the HTML pipeline. Do not pretend a generated person is a real client, employee or customer.
 
-## 7. Keep the generator
+## 7. Hand-off from \`request-creative\`
+When the work comes from a \`request-creative\` issue (one per post), the \`pib-creative-studio\` skill has the steps: brief, storyboard, render (this file), R2 import, Drive folder, \`update-post\` with the asset ids. Limits that apply to every asset: video 30 seconds at most, alt text on every image.
+
+## 8. Keep the generator
 Save your templates and scripts as one zip attached to the issue (\`<client>-asset-generator.zip\`) and name it in your close-out comment, so the next run changes the copy instead of rebuilding the design.
+`;
+
+const CREATIVE_DESCRIPTION =
+  "Produce the image or video for a social post: read the brief from the hand-off issue, storyboard it, render it from the client's brand, store it (R2 through the Social plugin, a copy in the scope's Drive 02 Assets folder), attach it to the post with alt text and send it back for review. Use on a hand-off issue from request-creative or whenever a post needs media.";
+
+export const CREATIVE_STUDIO_BODY = `# Creative studio (pib-creative-studio)
+
+You make the image or short video for one social post and hand it back. The Social agent asks with \`request-creative\`; it opens ONE issue per post (origin \`creative:<postId>\`), for the Creative Producer, or for the Social agent, Account Manager or Operator while none is hired. Calling it again returns the same issue.
+
+## Ground rules
+
+- **One post, one scope.** The issue names the post and its scope. Pass the same \`client\` on every call (nothing for own work). Never use another scope's brand, copy, accounts or media.
+- **You make media. You do not approve, schedule or publish.** The post goes back through \`request-review\`.
+- **Brief first.** Read the issue: brief, each destination's platform spec, the 30-second video cap, the alt-text requirement and the Drive folder. Then \`get-playbook\` (its \`media-rule\` and what has performed) and the client's brand (\`get-client-profile\`). A missing brief or brand: ask once with \`${ASK_OWNER_TOOL}\`, work from a neutral design meanwhile.
+- No stock or borrowed images, no invented stats, testimonials or people. Never paste tokens or credentials anywhere.
+
+## Steps
+
+1. **Brief.** Write the one-line point of the asset, the format (image, carousel or video) and the size per destination in the issue (sizes: \`references/media-studio.md\` in the social-content skill).
+2. **Storyboard.** Carousel: one line per slide, slide 1 is the hook, last slide the call to action. Video: one line per shot with seconds, at most 30 in total. Post the storyboard as a comment before you render, so the Reviewer sees what was meant.
+3. **Render.** Follow \`references/media-studio.md\`: HTML slides to PNG, ffmpeg for video. Look at the result at phone size. Fix overflow, contrast and safe areas.
+4. **Store on R2.** Attach each file to this issue, \`list-issue-attachments\`, then \`import-media-from-attachment\` with the post's \`client\` and an \`altText\` that says what is in it (an asset id comes back; the plugin stores the file on R2). A public https file instead: \`import-media-from-url\`. Check what you may reuse first with \`list-media-assets\`.
+5. **Drive.** The scope's Drive folder is \`02 Assets\`, and the plugin saves the media of a published post there. Also name the finished files and the generator zip in your close-out comment so a person finds them. Never move, rename or share existing Drive files.
+6. **Attach to the post.** \`update-post\` with \`mediaAssetIds\` in slide order (it replaces the list), then \`validate-post\` and fix every problem it lists. Then \`request-review\`.
+7. **Close.** One comment: post id, asset ids, alt text, what the storyboard was, and anything the Reviewer should look at. A Reviewer who sends it back reopens the issue: change the asset, not the copy, unless the issue says so.
+
+## Check before you hand back
+
+- Every image has alt text. A video is 30 seconds or less.
+- Text is readable at phone size and inside the safe area.
+- \`media-compliance\` shows how the scope is doing against the media rule, if you want the numbers.
 `;
 
 export const PLAN_ROUTINE_TITLE = "Weekly social review & plan";
 
-export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for PiB's own accounts and every active client (Growth Lab).
+export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for your company's own accounts and every active client (Growth Lab).
 
 Run procedure (details in the pib-social-content skill, "Weekly social review & plan"):
 1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts.
@@ -350,6 +388,26 @@ Run procedure (details in the pib-social-content skill, "Weekly social review & 
 export interface SocialSkill extends PluginManagedSkillDeclaration {
   markdown: string;
 }
+
+const OWN_NOTES_DESCRIPTION =
+  "Own-company notes for the Partners in Biz Social agent: the worked example of a content batch (PARA-4) and where its asset generator lives. Only the instance's own company receives this skill.";
+
+export const OWN_NOTES_BODY = `# Own notes (pib-social-own-notes)
+
+Facts for Partners in Biz's own Social work. They are not part of the shared skills.
+
+- The media-studio approach already produced the PARA-4 content batch (carousels at 1080x1350, 9:16 MP4s, a safe-area template). Its \`para4-asset-generator.zip\` (attached to issue PARA-4, Partners in Apps) is a working example: copy it when you start, change the copy and brand file, render again.
+`;
+
+export const PIB_ONLY_SKILLS: SocialSkill[] = [
+  {
+    skillKey: "social-own-notes",
+    displayName: "Social own notes",
+    slug: "pib-social-own-notes",
+    description: OWN_NOTES_DESCRIPTION,
+    markdown: withFrontmatter({ name: "pib-social-own-notes", description: OWN_NOTES_DESCRIPTION }, OWN_NOTES_BODY),
+  },
+];
 
 export const SKILLS: SocialSkill[] = [
   {
@@ -370,6 +428,13 @@ export const SKILLS: SocialSkill[] = [
       { path: "references/platforms.md", content: PLATFORMS_REFERENCE },
       { path: "references/media-studio.md", content: MEDIA_STUDIO_REFERENCE },
     ],
+  },
+  {
+    skillKey: "creative-studio",
+    displayName: "Creative studio",
+    slug: "pib-creative-studio",
+    description: CREATIVE_DESCRIPTION,
+    markdown: withFrontmatter({ name: "pib-creative-studio", description: CREATIVE_DESCRIPTION }, CREATIVE_STUDIO_BODY),
   },
 ];
 

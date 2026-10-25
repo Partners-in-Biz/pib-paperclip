@@ -133,7 +133,7 @@ The post becomes approved when every sign-off its policy asks for is in **for it
 
 ### Autonomy inputs (Q10-10)
 
-Every Reviewer, team member and client verdict is a row in `review_outcomes`: stage, outcome (approved or changes), round (a post sent back and forth has rounds 1, 2, 3), the post's **type** (`original`, `repurpose`, `rss` or `reply`, by format: text, image, carousel, video), its scope and platforms, how it was recorded and who. A person sending a post back from review counts as the owner asking for changes. `review-outcomes` (tool, and `social.review-outcomes`) returns first-pass approval rates and approval streaks per type and stage for one scope. **Auto-approval is NOT built and nothing graduates**: the output says `autonomy.enabled: false`. Turning on an autonomy ladder changes the owner design "approvals only a person decides", so the owner decides it once, on purpose (Q10-10).
+Every Reviewer, team member and client verdict is a row in `review_outcomes`: stage, outcome (approved or changes), round (a post sent back and forth has rounds 1, 2, 3), the post's **type** (`original`, `repurpose`, `rss` or `reply`, by format: text, image, carousel, video), its scope and platforms, how it was recorded and who. A person sending a post back from review counts as the owner asking for changes. `review-outcomes` (tool, and `social.review-outcomes`) returns first-pass approval rates and approval streaks per type and stage for one scope. **The autonomy ladder (PAR-4701) is built for low-risk posts only.** A post is auto-approved in place of the team member's click when its source is `original` or `repurpose`, its format is text or one image, its scope's policy does not ask for the client, `validate-post` passes, and the owner streak for that type in that scope is at least 5 (people's verdicts only). A required Reviewer pass still comes first. The complaint/legal/safety/PR exclusion works by source only: inbox replies and RSS items are out, but an agent-written original is eligible, because nothing reads its content. `review-outcomes` reports `autonomy.enabled` true only when some type qualifies in that scope; everything else stays with a person.
 
 ### Client issues in the client's project (Q1a-12)
 
@@ -165,6 +165,12 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 2. After the plugin is up: on the VPS, `bash plugin-social/ops/approval-server/install.sh` as root (creates the role `pib_approval` and its settings file, installs and starts the unit), then the Caddy lines in `ops/approval-server/README.md` and `systemctl reload caddy`. Until then clients cannot be sent links (the tool refuses) and Setup shows the item as optional; everything else works.
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
+
+## 0.9.21: X replies and quotes, draft note (PAR-4452)
+
+`create-post`, `update-post` and `create-personal-draft` take `replyToUrl` or `quoteUrl` (an x.com / twitter.com post link, not both) and an internal `note` (max 500 characters, never published; for example "HOLD until PAR-1234"). On publish X gets `reply.in_reply_to_tweet_id` or `quote_tweet_id`. Other platforms refuse a reply or quote draft in `validate-post` instead of posting it plain; Threads and Bluesky are not supported yet. The Posts list, the post sheet and the composer (Social and My Social) show "Replying to @handle" / "Quoting @handle" with the link, and the note. Changing the target changes the approval fingerprint; the note does not.
+
+**Deploy: stop-first** (migration `019_social.sql` adds `reply_to_url`, `quote_url`, `note`; additive, old code ignores them). The skill text changes what agents do for drafts of X replies.
 
 ## 0.9.1
 

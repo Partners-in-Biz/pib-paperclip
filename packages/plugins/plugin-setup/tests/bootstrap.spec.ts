@@ -44,7 +44,7 @@ const input = (patch: Partial<GrantInput> = {}): GrantInput => ({
 
 describe("the steps", () => {
   it("run in a fixed order, and say who runs each", () => {
-    expect(BOOTSTRAP_STEPS.map((step) => step.id)).toEqual(["modules", "setup-settings", "plugin-settings", "skills", "roles", "templates", "company-wiki", "starter-pack", "finish-issue", "owner-list"]);
+    expect(BOOTSTRAP_STEPS.map((step) => step.id)).toEqual(["modules", "setup-settings", "plugin-settings", "model-key", "skills", "roles", "templates", "company-wiki", "starter-pack", "finish-issue", "owner-list"]);
     expect(BOOTSTRAP_STEPS.filter((step) => step.where === "worker").map((step) => step.id)).toEqual(["modules", "finish-issue"]);
     expect(stepDef("roles")?.where).toBe("page");
     expect(stepDef("nope")).toBeNull();

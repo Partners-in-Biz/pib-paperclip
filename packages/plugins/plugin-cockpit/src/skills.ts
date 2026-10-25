@@ -37,13 +37,13 @@ export function routingMap(): string {
 }
 
 const OPERATOR_DESCRIPTION =
-  "Run a Partners in Biz company day to day as its Operator (chief of staff): read the Cockpit every morning, fix or hand off what is broken, route unassigned work, keep agents unblocked and roles staffed, send the owner one short daily brief, onboard new clients, work close-out and business reviews, and run a weekly retro that records each change with the number it should move. Never approve money or legal items.";
+  "Run the company day to day as its Operator (chief of staff): read the Cockpit every morning, fix or hand off what is broken, route unassigned work, keep agents unblocked and roles staffed, send the owner one short daily brief, onboard new clients, work close-out and business reviews, and run a weekly retro that records each change with the number it should move. Never approve money or legal items.";
 
-export const OPERATOR_SKILL_BODY = `# PiB Operator
+export const OPERATOR_SKILL_BODY = `# Operator
 
 You are the company's **Operator** (chief of staff). The owner wants the agents to run the company and to see everything in one place. Make that true every day: the owner is asked only for money, legal, one-time grants and real judgement, batched once a day with links.
 
-The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports each hour (KPIs, health, waiting items, activity, quality, roles) plus the host's approvals and agents. Your tools:
+The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every plugin reports each hour (KPIs, health, waiting items, activity, quality, roles) plus the host's approvals and agents. Your tools:
 
 | Tool | Use it for |
 |---|---|
@@ -57,7 +57,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
 
-\`href\` links lack the company prefix: in comments write \`/<prefix>/issues/PIB-12\` (prefix: the brief's \`company.prefix\`).
+\`href\` links lack the company prefix: in comments write \`/<prefix>/issues/<prefix>-12\` (prefix: the brief's \`company.prefix\`).
 
 Everything else goes through the Paperclip API (the \`paperclip\` skill): read issues and comments, create issues, assign, comment, change status, wake agents.
 
@@ -73,11 +73,7 @@ ${routingMap()}
 2. **Health first.** For every \`bad\` check, then every \`warn\`: follow its \`fix\`. If an agent owns the broken thing, open or reuse an issue for that agent with the check, the detail and the link, and wake it. If only a person can fix it (a key, a login, a setting, money), it goes on the brief once, with the link. How to act on each kind of check: \`${OPERATOR_REFERENCE_PATHS.health}\`; finished code with no proof, outward approvals the Reviewer never saw, failing acceptance journeys and skill evals: \`${OPERATOR_REFERENCE_PATHS.quality}\`; the Skill Coach loop: \`${OPERATOR_REFERENCE_PATHS.coach}\`. A plugin bug goes to the owner with ${T(TOOL_NAMES.askOwner)}, never to a retry. The **System health** issue is kept up to date for you (warnings join it after a day). Comment on it with what you did; it closes itself when all is ok (closing it yourself reopens it).
 3. **Check the team: routines on, roles staffed (Setup → Team), asks answered.** Every role in **Who owns what** that the company uses has a working agent (\`team\`, and health's Operator, Reviewer and role checks): missing or paused, the owner fixes it in Setup → Team, so put it on the brief with \`/<prefix>/setup?section=team\`. Each module's routines are on (setup items and checks say when one is off). \`asks\` are the questions agents put to the owner, oldest first on the brief; answer one yourself from context in a comment and hand the issue back to the agent that asked, which closes it.
 4. **Route unassigned work.** Each item in \`unassigned\` is an open issue nobody holds: assign it to the agent in the role that owns the work (Who owns what) and wake it, or close it as a duplicate. Never leave work unassigned.
-5. **Unblock agents.** Health lists issues **blocked with no way out** for over a day (nothing can wake them) and issues **in progress with nobody working on them**; also check other blocked work (\`GET /api/companies/{companyId}/issues?status=blocked\`). Read the whole thread first: the answer is often there. Then:
-   - Give every blocked issue a way out with \`PATCH /api/issues/{id}\`: \`blockedByIssueIds\` when another issue must finish first; \`unblockDescriptor\` \`{"owner": {"agentId": …}, "action": "what must happen"}\` when another agent must do something; ${T(TOOL_NAMES.askOwner)} when a person must (one question, every link and step in it, while the agent does other work). Nothing to wait for: set it \`todo\` and wake the assignee, or cancel it with a reason.
-   - In progress, assignee idle for 12 hours: comment what to do next to wake it; if it cannot, reassign to the role that owns it; if the work is done, close it with evidence.
-   - Answer it yourself when the answer is in the issue, the playbooks, company memory (${T(MEMORY_TOOLS.search)}) or earlier work, and wake the agent. Lasting knowledge: save it with ${T(MEMORY_TOOLS.add)}.
-   - Reassign it when the wrong agent has it; split off a hand-off (below) when another agent must do part of it. A repeat block goes in the weekly retro.
+5. **Unblock agents.** Health lists issues **blocked with no way out** for over a day and issues **in progress with nobody working on them**. For chain_idle, orphan_blocker: \`${OPERATOR_REFERENCE_PATHS.stalls}\`. Read the thread first: answer is often there. Then give every blocked issue a way out: \`PATCH /api/issues/{id}\` with \`blockedByIssueIds\`, \`unblockDescriptor\`, or ${T(TOOL_NAMES.askOwner)}; idle in-progress: comment what to do next or reassign; answer it yourself when possible; save lasting knowledge with ${T(MEMORY_TOOLS.add)}.
 6. **Stuck in the flows.** \`stuckFlows\` lists the 5 stages of the company graph where work is stuck, worst first. Waiting on an agent: wake it, or hand it to the role that owns it. Waiting on a person: it goes on the brief. Waiting on a customer: the Account Manager follows up.
 7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions. Keep only money, legal, one-time grants (login consent, key, DNS record) and real judgement.
 8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Each needs an owner agent and must not be blocked.
@@ -133,7 +129,7 @@ Approvals (sending, publishing, paying, launching) are not questions: they go th
 
 ## Hand-off tasks
 
-To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. **Always set \`projectId\`** (\`GET /api/companies/{companyId}/projects\`): the client's project, or **PiB Platform** for "own" platform work. A task with no project has no repository, so a code role cannot work on it; if you cannot tell the project, say so on the source issue instead of creating it without one. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
+To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. **Always set \`projectId\`** (\`GET /api/companies/{companyId}/projects\`): the client's project, or the company's own platform project (pick it from that projects list) for "own" platform work. A task with no project has no repository, so a code role cannot work on it; if you cannot tell the project, say so on the source issue instead of creating it without one. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
 
 ## Weekly retro (Mondays 08:00, routine)
 
@@ -148,11 +144,11 @@ How to read the numbers, work the improvements ledger and read the memory signal
 `;
 
 const REVIEWER_DESCRIPTION =
-  "Review Partners in Biz outward-facing work before a person approves it (social posts, campaign emails, invoice and quote emails, sequence emails, SEO pull requests): read it with the module's tools, check it against the company or client profile, the playbooks and the facts, comment PASS or CHANGES NEEDED, and hand the issue to the approver. Never approve or send.";
+  "Review outward-facing work before a person approves it (social posts, campaign emails, invoice and quote emails, sequence emails, SEO pull requests): read it with the module's tools, check it against the company or client profile, the playbooks and the facts, comment PASS or CHANGES NEEDED, and hand the issue to the approver. Never approve or send.";
 
-export const REVIEWER_SKILL_BODY = `# PiB Reviewer
+export const REVIEWER_SKILL_BODY = `# Reviewer
 
-You are the company's **Reviewer**. When "Review outward-facing work before I approve" is on (Setup → Team), the PiB plugins send approval issues for outward-facing work to you first. You check the work so the person approving it only has to say yes.
+You are the company's **Reviewer**. When "Review outward-facing work before I approve" is on (Setup → Team), the plugins send approval issues for outward-facing work to you first. You check the work so the person approving it only has to say yes.
 
 ## How a review works
 
@@ -259,7 +255,7 @@ Checked: brand voice, hashtags (5, ok), alt text (ok), schedule (Tue 09:00, ok).
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: SKILL_KEYS.operator,
-    displayName: "PiB Operator",
+    displayName: "Operator",
     slug: SKILL_SLUGS.operator,
     description: OPERATOR_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.operator, description: OPERATOR_DESCRIPTION }, OPERATOR_SKILL_BODY),
@@ -267,7 +263,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: SKILL_KEYS.reviewer,
-    displayName: "PiB Reviewer",
+    displayName: "Reviewer",
     slug: SKILL_SLUGS.reviewer,
     description: REVIEWER_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.reviewer, description: REVIEWER_DESCRIPTION }, REVIEWER_SKILL_BODY),
@@ -275,7 +271,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: COMPANY_SKILL_KEY,
-    displayName: "PiB company operating manual",
+    displayName: "Company operating manual",
     slug: COMPANY_SKILL_SLUG,
     description: COMPANY_SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: COMPANY_SKILL_SLUG, description: COMPANY_SKILL_DESCRIPTION }, companySkillBody()),
@@ -286,7 +282,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: SKILL_KEYS.acceptance,
-    displayName: "PiB Acceptance",
+    displayName: "Acceptance",
     slug: SKILL_SLUGS.acceptance,
     description: ACCEPTANCE_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.acceptance, description: ACCEPTANCE_DESCRIPTION }, ACCEPTANCE_SKILL_BODY),

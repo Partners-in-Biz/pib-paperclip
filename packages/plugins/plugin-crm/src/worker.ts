@@ -18,6 +18,8 @@ import {
   createSkillSyncer,
   createWorkIssue,
   DRIVE_EVENTS,
+  HOSTED_TIERS,
+  isHostedTier,
   isModuleEnabled,
   linkAgent,
   MAIL_EVENTS,
@@ -50,7 +52,7 @@ import {
   tryLinkAccountManager,
   wireAgent,
 } from "./agent.js";
-import { asRecord, asStringList, table } from "./db.js";
+import { asRecord, asStringList, getHosted, setHosted, table, type HostedInfo } from "./db.js";
 import { runSalesDaily, runSalesWeekly } from "./sales.js";
 import {
   contactCompanyLinks,
@@ -201,8 +203,8 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
-import { driveBindingDiscover, driveBindingSet, driveBindingStatus } from "./drive/binding.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany, resolveProducerSaveProject } from "./drive/tools.js";
+import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { saveDriveFile } from "./drive/save.js";
 import { listDriveFiles } from "./drive/store.js";
 import { listClientFiles } from "./drive/files-list.js";
@@ -215,7 +217,7 @@ import { registerPrivacy } from "./privacy.js";
 import { reemitSensitivity, sensitivityOf } from "./register.js";
 import { onReplyIssueUpdated } from "./support.js";
 import { startNewClient } from "./new-client.js";
-import { backfillServices, onServiceStepIssue, runServicesCheck } from "./service-onboarding.js";
+import { backfillServices, noteHostedPlan, onServiceStepIssue, runServicesCheck } from "./service-onboarding.js";
 import {
   findRecords,
   getClientProfileTool,
@@ -547,9 +549,21 @@ const plugin = definePlugin({
       if (!requestId) return;
 
       try {
+        const projectId = await resolveProducerSaveProject(ctx, companyId, {
+          kind: typeof kind === "string" ? kind : undefined,
+          clientKind: typeof clientKind === "string" ? clientKind : undefined,
+          clientRef: typeof clientRef === "string" ? clientRef : undefined,
+        });
+        if (!projectId) {
+          const hint = clientRef
+            ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
+            : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
+          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "no_project", hint });
+          return;
+        }
         const input: Parameters<typeof saveDriveFile>[2] = {
           companyId,
-          projectId: "root",
+          projectId,
           fileKind: (kind as string) || "ops",
           name: (name as string) || "",
           mimeType: (mimeType as string) || "",
@@ -571,6 +585,18 @@ const plugin = definePlugin({
       } catch (error) {
         ctx.logger.info("Drive save event handler failed", { requestId, error: error instanceof Error ? error.message : String(error) });
         await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      }
+    });
+
+    // Subscribe to Setup plugin's drive.binding.set event
+    ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
+      try {
+        // Validate event has companyId and payload object before processing
+        if (event.companyId && event.payload && typeof event.payload === "object") {
+          await onDriveBindingSetEvent(ctx, event as unknown as { companyId: string; payload: Record<string, unknown> });
+        }
+      } catch (error) {
+        ctx.logger.info("CRM drive.binding.set event handler failed", { error: String(error) });
       }
     });
 
@@ -1117,6 +1143,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     ...base,
     found: true as const,
     care,
+    hosted: account ? await getHosted(ctx, account.id).catch(() => null) : null,
     agreements: agreementsAndGrowth.agreements,
     growth: agreementsAndGrowth.growth,
     company: account,
@@ -1567,9 +1594,31 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   for (const key of BILLING_KEYS) account[key] = result.columns[key] as string | null;
   account.custom = result.custom;
   await saveAccount(ctx, account);
+  const hosted = await applyHostedPatch(ctx, account, params);
   await insertFacts(ctx, account.companyId, "company", account.id, result.facts);
   if (account.lifecycle === "churned" && lifecycleBefore !== "churned") await offboardCompany(ctx, account);
-  return { ...account, refused: result.refused };
+  return { ...account, ...hosted, refused: result.refused };
+}
+
+/** `hostedPlan` (starter, growth or business; null clears) and `hostedCompanyId` on update-company. Anything else is refused. */
+async function applyHostedPatch(ctx: PluginContext, account: AccountDraft, params: Record<string, unknown>): Promise<HostedInfo> {
+  const accountId = account.id;
+  const patch: Partial<HostedInfo> = {};
+  if ("hostedPlan" in params) {
+    const plan = params.hostedPlan;
+    if (plan !== null && !isHostedTier(plan)) throw new CrmError(`hostedPlan must be one of ${HOSTED_TIERS.join(", ")}`);
+    patch.hostedPlan = plan;
+  }
+  if ("hostedCompanyId" in params) {
+    const id = params.hostedCompanyId;
+    if (id !== null && (typeof id !== "string" || !id.trim())) throw new CrmError("hostedCompanyId must be a company id or null");
+    patch.hostedCompanyId = id === null ? null : (id as string).trim();
+    const current = (await getHosted(ctx, accountId)).hostedCompanyId;
+    if (current && patch.hostedCompanyId && patch.hostedCompanyId !== current) throw new CrmError("This client already has a hosted company. Do not overwrite its id; clear it first with hostedCompanyId null if it is wrong.");
+  }
+  if (Object.keys(patch).length > 0) await setHosted(ctx, accountId, patch);
+  if (patch.hostedPlan) await noteHostedPlan(ctx, account.companyId, account, patch.hostedPlan);
+  return getHosted(ctx, accountId);
 }
 
 /** A company became churned: its people's running sequences stop, and it is logged. */

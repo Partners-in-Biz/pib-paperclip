@@ -182,6 +182,7 @@ export function fakeCtx(options: {
     return { routineId: routine?.id ?? null, routine, status, missingRefs: [] };
   };
   const ctx = {
+    manifest: { id: "partnersinbiz.cockpit" },
     db,
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
     events: {

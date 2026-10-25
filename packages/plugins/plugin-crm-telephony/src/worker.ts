@@ -10,6 +10,7 @@ import { voiceTokenAction } from "./voice-token-action.js";
 import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
+import { registerTimelineHandlers } from "./timeline-handlers.js";
 
 let ctx: PluginContext | null = null;
 
@@ -72,6 +73,8 @@ const plugin = definePlugin({
     pluginCtx.actions.register("voice-token", async (_params, context: PluginPerformActionContext) => {
       return voiceTokenAction(pluginCtx, context);
     });
+
+    await registerTimelineHandlers(pluginCtx);
   },
 
   async onWebhook(input: PluginWebhookInput) {

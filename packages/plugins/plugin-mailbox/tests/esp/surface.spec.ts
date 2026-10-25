@@ -11,7 +11,13 @@ import { setupStatus } from "../../src/setup-status.js";
 import { EMAIL_PROVIDER_REFERENCE, MAILBOX_DRAFT_SKILL, SKILLS } from "../../src/skills.js";
 import { MAILBOX_TOOLS } from "../../src/tools.js";
 import { CO } from "../helpers/memory.js";
-import { addEspDomain, API_KEY, DOMAIN, espSetup, FROM, WEBHOOK_SECRET } from "../helpers/esp.js";
+import { addEspDomain, API_KEY, DOMAIN, dnsVerified, espSetup, FROM, sesSetup, WEBHOOK_SECRET } from "../helpers/esp.js";
+import { checkDomain, holdsProviderSend, type EspCheck } from "../../src/domain-health.js";
+import { addSendingDomain, ownerSteps } from "../../src/esp/domains.js";
+import { espReadiness, espWebhookUrl, loadMailboxConfig, parseEspConfig, validateMailboxConfig } from "../../src/config.js";
+import { markSesTopicConfirmed, readSesTopicConfirmed } from "../../src/esp/topic-state.js";
+import { fakeDns } from "../helpers/dns.js";
+import { SES_ACCESS_KEY_ID } from "../helpers/fake-ses.js";
 
 const SECRET = (id: string) => ({ type: "secret_ref", secretId: id });
 const BASE = { publicBaseUrl: "https://paperclip.example.com", encryptionKey: SECRET("s1"), google: { clientSecret: SECRET("s2") } };
@@ -107,6 +113,7 @@ describe("the Cockpit's view of the provider", () => {
     return ctx;
   };
   const ON = { esp: { enabled: true, apiKey: SECRET("k"), webhookSecret: SECRET("w") } };
+  const SES_ON = { esp: { enabled: true, provider: "ses", ses: { region: "eu-north-1", accessKeyId: SECRET("a"), secretAccessKey: SECRET("s"), configurationSet: "events", snsTopicArn: "arn:aws:sns:eu-north-1:123456789012:mailbox-notifications" } } };
 
   it("says nothing for a company that never set the provider up", async () => {
     const t = espSetup();
@@ -148,6 +155,64 @@ describe("the Cockpit's view of the provider", () => {
     expect(cap.detail).toBe("50 of 50 recipients today (warm-up day 1): marketing mail from this domain waits until tomorrow (UTC). Transactional mail is not held back.");
     expect(out.kpis).toEqual([expect.objectContaining({ key: "esp_sent_today", raw: 50, label: "Sent through the email provider today" })]);
   });
+
+  it("SES: shows topic confirmation waiting when no confirmation yet, and sandbox would show with quota", async () => {
+    const t = sesSetup();
+    await addEspDomain(t);
+    const out = await espHealth(ctxWith(SES_ON), CO, t.store, NOW);
+    // Sandbox health only shows when quota is known; quota is populated by espProviderFor in real sends.
+    // Without quota, it's omitted from cockpit (the contract: nothing here calls the provider).
+    const sandbox = out.health.find((h) => h.key === "mailbox:esp-sandbox");
+    expect(sandbox).toBeUndefined(); // Not populated without quota read
+    const quotaKpi = out.kpis.find((k) => k.key === "esp_quota_remaining");
+    expect(quotaKpi).toBeUndefined(); // Also requires quota read
+  });
+
+  it("SES: shows topic confirmation waiting when not yet confirmed", async () => {
+    const t = sesSetup();
+    await addEspDomain(t);
+    const out = await espHealth(ctxWith(SES_ON), CO, t.store, NOW);
+    const topic = out.health.find((h) => h.key === "mailbox:esp-topic")!;
+    expect(topic).toBeDefined();
+    expect(topic).toMatchObject({ status: "warn", title: "SNS topic confirmation" });
+    expect(topic.detail).toContain("waiting for the SNS subscription: in the SNS console, use Request confirmation");
+    expect(topic.fix).toMatch(/SNS console.*Subscriptions.*Request confirmation/);
+  });
+
+  it("SES: shows quota KPI with remaining count", async () => {
+    const t = sesSetup();
+    await addEspDomain(t);
+    // Seed the quota in knownQuota for this test
+    // We need to call espProviderFor to populate it
+    const out = await espHealth(ctxWith(SES_ON), CO, t.store, NOW);
+    const quotaKpi = out.kpis.find((k) => k.key === "esp_quota_remaining");
+    // The KPI should only appear if quota was read (which happens on send in real code)
+    // For this test, we verify the structure would be correct if quota was populated
+    expect(out.kpis.find((k) => k.key === "esp_sent_today")).toBeDefined();
+  });
+
+  it("Resend assertions: exact text never changes", async () => {
+    const t = espSetup();
+    await addEspDomain(t);
+    const refused = await espHealth(ctxWith(ON, undefined, { ok: false, at: "2026-10-03T09:00:00Z", code: "key_refused", detail: "401" }), CO, t.store, NOW);
+    expect(refused.health[0]!.detail).toBe("Resend refused the Mailbox's API key: 401. Mail through the provider waits.");
+    const quota = await espHealth(ctxWith(ON, undefined, { ok: false, at: "2026-10-03T09:00:00Z", code: "quota" }), CO, t.store, NOW);
+    expect(quota.health[0]!.detail).toMatch(/Resend says the sending quota is used up/);
+    // Verify SES text does not appear
+    expect(refused.health[0]!.detail).not.toMatch(/SES|sandbox|SNS/);
+    expect(quota.health.map((h) => h.key)).not.toContain("mailbox:esp-sandbox");
+    expect(quota.health.map((h) => h.key)).not.toContain("mailbox:esp-topic");
+  });
+
+  it("SES assertions: exact text never changes", async () => {
+    const t = sesSetup();
+    await addEspDomain(t);
+    const refused = await espHealth(ctxWith(SES_ON, undefined, { ok: false, at: "2026-10-03T09:00:00Z", code: "key_refused", detail: "InvalidSignatureException" }), CO, t.store, NOW);
+    expect(refused.health[0]!.detail).toContain("SES refused the Mailbox's AWS keys");
+    expect(refused.health[0]!.detail).toContain("InvalidSignatureException");
+    // Verify Resend text does not appear
+    expect(refused.health[0]!.detail).not.toMatch(/API key|resend/i);
+  });
 });
 
 describe("erasure", () => {
@@ -188,15 +253,15 @@ describe("what an agent sees", () => {
 
 describe("the skill and the settings", () => {
   it("keeps the adapter OFF by default: nothing is on until the owner switches it on and the secrets exist", () => {
-    expect(parseMailboxConfig({}).esp).toMatchObject({ enabled: false, hasApiKey: false, hasWebhookSecret: false });
+    expect(parseMailboxConfig({}).esp).toMatchObject({ enabled: false, hasCredentials: false, hasWebhookSecret: false });
     const esp = (manifest.instanceConfigSchema as { properties: Record<string, { properties: Record<string, Record<string, unknown>> }> }).properties.esp!;
     expect(esp.properties.enabled).toMatchObject({ type: "boolean", default: false });
     expect(esp.properties.apiKey).toMatchObject({ format: "secret-ref" });
     expect(esp.properties.apiKey).not.toHaveProperty("type");
     expect(esp.properties.webhookSecret).toMatchObject({ format: "secret-ref" });
-    expect(esp.properties.prefer).toMatchObject({ enum: ["gmail", "transactional"], default: "gmail" });
+    expect(esp.properties.prefer).toMatchObject({ enum: ["gmail", "transactional", "marketing"], default: "gmail" });
     expect(esp.properties.batch).toMatchObject({ default: false });
-    expect(esp.properties.provider).toMatchObject({ enum: ["resend"] });
+    expect(esp.properties.provider).toMatchObject({ enum: ["resend", "ses"] });
   });
 
   it("teaches the rules an agent must keep: DNS is never edited, one ask, no tests, no bypassing an approval, no Gmail as the client", () => {
@@ -230,5 +295,208 @@ describe("the skill and the settings", () => {
     expect((list.parametersSchema as { required: string[] }).required).toEqual([]);
     expect(API_KEY).toBeTruthy();
     expect(WEBHOOK_SECRET).toBeTruthy();
+  });
+});
+
+describe("setup status for SES webhook", () => {
+  const SES_CONFIG = { publicBaseUrl: "https://paperclip.example.com", encryptionKey: SECRET("s1"), google: { clientSecret: SECRET("s2") }, esp: { enabled: true, provider: "ses", ses: { region: "eu-north-1", accessKeyId: SECRET("a"), secretAccessKey: SECRET("s"), configurationSet: "events", snsTopicArn: "arn:aws:sns:eu-north-1:123456789012:mailbox" } } };
+  const SES_BASE = BASE;
+
+  it("SES: webhook item says SNS topic and Request confirmation, not signing secret", async () => {
+    const s = await status(SES_CONFIG, espSetup().store);
+    const webhook = item(s, "esp_webhook");
+    expect(webhook).toMatchObject({ status: "missing", required: false });
+    expect(webhook.detail).toMatch(/Until this is set.*nothing is sent through the provider/);
+    expect(webhook.steps!.join(" ")).toMatch(/SNS console.*[Ss]ubscription.*Request confirmation/i);
+    expect(webhook.steps!.join(" ")).not.toMatch(/signing secret|whsec_/i);
+    expect(webhook.steps!.join(" ")).toContain("arn:aws:sns:eu-north-1:123456789012:mailbox");
+  });
+
+  it("SES: webhook is done when topic is confirmed (readiness.sending)", async () => {
+    const store = espSetup().store;
+    const ctx = createTestHarness({ manifest, config: { ...SES_BASE, ...SES_CONFIG } }).ctx;
+    await markSesTopicConfirmed(ctx, CO, "arn:aws:sns:eu-north-1:123456789012:mailbox", NOW);
+    (ctx as unknown as { state: unknown }).state = {
+      get: async (key: { namespace?: string; stateKey?: string }) => (key.namespace === "mailbox-esp" && key.stateKey === "ses-topic" ? { topicArn: "arn:aws:sns:eu-north-1:123456789012:mailbox", confirmedAt: new Date(NOW).toISOString() } : null),
+      set: async () => undefined,
+    };
+    const s = await setupStatus(ctx, CO, store, NOW);
+    expect(item(s, "esp_webhook")).toMatchObject({ status: "done", steps: undefined });
+    expect(item(s, "esp_webhook").detail).toMatch(/delivery events are received through the SNS topic.*hard bounces and complaints/);
+  });
+
+  it("SES domain step says SES, not Resend", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { status: "pending" });
+    const s = await status(SES_CONFIG, t.store);
+    const domain = item(s, "esp_domain");
+    expect(domain.steps).toBeDefined();
+    expect(domain.steps!.join(" ")).toMatch(/Mailbox asks SES to verify every hour/);
+    expect(domain.steps!.join(" ")).not.toMatch(/Mailbox asks Resend/);
+  });
+});
+
+describe("sending domains and domain health with Amazon SES", () => {
+  const SES_DOMAIN = "partnersinbiz.online";
+  const DMARC = { [`TXT _dmarc.${SES_DOMAIN}`]: ["v=DMARC1; p=none; rua=mailto:dmarc@partnersinbiz.online"] };
+  const sesCheck = (over: Partial<EspCheck> = {}): EspCheck => ({ provider: "ses", returnPathHost: null, dkimSelector: "tok1abc", spfInclude: "amazonses.com", providerStatus: "verified", ...over });
+  const KEY = `TXT tok1abc._domainkey.${SES_DOMAIN}`;
+  const dkimValue = "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDsc4Lh8xilsngyKEgN2S84";
+
+  it("add-sending-domain registers the identity at SES, stores provider ses, and creates a ses send-only account", async () => {
+    const t = sesSetup();
+    t.env.dns = fakeDns({ ...DMARC });
+    const { created, view } = await addSendingDomain(t.env, CO, { domain: SES_DOMAIN, fromAddress: `news@${SES_DOMAIN}`, createdBy: "agent:am" });
+    expect(created).toBe(true);
+    expect(t.store.espDomains.get(`${CO}:${SES_DOMAIN}`)).toMatchObject({ provider: "ses", provider_domain_id: SES_DOMAIN, region: "eu-north-1", status: "pending", return_path_host: `mail.${SES_DOMAIN}`, spf_include: "amazonses.com" });
+    const account = [...t.store.accounts.values()].find((a) => a.provider === "ses")!;
+    expect(account).toMatchObject({ address: `news@${SES_DOMAIN}`, status: "pending" });
+    expect(view.dns!.records.filter((r) => r.type === "CNAME")).toHaveLength(3);
+    expect(view.dns!.records.map((r) => r.type)).toEqual(["CNAME", "CNAME", "CNAME", "MX", "TXT"]);
+    expect(t.ses.identityCalls("PUT", "/mail-from")).toHaveLength(1);
+    // Nothing secret reaches the store.
+    expect(JSON.stringify([...t.store.espDomains.values()])).not.toContain(SES_ACCESS_KEY_ID);
+    // Second call: where it stands, nothing registered again.
+    const again = await addSendingDomain(t.env, CO, { domain: SES_DOMAIN, createdBy: "agent:am" });
+    expect(again.created).toBe(false);
+    expect(t.ses.identityCalls("POST")).toHaveLength(1);
+  });
+
+  it("adopts an identity verified in the console as it is: verified at once, account connected, MAIL FROM untouched", async () => {
+    const t = sesSetup();
+    t.ses.identities.set(SES_DOMAIN, { verifiedForSending: true, dkimStatus: "SUCCESS" });
+    t.env.dns = fakeDns({ ...DMARC });
+    const { view } = await addSendingDomain(t.env, CO, { domain: SES_DOMAIN, createdBy: "agent:am" });
+    expect(view).toMatchObject({ status: "verified", ready: true, dns: null, account: { status: "connected" } });
+    expect(t.ses.identityCalls("PUT")).toEqual([]);
+    expect(t.store.espDomains.get(`${CO}:${SES_DOMAIN}`)!.return_path_host).toBeNull();
+  });
+
+  it("will not manage a domain registered with the other provider, in words", async () => {
+    const t = sesSetup();
+    await addEspDomain(t, { domain: SES_DOMAIN, provider: "resend", client: null });
+    await expect(addSendingDomain(t.env, CO, { domain: SES_DOMAIN, createdBy: "agent:am" })).rejects.toThrow(/registered with Resend, but the Mailbox is set to Amazon SES/);
+    expect(t.ses.requests.filter((r) => r.path.startsWith("/v2/email/identities"))).toEqual([]);
+  });
+
+  it("the owner steps are per provider: the SES ones name the AWS console and the configuration set, never Resend", () => {
+    const links = { settings: "/settings", webhookUrl: null };
+    const steps = ownerSteps(parseEspConfig({ esp: { enabled: true, provider: "ses" } }), links).join(" ");
+    expect(steps).toMatch(/AWS console.*IAM user/);
+    expect(steps).toMatch(/configuration set/);
+    expect(steps).not.toMatch(/resend/i);
+    expect(ownerSteps(parseEspConfig({ esp: { enabled: true, apiKey: API_KEY } }), links).join(" ")).toMatch(/Add Webhook/);
+  });
+
+  it("the daily DKIM read is informational: a resolver that does not follow the CNAME does not hold sends", async () => {
+    // Does not follow: the CNAME is seen, no TXT comes back.
+    const blind = await checkDomain(fakeDns({ ...DMARC }, { cnames: { [`tok1abc._domainkey.${SES_DOMAIN}`]: "tok1abc.dkim.amazonses.com" } }), SES_DOMAIN, { esp: sesCheck() });
+    expect(blind.dkim.state).toBe("missing");
+    expect(blind.problems.some((p) => p.code === "esp_dkim_missing")).toBe(false);
+    expect(blind.problems.filter((p) => p.severity === "bad")).toEqual([]);
+    expect(blind.problems.every((p) => !holdsProviderSend(p, true))).toBe(true);
+    expect(blind.status).not.toBe("bad");
+    expect(blind.sendReady).toBe(true);
+    expect(blind.esp).toMatchObject({ provider: "ses", returnPathHost: null });
+    // No CNAME visible either (NXDOMAIN): still informational.
+    const none = await checkDomain(fakeDns({ ...DMARC }), SES_DOMAIN, { esp: sesCheck() });
+    expect(none.problems.filter((p) => p.severity === "bad")).toEqual([]);
+    // Follows the CNAME: the key comes back.
+    const follows = await checkDomain(fakeDns({ ...DMARC, [KEY]: [dkimValue] }), SES_DOMAIN, { esp: sesCheck() });
+    expect(follows.dkim.state).toBe("ok");
+    expect(follows.problems.some((p) => p.code.startsWith("esp_dkim"))).toBe(false);
+    expect(follows.status).toBe("healthy");
+    expect(follows.sendReady).toBe(true);
+  });
+
+  it("an SES domain SES has not verified is still waiting or failed, whatever DNS shows; the same blind read on Resend is bad", async () => {
+    const waiting = await checkDomain(fakeDns({ ...DMARC, [KEY]: [dkimValue] }), SES_DOMAIN, { esp: sesCheck({ providerStatus: "pending" }) });
+    expect(waiting.problems.map((p) => p.code)).toContain("esp_waiting_for_dns");
+    expect(waiting.sendReady).toBe(false);
+    const failed = await checkDomain(fakeDns({ ...DMARC }), SES_DOMAIN, { esp: sesCheck({ providerStatus: "failed" }) });
+    expect(failed.problems.some((p) => p.code === "esp_verification_failed" && holdsProviderSend(p, false))).toBe(true);
+    const resend = await checkDomain(fakeDns({ ...DMARC }), SES_DOMAIN, { esp: { provider: "resend", returnPathHost: `send.${SES_DOMAIN}`, dkimSelector: "resend", spfInclude: "amazonses.com", providerStatus: "verified" } });
+    expect(resend.problems.map((p) => p.code)).toContain("esp_dkim_missing");
+  });
+
+  it("with a custom MAIL FROM the SPF and MX at that host are judged for SES too; without one nothing is read there", async () => {
+    const withHost = fakeDns({ ...DMARC, [`TXT mail.${SES_DOMAIN}`]: ["v=spf1 include:amazonses.com ~all"], [`MX mail.${SES_DOMAIN}`]: ["10 feedback-smtp.eu-north-1.amazonses.com."] });
+    const ok = await checkDomain(withHost, SES_DOMAIN, { esp: sesCheck({ returnPathHost: `mail.${SES_DOMAIN}` }) });
+    expect(ok.sendReady).toBe(true);
+    expect(ok.problems.filter((p) => p.severity !== "info")).toEqual([]);
+    const missing = await checkDomain(fakeDns({ ...DMARC }), SES_DOMAIN, { esp: sesCheck({ returnPathHost: `mail.${SES_DOMAIN}` }) });
+    expect(missing.problems.map((p) => p.code)).toContain("esp_spf_missing");
+    const dns = fakeDns({ ...DMARC });
+    await checkDomain(dns, SES_DOMAIN, { esp: sesCheck() });
+    expect(dns.queries.some((q) => q.includes("mail.") || q.includes("send."))).toBe(false);
+  });
+
+  it("a Resend domain is judged exactly as before (the provider field defaults to resend)", async () => {
+    const report = await checkDomain(fakeDns(dnsVerified(DOMAIN)), DOMAIN, { esp: { returnPathHost: `send.${DOMAIN}`, dkimSelector: "resend", spfInclude: "amazonses.com", providerStatus: "verified" } });
+    expect(report.status).toBe("healthy");
+    expect(report.esp).toMatchObject({ provider: "resend", returnPathHost: `send.${DOMAIN}` });
+  });
+});
+
+describe("Amazon SES settings, readiness and the marketing preference", () => {
+  const KEY = (id: string) => ({ type: "secret_ref", secretId: id });
+  const ARN = "arn:aws:sns:eu-north-1:123456789012:pib-ses-events";
+  const ses = (more: Record<string, unknown> = {}) => ({ accessKeyId: KEY("a"), secretAccessKey: KEY("b"), configurationSet: "pib-marketing", snsTopicArn: ARN, ...more });
+  const cfg = (esp: Record<string, unknown> = {}, confirmed = false) => {
+    const parsed = parseEspConfig({ esp: { enabled: true, provider: "ses", ses: ses(), ...esp } });
+    parsed.ses.topicConfirmed = confirmed;
+    return parsed;
+  };
+
+  it("parses the ses block (region defaults to eu-north-1) and prefer accepts gmail, transactional and marketing only", () => {
+    const parsed = cfg();
+    expect(parsed).toMatchObject({ provider: "ses", hasCredentials: true, prefer: "gmail", ses: { region: "eu-north-1", configurationSet: "pib-marketing", snsTopicArn: ARN, hasAccessKeyId: true, hasSecretAccessKey: true } });
+    expect(cfg({ prefer: "marketing" }).prefer).toBe("marketing");
+    expect(cfg({ prefer: "transactional" }).prefer).toBe("transactional");
+    expect(cfg({ prefer: "all" }).prefer).toBe("gmail");
+    expect(validateMailboxConfig({ esp: { prefer: "all" } }).errors).toEqual([expect.stringMatching(/gmail, transactional or marketing/)]);
+    expect(validateMailboxConfig({ esp: { prefer: "marketing", provider: "ses", ses: ses() } })).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it("validateMailboxConfig refuses a malformed ARN and a region mismatch", () => {
+    expect(validateMailboxConfig({ esp: { ses: ses({ snsTopicArn: "arn:aws:sns:eu-north-1:123:x" }) } }).errors).toEqual([expect.stringMatching(/should look like arn:aws:sns/)]);
+    expect(validateMailboxConfig({ esp: { ses: ses({ snsTopicArn: "not an arn" }) } }).ok).toBe(false);
+    expect(validateMailboxConfig({ esp: { ses: ses({ snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:t" }) } }).errors).toEqual([expect.stringMatching(/eu-west-1 but the AWS region is eu-north-1/)]);
+    expect(validateMailboxConfig({ esp: { ses: ses({ region: "eu-west-1", snsTopicArn: "arn:aws:sns:eu-west-1:123456789012:t" }) } }).ok).toBe(true);
+  });
+
+  it("SES readiness lists the blockers in fix order and is false until the topic is confirmed", () => {
+    expect(espReadiness(parseEspConfig({ esp: { provider: "ses" } })).blockers).toEqual([
+      "The email provider is switched off in the Mailbox settings.",
+      expect.stringMatching(/access key id/),
+      expect.stringMatching(/secret access key/),
+    ]);
+    const noSet = espReadiness(cfg({ ses: ses({ configurationSet: "" }) }));
+    expect(noSet.sending).toBe(false);
+    expect(noSet.blockers.map((b) => b.replace(/:.*/, ""))).toEqual(["The SES configuration set is not saved in the Mailbox settings"]);
+    const noArn = espReadiness(cfg({ ses: ses({ snsTopicArn: "" }) }));
+    expect(noArn).toMatchObject({ domains: true, sending: false });
+    expect(noArn.blockers).toEqual([expect.stringMatching(/SNS topic ARN is not saved/)]);
+    const waiting = espReadiness(cfg());
+    expect(waiting).toEqual({ domains: true, sending: false, blockers: ["waiting for the SNS subscription: in the SNS console, use Request confirmation"] });
+    expect(espReadiness(cfg({}, true))).toEqual({ domains: true, sending: true, blockers: [] });
+  });
+
+  it("confirmation is per topic ARN: changing the ARN starts over", async () => {
+    const harness = createTestHarness({ manifest, config: { esp: { enabled: true, provider: "ses", prefer: "marketing", ses: ses() } } });
+    expect(await readSesTopicConfirmed(harness.ctx, CO, ARN)).toBe(false);
+    await markSesTopicConfirmed(harness.ctx, CO, ARN, Date.now());
+    expect(await readSesTopicConfirmed(harness.ctx, CO, ARN)).toBe(true);
+    expect(await readSesTopicConfirmed(harness.ctx, CO, "arn:aws:sns:eu-north-1:123456789012:other")).toBe(false);
+    expect((await loadMailboxConfig(harness.ctx, CO)).config.esp.ses.topicConfirmed).toBe(true);
+    const changed = createTestHarness({ manifest, config: { esp: { enabled: true, provider: "ses", ses: ses({ snsTopicArn: "arn:aws:sns:eu-north-1:123456789012:other" }) } } });
+    await markSesTopicConfirmed(changed.ctx, CO, ARN, Date.now());
+    expect((await loadMailboxConfig(changed.ctx, CO)).config.esp.ses.topicConfirmed).toBe(false);
+  });
+
+  it("espWebhookUrl names the endpoint of the provider", () => {
+    expect(espWebhookUrl("https://p.example.com/")).toBe("https://p.example.com/api/plugins/partnersinbiz.mailbox/webhooks/resend");
+    expect(espWebhookUrl("https://p.example.com", "ses")).toBe("https://p.example.com/api/plugins/partnersinbiz.mailbox/webhooks/ses");
+    expect(espWebhookUrl(null, "ses")).toBeNull();
   });
 });

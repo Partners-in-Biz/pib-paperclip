@@ -89,15 +89,17 @@ export async function recordRepair(
 }
 
 /**
- * Lists repairs for a company, optionally filtered by kind and/or since timestamp.
+ * Lists repairs for a company, optionally filtered by kind, targetIds, and/or since timestamp.
  * Results are ordered by created_at DESC (newest first), then by id DESC.
  * Default limit is 100, clamped to 1..500.
+ * When targetIds are provided, they are applied in the WHERE clause so LIMIT applies after filtering.
  */
 export async function listRepairs(
   ctx: PluginContext,
   companyId: string,
   opts?: {
     kind?: string;
+    targetIds?: string[];
     since?: string;
     limit?: number;
   },
@@ -110,6 +112,20 @@ export async function listRepairs(
   if (opts?.kind) {
     params.push(opts.kind);
     query += ` AND kind = $${params.length}`;
+  }
+
+  if (opts?.targetIds && opts.targetIds.length > 0) {
+    // Build OR clause for each targetId to apply filter in WHERE (before LIMIT)
+    const idClauses = opts.targetIds.map(() => {
+      params.push("");  // Placeholder
+      return `target_id = $${params.length}`;
+    });
+    // Replace placeholders with actual targetIds
+    let idIdx = 0;
+    for (let i = params.length - opts.targetIds.length; i < params.length; i++) {
+      params[i] = opts.targetIds[idIdx++];
+    }
+    query += ` AND (${idClauses.join(" OR ")})`;
   }
 
   if (opts?.since) {

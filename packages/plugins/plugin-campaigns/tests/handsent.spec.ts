@@ -51,7 +51,7 @@ describe("a step issue for an agent to send by hand", () => {
     expect(issue!.title).toBe("Hello Ada: Ada Lovelace");
     const description = issue!.description!;
     // The body for this person, then the footer, then the instruction to send it whole.
-    expect(description).toContain("Hi Ada, we help Acme Plumbing.\n\nCan we talk?\n\n--\nYou are getting this email from Partners in Biz. To stop getting these emails, unsubscribe here: ");
+    expect(description).toContain("Hi Ada, we help Acme Plumbing.\n\nCan we talk?\n\n--\nYou are getting this email from PiB. To stop getting these emails, unsubscribe here: ");
     expect(description).toMatch(/or reply STOP\.\n\nSend to: Ada Lovelace <ada@acme\.test>/i);
     expect(description).toContain("including the last lines that say who we are and how to unsubscribe: never cut them");
     // The link is the one only this person on this list can use.
@@ -65,7 +65,7 @@ describe("a step issue for an agent to send by hand", () => {
     const issue = await stepIssue(booted, "e-acme");
     expect(issue!.title).toBe("[Acme Plumbing] Hello Ada: Ada Lovelace");
     expect(issue!.description).toContain("You are getting this email from Acme Plumbing. To stop getting these emails, unsubscribe here: ");
-    expect(issue!.description).not.toContain("from Partners in Biz");
+    expect(issue!.description).not.toContain("from PiB");
     expect(await linkIn(booted.harness.ctx, issue!.description!)).toMatchObject({ email: "ada@acme.test", senderKey: "company:acme" });
   });
 
@@ -74,7 +74,7 @@ describe("a step issue for an agent to send by hand", () => {
     s.campaign_enrollments!.push(enrollment("e-own", "camp-own", "ada", { next_due_at: PAST }));
     const booted = await boot({ store: s, config: { timezone: "Africa/Johannesburg" } });
     const issue = await stepIssue(booted, "e-own");
-    expect(issue!.description).toContain("\n\n--\nYou are getting this email from Partners in Biz. To stop getting these emails, reply STOP.");
+    expect(issue!.description).toContain("\n\n--\nYou are getting this email from PiB. To stop getting these emails, reply STOP.");
     expect(issue!.description).not.toContain("unsubscribe here");
   });
 
@@ -100,7 +100,7 @@ describe("a failed automatic send handed to an agent", () => {
     const description = issue!.description!;
     expect(description).toContain("Gmail not connected");
     expect(description).toContain("**Subject:** Hello Ada");
-    expect(description).toContain("Hi Ada, we help Acme Plumbing.\n\nCan we talk?\n\n--\nYou are getting this email from Partners in Biz.");
+    expect(description).toContain("Hi Ada, we help Acme Plumbing.\n\nCan we talk?\n\n--\nYou are getting this email from PiB.");
     expect(description).toContain("including the last lines that say who we are and how to unsubscribe");
     expect(await linkIn(booted.harness.ctx, description)).toMatchObject({ email: "ada@acme.test", senderKey: "own" });
   });

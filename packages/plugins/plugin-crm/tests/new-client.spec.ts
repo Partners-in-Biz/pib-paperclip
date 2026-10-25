@@ -32,7 +32,7 @@ describe("the new-client checklist", () => {
     // What the CRM cannot see it does not claim.
     for (const key of ["branch-policy", "agent-guide", "grants", "billing"]) expect(byKey(checklist, key).state).toBe("unknown");
     expect(byKey(checklist, "branch-policy").how).toMatch(/development/);
-    expect(byKey(checklist, "branch-policy").how).toMatch(/main only changes with Peet's approval/);
+    expect(byKey(checklist, "branch-policy").how).toMatch(/main only changes with the owner's approval/);
     expect(byKey(checklist, "grants").how).toMatch(/ONE ask|One ask/i);
   });
 

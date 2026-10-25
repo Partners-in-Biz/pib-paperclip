@@ -46,6 +46,7 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
   const skey = (k: Record<string, unknown>) => `${k.scopeKind}|${k.scopeId ?? ""}|${k.namespace ?? "default"}|${k.stateKey}`;
   let seq = 0;
   const ctx = {
+    manifest: { id: "partnersinbiz.payroll" },
     db: {
       namespace: "plugin_payroll_c6fcddb95c",
       query: async (sql: string, params: unknown[] = []) => {

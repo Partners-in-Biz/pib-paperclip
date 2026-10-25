@@ -14,7 +14,7 @@
  * hired through that plugin's own hire so the plugin links and wires it.
  */
 import { RUN_PROFILES, type RunProfile } from "@partnersinbiz/pib-plugin-kit/run-profile";
-import { TEAM_ROLES, teamSkillKey, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
+import { COMPANY_LIBRARY_SKILLS, TEAM_ROLES, teamSkillKey, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
 import { PACK_AGENT_FILES, PACK_MANIFEST_JSON, PACK_SHARED_BLOCKS } from "./pack/data.generated.js";
 import { parseSubagents, type SubagentPolicy } from "./subagents.js";
 
@@ -61,8 +61,10 @@ export interface AgentTemplate {
   match: { names: string[]; titles: string[]; roles: string[] };
   /** hire: a hire task; host / plugin: the host or a plugin creates it and the pack only carries its run profile. */
   provisioning: Provisioning;
-  /** Selected by default in Setup -> New company. */
+  /** Selected by default in Setup -> New company for the `pib` hosting profile (PiB's own company). */
   defaultOn: boolean;
+  /** The same for the `client` hosting profile; absent means "as `defaultOn`". `"repo"`: only when the company has a project with a repository. */
+  defaultOnClient?: DefaultOn;
   requires: { modules: string[]; environment?: string };
   notes: string[];
   kitRole?: TeamRoleKey;
@@ -90,6 +92,42 @@ export interface TemplatePack {
   templates: AgentTemplate[];
 }
 
+/** Whether a hosting profile selects a template by default. `"repo"` waits for a project with a repository. */
+export type DefaultOn = boolean | "repo";
+
+/** The manifest writes `defaultOn` as a boolean (same for both profiles) or as `{ pib, client }`. */
+function parseDefaultOn(key: string, value: unknown, problems: string[]): { pib: boolean; client: DefaultOn } {
+  if (value === undefined || typeof value === "boolean") return { pib: value === true, client: value === true };
+  const row = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  if (!row) {
+    problems.push(`${key}: defaultOn must be true, false or { pib, client }`);
+    return { pib: false, client: false };
+  }
+  if (typeof row.pib !== "boolean") problems.push(`${key}: defaultOn.pib must be true or false`);
+  if (typeof row.client !== "boolean" && row.client !== "repo") problems.push(`${key}: defaultOn.client must be true, false or "repo"`);
+  return { pib: row.pib === true, client: row.client === true ? true : row.client === "repo" ? "repo" : false };
+}
+
+export type HostingProfile = "pib" | "client";
+
+/** Whether a template is hired by default under a hosting profile. `hasRepository`: the company has a project with a repository. */
+export function isDefaultOn(template: Pick<AgentTemplate, "defaultOn" | "defaultOnClient">, profile: HostingProfile, hasRepository: boolean): boolean {
+  const value: DefaultOn = profile === "client" ? template.defaultOnClient ?? template.defaultOn : template.defaultOn;
+  return value === "repo" ? hasRepository : value;
+}
+
+/** Whether the host's project list (`GET /api/companies/:id/projects`) holds a live project with a repository: on its codebase, primary workspace or any workspace. */
+export function projectsHaveRepository(body: unknown): boolean {
+  if (!Array.isArray(body)) return false;
+  const hasUrl = (value: unknown): boolean => !!value && typeof value === "object" && typeof (value as { repoUrl?: unknown }).repoUrl === "string" && (value as { repoUrl: string }).repoUrl.trim().length > 0;
+  return body.some((project) => {
+    if (!project || typeof project !== "object") return false;
+    const row = project as { archivedAt?: unknown; codebase?: unknown; primaryWorkspace?: unknown; workspaces?: unknown };
+    if (row.archivedAt) return false;
+    return hasUrl(row.codebase) || hasUrl(row.primaryWorkspace) || (Array.isArray(row.workspaces) && row.workspaces.some(hasUrl));
+  });
+}
+
 type Rec = Record<string, unknown>;
 const rec = (value: unknown): Rec | null => (value && typeof value === "object" && !Array.isArray(value) ? (value as Rec) : null);
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -102,8 +140,8 @@ const PROVISIONING: readonly string[] = ["hire", "host", "plugin"];
 const EFFORTS: readonly string[] = ["low", "medium", "high"];
 const EVAL_FILE_RE = /^[a-z0-9][a-z0-9._-]*\.json$/;
 const SCOPES: readonly string[] = ["pib", "generic"];
-/** One rendered AGENTS.md stays under this (the host prints it into a hire task and a payload). */
-export const MAX_INSTRUCTION_CHARS = 14_000;
+/** One rendered AGENTS.md stays under this (the host prints it into a hire task and a payload). Raised to 14_500 for Spike rules (item 7 in delivery-lead procedure). */
+export const MAX_INSTRUCTION_CHARS = 14_500;
 
 function profileProblems(key: string, profile: RunProfile): string[] {
   const problems: string[] = [];
@@ -195,7 +233,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
     const profile = resolveProfile(key, t.runProfile, problems);
     const desiredSkills = strs(t.desiredSkills);
     if (desiredSkills.length === 0) problems.push(`${key}: desiredSkills is empty`);
-    for (const skill of desiredSkills) if (!SKILL_RE.test(skill)) problems.push(`${key}: skill key ${JSON.stringify(skill)} is not a canonical skill key`);
+    for (const skill of desiredSkills) if (!SKILL_RE.test(skill) && !(COMPANY_LIBRARY_SKILLS as readonly string[]).includes(skill)) problems.push(`${key}: skill key ${JSON.stringify(skill)} is not a canonical skill key`);
     if (new Set(desiredSkills).size !== desiredSkills.length) problems.push(`${key}: a skill is listed twice`);
     if (str(t.provisioning) === "hire" && !desiredSkills.includes(COMPANY_OS_KEY)) problems.push(`${key}: every hired agent carries the company operating manual (${COMPANY_OS_KEY})`);
     const kitRole = t.kitRole === undefined ? undefined : str(t.kitRole);
@@ -224,6 +262,7 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
     if (scope !== "generic" && !SCOPES.includes(scope)) problems.push(`${key}: scope must be one of ${SCOPES.join(", ")}`);
     const distilled = t.distilled === true;
     const hostOwned = t.hostOwned === true;
+    const defaultOn = parseDefaultOn(key, t.defaultOn, problems);
     if (distilled && !hostOwned && !evalFile) problems.push(`${key}: distilled templates must have evalFile (unless hostOwned)`);
     if (profile) {
       templates.push({
@@ -242,7 +281,8 @@ export function parsePack(raw: unknown, files: Record<string, string>, blocks: R
         file,
         match: { names: strs(match.names), titles: strs(match.titles), roles: strs(match.roles) },
         provisioning: str(t.provisioning) as Provisioning,
-        defaultOn: t.defaultOn === true,
+        defaultOn: defaultOn.pib,
+        ...(defaultOn.client !== defaultOn.pib ? { defaultOnClient: defaultOn.client } : {}),
         requires: { modules: strs(requires.modules), ...(str(requires.environment) ? { environment: str(requires.environment) } : {}) },
         notes: strs(t.notes),
         ...(kitRole ? { kitRole: kitRole as TeamRoleKey } : {}),

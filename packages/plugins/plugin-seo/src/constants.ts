@@ -14,6 +14,9 @@ export const AGENT_CAPABILITIES =
   "Runs Partners in Biz 90-day SEO sprints with the SEO plugin tools: site checks, keyword and content work, Search Console data, evidence and hand-offs.";
 export const SKILL_KEY = "seo-sprint";
 export const SKILL_SLUG = "pib-seo-sprint";
+/** The skill only the instance's own company receives (see PIB_ONLY_SKILLS in the manifest). */
+export const OWN_SKILL_KEY = "seo-sprint-own";
+export const OWN_SKILL_SLUG = "pib-seo-sprint-own";
 export const DAILY_JOB_KEY = "seo-daily";
 export const PREVIEW_JOB_KEY = "seo-previews";
 export const WEEKLY_JOB_KEY = "seo-weekly";

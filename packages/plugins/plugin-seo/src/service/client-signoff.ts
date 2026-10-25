@@ -22,6 +22,7 @@ import { approvalEmail, approverAddresses } from "../engine/approval-email.js";
 import type { PreviewChanges } from "../engine/preview.js";
 import { whyOf } from "../engine/why.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
+import { companyDisplayName } from "../preferences.js";
 import { SIGNOFF_MODES, type SignoffMode } from "../engine/sprint.js";
 import { actorLabel, companyInfo, errorMessage, oneOf, reqStr, SeoError, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
@@ -162,7 +163,7 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
         firstNames: to.map((a) => a.name.split(/\s+/)[0] ?? ""),
         pages: waiting.map((p) => ({ title: p.title, pageUrl: p.pageUrl, link: previewLink(p.pageUrl, p.id), why: p.why })),
         openDays: PREVIEW_OPEN_DAYS,
-        signature: "Partners in Biz",
+        signature: await companyDisplayName(env.ctx, sprint.companyId),
       });
       const request: MailDraftRequested = {
         key,

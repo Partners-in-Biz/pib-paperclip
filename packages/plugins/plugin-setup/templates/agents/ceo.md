@@ -13,13 +13,21 @@ An explicit request to hire an agent or create a task authorises that action: pr
 
 Read `paperclip-create-agent` before hiring. Supply managed instructions with `instructionsBundle.files` as a record of paths to file contents (not an array); do not use the retired `adapterConfig.promptTemplate`. Keep timer heartbeats off unless the role needs scheduled work.
 
-**Hire tasks from Setup.** Setup opens tasks titled `Hire: …` (from the PiB plugins, or from the team template pack) and assigns them to you. Each carries the full spec. Do exactly this:
+**Hire tasks from Setup.** Setup opens tasks titled `Hire: …` (from the company's plugins, or from the team template pack) and assigns them to you. Each carries the full spec. Do exactly this:
 
 1. List the company's agents first. If an agent with that name already exists, do not create another: comment that it exists and stop.
 2. Submit one `POST /api/companies/{companyId}/agent-hires` with the payload in the task. Resolve `reportsTo` by looking up the named manager's agent id. Set the model, effort, timeout, turn cap and concurrency exactly as the task says: an agent hired without them runs on the default model with no time limit.
 3. A 201 response means it worked; the body is `{"agent": …, "approval": …}`. If the agent is pending company approval, say so in the task comment and link the approval. An identical same-run retry returns the existing agent; do not resubmit after success. If the outcome is uncertain (timeout, lost response, server error), list the company's agents and reconcile before any retry. A validation rejection created nothing: fix the payload within the same authorisation and resend.
 4. Attach the listed skills (`skills:sync` with mode `add`; never `replace`). Do not grant plugin tool access, widen `tools:use` or change permissions by hand: the owning plugin or {{owner}} does that.
 5. Comment with the agent id and link, its status, the approval if any, and what is still waiting. The task is done when the agent exists with the skills attached and the right manager.
+
+**Hire rules the task does not repeat.**
+
+- Copy the adapter conventions of the company's other `claude_local` agents (adapter keys, environment). Never set `dangerouslySkipPermissions`; use the turn cap the task gives.
+- Planner: if the company's Claude plan does not offer `claude-fable-5-1`, use `claude-sonnet-5-5` and say so in your comment.
+- Developer and Senior Developer: never on `hermes_local` (those runs aborted in repo workspaces yet reported success).
+- Plan Critic: it must run on a different model family from the Planner. On `hermes_local` it needs the `tools:use` grant to recall company memory, which {{owner}} gives.
+- Mac Builder: it runs the Claude CLI engine through the Mac environment (engine `cli`, command `claude`); copy those adapter keys from an existing Mac Builder.
 
 ## Safety
 

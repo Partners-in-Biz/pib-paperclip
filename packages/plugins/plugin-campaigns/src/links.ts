@@ -20,7 +20,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { pluginUiBase, readConfig, requirePublicBaseUrl, signUnsubscribeToken, verifyUnsubscribeToken, type UnsubscribePayload } from "@partnersinbiz/pib-plugin-kit";
+import { createClaimGuard, pluginUiBase, readConfig, requirePublicBaseUrl, signUnsubscribeToken, verifyUnsubscribeToken, type UnsubscribePayload } from "@partnersinbiz/pib-plugin-kit";
 
 const SECRET_STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "campaigns-links", stateKey: "unsubscribe-secret" });
 const secrets = new Map<string, string>();
@@ -30,7 +30,7 @@ const secrets = new Map<string, string>();
  * webhook uses that, so a stranger's token cannot start a secret for any
  * company). Null when there is none.
  */
-export async function linkSecret(ctx: PluginContext, companyId: string, options: { create: boolean }): Promise<string | null> {
+export async function linkSecret(ctx: PluginContext, companyId: string, options: { create: boolean; rethrow?: boolean }): Promise<string | null> {
   const cached = secrets.get(companyId);
   if (cached) return cached;
   try {
@@ -48,13 +48,18 @@ export async function linkSecret(ctx: PluginContext, companyId: string, options:
       return final;
     }
   } catch (error) {
+    if (options.rethrow) throw error;
     ctx.logger.info("The unsubscribe secret could not be read", { companyId, error: error instanceof Error ? error.message : String(error) });
   }
   return null;
 }
 
+/** Guards the secret read for a company id a token only claims (unsigned). */
+const claimGuard = createClaimGuard<string>();
+
 export function clearLinkCache(): void {
   secrets.clear();
+  claimGuard.clear();
   configCache.clear();
 }
 
@@ -135,10 +140,12 @@ export function claimedCompany(token: string): string | null {
 }
 
 /** The payload of a token signed by this company's secret, or null. */
-export async function checkUnsubscribeToken(ctx: PluginContext, token: string): Promise<UnsubscribePayload | null> {
+export async function checkUnsubscribeToken(ctx: PluginContext, token: string, headers: Record<string, string | string[] | undefined> = {}): Promise<UnsubscribePayload | null> {
   const companyId = claimedCompany(token);
   if (!companyId) return null;
-  const secret = await linkSecret(ctx, companyId, { create: false });
+  // Per visitor (uncached lookups only), a minute's memory (misses too) and a cap on fresh reads: a flood of made-up company ids cannot become a flood of secret reads.
+  // A read error throws out of the loader so it is not remembered as "no secret".
+  const secret = await claimGuard.resolve(companyId, headers, () => linkSecret(ctx, companyId, { create: false, rethrow: true }));
   if (!secret) return null;
   const payload = verifyUnsubscribeToken(token, secret);
   // A signature made for another company's secret never verifies, but check the claim matches too.

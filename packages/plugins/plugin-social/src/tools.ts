@@ -55,16 +55,24 @@ const OWN = " Omit the client for PiB's own work; pass client for a client. Neve
 
 /** Growth Lab tag on a post. */
 const experimentTag: Record<string, JsonSchema> = {
-  experimentId: text("Growth Lab experiment this post tests (from list-experiments or propose-experiment). Empty string clears the tag."),
-  arm: choice(["control", "variant"], "Which arm of the experiment the post is: control (what we do now) or variant (the change)."),
+  experimentId: text("Growth Lab experiment id. Empty string clears the tag."),
+  arm: choice(["control", "variant"], "control (current) or variant (change)."),
 };
 
 const post: Record<string, JsonSchema> = {
-  accountIds: ids("Destination account ids of the post's scope (list-connected-accounts; status connected)"),
-  mediaAssetIds: ids("Media asset ids of the post's scope (list-media-assets or import-media-from-url); order = carousel order"),
-  firstComment: text("Posted as the first comment (X: a reply to the post) where the platform allows"),
-  scheduledAt: text(`Proposed publish time, ${ISO_TIME}. When a person approves the post it is scheduled for this time if it is still ahead.`),
+  accountIds: ids("Destination account ids (list-connected-accounts)."),
+  mediaAssetIds: ids("Media asset ids (list-media-assets). Order = carousel order."),
+  firstComment: text("Posted as first comment (or reply on X), where platform allows."),
+  replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>; not m.twitter.com). X only. \"\" clears."),
+  quoteUrl: text("X post link to quote. X only; not with replyToUrl. \"\" clears."),
+  note: text("Internal note, e.g. \"HOLD until PAR-1\"; never published. Max 500. \"\" clears."),
+  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
   overrides: OVERRIDES,
+  tags: {
+    type: "array",
+    items: { type: "string" },
+    description: "Post tags (text-native exempts media). Max 10.",
+  },
 };
 
 /** Growth Lab experiment statuses (list-experiments filter). */
@@ -120,7 +128,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
+      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
     parametersSchema: schema(["body"], {
       body: text("Main post text (used by every platform without a text override)"),
       ...scope,
@@ -134,12 +142,15 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-personal-draft",
     displayName: "Create personal draft",
     description:
-      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, and per-platform overrides.",
+      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note (for example \"HOLD until PAR-1234\"), and per-platform overrides.",
     parametersSchema: schema(["targetUserId", "body"], {
       targetUserId: text("User id whose My Social queue gets the draft"),
       body: text("Main post text"),
       mediaAssetIds: ids("Media asset ids (personal accounts of the target user)"),
       firstComment: text("Posted as the first comment where the platform allows"),
+      replyToUrl: post.replyToUrl!,
+      quoteUrl: post.quoteUrl!,
+      note: post.note!,
       overrides: OVERRIDES,
     }),
   },
@@ -147,7 +158,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "update-post",
     displayName: "Update post",
     description:
-      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, scheduledAt (\"\" clears it), overrides (replaces them). Leave the client out to keep the post's client; moving it to another client (client \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag the Growth Lab arm (experimentId \"\" clears it).",
+      "Change a draft or in-review post: body, mediaAssetIds (replaces the list), accountIds (adds destinations), firstComment, replyToUrl, quoteUrl, note (\"\" clears each), scheduledAt (\"\" clears it), overrides (replaces them). Leave the client out to keep the post's client; moving it to another client (client \"own\" for own work) only works once it has no accounts or media of the old one. experimentId + arm tag the Growth Lab arm (experimentId \"\" clears it).",
     parametersSchema: schema(["postId"], {
       postId: POST_ID,
       body: text("New main post text"),
@@ -224,18 +235,38 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "record-review-verdict",
     displayName: "Record review verdict",
     description:
-      "Reviewer only. Record your verdict on a post in review: pass (it is ready for whoever approves) or changes (with notes: one line per problem). A pass is a check, not an approval. The plugin hands the review issue on: after a pass to the person or the Social agent the policy names; after changes back to the Social agent with the post returned to draft. Do not reassign the issue yourself.",
+      "Reviewer only. pass: ready to approve (media required if playbook enforces; returned refused with blockers if missing). changes: send it back to draft with notes. A pass is a check, not an approval. The plugin hands the review issue on.",
     parametersSchema: schema(["postId", "verdict"], {
       postId: POST_ID,
-      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft with your notes."),
-      notes: text("changes: what to fix, one line per problem. pass: optional remarks."),
+      verdict: choice(["pass", "changes"], "pass: ready to approve. changes: send it back to draft."),
+      notes: text("changes: what to fix. pass: optional remarks."),
+      toneScore: { type: "number", minimum: 0, maximum: 20, description: "Tone score 0–20 (optional; requires toneReason)." },
+      toneReason: text("Why you gave this tone score (optional; required for score)."),
+    }),
+  },
+  {
+    name: "request-creative",
+    displayName: "Request creative",
+    description:
+      "Ask for an image or video for a draft post (or one in review). Opens ONE hand-off issue per post (origin creative:<postId>) for the Creative Producer, else the Social agent, the Account Manager, the Operator or the owner, with the brief, each destination's platform spec, the 30-second video cap, the alt-text requirement and the scope's Drive folder (02 Assets). Safe to call again: you get the same issue back (a finished one is reopened). Call it when the Reviewer sends the post back for missing or weak media.",
+    parametersSchema: schema(["postId"], {
+      postId: POST_ID,
+      brief: text("What the asset should show and say, in your words: hook, subject, mood, any text on it"),
+      format: choice(["image", "video"], "image (default) or video"),
+      durationS: int("Video length in seconds, 1-30 (default 30). Longer is refused."),
     }),
   },
   {
     name: "review-outcomes",
     displayName: "Review outcomes",
-    description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. These are inputs for a later autonomy policy: auto-approval is off and you never approve.${OWN}`,
+    description: `First-pass rates, change requests and approval streaks per post type (original, repurpose, rss, reply by format) for each stage (Reviewer, team member, client), for one scope. The autonomy block lists which post types qualify for the low-risk auto-approval ladder (streak of 5); you never approve.${OWN}`,
     parametersSchema: schema([], { ...scope, days: int("Days to look back, 7-365 (default 90)") }),
+  },
+  {
+    name: "media-compliance",
+    displayName: "Media compliance",
+    description: `Read-only. Of the posts published in the window (excluding the experiment control arm and posts tagged text-native): how many carried media, how many had alt text on every item, which ones did not, and every post that reached approved, scheduled or published with no Reviewer verdict on record.${OWN}`,
+    parametersSchema: schema([], { ...scope, days: int("Days to look back, 1-365 (default 28)") }),
   },
   {
     name: "schedule-post",
@@ -297,6 +328,18 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       url: text("Public https URL to download"),
       name: text("Display name (default: the file name)"),
       altText: text("What the image or video shows, for screen readers"),
+      ...scope,
+    }),
+  },
+  {
+    name: "store-rendered-asset",
+    displayName: "Store a rendered image",
+    description: `Put an image you rendered (a slide, a branded graphic) on R2, in the scope's Drive "02 Assets" folder, and on a post, in one call. Pass the file as contentBase64 (JPEG, PNG, GIF, WebP, MP4 or MOV; the type is read from its bytes) and an altText that says what it shows (required). With postId the asset is added to that post's media (the post's own client; leave client out). Returns the asset id, and reports a Drive or attach failure next to it: the R2 asset and its alt text are kept, so retry only the part that failed.${OWN}`,
+    parametersSchema: schema(["contentBase64", "altText"], {
+      contentBase64: text("The rendered file, base64 encoded"),
+      altText: text("What the image shows, for screen readers"),
+      name: text("Display name (default: rendered)"),
+      postId: text("Post to add the asset to (optional)"),
       ...scope,
     }),
   },

@@ -33,8 +33,8 @@ export async function runAgentTool(env: Env, name: string, raw: unknown, run: To
       return toolOk(`${result.status === "updated" ? "Updated the question" : "Asked the owner"} on ${result.identifier ?? result.issueId}. ${result.next}`, result) as ToolResult;
     }
     if (name === TOOL_NAMES.profile) {
-      const prefix = (await env.ctx.companies.get(companyId).catch(() => null))?.issuePrefix ?? null;
-      const summary = profileSummary(await readProfile(env.ctx, companyId), (href) => linkFor(href, prefix));
+      const company = await env.ctx.companies.get(companyId).catch(() => null);
+      const summary = profileSummary(await readProfile(env.ctx, companyId), (href) => linkFor(href, company?.issuePrefix ?? null), company?.name ?? null);
       return toolOk(summary.content, summary.data) as ToolResult;
     }
     if (name === TOOL_NAMES.updateProfile) {

@@ -1,4 +1,36 @@
-export const PUSH_SW_URL = "/_plugins/partnersinbiz.cockpit/ui/push-sw.js";
+export const PUSH_SW_FILE = "push-sw.js";
+
+/**
+ * Build the push service worker URL from a plugin UI base.
+ * Validates that the base matches the installation ID pattern.
+ * @param uiBase - The plugin UI base URL (e.g., `/_plugins/<uuid>/ui/`)
+ * @returns The full URL to push-sw.js
+ * @throws Error if uiBase is invalid
+ */
+export function buildPushSwUrl(uiBase: string): string {
+  const uuidPattern = /^\/_plugins\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/ui\/$/i;
+  if (!uuidPattern.test(uiBase)) {
+    throw new Error(`Invalid plugin UI base: must match /_plugins/<uuid>/ui/ pattern, got: ${uiBase}`);
+  }
+  return uiBase + PUSH_SW_FILE;
+}
+
+/**
+ * Resolve the push service worker URL by installation ID.
+ * First tries to extract the UUID from the module URL; if that fails,
+ * queries the host API for the plugin installation ID.
+ * @param moduleUrl - Optional module URL (typically import.meta.url from the UI bundle)
+ * @returns The full URL to push-sw.js using the installation ID
+ * @throws Error if the URL cannot be resolved
+ */
+export async function resolvePushSwUrl(moduleUrl?: string): Promise<string> {
+  const { resolvePluginUiBase } = await import("@partnersinbiz/pib-plugin-kit/oauth-client");
+  const uiBase = await resolvePluginUiBase("partnersinbiz.cockpit", moduleUrl);
+  if (!uiBase) {
+    throw new Error("Could not find the Cockpit plugin address");
+  }
+  return buildPushSwUrl(uiBase);
+}
 
 export type ServiceWorkerLike = {
   active?: { state: string } | null;
@@ -10,7 +42,7 @@ export type ServiceWorkerLike = {
 
 export async function registerPushServiceWorker(
   sw: { register(url: string, opts?: { updateViaCache?: "none" | "all" | "imports"; scope?: string }): Promise<ServiceWorkerLike> },
-  scriptUrl = PUSH_SW_URL,
+  scriptUrl: string,
 ): Promise<ServiceWorkerLike> {
   const registration = await sw.register(scriptUrl, { updateViaCache: "none" });
   if (registration.update) {

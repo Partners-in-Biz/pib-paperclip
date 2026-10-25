@@ -12,6 +12,12 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save these settings once for each Paperclip company that uses the CRM. Saving is what lets the scheduled jobs (sequence steps, client sync) act on the company.",
   properties: {
+    ownerCompany: {
+      type: "boolean",
+      title: "This is Partners in Biz's own company (owner company only)",
+      description: "Tick this ONLY on Partners in Biz's own company. It keeps Partners in Biz's own wording in the data-processing register. Leave it off for every client company: their register names the company itself.",
+      default: false,
+    },
     timezone: { type: "string", title: "Timezone", default: "Africa/Johannesburg" },
     defaultCurrency: { type: "string", title: "Default currency", default: "ZAR", minLength: 3, maxLength: 3 },
     sequenceIssueAssignee: {
@@ -65,13 +71,7 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     } as unknown as JsonSchema,
-    driveBrokerUrl: {
-      type: "string",
-      title: "Drive broker URL",
-      description: "The address of the partnersinbiz-web Drive broker API (default: https://partnersinbiz.online).",
-      default: "https://partnersinbiz.online",
-    },
-    driveBrokerToken: secretField("Drive broker token", "Bearer token for the partnersinbiz-web Drive broker (admin role). The token must be bound to the correct organization because the broker infers the organization ID from the token's user when none is explicitly sent.") as unknown as JsonSchema,
+    driveServiceAccountJson: secretField("Drive service account key", "The whole JSON key file of a Google service account that is a Content manager of the company's Shared Drive. Drive calls go straight to Google with it. Use a service account with Drive access only, not the Search Console one.") as unknown as JsonSchema,
     drive: {
       type: "object",
       title: "Drive settings",
@@ -79,7 +79,13 @@ const instanceConfigSchema: JsonSchema = {
         sharedDriveId: {
           type: "string",
           title: "Shared Drive ID",
-          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. This is separate from the broker token and must be set for planning to work.",
+          description: "The Google Shared Drive ID where folders are created. Leave empty to disable folder creation. It must be set for planning to work.",
+          default: "",
+        },
+        ownProjectId: {
+          type: "string",
+          title: "Own work project",
+          description: "The Paperclip project whose Drive folder holds the company's own files (saves from other plugins that name no client). Leave empty to refuse such saves.",
           default: "",
         },
       },
