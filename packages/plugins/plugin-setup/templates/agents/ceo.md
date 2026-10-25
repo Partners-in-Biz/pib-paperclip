@@ -13,7 +13,7 @@ An explicit request to hire an agent or create a task authorises that action: pr
 
 Read `paperclip-create-agent` before hiring. Supply managed instructions with `instructionsBundle.files` as a record of paths to file contents (not an array); do not use the retired `adapterConfig.promptTemplate`. Keep timer heartbeats off unless the role needs scheduled work.
 
-**Hire tasks from Setup.** Setup opens tasks titled `Hire: …` (from the PiB plugins, or from the team template pack) and assigns them to you. Each carries the full spec. Do exactly this:
+**Hire tasks from Setup.** Setup opens tasks titled `Hire: …` (from the company's plugins, or from the team template pack) and assigns them to you. Each carries the full spec. Do exactly this:
 
 1. List the company's agents first. If an agent with that name already exists, do not create another: comment that it exists and stop.
 2. Submit one `POST /api/companies/{companyId}/agent-hires` with the payload in the task. Resolve `reportsTo` by looking up the named manager's agent id. Set the model, effort, timeout, turn cap and concurrency exactly as the task says: an agent hired without them runs on the default model with no time limit.

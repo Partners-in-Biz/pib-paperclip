@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { allModulesOn } from "../src/modules.js";
 import { isOwnerCompany, startTemplateHire, templateDraft, templatesForOps } from "../src/new-company.js";
-import { loadPack, offeredTemplates } from "../src/templates.js";
+import { loadPack, offeredTemplates, templateVars } from "../src/templates.js";
+import { renderHire } from "../src/templates-render.js";
 import { selectedTemplates } from "../src/bootstrap-runner.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
@@ -83,28 +84,45 @@ describe("hire scope: a pib template is offered to the PiB company only", () => 
   });
 });
 
-describe("template notes are PiB-only: a client company's hire task carries none", () => {
-  it("templateDraft renders the notes for the owner company and leaves them out for a client company", async () => {
-    const owner = await templateDraft(ownerCtx().ctx, { companyId: A, key: NOTED, agents: [] });
-    expect(owner.description).toContain("## Notes");
-    expect(owner.description).toContain(NOTE);
-    const client = await templateDraft(clientCtx().ctx, { companyId: B, key: NOTED, agents: [] });
-    expect(client.description).not.toContain("## Notes");
-    expect(client.description).not.toContain(NOTE);
+// Stand-in for the kit's findBrandLeaks (PAR-5312 child A) until it lands: swap this for the kit helper then.
+const brandLeaks = (text: string) => text.match(/\bPeet\b|\bElon\b|Partners in Biz|\bPiB\b|\bPAR-\d+/g) ?? [];
+
+describe("template notes never reach a hire task", () => {
+  it("templateDraft leaves the notes out for the owner company and a client company alike", async () => {
+    for (const [ctx, companyId] of [[ownerCtx().ctx, A], [clientCtx().ctx, B]] as const) {
+      const draft = await templateDraft(ctx, { companyId, key: NOTED, agents: [] });
+      expect(draft.description).not.toContain("## Notes");
+      expect(draft.description).not.toContain(NOTE);
+    }
   });
 
-  it("the hire issue opened for a client company carries no notes, the owner company's does", async () => {
+  it("the hire issue opened through startTemplateHire carries no notes, and a client's passes the brand-leak check", async () => {
     const owner = ownerCtx();
     await startTemplateHire(owner.ctx, { companyId: A, key: NOTED, agents: [], userId: "user-1", assigneeUserId: "user-1" });
-    for (const issue of owner.issues.values()) expect(String(issue.description)).toContain("PAR-4062");
+    for (const issue of owner.issues.values()) expect(String(issue.description)).not.toContain("PAR-4062");
     const client = clientCtx();
     await startTemplateHire(client.ctx, { companyId: B, key: NOTED, agents: [], userId: "user-1", assigneeUserId: "user-1" });
     expect(client.issues.size).toBe(1);
-    for (const issue of client.issues.values()) expect(String(issue.description)).not.toContain("PAR-4062");
+    for (const issue of client.issues.values()) {
+      expect(String(issue.description)).not.toContain("PAR-4062");
+      expect(brandLeaks(String(issue.description))).toEqual([]);
+    }
   });
 
   it("fails closed: with no ownerCompany setting saved, no notes are rendered", async () => {
     const draft = await templateDraft(fakeCtx({ companies: COMPANIES }).ctx, { companyId: A, key: NOTED, agents: [] });
     expect(draft.description).not.toContain(NOTE);
+  });
+
+  it("every client-offered template renders a hire task without notes, a PIB block or a brand leak", () => {
+    const vars = templateVars({ company: "Client Corp", prefix: "CLI", owner: "Jo Owner", ceo: { name: "Boss", urlKey: "boss" } });
+    const offered = offeredTemplates(loadPack().templates, false);
+    expect(offered.length).toBeGreaterThan(0);
+    for (const template of offered) {
+      const draft = renderHire(template, { vars, ownerCompany: false });
+      expect(draft.description, template.key).not.toContain("## Notes");
+      expect(draft.instructions, template.key).not.toMatch(/pib-autonomy|pib-company-standards|pib-mistakes|pib-design-seo-gate/);
+      expect(brandLeaks(draft.description), template.key).toEqual([]);
+    }
   });
 });

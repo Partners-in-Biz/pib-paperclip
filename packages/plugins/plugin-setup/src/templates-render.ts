@@ -68,8 +68,8 @@ function introFor(template: AgentTemplate): string {
 }
 
 /**
- * `ownerCompany` is true only for Partners in Biz's own company. The template notes quote PiB's own live setup and issue history, so they
- * are rendered into a hire task for the owner company only: absent or false (a client company) renders none.
+ * The hire task never carries the template's `notes`: they are maintainer documentation (shown in the New company screen), and a hire task
+ * is text a client company's agent reads. `ownerCompany` is kept in the input for callers but changes nothing in the task.
  */
 export function renderHire(template: AgentTemplate, input: { vars: TemplateVars; agents?: readonly AgentLike[] | null; sourceIssueId?: string | null; ownerCompany?: boolean }): HireDraft {
   const adapterType = pickAdapter(template);
@@ -138,7 +138,6 @@ export function renderHire(template: AgentTemplate, input: { vars: TemplateVars;
     "```json",
     JSON.stringify(payload, null, 2),
     "```",
-    ...(input.ownerCompany === true && template.notes.length ? ["", "## Notes", "", ...template.notes.map((note) => `- ${note}`)] : []),
     ...(warnings.length ? ["", "## Check first", "", ...warnings.map((warning) => `- ${warning}`)] : []),
     "",
     "## Done when",

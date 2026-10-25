@@ -69,7 +69,7 @@
       "notes": [
         "With no CEO in the company nobody can execute a Hire task: a person creates this agent first (Agents -> New agent, or `new-company.py --create-ceo`).",
         "The company wizard builds a generic CEO with the host's default instructions; replace them with this file.",
-        "Live (2026-10-03): the PiB agent has dangerouslySkipPermissions, graceSec 15 and maxTurnsPerRun 1000. The pack asks for a turn cap of 300 and does not set dangerouslySkipPermissions: copy the adapter conventions of the company's other claude_local agents."
+        "The pack asks for a turn cap of 300 and does not set dangerouslySkipPermissions: copy the adapter conventions of the company's other claude_local agents."
       ]
     },
     {
@@ -153,7 +153,7 @@
         "modules": []
       },
       "notes": [
-        "The live Planner's model was set by a board user on 2026-09-29. If the company's Claude plan does not offer claude-fable-5-1, use claude-sonnet-5-5 and say so in the hire comment.",
+        "If the company's Claude plan does not offer claude-fable-5-1, use claude-sonnet-5-5 and say so in the hire comment.",
         "The Plan Critic must run on a different model family from the Planner: keep them apart."
       ]
     },
@@ -200,7 +200,7 @@
       },
       "notes": [
         "Runs on Hermes (a different model family from the Planner) on purpose. On claude_local the independence is lost: say so in the hire comment if Hermes is not available.",
-        "A hermes_local agent needs the tools:use grant to recall company memory (owner decision pending, see the grants list)."
+        "A hermes_local agent needs the tools:use grant to recall company memory."
       ]
     },
     {
@@ -280,7 +280,7 @@
         "modules": []
       },
       "notes": [
-        "Do not run this agent on hermes_local: Hermes runs of this role aborted in repo workspaces yet reported success (company memory, 2026-10-01). The live Developer moved to claude_local on 2026-10-02."
+        "Do not run this agent on hermes_local: Hermes runs of this role aborted in repo workspaces yet reported success."
       ]
     },
     {
@@ -364,7 +364,7 @@
       },
       "notes": [
         "Off by default: only a company that ships iOS apps needs it, and it needs its own Mac environment and SSH key (owner step).",
-        "The live agent runs the Claude CLI engine through the Mac environment (engine cli, command claude); copy those adapter keys from an existing Mac Builder."
+        "It runs the Claude CLI engine through the Mac environment (engine cli, command claude); copy those adapter keys from an existing Mac Builder."
       ]
     },
     {
