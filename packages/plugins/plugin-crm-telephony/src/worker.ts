@@ -13,6 +13,7 @@ import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
+import { syncTemplates, listPickerTemplates } from "./templates.js";
 
 let ctx: PluginContext | null = null;
 
@@ -30,6 +31,79 @@ export async function telephonyToolHandler(
   const status = await secretStatus(pluginCtx, run.companyId, [...TELEPHONY_SECRET_NAMES]);
   return { data: { settings, secrets: status } };
 }
+
+/**
+ * Build a Twilio client from the company's secrets.
+ * Returns null if a required secret is missing.
+ */
+async function buildTwilioClientForSecrets(
+  pluginCtx: PluginContext,
+  companyId: string,
+  requiredSecrets: string[],
+) {
+  const secrets: Record<string, string> = {};
+  for (const secretName of requiredSecrets) {
+    try {
+      const value = await pluginCtx.secrets.resolve(secretName, { companyId });
+      if (!value) return null;
+      secrets[secretName] = value;
+    } catch {
+      return null;
+    }
+  }
+
+  const { createTwilioClient } = await import("./twilio-client.js");
+  const client = createTwilioClient({
+    accountSid: secrets.TWILIO_ACCOUNT_SID,
+    authToken: secrets.TWILIO_AUTH_TOKEN,
+    fetch: pluginCtx.http.fetch,
+  });
+  return { client, secrets };
+}
+
+const toolHandlers: Record<
+  string,
+  (pluginCtx: PluginContext, params: unknown, run: ToolRunContext) => Promise<{ content?: string; data?: unknown; error?: string }>
+> = {
+  "telephony-status": telephonyToolHandler,
+
+  "whatsapp-templates": async (pluginCtx, params, run) => {
+    const p = params as { language?: string } | null;
+    const language = p?.language as "af" | "en" | undefined;
+    const templates = await listPickerTemplates(pluginCtx.db, NAMESPACE, run.companyId, { language });
+    return {
+      data: {
+        templates: templates.map((t) => ({ id: t.id, name: t.name, language: t.language, preview: t.bodyPreview })),
+        count: templates.length,
+      },
+    };
+  },
+
+  "whatsapp-sync-templates": async (pluginCtx, _params, run) => {
+    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"];
+    const result = await buildTwilioClientForSecrets(pluginCtx, run.companyId, requiredSecrets);
+    if (!result) return { error: `Missing required secrets: ${requiredSecrets.join(", ")}` };
+
+    const syncResult = await syncTemplates({
+      db: pluginCtx.db,
+      namespace: NAMESPACE,
+      client: result.client,
+      companyId: run.companyId,
+      agentId: run.agentId,
+    });
+    if (syncResult.error) return { error: `Sync failed: ${syncResult.error}` };
+
+    return {
+      data: {
+        created: syncResult.created,
+        updated: syncResult.updated,
+        approved: syncResult.approved,
+        unchanged: syncResult.unchanged,
+        skipped: syncResult.skipped,
+      },
+    };
+  },
+};
 
 const plugin = definePlugin({
   async setup(pluginCtx) {
@@ -70,9 +144,9 @@ const plugin = definePlugin({
     });
 
     for (const tool of TELEPHONY_TOOLS) {
-      pluginCtx.tools.register(tool.name, tool, (params, run) =>
-        telephonyToolHandler(pluginCtx, params, run),
-      );
+      const handler = toolHandlers[tool.name];
+      if (!handler) throw new Error(`No handler registered for tool: ${tool.name}`);
+      pluginCtx.tools.register(tool.name, tool, (params, run) => handler(pluginCtx, params, run));
     }
 
     pluginCtx.actions.register("voice-token", async (_params, context: PluginPerformActionContext) => {
