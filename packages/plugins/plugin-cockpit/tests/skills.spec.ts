@@ -87,11 +87,11 @@ describe("hand-off issues always carry a project", () => {
   it("the operating manual says to set projectId, with the own platform project case", () => {
     const body = companySkillBody();
     expect(body).toContain("always a `projectId`");
-    expect(body).toContain("company-profile");
+    expect(body).toContain("own platform project (pick it from that projects list)");
   });
   it("the Operator skill says to set projectId, the own platform project case, and what to do when unsure", () => {
     expect(OPERATOR_SKILL_BODY).toContain("**Always set `projectId`**");
-    expect(OPERATOR_SKILL_BODY).toContain("company-profile");
+    expect(OPERATOR_SKILL_BODY).toContain("own platform project (pick it from that projects list)");
     expect(OPERATOR_SKILL_BODY).toContain("instead of creating it without one");
   });
 });
