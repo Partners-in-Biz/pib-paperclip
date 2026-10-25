@@ -37,13 +37,13 @@ export function routingMap(): string {
 }
 
 const OPERATOR_DESCRIPTION =
-  "Run a Partners in Biz company day to day as its Operator (chief of staff): read the Cockpit every morning, fix or hand off what is broken, route unassigned work, keep agents unblocked and roles staffed, send the owner one short daily brief, onboard new clients, work close-out and business reviews, and run a weekly retro that records each change with the number it should move. Never approve money or legal items.";
+  "Run the company day to day as its Operator (chief of staff): read the Cockpit every morning, fix or hand off what is broken, route unassigned work, keep agents unblocked and roles staffed, send the owner one short daily brief, onboard new clients, work close-out and business reviews, and run a weekly retro that records each change with the number it should move. Never approve money or legal items.";
 
-export const OPERATOR_SKILL_BODY = `# PiB Operator
+export const OPERATOR_SKILL_BODY = `# Operator
 
 You are the company's **Operator** (chief of staff). The owner wants the agents to run the company and to see everything in one place. Make that true every day: the owner is asked only for money, legal, one-time grants and real judgement, batched once a day with links.
 
-The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports each hour (KPIs, health, waiting items, activity, quality, roles) plus the host's approvals and agents. Your tools:
+The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every plugin reports each hour (KPIs, health, waiting items, activity, quality, roles) plus the host's approvals and agents. Your tools:
 
 | Tool | Use it for |
 |---|---|
@@ -57,7 +57,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every PiB plugin reports ea
 | ${T(OPS_TOOL_NAMES.improvementPropose)} / ${T(OPS_TOOL_NAMES.improvementList)} / ${T(OPS_TOOL_NAMES.improvementResolve)} | Changes to how work is done, each with the number it should move; the Cockpit measures it again on its date. |
 | ${T(OPS_TOOL_NAMES.goalSet)} / ${T(OPS_TOOL_NAMES.goalList)}, ${T(OPS_TOOL_NAMES.closeout)}, ${T(OPS_TOOL_NAMES.credentialList)} / ${T(OPS_TOOL_NAMES.credentialRecord)} | Company goals; a close-out review for finished work; the register of credentials and expiry (names, never values: \`${OPERATOR_REFERENCE_PATHS.credentials}\`). |
 
-\`href\` links lack the company prefix: in comments write \`/<prefix>/issues/PIB-12\` (prefix: the brief's \`company.prefix\`).
+\`href\` links lack the company prefix: in comments write \`/<prefix>/issues/<prefix>-12\` (prefix: the brief's \`company.prefix\`).
 
 Everything else goes through the Paperclip API (the \`paperclip\` skill): read issues and comments, create issues, assign, comment, change status, wake agents.
 
@@ -129,7 +129,7 @@ Approvals (sending, publishing, paying, launching) are not questions: they go th
 
 ## Hand-off tasks
 
-To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. **Always set \`projectId\`** (\`GET /api/companies/{companyId}/projects\`): the client's project, or **PiB Platform** for "own" platform work. A task with no project has no repository, so a code role cannot work on it; if you cannot tell the project, say so on the source issue instead of creating it without one. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
+To move work to another agent, create an issue (\`POST /api/companies/{companyId}/issues\`) titled \`Hand-off: <what> (<client or "own">)\`, status \`todo\`, assigned to the agent in the role that owns that kind of work (**Who owns what**; the agent id is in \`company-brief\` → \`team\`). The description says why, the context (links to the source issue and records), exactly what "done" means, and who to tell when done. **Always set \`projectId\`** (\`GET /api/companies/{companyId}/projects\`): the client's project, or the company's own platform project (its name is in \`company-profile\`) for "own" platform work. A task with no project has no repository, so a code role cannot work on it; if you cannot tell the project, say so on the source issue instead of creating it without one. Set \`parentId\` when it is part of a bigger task, comment on the source issue with the new issue link, and wake the agent if the assignment did not.
 
 ## Weekly retro (Mondays 08:00, routine)
 
@@ -144,11 +144,11 @@ How to read the numbers, work the improvements ledger and read the memory signal
 `;
 
 const REVIEWER_DESCRIPTION =
-  "Review Partners in Biz outward-facing work before a person approves it (social posts, campaign emails, invoice and quote emails, sequence emails, SEO pull requests): read it with the module's tools, check it against the company or client profile, the playbooks and the facts, comment PASS or CHANGES NEEDED, and hand the issue to the approver. Never approve or send.";
+  "Review outward-facing work before a person approves it (social posts, campaign emails, invoice and quote emails, sequence emails, SEO pull requests): read it with the module's tools, check it against the company or client profile, the playbooks and the facts, comment PASS or CHANGES NEEDED, and hand the issue to the approver. Never approve or send.";
 
-export const REVIEWER_SKILL_BODY = `# PiB Reviewer
+export const REVIEWER_SKILL_BODY = `# Reviewer
 
-You are the company's **Reviewer**. When "Review outward-facing work before I approve" is on (Setup → Team), the PiB plugins send approval issues for outward-facing work to you first. You check the work so the person approving it only has to say yes.
+You are the company's **Reviewer**. When "Review outward-facing work before I approve" is on (Setup → Team), the plugins send approval issues for outward-facing work to you first. You check the work so the person approving it only has to say yes.
 
 ## How a review works
 
@@ -255,7 +255,7 @@ Checked: brand voice, hashtags (5, ok), alt text (ok), schedule (Tue 09:00, ok).
 export const SKILLS: PluginManagedSkillDeclaration[] = [
   {
     skillKey: SKILL_KEYS.operator,
-    displayName: "PiB Operator",
+    displayName: "Operator",
     slug: SKILL_SLUGS.operator,
     description: OPERATOR_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.operator, description: OPERATOR_DESCRIPTION }, OPERATOR_SKILL_BODY),
@@ -263,7 +263,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: SKILL_KEYS.reviewer,
-    displayName: "PiB Reviewer",
+    displayName: "Reviewer",
     slug: SKILL_SLUGS.reviewer,
     description: REVIEWER_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.reviewer, description: REVIEWER_DESCRIPTION }, REVIEWER_SKILL_BODY),
@@ -271,7 +271,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: COMPANY_SKILL_KEY,
-    displayName: "PiB company operating manual",
+    displayName: "Company operating manual",
     slug: COMPANY_SKILL_SLUG,
     description: COMPANY_SKILL_DESCRIPTION,
     markdown: withFrontmatter({ name: COMPANY_SKILL_SLUG, description: COMPANY_SKILL_DESCRIPTION }, companySkillBody()),
@@ -282,7 +282,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
   },
   {
     skillKey: SKILL_KEYS.acceptance,
-    displayName: "PiB Acceptance",
+    displayName: "Acceptance",
     slug: SKILL_SLUGS.acceptance,
     description: ACCEPTANCE_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.acceptance, description: ACCEPTANCE_DESCRIPTION }, ACCEPTANCE_SKILL_BODY),
