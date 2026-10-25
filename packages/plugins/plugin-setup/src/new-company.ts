@@ -398,7 +398,7 @@ export async function templateDraft(ctx: PluginContext, input: DraftInput) {
   const owner = await isOwnerCompany(ctx, input.companyId);
   if (template.scope === "pib" && !owner) throw new SetupError(`Template "${template.key}" is for the Partners in Biz company only.`);
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents) });
+  const draft = renderHire(template, { vars, agents: toAgentLikes(input.agents), ownerCompany: owner });
   return { key: template.key, kitRole: template.kitRole ?? null, provisioning: template.provisioning, title: draft.title, description: draft.description, payload: draft.payload, adapterType: draft.adapterType, warnings: draft.warnings };
 }
 
@@ -438,7 +438,7 @@ export async function startTemplateHire(
     if (issue && !CLOSED.has(String(issue.status))) return { hire: current, identifier: (issue as { identifier?: string | null }).identifier ?? null, staffed: null, existed: true, woke: false };
   }
   const { vars } = await varsFor(ctx, input);
-  const draft = renderHire(template, { vars, agents });
+  const draft = renderHire(template, { vars, agents, ownerCompany: await isOwnerCompany(ctx, input.companyId) });
   const created = await createWorkIssue(ctx, {
     companyId: input.companyId,
     title: draft.title,
@@ -494,7 +494,7 @@ export async function templatesForOps(ctx: PluginContext, input: DraftInput) {
     ownerCompany: owner,
     pack: { name: pack.pack, version: pack.version, updated: pack.updated },
     templates: templates.map((template) => {
-      const draft = renderHire(template, { vars, agents });
+      const draft = renderHire(template, { vars, agents, ownerCompany: owner });
       const adapterType = pickAdapter(template);
       const config = templateConfig(template, adapterType);
       return {
