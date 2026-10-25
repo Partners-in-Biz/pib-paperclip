@@ -41,6 +41,7 @@ import { scopePace } from "./pacing.js";
 import { OWN_SCOPE, PROPOSAL_KIND_LABELS, STATUS_LABELS, platformLabel, type ScopeKey } from "./platforms.js";
 import { impactLines, impactOf, numberLines, clientMessage } from "./proposal-text.js";
 import type { AdsRuntime } from "./runtime.js";
+import { ownerDelegateAgentId } from "./owner-route.js";
 import { signoffState } from "./signoffs.js";
 import { agentSummary } from "./agent.js";
 import { evaluateVariants } from "./variants.js";
@@ -278,7 +279,7 @@ export async function proposalDetail(rt: AdsRuntime, proposalId: string) {
   const scope = (await listScopes(rt.ctx, rt.companyId)).find((s) => s.scope_key === p.scope_key);
   const currency = scope?.currency ?? "ZAR";
   const approvals = await listApprovals(rt.ctx, rt.companyId, p.id);
-  const state = signoffState(p, approvals, rt.now());
+  const state = signoffState(p, approvals, rt.now(), await ownerDelegateAgentId(rt.ctx, rt.companyId));
   const name = await clientName(rt.ctx, rt.companyId, p.scope_key);
   const owner = state.valid.owner;
   return {

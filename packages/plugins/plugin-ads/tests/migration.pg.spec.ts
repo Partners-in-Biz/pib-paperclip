@@ -45,7 +45,7 @@ describe.skipIf(!available)("schema", () => {
   it("only a person's yes can be stored as an approval", async () => {
     await insert(`INSERT INTO ${NAMESPACE}.proposals (id, company_id, scope_key, kind, status, title, content_hash) VALUES ('p1', 'c', 'own', 'pause_campaign', 'in_review', 't', 'h')`);
     await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a1', 'c', 'p1', 'owner', 'approved', 'user:u1', 'h', now())`);
-    // Agent is allowed when role=owner and decision=approved (for Elon delegate)
+    // Agent is allowed when role=owner and decision=approved (for the owner's delegate)
     await insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a2', 'c', 'p1', 'owner', 'approved', 'agent:ag1', 'h', now())`);
     // Agent is rejected when decision is not approved (even with owner role)
     await expect(insert(`INSERT INTO ${NAMESPACE}.approvals (id, company_id, proposal_id, role, decision, decided_by, content_hash, expires_at) VALUES ('a3', 'c', 'p1', 'owner', 'rejected', 'agent:ag2', 'h', now())`)).rejects.toThrow(/approvals_person_or_delegate/);

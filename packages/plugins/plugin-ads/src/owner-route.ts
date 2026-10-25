@@ -1,12 +1,21 @@
-/** Determines whether agent Elon (owner delegate) can approve a proposal, or if Peet's approval is required. */
+/** Determines whether the owner's delegate (the company's Account Manager agent) can approve a proposal, or if the owner must. */
+import { teamAgentId, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { daysBetween } from "./dates.js";
 import type { ApprovalRow, ProposalRow, ScopeRow } from "./db.js";
 
-export const ELON_AGENT_ID = "7734f065-7c4a-4fc7-b80a-b1f36c0f0c7f";
+/** The team role whose agent may approve, as the owner's delegate, a proposal within the owner threshold. */
+export const OWNER_DELEGATE_ROLE: TeamRoleKey = "account-manager";
+
+/** The running Account Manager agent, or null (then only the owner, a person, can approve). */
+export async function ownerDelegateAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  return await teamAgentId(ctx, companyId, OWNER_DELEGATE_ROLE);
+}
+
 export const DEFAULT_OWNER_THRESHOLD_MINOR = 50_000;
 
 export interface OwnerRoute {
-  route: "elon" | "peet_required";
+  route: "delegate" | "owner_required";
   lifetimeMinor: number | null;
   thresholdMinor: number;
 }
@@ -83,10 +92,10 @@ export function lifetimeBudgetMinor(p: Pick<ProposalRow, "kind" | "payload" | "i
   return null;
 }
 
-/** Determine if Elon can approve (within threshold) or if Peet is required from a spend amount. */
+/** Determine if the owner's delegate can approve (within threshold) or if the owner is required, from a spend amount. */
 export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, lifetimeMinor: number | null): OwnerRoute {
   const threshold = ownerThresholdMinor(scope);
-  const route: OwnerRoute["route"] = lifetimeMinor === null || lifetimeMinor > threshold ? "peet_required" : "elon";
+  const route: OwnerRoute["route"] = lifetimeMinor === null || lifetimeMinor > threshold ? "owner_required" : "delegate";
   return {
     route,
     lifetimeMinor,
@@ -94,7 +103,7 @@ export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshol
   };
 }
 
-/** Determine if Elon can approve (within threshold) or if Peet is required. */
+/** Determine if the owner's delegate can approve (within threshold) or if the owner is required. */
 export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, p: Pick<ProposalRow, "kind" | "payload" | "impact">): OwnerRoute {
   const lifetime = lifetimeBudgetMinor(p);
   return routeForSpend(scope, lifetime);
@@ -103,13 +112,14 @@ export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold
 /** Extract owner route from proposal impact object. */
 export function routeFromImpact(impact: Record<string, unknown>): OwnerRoute | null {
   const route = impact.ownerRoute as OwnerRoute | undefined;
-  return route && (route.route === "elon" || route.route === "peet_required") ? route : null;
+  return route && (route.route === "delegate" || route.route === "owner_required") ? route : null;
 }
 
-/** Check if an approval is Elon's owner-delegate approval (within threshold). */
-export function isOwnerDelegateApproval(a: Pick<ApprovalRow, "decided_by" | "role" | "decision" | "over_cap_ack">): boolean {
+/** An owner-delegate approval (within threshold): the current Account Manager agent's yes as owner, no cap override. No delegate (null) means none counts. */
+export function isOwnerDelegateApproval(a: Pick<ApprovalRow, "decided_by" | "role" | "decision" | "over_cap_ack">, delegateAgentId: string | null): boolean {
   return (
-    a.decided_by === `agent:${ELON_AGENT_ID}` &&
+    delegateAgentId !== null &&
+    a.decided_by === `agent:${delegateAgentId}` &&
     a.role === "owner" &&
     a.decision === "approved" &&
     !a.over_cap_ack

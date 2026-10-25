@@ -93,11 +93,11 @@ export function gateGrowthHandlers<
 
     const route = routeForSpend(scope, increase);
 
-    if (actor.isAgent && route.route === "peet_required") {
+    if (actor.isAgent && route.route === "owner_required") {
       throw new AdsError(
         `This experiment's spend increase of ${formatMoney(increase, scope.currency)} exceeds the owner threshold of ${formatMoney(route.thresholdMinor, scope.currency)}. ` +
           `Raise it with the owner through ask-owner; a person can start it.`,
-        "peet_required",
+        "owner_required",
       );
     }
 
@@ -133,11 +133,11 @@ export function gateGrowthHandlers<
 
       const route = routeForSpend(scope, record.increaseMinor);
 
-      if (route.route === "peet_required") {
+      if (route.route === "owner_required") {
         throw new AdsError(
           `This experiment's spend increase of ${formatMoney(record.increaseMinor, scope.currency)} exceeds the owner threshold of ${formatMoney(route.thresholdMinor, scope.currency)}. ` +
             `Raise it with the owner through ask-owner; a person can start it.`,
-          "peet_required",
+          "owner_required",
         );
       }
     }
