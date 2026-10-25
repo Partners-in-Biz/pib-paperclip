@@ -124,11 +124,11 @@ describe("scope helpers", () => {
 describe("agent guidance", () => {
   it("explains own vs client scope in the skill and the tools", () => {
     const skill = SKILLS[0]!.markdown;
-    expect(skill).toContain("## Scope: PiB's own sites vs client sprints");
+    expect(skill).toContain("## Scope: your company's own sites vs client sprints");
     expect(skill).toContain('client: "company:<id>"');
     const create = SEO_TOOLS.find((t) => t.name === "create-sprint")!;
     const props = (create.parametersSchema as { properties: Record<string, { description?: string }> }).properties;
-    expect(props.client!.description).toMatch(/Omit for Partners in Biz's own sites/);
+    expect(props.client!.description).toMatch(/Omit for your company's own sites/);
     expect(props.clientName).toBeUndefined();
     for (const name of ["list-sprints", "today", "update-sprint"]) {
       const tool = SEO_TOOLS.find((t) => t.name === name)!;

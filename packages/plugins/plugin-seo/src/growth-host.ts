@@ -329,8 +329,8 @@ export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthAc
   return {
     kinds: ["own", "client"],
     descriptions: {
-      "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for PiB's own sites. Never mix scopes.",
-      "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for PiB's own sites. Never mix scopes.",
+      "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for your company's own sites. Never mix scopes.",
+      "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for your company's own sites. Never mix scopes.",
     },
     async actor(runContext: ToolRunContext) {
       if (!(await isModuleEnabled(ctx, runContext.companyId, PLUGIN_ID))) throw new SeoError("SEO is switched off for this company.");

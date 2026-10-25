@@ -147,7 +147,6 @@ const PIB_WORDING = /Peet|Partners in Biz|\bPiB\b/;
  * line. There is no permanent exemption: the list must be empty when the last text PR has merged.
  */
 const PENDING: Array<(typeof PLUGINS)[number]> = [
-  "seo",
   "crm",
 ];
 

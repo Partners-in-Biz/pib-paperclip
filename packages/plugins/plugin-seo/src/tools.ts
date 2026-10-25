@@ -72,7 +72,7 @@ function clientProps(clientDescription: string): Record<string, JsonSchema> {
   };
 }
 
-const CLIENT_FILTER = 'Filter by who the sprint is for: "own" for Partners in Biz\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>" for one client. Omit for every sprint.';
+const CLIENT_FILTER = 'Filter by who the sprint is for: "own" for your company\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>" for one client. Omit for every sprint.';
 
 /** The 90-day plan by business type (templates/plans.ts; the skill explains each). */
 const BUSINESS_TYPE_TEXT = "Plan for the business: local (local service), professional (firms), ecommerce (online shop) or saas (software). Pick it from the CRM client profile";
@@ -84,15 +84,15 @@ export interface SeoToolDeclaration extends PluginToolDeclaration {
 
 export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   // Sprints
-  { group: "Sprints", name: "list-sprints", displayName: "List SEO sprints", description: "List sprints with client, plan (businessType), day/week/phase, status, autopilot, task counts (due, overdue, stuck, waiting on a person; see the skill's Words) and the next thing due. Each sprint's `client` (null = Partners in Biz's own site) is what other tools take as `client`.", parametersSchema: schema([], { status: choice(SPRINT_STATUSES, "Only sprints with this status"), ...clientProps(CLIENT_FILTER) }) },
+  { group: "Sprints", name: "list-sprints", displayName: "List SEO sprints", description: "List sprints with client, plan (businessType), day/week/phase, status, autopilot, task counts (due, overdue, stuck, waiting on a person; see the skill's Words) and the next thing due. Each sprint's `client` (null = your company's own site) is what other tools take as `client`.", parametersSchema: schema([], { status: choice(SPRINT_STATUSES, "Only sprints with this status"), ...clientProps(CLIENT_FILTER) }) },
   {
     group: "Sprints",
     name: "create-sprint",
     displayName: "Create SEO sprint",
-    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations; AI search, Google Analytics and page groups start off, a person turns them on), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for Partners in Biz's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it. A fixture site (host ending .invalid) or the canary client makes a rehearsal sprint: its plan and tasks exist to read, but no issue is ever opened and nobody is asked for anything (the answer says rehearsal: true).",
+    description: "Start a 90-day sprint for one site: seeds the plan for its business type (42–46 tasks and 13–15 directories or citations; AI search, Google Analytics and page groups start off, a person turns them on), creates the sprint root issue in the SEO project, and opens the tasks that are already due. Omit client for your company's own sites; for client work pass the CRM client (the name comes from the CRM) and the businessType that fits it. A fixture site (host ending .invalid) or the canary client makes a rehearsal sprint: its plan and tasks exist to read, but no issue is ever opened and nobody is asked for anything (the answer says rehearsal: true).",
     parametersSchema: schema(["siteUrl"], {
       siteUrl: text("The site, e.g. https://example.co.za"),
-      ...clientProps('Who the sprint is for: "company:<CRM company id>" or "contact:<CRM contact id>" (a sole trader). Omit for Partners in Biz\'s own sites.'),
+      ...clientProps('Who the sprint is for: "company:<CRM company id>" or "contact:<CRM contact id>" (a sole trader). Omit for your company\'s own sites.'),
       siteName: text("Display name for the site (default: the client name, or the domain for own sites)"),
       businessType: choice(BUSINESS_TYPES, `${BUSINESS_TYPE_TEXT}; default local for a client, saas for own sites`),
       startDate: text("Day 0 (launch day), YYYY-MM-DD; default today"),
@@ -116,12 +116,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Sprints",
     name: "update-sprint",
     displayName: "Update SEO sprint",
-    description: "Change the site name or the notes the agent reads (site access, constraints). People only: move the sprint to another client or back to Partners in Biz's own sites.",
+    description: "Change the site name or the notes the agent reads (site access, constraints). People only: move the sprint to another client or back to your company's own sites.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       siteName: text("New display name for the site (max 200 chars)"),
       notes: text("Site access and constraints the agent reads (max 4000 chars; an empty string clears them)"),
-      ...clientProps('People only: "company:<CRM company id>", "contact:<CRM contact id>", or "own" for Partners in Biz\'s own sites.'),
+      ...clientProps('People only: "company:<CRM company id>", "contact:<CRM contact id>", or "own" for your company\'s own sites.'),
     }),
   },
   {
@@ -644,12 +644,12 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     group: "Site repo",
     name: "link-site",
     displayName: "Link site repo",
-    description: "Link the client's own Paperclip project (clientProjectId: all this sprint's issues open there) and/or the Paperclip project whose workspace holds the site repo (code and content tasks open there), wordpressSiteId for a client's WordPress site reached through the PiB Connector (changes through the partnersinbiz.crm:wp-* tools), or noRepo: true for a CMS / client-managed site without the Connector. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
+    description: "Link the client's own Paperclip project (clientProjectId: all this sprint's issues open there) and/or the Paperclip project whose workspace holds the site repo (code and content tasks open there), wordpressSiteId for a client's WordPress site reached through the Connector (changes through the partnersinbiz.crm:wp-* tools), or noRepo: true for a CMS / client-managed site without the Connector. Also sets branch, framework, hosting and the change policy (agents may only lower it).",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       projectId: text("Paperclip project whose workspace holds the site repo (from list-site-projects)"),
       clientProjectId: text("The client's own Paperclip project (from list-site-projects): all issues of this sprint open there. Auto-linked when a project is named like the client"),
-      wordpressSiteId: text("CRM website id of the sprint client's WordPress site (from list-site-projects wordpressSites): wordpress mode, changes through the PiB Connector"),
+      wordpressSiteId: text("CRM website id of the sprint client's WordPress site (from list-site-projects wordpressSites): wordpress mode, changes through the Connector"),
       noRepo: flag("No repo access: change sets go through Needs you"),
       unlink: flag("Remove the site link, back to unlinked (people only)"),
       defaultBranch: text("Branch PRs target and work starts from. Default: the project's work branch (its workspace policy base ref, e.g. development), else the workspace default, else main"),
@@ -658,7 +658,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       changePolicy: choice(CHANGE_POLICIES, "What you may merge: merge_seo_scope = SEO-scope PRs, pr_only = none, full = any PR; agents may only lower it"),
     }),
   },
-  { group: "Site repo", name: "get-site-link", displayName: "Get site link", description: "The sprint's site link (repo project, WordPress site through the PiB Connector, or none), change policy, the exact SEO scope you may merge or apply alone, and what to do next.", parametersSchema: schema(["sprintId"], { sprintId }) },
+  { group: "Site repo", name: "get-site-link", displayName: "Get site link", description: "The sprint's site link (repo project, WordPress site through the Connector, or none), change policy, the exact SEO scope you may merge or apply alone, and what to do next.", parametersSchema: schema(["sprintId"], { sprintId }) },
   {
     group: "Site repo",
     name: "check-change-scope",
@@ -825,10 +825,10 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "get-playbook",
     displayName: "Get SEO playbook",
     description:
-      "The learned playbook for a sprint's scope (one client, or Partners in Biz's own sites; shared by every sprint of that client): markdown rules kept from measured optimizations, its version, recent versions with reasons, and pending changes. Created on first use. Call it before working a sprint's tasks and follow it.",
+      "The learned playbook for a sprint's scope (one client, or your company's own sites; shared by every sprint of that client): markdown rules kept from measured optimizations, its version, recent versions with reasons, and pending changes. Created on first use. Call it before working a sprint's tasks and follow it.",
     parametersSchema: schema([], {
       sprintId: text("Sprint id: the playbook of its scope (preferred)"),
-      ...clientProps('Without sprintId: "own" for Partners in Biz\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>".'),
+      ...clientProps('Without sprintId: "own" for your company\'s own sites, "company:<CRM company id>" or "contact:<CRM contact id>".'),
       includeVersionText: flag("Include each version's full markdown (default false)"),
     }),
   },
@@ -868,8 +868,8 @@ export const SEO_TOOLS: PluginToolDeclaration[] = SEO_TOOL_DECLARATIONS.map(({ g
 export const GROWTH_TOOL_OPTIONS: GrowthDeclarationOptions = {
   kinds: ["own", "client"],
   descriptions: {
-    "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for PiB's own sites. Never mix scopes.",
-    "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for PiB's own sites. Never mix scopes.",
+    "performance-review": "Growth Lab review of one scope: running and proposed experiments, pending playbook changes and hypothesis types ranked by UCB. Omit scope for your company's own sites. Never mix scopes.",
+    "list-experiments": "Growth Lab experiments of one scope with arms, verdicts and the scoreboard. Omit scope for your company's own sites. Never mix scopes.",
   },
 };
 
