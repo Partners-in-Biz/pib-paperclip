@@ -58,7 +58,8 @@ async function erasedAt(id: string) {
     `SELECT erased_at FROM ${NAMESPACE}.tel_recordings WHERE id = $1::uuid`,
     [id],
   );
-  return rows[0]?.erased_at ?? "gone";
+  if (rows.length === 0) return "gone";
+  return rows[0].erased_at;
 }
 
 describe("retention gate (off by default, per company)", () => {
