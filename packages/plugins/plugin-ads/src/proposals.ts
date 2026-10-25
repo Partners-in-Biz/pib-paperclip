@@ -45,9 +45,9 @@ export interface ProposalActor {
 
 const hashOf = (kind: string, scopeKey: string, accountId: string | null, payload: Record<string, unknown>) => sha256(canonicalJson({ kind, scopeKey, accountId, payload })).slice(0, 40);
 
-/** Who must say yes: PiB's owner always; the client too when the scope asks for it and the change adds spend or is the client's copy. A pause needs only the owner. */
+/** Who must say yes: PiB's owner always; the client too when the scope asks for it and the change adds spend or is the client's copy. A pause needs only the owner. Ad groups and keywords need only the owner (non-spend). */
 export function signoffsFor(scope: Pick<ScopeRow, "signoffs">, kind: ProposalKind): Role[] {
-  if (kind === "pause_campaign") return ["owner"];
+  if (kind === "pause_campaign" || kind === "create_ad_group" || kind === "add_keywords") return ["owner"];
   return scope.signoffs === "owner_client" ? ["owner", "client"] : ["owner"];
 }
 
@@ -448,6 +448,8 @@ export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
     return { kind: p.kind, accountId: x.accountId, name: x.name, objective: x.objective, dailyBudgetMinor: x.dailyBudgetMinor, startDate: x.startDate, endDate: x.endDate, specialAdCategories: x.specialAdCategories, audience: x.audience, creative: x.creative, notes: x.notes, reason: x.reason };
   }
   if (p.kind === "change_budget") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, newDailyBudgetMinor: x.newDailyBudgetMinor, reason: x.reason };
+  if (p.kind === "create_ad_group") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, name: x.name, cpcBidMinor: x.cpcBidMinor, reason: x.reason };
+  if (p.kind === "add_keywords") return { kind: p.kind, accountId: x.accountId, adGroupExternalId: x.adGroupExternalId, keywords: x.keywords, reason: x.reason };
   if (p.kind === "creative_check") return { kind: p.kind, platform: x.platform, name: x.name, creative: x.creative, specialAdCategories: x.specialAdCategories, notes: x.notes, reason: x.reason };
   if (p.kind === "create_ad_creative") return { kind: p.kind, accountId: x.accountId, name: x.name, pageId: x.pageId, imageHash: x.imageHash, videoId: x.videoId, link: x.link, headline: x.headline, body: x.body, cta: x.cta, notes: x.notes, reason: x.reason };
   if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, notes: x.notes, reason: x.reason };

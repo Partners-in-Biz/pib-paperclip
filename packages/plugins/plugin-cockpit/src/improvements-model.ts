@@ -11,7 +11,7 @@
  */
 import { METRIC_KEY_HELP, parseMetricKey, type Better } from "./metrics-keys.js";
 
-export const IMPROVEMENT_KINDS = ["skill", "instruction", "routine", "plugin", "agent", "system"] as const;
+export const IMPROVEMENT_KINDS = ["skill", "instruction", "routine", "plugin", "agent", "template", "system"] as const;
 export type ImprovementKind = (typeof IMPROVEMENT_KINDS)[number];
 export type ImprovementStatus = "open" | "resolved" | "dropped";
 export type Outcome = "improved" | "no_change" | "worse" | "inconclusive";
