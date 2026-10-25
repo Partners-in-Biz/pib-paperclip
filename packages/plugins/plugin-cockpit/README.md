@@ -305,6 +305,16 @@ Core reads (`coreReadTables`):
 
 Approvals are read with `ctx.approvals.list` and agents with `ctx.agents.list`. 0.5.1 adds one capability, `issue.documents.read` (the eval harness reads the skill-test task's `output` document), and no `coreReadTables` entry.
 
+### Hosted usage (0.14.1)
+
+Read-only, owner company only (the company whose issue prefix is the owner's). Reads the `hosted_usage` table that the daily roll-up fills. Counts and cost only: no titles, agent names, comments or client content. No skill text mentions it.
+
+- Tool `hosted-usage-list` (`fromMonth`, `toMonth`, both optional `YYYY-MM`; default the last 6 months). Returns `{ allowed: true, rows }`, or `{ allowed: false, rows: [] }` for any other company.
+- Route `GET /hosted-usage?companyId=...&fromMonth=...&toMonth=...` (board auth). Returns `{ rows }`, or 403 for any other company, 400 for a bad month.
+- Row: `{ hostedCompanyId, companyName, month (YYYY-MM-01), runs, notionalUsd, doneIssues, agents, computedAt }`, newest month first (then company name).
+
+Src-only: no migration, no new capability, `coreReadTables` unchanged.
+
 ## Develop
 
 ```bash
