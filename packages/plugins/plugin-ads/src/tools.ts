@@ -27,7 +27,7 @@ const creative: JsonSchema = {
 };
 
 const proposalFields: Record<string, JsonSchema> = {
-  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, create_ad, create_ad_group and add_keywords."),
+  accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, create_ad, create_ad_group, add_keywords and create_responsive_search_ad."),
   name: str("create_campaign: the new campaign's name. create_ad_set: the new ad set's name. create_ad_creative: the creative's name. create_ad: the ad's name. create_ad_group: the new ad group's name. creative_check: a label for the copy."),
   objective: str("create_campaign: Meta OUTCOME_LEADS, OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT or OUTCOME_APP_PROMOTION; Google SEARCH (the only Google type version 0.1 creates). Default OUTCOME_LEADS / SEARCH."),
   dailyBudgetMinor: int("create_campaign: the daily budget in minor units of the account's currency (15000 means 150.00)."),
@@ -67,6 +67,11 @@ const proposalFields: Record<string, JsonSchema> = {
   creativeExternalId: str("create_ad: the creative's id (from an executed create_ad_creative proposal)."),
   creative,
   notes: str("Anything the approver should know."),
+  headlines: { type: "array", description: "create_responsive_search_ad: 3 to 15 headlines, each 30 characters at most, no repeats.", items: str("One headline (30 characters at most).") },
+  descriptions: { type: "array", description: "create_responsive_search_ad: 2 to 4 descriptions, each 90 characters at most, no repeats.", items: str("One description (90 characters at most).") },
+  finalUrl: str("create_responsive_search_ad: the https landing page, with utm_source, utm_medium and utm_campaign."),
+  path1: str("create_responsive_search_ad: first display-URL path (15 characters at most; letters, numbers, - and _)."),
+  path2: str("create_responsive_search_ad: second display-URL path (needs path1)."),
   cpcBidMinor: int("create_ad_group: the max CPC bid in minor units of the account's currency."),
   adGroupExternalId: str("add_keywords: the ad group's id from the ad platform."),
   keywords: {
@@ -208,8 +213,8 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     name: "propose-ad-change",
     displayName: "Propose an ad change",
     description:
-      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, create_ad_set (Meta only, made PAUSED), create_ad_creative (Meta only), create_ad (Meta only, made PAUSED), create_ad_group (Google only, made PAUSED), add_keywords (Google only), creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
-    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "create_ad_group", "add_keywords", "creative_check"], "What to change."), client, ...proposalFields }),
+      "Ask for a campaign or budget change as a proposal with the numbers. kinds: create_campaign (made PAUSED), change_budget (daily budget of one campaign), pause_campaign, resume_campaign, create_ad_set (Meta only, made PAUSED), create_ad_creative (Meta only), create_ad (Meta only, made PAUSED), create_ad_group (Google only, made PAUSED), add_keywords (Google only), create_responsive_search_ad (Google only, made PAUSED; the Google copy limits are checked when you propose), creative_check (clear ad copy; changes nothing). It opens an issue that goes to the Reviewer, then a person (and the client's own yes when the scope needs it). Nothing runs until every sign-off is recorded and, even then, only when changes are switched on for the scope. Money is minor units.",
+    parametersSchema: schema(["kind"], { kind: oneOf(["create_campaign", "change_budget", "pause_campaign", "resume_campaign", "create_ad_set", "create_ad_creative", "create_ad", "create_ad_group", "add_keywords", "create_responsive_search_ad", "creative_check"], "What to change."), client, ...proposalFields }),
   },
   {
     name: "revise-ad-proposal",

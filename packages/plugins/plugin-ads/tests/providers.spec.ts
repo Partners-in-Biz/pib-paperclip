@@ -572,3 +572,49 @@ describe("Google Ads: policy approval read-back", () => {
     expect(ads[0]!.feedback).toBeNull();
   });
 });
+
+describe("Google Ads: responsive search ads (Google only)", () => {
+  const gToken = { accessToken: GOOGLE_ACCESS };
+  const ref = { ...accountRef, externalId: "555-666-7777", loginCustomerId: "111-222-3333" };
+  const copy = {
+    headlines: ["Luxury shoes", "Free delivery", "Shop the sale"],
+    descriptions: ["Hand made shoes for every day.", "Order today, delivered in 3 days."],
+    finalUrl: "https://example.com/shoes?utm_source=google&utm_medium=cpc&utm_campaign=shoes",
+  };
+
+  it("creates the ad PAUSED with headlines, descriptions, final URL and paths", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*adGroupAds:mutate/, { body: { results: [{ resourceName: "customers/5556667777/adGroupAds/222~9001" }] } }]]);
+    const made = await googleProvider.createResponsiveSearchAd(env(googleApp(), fetchImpl), gToken, ref, "222", { ...copy, path1: "shoes", path2: "sale" });
+    expect(made).toEqual({ externalId: "9001", name: "Luxury shoes" });
+    expect(seen[0]!.headers["login-customer-id"]).toBe("1112223333");
+    const create = JSON.parse(seen[0]!.body!).operations[0].create;
+    expect(create).toMatchObject({ adGroup: "customers/5556667777/adGroups/222", status: "PAUSED" });
+    expect(create.ad.finalUrls).toEqual([copy.finalUrl]);
+    expect(create.ad.responsiveSearchAd).toEqual({
+      headlines: copy.headlines.map((text) => ({ text })),
+      descriptions: copy.descriptions.map((text) => ({ text })),
+      path1: "shoes",
+      path2: "sale",
+    });
+  });
+
+  it("checks the Google limits again before sending anything", async () => {
+    const invalid = scripted([]);
+    const run = (patch: Record<string, unknown>) => googleProvider.createResponsiveSearchAd(env(googleApp(), invalid.fetchImpl), gToken, ref, "222", { ...copy, ...patch });
+    await expect(run({ headlines: ["a".repeat(31), "b", "c"] })).rejects.toThrow(/too long/);
+    await expect(run({ finalUrl: "https://example.com/shoes" })).rejects.toThrow(/UTM/);
+    expect(invalid.seen).toHaveLength(0);
+  });
+
+  it("fails when Google does not return the new ad", async () => {
+    const { fetchImpl } = scripted([[/adGroupAds:mutate/, { body: { results: [] } }]]);
+    await expect(googleProvider.createResponsiveSearchAd(env(googleApp(), fetchImpl), gToken, ref, "222", copy)).rejects.toThrow(/did not return/);
+  });
+});
+
+describe("Meta: responsive search ads unsupported", () => {
+  it("rejects creation", async () => {
+    const copy = { headlines: ["a", "b", "c"], descriptions: ["d", "e"], finalUrl: "https://example.com/?utm_source=x&utm_medium=y&utm_campaign=z" };
+    await expect(metaProvider.createResponsiveSearchAd(env(metaApp()), { accessToken: META_TOKEN }, accountRef, "adg1", copy)).rejects.toThrow(/Google Ads only/);
+  });
+});

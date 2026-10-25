@@ -7,10 +7,10 @@
 import { AdsError } from "../domain.js";
 import { ProviderError } from "./http.js";
 import type { StoredPlatform } from "../platforms.js";
-import type { AccountCaps, AccountRef, AddKeywordsRequest, AdPolicyRow, AdsProvider, CampaignHealth, CampaignInfo, CreateAdCreativeRequest, CreateAdGroupRequest, CreateAdRequest, CreateCampaignRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
+import type { AccountCaps, AccountRef, AddKeywordsRequest, AdPolicyRow, AdsProvider, CampaignHealth, CampaignInfo, CreateAdCreativeRequest, CreateAdGroupRequest, CreateAdRequest, CreateCampaignRequest, CreateResponsiveSearchAdRequest, InsightRow, ProviderAdAccount, TokenBundle } from "./types.js";
 
 export interface MockWrite {
-  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad" | "adGroup" | "keywords";
+  op: "create" | "status" | "budget" | "upload_image" | "upload_video" | "create_adset" | "create_ad_creative" | "create_ad" | "adGroup" | "keywords" | "responsive_search_ad";
   accountExternalId: string;
   campaignExternalId?: string;
   adGroupExternalId?: string;
@@ -32,6 +32,9 @@ export interface MockWrite {
   creativeExternalId?: string;
   cpcBidMinor?: number;
   keywordCount?: number;
+  headlineCount?: number;
+  descriptionCount?: number;
+  finalUrl?: string;
 }
 
 /** A stable pseudo-random number in 0..1 from text, so the demo numbers are the same on every read. */
@@ -64,7 +67,7 @@ export class MockAdsProvider implements AdsProvider {
   writes: MockWrite[] = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
-  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health" | "adGroup" | "keywords", ProviderError | AdsError>> = {};
+  failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health" | "adGroup" | "keywords" | "responsiveSearchAd", ProviderError | AdsError>> = {};
   refreshed = 0;
   /** The clock the demo token expiry follows (tests move it). */
   clock: () => Date = () => new Date();
@@ -206,6 +209,13 @@ export class MockAdsProvider implements AdsProvider {
     const externalId = `mock-adg-${(this.seq += 1)}`;
     this.writes.push({ op: "adGroup", accountExternalId: account.externalId, campaignExternalId, adGroupExternalId: externalId, name: request.name, cpcBidMinor: request.cpcBidMinor, status: "paused" });
     return { externalId, name: request.name };
+  }
+
+  async createResponsiveSearchAd(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: CreateResponsiveSearchAdRequest) {
+    this.maybeFail("responsiveSearchAd");
+    const externalId = `mock-rsa-${(this.seq += 1)}`;
+    this.writes.push({ op: "responsive_search_ad", accountExternalId: account.externalId, adGroupExternalId, name: request.headlines[0], headlineCount: request.headlines.length, descriptionCount: request.descriptions.length, finalUrl: request.finalUrl, status: "paused" });
+    return { externalId, name: request.headlines[0]! };
   }
 
   async addKeywords(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest) {

@@ -389,6 +389,10 @@ export const metaProvider: AdsProvider = {
     throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
   },
 
+  async createResponsiveSearchAd() {
+    throw new AdsError("Responsive search ads are Google Ads only; use create_ad_creative and create_ad on Meta.");
+  },
+
   async addKeywords() {
     throw new AdsError("Ad groups and keywords are Google Ads only; use ad sets on Meta.");
   },

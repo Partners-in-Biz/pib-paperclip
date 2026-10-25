@@ -147,6 +147,14 @@ export interface CreateAdGroupRequest {
   cpcBidMinor: number;
 }
 
+export interface CreateResponsiveSearchAdRequest {
+  headlines: string[];
+  descriptions: string[];
+  finalUrl: string;
+  path1?: string;
+  path2?: string;
+}
+
 export type KeywordMatchType = "exact" | "phrase" | "broad";
 
 export interface KeywordInput {
@@ -222,6 +230,8 @@ export interface AdsProvider {
   createAd(env: ProviderEnv, token: TokenBundle, account: AccountRef, request: CreateAdRequest): Promise<{ externalId: string; name: string }>;
   /** Write: creates an ad group PAUSED under a campaign, with a max CPC bid (minor units). */
   createAdGroup(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string, request: CreateAdGroupRequest): Promise<{ externalId: string; name: string }>;
+  /** Write: creates a responsive search ad PAUSED in an ad group. Google only. */
+  createResponsiveSearchAd(env: ProviderEnv, token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: CreateResponsiveSearchAdRequest): Promise<{ externalId: string; name: string }>;
   /** Write: adds keywords (positive, or negative when negative:true) to an ad group. */
   addKeywords(env: ProviderEnv, token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest): Promise<{ added: number }>;
 }
