@@ -348,6 +348,7 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "sidebar", id: "pib-nav-clients", displayName: "Clients", exportName: "ClientsNav", order: 6 },
       { type: "sidebar", id: "pib-nav-marketing", displayName: "Marketing", exportName: "MarketingNav", order: 7 },
       { type: "sidebar", id: "pib-nav-finance", displayName: "Finance", exportName: "FinanceNav", order: 8 },
+      { type: "sidebar", id: "pib-nav-hosted", displayName: "Hosted clients", exportName: "HostedClientsNav", order: 9 },
       { type: "dashboardWidget", id: "cockpit-today", displayName: "Company today", exportName: "CompanyTodayWidget" },
     ],
   },

@@ -56,6 +56,7 @@ describe("grouped sidebar", () => {
       ["pib-nav-clients", "ClientsNav", 6],
       ["pib-nav-marketing", "MarketingNav", 7],
       ["pib-nav-finance", "FinanceNav", 8],
+      ["pib-nav-hosted", "HostedClientsNav", 9],
     ]);
     for (const group of Object.values(NAV_GROUPS)) expect(sidebar.some(([id]) => id === group.slotId)).toBe(true);
   });

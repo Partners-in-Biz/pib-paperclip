@@ -23,8 +23,9 @@ import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { MaintenancePanel } from "./maintenance.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
+import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
 
-export { ClientsNav, FinanceNav, MarketingNav } from "./nav.js";
+export { ClientsNav, FinanceNav, HostedClientsNav, MarketingNav } from "./nav.js";
 
 export { buildView } from "../view.js";
 
@@ -62,7 +63,7 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance", "hosted"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 /** `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
@@ -117,6 +118,8 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
+  const hosted = useHostedUsage(companyId);
+  const showHosted = hostedAllowed(hosted.state);
   const moved = movedTabTarget(location.search);
 
   // Follow the address (a `/cockpit?tab=memory` link while the page is open).
@@ -142,7 +145,8 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const memoryTab = tab === "memory";
   const profileTab = tab === "profile";
   const maintenanceTab = tab === "maintenance";
-  const pageTab = memoryTab || profileTab || maintenanceTab;
+  const hostedTab = tab === "hosted";
+  const pageTab = memoryTab || profileTab || maintenanceTab || hostedTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
@@ -161,7 +165,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : void data.reload())}
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
               disabled={!pageTab && data.loading}
             >
               {!pageTab && data.loading ? "Loading…" : "Refresh"}
@@ -179,11 +183,15 @@ function CockpitPageMain({ context }: PluginPageProps) {
           { id: "memory", label: "Memory", icon: Lightbulb },
           { id: "notifications", label: "Notifications", icon: Megaphone },
           { id: "maintenance", label: "Maintenance", icon: Wrench },
+          // Owner company only: other companies get no tab (a `?tab=hosted` link there shows "not available").
+          ...(showHosted ? [{ id: "hosted", label: "Hosted clients", icon: Building2 }] : []),
         ]}
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
       />
-      {tab === "notifications" ? (
+      {hostedTab ? (
+        <HostedView key={companyId} state={hosted.state} now={new Date()} onRetry={() => void hosted.reload()} />
+      ) : tab === "notifications" ? (
         <NotificationsPage key={companyId} />
       ) : maintenanceTab ? (
         <MaintenancePanel key={companyId} refreshKey={maintenanceTick} />
