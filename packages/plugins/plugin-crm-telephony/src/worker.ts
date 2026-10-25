@@ -14,6 +14,7 @@ import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
 import { syncTemplates, listPickerTemplates } from "./templates.js";
+import { normalizeE164 } from "./phone.js";
 
 let ctx: PluginContext | null = null;
 
@@ -101,6 +102,57 @@ const toolHandlers: Record<
         unchanged: syncResult.unchanged,
         skipped: syncResult.skipped,
       },
+    };
+  },
+  "whatsapp-send": async (pluginCtx, params, run) => {
+    const p = params as {
+      contactId?: string;
+      toE164: string;
+      kind?: string;
+      body?: string;
+      templateId?: string;
+      variables?: string[];
+    } | null;
+    if (!p?.toE164) return { error: "toE164 is required" };
+
+    const e164 = normalizeE164(p.toE164);
+    if (!e164) return { error: `Invalid phone number: ${p.toE164}` };
+
+    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM"];
+    const result = await buildTwilioClientForSecrets(pluginCtx, run.companyId, requiredSecrets);
+    if (!result) return { error: `Missing required secrets: ${requiredSecrets.join(", ")}` };
+
+    const settings = await readSettings(pluginCtx, run.companyId);
+    const { sendWhatsapp } = await import("./whatsapp-send.js");
+    const variablesRecord = p.variables
+      ? Object.fromEntries(p.variables.map((v, i) => [`${i}`, v]))
+      : undefined;
+
+    const sendResult = await sendWhatsapp(
+      {
+        db: pluginCtx.db,
+        namespace: NAMESPACE,
+        client: result.client,
+        settings,
+        fromWhatsapp: result.secrets.TWILIO_WHATSAPP_FROM,
+        statusCallbackUrl: undefined,
+        now: () => new Date(),
+      },
+      {
+        companyId: run.companyId,
+        userId: run.agentId,
+        contactId: p.contactId || null,
+        toE164: e164,
+        kind: (p.kind as "service" | "marketing") || "service",
+        body: p.body,
+        templateId: p.templateId,
+        variables: variablesRecord,
+      },
+    );
+    if (!sendResult.sent) return { error: `Send failed: ${sendResult.reason}` };
+
+    return {
+      data: { sent: true, messageId: sendResult.messageId, providerMessageId: sendResult.providerMsgId },
     };
   },
 };
