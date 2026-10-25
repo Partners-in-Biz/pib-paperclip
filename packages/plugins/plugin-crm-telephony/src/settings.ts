@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isSecretRef, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import type { R2Config } from "./r2-store.js";
+import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
 
 export interface TelephonySettings {
   recordingEnabled: boolean;
