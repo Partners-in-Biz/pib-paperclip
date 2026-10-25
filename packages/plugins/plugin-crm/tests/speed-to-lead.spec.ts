@@ -214,7 +214,7 @@ describe("speed-to-lead compose language", () => {
     expect(detectSpeedToLeadLang("Hello", "af")).toBe("af");
     const af = composeSpeedToLeadDraft({ name: "Jan", email: "j@x.test", text: "asseblief", contactId: "c1" });
     expect(af.lang).toBe("af");
-    expect(af.draft.text).toMatch(/Peet|skakel/i);
+    expect(af.draft.text).toMatch(/Die span|skakel/i);
     expect(af.draft.text).not.toMatch(/\[Slot/i);
     const en = composeSpeedToLeadDraft({ name: "Ada", email: "a@x.test", text: "Need a quote", contactId: "c1" });
     expect(en.lang).toBe("en");
@@ -254,7 +254,7 @@ describe("speed-to-lead draft-only", () => {
 });
 
 describe("speed-to-lead CEO ping", () => {
-  it("opens a 3-line ping issue for Elon with a link to the approval card", async () => {
+  it("opens a 3-line ping issue for the CEO with a link to the approval card", async () => {
     const { harness, result, row } = await openSpeedToLeadApproval({ leadKey: "form:stl-ping" });
     const ping = (await harness.ctx.issues.list({ companyId: CO, originKind: "plugin:partnersinbiz.crm", originId: `crm:stl-ping:${result.approvalId}`, limit: 1 }))[0];
     expect(ping).toBeTruthy();
@@ -304,7 +304,7 @@ describe("speed-to-lead person-done send path", () => {
   it("refuses sendApproved when the draft still has slot placeholders", async () => {
     const { harness, row } = await openSpeedToLeadApproval({ leadKey: "form:stl-slot" });
     const approval = (await getApproval(harness.ctx, CO, row.id))!;
-    const draft = { ...(approval.payload.draft as { to: { email: string; name: string }[]; subject: string; text: string }), text: "Hi,\n\nPick [Slot 1].\n\nPeet" };
+    const draft = { ...(approval.payload.draft as { to: { email: string; name: string }[]; subject: string; text: string }), text: "Hi,\n\nPick [Slot 1].\n\nThe team" };
     await expect(sendApproved(harness.ctx, approval, "user:test", { draft })).rejects.toBeInstanceOf(RecipientRefused);
     await expect(sendApproved(harness.ctx, approval, "user:test", { draft })).rejects.toThrow(/slot placeholders/i);
   });

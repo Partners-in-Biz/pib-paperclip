@@ -46,7 +46,7 @@ export const NEW_CLIENT_REFERENCE = `# Starting a new client
 
 ## Who does what
 - **Account Manager:** the profile (\`update-client-profile\`: brand voice, audience, services from the fixed list, website, booking link, banned words, tone, then the brand kit and proposal references), the client's sites (\`save-client-site\`), a lead form when the client bought lead capture (\`create-lead-endpoint\`), ONE grant ask for everything the client must give (never one per item).
-- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with Peet's approval.
+- **Delivery Lead:** the project and its git workspace, the \`development\` branch policy, the agent guide (AGENTS.md), staging. Hand it one issue in the client's project. main only changes with the owner's approval.
 - **The role that owns each service:** its onboarding step (below).
 
 ## The project: the contract between the ops tool and the CRM

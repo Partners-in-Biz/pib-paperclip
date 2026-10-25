@@ -1,7 +1,7 @@
 /**
  * Speed-to-lead (PAR-2262 / PAR-4754 / PAR-4757): draft-only first reply when a lead with email is stored.
  * Triggers: handleLead / lead.captured, Jagter sequence replies, client_leads channel stores.
- * Consent + spam gates → short EN/AF draft → Peet care approval → `mail.draft.requested` → CEO ping.
+ * Consent + spam gates → short EN/AF draft → owner care approval → `mail.draft.requested` → CEO ping.
  * Send only via care-approvals person-done path. This module never enqueues a send.
  * Metrics: t_arrival / t_draft_ready here; t_approved / t_sent in speedToLeadHooks.
  */
@@ -130,7 +130,7 @@ function firstName(name: string | null | undefined): string {
   return part && part.length <= 40 ? part : "";
 }
 
-/** Short draft with call CTA and Peet sign-off. No prices. */
+/** Short draft with call CTA and a team sign-off. No prices. */
 export function composeSpeedToLeadDraft(input: {
   name: string | null;
   email: string;
@@ -144,8 +144,8 @@ export function composeSpeedToLeadDraft(input: {
   const hi = who ? (lang === "af" ? `Hallo ${who},` : `Hi ${who},`) : lang === "af" ? "Hallo," : "Hi,";
   const text =
     lang === "af"
-      ? `${hi}\n\nDankie vir jou navraag. Kan ons kort skakel?\n\nAntwoord met 'n dag en tyd wat vir jou pas, en ons bevestig dit. Geen pryse hier.\n\nGroete,\nPeet`
-      : `${hi}\n\nThanks for getting in touch. Quick call?\n\nReply with a day and time that suits you and we'll lock it in. No prices here.\n\nThanks,\nPeet`;
+      ? `${hi}\n\nDankie vir jou navraag. Kan ons kort skakel?\n\nAntwoord met 'n dag en tyd wat vir jou pas, en ons bevestig dit. Geen pryse hier.\n\nGroete,\nDie span`
+      : `${hi}\n\nThanks for getting in touch. Quick call?\n\nReply with a day and time that suits you and we'll lock it in. No prices here.\n\nThanks,\nThe team`;
   const subject = lang === "af" ? "Jou navraag — kort skakel?" : "Your enquiry — quick call?";
   return {
     lang,
@@ -183,7 +183,7 @@ async function tagDoNotContact(ctx: PluginContext, contact: Awaited<ReturnType<t
   await saveContact(ctx, contact).catch(() => undefined);
 }
 
-/** Spec §2 step 6: 3-line summary + link to the approval card for Elon / CEO (Grok Bot). */
+/** Spec §2 step 6: 3-line summary + link to the approval card for the CEO agent. */
 async function pingCeoSpeedToLead(
   ctx: PluginContext,
   input: {
@@ -212,14 +212,14 @@ async function pingCeoSpeedToLead(
     assigneeAgentId = null;
   }
   if (!assigneeAgentId) {
-    ctx.logger.info("CRM speed-to-lead CEO ping skipped: no live CEO/Elon agent", { approvalId: input.approvalId });
+    ctx.logger.info("CRM speed-to-lead CEO ping skipped: no live CEO agent", { approvalId: input.approvalId });
     return;
   }
 
   const card = (await approvalLink(ctx, input.companyId, input.issueId)) ?? (input.issueId ? `/issues/${input.issueId}` : `(approval ${input.approvalId})`);
   const lines = [
     `New speed-to-lead draft for ${input.who} <${input.email}>.`,
-    `Source ${input.source}; language ${input.lang === "af" ? "Afrikaans" : "English"}; waiting on Peet approve (draft only).`,
+    `Source ${input.source}; language ${input.lang === "af" ? "Afrikaans" : "English"}; waiting on owner approval (draft only).`,
     `Card: ${card}`,
   ];
   await openIssueOnce(ctx, {
@@ -238,7 +238,7 @@ async function pingCeoSpeedToLead(
   });
 }
 
-/** After a lead is stored with an email: draft + Peet approval only; never queues a send. */
+/** After a lead is stored with an email: draft + owner approval only; never queues a send. */
 export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: SpeedToLeadInput): Promise<{ skipped: boolean; reason?: string; approvalId?: string }> {
   const email = input.email.trim().toLowerCase();
   if (!email.includes("@")) {
@@ -352,7 +352,7 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     subjectId: input.leadKey,
     title: `Approve speed-to-lead reply to ${who}`.slice(0, 200),
     intro: [
-      `A new lead (${input.source}) arrived with an email. Draft first reply for review (Reviewer, then Peet approval).`,
+      `A new lead (${input.source}) arrived with an email. Draft first reply for review (Reviewer, then owner approval).`,
       "Mark **done** to send from the Mailbox. Nothing is sent until then.",
       `Language: ${lang === "af" ? "Afrikaans" : "English"}.`,
     ],
@@ -360,7 +360,7 @@ export async function onLeadStoredForSpeedToLead(ctx: PluginContext, input: Spee
     payload: { meta: { kind: "speed_to_lead" }, leadKey: input.leadKey, source: input.source, lang, metrics },
     checks: ["Warm and brief; no prices.", "Call CTA asks for a day and time (no slot placeholders).", "Recipient is not unsubscribed or bounced."],
     outward: true,
-    wakeReason: "A speed-to-lead draft needs Peet's approval",
+    wakeReason: "A speed-to-lead draft needs the owner's approval",
   });
 
   const config = await readConfig(ctx, input.companyId).catch(() => ({} as Record<string, unknown>));
@@ -469,7 +469,7 @@ export async function onClientLeadStoredForSpeedToLead(
     subjectId: input.leadKey,
     title: `Approve speed-to-lead reply to ${who}`.slice(0, 200),
     intro: [
-      `A client-channel lead (${input.source}) arrived with an email. Draft first reply for review (Reviewer, then Peet approval).`,
+      `A client-channel lead (${input.source}) arrived with an email. Draft first reply for review (Reviewer, then owner approval).`,
       "Mark **done** to send from the Mailbox. Nothing is sent until then.",
       `Language: ${lang === "af" ? "Afrikaans" : "English"}.`,
       "No CRM contact was created (client-channel / POPIA).",
@@ -478,7 +478,7 @@ export async function onClientLeadStoredForSpeedToLead(
     payload: { meta: { kind: "speed_to_lead" }, leadKey: input.leadKey, source: input.source, lang, metrics, clientChannel: true },
     checks: ["Warm and brief; no prices.", "Call CTA asks for a day and time (no slot placeholders).", "Recipient is not unsubscribed or bounced."],
     outward: true,
-    wakeReason: "A speed-to-lead draft needs Peet's approval",
+    wakeReason: "A speed-to-lead draft needs the owner's approval",
   });
 
   const config = await readConfig(ctx, input.companyId).catch(() => ({} as Record<string, unknown>));
@@ -544,7 +544,7 @@ export const speedToLeadHooks: MailApprovalHooks = {
       recordType: record.recordType,
       recordId: record.recordId,
       kind: "speed_to_lead_sent",
-      body: info.dryRun ? "Speed-to-lead reply approved (canary dry run)." : "Speed-to-lead reply sent after Peet approved.",
+      body: info.dryRun ? "Speed-to-lead reply approved (canary dry run)." : "Speed-to-lead reply sent after the owner approved.",
       meta: { approvalId: approval.id, metrics, dryRun: info.dryRun },
       sourceKey: `stl-sent:${approval.id}`,
       issueId: approval.issueId,

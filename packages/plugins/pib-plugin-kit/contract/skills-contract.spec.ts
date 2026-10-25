@@ -35,7 +35,10 @@ async function loadManifests(): Promise<Manifest[]> {
  * nothing in them. Starts empty. Each text child of the hosted-clients scrub
  * adds its plugin here in the same PR, so the lint grows with the scope.
  */
-const SCRUBBED_PLUGINS: Array<(typeof PLUGINS)[number]> = [];
+const SCRUBBED_PLUGINS: Array<(typeof PLUGINS)[number]> = ["crm"];
+
+/** Product and protocol names a scrubbed plugin may keep: what a client really sees (the WordPress plugin, the signed-request headers, the canary company's stored name). */
+const BRAND_KEEP = ["PiB Connector", "X-PiB-", "PiB Canary Co"];
 
 /** The upstream LLM Wiki tools the manual may name (its manifest reads files at import time). */
 const WIKI_TOOLS = ["wiki_search", "wiki_read_page", "wiki_write_page", "wiki_propose_patch", "wiki_list_sources", "wiki_read_source", "wiki_append_log", "wiki_update_index", "wiki_list_backlinks", "wiki_list_pages"];
@@ -125,7 +128,7 @@ describe("skills ↔ tools contract", async () => {
       expect(id, `${name} is a loaded plugin`).toBeTruthy();
       const docs = skills.filter((s) => s.plugin === id);
       if (name === "cockpit") docs.push({ plugin: id!, key: "company-os (body)", md: companySkillBody() });
-      for (const s of docs) for (const l of findBrandLeaks(s.md)) leaks.push(`${s.plugin}/${s.key}:${l.line} ${l.term}: ${l.excerpt}`);
+      for (const s of docs) for (const l of findBrandLeaks(s.md, { allow: BRAND_KEEP })) leaks.push(`${s.plugin}/${s.key}:${l.line} ${l.term}: ${l.excerpt}`);
     }
     expect(leaks).toEqual([]);
   });

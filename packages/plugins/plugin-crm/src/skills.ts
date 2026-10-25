@@ -113,7 +113,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 
 ## Every marketing email (sequences, campaigns, follow-ups you write)
 - **POPIA:** email only people who agreed to hear from us, or existing clients about similar services we sell them. Never bought lists, never a client's leads.
-- **Who we are:** say it is Partners in Biz and who is writing; use the sender the sequence or Mailbox sets.
+- **Who we are:** say which company it is and who is writing; use the sender the sequence or Mailbox sets.
 - **Opt-out:** every email says how to stop, e.g. "Reply STOP and we won't email again."
 - **An opt-out is final:** the moment someone asks to stop, by any channel, \`set-email-status\` unsubscribed. Never re-add or re-enroll them; only a person can allow email again.
 - No claims we cannot back up, no pressure, no guarantees.
