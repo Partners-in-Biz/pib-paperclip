@@ -17,10 +17,12 @@ import {
   useUiContributions,
   visibleMembers,
   tone,
+  Building2,
   writeGroupOpen,
   type NavGroupKey,
 } from "@partnersinbiz/pib-plugin-ui";
 import type { CockpitView } from "../view.js";
+import { useHostedUsage } from "./hosted.js";
 import { useSidebarView } from "./data.js";
 
 type Modules = Partial<Record<string, boolean>> | null;
@@ -156,4 +158,15 @@ export function MarketingNav({ context }: PluginSidebarProps) {
 
 export function FinanceNav({ context }: PluginSidebarProps) {
   return <NavGroupSidebar groupKey="finance" companyId={context.companyId} />;
+}
+
+/** "Hosted clients": a row only for the owner company (the read says `allowed`); nothing for any other company. */
+export function HostedClientsNav({ context }: PluginSidebarProps) {
+  const navigation = useHostNavigation();
+  const location = useHostLocation();
+  const { state } = useHostedUsage(context.companyId);
+  if (state.status !== "ready" || !state.list.allowed) return null;
+  const route = "/cockpit?tab=hosted";
+  const active = location.pathname.endsWith("/cockpit") && new URLSearchParams(location.search).get("tab") === "hosted";
+  return <SidebarRowLink linkProps={navigation.linkProps(route) as unknown as Record<string, unknown>} label="Hosted clients" icon={Building2} active={active} />;
 }

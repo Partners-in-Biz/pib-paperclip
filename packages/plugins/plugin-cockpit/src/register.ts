@@ -406,6 +406,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   // The company profile (Cockpit → Profile).
   ctx.actions.register("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
+  // Hosted clients (owner company only): `allowed: false` for any other company, so the UI hides the entry.
+  ctx.actions.register("hosted-usage.load", async (_params, context) => listHostedUsage(env, requiredCompany(context)));
   ctx.actions.register("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
   ctx.actions.register("profile.save", async (params, context) => {
     const companyId = requiredCompany(context);
