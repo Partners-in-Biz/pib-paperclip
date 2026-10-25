@@ -422,13 +422,13 @@ describe("the Operator's references (Wave 3)", () => {
 });
 
 describe("the skill text names no owner company", () => {
-  it("carries no owner name (PiB Connector, the WordPress product, is the one allowed phrase), agency name or PiB in the company manual, the role skills, their references or the hire text", async () => {
+  it("carries no owner name, agency name or PiB in the company manual, the role skills, their references or the hire text", async () => {
     const { findBrandLeaks } = await import("@partnersinbiz/pib-plugin-kit");
     const { OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS } = await import("../src/hire.js");
     const { ACCEPTANCE_INSTRUCTIONS } = await import("../src/acceptance-role.js");
     const { ACCEPTANCE_SKILL_BODY } = await import("../src/acceptance-skill.js");
     const texts = [companySkillBody(), OPERATOR_TEXT, REVIEWER_SKILL_BODY, ACCEPTANCE_SKILL_BODY, OPERATOR_INSTRUCTIONS, REVIEWER_INSTRUCTIONS, ACCEPTANCE_INSTRUCTIONS, ...SKILLS.map((s) => `${s.displayName}\n${s.description ?? ""}\n${s.markdown ?? ""}`)];
-    expect(texts.flatMap((t) => findBrandLeaks(t, { allow: ["PiB Connector"] }))).toEqual([]);
+    expect(texts.flatMap((t) => findBrandLeaks(t))).toEqual([]);
   });
   it("tells agents to call company-profile for names", () => {
     expect(companySkillBody()).toContain("company-profile");
