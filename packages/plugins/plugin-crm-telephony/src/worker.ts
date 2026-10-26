@@ -64,7 +64,7 @@ async function buildTwilioClientForSecrets(
   return { client, secrets };
 }
 
-const toolHandlers: Record<
+export const toolHandlers: Record<
   string,
   (pluginCtx: PluginContext, params: unknown, run: ToolRunContext) => Promise<{ content?: string; data?: unknown; error?: string }>
 > = {
@@ -151,7 +151,10 @@ const toolHandlers: Record<
         variables: variablesRecord,
       },
     );
-    if (!sendResult.sent) return { error: `Send failed: ${sendResult.reason}` };
+    if (!sendResult.sent) {
+    const kind = sendResult.failureKind ? ` (${sendResult.failureKind})` : "";
+    return { error: `Send failed: ${sendResult.reason}${kind}` };
+  }
 
     return {
       data: { sent: true, messageId: sendResult.messageId, providerMessageId: sendResult.providerMsgId },

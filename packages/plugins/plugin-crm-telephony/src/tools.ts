@@ -37,7 +37,7 @@ export const TELEPHONY_TOOLS: PluginToolDeclaration[] = [
     name: "whatsapp-send",
     displayName: "Send a WhatsApp message",
     description:
-      "Send a WhatsApp message to a contact via Twilio. Messages can be either service (transactional) or marketing. Service messages can be sent anytime; marketing messages require an approved template and can only be sent within the 24-hour customer response window. Use whatsapp-templates to pick a template ID. Returns reason 'bad_number' for invalid recipient codes (21211, 21614), or 'send_failed' with failureKind (auth, rate_limited, rejected, retryable) for other API failures. On unknown_outcome, the message may have been delivered; do NOT retry or mark the number bad—check status first.",
+      "Send a WhatsApp message to a contact via Twilio. Messages can be either service (transactional) or marketing. Service messages can be sent anytime; marketing messages require an approved template and can only be sent within the 24-hour customer response window. Use whatsapp-templates to pick a template ID. Returns reason 'bad_number' for invalid recipient codes (21211, 21614), or 'send_failed' for other API failures; the error text then ends with the failure kind in parentheses, e.g. 'Send failed: send_failed (auth)' (auth = Twilio credentials need fixing, rate_limited = wait and try later, rejected = Twilio refused it, retryable = temporary). On unknown_outcome, the message may have been delivered; do NOT retry or mark the number bad—check status first.",
     parametersSchema: schema(["toE164"], {
       contactId: {
         type: "string",
