@@ -200,7 +200,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.11.1",
+  version: "0.12.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -267,6 +267,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Run recurring invoices and retainers",
       description: "Creates the next invoice for each due recurring schedule and retainer subscription (drafts unless set to send).",
       schedule: "0 0 * * *",
+    },
+    {
+      jobKey: "hosted-retainers",
+      displayName: "Hosted client retainers",
+      description: "On the first of the month, a draft invoice with one retainer line for each hosted client, priced from its plan label. Never sent.",
+      schedule: "15 0 1 * *",
     },
     {
       jobKey: "redeliver",

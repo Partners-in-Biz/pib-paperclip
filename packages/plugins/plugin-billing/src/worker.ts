@@ -170,7 +170,8 @@ import {
   requestReminderSend,
   retitleSendApprovals,
 } from "./requests.js";
-import { createPlan, createSubscription, listRetainers, runSubscriptions, setSubscriptionStatus, updatePlan } from "./retainers.js";
+import { hostedRetainerCompanyIds, runHostedRetainers } from "./hosted-retainers.js";
+import { createPlan, createSubscription,listRetainers, runSubscriptions, setSubscriptionStatus, updatePlan } from "./retainers.js";
 import { teamStatus } from "./routing.js";
 import { applyCustomerCredit, settle, writeOff } from "./settle.js";
 import { billingOn, knownCompanyIds, publishAllSetupStatus, setupStatus } from "./setup.js";
@@ -384,7 +385,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true, companyHosted: true });
     registerDriveReplies(ctx);
     registerModuleWatch(ctx);
     registerClientProjectWatch(ctx);
@@ -405,7 +406,8 @@ const plugin = definePlugin({
 
     ctx.jobs.register("mark-overdue", () => trackJob(ctx, "mark-overdue", () => markOverdueJob(ctx)));
     ctx.jobs.register("run-recurring", () => trackJob(ctx, "run-recurring", () => runRecurring(ctx)));
-    ctx.jobs.register("redeliver", () => trackJob(ctx, "redeliver", () => redeliverJob(ctx)));
+    ctx.jobs.register("hosted-retainers", () => trackJob(ctx, "hosted-retainers", () => hostedRetainersJob(ctx)));
+    ctx.jobs.register("redeliver",() => trackJob(ctx, "redeliver", () => redeliverJob(ctx)));
     ctx.jobs.register("emit-open-items", () => trackJob(ctx, "emit-open-items", () => emitOpenItemsJob(ctx, 1800)));
     ctx.jobs.register("emit-open-items-all", () => trackJob(ctx, "emit-open-items-all", () => emitOpenItemsJob(ctx, null)));
     ctx.jobs.register("dunning", () => trackJob(ctx, "dunning", () => dunningJob(ctx)));
@@ -1023,6 +1025,20 @@ async function runRecurring(ctx: PluginContext) {
       await runSubscriptions(ctx, companyId);
     } catch (error) {
       ctx.logger.info("Retainer run skipped", { companyId, error: errorMessage(error) });
+    }
+  }
+}
+
+/** Job (1st of the month): a draft retainer invoice for each hosted client. Drafts only, nothing is sent. */
+async function hostedRetainersJob(ctx: PluginContext) {
+  const on = moduleCache(ctx);
+  for (const companyId of await hostedRetainerCompanyIds(ctx)) {
+    try {
+      if (!(await on(companyId))) continue;
+      const { created, skipped } = await runHostedRetainers(ctx, companyId);
+      if (created.length > 0 || skipped.length > 0) ctx.logger.info("Hosted retainers", { companyId, created: created.length, skipped: skipped.length });
+    } catch (error) {
+      ctx.logger.info("Hosted retainers skipped", { companyId, error: errorMessage(error) });
     }
   }
 }
