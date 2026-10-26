@@ -38,6 +38,7 @@ import { billingOn, knownCompanyIds } from "./setup.js";
 export const BILLING_JOBS: Array<{ key: string; title: string; everyMinutes: number }> = [
   { key: "mark-overdue", title: "Mark overdue invoices", everyMinutes: 60 },
   { key: "run-recurring", title: "Recurring invoices and retainers", everyMinutes: 1440 },
+  { key: "hosted-retainers", title: "Hosted client retainers (monthly drafts)", everyMinutes: 44640 },
   { key: "dunning", title: "Payment reminders", everyMinutes: 1440 },
   { key: "redeliver", title: "Re-send to Mailbox and Accounting", everyMinutes: 5 },
   { key: "emit-open-items", title: "Share receivables and payables", everyMinutes: 15 },
