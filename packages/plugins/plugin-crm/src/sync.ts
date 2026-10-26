@@ -24,6 +24,8 @@ interface CompanyEventRow {
   address: string | null;
   vat_number: string | null;
   registration_number: string | null;
+  hosted_company_id?: string | null;
+  hosted_plan?: string | null;
   updated_at: unknown;
 }
 
@@ -58,6 +60,10 @@ export function companyEvent(row: CompanyEventRow): CrmCompanyEvent {
       vatNumber: row.vat_number ?? null,
       registrationNumber: row.registration_number ?? null,
     },
+    hosted: {
+      companyId: row.hosted_company_id ?? null,
+      plan: row.hosted_plan ?? null,
+    },
   };
 }
 
@@ -85,7 +91,7 @@ export async function emitChanges(
 ): Promise<{ companies: number; contacts: number }> {
   const since = sinceSeconds == null ? null : Math.max(1, Math.floor(sinceSeconds));
   const companies = await ctx.db.query<CompanyEventRow>(
-    `SELECT id, name, domain, lifecycle, billing_email, phone, address, vat_number, registration_number, updated_at
+    `SELECT id, name, domain, lifecycle, billing_email, phone, address, vat_number, registration_number, hosted_company_id, hosted_plan, updated_at
        FROM ${table(ctx, "companies")}
       WHERE company_id = $1 AND ($2::int IS NULL OR updated_at > now() - make_interval(secs => $2::int))
       ORDER BY updated_at`,

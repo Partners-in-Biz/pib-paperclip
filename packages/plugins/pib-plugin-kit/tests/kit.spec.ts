@@ -340,6 +340,29 @@ describe("CRM company projection billing option", () => {
     expect(params[6]).toBe("null");
   });
 
+  it("writes hosted as the seventh parameter when only companyHosted is on", async () => {
+    const hosted = { companyId: "hosted-1", plan: "growth" };
+    const { execute, emit } = harness({ companyHosted: true });
+    await emit({ ...event, billing, hosted });
+    const [sql, params] = execute.mock.calls[0] as [string, unknown[]];
+    expect(params).toHaveLength(7);
+    expect(params[6]).toBe(JSON.stringify(hosted));
+    expect(sql).toContain("$7::jsonb");
+    expect(sql).toContain("hosted = EXCLUDED.hosted");
+    expect(sql).not.toContain("billing");
+  });
+
+  it("writes billing then hosted when both options are on, JSON null for a missing hosted key", async () => {
+    const { execute, emit } = harness({ companyBilling: true, companyHosted: true });
+    await emit({ ...event, billing });
+    const [sql, params] = execute.mock.calls[0] as [string, unknown[]];
+    expect(params).toHaveLength(8);
+    expect(params[6]).toBe(JSON.stringify(billing));
+    expect(params[7]).toBe("null");
+    expect(sql).toContain("billing = EXCLUDED.billing");
+    expect(sql).toContain("hosted = EXCLUDED.hosted");
+  });
+
   it("reads billing only when asked", async () => {
     const row = { id: "c1", name: "Acme", domain: null, lifecycle: null, billing };
     const { ctx, query } = harness(undefined, [row]);
