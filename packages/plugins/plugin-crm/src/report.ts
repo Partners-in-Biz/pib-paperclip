@@ -182,8 +182,6 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
           }
         }
       }
-      const domain = daysUntil(state?.domainExpiresAt ?? null, toMs);
-      if (domain !== null) parts.push(`domain renews in ${Math.max(0, domain)} days`);
       if (parts.length) bullets.push(`${host}: ${parts.join(", ")}`);
     }
     if (bullets.length) {
