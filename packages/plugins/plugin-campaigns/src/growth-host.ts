@@ -247,6 +247,19 @@ export async function performanceReview(env: CampaignsGrowthEnv, actor: GrowthAc
   };
 }
 
+/** `growth_experiment_items.subject_kind` of a campaign tied to an experiment (see growth-measure.ts). */
+export const LINK_KIND = "campaign_link";
+
+/** Campaigns tags no posts, so the kit's reject has nothing to untag (it assumes the store lists tagged posts and fails without it). */
+const withoutPostTags = (env: CampaignsGrowthEnv): CampaignsGrowthEnv => ({ ...env, store: { ...env.store, experimentPosts: async () => [] } as GrowthStore });
+
+/** The kit's reject, plus the campaign links of the rejected experiment (the kit only untags posts, and Campaigns has none). */
+export async function rejectCampaignExperiment(env: CampaignsGrowthEnv, actor: GrowthActor, params: Record<string, unknown>) {
+  const result = await rejectExperiment(withoutPostTags(env), actor, params);
+  await env.ctx.db.execute(`DELETE FROM ${table(env.ctx, "growth_experiment_items")} WHERE experiment_id = $1 AND subject_kind = $2`, [String(params.experimentId), LINK_KIND]);
+  return result;
+}
+
 /** The eight handlers over one env per call (tests pass an env with a fixed scope resolver). */
 export function campaignsGrowthHandlers(envFor: () => CampaignsGrowthEnv): GrowthToolsHost<GrowthActor>["handlers"] {
   const run = (fn: (env: CampaignsGrowthEnv, actor: GrowthActor, p: Record<string, unknown>) => Promise<unknown>) => (actor: GrowthActor, p: Record<string, unknown>) => fn(envFor(), actor, p);
@@ -258,7 +271,7 @@ export function campaignsGrowthHandlers(envFor: () => CampaignsGrowthEnv): Growt
     "list-experiments": run(listExperimentsRecord),
     "propose-experiment": run(proposeExperiment),
     "approve-experiment": run(approveExperiment),
-    "reject-experiment": run(rejectExperiment),
+    "reject-experiment": run(rejectCampaignExperiment),
   };
 }
 
