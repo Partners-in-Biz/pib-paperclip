@@ -56,7 +56,9 @@ async function boot(records: Record<string, string[]>, tables: { accounts?: Row[
   return { harness, run, data, executed, doh };
 }
 
-const account = (address: string, over: Row = {}): Row => ({ id: "acc-1", company_id: CO, provider: "gmail", address, status: "connected", token_sealed: "sealed", is_default: true, client_kind: null, client_ref: null, from_name: null, connected_at: "2026-09-26T08:00:00.000Z", created_at: "2026-09-26T08:00:00.000Z", ...over });
+// Relative to now so the 30-day DMARC grace never expires under a fixed fixture date.
+const RECENT = new Date(Date.now() - 2 * 86_400_000).toISOString();
+const account = (address: string, over: Row = {}): Row => ({ id: "acc-1", company_id: CO, provider: "gmail", address, status: "connected", token_sealed: "sealed", is_default: true, client_kind: null, client_ref: null, from_name: null, connected_at: RECENT, created_at: RECENT, ...over });
 
 describe("check-sender-domain", () => {
   it("reads a new client's domain through the host's guarded fetch, keeps it, and returns the exact records to add", async () => {
