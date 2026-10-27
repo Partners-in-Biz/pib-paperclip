@@ -58,15 +58,16 @@ Any run (unit/integration/acceptance/canary/manual QA) that creates data in a sh
 - Never print, log, quote or commit token or environment values, in an issue, a comment or a PR. Name where a credential lives, never its value.
 - Use the GitHub credential only for pushing and PRs on this repo.
 
-## Access control (PAR-5715)
+## Access control (PAR-5715, added 2026-10-27)
 
 Paperclip roles are company-wide, so the kit (`pib-plugin-kit/src/permissions.ts`, import `@partnersinbiz/pib-plugin-kit/permissions`) adds per-area, per-action permissions and record scoping.
 
 - A permission is `<resource>:<action>`, e.g. `billing.invoices:view`. Actions: view, create, edit, delete, export, approve (each resource lists the ones it has). The catalog is `PERMISSION_CATALOG`; declare a new gate there and nowhere else. Sub-areas are separate resources (`billing.invoices` vs `billing.reports`, `crm.settings`).
 - Effective permissions = preset + `allow` - `deny`. Default deny. Presets: salesperson, accountant, client, viewer, manager. Owners, admins and `local-board` bypass. Agents are not restricted by this layer.
-- Record scoping: scopable resources (CRM contacts, companies, deals, projects, invoices, quotes, ...) are `all` or `linked`. `linked` limits rows to the CRM companies in the member's `linkedCompanyIds`; an empty list sees nothing. Overrides can be set per resource or per area.
+- Record scoping: scopable resources (CRM contacts, companies, deals, projects, invoices, quotes, ...) are `all` or `linked`. `linked` limits rows to the CRM companies in the member's `linkedCompanyIds`; an empty list sees nothing. A grant with no preset and no override is `linked` (fail closed); set `all` explicitly. Overrides can be set per resource or per area. Non-scopable resources (`billing.reports`, `cockpit.dashboards`, `mailbox.mail`, settings) ignore links, so an allow there shows everything.
 - In code: `const access = await resolveAccess(ctx, companyId, actor)`, then `const d = assertCan(access, "billing.invoices", "view")`, then filter with `scopeRows(d, rows, r => r.crmCompanyId)` or `scopeCompanyIds(d)` in SQL. Do it in every action, API route and tool; check search, export and agent-tool paths too, not only the list view.
-- Grants live in `ctx.state` (company scope, namespace `access`, key `u:<userId>`), one row per member. `saveGrant`/`clearGrant`/`listAccess` are owner/admin only and every change goes to the activity log with before and after.
+- Grants live in `ctx.state` (company scope, namespace `access`, key `u:<userId>`), one row per member. `saveGrant`/`clearGrant`/`listAccess` are owner/admin only and every change goes to the activity log with before and after; if the audit entry cannot be written the change is rolled back and refused.
+- A plugin that uses this needs capabilities `plugin.state.read`, `plugin.state.write`, `access.members.read` and `activity.log.write`. Adding any of them makes that release stop-first.
 - **Host limit:** `getData` handlers (what plugin UIs use to read) receive no verified caller; only `performAction`, API routes and tool runs do. A `userId` the UI passes in `getData` params can be spoofed, so UI reads are hide-only until the host passes `actorContext` to `getData` (finding on PAR-5715 for Peet). Do not treat a `getData` check as a security control.
 
 ## Where the truth lives

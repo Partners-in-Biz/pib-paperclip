@@ -171,7 +171,8 @@ function effectiveScope(grant: AccessGrant, resource: PermissionResource): Scope
   if (!resource.scopable) return "all";
   const own = grant.scopeOverrides[resource.id] ?? grant.scopeOverrides[resource.area];
   if (own) return own;
-  return grant.preset ? PRESETS[grant.preset].scope : "all";
+  // No preset and no override: fail closed. An admin must say `all` explicitly.
+  return grant.preset ? PRESETS[grant.preset].scope : "linked";
 }
 
 /** The single decision point. Unknown resources or actions are denied. */
@@ -232,6 +233,7 @@ const NAMESPACE = "access";
 const userScope = (companyId: string, userId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: NAMESPACE, stateKey: `u:${userId}` });
 export const MAX_LINKED_COMPANIES = 200;
 const SCOPE_MODES: readonly string[] = ["all", "linked"];
+const unique = (xs: readonly string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
 
 function clean(grant: unknown, userId: string): AccessGrant | null {
   if (!grant || typeof grant !== "object" || Array.isArray(grant)) return null;
@@ -246,7 +248,7 @@ function clean(grant: unknown, userId: string): AccessGrant | null {
     preset: g.preset && Object.hasOwn(PRESETS, g.preset) ? g.preset : null,
     allow: list(g.allow).filter(isPermissionKey),
     deny: list(g.deny).filter(isPermissionKey),
-    linkedCompanyIds: list(g.linkedCompanyIds),
+    linkedCompanyIds: unique(list(g.linkedCompanyIds)).slice(0, MAX_LINKED_COMPANIES),
     scopeOverrides: overrides,
     updatedBy: typeof g.updatedBy === "string" ? g.updatedBy : null,
     updatedAt: typeof g.updatedAt === "string" ? g.updatedAt : "",
@@ -301,7 +303,8 @@ async function requireAdmin(ctx: PluginContext, companyId: string, actor: ActorI
   return { userId: access.userId };
 }
 
-const unique = (xs: readonly string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
+/** An input list that is an array of strings, or null when it is anything else. */
+const stringList = (v: unknown): string[] | null => (v === undefined ? [] : Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null);
 
 /** Validates, stores and audits one member's grant. Fails closed; writes nothing on any problem. */
 export async function saveGrant(
@@ -316,11 +319,16 @@ export async function saveGrant(
   const userId = typeof input?.userId === "string" ? input.userId.trim() : "";
   if (!userId) return { ok: false, error: "Choose a person" };
   if (input.preset != null && !Object.hasOwn(PRESETS, input.preset)) return { ok: false, error: "Unknown preset" };
-  const allow = unique(input.allow ?? []);
-  const deny = unique(input.deny ?? []);
+  const rawAllow = stringList(input.allow);
+  const rawDeny = stringList(input.deny);
+  const rawLinked = stringList(input.linkedCompanyIds);
+  if (!rawAllow || !rawDeny || !rawLinked) return { ok: false, error: "Permissions and linked companies must be lists of text" };
+  if (input.scopeOverrides != null && (typeof input.scopeOverrides !== "object" || Array.isArray(input.scopeOverrides))) return { ok: false, error: "Scope overrides must be an object" };
+  const allow = unique(rawAllow);
+  const deny = unique(rawDeny);
   const bad = [...allow, ...deny].find((k) => !isPermissionKey(k));
   if (bad) return { ok: false, error: `Unknown permission "${bad}"` };
-  const linked = unique(input.linkedCompanyIds ?? []);
+  const linked = unique(rawLinked);
   if (linked.length > MAX_LINKED_COMPANIES) return { ok: false, error: `At most ${MAX_LINKED_COMPANIES} linked companies` };
   const overrides: Record<string, ScopeMode> = {};
   for (const [k, v] of Object.entries(input.scopeOverrides ?? {})) {
@@ -355,27 +363,46 @@ export async function saveGrant(
     ctx.logger.info("Could not save access", { error: error instanceof Error ? error.message : String(error) });
     return { ok: false, error: "Could not save access" };
   }
-  await audit(ctx, companyId, admin.userId, userId, before, grant);
+  if (!(await audit(ctx, companyId, admin.userId, userId, before, grant))) {
+    await restore(ctx, companyId, userId, before);
+    return { ok: false, error: "Could not record the change in the audit log, so it was not saved" };
+  }
   return { ok: true, grant };
 }
 
 /** Removes a member's grant (back to default deny). */
-export async function clearGrant(ctx: PluginContext, action: { companyId?: string | null; actor?: ActorInput }, userId: string): Promise<SaveGrantResult | { ok: true; grant: null }> {
+export async function clearGrant(ctx: PluginContext, action: { companyId?: string | null; actor?: ActorInput }, rawUserId: string): Promise<SaveGrantResult | { ok: true; grant: null }> {
   const companyId = typeof action.companyId === "string" ? action.companyId.trim() : "";
   if (!companyId) return { ok: false, error: "A company is required" };
   const admin = await requireAdmin(ctx, companyId, action.actor);
   if ("error" in admin) return { ok: false, error: admin.error };
+  const userId = typeof rawUserId === "string" ? rawUserId.trim() : "";
+  if (!userId) return { ok: false, error: "Choose a person" };
   const before = await loadGrant(ctx, companyId, userId);
   try {
     await ctx.state.delete(userScope(companyId, userId));
   } catch {
     return { ok: false, error: "Could not remove access" };
   }
-  await audit(ctx, companyId, admin.userId, userId, before, null);
+  if (!(await audit(ctx, companyId, admin.userId, userId, before, null))) {
+    await restore(ctx, companyId, userId, before);
+    return { ok: false, error: "Could not record the change in the audit log, so it was not saved" };
+  }
   return { ok: true, grant: null };
 }
 
-async function audit(ctx: PluginContext, companyId: string, by: string, target: string, before: AccessGrant | null, after: AccessGrant | null): Promise<void> {
+/** Puts the previous grant back after a failed audit write. Best effort; logs if it also fails. */
+async function restore(ctx: PluginContext, companyId: string, userId: string, before: AccessGrant | null): Promise<void> {
+  try {
+    if (before) await ctx.state.set(userScope(companyId, userId), before);
+    else await ctx.state.delete(userScope(companyId, userId));
+  } catch (error) {
+    ctx.logger.info("Could not restore access after a failed audit write", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** True when the entry was written. A change is only kept if its audit entry exists. */
+async function audit(ctx: PluginContext, companyId: string, by: string, target: string, before: AccessGrant | null, after: AccessGrant | null): Promise<boolean> {
   const summary = (g: AccessGrant | null) => (g ? { preset: g.preset, allow: g.allow, deny: g.deny, linkedCompanyIds: g.linkedCompanyIds, scopeOverrides: g.scopeOverrides } : null);
   try {
     await ctx.activity.log({
@@ -385,8 +412,10 @@ async function audit(ctx: PluginContext, companyId: string, by: string, target: 
       entityId: target,
       metadata: { changedBy: by, before: summary(before), after: summary(after) },
     });
+    return true;
   } catch (error) {
     ctx.logger.info("Could not write the access audit entry", { error: error instanceof Error ? error.message : String(error) });
+    return false;
   }
 }
 

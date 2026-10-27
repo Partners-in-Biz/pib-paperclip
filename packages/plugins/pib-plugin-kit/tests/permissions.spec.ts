@@ -239,3 +239,70 @@ describe("managing grants", () => {
     expect(JSON.parse(JSON.stringify(describePermissions())).presets).toHaveLength(5);
   });
 });
+
+describe("review fixes (PR 384)", () => {
+  const members = [member("o", "owner"), member("a", "admin"), member("m")];
+  const act = { companyId: CO, actor: user("a") };
+
+  it("a grant with no preset and linked ids cannot see unlinked rows", () => {
+    const g = grantFor({ allow: [permissionKey("crm.contacts", "view")], linkedCompanyIds: ["acme"] });
+    const d = assertCan(g, "crm.contacts", "view");
+    expect(scopeCompanyIds(d)).toEqual(["acme"]);
+    expect(scopeRows(d, [{ c: "acme" }, { c: "other" }], (r) => r.c)).toEqual([{ c: "acme" }]);
+  });
+  it("no preset, allow and no links sees nothing; an explicit all override still works", () => {
+    const allow = [permissionKey("crm.contacts", "view")];
+    const none = assertCan(grantFor({ allow }), "crm.contacts", "view");
+    expect(scopeRows(none, [{ c: "x" }], (r) => r.c)).toEqual([]);
+    const all = assertCan(grantFor({ allow, scopeOverrides: { "crm.contacts": "all" } }), "crm.contacts", "view");
+    expect(scopeCompanyIds(all)).toBeNull();
+  });
+  it("a failed audit write refuses the save and restores the previous grant", async () => {
+    const { ctx } = fake(members);
+    await saveGrant(ctx, act, { userId: "m", preset: "viewer" });
+    (ctx as unknown as { activity: { log: () => Promise<void> } }).activity.log = async () => {
+      throw new Error("down");
+    };
+    const r = await saveGrant(ctx, act, { userId: "m", preset: "manager" });
+    expect(r.ok).toBe(false);
+    expect((await loadGrant(ctx, CO, "m"))?.preset).toBe("viewer");
+    expect((await clearGrant(ctx, act, "m")).ok).toBe(false);
+    expect((await loadGrant(ctx, CO, "m"))?.preset).toBe("viewer");
+  });
+  it("a failed audit on a first grant removes it", async () => {
+    const { ctx } = fake(members);
+    (ctx as unknown as { activity: { log: () => Promise<void> } }).activity.log = async () => {
+      throw new Error("down");
+    };
+    expect((await saveGrant(ctx, act, { userId: "m", preset: "viewer" })).ok).toBe(false);
+    expect(await loadGrant(ctx, CO, "m")).toBeNull();
+  });
+  it("malformed input returns ok:false instead of throwing", async () => {
+    const { ctx, store } = fake(members);
+    const bad = [
+      { userId: "m", allow: "crm.contacts:view" },
+      { userId: "m", deny: [1] },
+      { userId: "m", linkedCompanyIds: { a: 1 } },
+      { userId: "m", scopeOverrides: [] },
+    ];
+    for (const input of bad) expect((await saveGrant(ctx, act, input as never)).ok).toBe(false);
+    expect((await clearGrant(ctx, act, undefined as never)).ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+  it("clearGrant trims the user id", async () => {
+    const { ctx } = fake(members);
+    await saveGrant(ctx, act, { userId: "m", preset: "viewer" });
+    expect((await clearGrant(ctx, act, " m ")).ok).toBe(true);
+    expect(await loadGrant(ctx, CO, "m")).toBeNull();
+  });
+  it("loading cleans tampered linked ids: trims, drops empties, dedupes, caps", async () => {
+    const { ctx, store } = fake(members);
+    const many = Array.from({ length: 300 }, (_, i) => `c${i}`);
+    store.set(`${CO}|access|u:m`, { preset: "client", linkedCompanyIds: ["", "  ", " a ", "a", ...many, 5] });
+    const g = await loadGrant(ctx, CO, "m");
+    expect(g?.linkedCompanyIds[0]).toBe("a");
+    expect(g?.linkedCompanyIds).not.toContain("");
+    expect(g?.linkedCompanyIds).toHaveLength(200);
+    expect(new Set(g?.linkedCompanyIds).size).toBe(200);
+  });
+});
