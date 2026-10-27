@@ -38,6 +38,7 @@ export const COMPANY_METRICS = {
   review_latency_p90_hours: { label: "Slowest 10% of reviews, hours (30 days)", unit: "h", better: "lower" },
   limit_failures_7d: { label: "Runs that hit the subscription limit (7 days)", unit: "runs", better: "lower" },
   blocked_no_way_out: { label: "Issues blocked with no way out", unit: "issues", better: "lower" },
+  blocked_uncovered: { label: "Blocked issues nobody is working to unblock (no owner, ask or live blocker)", unit: "issues", better: "lower" },
   unassigned_old: { label: "Open issues nobody holds, older than a day", unit: "issues", better: "lower" },
   asks_open: { label: "Questions waiting on the owner", unit: "asks", better: "lower" },
   asks_oldest_days: { label: "Age of the oldest question to the owner, days", unit: "days", better: "lower" },
