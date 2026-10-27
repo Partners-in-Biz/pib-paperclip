@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { failureMessage } from "../src/ui/save-notice.js";
+import { newUuid } from "../src/ui/uuid.js";
 import { buildRecap, buildTranscriptDocument, documentKey, hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi } from "../src/ui/transcript-report.js";
 
 const START = new Date(2026, 9, 27, 10, 0, 0).getTime();
@@ -13,13 +15,16 @@ const CALL: CallRecord = {
   ],
 };
 
-function fakeApi(failPutFor?: string) {
-  const put = vi.fn(async (path: string) => {
+function fakeApi(failPutFor?: string, existingRevision?: string) {
+  const put = vi.fn(async (path: string, _body?: unknown) => {
     if (failPutFor && path.includes(failPutFor)) throw new Error("Paperclip answered 500");
     return {};
   });
   const post = vi.fn(async () => ({}));
-  const get = vi.fn(async () => ({}));
+  const get = vi.fn(async () => {
+    if (existingRevision) return { latestRevisionId: existingRevision };
+    throw new Error("Paperclip answered 404");
+  });
   return { api: { get, post, put } as unknown as ReportApi, put, post };
 }
 
@@ -78,5 +83,43 @@ describe("transcript report", () => {
     expect(result.failed).toEqual([{ ref: "PAR-1", error: "Paperclip answered 500" }]);
     expect(result.saved).toEqual(["PAR-2"]);
     expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates an existing document with its latest revision id, so a retry does not 409", async () => {
+    const { api, put, post } = fakeApi(undefined, "11111111-1111-4111-8111-111111111111");
+    const result = await saveLiveTranscript(api, CALL, [{ issueId: "i1", ref: "PAR-1" }]);
+    expect(result.saved).toEqual(["PAR-1"]);
+    expect(put.mock.calls[0]![1]).toMatchObject({ baseRevisionId: "11111111-1111-4111-8111-111111111111" });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no base revision on a first save", async () => {
+    const { api, put } = fakeApi();
+    await saveLiveTranscript(api, CALL, [{ issueId: "i1", ref: "PAR-1" }]);
+    expect(put.mock.calls[0]![1]).not.toHaveProperty("baseRevisionId");
+  });
+
+  it("counts tasks past the limit instead of dropping them silently", async () => {
+    const { api } = fakeApi();
+    const targets = Array.from({ length: 7 }, (_, i) => ({ issueId: `i${i}`, ref: `PAR-${i}` }));
+    const result = await saveLiveTranscript(api, CALL, targets);
+    expect(result.saved).toHaveLength(5);
+    expect(result.skipped).toBe(2);
+    expect(failureMessage(result)).toContain("2 more tasks");
+  });
+
+  it("names the failed tasks in the notice text", () => {
+    expect(failureMessage({ saved: [], skipped: 0, failed: [{ ref: "PAR-1", error: "Paperclip answered 500" }] })).toContain("PAR-1");
+  });
+
+  it("makes a valid UUID even without crypto.randomUUID", () => {
+    const original = crypto.randomUUID;
+    // @ts-expect-error simulate an insecure context
+    crypto.randomUUID = undefined;
+    try {
+      expect(newUuid()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+      crypto.randomUUID = original;
+    }
   });
 });

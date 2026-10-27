@@ -15,6 +15,7 @@ import {
 import { buildInstructions } from "./live-instructions.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./live-tools.js";
+import { failureMessage, showSaveNotice } from "./save-notice.js";
 import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type SaveTarget } from "./transcript-report.js";
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
 
@@ -72,7 +73,14 @@ async function saveCall(call: CallRecord, touched: SaveTarget[], pageIssueRef: s
     }
   }
   if (targets.length === 0) return;
-  await saveLiveTranscript(paperclipApi, call, targets);
+  const result = await saveLiveTranscript(paperclipApi, call, targets);
+  if (result.failed.length === 0 && result.skipped === 0) return;
+  const failedRefs = new Set(result.failed.map((f) => f.ref));
+  const retryTargets = targets.filter((t) => failedRefs.has(t.ref));
+  showSaveNotice(
+    failureMessage(result),
+    retryTargets.length > 0 ? async () => void (await saveCall(call, retryTargets, null)) : null,
+  );
 }
 
 function errorText(err: unknown): string {
@@ -370,7 +378,10 @@ function LivePanel({
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
           onError: setError,
-          onEnd: (call, touched) => void saveCall(call, touched, pageIssueRef).catch(() => undefined),
+          onEnd: (call, touched) =>
+            void saveCall(call, touched, pageIssueRef).catch((err) => {
+              showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
+            }),
         });
         session.current = live;
         await live.start();

@@ -10,6 +10,8 @@
  * runs, not the arguments of the second call, and it is cleared after one use.
  */
 
+import { newUuid } from "./uuid.js";
+
 export interface ApiClient {
   get<T>(path: string): Promise<T>;
   post<T>(path: string, body: unknown): Promise<T>;
@@ -288,7 +290,7 @@ export class LiveTools {
         const issue = await this.ctx.api.get<IssueRow>(`/issues/${encodeURIComponent(ref)}`);
         const target = (await this.agentName(issue.assigneeAgentId)) ?? "nobody (no agent will wake)";
         return this.stage(`Post to ${issue.identifier ?? ref} (${issue.title}), going to ${target}: "${text}"`, async () => {
-          await this.ctx.api.post(`/issues/${issue.id}/comments`, { body: text, clientRequestId: `voice-${Date.now()}` });
+          await this.ctx.api.post(`/issues/${issue.id}/comments`, { body: text, clientRequestId: newUuid() });
           this.ctx.watch(issue.id, issue.identifier ?? ref);
           return { posted: true, task: issue.identifier ?? ref, wakes: target };
         });

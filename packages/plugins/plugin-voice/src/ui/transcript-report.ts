@@ -1,4 +1,5 @@
 import { clip, type ApiClient } from "./live-tools.js";
+import { newUuid } from "./uuid.js";
 
 /** One line of the call, with the time it first appeared. */
 export interface LogEntry {
@@ -41,7 +42,7 @@ function duration(ms: number): string {
   return m > 0 ? `${m} min ${s} s` : `${s} s`;
 }
 
-/** Stable per call: saving twice overwrites the same document instead of adding a second one. */
+/** Stable per call: a retry updates the same document (with its latest revision id) instead of adding a second one. */
 export function documentKey(startedAt: number): string {
   const d = new Date(startedAt);
   return `live-chat-transcript-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
@@ -99,11 +100,23 @@ export function buildRecap(call: CallRecord, key: string): string {
 export interface SaveResult {
   saved: string[];
   failed: Array<{ ref: string; error: string }>;
+  /** Tasks beyond the limit that got nothing. */
+  skipped: number;
+}
+
+/** The host refuses an update to an existing key without the latest revision id, so look it up first. */
+async function latestRevisionId(api: ReportApi, path: string): Promise<string | null> {
+  try {
+    const doc = await api.get<{ latestRevisionId?: string | null }>(path);
+    return doc.latestRevisionId ?? null;
+  } catch {
+    return null; // Not there yet: this is a first save.
+  }
 }
 
 /** Writes the transcript document, then the recap comment, on each task the call touched. */
 export async function saveLiveTranscript(api: ReportApi, call: CallRecord, targets: SaveTarget[]): Promise<SaveResult> {
-  const result: SaveResult = { saved: [], failed: [] };
+  const result: SaveResult = { saved: [], failed: [], skipped: 0 };
   if (!hasSpeech(call.entries)) return result;
   const key = documentKey(call.startedAt);
   const title = `Live chat transcript ${new Date(call.startedAt).toLocaleDateString("en-ZA")} ${clock(call.startedAt)}`;
@@ -111,12 +124,24 @@ export async function saveLiveTranscript(api: ReportApi, call: CallRecord, targe
   const recap = buildRecap(call, key);
   const seen = new Set<string>();
   for (const target of targets) {
-    if (seen.has(target.issueId) || seen.size >= MAX_TARGETS) continue;
+    if (seen.has(target.issueId)) continue;
+    if (seen.size >= MAX_TARGETS) {
+      result.skipped++;
+      continue;
+    }
     seen.add(target.issueId);
     try {
-      await api.put(`/issues/${target.issueId}/documents/${key}`, { title, format: "markdown", body, changeSummary: "Saved from a live voice chat" });
+      const docPath = `/issues/${target.issueId}/documents/${key}`;
+      const baseRevisionId = await latestRevisionId(api, docPath);
+      await api.put(docPath, {
+        title,
+        format: "markdown",
+        body,
+        changeSummary: "Saved from a live voice chat",
+        ...(baseRevisionId ? { baseRevisionId } : {}),
+      });
       // The comment goes last: a failed document write never leaves a recap pointing at nothing.
-      await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId: crypto.randomUUID() });
+      await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId: newUuid() });
       result.saved.push(target.ref);
     } catch (err) {
       result.failed.push({ ref: target.ref, error: err instanceof Error ? clip(err.message, 160) : "unknown error" });
