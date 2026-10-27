@@ -88,7 +88,7 @@ d("reading metrics by key (Postgres)", () => {
     it("counts blocked issues whose only blocker is parked, but not ones with a moving blocker", async () => {
       const w = await make();
       const ins = (id: string, ident: string, status: string) =>
-        w.client.query(`INSERT INTO public.issues (id, company_id, identifier, title, status, created_at) VALUES ($1, $2, $3, $3, $4, $5)`, [id, A, ident, status, ago(100)]);
+        w.client.query(`INSERT INTO public.issues (id, company_id, identifier, title, status, assignee_agent_id, created_at) VALUES ($1, $2, $3, $3, $4, $5, $6)`, [id, A, ident, status, OP, ago(100)]);
       const ids = { parked: uuid(), live: uuid(), onParked: uuid(), onLive: uuid() };
       await ins(ids.parked, "P-1", "backlog");
       await ins(ids.live, "P-2", "in_progress");
@@ -100,6 +100,33 @@ d("reading metrics by key (Postgres)", () => {
       await rel(ids.live, ids.onLive);
       expect((await read(w, "company:blocked_uncovered")).value).toBe(1);
       expect((await read(w, "company:blocked_no_way_out")).value).toBe(0);
+    });
+
+    it("blocked_uncovered ignores covered cases and counts blockers that are blocked or unassigned", async () => {
+      const w = await make();
+      const OTHER = "bbbbbbbb-0000-4000-8000-0000000000b1";
+      const ins = (id: string, ident: string, status: string, o: { co?: string; agent?: string | null; descriptor?: object; hidden?: boolean } = {}) =>
+        w.client.query(
+          `INSERT INTO public.issues (id, company_id, identifier, title, status, assignee_agent_id, unblock_descriptor, hidden_at, created_at) VALUES ($1, $2, $3, $3, $4, $5, $6::jsonb, $7, $8)`,
+          [id, o.co ?? A, ident, status, o.agent ?? null, o.descriptor ? JSON.stringify(o.descriptor) : null, o.hidden ? ago(1) : null, ago(100)],
+        );
+      const rel = (blocker: string, blocked: string) =>
+        w.client.query(`INSERT INTO public.issue_relations (company_id, issue_id, related_issue_id, type) VALUES ($1, $2, $3, 'blocks')`, [A, blocker, blocked]);
+      const id = { descr: uuid(), ask: uuid(), hid: uuid(), other: uuid(), onBlocked: uuid(), blockedRoot: uuid(), onUnassigned: uuid(), unassignedRoot: uuid(), plain: uuid() };
+      await ins(id.descr, "D-1", "blocked", { descriptor: { owner: { agentId: OP }, action: "Merge" } }); // has a way out
+      await ins(id.ask, "D-2", "blocked"); // open question to the owner
+      await w.client.query(`INSERT INTO ${NAMESPACE}.asks (id, company_id, issue_id, question, status, asked_at) VALUES ('ua1', $1, $2, 'Which?', 'open', $3)`, [A, id.ask, ago(5)]);
+      await ins(id.hid, "D-3", "blocked", { hidden: true });
+      await ins(id.other, "D-4", "blocked", { co: OTHER });
+      await ins(id.blockedRoot, "D-5", "blocked", { agent: OP });
+      await ins(id.onBlocked, "D-6", "blocked"); // blocker is itself blocked: counted
+      await rel(id.blockedRoot, id.onBlocked);
+      await ins(id.unassignedRoot, "D-7", "todo"); // blocker nobody holds
+      await ins(id.onUnassigned, "D-8", "blocked"); // counted
+      await rel(id.unassignedRoot, id.onUnassigned);
+      await ins(id.plain, "D-9", "blocked", { agent: OP }); // no blockers: counted
+      // counted: D-5 (no blocker), D-6, D-8, D-9
+      expect((await read(w, "company:blocked_uncovered")).value).toBe(4);
     });
 
     it("counts what is stuck or waiting: blocked with no way out, unassigned and old, questions to the owner and the age of the oldest", async () => {

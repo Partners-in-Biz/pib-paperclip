@@ -376,7 +376,10 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
-  const blockedUncovered = await countBlockedUncovered(env, companyId).catch(() => null);
+  const blockedUncovered = await countBlockedUncovered(env, companyId).catch((err) => {
+    env.ctx.logger.warn("blocked_uncovered count failed", { error: String(err) });
+    return null;
+  });
 
   const expected = await expectedPlugins(env, companyId, Object.keys(data.receivedAt));
   const stale = staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });

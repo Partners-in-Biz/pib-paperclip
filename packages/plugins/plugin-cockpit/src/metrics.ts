@@ -39,10 +39,9 @@ export interface MetricReading {
 
 const WEEK_MS = 7 * 86_400_000;
 
-/** Reads metrics for one company; each expensive read is done once per reader. */
 /**
  * Blocked issues with no unblock owner, no open question to the owner and no blocker that is
- * moving (todo, in progress or in review). Unlike `blocked_no_way_out`, a blocker parked in
+ * moving (todo, in progress or in review) and held by an assignee. Unlike `blocked_no_way_out`, a blocker parked in
  * backlog or itself blocked with no way out does not count as cover, so chains that end in
  * dead ends are counted. This is the number the daily brief trends toward 0 (PAR-5829).
  */
@@ -52,13 +51,14 @@ export async function countBlockedUncovered(env: Env, companyId: string): Promis
       WHERE i.company_id = $1::uuid AND i.status = 'blocked' AND i.hidden_at IS NULL
         AND jsonb_typeof(i.unblock_descriptor) IS DISTINCT FROM 'object'
         AND NOT EXISTS (SELECT 1 FROM public.issue_relations r JOIN public.issues b ON b.id = r.issue_id
-                         WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status IN ('todo', 'in_progress', 'in_review'))
+                         WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status IN ('todo', 'in_progress', 'in_review') AND (b.assignee_agent_id IS NOT NULL OR b.assignee_user_id IS NOT NULL))
         AND NOT EXISTS (SELECT 1 FROM ${NAMESPACE}.asks a WHERE a.company_id = i.company_id::text AND a.issue_id = i.id::text AND a.status = 'open')`,
     [companyId],
   );
   return Number(rows[0]?.n ?? 0) || 0;
 }
 
+/** Reads metrics for one company; each expensive read is done once per reader. */
 export class MetricReader {
   private memo = new Map<string, Promise<unknown>>();
 
