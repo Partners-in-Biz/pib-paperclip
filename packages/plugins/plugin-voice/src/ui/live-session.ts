@@ -1,5 +1,6 @@
 import { base64ToArrayBuffer, LIVE_SAMPLE_RATE, MicCapture, Player } from "./audio.js";
 import { clip, LiveTools, TOOL_DEFINITIONS, type ApiClient } from "./live-tools.js";
+import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
 
 export type LiveState = "connecting" | "listening" | "thinking" | "speaking" | "ended" | "error";
 
@@ -31,6 +32,8 @@ export interface LiveSessionOptions {
   onTranscript: (entries: TranscriptEntry[]) => void;
   onLevel: (mic: number, voice: number) => void;
   onError: (message: string) => void;
+  /** Once, when the call ends for any reason, with the whole call (the panel keeps only the last 60 lines). */
+  onEnd?: (call: CallRecord, targets: SaveTarget[]) => void;
   /** How often watched tasks are checked for agent replies. */
   replyPollMs?: number;
 }
@@ -66,6 +69,9 @@ export class LiveSession {
   private voiceLevel = 0;
   private closed = false;
   private userTurns = 0;
+  private readonly startedAt = Date.now();
+  private readonly fullLog = new Map<string, LogEntry>();
+  private ended = false;
 
   constructor(private readonly opts: LiveSessionOptions) {
     this.player = new Player(opts.audioContext);
@@ -140,6 +146,19 @@ export class LiveSession {
     }
     void this.opts.audioContext.close().catch(() => undefined);
     this.setState("ended");
+    this.finish();
+  }
+
+  /** Hands the whole call to the host once, however the call ended. */
+  private finish(): void {
+    if (this.ended) return;
+    this.ended = true;
+    const targets: SaveTarget[] = [...this.watched].map(([issueId, w]) => ({ issueId, ref: w.ref }));
+    try {
+      this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now() }, targets);
+    } catch {
+      // Saving the transcript must never break hanging up.
+    }
   }
 
   private setState(state: LiveState): void {
@@ -163,6 +182,7 @@ export class LiveSession {
     }
     this.state = "error";
     this.opts.onState("error");
+    this.finish();
   }
 
   private lastBump = 0;
@@ -412,6 +432,9 @@ export class LiveSession {
     } else {
       this.transcript.push({ id, who, text, final });
     }
+    const logged = this.fullLog.get(id);
+    if (logged) logged.text = text;
+    else this.fullLog.set(id, { who, text, at: Date.now() });
     // Keep the panel light on a long call.
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);
