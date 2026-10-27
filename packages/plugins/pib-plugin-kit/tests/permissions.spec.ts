@@ -306,3 +306,39 @@ describe("review fixes (PR 384)", () => {
     expect(new Set(g?.linkedCompanyIds).size).toBe(200);
   });
 });
+
+describe("review fixes round 2 (PR 384)", () => {
+  const members = [member("a", "admin"), member("m")];
+  const act = { companyId: CO, actor: user("a") };
+  const failAudit = (ctx: PluginContext) => {
+    (ctx as unknown as { activity: { log: () => Promise<void> } }).activity.log = async () => {
+      throw new Error("down");
+    };
+  };
+  it("says so plainly when the rollback itself fails", async () => {
+    const { ctx } = fake(members);
+    failAudit(ctx);
+    (ctx as unknown as { logger: { error: () => void } }).logger.error = () => undefined;
+    (ctx as unknown as { state: { delete: () => Promise<void> } }).state.delete = async () => {
+      throw new Error("state down");
+    };
+    const r = await saveGrant(ctx, act, { userId: "m", preset: "viewer" });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toMatch(/was saved but could not be recorded/);
+  });
+  it("a state read failure returns ok:false instead of rejecting", async () => {
+    const { ctx } = fake(members);
+    const state = (ctx as unknown as { state: { get: () => Promise<unknown> } }).state;
+    state.get = async () => {
+      throw new Error("read down");
+    };
+    expect((await saveGrant(ctx, act, { userId: "m", preset: "viewer" })).ok).toBe(false);
+    expect((await clearGrant(ctx, act, "m")).ok).toBe(false);
+  });
+  it("rejects a non-string preset and writes no audit entry when clearing nothing", async () => {
+    const { ctx, logs } = fake(members);
+    expect((await saveGrant(ctx, act, { userId: "m", preset: ["viewer"] as never })).ok).toBe(false);
+    expect((await clearGrant(ctx, act, "m")).ok).toBe(true);
+    expect(logs).toHaveLength(0);
+  });
+});

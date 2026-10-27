@@ -245,7 +245,7 @@ function clean(grant: unknown, userId: string): AccessGrant | null {
   }
   return {
     userId,
-    preset: g.preset && Object.hasOwn(PRESETS, g.preset) ? g.preset : null,
+    preset: typeof g.preset === "string" && Object.hasOwn(PRESETS, g.preset) ? g.preset : null,
     allow: list(g.allow).filter(isPermissionKey),
     deny: list(g.deny).filter(isPermissionKey),
     linkedCompanyIds: unique(list(g.linkedCompanyIds)).slice(0, MAX_LINKED_COMPANIES),
@@ -318,7 +318,7 @@ export async function saveGrant(
   if ("error" in admin) return { ok: false, error: admin.error };
   const userId = typeof input?.userId === "string" ? input.userId.trim() : "";
   if (!userId) return { ok: false, error: "Choose a person" };
-  if (input.preset != null && !Object.hasOwn(PRESETS, input.preset)) return { ok: false, error: "Unknown preset" };
+  if (input.preset != null && (typeof input.preset !== "string" || !Object.hasOwn(PRESETS, input.preset))) return { ok: false, error: "Unknown preset" };
   const rawAllow = stringList(input.allow);
   const rawDeny = stringList(input.deny);
   const rawLinked = stringList(input.linkedCompanyIds);
@@ -346,7 +346,12 @@ export async function saveGrant(
   if (!target) return { ok: false, error: "That person is not an active member of this company" };
   if (target === "owner" || target === "admin") return { ok: false, error: "Owners and admins always have full access; change their role instead" };
 
-  const before = await loadGrant(ctx, companyId, userId);
+  let before: AccessGrant | null;
+  try {
+    before = await loadGrant(ctx, companyId, userId);
+  } catch {
+    return { ok: false, error: "Cannot read the person's current access" };
+  }
   const grant: AccessGrant = {
     userId,
     preset: input.preset ?? null,
@@ -364,8 +369,7 @@ export async function saveGrant(
     return { ok: false, error: "Could not save access" };
   }
   if (!(await audit(ctx, companyId, admin.userId, userId, before, grant))) {
-    await restore(ctx, companyId, userId, before);
-    return { ok: false, error: "Could not record the change in the audit log, so it was not saved" };
+    return { ok: false, error: await undoAfterFailedAudit(ctx, companyId, userId, before) };
   }
   return { ok: true, grant };
 }
@@ -378,27 +382,39 @@ export async function clearGrant(ctx: PluginContext, action: { companyId?: strin
   if ("error" in admin) return { ok: false, error: admin.error };
   const userId = typeof rawUserId === "string" ? rawUserId.trim() : "";
   if (!userId) return { ok: false, error: "Choose a person" };
-  const before = await loadGrant(ctx, companyId, userId);
+  let before: AccessGrant | null;
+  try {
+    before = await loadGrant(ctx, companyId, userId);
+  } catch {
+    return { ok: false, error: "Cannot read the person's current access" };
+  }
+  if (!before) return { ok: true, grant: null };
   try {
     await ctx.state.delete(userScope(companyId, userId));
   } catch {
     return { ok: false, error: "Could not remove access" };
   }
   if (!(await audit(ctx, companyId, admin.userId, userId, before, null))) {
-    await restore(ctx, companyId, userId, before);
-    return { ok: false, error: "Could not record the change in the audit log, so it was not saved" };
+    return { ok: false, error: await undoAfterFailedAudit(ctx, companyId, userId, before) };
   }
   return { ok: true, grant: null };
 }
 
-/** Puts the previous grant back after a failed audit write. Best effort; logs if it also fails. */
-async function restore(ctx: PluginContext, companyId: string, userId: string, before: AccessGrant | null): Promise<void> {
-  try {
-    if (before) await ctx.state.set(userScope(companyId, userId), before);
-    else await ctx.state.delete(userScope(companyId, userId));
-  } catch (error) {
-    ctx.logger.info("Could not restore access after a failed audit write", { error: error instanceof Error ? error.message : String(error) });
+/**
+ * Puts the previous grant back after a failed audit write, retrying once. Returns
+ * the refusal text: if the restore also fails, it says the change IS in effect but unaudited.
+ */
+async function undoAfterFailedAudit(ctx: PluginContext, companyId: string, userId: string, before: AccessGrant | null): Promise<string> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (before) await ctx.state.set(userScope(companyId, userId), before);
+      else await ctx.state.delete(userScope(companyId, userId));
+      return "Could not record the change in the audit log, so it was not saved";
+    } catch (error) {
+      ctx.logger.error("Could not restore access after a failed audit write", { error: error instanceof Error ? error.message : String(error), attempt });
+    }
   }
+  return "The change was saved but could not be recorded in the audit log, and it could not be undone. Check this person's access and try again";
 }
 
 /** True when the entry was written. A change is only kept if its audit entry exists. */
