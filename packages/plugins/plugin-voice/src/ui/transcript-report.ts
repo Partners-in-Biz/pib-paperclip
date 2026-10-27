@@ -16,6 +16,8 @@ export interface CallRecord {
   entries: LogEntry[];
   startedAt: number;
   endedAt: number;
+  /** Recap request id per task, kept so a retry reuses it and the host drops a duplicate. */
+  recapIds?: Record<string, string>;
 }
 
 export interface SaveTarget {
@@ -109,8 +111,10 @@ async function latestRevisionId(api: ReportApi, path: string): Promise<string | 
   try {
     const doc = await api.get<{ latestRevisionId?: string | null }>(path);
     return doc.latestRevisionId ?? null;
-  } catch {
-    return null; // Not there yet: this is a first save.
+  } catch (err) {
+    // Only "not found" means a first save; a 401, 500 or dropped network must reach the person.
+    if (err instanceof Error && /\b404\b/.test(err.message)) return null;
+    throw err;
   }
 }
 
@@ -141,7 +145,9 @@ export async function saveLiveTranscript(api: ReportApi, call: CallRecord, targe
         ...(baseRevisionId ? { baseRevisionId } : {}),
       });
       // The comment goes last: a failed document write never leaves a recap pointing at nothing.
-      await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId: newUuid() });
+      const recapIds = (call.recapIds ??= {});
+      const clientRequestId = (recapIds[target.issueId] ??= newUuid());
+      await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId });
       result.saved.push(target.ref);
     } catch (err) {
       result.failed.push({ ref: target.ref, error: err instanceof Error ? clip(err.message, 160) : "unknown error" });

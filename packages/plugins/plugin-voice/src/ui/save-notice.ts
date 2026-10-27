@@ -34,7 +34,7 @@ export function showSaveNotice(message: string, retry: (() => Promise<void>) | n
   if (retry) {
     const retryButton = button("Try again", () => {
       retryButton.disabled = true;
-      void retry().finally(() => box.remove());
+      void retry().catch(() => undefined).finally(() => box.remove());
     });
     row.append(retryButton);
   }

@@ -15,15 +15,15 @@ const CALL: CallRecord = {
   ],
 };
 
-function fakeApi(failPutFor?: string, existingRevision?: string) {
+function fakeApi(failPutFor?: string, existingRevision?: string, getError?: string) {
   const put = vi.fn(async (path: string, _body?: unknown) => {
     if (failPutFor && path.includes(failPutFor)) throw new Error("Paperclip answered 500");
     return {};
   });
-  const post = vi.fn(async () => ({}));
+  const post = vi.fn(async (_path: string, _body?: unknown) => ({}));
   const get = vi.fn(async () => {
     if (existingRevision) return { latestRevisionId: existingRevision };
-    throw new Error("Paperclip answered 404");
+    throw new Error(getError ?? "Paperclip answered 404 for /issues/i1/documents/k");
   });
   return { api: { get, post, put } as unknown as ReportApi, put, post };
 }
@@ -121,5 +121,27 @@ describe("transcript report", () => {
     } finally {
       crypto.randomUUID = original;
     }
+  });
+
+  it("does not treat a non-404 failure on the lookup as a first save", async () => {
+    const { api, put, post } = fakeApi(undefined, undefined, "Paperclip answered 500 for /issues/i1/documents/k");
+    const result = await saveLiveTranscript(api, CALL, [{ issueId: "i1", ref: "PAR-1" }]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]!.error).toContain("500");
+    expect(put).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("reuses the recap request id when a retry follows a failed comment post", async () => {
+    const { api, post } = fakeApi();
+    post.mockRejectedValueOnce(new Error("Paperclip answered 502"));
+    const call = { ...CALL };
+    const first = await saveLiveTranscript(api, call, [{ issueId: "i1", ref: "PAR-1" }]);
+    expect(first.failed).toHaveLength(1);
+    const second = await saveLiveTranscript(api, call, [{ issueId: "i1", ref: "PAR-1" }]);
+    expect(second.saved).toEqual(["PAR-1"]);
+    const ids = post.mock.calls.map((c) => (c[1] as { clientRequestId: string }).clientRequestId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
   });
 });
