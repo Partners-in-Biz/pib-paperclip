@@ -85,6 +85,23 @@ d("reading metrics by key (Postgres)", () => {
       expect(failRate).toMatchObject({ key: "company:fail_rate", label: "Run failure rate (7 days)", unit: "%", note: null });
     });
 
+    it("counts blocked issues whose only blocker is parked, but not ones with a moving blocker", async () => {
+      const w = await make();
+      const ins = (id: string, ident: string, status: string) =>
+        w.client.query(`INSERT INTO public.issues (id, company_id, identifier, title, status, created_at) VALUES ($1, $2, $3, $3, $4, $5)`, [id, A, ident, status, ago(100)]);
+      const ids = { parked: uuid(), live: uuid(), onParked: uuid(), onLive: uuid() };
+      await ins(ids.parked, "P-1", "backlog");
+      await ins(ids.live, "P-2", "in_progress");
+      await ins(ids.onParked, "P-3", "blocked");
+      await ins(ids.onLive, "P-4", "blocked");
+      const rel = (blocker: string, blocked: string) =>
+        w.client.query(`INSERT INTO public.issue_relations (company_id, issue_id, related_issue_id, type) VALUES ($1, $2, $3, 'blocks')`, [A, blocker, blocked]);
+      await rel(ids.parked, ids.onParked);
+      await rel(ids.live, ids.onLive);
+      expect((await read(w, "company:blocked_uncovered")).value).toBe(1);
+      expect((await read(w, "company:blocked_no_way_out")).value).toBe(0);
+    });
+
     it("counts what is stuck or waiting: blocked with no way out, unassigned and old, questions to the owner and the age of the oldest", async () => {
       const w = await make();
       await issue(w, "B-1", "blocked", { agent: OP }); // no way out

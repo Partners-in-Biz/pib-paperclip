@@ -14,6 +14,7 @@ import { message, type Env } from "./env.js";
 import { listRepairs, type RepairRow } from "./repairs.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
 import { goalViews, goalViewsBrief } from "./goals.js";
+import { countBlockedUncovered } from "./metrics.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
 import { improvementsBrief } from "./improvements.js";
 import { agentMeasureBriefs, type AgentMeasureBrief } from "./measure.js";
@@ -375,6 +376,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
+  const blockedUncovered = await countBlockedUncovered(env, companyId).catch(() => null);
 
   const expected = await expectedPlugins(env, companyId, Object.keys(data.receivedAt));
   const stale = staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
@@ -454,6 +456,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       count: data.unassigned.count,
       items: data.unassigned.items.slice(0, 5).map((i) => ({ issue: i.identifier ?? i.id, title: i.title, status: i.status, priority: i.priority, createdAt: i.createdAt, href: link(`/issues/${i.identifier ?? i.id}`) })),
     },
+    /** Blocked issues with no unblock owner, open question or moving blocker. The daily brief states this number so the trend toward 0 is readable; null when it could not be read. */
+    blockedUncovered,
     /** Who holds each team role (for hand-offs); an unstaffed sales role names who covers it (`coveredBy`). */
     team: Object.fromEntries(
       TEAM_ROLES.map((role) => {
