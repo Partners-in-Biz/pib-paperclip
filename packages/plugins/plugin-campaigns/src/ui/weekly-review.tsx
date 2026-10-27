@@ -39,6 +39,7 @@ export interface WeeklyReviewData {
 
 const card = { display: "grid", gap: 6, padding: 12, border: `1px solid ${tokens.border}`, borderRadius: 8 } as const;
 const muted = { color: tokens.muted, fontSize: 12.5 } as const;
+const failure = { color: tokens.destructive, fontSize: 13 } as const;
 const small = { height: 28, fontSize: 12 } as const;
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "");
 
@@ -76,7 +77,7 @@ function ExperimentCard({ experiment, busy, onApprove, onReject }: { experiment:
 }
 
 /** The Weekly review tab: the experiments and playbook changes a person has to decide, and the ones already running. */
-export function WeeklyReview({ client, onChanged }: { client: string | null; onChanged?: () => void }) {
+export function WeeklyReview({ client }: { client: string | null }) {
   const load = usePluginAction("campaigns.growth-load");
   const approve = usePluginAction("campaigns.growth-approve-experiment");
   const reject = usePluginAction("campaigns.growth-reject-experiment");
@@ -84,6 +85,7 @@ export function WeeklyReview({ client, onChanged }: { client: string | null; onC
   const [data, setData] = useState<WeeklyReviewData | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -102,12 +104,13 @@ export function WeeklyReview({ client, onChanged }: { client: string | null; onC
   async function act(work: () => Promise<unknown>, success: string) {
     setBusy(true);
     setMessage("");
+    setFailed(false);
     try {
       await work();
       setMessage(success);
-      onChanged?.();
     } catch (e) {
       setMessage(errorText(e));
+      setFailed(true);
     }
     await refresh();
     setBusy(false);
@@ -123,7 +126,8 @@ export function WeeklyReview({ client, onChanged }: { client: string | null; onC
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      {message ? <div role="status" style={muted}>{message}</div> : null}
+      {error ? <div role="alert" style={failure}>Could not refresh the weekly review: {error}. What you see may be out of date.</div> : null}
+      {message ? <div role={failed ? "alert" : "status"} style={failed ? failure : muted}>{message}</div> : null}
       {data.autopilot !== "full" ? <span style={muted}>Autopilot is {data.autopilot}: agents propose, a person approves here.</span> : null}
       {nothing ? <EmptyState compact title="Nothing waiting for you" description="New experiments and playbook changes show here when the weekly review proposes them." /> : null}
 

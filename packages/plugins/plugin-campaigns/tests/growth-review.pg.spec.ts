@@ -99,6 +99,17 @@ describe.skipIf(!available)("campaigns weekly review actions", () => {
     expect(await w.call("reject-experiment", { experimentId: exp.experimentId, reason: "Not now" })).toMatchObject({ status: "rejected" });
   });
 
+  it("another company's person cannot approve, reject or decide it", async () => {
+    const w = world();
+    const other = world();
+    const exp = await w.call("propose-experiment", w.proposal);
+    const change = await w.call("propose-playbook-change", { text: "Rule", section: "rules", reason: "r" });
+    await expect(growthApproveExperiment(other.ctx, other.person("user-2"), { experimentId: exp.experimentId })).rejects.toThrow();
+    await expect(growthRejectExperiment(other.ctx, other.person("user-2"), { experimentId: exp.experimentId, reason: "x" })).rejects.toThrow();
+    await expect(growthDecideChange(other.ctx, other.person("user-2"), { changeId: change.changeId, decision: "keep" })).rejects.toThrow();
+    expect((await growthReviewLoad(w.ctx, w.person("user-1"), {})).experiments[0].status).toBe("proposed");
+  });
+
   it("a person rejects an experiment with a reason, and keeps or discards a playbook change", async () => {
     const w = world();
     const exp = await w.call("propose-experiment", w.proposal);
@@ -106,7 +117,10 @@ describe.skipIf(!available)("campaigns weekly review actions", () => {
     const drop = await w.call("propose-playbook-change", { text: "Rule two", section: "rules", reason: "r" });
 
     await expect(growthRejectExperiment(w.ctx, w.person("user-1"), { experimentId: exp.experimentId })).rejects.toThrow();
+    await pg.client.query(`INSERT INTO ${NAMESPACE}.growth_experiment_items (experiment_id, arm, subject_kind, subject_id) VALUES ($1, 'link', 'campaign_link', 'camp-1')`, [exp.experimentId]);
     expect(await growthRejectExperiment(w.ctx, w.person("user-1"), { experimentId: exp.experimentId, reason: "Too close to last week" })).toMatchObject({ status: "rejected" });
+    const links = await pg.client.query(`SELECT 1 FROM ${NAMESPACE}.growth_experiment_items WHERE experiment_id = $1`, [exp.experimentId]);
+    expect(links.rows).toHaveLength(0);
     expect(await growthDecideChange(w.ctx, w.person("user-1"), { changeId: keep.changeId, decision: "keep" })).toMatchObject({ status: "kept" });
     expect(await growthDecideChange(w.ctx, w.person("user-1"), { changeId: drop.changeId, decision: "discard" })).toMatchObject({ status: "discarded" });
 

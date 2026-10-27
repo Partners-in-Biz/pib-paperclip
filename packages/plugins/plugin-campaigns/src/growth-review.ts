@@ -10,11 +10,10 @@ import {
   decidePlaybookChange,
   getPlaybookRecord,
   listExperimentsRecord,
-  rejectExperiment,
   type GrowthActor,
 } from "@partnersinbiz/pib-plugin-kit";
 import { CampaignError } from "./domain.js";
-import { campaignsGrowthEnv, withoutPostTags } from "./growth-host.js";
+import { campaignsGrowthEnv, rejectCampaignExperiment } from "./growth-host.js";
 
 type Params = Record<string, unknown>;
 
@@ -26,7 +25,7 @@ function personActor(context: PluginPerformActionContext, what: string): GrowthA
   return { companyId: context.companyId, userId, agentId: null, isAgent: false };
 }
 
-/** The program's experiments (proposed, running and measured) and the playbook changes waiting for a decision. */
+/** The program's experiments (a program with none yet is created empty, as the get-playbook tool does) (proposed, running and measured) and the playbook changes waiting for a decision. */
 export async function growthReviewLoad(ctx: PluginContext, context: PluginPerformActionContext, params: Params) {
   const actor = personActor(context, "see the weekly review");
   const env = campaignsGrowthEnv(ctx);
@@ -50,7 +49,7 @@ export async function growthApproveExperiment(ctx: PluginContext, context: Plugi
 }
 
 export async function growthRejectExperiment(ctx: PluginContext, context: PluginPerformActionContext, params: Params) {
-  return rejectExperiment(withoutPostTags(campaignsGrowthEnv(ctx)), personActor(context, "reject an experiment"), params);
+  return rejectCampaignExperiment(campaignsGrowthEnv(ctx), personActor(context, "reject an experiment"), params);
 }
 
 export async function growthDecideChange(ctx: PluginContext, context: PluginPerformActionContext, params: Params) {
