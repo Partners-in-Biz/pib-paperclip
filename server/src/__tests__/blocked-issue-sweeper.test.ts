@@ -27,7 +27,8 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("blocked issue sweeper", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
-  const now = new Date("2026-10-28T12:00:00.000Z");
+  // Real clock: the loop guard compares against DB-generated activity timestamps.
+  const now = new Date();
   const blockedLongAgo = new Date(now.getTime() - 45 * 60 * 1000);
   const blockedJustNow = new Date(now.getTime() - 5 * 60 * 1000);
 

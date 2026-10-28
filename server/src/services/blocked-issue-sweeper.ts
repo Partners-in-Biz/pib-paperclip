@@ -86,6 +86,8 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           .from(activityLog)
           .where(
             and(
+              inArray(activityLog.companyId, [...new Set(candidates.map((c) => c.companyId))]),
+              eq(activityLog.entityType, "issue"),
               eq(activityLog.action, BLOCKED_ISSUE_SWEPT_ACTION),
               inArray(activityLog.entityId, candidates.map((c) => c.id)),
               gte(activityLog.createdAt, new Date(now.getTime() - BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS)),
@@ -196,9 +198,9 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           skipped += 1;
           continue;
         }
-        moved += 1;
         // Wake first: the move is already committed, so a failing log write must not
         // leave the issue in todo with nobody woken.
+        let wakeFailed = false;
         if (reason === "blockers_done") {
           // Same source and state key as the route and the recovery backstop, so the
           // wake queue treats this as the same wake and does not start a second run.
@@ -228,6 +230,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
               },
             })
             .catch((err) => {
+              wakeFailed = true;
               logger.warn({ err, issueId: candidate.id }, "failed to wake assignee after blocked issue sweep");
             });
         } else {
@@ -248,6 +251,9 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           status: "todo",
           blockedSince: new Date(candidate.blockedSince).toISOString(),
           assigneeAgentId,
+          // The issue is already in todo, so a failed wake does not leave it blocked and the
+          // guard has nothing to hold back; the assignee's next timer heartbeat finds it.
+          ...(wakeFailed ? { wakeFailed: true } : {}),
         };
         // The sweeper entry is the loop guard; `issue.updated` is the event plugins
         // subscribe to, which the route writes for a status change and the service does not.
@@ -276,6 +282,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
             changes: { status: { from: "blocked", to: "todo" } },
           },
         });
+        moved += 1;
       } catch (err) {
         logger.error({ err, issueId: candidate.id }, "blocked issue sweep failed for issue");
         skipped += 1;
