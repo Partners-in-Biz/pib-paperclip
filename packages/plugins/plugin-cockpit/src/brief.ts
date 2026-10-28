@@ -4,12 +4,13 @@
  * agent tools.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { emptySnapshot, isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import { formatAmount } from "./activity.js";
 import { askWaitingItem, type AskView } from "./ask-model.js";
 import { openAskViews } from "./asks.js";
-import { assignableUser, ORIGIN } from "./constants.js";
+import { assignableUser, ORIGIN, PLUGIN_KEY } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
+import { briefBudget, type BriefBudget } from "./budget.js";
 import { message, type Env } from "./env.js";
 import { listRepairs, type RepairRow } from "./repairs.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
@@ -188,6 +189,10 @@ async function enabledModules(env: Env, companyId: string, keys: string[]): Prom
   return out;
 }
 
+function newBudget(env: Env, options: { sectionMs?: number; totalMs?: number } = {}): BriefBudget {
+  return briefBudget((text, meta) => env.ctx.logger.info(text, meta), options);
+}
+
 export interface CompanyData {
   snapshots: CockpitSnapshot[];
   receivedAt: Record<string, string>;
@@ -209,27 +214,24 @@ export interface CompanyData {
   repairs: RepairRow[];
 }
 
-export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24): Promise<CompanyData> {
+/** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
+export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
+  const { guard } = budget;
   const roles = await getRoles(env.ctx, companyId);
-  const stored = await storedSnapshots(env, companyId);
-  const own = await ownSnapshot(env, companyId);
+  const stored = await guard("snapshots", () => storedSnapshots(env, companyId), []);
+  // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
+  const own = await guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() });
   const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
-    listAgents(env, companyId),
-    listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
-    listApprovals(env.ctx, companyId),
-    listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null),
-    setupStatuses(env, companyId),
-    openAskViews(env, companyId).catch((error) => {
-      env.ctx.logger.info("Cockpit asks read failed", { companyId, error: message(error) });
-      return [] as AskView[];
-    }),
-    listUnassigned(env.ctx, companyId),
-    listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }).catch((error) => {
-      env.ctx.logger.info("Cockpit repairs read failed", { companyId, error: message(error) });
-      return [] as RepairRow[];
-    }),
+    guard("agents", () => listAgents(env, companyId), []),
+    guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
+    guard("approvals", () => listApprovals(env.ctx, companyId), []),
+    guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), []),
+    guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
+    guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
+    guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
+    guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
   ]);
-  const enabled = await enabledModules(env, companyId, Object.keys(statuses));
+  const enabled = await guard("modules", () => enabledModules(env, companyId, Object.keys(statuses)), {} as Record<string, boolean>);
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
   const setup = await readSetupSummary(env, companyId);
   const missing = setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
@@ -369,53 +371,39 @@ export function repairLines(rows: RepairRow[], max: number = 10): string[] {
 }
 
 /** Compact JSON for the Operator: waiting, health, KPIs, activity, agents incl. spend/budget. */
-export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number } = {}) {
+export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number; sectionMs?: number; totalMs?: number } = {}) {
   const windowHours = Math.min(Math.max(Math.round(options.windowHours ?? 24), 1), 720);
-  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours);
+  const budget = newBudget(env, options);
+  const { guard } = budget;
+  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours, budget);
   const now = env.now();
   const company = await env.ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
-  const blockedUncovered = await countBlockedUncovered(env, companyId).catch((err) => {
-    env.ctx.logger.warn("blocked_uncovered count failed", { error: String(err) });
-    return null;
-  });
 
-  const expected = await expectedPlugins(env, companyId, Object.keys(data.receivedAt));
+  // The slow reads run side by side, each against its own time limit. Unreadable gives none (or null), not zeros or a guess.
+  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected] = await Promise.all([
+    guard("blockedUncovered", () => countBlockedUncovered(env, companyId), null),
+    guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [] } as unknown as Awaited<ReturnType<typeof collectProblems>>),
+    // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue).
+    guard("agentMeasures", () => agentMeasureBriefs(env, companyId, windowHours), new Map<string, AgentMeasureBrief>()),
+    guard("roles", () => currentRoles(env, companyId), null),
+    // Changes recorded with a number to move (overdue first) and the company's goals against their numbers: what the weekly retro walks through.
+    guard("improvements", () => improvementsBrief(env, companyId), null),
+    guard("goals", () => goalViews(env, companyId, ["active", "proposed"]).then((views) => goalViewsBrief(views)), null),
+    guard("repairs", () => listRepairs(env.ctx, companyId, { limit: 100 }).then((rows) => repairLines(rows)), [] as string[]),
+    guard("expectedPlugins", () => expectedPlugins(env, companyId, Object.keys(data.receivedAt)), [] as Awaited<ReturnType<typeof expectedPlugins>>),
+  ]);
   const stale = staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
-  const problems = await collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince });
   const waiting = waitingFrom(data);
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
-  // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue). Unreadable gives none, not zeros.
-  const measures = await agentMeasureBriefs(env, companyId, windowHours).catch((error) => {
-    env.ctx.logger.info("Brief: agent measures unreadable", { companyId, error: message(error) });
-    return new Map<string, AgentMeasureBrief>();
-  });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;
-  const roles = await currentRoles(env, companyId).catch(() => null);
   const names = new Map(data.agents.map((a) => [a.id, a.name]));
   const graph = buildFlows({ snapshots: data.snapshots, roles, agents: data.agents });
-  // Changes recorded with a number to move (overdue first) and the company's goals against their numbers: what the weekly retro walks through. Unreadable gives null, not a guess.
-  const improvements = await improvementsBrief(env, companyId).catch((error) => {
-    env.ctx.logger.info("Brief: improvements unreadable", { companyId, error: message(error) });
-    return null;
-  });
-  const goals = await goalViews(env, companyId, ["active", "proposed"])
-    .then((views) => goalViewsBrief(views))
-    .catch((error) => {
-      env.ctx.logger.info("Brief: goals unreadable", { companyId, error: message(error) });
-      return null;
-    });
-  const repairs = await listRepairs(env.ctx, companyId, { limit: 100 })
-    .then((rows) => repairLines(rows))
-    .catch((error) => {
-      env.ctx.logger.info("Brief: repairs unreadable", { companyId, error: message(error) });
-      return [];
-    });
 
   return {
     company: { id: companyId, name: company?.name ?? null, prefix },
@@ -508,6 +496,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     goals,
     /** System repairs from the last 7 days, formatted as lines. */
     repairs,
+    /** Sections that gave no answer in time or failed (so their lists above are empty or null, not "nothing there"). Empty when everything answered. Say so in the brief instead of dropping it. */
+    degraded: [...budget.degraded],
     setupMissing: data.setupMissing,
     links: { cockpit: link("/cockpit"), flows: link("/cockpit?tab=flows"), setup: link("/setup") },
   };
