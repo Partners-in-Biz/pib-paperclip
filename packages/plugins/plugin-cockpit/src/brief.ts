@@ -201,7 +201,8 @@ export interface CompanyData {
   runStats: RunStat[];
   approvals: ApprovalLite[];
   ownerIssues: IssueLite[];
-  setupMissing: number;
+  /** Setup count; null when setup, modules or setupSummary is degraded. */
+  setupMissing: number | null;
   /** The open Finish setup issue (from the Setup plugin's count), listed once as the setup item. */
   setupIssueId?: string | null;
   ownerUserId: string | null;
@@ -217,11 +218,11 @@ export interface CompanyData {
 /** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
-  const roles = await getRoles(env.ctx, companyId);
-  const stored = await guard("snapshots", () => storedSnapshots(env, companyId), []);
-  // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
-  const own = await guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() });
-  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
+  const roles = await guard("ownerRoles", () => getRoles(env.ctx, companyId), null);
+  const [stored, own, agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs, setup] = await Promise.all([
+    guard("snapshots", () => storedSnapshots(env, companyId), []),
+    // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
+    guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
     guard("agents", () => listAgents(env, companyId), []),
     guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
     guard("approvals", () => listApprovals(env.ctx, companyId), []),
@@ -230,11 +231,13 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
     guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
     guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
+    guard("setupSummary", () => readSetupSummary(env, companyId), null),
   ]);
   const enabled = await guard("modules", () => enabledModules(env, companyId, Object.keys(statuses)), {} as Record<string, boolean>);
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
-  const setup = await readSetupSummary(env, companyId);
-  const missing = setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
+  const missing = budget.degraded.includes("setup") || budget.degraded.includes("modules") || budget.degraded.includes("setupSummary")
+    ? null
+    : setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
     snapshots: [...stored.map((s) => s.snapshot), own],
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
@@ -377,14 +380,14 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const { guard } = budget;
   const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours, budget);
   const now = env.now();
-  const company = await env.ctx.companies.get(companyId).catch(() => null);
+  const company = await guard("company", () => env.ctx.companies.get(companyId), null);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
 
   // The slow reads run side by side, each against its own time limit. Unreadable gives none (or null), not zeros or a guess.
   const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected] = await Promise.all([
     guard("blockedUncovered", () => countBlockedUncovered(env, companyId), null),
-    guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [] } as unknown as Awaited<ReturnType<typeof collectProblems>>),
+    guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [], keys: [] }),
     // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue).
     guard("agentMeasures", () => agentMeasureBriefs(env, companyId, windowHours), new Map<string, AgentMeasureBrief>()),
     guard("roles", () => currentRoles(env, companyId), null),
@@ -574,15 +577,22 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
       const brief = await companyBrief(env, companyId);
       const include = p.includeWarnings !== false;
       const problems = brief.health.problems.filter((c) => include || c.status === "bad");
-      return toolOk(problems.length === 0 && brief.health.agentAlerts.length === 0 ? "All systems ok." : `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.`, {
+      const degradedText = brief.degraded.length > 0 ? ` ${brief.degraded.join(", ")} unavailable (timed out).` : "";
+      const summary = brief.degraded.length > 0 || problems.length > 0 || brief.health.agentAlerts.length > 0
+        ? `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.${degradedText}`
+        : "All systems ok.";
+      return toolOk(summary, {
         status: brief.health.status,
         problems,
         agentAlerts: brief.health.agentAlerts,
+        degraded: brief.degraded,
       });
     }
     if (name === TOOL_NAMES.waiting) {
       const brief = await companyBrief(env, companyId);
-      return toolOk(brief.waiting.length === 0 ? "Nothing waits on the owner." : `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.`, { items: brief.waiting, count: brief.waiting.length });
+      const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
+      const summary = brief.waiting.length === 0 && brief.degraded.length === 0 ? "Nothing waits on the owner." : `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
+      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {
       const brief = await companyBrief(env, companyId, { windowHours: 168 });
