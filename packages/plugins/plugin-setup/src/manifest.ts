@@ -2,11 +2,12 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { PLUGIN_ID } from "./namespace.js";
 import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.7.6";
+export const VERSION = "0.7.7";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
   weeklyFinishSetup: "weekly-finish-setup",
+  templateDrift: "template-drift",
 } as const;
 
 const instanceConfigSchema: JsonSchema = {
@@ -83,6 +84,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Weekly Finish setup issue",
       description: "Mondays 07:00 SAST: opens or updates one Finish setup issue per company, and closes it when nothing required is missing.",
       schedule: "0 5 * * 1",
+    },
+    {
+      jobKey: JOBS.templateDrift,
+      displayName: "Template drift",
+      description: "Every hour: finds agents behind the team template pack and keeps one Template drift issue per company (the sync work list). Closes it at zero and reports the templates:drift health check.",
+      schedule: "30 * * * *",
     },
   ],
   apiRoutes: [

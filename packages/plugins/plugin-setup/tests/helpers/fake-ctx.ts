@@ -21,7 +21,7 @@ export interface FakeCompany {
   requireBoardApprovalForNewAgents?: boolean;
 }
 
-export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string>; companies?: Record<string, FakeCompany>; wakeFails?: boolean; members?: Record<string, Array<{ principalId: string; membershipRole: string | null; status?: string; principalType?: string }>> } = {}) {
+export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConfigs?: Record<string, Record<string, unknown>>; prefixes?: Record<string, string>; companies?: Record<string, FakeCompany>; wakeFails?: boolean; members?: Record<string, Array<{ principalId: string; membershipRole: string | null; status?: string; principalType?: string }>> } = {}) {
   const wakes: Array<{ issueId: string; companyId: string; reason?: string }> = [];
   const store: Store = {};
   const db = createFakeDb(store, { namespace: NAMESPACE });
@@ -71,6 +71,7 @@ export function fakeCtx(options: { savedConfigs?: Record<string, Record<string, 
         return options.prefixes?.[companyId] ? { id: companyId, issuePrefix: options.prefixes[companyId] } : null;
       },
     },
+    agents: { list: async ({ companyId, limit }: { companyId: string; limit?: number }) => (options.agents?.[companyId] ?? []).slice(0, limit ?? 50) },
     issues: {
       create: async (input: Omit<FakeIssue, "id" | "status"> & { status?: string }) => {
         seq += 1;
