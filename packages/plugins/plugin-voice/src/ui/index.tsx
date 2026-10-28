@@ -15,6 +15,8 @@ import {
 import { buildInstructions } from "./live-instructions.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./live-tools.js";
+import { failureMessage, showSaveNotice } from "./save-notice.js";
+import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type SaveTarget } from "./transcript-report.js";
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
 
 interface VoiceStatus {
@@ -24,7 +26,7 @@ interface VoiceStatus {
 }
 
 /** Same-origin calls to Paperclip's API with the person's own session. */
-export const paperclipApi: ApiClient = {
+export const paperclipApi: ReportApi = {
   async get<T>(path: string): Promise<T> {
     const res = await fetch(`/api${path}`, { credentials: "include", headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`Paperclip answered ${res.status} for ${path.split("?")[0]}`);
@@ -43,7 +45,43 @@ export const paperclipApi: ApiClient = {
     }
     return (await res.json()) as T;
   },
+  async put<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`/api${path}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null) as { error?: unknown } | null;
+      throw new Error(typeof detail?.error === "string" ? detail.error : `Paperclip answered ${res.status}`);
+    }
+    return (await res.json()) as T;
+  },
 };
+
+/** Puts the call on the task it was opened from and on every task it posted to or created. */
+async function saveCall(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
+  if (!hasSpeech(call.entries)) return;
+  const targets = [...touched];
+  if (pageIssueRef) {
+    try {
+      const issue = await paperclipApi.get<{ id: string; identifier?: string | null }>(`/issues/${encodeURIComponent(pageIssueRef)}`);
+      targets.unshift({ issueId: issue.id, ref: issue.identifier ?? pageIssueRef });
+    } catch {
+      // The task on screen is optional; the tasks the call touched still get the transcript.
+    }
+  }
+  if (targets.length === 0) return;
+  const result = await saveLiveTranscript(paperclipApi, call, targets);
+  if (result.failed.length === 0 && result.skipped === 0) return;
+  const failedRefs = new Set(result.failed.map((f) => f.ref));
+  const retryTargets = targets.filter((t) => failedRefs.has(t.ref));
+  showSaveNotice(
+    failureMessage(result),
+    retryTargets.length > 0 ? async () => void (await saveCall(call, retryTargets, null)) : null,
+  );
+}
 
 function errorText(err: unknown): string {
   if (err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string") {
@@ -340,6 +378,10 @@ function LivePanel({
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
           onError: setError,
+          onEnd: (call, touched) =>
+            void saveCall(call, touched, pageIssueRef).catch((err) => {
+              showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
+            }),
         });
         session.current = live;
         await live.start();
