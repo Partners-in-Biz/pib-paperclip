@@ -3,7 +3,7 @@
  * re-check that writes improved / no change / worse with both numbers, the
  * overdue list, and the pinned tool facts that become improvements.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ImprovementError } from "../src/improvements-model.js";
 import { getImprovement, improvementsBrief, listImprovements, proposeFactPromotions, proposeImprovement, recheckCompany, recheckImprovements, resolveImprovement } from "../src/improvements.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -169,6 +169,101 @@ d("improvements ledger (Postgres)", () => {
       const result = await recheckImprovements(h.env);
       expect(result.companies).toBe(1); // OTHER_COMPANY has no saved settings
       expect(result.failed).toBe(0);
+    });
+  });
+
+  describe("template rollout (C7c): the 7-day window starts when the change is applied", () => {
+    const HASH = "0123456789abcdef";
+    const LEAD = "aaaaaaaa-0000-4000-8000-0000000000a9";
+    type Agent = { id: string; name: string; title?: string; status: string; metadata?: unknown };
+    let team: Agent[];
+    const pack = (over: Record<string, unknown> = {}) => ({ pack: "v2", version: 2, key: "developer", hash: HASH, appliedAt: day(3).toISOString(), ...over });
+    const developer = (metadata: unknown): Agent => ({ id: DEV, name: "Developer", status: "idle", metadata });
+    const template = () => propose({ kind: "template", targetRef: "developer", baselineValue: 40, targetValue: undefined, sourceRef: `templatechange:developer:${HASH}`, recheckInDays: 30, sourceIssueId: null });
+    const recheckAtOf = async (id: string) => (await getImprovement(h.ctx, COMPANY, id))!;
+
+    const originalAgents = (): unknown => (h.ctx as unknown as { agents: unknown }).agents;
+    let saved: unknown;
+    let savedIssues: unknown;
+    let opened: Array<Record<string, unknown>>;
+    afterEach(() => {
+      (h.ctx as unknown as { agents: unknown }).agents = saved;
+      (h.ctx as unknown as { issues: unknown }).issues = savedIssues;
+    });
+    beforeEach(() => {
+      saved = originalAgents();
+      savedIssues = (h.ctx as unknown as { issues: unknown }).issues;
+      opened = [];
+      (h.ctx as unknown as { issues: unknown }).issues = {
+        ...(savedIssues as object),
+        create: async (input: Record<string, unknown>) => {
+          opened.push(input);
+          return { id: `opened-${opened.length}` };
+        },
+      };
+      team = [{ id: LEAD, name: "Delivery Lead", title: "Delivery Lead", status: "idle" }, developer(null)];
+      (h.ctx as unknown as { agents: unknown }).agents = { get: async (id: string) => team.find((a) => a.id === id) ?? null, list: async () => team };
+    });
+
+    it("not applied: the placeholder date is not due, and nothing is measured", async () => {
+      const { improvement } = await template();
+      team = [developer({ pibPack: pack({ hash: "ffffffffffffffff" }) })];
+      h.clock.now = day(10); // well before the stall rule (21 days): it only waits
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ measured: 0, rearmed: 0, stalled: 0 });
+      expect((await recheckAtOf(improvement.id)).recheckAt).toBe(day(30).toISOString());
+    });
+
+    it("applied: the window is re-armed from appliedAt, then measured when it ends", async () => {
+      const { improvement } = await template();
+      team = [developer({ pibPack: pack({ appliedAt: day(5).toISOString() }) })];
+      h.clock.now = day(6);
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ rearmed: 1, measured: 0 });
+      expect((await recheckAtOf(improvement.id)).recheckAt).toBe(day(12).toISOString());
+      await runs(DEV, "succeeded", 10);
+      h.clock.now = day(12);
+      await runs(DEV, "succeeded", 10);
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ measured: 1 });
+      expect((await recheckAtOf(improvement.id)).status).toBe("resolved");
+    });
+
+    it("re-arming is idempotent: a second run changes nothing", async () => {
+      const { improvement } = await template();
+      team = [developer({ pibPack: pack({ appliedAt: day(5).toISOString() }) })];
+      h.clock.now = day(6);
+      await recheckCompany(h.env, COMPANY);
+      const first = await recheckAtOf(improvement.id);
+      h.clock.now = day(7);
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ rearmed: 0, stalled: 0, measured: 0 });
+      const second = await recheckAtOf(improvement.id);
+      expect(second.recheckAt).toBe(first.recheckAt);
+      expect(second.updatedAt).toBe(first.updatedAt);
+    });
+
+    it("not applied 21 days on: closed as inconclusive (rollout stalled) with one note to the Delivery Lead", async () => {
+      const { improvement } = await template();
+      h.clock.now = day(20);
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ stalled: 0 });
+      h.clock.now = day(22);
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ stalled: 1, measured: 0 });
+      expect(await recheckAtOf(improvement.id)).toMatchObject({ status: "resolved", outcome: "inconclusive", resultNote: "rollout stalled" });
+      expect(opened).toHaveLength(1);
+      expect(opened[0]).toMatchObject({ companyId: COMPANY, assigneeAgentId: LEAD, description: expect.stringContaining("Rollout stalled") });
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ stalled: 0 });
+      expect(opened).toHaveLength(1);
+    });
+
+    it.each([
+      { name: "a string", value: "applied" },
+      { name: "an array", value: [HASH] },
+      { name: "a bad hash", value: pack({ hash: "NOTAHASH" }) },
+      { name: "a bad date", value: pack({ appliedAt: "yesterday" }) },
+      { name: "no hash", value: { key: "developer", appliedAt: day(3).toISOString() } },
+    ])("a malformed pibPack ($name) counts as not applied and never throws", async ({ value }) => {
+      const { improvement } = await template();
+      team = [developer({ pibPack: value })];
+      h.clock.now = day(10);
+      await expect(recheckCompany(h.env, COMPANY)).resolves.toMatchObject({ rearmed: 0, measured: 0, stalled: 0 });
+      expect((await recheckAtOf(improvement.id)).recheckAt).toBe(day(30).toISOString());
     });
   });
 
