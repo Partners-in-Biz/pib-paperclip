@@ -19,13 +19,13 @@ function comment(authorAgentId: string | null, body: string, minute: number): Co
 
 function input(overrides: Partial<CodeReviewGateInput> = {}): CodeReviewGateInput {
   return {
-    assignee: { id: "dev-1", role: "Senior Developer", name: "Senior Developer" },
+    assignee: { id: "dev-1", role: "engineer", name: "Senior Developer" },
     projectName: "PiB Platform",
     labels: [],
     description: null,
     comments: [comment("dev-1", `PR ${PR}`, 1)],
     codeReviewerAgentIds: new Set([REVIEWER_ID]),
-    completedCodeReviewerStage: false,
+    reviewerStageApprovals: [],
     ...overrides,
   };
 }
@@ -45,8 +45,17 @@ describe("evaluateCodeReviewGate", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("allows when a completed Code Reviewer review stage exists", () => {
-    expect(evaluateCodeReviewGate(input({ completedCodeReviewerStage: true })).allowed).toBe(true);
+  it("allows on a Code Reviewer stage approval newer than the PR link", () => {
+    expect(evaluateCodeReviewGate(input({ reviewerStageApprovals: [at(5)] })).allowed).toBe(true);
+  });
+
+  it("denies when the stage approval is older than the latest PR link", () => {
+    const stale = input({ reviewerStageApprovals: [at(0)], comments: [comment("dev-1", PR, 3)] });
+    expect(evaluateCodeReviewGate(stale).allowed).toBe(false);
+  });
+
+  it("denies when the review stage was skipped (no approval decision recorded)", () => {
+    expect(evaluateCodeReviewGate(input({ reviewerStageApprovals: [] })).allowed).toBe(false);
   });
 
   it("denies code work with no PASS and names the fix", () => {
@@ -78,17 +87,17 @@ describe("evaluateCodeReviewGate", () => {
   });
 
   it("exempts non-engineer assignees", () => {
-    const assignee = { id: "pm-1", role: "Planner", name: "Planner" };
+    const assignee = { id: "pm-1", role: "engineer", name: "Planner" };
     expect(evaluateCodeReviewGate(input({ assignee })).allowed).toBe(true);
   });
 
   it("lets the Code Reviewer itself close (not an engineer assignee)", () => {
-    const assignee = { id: REVIEWER_ID, role: "Code Reviewer", name: "Code Reviewer" };
+    const assignee = { id: REVIEWER_ID, role: "qa", name: "Code Reviewer" };
     expect(evaluateCodeReviewGate(input({ assignee })).allowed).toBe(true);
   });
 
   it("recognises Arjun and Kai as engineers", () => {
-    const assignee = { id: "a-1", role: "general", name: "Arjun" };
+    const assignee = { id: "a-1", role: "engineer", name: "Arjun" };
     expect(evaluateCodeReviewGate(input({ assignee })).allowed).toBe(false);
   });
 
@@ -96,12 +105,25 @@ describe("evaluateCodeReviewGate", () => {
     expect(evaluateCodeReviewGate(input({ projectName: "Loyalty Plus" })).allowed).toBe(true);
   });
 
+  it("ignores a no-code-review justification written by the assignee", () => {
+    const own = input({
+      labels: ["no-code-review"],
+      comments: [comment("dev-1", PR, 1), comment("dev-1", "no-code-review: docs-only", 2)],
+    });
+    expect(evaluateCodeReviewGate(own).allowed).toBe(false);
+    const board = input({
+      labels: ["no-code-review"],
+      comments: [comment("dev-1", PR, 1), comment(null, "no-code-review: docs-only", 2)],
+    });
+    expect(evaluateCodeReviewGate(board).allowed).toBe(true);
+  });
+
   it("exempts no-code-review only with a justification comment", () => {
     const labels = ["no-code-review"];
     expect(evaluateCodeReviewGate(input({ labels })).allowed).toBe(false);
     const justified = input({
       labels,
-      comments: [comment("dev-1", PR, 1), comment("dev-1", "no-code-review: docs-only change", 2)],
+      comments: [comment("dev-1", PR, 1), comment(null, "no-code-review: docs-only change", 2)],
     });
     expect(evaluateCodeReviewGate(justified).allowed).toBe(true);
   });

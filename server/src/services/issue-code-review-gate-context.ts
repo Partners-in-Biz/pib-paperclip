@@ -1,8 +1,17 @@
-import { and, asc, eq, ne } from "drizzle-orm";
-import { agents, issueComments, issueLabels, labels, projects, type Db } from "@paperclipai/db";
+import { and, asc, eq, ilike, inArray, ne } from "drizzle-orm";
+import {
+  agents,
+  issueComments,
+  issueExecutionDecisions,
+  issueLabels,
+  labels,
+  projects,
+  type Db,
+} from "@paperclipai/db";
 import {
   evaluateCodeReviewGate,
   isCodeWork,
+  isEngineerAgent,
   isExemptFromCodeReview,
   type CodeReviewGateInput,
   type CodeReviewGateResult,
@@ -13,55 +22,45 @@ type GateIssue = {
   companyId: string;
   projectId: string | null;
   description: string | null;
-  executionPolicy: unknown;
-  executionState: unknown;
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-/** Ids of review stages in `policy` that name a Code Reviewer and are listed as completed in `state`. */
-function hasCompletedCodeReviewerStage(
-  policy: unknown,
-  state: unknown,
-  codeReviewerAgentIds: ReadonlySet<string>,
-): boolean {
-  const stages = asRecord(policy)?.stages;
-  const completed = asRecord(state)?.completedStageIds;
-  if (!Array.isArray(stages) || !Array.isArray(completed)) return false;
-  const completedIds = new Set(completed.filter((id): id is string => typeof id === "string"));
-  return stages.some((raw) => {
-    const stage = asRecord(raw);
-    if (!stage || stage.type !== "review" || typeof stage.id !== "string" || !completedIds.has(stage.id)) return false;
-    const participants = Array.isArray(stage.participants) ? stage.participants : [];
-    return participants.some((participant) => {
-      const entry = asRecord(participant);
-      return entry?.type === "agent" && typeof entry.agentId === "string" && codeReviewerAgentIds.has(entry.agentId);
-    });
-  });
+/** The Code Reviewer is matched by name: the live `role` column is an enum (`qa`), not a job title. */
+async function listCodeReviewerAgentIds(db: Db, companyId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), ilike(agents.name, "Code Reviewer"), ne(agents.status, "terminated")))
+    .orderBy(asc(agents.createdAt));
+  return rows.map((row) => row.id);
 }
 
 export async function loadCodeReviewGateInput(
   db: Db,
   issue: GateIssue,
   assigneeAgentId: string | null,
-  state: unknown = issue.executionState,
 ): Promise<CodeReviewGateInput> {
-  const [reviewerRows, assignee, project, labelRows, comments] = await Promise.all([
-    db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.companyId, issue.companyId), eq(agents.role, "Code Reviewer"), ne(agents.status, "terminated")))
-      .orderBy(asc(agents.createdAt)),
-    assigneeAgentId
-      ? db
-          .select({ id: agents.id, role: agents.role, name: agents.name })
-          .from(agents)
-          .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, issue.companyId)))
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
-      : Promise.resolve(null),
+  const assignee = assigneeAgentId
+    ? await db
+        .select({ id: agents.id, role: agents.role, name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, issue.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const base: CodeReviewGateInput = {
+    assignee,
+    projectName: null,
+    labels: [],
+    description: issue.description,
+    comments: [],
+    codeReviewerAgentIds: new Set(),
+    reviewerStageApprovals: [],
+  };
+  // Only engineer assignees are gated, so skip the remaining reads for everyone else.
+  if (!isEngineerAgent(assignee)) return base;
+
+  const [reviewerIds, project, labelRows, comments] = await Promise.all([
+    listCodeReviewerAgentIds(db, issue.companyId),
     issue.projectId
       ? db
           .select({ name: projects.name })
@@ -84,16 +83,27 @@ export async function loadCodeReviewGateInput(
       .from(issueComments)
       .where(eq(issueComments.issueId, issue.id)),
   ]);
+  const approvals = reviewerIds.length
+    ? await db
+        .select({ createdAt: issueExecutionDecisions.createdAt })
+        .from(issueExecutionDecisions)
+        .where(
+          and(
+            eq(issueExecutionDecisions.issueId, issue.id),
+            eq(issueExecutionDecisions.stageType, "review"),
+            eq(issueExecutionDecisions.outcome, "approved"),
+            inArray(issueExecutionDecisions.actorAgentId, reviewerIds),
+          ),
+        )
+    : [];
 
-  const codeReviewerAgentIds = new Set(reviewerRows.map((row) => row.id));
   return {
-    assignee,
+    ...base,
     projectName: project?.name ?? null,
     labels: labelRows.map((row) => row.name),
-    description: issue.description,
     comments,
-    codeReviewerAgentIds,
-    completedCodeReviewerStage: hasCompletedCodeReviewerStage(issue.executionPolicy, state, codeReviewerAgentIds),
+    codeReviewerAgentIds: new Set(reviewerIds),
+    reviewerStageApprovals: approvals.map((row) => row.createdAt),
   };
 }
 
@@ -101,9 +111,8 @@ export async function evaluateIssueCodeReviewGate(
   db: Db,
   issue: GateIssue,
   assigneeAgentId: string | null,
-  state?: unknown,
 ): Promise<CodeReviewGateResult> {
-  return evaluateCodeReviewGate(await loadCodeReviewGateInput(db, issue, assigneeAgentId, state));
+  return evaluateCodeReviewGate(await loadCodeReviewGateInput(db, issue, assigneeAgentId));
 }
 
 /** The Code Reviewer to put on an automatically added review stage, or null when none applies. */

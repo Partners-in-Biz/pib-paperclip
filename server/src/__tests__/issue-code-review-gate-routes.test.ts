@@ -277,6 +277,28 @@ describe("code review gate on PATCH /issues/:id", () => {
     expect(mockGate.evaluateIssueCodeReviewGate).not.toHaveBeenCalled();
   });
 
+  it("keeps the review stage in executionPolicy when status moves to in_progress", async () => {
+    const executionPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [
+        {
+          id: "063a068c-8a75-4d32-a6ac-a4290d477842",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: "80d79a88-43b7-47cb-a2a1-0228f069ff0f", type: "agent", agentId: REVIEWER_ID }],
+        },
+      ],
+    };
+    mockIssueService.getById.mockResolvedValue(baseIssue({ status: "todo", executionPolicy }));
+
+    const res = await request(await createApp(engineerActor)).patch(`/api/issues/${ISSUE_ID}`).send({ status: "in_progress" });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect("executionPolicy" in patch ? patch.executionPolicy : executionPolicy).toMatchObject({ stages: [{ type: "review" }] });
+  });
+
   it("adds a Code Reviewer review stage when an engineer is assigned matching code work", async () => {
     mockIssueService.getById.mockResolvedValue(baseIssue({ assigneeAgentId: null }));
     mockGate.pickAutoReviewStageReviewer.mockResolvedValue(REVIEWER_ID);

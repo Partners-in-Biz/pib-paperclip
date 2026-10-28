@@ -13288,12 +13288,7 @@ export function issueRoutes(
         actor.agentId &&
         actor.agentId === existing.assigneeAgentId
       ) {
-        const gate = await evaluateIssueCodeReviewGate(
-          db,
-          { ...existing, executionPolicy: nextExecutionPolicy },
-          existing.assigneeAgentId,
-          updateFields.executionState ?? existing.executionState,
-        );
+        const gate = await evaluateIssueCodeReviewGate(db, existing, existing.assigneeAgentId);
         if (!gate.allowed) {
           throw unprocessable(gate.reason ?? "Code Reviewer review is required");
         }

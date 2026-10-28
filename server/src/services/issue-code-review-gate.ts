@@ -9,8 +9,8 @@
 export const CODE_REVIEW_REQUIRED_MESSAGE =
   "Request Code Reviewer review (set the review stage) instead of closing";
 
-const ENGINEER_ROLES = new Set(["developer", "senior developer", "release engineer"]);
-const ENGINEER_NAMES = new Set(["arjun", "kai"]);
+// Live agent `role` is an enum (engineer, qa, ...), not a job title, so engineers are matched by name.
+const ENGINEER_NAMES = new Set(["developer", "senior developer", "release engineer", "arjun", "kai"]);
 const PR_URL_PATTERN = /https?:\/\/[^\s)]+\/pull\/\d+/i;
 const REVIEWER_PASS_PATTERN = /^\s*(?:approved\s*:|pass\b)/i;
 const CODE_LABEL = "code";
@@ -36,8 +36,8 @@ export interface CodeReviewGateInput {
   description: string | null;
   comments: CodeReviewGateComment[];
   codeReviewerAgentIds: ReadonlySet<string>;
-  /** A review stage that names a Code Reviewer is already completed on the issue. */
-  completedCodeReviewerStage: boolean;
+  /** Times of approve decisions recorded on review stages by a Code Reviewer (skipped stages leave none). */
+  reviewerStageApprovals: Date[];
 }
 
 export interface CodeReviewGateResult {
@@ -47,13 +47,7 @@ export interface CodeReviewGateResult {
 
 export function isEngineerAgent(agent: CodeReviewGateAgent | null): boolean {
   if (!agent) return false;
-  const role = agent.role?.trim().toLowerCase() ?? "";
-  const name = agent.name?.trim().toLowerCase() ?? "";
-  return ENGINEER_ROLES.has(role) || ENGINEER_NAMES.has(name);
-}
-
-export function isCodeReviewerAgent(agent: CodeReviewGateAgent | null): boolean {
-  return agent?.role?.trim().toLowerCase() === "code reviewer";
+  return ENGINEER_NAMES.has(agent.name?.trim().toLowerCase() ?? "");
 }
 
 function hasLabel(labels: string[], wanted: string): boolean {
@@ -76,14 +70,19 @@ export function isCodeWork(input: Pick<CodeReviewGateInput, "assignee" | "labels
 
 /**
  * Exempt: the Loyalty Plus project, and issues labelled `no-code-review` that carry a
- * one-line justification comment mentioning the label.
+ * one-line justification comment mentioning the label, written by someone other than the assignee.
  */
 export function isExemptFromCodeReview(
-  input: Pick<CodeReviewGateInput, "projectName" | "labels" | "comments">,
+  input: Pick<CodeReviewGateInput, "assignee" | "projectName" | "labels" | "comments">,
 ): boolean {
   if (input.projectName && EXEMPT_PROJECT_PATTERN.test(input.projectName)) return true;
   if (!hasLabel(input.labels, NO_REVIEW_LABEL)) return false;
-  return input.comments.some((comment) => comment.body.toLowerCase().includes(NO_REVIEW_LABEL));
+  // The justification must not come from the assignee closing its own work.
+  return input.comments.some(
+    (comment) =>
+      comment.body.toLowerCase().includes(NO_REVIEW_LABEL) &&
+      (comment.authorAgentId === null || comment.authorAgentId !== input.assignee?.id),
+  );
 }
 
 /**
@@ -91,9 +90,13 @@ export function isExemptFromCodeReview(
  * non-reviewer comment that links a PR.
  */
 export function hasCodeReviewerPass(
-  input: Pick<CodeReviewGateInput, "comments" | "codeReviewerAgentIds">,
+  input: Pick<CodeReviewGateInput, "comments" | "codeReviewerAgentIds" | "reviewerStageApprovals">,
 ): boolean {
   let latestPass: number | null = null;
+  for (const approvedAt of input.reviewerStageApprovals) {
+    const at = approvedAt.getTime();
+    if (latestPass === null || at > latestPass) latestPass = at;
+  }
   let latestPrLink: number | null = null;
   for (const comment of input.comments) {
     const at = comment.createdAt.getTime();
@@ -111,6 +114,6 @@ export function hasCodeReviewerPass(
 export function evaluateCodeReviewGate(input: CodeReviewGateInput): CodeReviewGateResult {
   if (!isCodeWork(input)) return { allowed: true };
   if (isExemptFromCodeReview(input)) return { allowed: true };
-  if (input.completedCodeReviewerStage || hasCodeReviewerPass(input)) return { allowed: true };
+  if (hasCodeReviewerPass(input)) return { allowed: true };
   return { allowed: false, reason: CODE_REVIEW_REQUIRED_MESSAGE };
 }
