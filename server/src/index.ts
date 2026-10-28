@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { blockedIssueSweeper } from "./services/blocked-issue-sweeper.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -1331,6 +1332,29 @@ async function startServerWithDatabaseTeardown(
     // The throttle keeps the 30s cadence from flooding the log.
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
+    // Moves long-blocked issues with no real blocker back to todo and wakes the
+    // assignee. The in-flight flag keeps a slow sweep from overlapping the next
+    // 30s tick.
+    const blockedIssueSweep = blockedIssueSweeper(db as any, heartbeat);
+    let blockedIssueSweepInFlight = false;
+    const scheduleBlockedIssueSweep = () => {
+      if (heartbeatSchedulerStopped || blockedIssueSweepInFlight) return;
+      blockedIssueSweepInFlight = true;
+      trackHeartbeatSchedulerWork(blockedIssueSweep
+        .sweep(new Date())
+        .then((result) => {
+          if (result.moved > 0) {
+            logger.info(result, "blocked issue sweeper moved issues to todo");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "blocked issue sweeper failed");
+        })
+        .finally(() => {
+          blockedIssueSweepInFlight = false;
+        }));
+    };
+
     const scheduleTerminalWorkspaceSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(terminalWorkspaces
@@ -1664,6 +1688,7 @@ async function startServerWithDatabaseTeardown(
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
         scheduleTerminalWorkspaceSweep();
+        scheduleBlockedIssueSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
