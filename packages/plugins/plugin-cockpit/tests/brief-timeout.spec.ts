@@ -9,6 +9,7 @@ import { companyBrief, ensureBriefIssue, runTool } from "../src/brief.js";
 import { briefBudget } from "../src/budget.js";
 import { TOOL_NAMES } from "../src/tools.js";
 import { createEnv, registerCockpit } from "../src/register.js";
+import { NAMESPACE } from "../src/namespace.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 
 const A = "company-a";
@@ -25,9 +26,15 @@ function setStateGet(ctx: PluginContext, fn: (key: unknown) => Promise<unknown>)
   mutable.get = fn;
 }
 
-function setCompaniesGet(ctx: PluginContext, fn: (id: string) => Promise<unknown>): void {
+function setCompaniesGet(ctx: PluginContext, fn: (companyId: string) => Promise<unknown>): void {
   const mutable = ctx.companies as unknown as Record<string, unknown>;
   mutable.get = fn;
+}
+
+function setRoutinesManagedGet(ctx: PluginContext, fn: (key: string, companyId: string) => Promise<unknown>): void {
+  const mutable = ctx.routines as unknown as Record<string, unknown>;
+  const managed = mutable.managed as unknown as Record<string, unknown>;
+  managed.get = fn;
 }
 
 function setup() {
@@ -116,15 +123,18 @@ describe("companyBrief with a hanging read", () => {
   it("hangs ownerRoles and marks it degraded", async () => {
     const s = setup();
     const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    let rolesHangFired = false;
     s.ctx.db.query = async (sql: string) => {
-      // team_members queries are for getRoles
-      if (sql.includes("team_members")) {
+      // getRoles reads from ${NAMESPACE}.roles
+      if (sql.includes(`${NAMESPACE}.roles`)) {
+        rolesHangFired = true;
         return await never();
       }
       return origQuery(sql);
     };
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
     expect(brief.degraded).toContain("ownerRoles");
+    expect(rolesHangFired).toBe(true);
   }, 10_000);
 
   it("setupMissing is null when setupSummary is degraded", async () => {
@@ -167,31 +177,50 @@ describe("companyBrief with a hanging read", () => {
     expect(elapsed).toBeLessThan(2000);
   }, 10_000);
 
+
   it("staleChecks skipped when snapshots degraded", async () => {
     const s = setup();
     const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    let snapshotsHangFired = false;
     s.ctx.db.query = async (sql: string) => {
-      if (sql.includes("plugin_snapshots")) {
+      // listSnapshots reads from ${NAMESPACE}.snapshots
+      if (sql.includes(`${NAMESPACE}.snapshots`)) {
+        snapshotsHangFired = true;
         return await never();
       }
       return origQuery(sql);
     };
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
     expect(brief.degraded).toContain("snapshots");
+    expect(snapshotsHangFired).toBe(true);
     // staleChecks should be skipped, so health problems should only be from live plugins/agents, not from stale checks
     const staleCheckProblems = brief.health.problems.filter((p) => p.detail?.includes("not reporting"));
     expect(staleCheckProblems).toHaveLength(0);
   }, 10_000);
 
-  it("ensureBriefIssue creates a new issue with owner unassigned when roles missing", async () => {
+  it("ensureBriefIssue creates a new issue with owner unassigned when roles hangs", async () => {
     const s = setup();
+    let rolesHangFired = false;
+    const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    s.ctx.db.query = async (sql: string, params: unknown[] | undefined) => {
+      // Hang getRoles specifically - SELECT FROM ${NAMESPACE}.roles with company_id parameter
+      if (sql.includes(`${NAMESPACE}.roles`) && sql.includes("WHERE company_id")) {
+        rolesHangFired = true;
+        return await never();
+      }
+      return origQuery(sql, params);
+    };
+    const started = Date.now();
     const result = await ensureBriefIssue(s.env, A);
-    expect(result.issueId).toBeDefined();
+    const elapsed = Date.now() - started;
+    // Should complete within 4 seconds (3000ms budget + overhead)
+    expect(elapsed).toBeLessThan(4000);
+    expect(rolesHangFired).toBe(true);
     expect(result.created).toBe(true);
     const issue = await s.ctx.issues.get(result.issueId, A).catch(() => null);
-    expect(issue).toBeDefined();
     // The issue should be created even if we couldn't fetch roles (falls back to null owner)
     expect(issue?.status).toBe("todo");
+    expect(issue?.assigneeUserId ?? null).toBeNull();
   }, 10_000);
 
   it("activity is returned as array even with degraded sections", async () => {
@@ -206,13 +235,16 @@ describe("runTool with degraded sections", () => {
   it("health tool shows 'health unavailable' text when snapshots degraded", async () => {
     const s = setup();
     const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    let snapshotsHangFired = false;
     s.ctx.db.query = async (sql: string) => {
-      if (sql.includes("plugin_snapshots")) {
+      if (sql.includes(`${NAMESPACE}.snapshots`)) {
+        snapshotsHangFired = true;
         return await never();
       }
       return origQuery(sql);
     };
-    const result = await runTool(s.env, TOOL_NAMES.health, {}, RUN);
+    const result = await runTool(s.env, TOOL_NAMES.health, { sectionMs: 50, totalMs: 500 }, RUN);
+    expect(snapshotsHangFired).toBe(true);
     expect(result.content).toContain("health unavailable");
     const data = result.data as Record<string, unknown>;
     expect(data.healthAvailable).toBe(false);
@@ -247,13 +279,16 @@ describe("runTool with degraded sections", () => {
   it("health status is unavailable when snapshots degraded", async () => {
     const s = setup();
     const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    let snapshotsHangFired = false;
     s.ctx.db.query = async (sql: string) => {
-      if (sql.includes("plugin_snapshots")) {
+      if (sql.includes(`${NAMESPACE}.snapshots`)) {
+        snapshotsHangFired = true;
         return await never();
       }
       return origQuery(sql);
     };
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(snapshotsHangFired).toBe(true);
     expect(brief.degraded).toContain("snapshots");
     expect(brief.health.healthAvailable).toBe(false);
     expect(brief.health.status).toBe("unavailable");
@@ -262,13 +297,16 @@ describe("runTool with degraded sections", () => {
   it("brief tool shows exact health status text when unavailable", async () => {
     const s = setup();
     const origQuery = s.ctx.db.query.bind(s.ctx.db);
+    let snapshotsHangFired = false;
     s.ctx.db.query = async (sql: string) => {
-      if (sql.includes("plugin_snapshots")) {
+      if (sql.includes(`${NAMESPACE}.snapshots`)) {
+        snapshotsHangFired = true;
         return await never();
       }
       return origQuery(sql);
     };
-    const result = await runTool(s.env, TOOL_NAMES.brief, {}, RUN);
+    const result = await runTool(s.env, TOOL_NAMES.brief, { sectionMs: 50, totalMs: 500 }, RUN);
+    expect(snapshotsHangFired).toBe(true);
     expect(result.content).toContain("health unavailable");
   }, 10_000);
 });

@@ -259,7 +259,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   ]);
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
-  const holds = await readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id));
+  const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
   const now = env.now().getTime();
   const ownerIssues = ownerList.items.map((i) => {
     const since = Date.parse(i.updatedAt ?? i.createdAt ?? "");
@@ -622,13 +622,20 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
   const p = params(raw);
   try {
     if (name === TOOL_NAMES.brief) {
-      const brief = await companyBrief(env, companyId, { windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined });
+      const brief = await companyBrief(env, companyId, {
+        windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined,
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
       const stuck = brief.stuckFlows.length ? ` ${brief.stuckFlows.length} stuck ${brief.stuckFlows.length === 1 ? "stage" : "stages"} in the flows.` : "";
       const healthText = brief.health.healthAvailable === false ? "unavailable" : brief.health.status;
       return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${healthText}, ${brief.agents.length} agents.${stuck}`, brief);
     }
     if (name === TOOL_NAMES.health) {
-      const brief = await companyBrief(env, companyId);
+      const brief = await companyBrief(env, companyId, {
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
       const include = p.includeWarnings !== false;
       const problems = brief.health.problems.filter((c) => include || c.status === "bad");
       const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
@@ -650,7 +657,10 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
       });
     }
     if (name === TOOL_NAMES.waiting) {
-      const brief = await companyBrief(env, companyId);
+      const brief = await companyBrief(env, companyId, {
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
       const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
       let summary: string;
       if (unavailableSections.length > 0) {
