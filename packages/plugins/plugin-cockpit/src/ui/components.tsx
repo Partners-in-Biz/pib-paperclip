@@ -326,6 +326,16 @@ export function AskCard({ item, linkFor, now }: { item: WaitingEntry; linkFor: L
   );
 }
 
+/** "holds up 1 issue" / "holds up 17 issues". */
+export function holdsUpText(n: number): string {
+  return `holds up ${n} ${n === 1 ? "issue" : "issues"}`;
+}
+
+/** Age from whole hours: "3h" under a day, else "4d". */
+export function ageText(hours: number): string {
+  return hours < 24 ? `${Math.max(0, hours)}h waiting` : `${Math.floor(hours / 24)}d waiting`;
+}
+
 /** The right-hand "Open →" of a tappable row: the label on a wide screen, a chevron on a phone. Never wraps. */
 function RowArrow({ label, narrow }: { label: string; narrow: boolean }) {
   return narrow
@@ -343,7 +353,9 @@ export function WaitingRow({ item, linkFor, now, first }: { item: WaitingEntry; 
   const t = tone(KIND_TONE[item.kind]);
   const examples = (item.examples ?? []).slice(0, narrow ? 3 : 5);
   const link = examples.length ? null : linkOf(item.href, linkFor);
-  const meta = [item.why, item.sourceTitle, since(item.since, now)].filter(Boolean).join(" · ");
+  const rank = item.rank;
+  const age = rank?.ageHours != null ? ageText(rank.ageHours) : since(item.since, now);
+  const meta = [item.why, item.sourceTitle, age].filter(Boolean).join(" · ");
   const row: CSSProperties = {
     display: "grid",
     gridTemplateColumns: link ? "3px minmax(0, 1fr) auto" : "3px minmax(0, 1fr)",
@@ -362,9 +374,11 @@ export function WaitingRow({ item, linkFor, now, first }: { item: WaitingEntry; 
       <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
           <Pill tone={KIND_TONE[item.kind]} icon={KIND_ICON[item.kind]}>{KIND_LABEL[item.kind]}</Pill>
-          <span style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 200px" }}>{item.title}</span>
+          {rank?.holdsUp ? <Pill tone="bad" size="sm" dot>{holdsUpText(rank.holdsUp)}</Pill> : null}
+          <span style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", flex: "1 1 200px" }}>{rank?.identifier ? `${rank.identifier} ` : ""}{item.title}</span>
         </div>
         <div style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, overflowWrap: "anywhere", ...(narrow ? clampLines(2) : {}) }}>{meta}</div>
+        {rank?.recommended ? <div style={{ fontSize: 12.5, lineHeight: 1.45, overflowWrap: "anywhere" }}><span style={{ fontWeight: 600 }}>Recommended:</span> {rank.recommended}</div> : null}
         {examples.length ? (
           <ul style={{ margin: "2px 0 0", padding: 0, listStyle: "none", display: "grid", minWidth: 0 }}>
             {examples.map((example, index) => {
@@ -410,7 +424,7 @@ export function WaitingList({ items, linkFor, now, limit }: { items: WaitingEntr
           {rest.map((item, index) => <WaitingRow key={item.key} item={item} linkFor={linkFor} now={now} first={index === 0} />)}
         </div>
       ) : null}
-      {limit && items.length > limit ? <Muted>And {items.length - limit} more.</Muted> : null}
+      {limit && items.length > limit ? <Muted>Showing {limit} of {items.length}. {items.length - limit} more not shown.</Muted> : null}
     </div>
   );
 }
