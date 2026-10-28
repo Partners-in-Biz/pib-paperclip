@@ -230,10 +230,10 @@ export function spikeResult(input: {
   // An empty list is "no name matched". A named plugin with no seen_at is a missing
   // record, not a missed name — saying "Name the plugin" here sent a false fix.
   if (input.deployedAt.length === 0) {
-    missing.push("The deploy time of the plugin is not known here, so this was checked against the start and merge times only. Name the plugin in the title or description (e.g. `plugin-crm`) so the check can use its deploy time.");
+    missing.push("The deploy time of the plugin is not known here, so this was checked against the issue start time only. Name the plugin in the title or description (e.g. `plugin-crm`) so the check can use its deploy time.");
   } else if (input.deployedAt.every((d) => !d.at)) {
     const keys = input.deployedAt.map((d) => d.plugin).join(", ");
-    missing.push(`The deploy time of ${keys} is not recorded, so this was checked against the start and merge times only.`);
+    missing.push(`The deploy time of ${keys} is not recorded, so this was checked against the issue start time only.`);
   }
   return { done: false, missing };
 }
@@ -265,7 +265,7 @@ export async function spikeCheck(env: Env, issue: Pick<DoneCheckIssue, "id" | "c
   const startedAt = startAtValue ? (typeof startAtValue === "string" ? startAtValue : new Date(startAtValue as unknown as Date).toISOString()) : null;
 
   if (deployedAt.length === 0 || deployedAt.some((d) => d.at === null)) {
-    ctx.logger.info("Spike done-check: deploy time unknown, used start and merge times", { issueId: issue.id });
+    ctx.logger.info("Spike done-check: deploy time unknown, used the issue start time", { issueId: issue.id });
   }
 
   return spikeResult({

@@ -105,6 +105,23 @@ describe("done checks", () => {
     }
   });
 
+  it("keeps waiting when a poll read fails, then wakes once", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = simpleFakeCtx({ ...issue, executionRunId: "run-1" });
+      const get = f.ctx.issues.get as unknown as ReturnType<typeof vi.fn>;
+      get.mockResolvedValueOnce({ ...issue, executionRunId: "run-1" }); // done-check read
+      get.mockResolvedValueOnce({ ...issue, executionRunId: "run-1" }); // first wait read
+      get.mockRejectedValueOnce(new Error("transient"));
+      get.mockResolvedValue({ ...issue, executionRunId: null });
+      await runDoneCheck(f.ctx, [rule(false)], event);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(f.wakes).toEqual(["i1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops waiting for a run that never ends", async () => {
     vi.useFakeTimers();
     try {

@@ -67,20 +67,25 @@ export async function wakeIssueWhenIdle(
   const pollMs = options.pollMs ?? IDLE_POLL_MS;
   const maxWaitMs = options.maxWaitMs ?? IDLE_MAX_WAIT_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
-  const heldByRun = async (): Promise<boolean | "gone"> => {
-    const issue = await ctx.issues.get(issueId, companyId).catch(() => undefined);
-    if (!issue) return "gone";
-    return Boolean((issue as { executionRunId?: string | null }).executionRunId);
+  // A read error is "unknown": the caller retries on the next poll. Only a missing issue is "gone".
+  const heldByRun = async (): Promise<boolean | "gone" | "unknown"> => {
+    try {
+      const issue = await ctx.issues.get(issueId, companyId);
+      if (!issue) return "gone";
+      return Boolean((issue as { executionRunId?: string | null }).executionRunId);
+    } catch {
+      return "unknown";
+    }
   };
   const first = await heldByRun();
   if (first === "gone") return false;
-  if (!first) return wakeIssue(ctx, issueId, companyId, reason);
+  if (first === false || first === "unknown") return wakeIssue(ctx, issueId, companyId, reason);
   void (async () => {
     for (let waited = 0; waited < maxWaitMs; waited += pollMs) {
       await sleep(pollMs);
       const held = await heldByRun();
       if (held === "gone") return;
-      if (!held) {
+      if (held === false) {
         await wakeIssue(ctx, issueId, companyId, reason);
         return;
       }
