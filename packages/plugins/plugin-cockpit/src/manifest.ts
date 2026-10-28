@@ -257,6 +257,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "40 4 * * *",
     },
     {
+      jobKey: JOBS.agentResearch,
+      displayName: "Weekly agent research",
+      description: "Monday 06:00 SAST: for the five distilled agents that failed most in the last 7 days (at least 20 runs, no open improvement or Distill: issue), opens one issue for the Reflection Coach with the measure brief, the failure breakdown and the current template hash. At most one per agent per week.",
+      schedule: "0 4 * * 1",
+    },
+    {
       jobKey: JOBS.credentialsCheck,
       displayName: "Credentials check",
       description: "Daily: calls each provider it has a company secret for (one read-only request, never storing the value) and settles the expiry alerts: 30 days, 7 days, expired, refused. Loads Partners in Biz's own starting entries only for the company that ticked \"Load Partners in Biz's own credentials list\".",

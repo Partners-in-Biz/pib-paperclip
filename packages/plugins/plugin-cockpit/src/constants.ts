@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.14.9";
+export const VERSION = "0.15.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -14,6 +14,7 @@ export const JOBS = {
   closeoutSweep: "closeout-sweep",
   /** Daily: re-measures improvements that are due, proposes the pinned tool facts that belong in a skill. */
   improvementsRecheck: "improvements-recheck",
+  agentResearch: "agent-research",
   /** Daily: verifies the credentials it can reach (one cheap GET each) and settles the expiry alerts. */
   credentialsCheck: "credentials-check",
   /** Mondays, before the Weekly retro: one business review issue comparing the goals' actuals to their targets. */
@@ -69,6 +70,7 @@ export const ORIGIN = {
   acceptance: `plugin:${COCKPIT_PLUGIN}:acceptance`,
   routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
   growthReview: `plugin:${COCKPIT_PLUGIN}:growth-review`,
+  autoresearch: `plugin:${COCKPIT_PLUGIN}:autoresearch`,
 } as const;
 
 /**
