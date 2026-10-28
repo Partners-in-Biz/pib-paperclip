@@ -218,21 +218,22 @@ export interface CompanyData {
 /** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
-  const roles = await guard("ownerRoles", () => getRoles(env.ctx, companyId), null);
-  const [stored, own, agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs, setup] = await Promise.all([
+  const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
     guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
     guard("agents", () => listAgents(env, companyId), []),
     guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
     guard("approvals", () => listApprovals(env.ctx, companyId), []),
-    guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), []),
     guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
     guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
     guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
     guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
-    guard("setupSummary", () => readSetupSummary(env, companyId), null),
+    guard("setupSummary", () => readSetupSummaryThrows(env, companyId), null),
+    guard("ownerRoles", () => getRoles(env.ctx, companyId), null),
   ]);
+  // ownerIssues depends on roles, so fetch it after roles are available
+  const ownerIssues = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), []);
   const enabled = await guard("modules", () => enabledModules(env, companyId, Object.keys(statuses)), {} as Record<string, boolean>);
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
   const missing = budget.degraded.includes("setup") || budget.degraded.includes("modules") || budget.degraded.includes("setupSummary")
@@ -313,9 +314,15 @@ export async function onSetupSummary(env: Env, companyId: string | null | undefi
   return true;
 }
 
+/** Throws errors for use in guarded reads (e.g., in loadCompanyData). */
+async function readSetupSummaryThrows(env: Env, companyId: string): Promise<SetupSummaryCopy | null> {
+  return parseSetupSummary(await env.ctx.state.get(SETUP_SUMMARY_STATE(companyId)));
+}
+
+/** Safe wrapper that returns null on error (for non-guarded callers). */
 export async function readSetupSummary(env: Env, companyId: string): Promise<SetupSummaryCopy | null> {
   try {
-    return parseSetupSummary(await env.ctx.state.get(SETUP_SUMMARY_STATE(companyId)));
+    return await readSetupSummaryThrows(env, companyId);
   } catch {
     return null;
   }
@@ -380,12 +387,9 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const { guard } = budget;
   const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours, budget);
   const now = env.now();
-  const company = await guard("company", () => env.ctx.companies.get(companyId), null);
-  const prefix = company?.issuePrefix ?? null;
-  const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
 
   // The slow reads run side by side, each against its own time limit. Unreadable gives none (or null), not zeros or a guess.
-  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected] = await Promise.all([
+  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected, company] = await Promise.all([
     guard("blockedUncovered", () => countBlockedUncovered(env, companyId), null),
     guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [], keys: [] }),
     // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue).
@@ -396,7 +400,10 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     guard("goals", () => goalViews(env, companyId, ["active", "proposed"]).then((views) => goalViewsBrief(views)), null),
     guard("repairs", () => listRepairs(env.ctx, companyId, { limit: 100 }).then((rows) => repairLines(rows)), [] as string[]),
     guard("expectedPlugins", () => expectedPlugins(env, companyId, Object.keys(data.receivedAt)), [] as Awaited<ReturnType<typeof expectedPlugins>>),
+    guard("company", () => env.ctx.companies.get(companyId), null),
   ]);
+  const prefix = company?.issuePrefix ?? null;
+  const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
   // When snapshots is degraded, skip stale checks (they would be false alarms).
   const stale = budget.degraded.includes("snapshots")
     ? []
@@ -472,7 +479,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       }),
     ),
     health: {
-      status: health,
+      status: healthAvailable ? health : "unavailable",
       healthAvailable,
       problems: groups.flatMap((g) => g.checks.filter((c) => c.status !== "ok").map((c) => ({ plugin: g.title, status: c.status, title: c.title, detail: c.detail ?? null, fix: c.fix ?? null, href: link(c.href), since: c.since ?? null }))),
       agentAlerts: problems.entries.filter((e) => e.plugin === "agents").map((e) => ({ title: e.title, detail: e.detail ?? null, error: e.raw ?? null, href: link(e.href) })),
