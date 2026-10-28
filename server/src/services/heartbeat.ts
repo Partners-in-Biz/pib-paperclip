@@ -360,6 +360,18 @@ import {
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import {
+  BLOCKED_TICKET_NO_WAKE_REASON,
+  evaluateTicketHourlyRunCap,
+  isHumanBoardActor,
+  ISSUE_RUN_CAP_SKIP_REASON,
+  shouldStartQueuedIssueRun,
+  shouldWakeBlockedTicket,
+} from "./issue-wake-guards.js";
+import {
+  loadTicketRunCapState,
+  recordWakeLoopFlag,
+} from "./issue-wake-guard-store.js";
+import {
   logActivity,
   publishPluginDomainEvent,
   type LogActivityInput,
@@ -17237,12 +17249,23 @@ export function heartbeatService(
       if (settlingOwner) return null;
     }
     if (issueId) {
+      const wakeActorType = run.wakeupRequestId
+        ? await db
+            .select({
+              requestedByActorType: agentWakeupRequests.requestedByActorType,
+            })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+            .then((rows) => rows[0]?.requestedByActorType ?? null)
+        : null;
+      const humanWake = isHumanBoardActor(wakeActorType);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,
         issueId,
       );
       const treeHoldInteractionWake =
         activePauseHold &&
+        humanWake &&
         (await isVerifiedIssueTreeControlInteractionWake(db, {
           companyId: run.companyId,
           issueId,
@@ -17281,6 +17304,48 @@ export function heartbeatService(
         return null;
       }
 
+      const [startIssue] = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
+        )
+        .limit(1);
+      const startWakeReason =
+        readNonEmptyString(context.wakeReason) ??
+        readNonEmptyString(context.reason);
+      const startDecision = shouldStartQueuedIssueRun({
+        issueStatus: startIssue?.status ?? null,
+        paused: false,
+        assigneeAgentId: startIssue?.assigneeAgentId ?? null,
+        runAgentId: run.agentId,
+        wakeReason: startWakeReason,
+        humanWake,
+        blockerClearedWake:
+          startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+        assigneeMismatchExempt: isNonAssigneeWorkspaceBusyRetry(
+          readNonEmptyString(context.retryReason),
+          context,
+        ),
+      });
+      if (!startIssue || !startDecision.start) {
+        const startStopReason =
+          !startIssue ||
+          startDecision.reason === "ok" ||
+          startDecision.reason === "paused"
+            ? "missing"
+            : startDecision.reason;
+        await cancelQueuedRunBeforeStart(run, issueId, startStopReason);
+        logger.info(
+          { runId: run.id, issueId, reason: startDecision.reason },
+          "claimQueuedRun: cancelled doomed queued run",
+        );
+        return null;
+      }
+
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(
         run.companyId,
         [issueId],
@@ -17289,9 +17354,12 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
-          context,
-          ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+        !(
+          humanWake &&
+          allowsIssueInteractionWake(
+            context,
+            ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          )
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -17302,6 +17370,37 @@ export function heartbeatService(
         logger.info(
           { runId: run.id, issueId, unresolvedBlockerCount },
           "claimQueuedRun: cancelled blocked queued run",
+        );
+        return null;
+      }
+
+      const capNow = new Date();
+      const capState = await loadTicketRunCapState(db, {
+        companyId: run.companyId,
+        issueId,
+        now: capNow,
+        excludeRunId: run.id,
+      });
+      const capDecision = evaluateTicketHourlyRunCap(capState);
+      if (!capDecision.allow) {
+        if (capDecision.flag) {
+          await recordWakeLoopFlag(db, {
+            companyId: run.companyId,
+            issueId,
+            agentId: run.agentId,
+            runsStartedInWindow: capState.runsStartedInWindow,
+            now: capNow,
+          });
+        }
+        await cancelQueuedRunBeforeStart(run, issueId, "capped");
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            runsStartedInWindow: capState.runsStartedInWindow,
+            flagged: capDecision.flag,
+          },
+          "claimQueuedRun: skipped by ticket hourly run cap",
         );
         return null;
       }
@@ -17933,6 +18032,75 @@ export function heartbeatService(
       },
     });
 
+    return cancelled;
+  }
+
+  async function cancelQueuedRunBeforeStart(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    reason: "cancelled" | "blocked" | "reassigning" | "missing" | "capped",
+  ) {
+    const now = new Date();
+    const message =
+      reason === "cancelled"
+        ? "Cancelled before start: ticket is cancelled"
+        : reason === "blocked"
+          ? "Cancelled before start: blocked tickets start only for a human comment or a cleared blocker"
+          : reason === "reassigning"
+            ? "Cancelled before start: ticket is being reassigned"
+            : reason === "capped"
+              ? "Cancelled before start: ticket already had 3 runs in the rolling hour"
+              : "Cancelled before start: ticket was not found";
+    const errorCode =
+      reason === "cancelled"
+        ? "issue_cancelled"
+        : reason === "blocked"
+          ? "issue_blocked"
+          : reason === "reassigning"
+            ? "issue_assignee_changed"
+            : reason === "capped"
+              ? ISSUE_RUN_CAP_SKIP_REASON
+              : "issue_execution_issue_not_found";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: message,
+      errorCode,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: errorCode,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "wake_guard",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: message,
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+    await appendRunEvent(cancelled, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message,
+      payload: { issueId, reason, errorCode },
+    });
     return cancelled;
   }
 
@@ -26998,6 +27166,97 @@ export function heartbeatService(
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
           }
 
+          const enqueueWakeReason =
+            reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason);
+          const blockedTicketWake = shouldWakeBlockedTicket({
+            issueStatus: issue.status,
+            wakeReason: enqueueWakeReason,
+            requestedByActorType: opts.requestedByActorType ?? null,
+          });
+          if (
+            (issue.status === "cancelled" &&
+              !isHumanBoardActor(opts.requestedByActorType)) ||
+            !blockedTicketWake.wake
+          ) {
+            const skippedBecauseCancelled =
+              issue.status === "cancelled" && blockedTicketWake.wake;
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: skippedBecauseCancelled
+                ? "issue_cancelled"
+                : BLOCKED_TICKET_NO_WAKE_REASON,
+              payload,
+              status: "skipped",
+              error: skippedBecauseCancelled
+                ? "Skipped: ticket is cancelled"
+                : "Skipped: blocked ticket wakes only for a human comment or a cleared blocker",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            logger.info(
+              {
+                agentId,
+                issueId: issue.id,
+                wakeReason: enqueueWakeReason,
+                issueStatus: issue.status,
+              },
+              skippedBecauseCancelled
+                ? "enqueueWakeup: skipped cancelled-ticket wake"
+                : "enqueueWakeup: skipped blocked-ticket wake",
+            );
+            return { kind: "skipped" as const };
+          }
+
+          const capNow = new Date();
+          const capState = await loadTicketRunCapState(tx as unknown as Db, {
+            companyId: agent.companyId,
+            issueId: issue.id,
+            now: capNow,
+          });
+          const capDecision = evaluateTicketHourlyRunCap(capState);
+          if (!capDecision.allow) {
+            if (capDecision.flag) {
+              await recordWakeLoopFlag(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                agentId,
+                runsStartedInWindow: capState.runsStartedInWindow,
+                now: capNow,
+              });
+            }
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: ISSUE_RUN_CAP_SKIP_REASON,
+              payload,
+              status: "skipped",
+              error: "Skipped: ticket already had 3 runs in the rolling hour",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: capNow,
+            });
+            logger.info(
+              {
+                agentId,
+                issueId: issue.id,
+                runsStartedInWindow: capState.runsStartedInWindow,
+                flagged: capDecision.flag,
+              },
+              "enqueueWakeup: skipped by ticket hourly run cap",
+            );
+            return { kind: "skipped" as const };
+          }
+
           let reconciledSourceRunId: string | null = null;
           let reconciledRestoreRetryCount: number | null = null;
           if (executionReconciliationWake) {
@@ -27507,6 +27766,7 @@ export function heartbeatService(
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
+            isHumanBoardActor(opts.requestedByActorType) &&
             allowsIssueInteractionWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,

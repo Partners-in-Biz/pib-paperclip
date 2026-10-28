@@ -246,6 +246,7 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { shouldWakeBlockedTicket } from "../services/issue-wake-guards.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -14714,6 +14715,7 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              commentAuthorType: actor.actorType,
             });
 
           if (
@@ -14783,6 +14785,15 @@ export function issueRoutes(
           }
 
           for (const mentionedId of mentionedIds) {
+            if (
+              !shouldWakeBlockedTicket({
+                issueStatus: issue.status,
+                wakeReason: "issue_comment_mentioned",
+                requestedByActorType: actor.actorType,
+              }).wake
+            ) {
+              continue;
+            }
             if (
               (actor.actorType === "agent" && actor.actorId === mentionedId) ||
               (commentIsFromAssigneeRun && mentionedId === assigneeId)
@@ -18127,6 +18138,7 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          commentAuthorType: actor.actorType,
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {
@@ -18217,6 +18229,15 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
+          if (
+            !shouldWakeBlockedTicket({
+              issueStatus: wakeIssueSnapshot.status,
+              wakeReason: "issue_comment_mentioned",
+              requestedByActorType: actor.actorType,
+            }).wake
+          ) {
+            continue;
+          }
           if (
             (actorIsAgent && actor.actorId === mentionedId) ||
             (commentIsFromAssigneeRun && mentionedId === assigneeId)
