@@ -19,6 +19,7 @@ import {
   BLOCKED_ISSUE_SWEEP_MAX_PER_TICK,
   blockedIssueSweeper,
 } from "../services/blocked-issue-sweeper.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -136,6 +137,62 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
       .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.blocked_swept_to_todo")));
     expect(entry?.actorType).toBe("system");
     expect(entry?.details).toMatchObject({ reason: "blockers_done", previousStatus: "blocked", status: "todo" });
+  });
+
+  it("sends the same wake source and state key as the blockers-resolved route, and logs issue.updated", async () => {
+    const ctx = await seedCompany();
+    const issueId = await seedIssue(ctx);
+    const blockerId = await blockedBy(ctx, issueId, "done");
+    const { sweeper, wakeup } = makeSweeper();
+
+    await sweeper.sweep(now);
+
+    expect(wakeup).toHaveBeenCalledWith(
+      ctx.agentId,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_blockers_resolved",
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: issueId,
+          blockerIssueIds: [blockerId],
+          blockedTransitionAt: blockedLongAgo,
+        }),
+      }),
+    );
+    const updated = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.updated")));
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.details).toMatchObject({ status: "todo", changes: { status: { from: "blocked", to: "todo" } } });
+  });
+
+  it("sweeps an issue that is re-blocked only once inside 24 hours, and again after the window", async () => {
+    const ctx = await seedCompany();
+    const issueId = await seedIssue(ctx);
+    const { sweeper, wakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(now)).moved).toBe(1);
+    expect(await statusOf(issueId)).toBe("todo");
+
+    // The agent re-blocks the issue; 45 minutes later it is eligible by age again.
+    const later = new Date(now.getTime() + 60 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({ status: "blocked", blockedTransitionAt: new Date(later.getTime() - 45 * 60 * 1000) })
+      .where(eq(issues.id, issueId));
+    const second = await sweeper.sweep(later);
+    expect(second.moved).toBe(0);
+    expect(await statusOf(issueId)).toBe("blocked");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+
+    const nextDay = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({ blockedTransitionAt: new Date(nextDay.getTime() - 45 * 60 * 1000) })
+      .where(eq(issues.id, issueId));
+    expect((await sweeper.sweep(nextDay)).moved).toBe(1);
+    expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
   it("moves an issue with no blockers to todo when its assignee is idle", async () => {

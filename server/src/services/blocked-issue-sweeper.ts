@@ -1,9 +1,10 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { isAgentInvokable } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "./issue-dependency-wakeups.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
 
@@ -12,6 +13,10 @@ export const BLOCKED_ISSUE_SWEEP_MAX_PER_TICK = 50;
 // Candidates are scanned in age order. The scan window is wider than the move
 // cap so issues that stay blocked on purpose cannot starve the ones behind them.
 const BLOCKED_ISSUE_SWEEP_SCAN_LIMIT = 500;
+// An issue swept once is not swept again inside this window. Without it, an agent
+// that re-blocks the issue would be woken about every 30 minutes.
+export const BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const BLOCKED_ISSUE_SWEPT_ACTION = "issue.blocked_swept_to_todo";
 const HEALTHY_AGENT_STATUSES = new Set(["idle", "active"]);
 
 export type BlockedIssueSweepReason = "blockers_done" | "owner_agent_idle";
@@ -74,6 +79,21 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
 
     if (candidates.length === 0) return { checked: 0, moved: 0, skipped: 0 };
 
+    const recentlySwept = new Set(
+      (
+        await db
+          .select({ entityId: activityLog.entityId })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.action, BLOCKED_ISSUE_SWEPT_ACTION),
+              inArray(activityLog.entityId, candidates.map((c) => c.id)),
+              gte(activityLog.createdAt, new Date(now.getTime() - BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS)),
+            ),
+          )
+      ).map((row) => row.entityId),
+    );
+
     const companyIds = [...new Set(candidates.map((c) => c.companyId))];
     const agentRows = await db
       .select({
@@ -111,6 +131,11 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
     for (const candidate of candidates) {
       if (moved >= BLOCKED_ISSUE_SWEEP_MAX_PER_TICK) break;
       const assigneeAgentId = candidate.assigneeAgentId!;
+      if (recentlySwept.has(candidate.id)) {
+        logger.info({ issueId: candidate.id }, "blocked issue sweeper skipped an issue it already swept in the last 24h");
+        skipped += 1;
+        continue;
+      }
       const readiness = readinessByCompany.get(candidate.companyId)?.get(candidate.id);
       // Open or still-finalizing blockers: the issue is blocked for a real reason.
       if (!readiness || readiness.unresolvedBlockerCount > 0) {
@@ -142,6 +167,8 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           continue;
         }
         // Re-read so an issue unblocked, re-blocked or reassigned since the scan is left alone.
+        // This is a check, not a lock: a change between this read and the update below is
+        // possible but rare, and the worst case is one early move to todo.
         const [fresh] = await db
           .select({
             status: issues.status,
@@ -169,32 +196,85 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           skipped += 1;
           continue;
         }
+        moved += 1;
+        // Wake first: the move is already committed, so a failing log write must not
+        // leave the issue in todo with nobody woken.
+        if (reason === "blockers_done") {
+          // Same source and state key as the route and the recovery backstop, so the
+          // wake queue treats this as the same wake and does not start a second run.
+          await heartbeat
+            .wakeup(assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_blockers_resolved",
+              payload: {
+                issueId: candidate.id,
+                blockerIssueIds: readiness.blockerIssueIds,
+                mutation: "blocked_issue_sweep",
+              },
+              idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+                dependentIssueId: candidate.id,
+                blockerIssueIds: readiness.blockerIssueIds,
+                blockedTransitionAt: candidate.blockedTransitionAt,
+              }),
+              requestedByActorType: "system",
+              requestedByActorId: "blocked_issue_sweeper",
+              contextSnapshot: {
+                issueId: candidate.id,
+                taskId: candidate.id,
+                wakeReason: "issue_blockers_resolved",
+                source: "blocked_issue_sweeper",
+                blockerIssueIds: readiness.blockerIssueIds,
+              },
+            })
+            .catch((err) => {
+              logger.warn({ err, issueId: candidate.id }, "failed to wake assignee after blocked issue sweep");
+            });
+        } else {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: { id: candidate.id, assigneeAgentId, status: "todo" },
+            reason: "issue_status_changed",
+            mutation: "blocked_issue_sweep",
+            contextSource: "blocked_issue_sweeper",
+            requestedByActorType: "system",
+            requestedByActorId: "blocked_issue_sweeper",
+          });
+        }
+        const details = {
+          identifier: candidate.identifier,
+          reason,
+          previousStatus: "blocked",
+          status: "todo",
+          blockedSince: new Date(candidate.blockedSince).toISOString(),
+          assigneeAgentId,
+        };
+        // The sweeper entry is the loop guard; `issue.updated` is the event plugins
+        // subscribe to, which the route writes for a status change and the service does not.
         await logActivity(db, {
           companyId: candidate.companyId,
           actorType: "system",
           actorId: "blocked_issue_sweeper",
-          action: "issue.blocked_swept_to_todo",
+          action: BLOCKED_ISSUE_SWEPT_ACTION,
+          entityType: "issue",
+          entityId: candidate.id,
+          issueId: candidate.id,
+          details,
+        });
+        await logActivity(db, {
+          companyId: candidate.companyId,
+          actorType: "system",
+          actorId: "blocked_issue_sweeper",
+          action: "issue.updated",
           entityType: "issue",
           entityId: candidate.id,
           issueId: candidate.id,
           details: {
-            identifier: candidate.identifier,
-            reason,
-            previousStatus: "blocked",
             status: "todo",
-            blockedSince: new Date(candidate.blockedSince).toISOString(),
-            assigneeAgentId,
+            identifier: candidate.identifier,
+            source: "blocked_issue_sweeper",
+            changes: { status: { from: "blocked", to: "todo" } },
           },
-        });
-        moved += 1;
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: { id: candidate.id, assigneeAgentId, status: "todo" },
-          reason: reason === "blockers_done" ? "issue_blockers_resolved" : "issue_status_changed",
-          mutation: "blocked_issue_sweep",
-          contextSource: "blocked_issue_sweeper",
-          requestedByActorType: "system",
-          requestedByActorId: "blocked_issue_sweeper",
         });
       } catch (err) {
         logger.error({ err, issueId: candidate.id }, "blocked issue sweep failed for issue");

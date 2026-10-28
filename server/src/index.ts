@@ -1333,12 +1333,17 @@ async function startServerWithDatabaseTeardown(
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
     // Moves long-blocked issues with no real blocker back to todo and wakes the
-    // assignee. The in-flight flag keeps a slow sweep from overlapping the next
-    // 30s tick.
+    // assignee. It runs every 5 minutes; the in-flight flag keeps a slow sweep from
+    // overlapping the next run.
     const blockedIssueSweep = blockedIssueSweeper(db as any, heartbeat);
     let blockedIssueSweepInFlight = false;
+    let lastBlockedIssueSweepAt = 0;
+    const blockedIssueSweepIntervalMs = 5 * 60 * 1000;
     const scheduleBlockedIssueSweep = () => {
       if (heartbeatSchedulerStopped || blockedIssueSweepInFlight) return;
+      const nowMs = Date.now();
+      if (nowMs - lastBlockedIssueSweepAt < blockedIssueSweepIntervalMs) return;
+      lastBlockedIssueSweepAt = nowMs;
       blockedIssueSweepInFlight = true;
       trackHeartbeatSchedulerWork(blockedIssueSweep
         .sweep(new Date())
