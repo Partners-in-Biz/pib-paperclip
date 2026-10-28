@@ -32,7 +32,9 @@ export function holdsUpCounts(roots: string[], edges: BlockEdge[]): Map<string, 
       for (const edge of next.get(queue.shift()!) ?? []) {
         if (seen.has(edge.to)) continue;
         seen.add(edge.to);
-        if (edge.toOpen) open += 1;
+        // A closed issue blocks nothing any more: do not count it or walk past it.
+        if (!edge.toOpen) continue;
+        open += 1;
         queue.push(edge.to);
       }
     }
@@ -50,8 +52,9 @@ export async function readHoldsUp(ctx: PluginContext, companyId: string, issueId
          SELECT r.issue_id, r.related_issue_id FROM public.issue_relations r
           WHERE r.company_id = $1 AND r.type = 'blocks' AND r.issue_id = ANY($2::uuid[])
          UNION
-         SELECT r.issue_id, r.related_issue_id FROM walk w JOIN public.issue_relations r
-            ON r.issue_id = w.to_id AND r.company_id = $1 AND r.type = 'blocks'
+         SELECT r.issue_id, r.related_issue_id FROM walk w
+           JOIN public.issues wi ON wi.id = w.to_id AND wi.status NOT IN ('done', 'cancelled') AND wi.hidden_at IS NULL
+           JOIN public.issue_relations r ON r.issue_id = w.to_id AND r.company_id = $1 AND r.type = 'blocks'
        )
        SELECT w.from_id::text AS from_id, w.to_id::text AS to_id, (i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL) AS open
          FROM walk w JOIN public.issues i ON i.id = w.to_id AND i.company_id = $1`,

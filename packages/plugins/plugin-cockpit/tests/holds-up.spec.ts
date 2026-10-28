@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { holdsUpCounts, readHoldsUp, type BlockEdge } from "../src/holds-up.js";
-import { hostWaiting, mergeWaiting } from "../src/merge.js";
+import { hostWaiting, mergeWaiting, type WaitingAskInfo } from "../src/merge.js";
 
 const e = (from: string, to: string, toOpen = true): BlockEdge => ({ from, to, toOpen });
 
@@ -14,6 +14,9 @@ describe("holdsUpCounts", () => {
   it("does not count closed issues and counts a diamond once", () => {
     const edges = [e("r", "x"), e("r", "y"), e("x", "z"), e("y", "z"), e("r", "done", false)];
     expect(holdsUpCounts(["r"], edges).get("r")).toBe(3);
+  });
+  it("does not walk past a closed issue", () => {
+    expect(holdsUpCounts(["r"], [e("r", "x", false), e("x", "y"), e("r", "z")]).get("r")).toBe(1);
   });
   it("terminates on a relation cycle", () => {
     expect(holdsUpCounts(["a"], [e("a", "b"), e("b", "c"), e("c", "a")]).get("a")).toBe(2);
@@ -34,5 +37,11 @@ describe("waiting ranking", () => {
     expect(out.map((o) => o.issueId)).toEqual(["3928", "old", "new"]);
     expect(out[0]!.rank).toMatchObject({ holdsUp: 17, identifier: "PAR-3928", link: "/issues/PAR-3928", ageHours: 5 });
     expect(out[0]!.rank!.recommended).toBeTruthy();
+  });
+  it("ranks an escalated ask above a bigger holds-up", () => {
+    const ask: WaitingAskInfo = { id: "a", kind: "decision", question: "q", options: [], why: null, askedBy: null, askedAt: "2026-10-01T00:00:00Z", dueBy: null, clientName: null, escalatedAt: "2026-10-02T00:00:00Z" };
+    const host = { source: "host", items: hostWaiting({ myIssues: [issue("big", 17, "2026-10-01T00:00:00Z")] }) };
+    const asks = { source: "asks", items: [{ key: "ask:a", title: "q", why: "w", kind: "judgement" as const, issueId: "ia", ask }] };
+    expect(mergeWaiting([host, asks]).map((o) => o.key)).toEqual(["ask:a", "issue:big"]);
   });
 });

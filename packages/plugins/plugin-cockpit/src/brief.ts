@@ -75,19 +75,25 @@ const OWNER_ISSUE_PAGE = 100;
 /** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. `total` is the real count; `more` is set when some are not shown. */
 export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<{ items: IssueLite[]; total: number; more: boolean }> {
   if (!userId) return { items: [], total: 0, more: false };
+  const items: IssueLite[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  let offset = 0;
   try {
-    const items: IssueLite[] = [];
-    let total = 0;
-    while (items.length < OWNER_ISSUE_CEILING) {
+    while (offset < OWNER_ISSUE_CEILING) {
       const rows = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
           WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
           ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
-        [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - items.length), items.length],
+        [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - offset), offset],
       );
       if (!rows.length) break;
-      total = Number(rows[0]!.total) || items.length + rows.length;
+      total = Number(rows[0]!.total) || offset + rows.length;
+      offset += rows.length;
       for (const row of rows) {
+        // Rows can shift between pages (updated_at moves): keep each issue once.
+        if (seen.has(String(row.id))) continue;
+        seen.add(String(row.id));
         items.push({
           id: String(row.id),
           identifier: row.identifier == null ? null : String(row.identifier),
@@ -98,12 +104,13 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
           createdAt: iso(row.created_at),
         });
       }
-      if (items.length >= total) break;
+      if (offset >= total) break;
     }
-    return { items, total: Math.max(total, items.length), more: total > items.length };
+    return { items, total: Math.max(total, items.length), more: total > offset };
   } catch (error) {
     ctx.logger.info("Cockpit issue read failed", { companyId, error: message(error) });
-    return { items: [], total: 0, more: false };
+    // Keep the pages already read; the rest are not shown.
+    return { items, total: Math.max(total, items.length), more: true };
   }
 }
 
@@ -250,7 +257,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   const holds = await readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id));
   const now = env.now().getTime();
   const ownerIssues = ownerList.items.map((i) => {
-    const since = Date.parse(i.createdAt ?? i.updatedAt ?? "");
+    const since = Date.parse(i.updatedAt ?? i.createdAt ?? "");
     return { ...i, holdsUp: holds.get(i.id) ?? 0, ageHours: Number.isFinite(since) ? Math.max(0, Math.floor((now - since) / 3_600_000)) : null };
   });
   const enabled = await enabledModules(env, companyId, Object.keys(statuses));
