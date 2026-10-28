@@ -61,6 +61,7 @@ import {
   isPlausibleHermesSessionId,
   parseHermesStreamJsonLine,
   parseHermesStreamJsonOutput,
+  sessionCheckpointResumeEnabled,
 } from "./session-checkpoint.js";
 
 // ---------------------------------------------------------------------------
@@ -465,14 +466,16 @@ export async function execute(
   // ── Build prompt ───────────────────────────────────────────────────────
   const sessionHandoffMarkdown =
     cfgString((ctx as { context?: Record<string, unknown> }).context?.paperclipSessionHandoffMarkdown)?.trim() || "";
+  const checkpointEnabled = sessionCheckpointResumeEnabled();
   const checkpointResume =
     Boolean(prevSessionId) ||
-    sessionHandoffMarkdown.length > 0 ||
-    (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true;
+    (checkpointEnabled &&
+      (sessionHandoffMarkdown.length > 0 ||
+        (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true));
   let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
   // The transcript already has the instructions. Re-sending them on every
   // wake is a full rerun in token cost even when --resume is set.
-  if (agentInstructions && !prevSessionId) {
+  if (agentInstructions && !(checkpointEnabled && prevSessionId)) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
 
@@ -519,7 +522,7 @@ export async function execute(
   }
   // Init event carries session_id before any model work, so a kill still
   // leaves a checkpoint the next wake can resume.
-  if (persistSession && !extraArgs?.includes("--format")) {
+  if (persistSession && sessionCheckpointResumeEnabled() && !extraArgs?.includes("--format")) {
     args.push("--format", "stream-json");
   }
 
@@ -586,7 +589,7 @@ export async function execute(
     if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
     if (checkpointedSessionId === sessionId) return;
     checkpointedSessionId = sessionId;
-    if (ctx.onSessionCheckpoint) {
+    if (ctx.onSessionCheckpoint && sessionCheckpointResumeEnabled()) {
       await ctx.onSessionCheckpoint({ sessionId });
     }
   };

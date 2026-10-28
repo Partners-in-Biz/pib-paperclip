@@ -3,6 +3,7 @@ import {
   extractHermesSessionId,
   parseHermesStreamJsonLine,
   parseHermesStreamJsonOutput,
+  sessionCheckpointResumeEnabled,
 } from "./session-checkpoint.js";
 
 describe("hermes session checkpoint", () => {
@@ -21,6 +22,12 @@ describe("hermes session checkpoint", () => {
 
   it("ignores non-session ids", () => {
     expect(extractHermesSessionId('{"session_id":"not-a-session"}')).toBeNull();
+  });
+
+  it("defaults the rollback flag on and honours an explicit off", () => {
+    expect(sessionCheckpointResumeEnabled({})).toBe(true);
+    expect(sessionCheckpointResumeEnabled({ PAPERCLIP_SESSION_CHECKPOINT: "0" })).toBe(false);
+    expect(sessionCheckpointResumeEnabled({ PAPERCLIP_SESSION_CHECKPOINT: "off" })).toBe(false);
   });
 
   it("keeps the result text and usage when the process dies after init", () => {

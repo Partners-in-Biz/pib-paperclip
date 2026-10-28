@@ -5653,6 +5653,14 @@ export function shouldKeepTaskSessionCheckpoint(
   return readNonEmptyString(contextSnapshot?.wakeReason) === "issue_assigned";
 }
 
+export function sessionCheckpointResumeEnabled(
+  env: Record<string, string | undefined> = process.env,
+) {
+  const raw = env.PAPERCLIP_SESSION_CHECKPOINT;
+  if (raw == null || raw.trim() === "") return true;
+  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
+}
+
 /** A mid-run checkpoint must survive a kill that never returns a new session id. */
 export function shouldClearTaskSessionAfterRun(input: {
   clearSession: boolean;
@@ -21647,10 +21655,12 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      const keepTaskSessionCheckpoint = shouldKeepTaskSessionCheckpoint(
-        context,
-        taskSession != null,
-      );
+      const keepTaskSessionCheckpoint =
+        sessionCheckpointResumeEnabled() &&
+        shouldKeepTaskSessionCheckpoint(
+          context,
+          taskSession != null,
+        );
       const wakeSessionResetReason = keepTaskSessionCheckpoint
         ? null
         : describeSessionResetReason(context);
@@ -22839,7 +22849,10 @@ export function heartbeatService(
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
       }
-      if (sessionCompaction.rotate || keepTaskSessionCheckpoint) {
+      if (
+        sessionCheckpointResumeEnabled() &&
+        (sessionCompaction.rotate || keepTaskSessionCheckpoint)
+      ) {
         context.paperclipCheckpointResume = true;
       } else {
         delete context.paperclipCheckpointResume;
@@ -24590,6 +24603,7 @@ export function heartbeatService(
                     runtimeTools,
                     onLog,
                     onSessionCheckpoint: async (checkpoint: { sessionId: string }) => {
+                      if (!sessionCheckpointResumeEnabled()) return;
                       const { sessionId } = checkpoint;
                       if (!taskKey) return;
                       if (
