@@ -297,7 +297,10 @@ d("skill evals (Postgres)", () => {
       expect(parsed.version).toBe(1);
       expect(parsed.enforce).toBe(false);
       expect(parsed.minPassRate).toBe(0.8);
-      expect(parsed.skills).toEqual({});
+      // The B1-B8 baselines (PAR-6154) are recorded, none is enforced yet.
+      for (const entry of Object.values(parsed.skills)) {
+        expect(entry.baseline?.hash).toMatch(/^[0-9a-f]{16}$/);
+      }
     });
   });
 
