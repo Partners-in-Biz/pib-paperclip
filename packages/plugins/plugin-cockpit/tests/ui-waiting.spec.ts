@@ -35,7 +35,7 @@ describe("Waiting on you list", () => {
     expect(html).toContain('href="/issues/PAR-1"');
   });
 
-  it("lists questions from agents before rows, then rows in the order given (holds up first)", () => {
+  it("lists questions from agents before rows, then rows in the order given", () => {
     const ask = entry(9, { title: "Ask nine", ask: { id: "a", kind: "decision", question: "Which one?", options: [], why: null, askedBy: "Dev", askedAt: "2026-10-27T10:00:00.000Z", dueBy: null, clientName: null }, rank: { identifier: "PAR-9", link: "/issues/PAR-9", holdsUp: 0, ageHours: 1, recommended: "x" } });
     const big = entry(1, { title: "Big blocker", rank: { identifier: "PAR-1", link: "/issues/PAR-1", holdsUp: 17, ageHours: 1, recommended: "x" } });
     const small = entry(2, { title: "Small one", rank: { identifier: "PAR-2", link: "/issues/PAR-2", holdsUp: 1, ageHours: 1, recommended: "x" } });
