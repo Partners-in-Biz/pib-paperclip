@@ -2179,7 +2179,13 @@ export function selectPaperclipTaskMarkdown(
 ): string {
   const full = asString(context?.paperclipTaskMarkdown, "").trim();
   if (!full) return "";
-  if (options.resumedSession !== true) {
+  // A saved transcript or a compaction handoff is a checkpoint resume. Sending
+  // the full brief again is what pushes the next wake back over the rotation
+  // threshold and makes the agent redo the task.
+  const checkpointResume =
+    context?.paperclipCheckpointResume === true ||
+    asString(context?.paperclipSessionHandoffMarkdown, "").trim().length > 0;
+  if (options.resumedSession !== true && !checkpointResume) {
     const guidance = options.includeCommunicationGuidance === false
       ? "" : selectInitialCommunicationGuidance(context, options);
     return joinPromptSections([guidance, full]);
@@ -2187,8 +2193,9 @@ export function selectPaperclipTaskMarkdown(
   const wake = normalizePaperclipWakePayload(context?.paperclipWake);
   if (!wake) return full;
   if (
-    isAssignmentShapedPaperclipWakeReason(wake.reason) ||
-    isPaperclipRecoveryWakePayload(context?.paperclipWake)
+    !checkpointResume &&
+    (isAssignmentShapedPaperclipWakeReason(wake.reason) ||
+      isPaperclipRecoveryWakePayload(context?.paperclipWake))
   ) {
     return full;
   }

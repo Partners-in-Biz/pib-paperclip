@@ -3052,6 +3052,34 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(fullMarkdown);
   });
 
+  it("uses the compact brief for a checkpoint handoff instead of replaying the full task", () => {
+    expect(
+      selectPaperclipTaskMarkdown(
+        {
+          paperclipTaskMarkdown: fullMarkdown,
+          paperclipTaskMarkdownCompact: compactMarkdown,
+          paperclipSessionHandoffMarkdown: "Paperclip session handoff:\n- Rotation reason: raw input",
+          paperclipWake: wake("issue_commented"),
+        },
+        { resumedSession: false },
+      ),
+    ).toBe(compactMarkdown);
+  });
+
+  it("uses the compact brief when a same-issue assignment keeps its checkpoint", () => {
+    expect(
+      selectPaperclipTaskMarkdown(
+        {
+          paperclipTaskMarkdown: fullMarkdown,
+          paperclipTaskMarkdownCompact: compactMarkdown,
+          paperclipCheckpointResume: true,
+          paperclipWake: wake("issue_assigned"),
+        },
+        { resumedSession: true },
+      ),
+    ).toBe(compactMarkdown);
+  });
+
   it("returns the compact markdown for non-assignment resume deltas", () => {
     expect(
       selectPaperclipTaskMarkdown(

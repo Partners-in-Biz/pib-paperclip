@@ -45,6 +45,8 @@ import {
   normalizeSessionParams,
   isTaskSessionCredentialCompatible,
   shouldResetTaskSessionForWake,
+  shouldKeepTaskSessionCheckpoint,
+  shouldClearTaskSessionAfterRun,
   scrubGitCredentialText,
   buildAnchorFallbackWorkspaceNotes,
   type ResolvedWorkspaceForRun,
@@ -1933,6 +1935,42 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
 describe("shouldResetTaskSessionForWake", () => {
   it("resets session context on assignment wake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
+  });
+
+  it("keeps a same-issue assignment checkpoint and still starts fresh when none exists", () => {
+    expect(shouldKeepTaskSessionCheckpoint({ wakeReason: "issue_assigned" }, true)).toBe(true);
+    expect(shouldKeepTaskSessionCheckpoint({ wakeReason: "issue_assigned" }, false)).toBe(false);
+    expect(
+      shouldKeepTaskSessionCheckpoint(
+        { wakeReason: "issue_assigned", forceFreshSession: true },
+        true,
+      ),
+    ).toBe(false);
+    expect(shouldKeepTaskSessionCheckpoint({ wakeReason: "issue_commented" }, true)).toBe(false);
+  });
+
+  it("does not clear a task session that was checkpointed before the process died", () => {
+    expect(
+      shouldClearTaskSessionAfterRun({
+        clearSession: false,
+        hasNextSession: false,
+        hasEarlyCheckpoint: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearTaskSessionAfterRun({
+        clearSession: true,
+        hasNextSession: true,
+        hasEarlyCheckpoint: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldClearTaskSessionAfterRun({
+        clearSession: false,
+        hasNextSession: false,
+        hasEarlyCheckpoint: false,
+      }),
+    ).toBe(true);
   });
 
   it("preserves session context on execution review handoff wakes", () => {

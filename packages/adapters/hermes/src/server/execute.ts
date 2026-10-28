@@ -55,6 +55,13 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
+import {
+  extractHermesSessionId,
+  formatHermesStreamEventForLog,
+  isPlausibleHermesSessionId,
+  parseHermesStreamJsonLine,
+  parseHermesStreamJsonOutput,
+} from "./session-checkpoint.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -456,8 +463,16 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
-  if (agentInstructions) {
+  const sessionHandoffMarkdown =
+    cfgString((ctx as { context?: Record<string, unknown> }).context?.paperclipSessionHandoffMarkdown)?.trim() || "";
+  const checkpointResume =
+    Boolean(prevSessionId) ||
+    sessionHandoffMarkdown.length > 0 ||
+    (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true;
+  let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
+  // The transcript already has the instructions. Re-sending them on every
+  // wake is a full rerun in token cost even when --resume is set.
+  if (agentInstructions && !prevSessionId) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
 
@@ -501,6 +516,11 @@ export async function execute(
 
   if (persistSession && prevSessionId) {
     args.push("--resume", prevSessionId);
+  }
+  // Init event carries session_id before any model work, so a kill still
+  // leaves a checkpoint the next wake can resume.
+  if (persistSession && !extraArgs?.includes("--format")) {
+    args.push("--format", "stream-json");
   }
 
   if (extraArgs?.length) {
@@ -558,10 +578,46 @@ export async function execute(
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
-  // Wrap onLog to reclassify benign stderr lines as stdout.
+  // Wrap onLog to reclassify benign stderr lines as stdout, and to checkpoint
+  // the session id from the stream-json init event before the process can die.
+  let streamBuffer = "";
+  let checkpointedSessionId: string | null = null;
+  const noteSessionId = async (sessionId: string | null) => {
+    if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
+    if (checkpointedSessionId === sessionId) return;
+    checkpointedSessionId = sessionId;
+    if (ctx.onSessionCheckpoint) {
+      await ctx.onSessionCheckpoint({ sessionId });
+    }
+  };
+  const forwardStdoutLines = async (raw: string, flushTail: boolean) => {
+    streamBuffer += raw;
+    const lines = streamBuffer.split("\n");
+    streamBuffer = flushTail ? "" : (lines.pop() ?? "");
+    const human: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = parseHermesStreamJsonLine(trimmed);
+      if (!event) {
+        const plain = extractHermesSessionId(trimmed);
+        if (plain) await noteSessionId(plain);
+        human.push(line);
+        continue;
+      }
+      if (event.sessionId) await noteSessionId(event.sessionId);
+      const rendered = formatHermesStreamEventForLog(event);
+      if (rendered) human.push(rendered);
+    }
+    if (human.length > 0) {
+      await ctx.onLog("stdout", `${human.join("\n")}\n`);
+    }
+  };
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
+      const stderrSessionId = extractHermesSessionId(trimmed);
+      if (stderrSessionId) await noteSessionId(stderrSessionId);
       // Benign patterns that should NOT appear as errors:
       // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
       // - MCP server registration messages
@@ -576,6 +632,9 @@ export async function execute(
         return ctx.onLog("stdout", chunk);
       }
     }
+    if (stream === "stdout") {
+      return forwardStdoutLines(chunk, false);
+    }
     return ctx.onLog(stream, chunk);
   };
 
@@ -587,9 +646,19 @@ export async function execute(
     onLog: wrappedOnLog,
     onSpawn: ctx.onSpawn,
   });
+  if (streamBuffer.trim()) {
+    await forwardStdoutLines("\n", true);
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const streamed = parseHermesStreamJsonOutput(`${result.stdout || ""}\n${result.stderr || ""}`);
+  if (!parsed.sessionId && (streamed.sessionId || checkpointedSessionId)) {
+    parsed.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
+  }
+  if (!parsed.response && streamed.response) parsed.response = streamed.response;
+  if (!parsed.usage && streamed.usage) parsed.usage = streamed.usage;
+  if (!parsed.errorMessage && streamed.errorMessage) parsed.errorMessage = streamed.errorMessage;
 
   await ctx.onLog(
     "stdout",
