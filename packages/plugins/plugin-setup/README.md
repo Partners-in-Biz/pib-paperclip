@@ -135,6 +135,7 @@ The page saves Setup's own settings the first time someone saves the modules. Th
 | route | `GET /modules?companyId=` | `{ modules, updatedAt }`, where `modules` is `null` when no choice is saved. Used by every plugin's sidebar. |
 | job | `reemit-modules` | Hourly re-send of every saved choice, for companies whose Setup settings are saved. |
 | job | `weekly-finish-setup` | Mondays 05:00 UTC. |
+| job | `template-drift` | Hourly at :30. One Template drift issue per company (the sync work list), closed at zero; health key `templates:drift`. Acts only for companies with saved Setup settings. |
 
 ## Contract for other plugins
 

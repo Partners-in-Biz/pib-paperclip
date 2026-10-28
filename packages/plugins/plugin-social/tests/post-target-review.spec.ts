@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { snapshotOf } from "../src/client-approval.js";
 import { xTargetFields } from "../src/oauth/providers/x.js";
 import { summarizeTarget } from "../src/post-target.js";
-import { unsupportedTargetProblem } from "../src/publish.js";
+import { unsupportedTargetProblem, validateDestination } from "../src/publish.js";
 import { postReviewDescription } from "../src/review.js";
 import { changedTarget } from "../src/service.js";
 import { createPersonalDraftRecord } from "../src/personal-draft.js";
@@ -89,5 +89,18 @@ describe("create-personal-draft", () => {
       note: "HOLD until PAR-1",
     });
     expect(posts.get(result.id)).toMatchObject({ reply_to_url: REPLY, quote_url: null, note: "HOLD until PAR-1" });
+  });
+});
+
+describe("a body that only says it is a reply", () => {
+  const fake = "Reply to: https://x.com/peet/status/42\nThe Mac Mini going offline is the real story.";
+  it("is refused on X unless replyToUrl or quoteUrl carries the target", () => {
+    expect(validateDestination("x", { text: fake, media: [] })[0]).toMatch(/replyToUrl/);
+    expect(validateDestination("x", { text: "In reply to @peet: agreed.", media: [] })[0]).toMatch(/replyToUrl/);
+    expect(validateDestination("x", { text: "Agreed.", replyToUrl: REPLY, media: [] })).toEqual([]);
+    expect(validateDestination("x", { text: fake, replyToUrl: REPLY, media: [] })).toEqual([]);
+    expect(validateDestination("x", { text: "Replying to customers faster is our focus.", media: [] })).toEqual([]);
+    expect(validateDestination("x", { text: "We reply to every email within a day.", media: [] })).toEqual([]);
+    expect(validateDestination("linkedin", { text: fake, media: [] })).toEqual([]);
   });
 });

@@ -228,7 +228,16 @@ export interface WaitingAskInfo {
 }
 
 /** A waiting item as a source gives it: plain, a question for the owner, or a count with a few examples. */
-export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[] };
+export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[]; rank?: WaitingRank };
+
+/** What ranks an item the owner must act on: how much it holds up and how long it has waited. */
+export interface WaitingRank {
+  identifier: string | null;
+  link: string | null;
+  holdsUp: number;
+  ageHours: number | null;
+  recommended: string;
+}
 
 export interface WaitingExample {
   title: string;
@@ -244,6 +253,7 @@ export interface WaitingEntry extends WaitingItem {
   sourceTitle: string;
   /** Set for questions agents asked the owner: they come first. */
   ask?: WaitingAskInfo;
+  rank?: WaitingRank;
   /** A few of the items a count stands for (unassigned issues), with links. */
   examples?: WaitingExample[];
 }
@@ -274,6 +284,14 @@ export function mergeWaiting(sources: Array<{ source: string; sourceTitle?: stri
     }
   }
   return out.sort((a, b) => {
+    // An escalated ask (deadline passed) is first of all, then whatever holds up the most work
+    const aEsc = a.ask?.escalatedAt ? 0 : 1;
+    const bEsc = b.ask?.escalatedAt ? 0 : 1;
+    if (aEsc !== bEsc) return aEsc - bEsc;
+    const aHolds = a.rank?.holdsUp ?? 0;
+    const bHolds = b.rank?.holdsUp ?? 0;
+    if (aHolds !== bHolds) return bHolds - aHolds;
+
     // Asks come first
     const aIsAsk = a.ask ? 0 : 1;
     const bIsAsk = b.ask ? 0 : 1;
@@ -355,6 +373,9 @@ export interface IssueLite {
   priority?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+  /** Open issues this one blocks, directly or through others. */
+  holdsUp?: number;
+  ageHours?: number | null;
 }
 
 const OPEN_APPROVAL = new Set(["pending", "revision_requested"]);
@@ -400,8 +421,8 @@ export function issueHref(issue: Pick<IssueLite, "id" | "identifier">): string {
  * so that issue is not listed again), open approvals, open issues assigned to
  * the person.
  */
-export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: IssueLite[]; setupMissing?: number | null; setupIssueId?: string | null }): WaitingItem[] {
-  const items: WaitingItem[] = [];
+export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: IssueLite[]; setupMissing?: number | null; setupIssueId?: string | null }): WaitingInput[] {
+  const items: WaitingInput[] = [];
   if (input.setupMissing && input.setupMissing > 0) {
     items.push({
       key: "setup:missing",
@@ -436,6 +457,13 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
       issueId: issue.id,
       kind: issueKind(issue),
       since: issue.updatedAt ?? issue.createdAt ?? null,
+      rank: {
+        identifier: issue.identifier ?? null,
+        link: issueHref(issue),
+        holdsUp: issue.holdsUp ?? 0,
+        ageHours: issue.ageHours ?? null,
+        recommended: issue.status === "in_review" ? "Review it: approve or ask for changes." : issue.status === "blocked" ? "Unblock it: name what is missing." : "Do it, or hand it back with a reason.",
+      },
     });
   }
   return items;
