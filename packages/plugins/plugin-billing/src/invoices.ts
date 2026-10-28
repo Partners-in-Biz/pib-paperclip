@@ -731,6 +731,8 @@ export async function invoiceView(ctx: PluginContext, invoice: InvoiceRow, setti
 export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: BillingSettings): Promise<DocView> {
   const lines = await quoteLinesFor(ctx, quote.id);
   const totals = totalsOf(lines, quote);
+  const sender = asObject(quote.sender);
+  const payment = asObject(sender.payment ?? settings.payment ?? {});
   return {
     kind: "quote",
     number: quote.number,
@@ -738,7 +740,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     currency: quote.currency,
     issuedAt: iso(quote.sent_at) ?? iso(quote.created_at) ?? new Date().toISOString(),
     dueAt: iso(quote.valid_until),
-    sender: asObject(quote.sender),
+    sender,
     customer: await currentCustomer(ctx, quote),
     lines: lineViews(lines, totals),
     groups: totals.groups,
@@ -748,7 +750,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     pricesIncludeVat: Boolean(quote.prices_include_vat),
     legacy: totals.legacy,
     notes: quote.notes ?? null,
-    payment: null,
+    payment: Object.keys(payment).length ? payment : null,
   };
 }
 
