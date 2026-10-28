@@ -76,15 +76,22 @@ async function underChange(env: Env, companyId: string): Promise<Set<string>> {
   return refs;
 }
 
-/** Open `Distill:` issues, as lower-case title + description, to look for a template key in. */
-async function openDistillText(env: Env, companyId: string): Promise<string[]> {
+/**
+ * The words of every open `Distill:` issue's title and description, split on anything outside [a-z0-9-] and
+ * lower-cased, so a key matches only as a whole word (`developer` is not in `senior-developer`).
+ */
+async function openDistillWords(env: Env, companyId: string): Promise<Set<string>> {
   const rows = await env.ctx.db.query<Raw>(
     `SELECT title, description FROM public.issues
       WHERE company_id = $1::uuid AND hidden_at IS NULL AND status NOT IN ('done', 'cancelled') AND title ILIKE 'Distill:%'
       LIMIT 200`,
     [companyId],
   );
-  return rows.map((r) => `${String(r.title ?? "")}\n${String(r.description ?? "")}`.toLowerCase());
+  const words = new Set<string>();
+  for (const r of rows) {
+    for (const word of `${String(r.title ?? "")}\n${String(r.description ?? "")}`.toLowerCase().split(/[^a-z0-9-]+/)) if (word) words.add(word);
+  }
+  return words;
 }
 
 async function alreadyOpened(env: Env, companyId: string, originId: string): Promise<boolean> {
@@ -146,7 +153,7 @@ export async function researchCompany(env: Env, companyId: string): Promise<Omit
 
   const [change, distill, read] = await Promise.all([
     underChange(env, companyId),
-    openDistillText(env, companyId),
+    openDistillWords(env, companyId),
     readAgentRuns(env.ctx, companyId, new Date(now.getTime() - RESEARCH_WINDOW_DAYS * DAY_MS).toISOString()),
   ]);
 
@@ -154,16 +161,18 @@ export async function researchCompany(env: Env, companyId: string): Promise<Omit
   for (const { agent, pack } of packed) {
     const agentId = String(agent.id);
     if ([pack.key, agentId, String(agent.name ?? "")].some((ref) => change.has(ref.toLowerCase()))) continue;
-    if (distill.some((text) => text.includes(pack.key.toLowerCase()))) continue;
+    if (distill.has(pack.key.toLowerCase())) continue;
     const agg = read.aggregates.get(agentId);
     if (!agg || agg.runs < RESEARCH_MIN_RUNS) continue;
+    const rate = failRate(agg);
+    if (rate === null) continue; // no run ended in a verdict (all cancelled, say): there is no rate to rank
     candidates.push({
       agentId,
       name: String(agent.name ?? "Agent"),
       pack,
       runs: agg.runs,
       failed: agg.failed,
-      failRate: failRate(agg) ?? 0,
+      failRate: rate,
       failures: breakdowns(read.reasons, agentId).failures,
     });
   }

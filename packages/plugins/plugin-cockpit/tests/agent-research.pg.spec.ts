@@ -89,6 +89,8 @@ d("weekly agent research (Postgres)", () => {
     expect(created[0]!.description).toContain("fail rate: 70%");
     expect(created[0]!.description).toContain(`current hash: \`${HASH}\``);
     expect(created[0]!.description).toContain("adapter_failed: 21");
+    expect(created[0]!.description).toContain("`review_pass_rate`");
+    expect(created[0]!.description).toContain("`cycle_hours`");
   });
 
   it("does not rank an agent with fewer than 20 runs in the window", async () => {
@@ -118,7 +120,21 @@ d("weekly agent research (Postgres)", () => {
     expect(created[0]!.title).toBe("Autoresearch: Agent code-reviewer (week 41)");
   });
 
-  it("opens nothing on a second run in the same ISO week, then again the next week", async () => {
+  it("matches an open Distill: issue to the whole template key, not a longer key that contains it", async () => {
+    agents.push(distilled(1, "developer"), distilled(2, "senior-developer"));
+    await history(1, 30, 15);
+    await history(2, 30, 15);
+    await h.addIssueToDb({ id: "00000000-0000-4000-8000-0000000000d2", companyId: COMPANY, identifier: "PAR-2", title: "Distill: senior-developer", status: "todo" });
+    expect(await researchCompany(h.env, COMPANY)).toMatchObject({ eligible: 1, opened: 1 });
+    expect(created.map((i) => i.title)).toEqual(["Autoresearch: Agent developer (week 41)"]);
+    await h.addIssueToDb({ id: "00000000-0000-4000-8000-0000000000d3", companyId: COMPANY, identifier: "PAR-3", title: "Distill: developer", status: "in_progress" });
+    created = [];
+    h.clock.now = new Date(T0.getTime() + 86_400_000);
+    await h.client.query(`DELETE FROM public.issues WHERE origin_kind = $1`, [ORIGIN.autoresearch]);
+    expect(await researchCompany(h.env, COMPANY)).toMatchObject({ eligible: 0, opened: 0 });
+  });
+
+  it("opens nothing on a second run in the same ISO week", async () => {
     agents.push(distilled(1), distilled(2));
     await history(1, 30, 15);
     await history(2, 30, 6);
