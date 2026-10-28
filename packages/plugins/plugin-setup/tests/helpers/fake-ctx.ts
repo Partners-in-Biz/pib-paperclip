@@ -87,7 +87,8 @@ export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConf
         [...issues.values()]
           .filter((issue) => issue.companyId === filter.companyId && (!filter.originKind || issue.originKind === filter.originKind) && (!filter.originId || issue.originId === filter.originId))
           .slice(0, filter.limit ?? 50)
-          .map((issue) => ({ ...issue })),
+          // The host cuts list descriptions at 1200 chars (server issues.ts); get returns the full text.
+          .map((issue) => ({ ...issue, description: issue.description.slice(0, 1200) })),
       update: async (id: string, patch: Partial<FakeIssue>, companyId: string) => {
         const issue = issues.get(id);
         if (!issue || issue.companyId !== companyId) throw new Error("issue not found");

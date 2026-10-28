@@ -1,6 +1,7 @@
 // Hourly template-drift job: one open "Template drift: N agents behind pack v2" issue per company,
 // kept up to date, closed at zero. The issue body is the work list for the root sync script, which
 // reads each agent's rendered text itself through the `template-get` tool (proven in PAR-4556).
+import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { COCKPIT_EVENTS, configSaved, createWorkIssue, emptySnapshot, readCompanyRoles, type HealthCheck } from "@partnersinbiz/pib-plugin-kit";
 import { computeDrift, type AgentDrift, type DriftReason } from "./drift.js";
@@ -15,6 +16,8 @@ import { renderInstructions } from "./templates-render.js";
 export const DRIFT_HEALTH_KEY = "templates:drift";
 const CLOSED = new Set(["done", "cancelled"]);
 const AGENT_PAGE = 200;
+// Closed drift issues pile up one per episode; look at enough of them that an open one is never hidden.
+const OPEN_LOOKUP_LIMIT = 200;
 
 export type DriftCompanyResult = "created" | "updated" | "unchanged" | "closed" | "none" | "skipped" | "failed";
 
@@ -84,7 +87,7 @@ async function publishHealth(ctx: PluginContext, companyId: string, check: Healt
 }
 
 async function openDriftIssue(ctx: PluginContext, companyId: string): Promise<{ id: string; title?: string; description?: string | null } | null> {
-  const found = (await ctx.issues.list({ companyId, originKind: `plugin:${PLUGIN_ID}` as never, originId: `template-drift:${companyId}`, limit: 10 })) as Array<{ id: string; status?: string; title?: string; description?: string | null }>;
+  const found = (await ctx.issues.list({ companyId, originKind: `plugin:${PLUGIN_ID}` as never, originId: `template-drift:${companyId}`, limit: OPEN_LOOKUP_LIMIT })) as Array<{ id: string; status?: string; title?: string; description?: string | null }>;
   return found.find((issue) => !CLOSED.has(String(issue.status))) ?? null;
 }
 
@@ -105,9 +108,6 @@ export async function refreshDriftIssue(ctx: PluginContext, companyId: string, t
   if (!found) return { result: "skipped", drifted: 0 };
 
   const results = computeDrift({ templates, agents: live, vars, attachedSkills: {} });
-  // No agent matches any template: this company has no pack, so it gets no issue.
-  if (results.length === 0) return { result: "none", drifted: 0 };
-
   const byKey = new Map(templates.map((template) => [template.key, template]));
   const rows = results
     .filter((drift) => drift.drifted)
@@ -124,8 +124,12 @@ export async function refreshDriftIssue(ctx: PluginContext, companyId: string, t
   let issueId: string | null = open?.id ?? null;
 
   if (rows.length === 0) {
+    // Also reached when no agent matches any template any more (results empty): an open issue still closes.
     if (open) {
-      await ctx.issues.update(open.id, { status: "done", description: `${open.description ?? ""}\n\nNo agent is behind pack v2. Closed by the Setup plugin.`.trim() }, companyId);
+      // issues.list cuts descriptions at 1200 chars: read the full text before appending to it.
+      const full = await ctx.issues.get(open.id, companyId).catch(() => null);
+      const note = "No agent is behind pack v2. Closed by the Setup plugin.";
+      await ctx.issues.update(open.id, { status: "done", ...(full ? { description: `${full.description ?? ""}\n\n${note}`.trim() } : {}) }, companyId);
       result = "closed";
       issueId = null;
     } else {
@@ -133,9 +137,12 @@ export async function refreshDriftIssue(ctx: PluginContext, companyId: string, t
     }
   } else {
     const title = driftTitle(rows.length);
-    const description = driftBody({ companyId, rows });
+    const body = driftBody({ companyId, rows });
+    // issues.list returns only the first 1200 chars of a description, so the change check reads a marker at the top.
+    const marker = `<!-- template-drift:${createHash("sha256").update(body).digest("hex").slice(0, 16)} -->`;
+    const description = `${marker}\n${body}`;
     if (open) {
-      if (open.title === title && open.description === description) {
+      if (open.title === title && (open.description ?? "").startsWith(marker)) {
         result = "unchanged";
       } else {
         await ctx.issues.update(open.id, { title, description }, companyId);

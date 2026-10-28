@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { COCKPIT_EVENTS } from "@partnersinbiz/pib-plugin-kit";
 import { DRIFT_HEALTH_KEY, driftTitle, refreshDriftIssue, templateDrift } from "../src/drift-job.js";
-import { JOBS } from "../src/manifest.js";
+import manifest, { JOBS } from "../src/manifest.js";
 import { varsFor } from "../src/new-company.js";
 import { renderHash } from "../src/render-hash.js";
 import { saveModules } from "../src/service.js";
@@ -42,7 +42,8 @@ function healthOf(emitted: Array<{ name: string; companyId: string; payload: unk
 }
 
 describe("template drift job", () => {
-  it("is declared hourly in the manifest and registered", () => {
+  it("is declared at :30 every hour in the manifest and registered", () => {
+    expect(manifest.jobs?.find((job: { jobKey: string }) => job.jobKey === JOBS.templateDrift)?.schedule).toBe("30 * * * *");
     const { ctx, jobs } = fakeCtx({ companies });
     registerSetup(ctx);
     expect(jobs.has(JOBS.templateDrift)).toBe(true);
@@ -113,5 +114,33 @@ describe("template drift job", () => {
     expect(drift()).toHaveLength(1);
     await templateDrift(ctx);
     expect(drift()).toHaveLength(1);
+  });
+
+  it("with a long body (list cuts descriptions), a second run is unchanged and close keeps the full work list", async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ceo({ id: `agent-${i}`, name: `CEO ${i}` }));
+    const agents = { [A]: many as unknown[] };
+    const { ctx, issues } = fakeCtx({ companies, agents });
+    // Only one agent matches the ceo template, so give each template a matching agent instead.
+    agents[A] = templates.filter((t) => !t.hostOwned).map((t, i) => ({ id: `agent-${i}`, name: t.name, title: t.title ?? null, role: t.role ?? "general", status: "idle", metadata: null }));
+    const first = await refreshDriftIssue(ctx, A, templates);
+    const issue = [...issues.values()][0]!;
+    expect(issue.description.length).toBeGreaterThan(1200);
+    expect((await refreshDriftIssue(ctx, A, templates)).result).toBe("unchanged");
+    expect(first.drifted).toBeGreaterThan(1);
+    agents[A] = [];
+    expect((await refreshDriftIssue(ctx, A, templates)).result).toBe("closed");
+    expect(issue.status).toBe("done");
+    expect(issue.description).toContain("```json");
+    expect(issue.description).toContain("Closed by the Setup plugin");
+  });
+
+  it("closes an open issue when no agent matches any template any more, and reports ok", async () => {
+    const agents = { [A]: [ceo()] as unknown[] };
+    const { ctx, issues, emitted } = fakeCtx({ companies, agents });
+    await refreshDriftIssue(ctx, A, templates);
+    agents[A] = [];
+    expect((await refreshDriftIssue(ctx, A, templates)).result).toBe("closed");
+    expect([...issues.values()][0]!.status).toBe("done");
+    expect(healthOf(emitted, A)?.status).toBe("ok");
   });
 });
