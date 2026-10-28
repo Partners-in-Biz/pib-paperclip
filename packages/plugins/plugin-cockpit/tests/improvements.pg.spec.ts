@@ -200,6 +200,7 @@ d("improvements ledger (Postgres)", () => {
           opened.push(input);
           return { id: `opened-${opened.length}` };
         },
+        list: async (q: { originId?: string }) => opened.filter((o) => o.originId === q.originId),
       };
       team = [{ id: LEAD, name: "Delivery Lead", title: "Delivery Lead", status: "idle" }, developer(null)];
       (h.ctx as unknown as { agents: unknown }).agents = { get: async (id: string) => team.find((a) => a.id === id) ?? null, list: async () => team };
@@ -250,6 +251,41 @@ d("improvements ledger (Postgres)", () => {
       expect(opened[0]).toMatchObject({ companyId: COMPANY, assigneeAgentId: LEAD, description: expect.stringContaining("Rollout stalled") });
       expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ stalled: 0 });
       expect(opened).toHaveLength(1);
+    });
+
+    const measureAt = async (failed: number) => {
+      team = [{ id: LEAD, name: "Delivery Lead", title: "Delivery Lead", status: "idle" }, developer({ pibPack: pack({ appliedAt: day(5).toISOString() }) })];
+      h.clock.now = day(6);
+      await recheckCompany(h.env, COMPANY); // re-arms the window
+      h.clock.now = day(12);
+      await runs(DEV, "succeeded", 20 - failed);
+      if (failed > 0) await runs(DEV, "failed", failed);
+      return recheckCompany(h.env, COMPANY);
+    };
+
+    it("worse: opens exactly one Revert issue for the Delivery Lead, and a second recheck opens none", async () => {
+      const { improvement } = await template();
+      expect(await measureAt(10)).toMatchObject({ measured: 1, worse: 1 });
+      expect((await recheckAtOf(improvement.id)).outcome).toBe("worse");
+      expect(opened).toHaveLength(1);
+      expect(opened[0]).toMatchObject({ companyId: COMPANY, assigneeAgentId: LEAD, title: `Revert: ${improvement.title}`, originId: `cockpit:template-revert:${improvement.id}` });
+      expect(String(opened[0]!.description)).toContain("eval file");
+      expect(await recheckCompany(h.env, COMPANY)).toMatchObject({ measured: 0, worse: 0 });
+      expect(opened).toHaveLength(1);
+    });
+
+    it("improved: opens nothing, and the verdict is in the retro's recent list", async () => {
+      const { improvement } = await template();
+      expect(await measureAt(2)).toMatchObject({ measured: 1, improved: 1 });
+      expect(opened).toHaveLength(0);
+      const brief = await improvementsBrief(h.env, COMPANY);
+      expect(JSON.stringify(brief.recent)).toContain(improvement.id);
+    });
+
+    it("no change: opens nothing", async () => {
+      await template();
+      expect(await measureAt(8)).toMatchObject({ measured: 1, noChange: 1 });
+      expect(opened).toHaveLength(0);
     });
 
     it.each([

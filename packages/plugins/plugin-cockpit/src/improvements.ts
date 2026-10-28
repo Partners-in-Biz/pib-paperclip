@@ -325,6 +325,34 @@ async function tellDeliveryLead(env: Env, row: ImprovementRow, agents: ReadonlyA
   });
 }
 
+/** Opens the one revert issue for a template change that made things worse; the origin id is the ledger row, so a repeat finds it. */
+async function openRevertIssue(env: Env, row: ImprovementRow, detail: string, agents: ReadonlyArray<{ id: string; name?: unknown; title?: unknown }> | null): Promise<void> {
+  const originId = `cockpit:template-revert:${row.id}`;
+  const existing = (await env.ctx.issues.list({ companyId: row.companyId, originKind: ORIGIN.health as `plugin:${string}`, originId, limit: 1 })) as unknown[];
+  if (existing.length > 0) return;
+  const assigneeAgentId = agents ? deliveryLeadId(agents) : null;
+  const description = [
+    `The template change "${row.title}" (${row.sourceRef}) made the number worse. ${detail}`,
+    "",
+    "Rollback PR (into `development`, never `main`):",
+    `1. Revert the edit to the \`${row.targetRef ?? "template"}\` template text.`,
+    "2. Remove the matching entry from the eval file.",
+    "3. Bump the plugin version and say in the PR that agent instructions change on the next deploy.",
+    "",
+    `Ledger entry: ${row.id}.`,
+  ].join("\n");
+  await env.ctx.issues.create({
+    companyId: row.companyId,
+    title: `Revert: ${row.title}`.slice(0, 160),
+    description,
+    status: "todo",
+    priority: "high",
+    ...(assigneeAgentId ? { assigneeAgentId } : {}),
+    originKind: ORIGIN.health as `plugin:${string}`,
+    originId,
+  });
+}
+
 /**
  * Starts the 7-day window when the change is applied. Returns the row to go on with (re-armed or as it was),
  * "wait" while the change is not applied, or "closed" when the rollout stalled. Re-arming sets a date computed
@@ -384,7 +412,10 @@ export async function recheckCompany(env: Env, companyId: string): Promise<Reche
     const done = await finish(env, row, { status: "resolved", outcome: verdict.outcome, resultValue: reading.value, note: verdict.detail });
     result.measured += 1;
     if (verdict.outcome === "improved") result.improved += 1;
-    else if (verdict.outcome === "worse") result.worse += 1;
+    else if (verdict.outcome === "worse") {
+      result.worse += 1;
+      if (row.sourceRef?.startsWith(TEMPLATE_REF)) await openRevertIssue(env, done, verdict.detail, agents ?? null).catch((error) => env.ctx.logger.info("Improvement: the revert issue was not opened", { companyId, id: row.id, error: message(error) }));
+    }
     else if (verdict.outcome === "no_change") result.noChange += 1;
     await recordActivity(env.ctx, companyId, {
       key: `improvement:${done.id}`,
