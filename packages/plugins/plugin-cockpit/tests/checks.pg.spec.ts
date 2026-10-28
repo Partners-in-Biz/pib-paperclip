@@ -7,12 +7,14 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_TOOLS_GRANT, PLUGIN_TOOLS_GRANT, repairUnroutedApprovals } from "@partnersinbiz/pib-plugin-kit";
+import { companyBrief, runTool } from "../src/brief.js";
 import { extraChecks, forgetChecks } from "../src/checks.js";
 import { ensureGrantAsk } from "../src/effects.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { ownSnapshot } from "../src/own.js";
 import { saveTeam } from "../src/roles.js";
 import { confirmAttestation } from "../src/security.js";
+import { TOOL_NAMES } from "../src/tools.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
@@ -368,5 +370,86 @@ d("the Cockpit's extra checks (Postgres)", () => {
         await w.client.query(`ALTER TABLE ${NAMESPACE}.${table}_gone RENAME TO ${table}`);
       }
     });
+  });
+
+  describe("ownChecks hang when a call in ownSnapshot times out", () => {
+    it("hangs memoryStats (one call in ownSnapshot) and marks ownChecks degraded with health unavailable", async () => {
+      const w = await make();
+      const never = <T>() => new Promise<T>(() => {});
+      const origQuery = w.client.query.bind(w.client);
+      let memoryHangFired = false;
+      // Override the db.query to hang the memory call
+      (w.ctx as unknown as { db: unknown }).db = {
+        query: async (sql: string, params?: unknown[]) => {
+          // memoryStats calls memory_facts and memory_briefs tables
+          if (sql.includes(`${NAMESPACE}.memory`) || sql.includes("memory_facts")) {
+            memoryHangFired = true;
+            return await never<unknown[]>();
+          }
+          return origQuery(sql, params);
+        },
+      };
+
+      // Call companyBrief with tight timeout so ownChecks (which contains ownSnapshot) times out
+      const brief = await companyBrief(w.env, A, { sectionMs: 50, totalMs: 500 });
+
+      // When ownChecks times out, it should be marked degraded
+      expect(memoryHangFired).toBe(true);
+      expect(brief.degraded).toContain("ownChecks");
+      // When degraded sections include snapshots or ownChecks, healthAvailable should be false
+      expect(brief.health.healthAvailable).toBe(false);
+      expect(brief.health.status).toBe("unavailable");
+    }, 15_000);
+
+    it("health tool shows 'health unavailable' when ownChecks degraded", async () => {
+      const w = await make();
+      const never = <T>() => new Promise<T>(() => {});
+      const origQuery = w.client.query.bind(w.client);
+      let rolesHangFired = false;
+      // Hang getRoles which is called in ownSnapshot
+      (w.ctx as unknown as { db: unknown }).db = {
+        query: async (sql: string, params?: unknown[]) => {
+          if (sql.includes(`${NAMESPACE}.roles`) && sql.includes("WHERE company_id")) {
+            rolesHangFired = true;
+            return await never<unknown[]>();
+          }
+          return origQuery(sql, params);
+        },
+      };
+
+      const result = await runTool(w.env, TOOL_NAMES.health, { sectionMs: 50, totalMs: 500 }, { agentId: "op", runId: "test", companyId: A, projectId: "test" });
+
+      expect(rolesHangFired).toBe(true);
+      expect(result.content).toContain("health unavailable");
+      const data = result.data as Record<string, unknown>;
+      expect(data.healthAvailable).toBe(false);
+    }, 15_000);
+
+    it("brief tool shows 'health unavailable' in content and today when ownChecks degraded", async () => {
+      const w = await make();
+      const never = <T>() => new Promise<T>(() => {});
+      const origQuery = w.client.query.bind(w.client);
+      let extraHangFired = false;
+      // Hang the extra checks query (part of ownSnapshot)
+      (w.ctx as unknown as { db: unknown }).db = {
+        query: async (sql: string, params?: unknown[]) => {
+          // Hang a query that's part of ownSnapshot's extraChecks
+          if (sql.includes(`${NAMESPACE}.`) && sql.includes("asks")) {
+            extraHangFired = true;
+            return await never<unknown[]>();
+          }
+          return origQuery(sql, params);
+        },
+      };
+
+      const result = await runTool(w.env, TOOL_NAMES.brief, { sectionMs: 50, totalMs: 500 }, { agentId: "op", runId: "test", companyId: A, projectId: "test" });
+
+      expect(extraHangFired).toBe(true);
+      expect(result.content).toContain("health unavailable");
+      const data = result.data as Record<string, unknown>;
+      const brief = data as Record<string, unknown>;
+      expect(brief.today).toBeDefined();
+      expect(String(brief.today)).toContain("unavailable");
+    }, 15_000);
   });
 });
