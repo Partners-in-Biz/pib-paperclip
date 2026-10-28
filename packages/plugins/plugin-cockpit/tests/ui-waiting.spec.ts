@@ -8,7 +8,7 @@ const NOW = new Date("2026-10-28T10:00:00.000Z");
 const linkFor = (path: string) => ({ href: path, onClick: () => {} });
 
 function entry(n: number, extra: Partial<WaitingEntry> = {}): WaitingEntry {
-  return { key: `k${n}`, title: `Issue ${n}`, why: "Needs you", kind: "judgement", href: `/PAR/issues/PAR-${n}`, source: "host", sourceTitle: "Paperclip", since: "2026-10-27T10:00:00.000Z", ...extra };
+  return { key: `k${n}`, title: `Issue ${n}`, why: "Needs you", kind: "judgement", href: `/issues/PAR-${n}`, source: "host", sourceTitle: "Paperclip", since: "2026-10-27T10:00:00.000Z", ...extra };
 }
 const render = (items: WaitingEntry[], limit?: number) =>
   renderToStaticMarkup(createElement(WaitingList, { items, linkFor: linkFor as never, now: NOW, limit }));
@@ -23,8 +23,8 @@ describe("Waiting on you list", () => {
 
   it("shows holds up, age, recommended and the issue id, in the given order", () => {
     const html = render([
-      entry(1, { rank: { identifier: "PAR-1", link: "/PAR/issues/PAR-1", holdsUp: 17, ageHours: 50, recommended: "Review it: approve or ask for changes." } }),
-      entry(2, { rank: { identifier: "PAR-2", link: "/PAR/issues/PAR-2", holdsUp: 0, ageHours: 3, recommended: "Do it, or hand it back with a reason." } }),
+      entry(1, { rank: { identifier: "PAR-1", link: "/issues/PAR-1", holdsUp: 17, ageHours: 50, recommended: "Review it: approve or ask for changes." } }),
+      entry(2, { rank: { identifier: "PAR-2", link: "/issues/PAR-2", holdsUp: 0, ageHours: 3, recommended: "Do it, or hand it back with a reason." } }),
     ]);
     expect(html).toContain("holds up 17 issues");
     expect(html).not.toContain("holds up 0");
@@ -32,7 +32,19 @@ describe("Waiting on you list", () => {
     expect(html).toContain("Recommended:");
     expect(html).toContain("PAR-1 Issue 1");
     expect(html.indexOf("PAR-1 Issue 1")).toBeLessThan(html.indexOf("PAR-2 Issue 2"));
-    expect(html).toContain('href="/PAR/issues/PAR-1"');
+    expect(html).toContain('href="/issues/PAR-1"');
+  });
+
+  it("lists questions from agents before rows, then rows in the order given (holds up first)", () => {
+    const ask = entry(9, { title: "Ask nine", ask: { id: "a", kind: "decision", question: "Which one?", options: [], why: null, askedBy: "Dev", askedAt: "2026-10-27T10:00:00.000Z", dueBy: null, clientName: null }, rank: { identifier: "PAR-9", link: "/issues/PAR-9", holdsUp: 0, ageHours: 1, recommended: "x" } });
+    const big = entry(1, { title: "Big blocker", rank: { identifier: "PAR-1", link: "/issues/PAR-1", holdsUp: 17, ageHours: 1, recommended: "x" } });
+    const small = entry(2, { title: "Small one", rank: { identifier: "PAR-2", link: "/issues/PAR-2", holdsUp: 1, ageHours: 1, recommended: "x" } });
+    const html = render([small, big, ask]);
+    expect(html.indexOf("Which one?")).toBeLessThan(html.indexOf("Small one"));
+    // rows keep the order they were given; mergeWaiting is what sorts by holds up
+    expect(html.indexOf("Small one")).toBeLessThan(html.indexOf("Big blocker"));
+    const sorted = render([big, small, ask]);
+    expect(sorted.indexOf("Big blocker")).toBeLessThan(sorted.indexOf("Small one"));
   });
 
   it("shows the empty state", () => {

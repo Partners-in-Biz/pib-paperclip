@@ -409,6 +409,7 @@ export function WaitingRow({ item, linkFor, now, first }: { item: WaitingEntry; 
 export function WaitingList({ items, linkFor, now, limit }: { items: WaitingEntry[]; linkFor: LinkPropsFor; now: Date; limit?: number }) {
   if (items.length === 0) return <Muted>Nothing waits on you. The agents have what they need.</Muted>;
   const shown = limit ? items.slice(0, limit) : items;
+  // Questions agents asked come first by design (an answer unblocks the agent); the rest keep the holds-up order mergeWaiting gave them.
   const asks = shown.filter((item) => item.ask);
   const rest = shown.filter((item) => !item.ask);
   return (
