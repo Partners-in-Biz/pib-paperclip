@@ -39,6 +39,7 @@ import { credentialsCheck } from "./credentials.js";
 import { registerCockpitEffects, resolveOpenCockpitAsks } from "./effects.js";
 import { activateGoals, businessReviews } from "./goals.js";
 import { ACTIVATE_GOALS_EFFECT } from "./goals-model.js";
+import { agentResearch } from "./agent-research.js";
 import { recheckImprovements } from "./improvements.js";
 import { GROWTH_VERDICT_EVENT, GROWTH_VERDICT_SOURCES, onGrowthVerdictEvent } from "./growth-ledger.js";
 import { growthReviews } from "./growth-review-run.js";
@@ -536,6 +537,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ctx.jobs.register(JOBS.closeoutSweep, async () => {
     ctx.logger.info("Close-out sweep", await trackJob(ctx, JOBS.closeoutSweep, () => closeoutSweep(env)));
   });
+  ctx.jobs.register(JOBS.agentResearch, async () => {
+    const result = await trackJob(ctx, JOBS.agentResearch, () => agentResearch(env));
+    ctx.logger.info(result.opened === 0 ? "Agent research: nothing opened (no eligible agent, or this week's issues already exist)" : "Agent research", result);
+  });
+
   ctx.jobs.register(JOBS.improvementsRecheck, async () => {
     ctx.logger.info("Improvements re-check", await trackJob(ctx, JOBS.improvementsRecheck, () => recheckImprovements(env)));
   });
