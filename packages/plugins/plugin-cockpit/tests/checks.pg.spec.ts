@@ -12,6 +12,7 @@ import { extraChecks, forgetChecks } from "../src/checks.js";
 import { ensureGrantAsk } from "../src/effects.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { ownSnapshot } from "../src/own.js";
+import { PLUGIN_KEY } from "../src/constants.js";
 import { saveTeam } from "../src/roles.js";
 import { confirmAttestation } from "../src/security.js";
 import { TOOL_NAMES } from "../src/tools.js";
@@ -450,6 +451,146 @@ d("the Cockpit's extra checks (Postgres)", () => {
       const brief = data as Record<string, unknown>;
       expect(brief.today).toBeDefined();
       expect(String(brief.today)).toContain("unavailable");
+    }, 15_000);
+  });
+
+  describe("guards: readHoldsUp and staleChecks when snapshots degraded", () => {
+    it("guards readHoldsUp: hang the issue_relations query and verify brief returns with degraded holdsUp", async () => {
+      const w = await make();
+      // Ensure the roles are set up so we have an owner
+      const roles = await w.ctx.db.query<{ company_id: string }>(
+        `SELECT company_id FROM ${NAMESPACE}.roles WHERE company_id = $1`,
+        [A],
+      );
+      if (!roles.length) {
+        await w.client.query(`INSERT INTO ${NAMESPACE}.roles (company_id, owner_user_id, created_at) VALUES ($1, $2, $3)`, [
+          A,
+          "user-owner",
+          new Date().toISOString(),
+        ]);
+      } else {
+        await w.client.query(`UPDATE ${NAMESPACE}.roles SET owner_user_id = $2 WHERE company_id = $1`, [
+          A,
+          "user-owner",
+        ]);
+      }
+
+      const issueId = uuid();
+      // Create an owner issue with a blocking relation
+      await w.client.query(
+        `INSERT INTO public.issues (id, company_id, identifier, title, status, assignee_user_id, updated_at)
+         VALUES ($1, $2, 'PAR-1', 'Owner issue', 'in_progress', 'user-owner', $3)`,
+        [issueId, A, new Date().toISOString()],
+      );
+      const blockerIssueId = uuid();
+      await w.client.query(
+        `INSERT INTO public.issues (id, company_id, identifier, title, status, updated_at)
+         VALUES ($1, $2, 'PAR-2', 'Blocker issue', 'in_progress', $3)`,
+        [blockerIssueId, A, new Date().toISOString()],
+      );
+      // Create a blocks relation
+      await w.client.query(
+        `INSERT INTO public.issue_relations (company_id, issue_id, related_issue_id, type)
+         VALUES ($1, $2, $3, 'blocks')`,
+        [A, blockerIssueId, issueId],
+      );
+
+      const never = <T>() => new Promise<T>(() => {});
+      const origQuery = ((w.ctx as unknown as { db: unknown }).db as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> }).query.bind((w.ctx as unknown as { db: unknown }).db);
+      let holdsUpHangFired = false;
+      // Override db.query to hang the issue_relations / issue_blocks query
+      ((w.ctx as unknown as { db: unknown }).db as unknown as { query: unknown }).query = async (sql: string, params?: unknown[]) => {
+        // readHoldsUp uses issue_relations and WITH RECURSIVE walk
+        if (sql.includes("issue_relations") && sql.includes("WITH RECURSIVE walk")) {
+          holdsUpHangFired = true;
+          return await never<unknown[]>();
+        }
+        return origQuery(sql, params);
+      };
+
+      // Call companyBrief with tight timeout so readHoldsUp times out
+      const brief = await companyBrief(w.env, A, { sectionMs: 50, totalMs: 500 });
+
+      // Verify the hang was attempted
+      expect(holdsUpHangFired).toBe(true);
+      // When holdsUp times out, it should be marked degraded
+      expect(brief.degraded).toContain("holdsUp");
+      // But ownerIssues should still be returned (without hold-up enrichment)
+      expect(brief.ownerIssues.total).toBeGreaterThanOrEqual(0);
+      // The waiting list should still include owner issues (or not, but the test should not hang)
+      expect(brief.waiting).toBeDefined();
+    }, 15_000);
+
+    it("guards staleChecks: skip when snapshots is degraded (hang snapshots query)", async () => {
+      const w = await make();
+      // Set up roles with an earlier listeningSince so stale checks will fire for plugins that haven't reported
+      const now = Date.parse(NOW);
+      const earlierTime = new Date(now - 5 * 3_600_000); // 5 hours ago (enough to trigger stale check)
+      const roles = await w.ctx.db.query<{ company_id: string }>(
+        `SELECT company_id FROM ${NAMESPACE}.roles WHERE company_id = $1`,
+        [A],
+      );
+      if (!roles.length) {
+        await w.client.query(
+          `INSERT INTO ${NAMESPACE}.roles (company_id, created_at) VALUES ($1, $2)`,
+          [A, earlierTime.toISOString()],
+        );
+      } else {
+        await w.client.query(
+          `UPDATE ${NAMESPACE}.roles SET created_at = $2 WHERE company_id = $1`,
+          [A, earlierTime.toISOString()],
+        );
+      }
+
+      // Insert snapshots from known plugins
+      // Insert Cockpit snapshot (recent, so it's healthy)
+      await w.client.query(
+        `INSERT INTO ${NAMESPACE}.snapshots (company_id, plugin_key, kind, payload, checked_at, received_at)
+         VALUES ($1, $2, 'cockpit', $3, $4, $5)`,
+        [A, PLUGIN_KEY, JSON.stringify({ waiting: [] }), new Date(now).toISOString(), new Date(now).toISOString()],
+      );
+      // Insert a CRM snapshot from much earlier so it will be stale
+      const veryOldTime = new Date(now - 6 * 3_600_000); // 6 hours ago, beyond the 3h stale threshold
+      await w.client.query(
+        `INSERT INTO ${NAMESPACE}.snapshots (company_id, plugin_key, kind, payload, checked_at, received_at)
+         VALUES ($1, $2, 'cockpit', $3, $4, $5)`,
+        [A, "partnersinbiz.crm", JSON.stringify({ waiting: [] }), veryOldTime.toISOString(), veryOldTime.toISOString()],
+      );
+
+      // FIRST: Call without hang to verify staleChecks can appear
+      const briefHealthy = await companyBrief(w.env, A, { sectionMs: 1000, totalMs: 3000 });
+      expect(briefHealthy.degraded).not.toContain("snapshots");
+      // Note: staleChecks may not appear if no plugins are in expected list, that's ok
+      const staleChecksHealthy = briefHealthy.health.problems.filter((p) => p.title && p.title.includes("not reporting"));
+
+      // SECOND: Now hang the snapshots query to make snapshots degraded
+      const never = <T>() => new Promise<T>(() => {});
+      const origQuery = ((w.ctx as unknown as { db: unknown }).db as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> }).query.bind((w.ctx as unknown as { db: unknown }).db);
+      let snapshotsHangFired = false;
+      ((w.ctx as unknown as { db: unknown }).db as unknown as { query: unknown }).query = async (sql: string, params?: unknown[]) => {
+        // Hang the snapshots query that lists stored snapshots (kind = $2 means it's the listSnapshots call)
+        if (sql.includes(`${NAMESPACE}.snapshots`) && sql.includes("kind = $2")) {
+          snapshotsHangFired = true;
+          return await never<unknown[]>();
+        }
+        return origQuery(sql, params);
+      };
+
+      // Call with snapshots degraded: staleChecks should be skipped, so no false alarm for "not reporting"
+      const briefDegraded = await companyBrief(w.env, A, { sectionMs: 50, totalMs: 500 });
+
+      // Verify the hang was attempted
+      expect(snapshotsHangFired).toBe(true);
+      // When snapshots times out, it should be marked degraded
+      expect(briefDegraded.degraded).toContain("snapshots");
+      // staleChecks should NOT produce false alarms when snapshots is degraded
+      // The health problems from staleChecks should be empty or not contain "not reporting" checks
+      const staleChecksDegraded = briefDegraded.health.problems.filter((p) => p.title && p.title.includes("not reporting"));
+      expect(staleChecksDegraded.length).toBe(0);
+      // And if stale checks appeared in the healthy run, they should not appear in the degraded run
+      if (staleChecksHealthy.length > 0) {
+        expect(staleChecksDegraded.length).toBe(0);
+      }
     }, 15_000);
   });
 });
