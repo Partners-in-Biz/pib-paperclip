@@ -916,11 +916,14 @@ export function activityGroups(input: {
 // Summary line
 // ---------------------------------------------------------------------------
 
-export function todayLine(input: { waiting: number; health: HealthStatus; problems: number; agentAlerts: number; activeAgents: number | null }): string {
+export function todayLine(input: { waiting: number; health: HealthStatus; healthAvailable?: boolean; degraded?: string[]; problems: number; agentAlerts: number; activeAgents: number | null }): string {
   const parts: string[] = [];
   parts.push(input.waiting === 0 ? "Nothing waiting on you" : `${input.waiting} ${input.waiting === 1 ? "thing waits" : "things wait"} on you`);
   if (input.problems > 0) parts.push(`${input.problems} ${input.problems === 1 ? "problem" : "problems"} to fix`);
-  else parts.push(input.health === "ok" ? "all systems ok" : "a few warnings");
+  else if (input.healthAvailable === false) {
+    const unavailableSections = (input.degraded ?? []).filter((s) => s === "snapshots" || s === "ownChecks").join(", ");
+    parts.push(unavailableSections ? `health unavailable (${unavailableSections} timed out)` : "health unavailable");
+  } else parts.push(input.health === "ok" ? "all systems ok" : "a few warnings");
   if (input.agentAlerts > 0) parts.push(`${input.agentAlerts} agent ${input.agentAlerts === 1 ? "alert" : "alerts"}`);
   if (input.activeAgents !== null) parts.push(`${input.activeAgents} ${input.activeAgents === 1 ? "agent" : "agents"} working`);
   return `${parts.join(" · ")}.`;
