@@ -4,7 +4,7 @@
  * everything else is still returned.
  */
 import { describe, expect, it } from "vitest";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { ToolRunContext, PluginContext } from "@paperclipai/plugin-sdk";
 import { companyBrief, ensureBriefIssue, runTool } from "../src/brief.js";
 import { briefBudget } from "../src/budget.js";
 import { TOOL_NAMES } from "../src/tools.js";
@@ -14,6 +14,21 @@ import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 const A = "company-a";
 const never = <T>() => new Promise<T>(() => {});
 const RUN: ToolRunContext = { agentId: "test-agent", runId: "test-run", companyId: A, projectId: "test-project" };
+
+function setApprovalsList(ctx: PluginContext, fn: () => Promise<unknown>): void {
+  const mutable = ctx.approvals as unknown as Record<string, unknown>;
+  mutable.list = fn;
+}
+
+function setStateGet(ctx: PluginContext, fn: (key: unknown) => Promise<unknown>): void {
+  const mutable = ctx.state as unknown as Record<string, unknown>;
+  mutable.get = fn;
+}
+
+function setCompaniesGet(ctx: PluginContext, fn: (id: string) => Promise<unknown>): void {
+  const mutable = ctx.companies as unknown as Record<string, unknown>;
+  mutable.get = fn;
+}
 
 function setup() {
   const fake = fakeCtx({
@@ -53,7 +68,7 @@ describe("briefBudget", () => {
 describe("companyBrief with a hanging read", () => {
   it("answers within the budget, with the hung section listed in degraded", async () => {
     const s = setup();
-    (s.ctx as any).approvals.list = () => never();
+    setApprovalsList(s.ctx, () => never());
     const started = Date.now();
     const brief = await companyBrief(s.env, A, { sectionMs: 100, totalMs: 1_000 });
     expect(Date.now() - started).toBeLessThan(5_000);
@@ -64,12 +79,12 @@ describe("companyBrief with a hanging read", () => {
   it("hangs setupSummary and marks setupMissing as null", async () => {
     const s = setup();
     const origStateGet = s.ctx.state.get.bind(s.ctx.state);
-    (s.ctx as any).state.get = async (key: any) => {
-      if (key?.stateKey === "setup-summary") {
+    setStateGet(s.ctx, async (key: unknown) => {
+      if (typeof key === "object" && key !== null && (key as Partial<{ stateKey: string }>).stateKey === "setup-summary") {
         return await never();
       }
-      return origStateGet(key);
-    };
+      return origStateGet(key as Parameters<typeof origStateGet>[0]);
+    });
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
     expect(brief.degraded).toContain("setupSummary");
     expect(brief.setupMissing).toBeNull();
@@ -77,9 +92,9 @@ describe("companyBrief with a hanging read", () => {
 
   it("hangs company.get and includes it in degraded", async () => {
     const s = setup();
-    (s.ctx as any).companies.get = async (id: string) => {
-      return await never<any>();
-    };
+    setCompaniesGet(s.ctx, async (id: string) => {
+      return await never<unknown>();
+    });
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
     expect(brief.degraded).toContain("company");
   }, 10_000);
@@ -181,7 +196,7 @@ describe("companyBrief with a hanging read", () => {
 
   it("activity is returned as array even with degraded sections", async () => {
     const s = setup();
-    (s.ctx as any).approvals.list = () => never();
+    setApprovalsList(s.ctx, () => never());
     const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
     expect(Array.isArray(brief.activity)).toBe(true);
   }, 10_000);
@@ -223,7 +238,7 @@ describe("runTool with degraded sections", () => {
 
   it("waiting tool shows degraded when approvals times out", async () => {
     const s = setup();
-    (s.ctx as any).approvals.list = () => never();
+    setApprovalsList(s.ctx, () => never());
     const result = await runTool(s.env, TOOL_NAMES.waiting, {}, RUN);
     const data = result.data as Record<string, unknown>;
     expect((data.degraded as string[])).toContain("approvals");
