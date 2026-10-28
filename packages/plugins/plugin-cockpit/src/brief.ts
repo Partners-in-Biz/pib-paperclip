@@ -397,13 +397,18 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     guard("repairs", () => listRepairs(env.ctx, companyId, { limit: 100 }).then((rows) => repairLines(rows)), [] as string[]),
     guard("expectedPlugins", () => expectedPlugins(env, companyId, Object.keys(data.receivedAt)), [] as Awaited<ReturnType<typeof expectedPlugins>>),
   ]);
-  const stale = staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
+  // When snapshots is degraded, skip stale checks (they would be false alarms).
+  const stale = budget.degraded.includes("snapshots")
+    ? []
+    : staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
   const waiting = waitingFrom(data);
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
+  // Mark health unavailable when snapshots or ownChecks is degraded.
+  const healthAvailable = !budget.degraded.includes("snapshots") && !budget.degraded.includes("ownChecks");
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;
   const names = new Map(data.agents.map((a) => [a.id, a.name]));
   const graph = buildFlows({ snapshots: data.snapshots, roles, agents: data.agents });
@@ -414,6 +419,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     today: todayLine({
       waiting: waiting.length,
       health,
+      healthAvailable,
+      degraded: budget.degraded,
       problems: problemCount,
       agentAlerts: agents.filter((a) => a.alert).length,
       activeAgents: agents.filter((a) => ["active", "running", "idle"].includes(a.status)).length,
@@ -466,6 +473,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     ),
     health: {
       status: health,
+      healthAvailable,
       problems: groups.flatMap((g) => g.checks.filter((c) => c.status !== "ok").map((c) => ({ plugin: g.title, status: c.status, title: c.title, detail: c.detail ?? null, fix: c.fix ?? null, href: link(c.href), since: c.since ?? null }))),
       agentAlerts: problems.entries.filter((e) => e.plugin === "agents").map((e) => ({ title: e.title, detail: e.detail ?? null, error: e.raw ?? null, href: link(e.href) })),
     },
@@ -523,7 +531,9 @@ export async function ensureBriefIssue(env: Env, companyId: string): Promise<{ i
     const issue = await env.ctx.issues.get(existing, companyId).catch(() => null);
     if (issue && !["cancelled"].includes(String(issue.status))) return { issueId: existing, created: false };
   }
-  const roles = await getRoles(env.ctx, companyId);
+  // Guard getRoles with a time limit; fall back to null on timeout.
+  const budget = newBudget(env, { sectionMs: 1000, totalMs: 3000 });
+  const roles = await budget.guard("ownerRoles", () => getRoles(env.ctx, companyId), null);
   const owner = assignableUser(roles?.ownerUserId ?? null);
   const issue = await env.ctx.issues.create({
     companyId,
@@ -571,18 +581,26 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
     if (name === TOOL_NAMES.brief) {
       const brief = await companyBrief(env, companyId, { windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined });
       const stuck = brief.stuckFlows.length ? ` ${brief.stuckFlows.length} stuck ${brief.stuckFlows.length === 1 ? "stage" : "stages"} in the flows.` : "";
-      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${brief.health.status}, ${brief.agents.length} agents.${stuck}`, brief);
+      const healthText = brief.health.healthAvailable === false ? "unavailable" : brief.health.status;
+      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${healthText}, ${brief.agents.length} agents.${stuck}`, brief);
     }
     if (name === TOOL_NAMES.health) {
       const brief = await companyBrief(env, companyId);
       const include = p.includeWarnings !== false;
       const problems = brief.health.problems.filter((c) => include || c.status === "bad");
+      const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
       const degradedText = brief.degraded.length > 0 ? ` ${brief.degraded.join(", ")} unavailable (timed out).` : "";
-      const summary = brief.degraded.length > 0 || problems.length > 0 || brief.health.agentAlerts.length > 0
-        ? `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.${degradedText}`
-        : "All systems ok.";
+      let summary: string;
+      if (unavailableSections.length > 0) {
+        summary = `health unavailable (${unavailableSections.join(", ")} timed out).`;
+      } else if (brief.degraded.length > 0 || problems.length > 0 || brief.health.agentAlerts.length > 0) {
+        summary = `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.${degradedText}`;
+      } else {
+        summary = "All systems ok.";
+      }
       return toolOk(summary, {
         status: brief.health.status,
+        healthAvailable: brief.health.healthAvailable,
         problems,
         agentAlerts: brief.health.agentAlerts,
         degraded: brief.degraded,
@@ -590,8 +608,16 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
     }
     if (name === TOOL_NAMES.waiting) {
       const brief = await companyBrief(env, companyId);
-      const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
-      const summary = brief.waiting.length === 0 && brief.degraded.length === 0 ? "Nothing waits on the owner." : `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
+      const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
+      let summary: string;
+      if (unavailableSections.length > 0) {
+        summary = `Waiting list incomplete: ${unavailableSections.join(", ")} unavailable (timed out).`;
+      } else if (brief.waiting.length === 0 && brief.degraded.length === 0) {
+        summary = "Nothing waits on the owner.";
+      } else {
+        const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
+        summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
+      }
       return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {

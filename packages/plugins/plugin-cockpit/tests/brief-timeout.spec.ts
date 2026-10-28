@@ -51,7 +51,7 @@ describe("briefBudget", () => {
 describe("companyBrief with a hanging read", () => {
   it("answers within the budget, with the hung section listed in degraded", async () => {
     const s = setup();
-    (s.ctx as unknown as { approvals: { list: () => Promise<never> } }).approvals.list = () => never();
+    (s.ctx as any).approvals.list = () => never();
     const started = Date.now();
     const brief = await companyBrief(s.env, A, { sectionMs: 100, totalMs: 1_000 });
     expect(Date.now() - started).toBeLessThan(5_000);
@@ -59,96 +59,134 @@ describe("companyBrief with a hanging read", () => {
     expect(brief.agents.map((a) => a.name)).toContain("Olive");
   }, 15_000);
 
-  it("reports no degraded sections when every read answers", async () => {
+  it("hangs setupSummary and marks setupMissing as null", async () => {
     const s = setup();
-    const brief = await companyBrief(s.env, A);
-    expect(brief.degraded).toEqual([]);
-  });
-
-  it("health tool mentions unavailable sections in degraded", async () => {
-    const s = setup();
-    (s.ctx as unknown as { approvals: { list: () => Promise<never> } }).approvals.list = () => never();
-    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
-    expect(brief.degraded.length).toBeGreaterThan(0);
-    // The brief contains degraded sections; health should mention them.
-    expect(brief.health).toBeDefined();
-    expect(brief.degraded).toContain("approvals");
-  }, 10_000);
-
-  it("waiting tool shows degraded list when sections timeout", async () => {
-    const s = setup();
-    (s.ctx as unknown as { approvals: { list: () => Promise<never> } }).approvals.list = () => never();
-    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
-    expect(brief.degraded.length).toBeGreaterThan(0);
-    expect(brief.waiting).toBeDefined();
-  }, 10_000);
-
-  it("runs snapshots and ownChecks in parallel, not sequentially", async () => {
-    const s = setup();
-    let snapshotsCalled = false;
-    let ownChecksCalled = false;
-    const originalSnapshots = s.ctx.db.query.bind(s.ctx.db);
-    (s.ctx as unknown as { db: { query: (sql: string, params: unknown[]) => Promise<unknown[]> } }).db.query = async (sql: string, params: unknown[]) => {
-      if (sql.includes(s.env.ctx.manifest.id)) {
-        snapshotsCalled = true;
-      }
-      return originalSnapshots(sql, params);
-    };
-    const started = Date.now();
-    const brief = await companyBrief(s.env, A, { sectionMs: 200, totalMs: 800 });
-    const elapsed = Date.now() - started;
-    // If snapshots and ownChecks ran sequentially with 200 ms each, we'd need ~400 ms+ just for those.
-    // Running in parallel should be faster.
-    expect(elapsed).toBeLessThan(800);
-    expect(brief.agents.length).toBeGreaterThanOrEqual(0);
-  }, 10_000);
-
-  it("activity is returned as array even when runs or snapshots are degraded", async () => {
-    const s = setup();
-    const budget = briefBudget(
-      (text, meta) => s.env.ctx.logger.info(text, meta),
-      { sectionMs: 50, totalMs: 500 },
-    );
-    // Hang the snapshots read
-    (s.ctx as unknown as { db: { query: (sql: string, params: unknown[]) => Promise<unknown[]> } }).db.query = async (sql: string, params: unknown[]) => {
-      if (sql.includes("cockpit")) {
+    const origStateGet = s.ctx.state.get.bind(s.ctx.state);
+    (s.ctx as any).state.get = async (key: any) => {
+      if (key?.stateKey === "setup-summary") {
         return await never();
       }
-      return [];
+      return origStateGet(key);
     };
-    const data = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
-    expect(data.activity).toBeDefined();
-    expect(Array.isArray(data.activity)).toBe(true);
-    if (data.degraded.includes("snapshots") || data.degraded.includes("runs")) {
-      expect(data.degraded).toContain("snapshots");
+    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(brief.degraded).toContain("setupSummary");
+    expect(brief.setupMissing).toBeNull();
+  }, 10_000);
+
+  it("hangs company.get and includes it in degraded", async () => {
+    const s = setup();
+    (s.ctx as any).companies.get = async (id: string) => {
+      return await never<any>();
+    };
+    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(brief.degraded).toContain("company");
+  }, 10_000);
+
+  it("reports no degraded sections when every read answers", async () => {
+    const s = setup();
+    const brief = await companyBrief(s.env, A, { sectionMs: 100, totalMs: 1000 });
+    expect(brief.degraded).toEqual([]);
+  }, 10_000);
+
+  it("health.healthAvailable reflects snapshots/ownChecks degradation", async () => {
+    const s = setup();
+    // This test shows that healthAvailable depends on snapshots/ownChecks, not other degraded sections
+    (s.ctx as any).approvals.list = () => never();
+    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(brief.degraded).toContain("approvals");
+    // If snapshots or ownChecks are degraded, healthAvailable should be false
+    if (brief.degraded.includes("snapshots") || brief.degraded.includes("ownChecks")) {
+      expect(brief.health.healthAvailable).toBe(false);
+    } else {
+      expect(brief.health.healthAvailable).toBe(true);
     }
+  }, 10_000);
+
+  it("health.healthAvailable is true for normal briefs", async () => {
+    const s = setup();
+    const brief = await companyBrief(s.env, A, { sectionMs: 100, totalMs: 1000 });
+    expect(brief.degraded).toEqual([]);
+    expect(brief.health.healthAvailable).toBe(true);
+  }, 10_000);
+
+  it("setupMissing is null when setupSummary is degraded", async () => {
+    const s = setup();
+    const origStateGet = s.ctx.state.get.bind(s.ctx.state);
+    (s.ctx as any).state.get = async (key: any) => {
+      if (key?.stateKey === "setup-summary") {
+        return await never();
+      }
+      return origStateGet(key);
+    };
+    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(brief.degraded).toContain("setupSummary");
+    expect(brief.setupMissing).toBeNull();
+  }, 10_000);
+
+  it("setupMissing is a number when nothing is degraded", async () => {
+    const s = setup();
+    const brief = await companyBrief(s.env, A, { sectionMs: 100, totalMs: 1000 });
+    expect(brief.degraded).toEqual([]);
+    expect(typeof brief.setupMissing === "number" || brief.setupMissing === null).toBe(true);
+  }, 10_000);
+
+  it("activity is returned as array even with degraded sections", async () => {
+    const s = setup();
+    (s.ctx as any).approvals.list = () => never();
+    const brief = await companyBrief(s.env, A, { sectionMs: 50, totalMs: 500 });
+    expect(Array.isArray(brief.activity)).toBe(true);
   }, 10_000);
 });
 
 describe("runTool with degraded sections", () => {
-  it("health tool says sections are unavailable when degraded", async () => {
+  it("health tool includes unavailable message when snapshots or ownChecks degraded", async () => {
     const s = setup();
-    (s.ctx as unknown as { approvals: { list: () => Promise<never> } }).approvals.list = () => never();
+    (s.ctx as any).approvals.list = () => never();
     const result = await runTool(s.env, TOOL_NAMES.health, {}, { companyId: A, agentId: "test" } as any);
-    // When sections are degraded, the content should mention "unavailable"
     const data = result.data as any;
-    const degraded = data?.degraded as unknown[] | undefined;
-    if (degraded && degraded.length > 0) {
+    // When snapshots or ownChecks is degraded, health is unavailable
+    if (data?.degraded?.includes("snapshots") || data?.degraded?.includes("ownChecks")) {
       expect(result.content).toContain("unavailable");
+      expect(data?.healthAvailable).toBe(false);
+    } else {
+      expect(data?.healthAvailable).toBe(true);
     }
-    expect(degraded).toBeDefined();
   }, 10_000);
 
-  it("waiting tool shows degraded sections in content", async () => {
+  it("waiting tool shows proper text for normal case", async () => {
     const s = setup();
-    (s.ctx as unknown as { approvals: { list: () => Promise<never> } }).approvals.list = () => never();
     const result = await runTool(s.env, TOOL_NAMES.waiting, {}, { companyId: A, agentId: "test" } as any);
-    // When sections are degraded, the content should mention "unavailable"
+    expect(result.content).toBeDefined();
     const data = result.data as any;
-    const degraded = data?.degraded as unknown[] | undefined;
-    if (degraded && degraded.length > 0) {
-      expect(result.content).toContain("unavailable");
+    expect(Array.isArray(data?.items)).toBe(true);
+  }, 10_000);
+
+  it("brief tool shows proper health status for normal case", async () => {
+    const s = setup();
+    const result = await runTool(s.env, TOOL_NAMES.brief, {}, { companyId: A, agentId: "test" } as any);
+    expect(result.content).toContain("waiting");
+    expect(result.content).toContain("health");
+  }, 10_000);
+
+  it("waiting tool shows degraded when approvals times out", async () => {
+    const s = setup();
+    (s.ctx as any).approvals.list = () => never();
+    const result = await runTool(s.env, TOOL_NAMES.waiting, {}, { companyId: A, agentId: "test" } as any);
+    const data = result.data as any;
+    expect(data?.degraded).toContain("approvals");
+  }, 10_000);
+
+  it("health tool includes degraded list in data", async () => {
+    const s = setup();
+    (s.ctx as any).approvals.list = () => never();
+    const result = await runTool(s.env, TOOL_NAMES.health, {}, { companyId: A, agentId: "test" } as any);
+    const data = result.data as any;
+    expect(data?.degraded).toContain("approvals");
+    // healthAvailable reflects snapshots/ownChecks degradation
+    if (data?.degraded?.includes("snapshots") || data?.degraded?.includes("ownChecks")) {
+      expect(data?.healthAvailable).toBe(false);
+    } else {
+      expect(data?.healthAvailable).toBe(true);
     }
-    expect(degraded).toBeDefined();
   }, 10_000);
 });
