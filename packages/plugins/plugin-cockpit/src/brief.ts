@@ -16,6 +16,7 @@ import { buildFlows, type FlowStageView } from "./flows.js";
 import { goalViews, goalViewsBrief } from "./goals.js";
 import { countBlockedUncovered } from "./metrics.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
+import { readHoldsUp } from "./holds-up.js";
 import { improvementsBrief } from "./improvements.js";
 import { agentMeasureBriefs, type AgentMeasureBrief } from "./measure.js";
 import {
@@ -67,28 +68,42 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
   }
 }
 
-/** Open issues assigned to a person (core read of public.issues). */
-export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<IssueLite[]> {
-  if (!userId) return [];
+/** Most owner issues listed; past this the rest are counted but not shown. */
+export const OWNER_ISSUE_CEILING = 500;
+const OWNER_ISSUE_PAGE = 100;
+
+/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. `total` is the real count; `more` is set when some are not shown. */
+export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<{ items: IssueLite[]; total: number; more: boolean }> {
+  if (!userId) return { items: [], total: 0, more: false };
   try {
-    const rows = await ctx.db.query<Record<string, unknown>>(
-      `SELECT id, identifier, title, status, priority, updated_at, created_at FROM public.issues
-        WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
-        ORDER BY updated_at DESC LIMIT 50`,
-      [companyId, userId],
-    );
-    return rows.map((row) => ({
-      id: String(row.id),
-      identifier: row.identifier == null ? null : String(row.identifier),
-      title: String(row.title ?? ""),
-      status: String(row.status ?? ""),
-      priority: row.priority == null ? null : String(row.priority),
-      updatedAt: iso(row.updated_at),
-      createdAt: iso(row.created_at),
-    }));
+    const items: IssueLite[] = [];
+    let total = 0;
+    while (items.length < OWNER_ISSUE_CEILING) {
+      const rows = await ctx.db.query<Record<string, unknown>>(
+        `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
+          WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
+          ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
+        [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - items.length), items.length],
+      );
+      if (!rows.length) break;
+      total = Number(rows[0]!.total) || items.length + rows.length;
+      for (const row of rows) {
+        items.push({
+          id: String(row.id),
+          identifier: row.identifier == null ? null : String(row.identifier),
+          title: String(row.title ?? ""),
+          status: String(row.status ?? ""),
+          priority: row.priority == null ? null : String(row.priority),
+          updatedAt: iso(row.updated_at),
+          createdAt: iso(row.created_at),
+        });
+      }
+      if (items.length >= total) break;
+    }
+    return { items, total: Math.max(total, items.length), more: total > items.length };
   } catch (error) {
     ctx.logger.info("Cockpit issue read failed", { companyId, error: message(error) });
-    return [];
+    return { items: [], total: 0, more: false };
   }
 }
 
@@ -196,6 +211,9 @@ export interface CompanyData {
   runStats: RunStat[];
   approvals: ApprovalLite[];
   ownerIssues: IssueLite[];
+  /** All open owner issues counted, and whether the list was cut at the ceiling. */
+  ownerIssuesTotal?: number;
+  ownerIssuesMore?: boolean;
   setupMissing: number;
   /** The open Finish setup issue (from the Setup plugin's count), listed once as the setup item. */
   setupIssueId?: string | null;
@@ -213,7 +231,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   const roles = await getRoles(env.ctx, companyId);
   const stored = await storedSnapshots(env, companyId);
   const own = await ownSnapshot(env, companyId);
-  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
+  const [agents, runStats, approvals, ownerList, statuses, asks, unassigned, repairs] = await Promise.all([
     listAgents(env, companyId),
     listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
     listApprovals(env.ctx, companyId),
@@ -229,6 +247,12 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
       return [] as RepairRow[];
     }),
   ]);
+  const holds = await readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id));
+  const now = env.now().getTime();
+  const ownerIssues = ownerList.items.map((i) => {
+    const since = Date.parse(i.createdAt ?? i.updatedAt ?? "");
+    return { ...i, holdsUp: holds.get(i.id) ?? 0, ageHours: Number.isFinite(since) ? Math.max(0, Math.floor((now - since) / 3_600_000)) : null };
+  });
   const enabled = await enabledModules(env, companyId, Object.keys(statuses));
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
   const setup = await readSetupSummary(env, companyId);
@@ -240,6 +264,8 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     runStats,
     approvals,
     ownerIssues,
+    ownerIssuesTotal: ownerList.total,
+    ownerIssuesMore: ownerList.more,
     setupMissing: missing,
     setupIssueId: setup?.finishIssueId ?? null,
     ownerUserId: roles?.ownerUserId ?? null,
@@ -435,9 +461,12 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       issueId: w.issueId ?? null,
       since: w.since ?? null,
       from: w.sourceTitle,
+      ...(w.rank ? { identifier: w.rank.identifier, link: link(w.rank.link), holdsUp: w.rank.holdsUp, ageHours: w.rank.ageHours, recommended: w.rank.recommended } : {}),
       ...(w.ask ? { question: { askKind: w.ask.kind, options: w.ask.options, askedBy: w.ask.askedBy, dueBy: w.ask.dueBy } } : {}),
       ...(w.examples ? { examples: w.examples.map((e) => ({ title: e.title, href: link(e.href), since: e.since ?? null })) } : {}),
     })),
+    /** Owner issues counted, and whether some are not shown (list stops at the ceiling). */
+    ownerIssues: { total: data.ownerIssuesTotal ?? data.ownerIssues.length, moreNotShown: data.ownerIssuesMore ?? false },
     /** Questions agents asked the owner, oldest first: answered on the issue, they go back to the agent. */
     asks: data.asks.map((a) => ({
       askId: a.id,
