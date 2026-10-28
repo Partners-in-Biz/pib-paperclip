@@ -35,6 +35,8 @@ export const COMPANY_METRICS = {
   usd_per_done: { label: "Notional AI spend per finished issue (7 days)", unit: "USD", better: "lower" },
   issues_done_7d: { label: "Issues finished (7 days)", unit: "issues", better: "higher" },
   review_coverage: { label: "Finished code work that was reviewed (30 days)", unit: "%", better: "higher" },
+  review_pass_rate: { label: "Finished code work that passed review (30 days)", unit: "%", better: "higher" },
+  cycle_hours: { label: "Median hours from an issue created to done (30 days)", unit: "h", better: "lower" },
   review_latency_p90_hours: { label: "Slowest 10% of reviews, hours (30 days)", unit: "h", better: "lower" },
   limit_failures_7d: { label: "Runs that hit the subscription limit (7 days)", unit: "runs", better: "lower" },
   blocked_no_way_out: { label: "Issues blocked with no way out", unit: "issues", better: "lower" },

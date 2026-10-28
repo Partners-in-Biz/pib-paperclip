@@ -7,6 +7,7 @@ import {
   BUDGET_MEANING,
   breakdowns,
   COVERAGE_MIN_DONE,
+  cycleHours,
   emptyAggregate,
   failRate,
   formatDuration,
@@ -16,6 +17,7 @@ import {
   percentile,
   reviewCoverage,
   reviewCoverageCheck,
+  reviewPassRate,
   REVIEW_AGENT,
   SPEND_ANOMALY,
   spendChecks,
@@ -133,6 +135,15 @@ describe("review coverage (Q8-8)", () => {
     expect(c.latencyP50Hours).toBeNull();
   });
 
+  it("reads review_pass_rate as the coverage in percent, null with nothing done (not 0)", () => {
+    const c = reviewCoverage([row("a", { policyApproved: true }), row("b", { reviewIssueId: "r2" }), row("c"), row("d")]);
+    expect(reviewPassRate(c)).toBe(c.coverage! * 100);
+    expect(reviewPassRate(c)).toBe(50);
+    expect(reviewPassRate(reviewCoverage([]))).toBeNull();
+    expect(reviewPassRate(null)).toBeNull();
+    expect(reviewPassRate(reviewCoverage([row("a")]))).toBe(0); // done but none reviewed is a real 0
+  });
+
   it("warns below 70% over enough work, names the rule, and says nothing about a thin sample", () => {
     const many = (reviewed: number, total: number) => reviewCoverage(Array.from({ length: total }, (_, i) => row(`i${i}`, i < reviewed ? { policyApproved: true } : {})));
     const check = reviewCoverageCheck(many(3, 12))!;
@@ -205,5 +216,31 @@ describe("the compact measures the brief carries for every agent that ran", () =
     expect(busy).toMatchObject({ windowHours: 168, retries: 2, continuations: 1, limitFailures: 1, usdPerDone: 4.5, runsPerDone: 5, failRate: 0.5, doneIssues: 2 });
     expect(busy.failures).toEqual(reasons.slice(0, MEASURE_REASONS_SHOWN));
     expect(busy.cancellations).toHaveLength(3);
+  });
+});
+
+describe("cycle hours", () => {
+  const at = (created: string, completed: string | null) => ({ createdAt: created, completedAt: completed });
+
+  it("is the median of created to done, in hours", () => {
+    // 2h, 4h, 30h, 6h -> sorted 2, 4, 6, 30 -> p50 5
+    expect(
+      cycleHours([
+        at("2026-10-01T10:00:00.000Z", "2026-10-01T12:00:00.000Z"),
+        at("2026-10-01T10:00:00.000Z", "2026-10-01T14:00:00.000Z"),
+        at("2026-10-01T10:00:00.000Z", "2026-10-02T16:00:00.000Z"),
+        at("2026-10-01T10:00:00.000Z", "2026-10-01T16:00:00.000Z"),
+      ]),
+    ).toBe(5);
+    expect(cycleHours([at("2026-10-01T10:00:00.000Z", "2026-10-01T13:00:00.000Z"), at("2026-10-01T10:00:00.000Z", "2026-10-01T19:00:00.000Z"), at("2026-10-01T10:00:00.000Z", "2026-10-03T10:00:00.000Z")])).toBe(9);
+  });
+
+  it("returns null, not 0, for an empty set or rows that cannot be timed", () => {
+    expect(cycleHours([])).toBeNull();
+    expect(cycleHours([at("2026-10-01T10:00:00.000Z", null), { createdAt: null, completedAt: "2026-10-01T10:00:00.000Z" }, at("2026-10-02T10:00:00.000Z", "2026-10-01T10:00:00.000Z")])).toBeNull();
+  });
+
+  it("skips untimed rows and keeps a real zero", () => {
+    expect(cycleHours([at("2026-10-01T10:00:00.000Z", null), at("2026-10-01T10:00:00.000Z", "2026-10-01T10:00:00.000Z")])).toBe(0);
   });
 });

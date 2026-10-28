@@ -19,8 +19,8 @@ import { listSnapshots } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { isToolBehaviourFact } from "./improvements-model.js";
-import { readAgentRuns, measureReviewCoverage, readLimitFailures } from "./measure.js";
-import { failRate, round } from "./measure-model.js";
+import { readAgentRuns, measureReviewCoverage, readCycleRows, readLimitFailures } from "./measure.js";
+import { cycleHours, failRate, reviewPassRate, round } from "./measure-model.js";
 import { parseSnapshot } from "./merge.js";
 import { memoryStats } from "./memory/store.js";
 import { AGENT_METRICS, COMPANY_METRICS, kpiNumber, parseMetricKey, type AgentMetric, type Better, type CompanyMetric } from "./metrics-keys.js";
@@ -155,6 +155,14 @@ export class MetricReader {
       case "review_coverage": {
         const c = await this.coverage();
         return reading(c?.coverage == null ? null : c.coverage * 100, c?.coverage == null ? "No finished code work in the window (or it could not be read)." : null);
+      }
+      case "review_pass_rate": {
+        const rate = reviewPassRate(await this.coverage());
+        return reading(rate, rate === null ? "No finished code work in the window (or it could not be read)." : null);
+      }
+      case "cycle_hours": {
+        const hours = cycleHours(await readCycleRows(this.env.ctx, companyId, new Date(now.getTime() - 30 * 86_400_000).toISOString()));
+        return reading(hours, hours === null ? "No issues finished in the window." : null);
       }
       case "review_latency_p90_hours": {
         const c = await this.coverage();
