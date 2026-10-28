@@ -85,6 +85,39 @@ describe("done checks", () => {
     expect(f.wakes).toEqual(["i1"]);
   });
 
+  it("holds the wake while the finishing run still holds the issue, then wakes when it ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const held = { ...issue, executionRunId: "run-1" };
+      const f = simpleFakeCtx(held);
+      expect(await runDoneCheck(f.ctx, [rule(false)], event)).toBe("reopened");
+      expect(f.updates[0]).toEqual({ status: "todo" });
+      expect(f.wakes).toEqual([]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.wakes).toEqual([]);
+      held.executionRunId = null as unknown as string;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(f.wakes).toEqual(["i1"]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.wakes).toEqual(["i1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting for a run that never ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = simpleFakeCtx({ ...issue, executionRunId: "run-1" });
+      await runDoneCheck(f.ctx, [rule(false)], event);
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      expect(f.wakes).toEqual([]);
+      expect(f.ctx.issues.get).toHaveBeenCalledTimes(1 + 1 + 60);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("escalates after the last allowed early close when escalation is enabled", async () => {
     const now = new Date("2026-10-19T12:00:00Z");
     const fake = fakeCtx({

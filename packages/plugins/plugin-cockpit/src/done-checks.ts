@@ -21,8 +21,8 @@
  *
  * - Spike (any issue with `spike` in the title or `pib:spike` in the description):
  *   needs an `**Evidence:**` comment (or attachment) posted after the plugin deploy
- *   time (plugin_versions.seen_at) and after the issue started and after the latest
- *   merged-PR comment.
+ *   time (plugin_versions.seen_at) and after the issue started. A merged PR is
+ *   not a deploy and does not move that time.
  *
  * Issues opened before 0.4.0 carry the same kinds without the plugin part
  * (`onboarding:…`, `health:…`) and are checked the same way.
@@ -193,19 +193,7 @@ export function spikeResult(input: {
 
   if (startedMs) timestamps.push({ ms: startedMs, label: `the issue started at ${new Date(startedMs).toISOString()}` });
 
-  // Find the latest merged-PR comment that does not contain **Evidence:**
-  const mergedPrComment = input.comments
-    .filter((c) => !c.deletedAt && typeof c.body === "string")
-    .reverse()
-    .find((c) => {
-      const body = c.body as string;
-      return /\bmerged\b/i.test(body) && (/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+|PR\s*#?\d+|pull request/i.test(body)) && !/\*\*Evidence:\*\*/i.test(body);
-    });
-
-  if (mergedPrComment && mergedPrComment.createdAt) {
-    const ms = parse(mergedPrComment.createdAt);
-    if (ms) timestamps.push({ ms, label: `the latest merged-PR comment (${new Date(ms).toISOString()})` });
-  }
+  // A merged repo PR is not a deploy: only the plugin's recorded deploy time (below) and the start raise the bar.
 
   for (const deployed of input.deployedAt) {
     if (deployed.at) {
