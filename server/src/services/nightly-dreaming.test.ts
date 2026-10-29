@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { nightlyDreamingEnabled } from "./nightly-dreaming.js";
+import { nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const routinePath = path.resolve(
@@ -21,6 +21,12 @@ describe("nightly dreaming flag", () => {
     expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(true);
     expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "true" })).toBe(true);
     expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "on" })).toBe(true);
+  });
+
+  it("gates only the dreaming routine key", () => {
+    expect(nightlyDreamingMaySchedule("nightly-dreaming", {})).toBe(false);
+    expect(nightlyDreamingMaySchedule("nightly-dreaming", { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(true);
+    expect(nightlyDreamingMaySchedule("recent-agent-reflection", {})).toBe(true);
   });
 });
 
@@ -51,7 +57,11 @@ describe("reflection-coach dreaming stock", () => {
     expect(block).toContain("enabled: false");
     expect(block).toContain('cronExpression: "15 3 * * *"');
     expect(block).toContain('timezone: "Africa/Johannesburg"');
-    expect(block).toContain('"grok_local"');
-    expect(block).toContain('"hermes_local"');
+    expect(routine).toContain("routineKey: nightly-dreaming");
+    expect(routine).toContain("[redacted]");
+    expect(definition).toContain("\"grok_local\"");
+    expect(definition).toContain("\"hermes_local\"");
+    expect(definition).toContain("REFLECTION_COACH_REVOKED_APPLY_GRANTS");
+    expect(definition).toContain("nightlyDreamingMaySchedule");
   });
 });

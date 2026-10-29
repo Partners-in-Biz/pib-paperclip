@@ -9,6 +9,7 @@ import { agents, builtInManagedResources, companies, issueThreadInteractions, is
 import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { NIGHTLY_DREAMING_ROUTINE_KEY, nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
@@ -364,7 +365,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
         },
       },
       routine: {
-        routineKey: "recent-agent-reflection",
+        routineKey: NIGHTLY_DREAMING_ROUTINE_KEY,
         title: "Nightly dreaming — draft skill and memory proposals from run logs",
         description: REFLECTION_COACH_ROUTINE,
         status: "paused",
@@ -471,9 +472,13 @@ const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.k
 const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
-const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
-  "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
-};
+const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {};
+// The coach drafts only. These grants are what the instruction and skill routes
+// accept as an apply. Reconcile revokes them so a prompt cannot apply a change.
+const REFLECTION_COACH_REVOKED_APPLY_GRANTS: PermissionKey[] = [
+  "agents:suggest-changes",
+  "skills:suggest-changes",
+];
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -821,6 +826,11 @@ export function builtInAgentService(db: Db) {
 
   async function ensureBuiltInAgentDefaultGrants(agent: Agent, definition: BuiltInAgentDefinition) {
     if (agent.status === "pending_approval" || agent.status === "terminated") return 0;
+    if (definition.key === "reflection-coach") {
+      for (const permissionKey of REFLECTION_COACH_REVOKED_APPLY_GRANTS) {
+        await accessSvc.setPrincipalPermission(agent.companyId, "agent", agent.id, permissionKey, false, null);
+      }
+    }
     return ensureAgentDefaultGrants(
       agent.companyId,
       agent.id,
@@ -1278,13 +1288,15 @@ export function builtInAgentService(db: Db) {
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
     const actor = { agentId: null, userId: "built-in-bundles" };
+    const dreamingOff = routine.routineKey === NIGHTLY_DREAMING_ROUTINE_KEY && !nightlyDreamingEnabled();
+    const status = dreamingOff ? "paused" : routine.status;
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
         title: routine.title,
         description: routine.description,
         assigneeAgentId: agent.id,
         priority: routine.priority,
-        status: routine.status,
+        status,
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
@@ -1294,7 +1306,7 @@ export function builtInAgentService(db: Db) {
         description: routine.description,
         assigneeAgentId: agent.id,
         priority: routine.priority,
-        status: routine.status,
+        status,
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
@@ -1316,10 +1328,11 @@ export function builtInAgentService(db: Db) {
       .then((rows) => rows as RoutineTrigger[]);
     const firstSchedule = currentTriggers.find((trigger) => trigger.kind === "schedule");
     const stockTrigger = routine.triggers[0];
+    const triggerEnabled = dreamingOff ? false : stockTrigger?.enabled;
     if (stockTrigger && firstSchedule) {
       await routineSvc.updateTrigger(firstSchedule.id, {
         label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
+        enabled: triggerEnabled,
         cronExpression: stockTrigger.cronExpression,
         timezone: stockTrigger.timezone,
       }, actor);
@@ -1327,7 +1340,7 @@ export function builtInAgentService(db: Db) {
       await routineSvc.createTrigger(nextRoutine.id, {
         kind: "schedule",
         label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
+        enabled: triggerEnabled,
         cronExpression: stockTrigger.cronExpression,
         timezone: stockTrigger.timezone,
       }, actor);
@@ -1342,7 +1355,7 @@ export function builtInAgentService(db: Db) {
       details: {
         key: definition.key,
         routineKey: routine.routineKey,
-        status: routine.status,
+        status,
       },
     });
     return nextRoutine;
@@ -1376,6 +1389,9 @@ export function builtInAgentService(db: Db) {
     const nextRoutine = shouldWrite
       ? await createOrResetRoutine(agent, definition, routine, mode)
       : routine!;
+    if (bundle.routine.routineKey === NIGHTLY_DREAMING_ROUTINE_KEY && !nightlyDreamingEnabled() && nextRoutine) {
+      await forceNightlyDreamingOff(nextRoutine.id);
+    }
     await upsertManagedResourceBinding({
       companyId: agent.companyId,
       bundleKey: definition.key,
@@ -1859,6 +1875,28 @@ export function builtInAgentService(db: Db) {
     return state(definition, await agentSvc.getById(current.agent.id) as Agent, resources);
   }
 
+  async function forceNightlyDreamingOff(routineId: string) {
+    const actor = { agentId: null, userId: "built-in-bundles" };
+    const routine = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.id, routineId))
+      .then((rows: Routine[]) => rows[0]);
+    if (routine && routine.status !== "paused") {
+      await routineSvc.update(routine.id, { status: "paused" }, actor);
+    }
+    const triggers = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.routineId, routineId))
+      .then((rows: RoutineTrigger[]) => rows);
+    for (const trigger of triggers) {
+      if (trigger.kind === "schedule" && trigger.enabled) {
+        await routineSvc.updateTrigger(trigger.id, { enabled: false }, actor);
+      }
+    }
+  }
+
   async function setRoutineSchedule(
     companyId: string,
     key: string,
@@ -1868,6 +1906,12 @@ export function builtInAgentService(db: Db) {
   ) {
     const { definition, agent, routine, schedule } = await requireBundleRoutine(companyId, key, routineKey);
     if (!schedule) throw notFound("Built-in routine schedule not found");
+    if (enabled && !nightlyDreamingMaySchedule(routineKey)) {
+      throw conflict(
+        "Nightly dreaming is off. Set PAPERCLIP_NIGHTLY_DREAMING=1 before enabling this schedule.",
+        { code: "nightly_dreaming_disabled", routineKey },
+      );
+    }
     if (enabled) {
       await ensureBuiltInAgentAssignable(agent);
       await routineSvc.update(routine.id, { status: "active" }, actor);
@@ -1886,6 +1930,12 @@ export function builtInAgentService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null; runId?: string | null } = {},
   ) {
     const { agent, routine } = await requireBundleRoutine(companyId, key, routineKey);
+    if (!nightlyDreamingMaySchedule(routineKey)) {
+      throw conflict(
+        "Nightly dreaming is off. Set PAPERCLIP_NIGHTLY_DREAMING=1 before running this routine.",
+        { code: "nightly_dreaming_disabled", routineKey },
+      );
+    }
     await ensureBuiltInAgentAssignable(agent);
     return routineSvc.runRoutine(routine.id, { source: "manual" }, actor);
   }
