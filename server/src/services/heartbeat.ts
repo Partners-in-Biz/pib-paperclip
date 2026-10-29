@@ -1027,14 +1027,14 @@ export interface SharedWorkspaceHolder {
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
   holder: SharedWorkspaceHolder;
-  projectWorkspaceId: string;
+  projectWorkspaceId: string | null;
   executionWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
-    projectWorkspaceId: string;
+    projectWorkspaceId: string | null;
     executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
@@ -21563,7 +21563,7 @@ export function heartbeatService(
         if (executionWorkspaceHolder) {
           throw new WorkspaceBusyDeferral({
             holder: executionWorkspaceHolder,
-            projectWorkspaceId: issueRef.projectWorkspaceId ?? "",
+            projectWorkspaceId: issueRef.projectWorkspaceId ?? null,
             executionWorkspaceId: reusableExistingExecutionWorkspace.id,
             deferralAttempt:
               run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
