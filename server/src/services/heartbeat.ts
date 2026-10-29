@@ -8940,7 +8940,7 @@ export function buildPaperclipTaskMarkdown(input: {
         lines.push("- (more attachments exist: list them with GET /api/issues/{issueId}/attachments)");
       }
       lines.push(
-        "Download each with the Paperclip API (GET the contentPath with your run auth) and process it with the `handle-attachments` skill: transcribe audio/voice notes, sample frames and transcribe video, extract text from PDF/Office docs, view images.",
+        "Download each with the Paperclip API (GET the contentPath with your run auth) and process it with `handle-attachment --attachment <id>` (see the transcribe-audio skill): transcribe audio/voice notes, sample frames and transcribe video, extract text from PDF/Office docs, view images.",
       );
     }
     if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {

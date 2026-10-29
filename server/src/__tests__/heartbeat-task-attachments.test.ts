@@ -22,7 +22,7 @@ describe("task-level attachments in task markdown", () => {
     expect(md).toContain("Files attached to this task");
     expect(md).toContain("WhatsApp Audio 2026-10-14 at 13.14.28.opus");
     expect(md).toContain("/api/attachments/att-1/content");
-    expect(md).toContain("handle-attachments");
+    expect(md).toContain("handle-attachment --attachment");
   });
 
   it("adds nothing when the task has no attachments", () => {
