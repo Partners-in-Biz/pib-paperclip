@@ -75,7 +75,10 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   if (!approval || approval.companyId !== event.companyId) return false;
   if (approval.status !== "open") return true;
   if (issueStatus !== "done" && issueStatus !== "cancelled") return true;
-  if (event.actorType !== "user") {
+  // An agent acting under a person's credentials still shows as a user, but its calls carry an agent or run id: only a human click sends.
+  const payload = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
+  const byAgentSession = Boolean(payload.agentId) || Boolean(payload.runId);
+  if (event.actorType !== "user" || byAgentSession) {
     const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, what: String(approval.payload.title ?? "a client approval") });
     if (!reopened) ctx.logger.info("A client approval closed by an agent could not be reopened", { approvalId: approval.id, actorType: event.actorType ?? null });
     return true;
@@ -93,6 +96,13 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
 
 async function queueEmail(ctx: PluginContext, approval: ApprovalRecord, by: string): Promise<void> {
   const hooks = HOOKS[approval.kind];
+  // PAR-6363: a reply card made for a client org's lead (older cards) never sends.
+  if (approval.kind === "speed_to_lead" && approval.payload.clientChannel === true) {
+    const why = "this is a reply to a client's own lead; Partners in Biz does not reply to it.";
+    await updateApproval(ctx, approval.companyId, approval.id, { status: "refused", decidedBy: "system:client-org-lead", error: why });
+    await comment(ctx, approval, `Not sent: ${why} Nothing went to the lead.`);
+    return;
+  }
   // The approval was written for one state of the request or report. If it moved on while the approval waited (the client answered, the
   // request was finished, the report skipped), the email is wrong now: a person's "done" does not send it.
   const stale = (await actionEmailProblem(ctx, approval).catch(() => null)) ?? (await reportEmailProblem(ctx, approval).catch(() => null)) ?? (await esignEmailProblem(ctx, approval).catch(() => null));

@@ -361,12 +361,17 @@ describe("speed-to-lead Jagter / sequence reply", () => {
   });
 });
 
-describe("speed-to-lead client-channel (no handleLead)", () => {
-  it("reuses onLeadStoredForSpeedToLead when the email already has a CRM contact", async () => {
-    const { harness, store, emit } = await bootCare();
-    harness.seed({
+describe("speed-to-lead client-org leads (PAR-6363)", () => {
+  async function bootWithCeo() {
+    const booted = await bootCare();
+    booted.harness.seed({
       agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
     });
+    return booted;
+  }
+
+  it("creates no card when the email already has a CRM contact", async () => {
+    const { harness, store, emit } = await bootWithCeo();
     const result = await onClientLeadStoredForSpeedToLead(harness.ctx, {
       companyId: CO,
       client: { kind: "company", id: "acme" },
@@ -377,19 +382,13 @@ describe("speed-to-lead client-channel (no handleLead)", () => {
       email: "ada@acme.co.za",
       arrivedAt: "2026-10-22T11:00:00.000Z",
     });
-    expect(result.skipped).toBe(false);
-    const row = store.care_approvals!.find((a) => a.id === result.approvalId)!;
-    expect(row.client_kind).toBe("contact");
-    expect(row.client_ref).toBe("ada");
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
+    expect(result).toEqual({ skipped: true, reason: "client_org_lead" });
+    expect((store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead")).toHaveLength(0);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
   });
 
-  it("opens a client-scoped draft without creating a CRM contact (POPIA)", async () => {
-    const { harness, store, emit } = await bootCare();
-    harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
-    });
+  it("creates no card or contact for a new client-org visitor", async () => {
+    const { harness, store, emit } = await bootWithCeo();
     const beforeContacts = (store.contacts ?? []).length;
     const result = await onClientLeadStoredForSpeedToLead(harness.ctx, {
       companyId: CO,
@@ -401,24 +400,14 @@ describe("speed-to-lead client-channel (no handleLead)", () => {
       email: "jane@new-visitor.test",
       arrivedAt: "2026-10-22T12:00:00.000Z",
     });
-    expect(result.skipped).toBe(false);
+    expect(result.skipped).toBe(true);
     expect((store.contacts ?? []).length).toBe(beforeContacts);
-    const row = store.care_approvals!.find((a) => a.id === result.approvalId)!;
-    expect(row.kind).toBe("speed_to_lead");
-    expect(row.client_kind).toBe("company");
-    expect(row.client_ref).toBe("acme");
-    expect(row.payload.clientChannel).toBe(true);
-    expect((row.payload.draft as { contactId?: string | null }).contactId).toBeNull();
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
+    expect((store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead")).toHaveLength(0);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
   });
 
-  it("intakeLead client-channel path (no CRM contact) requests one speed_to_lead approval and drafts only", async () => {
-    const { harness, store, emit } = await bootCare();
-    harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
-    });
-    const beforeContacts = (store.contacts ?? []).length;
+  it("intakeLead for a client-channel lead stores it but opens no speed_to_lead card", async () => {
+    const { harness, store, emit } = await bootWithCeo();
     const result = await intakeLead(harness.ctx, CO, "plugin.partnersinbiz.social.lead.captured", {
       key: "social:inbox:stl-intake-1",
       source: "social",
@@ -434,15 +423,46 @@ describe("speed-to-lead client-channel (no handleLead)", () => {
       capturedAt: "2026-10-22T13:00:00.000Z",
     });
     expect(result).toMatchObject({ status: "stored", contactId: null });
-    expect((store.contacts ?? []).length).toBe(beforeContacts);
-    expect(store.client_leads).toEqual([
-      expect.objectContaining({ key: "social:inbox:stl-intake-1", client_kind: "company", client_ref: "acme", email: "pat.new@visitor.test" }),
-    ]);
-    const stl = (store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead");
-    expect(stl).toHaveLength(1);
-    expect(stl[0]).toMatchObject({ client_kind: "company", client_ref: "acme", kind: "speed_to_lead" });
-    expect(stl[0]!.payload.clientChannel).toBe(true);
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
-    expect(emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
+    expect(store.client_leads).toEqual([expect.objectContaining({ key: "social:inbox:stl-intake-1", client_ref: "acme" })]);
+    expect((store.care_approvals ?? []).filter((a) => a.kind === "speed_to_lead")).toHaveLength(0);
+    expect(emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
+  });
+
+  it("still creates a card for one of our own leads, with the client-org reject rule on its checklist", async () => {
+    const { result, row } = await openSpeedToLeadApproval();
+    expect(result.approvalId).toBeTruthy();
+    expect(JSON.stringify(row.payload.checks)).toContain("never a client org's lead");
+  });
+
+  it("an older client-channel card never sends, even on a human done", async () => {
+    const { harness, store, emit } = await openSpeedToLeadApproval({ leadKey: "form:stl-old" });
+    const row = store.care_approvals!.find((a) => a.kind === "speed_to_lead")!;
+    row.payload = { ...(row.payload as Record<string, unknown>), clientChannel: true };
+    await decide(harness, row.issue_id!, "done", "user");
+    expect(sentMail(emit)).toHaveLength(0);
+    expect((await getApproval(harness.ctx, CO, row.id))!.status).toBe("refused");
+  });
+
+  it("an agent marking the card done does not send", async () => {
+    const { harness, store, emit } = await openSpeedToLeadApproval({ leadKey: "form:stl-agent" });
+    const row = store.care_approvals!.find((a) => a.kind === "speed_to_lead")!;
+    await decide(harness, row.issue_id!, "done", "agent");
+    expect(sentMail(emit)).toHaveLength(0);
+    expect((await getApproval(harness.ctx, CO, row.id))!.status).toBe("open");
+  });
+
+  it("an agent acting under a person's credentials (actor user, run id set) does not send", async () => {
+    const { harness, store, emit } = await openSpeedToLeadApproval({ leadKey: "form:stl-agent-as-user" });
+    const row = store.care_approvals!.find((a) => a.kind === "speed_to_lead")!;
+    await decide(harness, row.issue_id!, "done", "user", { agentId: "am-1", runId: "run-1" });
+    expect(sentMail(emit)).toHaveLength(0);
+    expect((await getApproval(harness.ctx, CO, row.id))!.status).toBe("open");
+  });
+
+  it("a human done (no agent or run id) sends", async () => {
+    const { harness, store, emit } = await openSpeedToLeadApproval({ leadKey: "form:stl-human" });
+    const row = store.care_approvals!.find((a) => a.kind === "speed_to_lead")!;
+    await decide(harness, row.issue_id!, "done", "user", { agentId: null, runId: null });
+    expect(sentMail(emit)).toHaveLength(1);
   });
 });
