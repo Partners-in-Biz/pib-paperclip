@@ -349,6 +349,8 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "grok_local", "hermes_local", "opencode_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
+      // Label only. Live routine text is picked up when the description hash changes.
+      // The description is the full routine markdown. A bump is not required, and a bump alone does not rewrite.
       stockVersion: "2026-10-29",
       instructions: {
         entryFile: "AGENTS.md",
