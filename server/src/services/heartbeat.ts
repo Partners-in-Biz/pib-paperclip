@@ -7871,6 +7871,49 @@ export async function buildPaperclipWakePayload(input: {
     if (attachments?.length) comment.attachments = attachments;
   }
 
+  // Files attached to the task itself (dropped into the New Task dialog or the
+  // issue's attachment area) have no issueCommentId, so the comment lookup above
+  // never sees them. Surface them on the issue so agents don't report an
+  // "empty" task when the request is actually a voice note, video or document.
+  const issueLevelAttachmentRows =
+    !issueId || conversationMode
+      ? []
+      : await input.db
+          .select({
+            id: issueAttachments.id,
+            filename: assets.originalFilename,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+          })
+          .from(issueAttachments)
+          .innerJoin(
+            assets,
+            and(
+              eq(issueAttachments.assetId, assets.id),
+              eq(assets.companyId, input.companyId),
+            ),
+          )
+          .where(
+            and(
+              eq(issueAttachments.companyId, input.companyId),
+              eq(issueAttachments.issueId, issueId),
+              isNull(issueAttachments.issueCommentId),
+            ),
+          )
+          .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
+          .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
+  const issueLevelAttachmentsTruncated =
+    issueLevelAttachmentRows.length > MAX_INLINE_WAKE_ATTACHMENTS;
+  const issueLevelAttachments = issueLevelAttachmentRows
+    .slice(0, MAX_INLINE_WAKE_ATTACHMENTS)
+    .map((attachment) => ({
+      id: attachment.id,
+      filename: attachment.filename?.trim() || "attachment",
+      contentType: attachment.contentType,
+      byteSize: attachment.byteSize,
+      contentPath: `/api/attachments/${attachment.id}/content`,
+    }));
+
   const annotationDeltas =
     annotationCommentId && issueId
       ? await input.db
@@ -8070,6 +8113,8 @@ export async function buildPaperclipWakePayload(input: {
           title: issueSummary.title,
           description: inlineIssueDescription,
           descriptionTruncated: issueDescriptionTruncated,
+          attachments: issueLevelAttachments,
+          attachmentsTruncated: issueLevelAttachmentsTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
@@ -8511,6 +8556,22 @@ function buildRunEventRuntimeProgress(input: {
   };
 }
 
+function readWakeIssueAttachments(issue: unknown) {
+  const raw = parseObject(issue).attachments;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((attachment) => {
+    const descriptor = parseObject(attachment);
+    const id = readNonEmptyString(descriptor.id);
+    const filename = readNonEmptyString(descriptor.filename);
+    const contentType = readNonEmptyString(descriptor.contentType);
+    const contentPath = readNonEmptyString(descriptor.contentPath);
+    const byteSize = descriptor.byteSize;
+    return id && filename && contentType && contentPath && typeof byteSize === "number"
+      ? [{ id, filename, contentType, byteSize, contentPath }]
+      : [];
+  });
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -8519,6 +8580,14 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
+    attachments?: Array<{
+      id: string;
+      filename: string;
+      contentType: string;
+      byteSize: number;
+      contentPath: string;
+    }> | null;
+    attachmentsTruncated?: boolean;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -8762,6 +8831,29 @@ export function buildPaperclipTaskMarkdown(input: {
       input.includeDescription === false || issue.conversationAgentId ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    if (!issue.conversationAgentId && issue.attachments?.length) {
+      lines.push(
+        "",
+        "Files attached to this task (part of the request, read them before answering; a task with only a title and an attachment is NOT empty):",
+      );
+      for (const attachment of issue.attachments) {
+        lines.push(
+          `- ${JSON.stringify({
+            id: attachment.id,
+            filename: attachment.filename,
+            contentType: attachment.contentType,
+            byteSize: attachment.byteSize,
+            contentPath: input.nativeRunner ? undefined : attachment.contentPath,
+          })}`,
+        );
+      }
+      if (issue.attachmentsTruncated) {
+        lines.push("- (more attachments exist: list them with GET /api/issues/{issueId}/attachments)");
+      }
+      lines.push(
+        "Download each with the Paperclip API (GET the contentPath with your run auth) and process it with `handle-attachment --attachment <id>` (see the transcribe-audio skill): transcribe audio/voice notes, sample frames and transcribe video, extract text from PDF/Office docs, view images.",
+      );
     }
     if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
       lines.push(
@@ -20844,6 +20936,10 @@ export function heartbeatService(
               workMode: issueRef.workMode,
               conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
+              attachments: readWakeIssueAttachments(paperclipWakePayload?.issue),
+              attachmentsTruncated:
+                (paperclipWakePayload?.issue as { attachmentsTruncated?: unknown } | null | undefined)
+                  ?.attachmentsTruncated === true,
             }
           : null,
         ancestors: issueAncestors,
