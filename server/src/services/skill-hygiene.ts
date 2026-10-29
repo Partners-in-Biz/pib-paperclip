@@ -19,6 +19,7 @@ const STOP_TOKENS = new Set([
   "a", "an", "the", "and", "or", "to", "of", "for", "in", "on", "with", "from", "by", "is", "are",
 ]);
 
+const INSTALLED_SOURCE_TYPES = new Set(["catalog", "github", "skills_sh", "url"]);
 const INSTALLED_BADGES = new Set(["catalog", "github", "skills_sh", "url"]);
 const INSTALLED_KEY_PREFIXES = ["paperclipai/", "plugin/"];
 
@@ -60,7 +61,7 @@ export type SkillHygienePlan = {
 };
 
 export function isInstalledSkill(skill: Pick<HygieneSkill, "key" | "sourceType" | "sourceBadge">): boolean {
-  if (skill.sourceType === "catalog") return true;
+  if (skill.sourceType && INSTALLED_SOURCE_TYPES.has(skill.sourceType)) return true;
   if (skill.sourceBadge && INSTALLED_BADGES.has(skill.sourceBadge)) return true;
   return INSTALLED_KEY_PREFIXES.some((prefix) => skill.key.startsWith(prefix));
 }
@@ -101,10 +102,17 @@ function preferKeep(left: HygieneSkill, right: HygieneSkill): HygieneSkill {
 function isUnused(skill: HygieneSkill): boolean {
   if (isProtectedSkill(skill)) return false;
   if (skill.useCount !== 0 || skill.viewCount !== 0) return false;
-  if (skill.ageDays === null || skill.ageDays < SKILL_HYGIENE_PROBATION_DAYS) return false;
+  // Positive check. A negated comparison lets undefined and NaN through.
+  const ageDays = skill.ageDays;
+  if (typeof ageDays !== "number" || !Number.isFinite(ageDays) || !(ageDays >= SKILL_HYGIENE_PROBATION_DAYS)) return false;
   return true;
 }
 
+/**
+ * Changelog list of agent-owned skills only.
+ * The dreaming routine may paste this into its own changelog.
+ * Do not inject it into other agents' session starts.
+ */
 export function sessionIndexFor(skills: HygieneSkill[]): string {
   const owned = skills
     .filter((skill) => !isProtectedSkill(skill))
@@ -190,6 +198,10 @@ export function planSkillHygiene(skills: HygieneSkill[]): SkillHygienePlan {
   };
 }
 
+/**
+ * Map a company-skill API row. Missing usage and age stay null, so they are not unused.
+ * Not wired into a write path. Callers must not invent counters.
+ */
 export function hygieneSkillFromApi(
   row: {
     key: string;

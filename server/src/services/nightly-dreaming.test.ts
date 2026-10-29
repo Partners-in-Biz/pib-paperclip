@@ -3,6 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { nightlyDreamingEnabled, nightlyDreamingMaySchedule, nightlyDreamingRunBlocked } from "./nightly-dreaming.js";
+import {
+  SKILL_HYGIENE_MERGE_OVERLAP,
+  SKILL_HYGIENE_MIN_SHARED_TOKENS,
+  SKILL_HYGIENE_PROBATION_DAYS,
+} from "./skill-hygiene.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const routinePath = path.resolve(
@@ -75,6 +80,11 @@ describe("reflection-coach dreaming stock", () => {
     expect(routine).toContain("Skill count after equals skill count before");
     expect(routine).toContain("Do not add a /learn command");
     expect(routine).toContain("Do not inject a learned-skill index");
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_MIN_SHARED_TOKENS} tokens`);
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_MERGE_OVERLAP}`);
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_PROBATION_DAYS} days old`);
+    expect(routine).toContain("skills_sh");
+    expect(routine).not.toContain("skills.sh");
   });
 
   it("keeps the built-in definition paused and on the dreaming stock version", () => {

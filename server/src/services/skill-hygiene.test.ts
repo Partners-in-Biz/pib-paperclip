@@ -40,6 +40,10 @@ describe("skill hygiene protection", () => {
       skill({ key: "plugin/paperclip/reflection-coach", name: "reflection-coach", sourceBadge: "catalog", sourceType: "catalog" }),
       skill({ key: "paperclipai/paperclip/first-task", name: "first-task", sourceBadge: "paperclip" }),
       skill({ key: "local/github-skill", name: "github-skill", sourceBadge: "github" }),
+      skill({ key: "local/skills-sh", name: "skills-sh", sourceBadge: "skills_sh", sourceType: "skills_sh" }),
+      skill({ key: "local/url-skill", name: "url-skill", sourceBadge: "url", sourceType: "url" }),
+      skill({ key: "plugin/bare", name: "bare-plugin", sourceBadge: "paperclip", sourceType: "local_path" }),
+      skill({ key: "local/github-source", name: "github-source", sourceBadge: "paperclip", sourceType: "github" }),
     ]) {
       expect(isProtectedSkill(installed)).toBe(true);
     }
@@ -86,6 +90,22 @@ describe("skill hygiene merge and archive", () => {
     expect(plan.mergeProposals).toEqual([]);
   });
 
+  it("does not merge when 3 tokens are shared but Jaccard is under 0.5", () => {
+    const plan = planSkillHygiene([
+      skill({
+        key: "agent/wide-a",
+        name: "alpha-beta-gamma",
+        description: "extra1 extra2 extra3 extra4",
+      }),
+      skill({
+        key: "agent/wide-b",
+        name: "alpha-beta-gamma",
+        description: "other1 other2 other3 other4",
+      }),
+    ]);
+    expect(plan.mergeProposals).toEqual([]);
+  });
+
   it("archives an unused agent skill and leaves unknown usage alone", () => {
     const plan = planSkillHygiene([
       skill({
@@ -115,6 +135,22 @@ describe("skill hygiene merge and archive", () => {
     ]);
     expect(plan.archiveProposals.map((item) => item.key)).toEqual(["agent/old-unused"]);
     expect(plan.skillCountAfterIfApplied).toBe(2);
+  });
+
+  it("does not archive when age is null, undefined, NaN, or not finite", () => {
+    for (const ageDays of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY] as Array<number | null | undefined>) {
+      const plan = planSkillHygiene([
+        skill({
+          key: "agent/unknown-age",
+          name: "unknown-age",
+          description: "age is not a known number",
+          useCount: 0,
+          viewCount: 0,
+          ageDays: ageDays as number | null,
+        }),
+      ]);
+      expect(plan.archiveProposals).toEqual([]);
+    }
   });
 
   it("does not archive the skill a merge keeps", () => {
