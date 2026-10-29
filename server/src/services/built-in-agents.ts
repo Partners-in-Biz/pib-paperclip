@@ -159,9 +159,9 @@ const FALLBACK_REFLECTION_COACH_INSTRUCTIONS = [
 ].join("\n");
 
 const FALLBACK_REFLECTION_COACH_ROUTINE = [
-  "Review recent agent work for coaching opportunities.",
+  "Nightly dreaming: draft skill and memory proposals from the day's run logs.",
   "",
-  "Select recent target agents, inspect their work history and current instructions, then propose small, review-gated improvements that would prevent repeated misses.",
+  "Never apply. Drafts go to Code Reviewer. The schedule ships paused and disabled.",
   "",
 ].join("\n");
 
@@ -344,10 +344,10 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultStatus: "paused",
     defaultManager: "single_root_agent",
-    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "grok_local", "hermes_local", "opencode_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-08",
+      stockVersion: "2026-10-29",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -365,32 +365,25 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
       },
       routine: {
         routineKey: "recent-agent-reflection",
-        title: "Review recent agent trajectories for coaching proposals",
+        title: "Nightly dreaming — draft skill and memory proposals from run logs",
         description: REFLECTION_COACH_ROUTINE,
         status: "paused",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [
-          { name: "lookbackDays", label: "Lookback days", type: "number", defaultValue: 7, required: true, options: [] },
+          { name: "lookbackHours", label: "Lookback hours", type: "number", defaultValue: 24, required: true, options: [] },
+          { name: "maxRuns", label: "Max runs", type: "number", defaultValue: 40, required: true, options: [] },
+          { name: "maxProposals", label: "Max draft proposals", type: "number", defaultValue: 5, required: true, options: [] },
           { name: "maxTargetAgents", label: "Max target agents", type: "number", defaultValue: 8, required: true, options: [] },
-          {
-            name: "targetAgentMode",
-            label: "Target agent mode",
-            type: "select",
-            defaultValue: "recent_active",
-            required: true,
-            options: ["recent_active", "recent_blocked", "recent_completed"],
-          },
-          { name: "excludeAgentIds", label: "Excluded agent ids", type: "text", defaultValue: "", required: false, options: [] },
         ],
         triggers: [
           {
             kind: "schedule",
-            label: "Weekly reflection review",
+            label: "Nightly dreaming draft",
             enabled: false,
-            cronExpression: "0 9 * * 1",
-            timezone: "UTC",
+            cronExpression: "15 3 * * *",
+            timezone: "Africa/Johannesburg",
           },
         ],
       },

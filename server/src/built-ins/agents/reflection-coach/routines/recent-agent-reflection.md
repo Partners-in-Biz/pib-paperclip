@@ -1,7 +1,7 @@
 ---
 routineKey: recent-agent-reflection
-title: Review recent agent trajectories for coaching proposals
-description: Bounded reflection sweep over recently active agents that produces evidence-backed coaching proposals only. Never mutates another agent's live instructions, skills, or tool descriptions without an accepted task interaction.
+title: Nightly dreaming — draft skill and memory proposals from run logs
+description: Read the day's run transcripts, cluster repeated failures and the fixes that followed, and draft company skill or agent-memory proposals. Drafts go to Code Reviewer. This routine never applies a change.
 assigneeRef:
   resourceKind: agent
   resourceKey: reflection-coach
@@ -10,68 +10,66 @@ priority: medium
 concurrencyPolicy: coalesce_if_active
 catchUpPolicy: skip_missed
 variables:
-  - name: lookbackDays
-    label: Lookback window (days)
+  - name: lookbackHours
+    label: Lookback window (hours)
     type: number
-    defaultValue: 7
-    required: false
+    defaultValue: 24
+    required: true
+    options: []
+  - name: maxRuns
+    label: Max runs to read
+    type: number
+    defaultValue: 40
+    required: true
+    options: []
+  - name: maxProposals
+    label: Max draft proposals
+    type: number
+    defaultValue: 5
+    required: true
     options: []
   - name: maxTargetAgents
-    label: Max target agents per run
+    label: Max target agents
     type: number
     defaultValue: 8
-    required: false
-    options: []
-  - name: targetAgentMode
-    label: Target selection mode
-    type: select
-    defaultValue: recent_active
-    required: false
-    options:
-      - recent_active
-      - all
-      - explicit
-  - name: excludeAgentIds
-    label: Agent ids to exclude (comma-separated)
-    type: string
-    defaultValue: null
-    required: false
+    required: true
     options: []
 triggers:
   - kind: schedule
-    label: Weekly reflection sweep
+    label: Nightly dreaming draft
     enabled: false
-    cronExpression: "0 9 * * 1"
-    timezone: UTC
+    cronExpression: "15 3 * * *"
+    timezone: Africa/Johannesburg
     signingMode: none
     replayWindowSec: 0
 issueTemplate:
   surfaceVisibility: normal
 ---
 
-# Recent agent reflection sweep
+# Nightly dreaming (draft only)
 
-This routine is **paused by default** and spends no tokens until an operator enables its schedule or triggers a manual run. When it runs, it produces coaching proposals only.
+Feature flag: this schedule ships **disabled** (`enabled: false`, routine `paused`). That is the flag. It stays off until tests have passed on `development` and an operator turns it on. Do not enable it from this run.
+
+`PAPERCLIP_NIGHTLY_DREAMING` is the env override (`1`, `true`, or `on`). It defaults off. A scheduler follow-up must refuse to enqueue this routine unless that function returns true. Until that wire-up ships, the disabled schedule is what keeps the job from firing.
+
+Prefer a cheap Grok model (`grok_local` or `hermes_local`). Do not change your own adapter in this run. If you are not already on a Grok adapter, say so in the changelog and continue.
 
 ## What this run must do
 
-1. Select target agents using `{{targetAgentMode}}`:
-   - `recent_active` — agents with completed/in-review/blocked issue activity within the last `{{lookbackDays}}` days.
-   - `all` — every non-terminated agent in the company.
-   - `explicit` — only agents named in the run inputs.
-   Cap the set at `{{maxTargetAgents}}`. Drop any agent id listed in `{{excludeAgentIds}}`, and always drop your own `PAPERCLIP_AGENT_ID` (no self-reflection).
-2. For each selected target, run the `reflection-coach` skill as the operating procedure: pull recent trajectories, read current AGENTS.md and assigned skills, cluster evidence-backed patterns, and draft the smallest durable change.
-3. Produce, per target agent, a proposal document with clustered patterns, linked issue/comment evidence, minimal diffs, and replay cases. Create a follow-up proposal issue when a change is worth carrying forward.
+1. Read company heartbeat runs from the last `{{lookbackHours}}` hours, cap `{{maxRuns}}`. Use `GET /api/companies/$PAPERCLIP_COMPANY_ID/heartbeat-runs` and, for repeated failures only, `GET /api/heartbeat-runs/{runId}/log`. Skip your own runs.
+2. Cluster repeated failures and the fix that followed. A cluster needs at least two runs, or one run plus a later issue comment that names the fix. No evidence, no proposal.
+3. Draft at most `{{maxProposals}}` updates to a company skill or an agent's instructions (memory). Cap `{{maxTargetAgents}}` agents. Never draft a change to yourself.
+4. Post one short changelog comment on this routine issue: window, runs read, clusters, drafts opened, what was not proposed.
+5. For each draft, open a child issue assigned to the company agent whose `urlKey` is `code-reviewer`. Put the diff in the issue body. Title prefix: `Dream draft:`.
 
-## Hard limits for this routine
+## Hard limits
 
-- Proposal-only. This routine must not edit any agent's live AGENTS.md, skill assignments, or tool descriptions directly.
-- Any actual instruction/skill/tool-description change requires a displayed diff and an **accepted** `request_confirmation` task interaction, applied only in a separate follow-up run.
-- Mutation confirmations must bind the exact resource key they will apply, using `agent:<agentId>:instructions`, `agent:<agentId>:profile`, `skill:<skillId>`, `skill-slug:<slug>`, `skill-import:<source>`, or `skills:scan-projects`.
-- Keep every read company-scoped. Do not cross company boundaries.
-- Every proposed rule needs linked issue/comment evidence or it is dropped. No scoring without trajectories.
-- Respect the size caps: AGENTS.md +20% max per proposal, skills 15KB max, tool descriptions 500 chars max.
+- **Never apply.** Do not edit skills, `AGENTS.md`, agent memory, tool descriptions, or adapter config.
+- **Never open `request_confirmation`.** Code Reviewer reviews the draft. Application, if any, is a later issue that is not this routine.
+- Do not enable this schedule, do not flip `PAPERCLIP_NIGHTLY_DREAMING`, and do not reset built-in stock.
+- Keep every read company-scoped.
+- Size caps still hold: skills ≤ 15KB, tool descriptions ≤ 500 chars, `AGENTS.md` growth ≤ +20% per draft.
 
 ## Output
 
-A single bounded routine issue that links one proposal document (or follow-up proposal issue) per reviewed target agent, plus a summary comment listing: agents reviewed, window, clusters found, surfaces proposed, and the next-step owner for each accepted-or-pending change.
+A changelog comment on this issue, plus zero or more `Dream draft:` child issues assigned to Code Reviewer. No mutations.

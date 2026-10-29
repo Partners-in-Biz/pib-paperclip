@@ -25,6 +25,7 @@ Two load-bearing rules: **trajectories, not scores, are load-bearing**, and **ch
 
 - An issue asks you to reflect on, coach, or review the recent work of a specific agent.
 - A routine (e.g. `recent-agent-reflection`) hands you a bounded set of agents to review.
+- The nightly dreaming run asks you to turn the day's run logs into draft skill or memory updates for Code Reviewer. That path never applies.
 - Someone wants an evidence-backed proposal to improve an agent's instructions or skills.
 
 ## When not to use
@@ -32,6 +33,7 @@ Two load-bearing rules: **trajectories, not scores, are load-bearing**, and **ch
 - The target agent id is your own. Refuse — no self-reflection.
 - You are asked to rewrite product code or shared infra. That is out of scope.
 - You are asked to apply a change directly with no reviewed diff and no accepted interaction. Refuse and name the gate.
+- The wake is the nightly dreaming routine. Do not apply, and do not open `request_confirmation`. Draft only, assigned to Code Reviewer.
 
 ## Inputs
 
