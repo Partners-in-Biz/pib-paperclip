@@ -26,6 +26,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
+  sessionCheckpointResumeEnabled,
   selectInitialCommunicationGuidance,
   runningProcesses,
   runChildProcess,
@@ -3052,7 +3053,22 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(fullMarkdown);
   });
 
-  it("uses the compact brief for a checkpoint handoff instead of replaying the full task", () => {
+  it("uses the compact brief for a flagged checkpoint handoff instead of replaying the full task", () => {
+    expect(
+      selectPaperclipTaskMarkdown(
+        {
+          paperclipTaskMarkdown: fullMarkdown,
+          paperclipTaskMarkdownCompact: compactMarkdown,
+          paperclipSessionHandoffMarkdown: "Paperclip session handoff:\n- Rotation reason: raw input",
+          paperclipCheckpointResume: true,
+          paperclipWake: wake("issue_commented"),
+        },
+        { resumedSession: false },
+      ),
+    ).toBe(compactMarkdown);
+  });
+
+  it("flag off: a handoff without the checkpoint key still gets the full brief", () => {
     expect(
       selectPaperclipTaskMarkdown(
         {
@@ -3063,7 +3079,15 @@ describe("selectPaperclipTaskMarkdown", () => {
         },
         { resumedSession: false },
       ),
-    ).toBe(compactMarkdown);
+    ).toBe(fullMarkdown);
+  });
+
+  it("reads PAPERCLIP_SESSION_CHECKPOINT with default on", () => {
+    expect(sessionCheckpointResumeEnabled({})).toBe(true);
+    expect(sessionCheckpointResumeEnabled({ PAPERCLIP_SESSION_CHECKPOINT: "1" })).toBe(true);
+    for (const off of ["0", "false", "OFF", " no "]) {
+      expect(sessionCheckpointResumeEnabled({ PAPERCLIP_SESSION_CHECKPOINT: off })).toBe(false);
+    }
   });
 
   it("uses the compact brief when a same-issue assignment keeps its checkpoint", () => {

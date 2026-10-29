@@ -2168,6 +2168,17 @@ export function selectInitialCommunicationGuidance(
     ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
 }
 
+const SESSION_CHECKPOINT_OFF_VALUES = new Set(["0", "false", "off", "no"]);
+
+/** Default on. Set PAPERCLIP_SESSION_CHECKPOINT=0 to restore full-rerun wakes. */
+export function sessionCheckpointResumeEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.PAPERCLIP_SESSION_CHECKPOINT;
+  if (raw == null || raw.trim() === "") return true;
+  return !SESSION_CHECKPOINT_OFF_VALUES.has(raw.trim().toLowerCase());
+}
+
 // Picks the task-context markdown variant for adapters that inject it into the
 // prompt. Fresh sessions, assignment-shaped wakes, and recovery wakes get the
 // full brief; other resume deltas get the compact variant (description
@@ -2179,12 +2190,10 @@ export function selectPaperclipTaskMarkdown(
 ): string {
   const full = asString(context?.paperclipTaskMarkdown, "").trim();
   if (!full) return "";
-  // A saved transcript or a compaction handoff is a checkpoint resume. Sending
-  // the full brief again is what pushes the next wake back over the rotation
-  // threshold and makes the agent redo the task.
-  const checkpointResume =
-    context?.paperclipCheckpointResume === true ||
-    asString(context?.paperclipSessionHandoffMarkdown, "").trim().length > 0;
+  // The server sets paperclipCheckpointResume only when the checkpoint flag is
+  // on and the wake keeps a saved transcript or rotates with a handoff. Keying
+  // on the handoff text alone would change flag-off rotated wakes.
+  const checkpointResume = context?.paperclipCheckpointResume === true;
   if (options.resumedSession !== true && !checkpointResume) {
     const guidance = options.includeCommunicationGuidance === false
       ? "" : selectInitialCommunicationGuidance(context, options);

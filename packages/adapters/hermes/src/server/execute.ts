@@ -56,7 +56,6 @@ import {
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 import {
-  extractHermesSessionId,
   formatHermesStreamEventForLog,
   isPlausibleHermesSessionId,
   parseHermesStreamJsonLine,
@@ -464,14 +463,11 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  const sessionHandoffMarkdown =
-    cfgString((ctx as { context?: Record<string, unknown> }).context?.paperclipSessionHandoffMarkdown)?.trim() || "";
   const checkpointEnabled = sessionCheckpointResumeEnabled();
   const checkpointResume =
     Boolean(prevSessionId) ||
     (checkpointEnabled &&
-      (sessionHandoffMarkdown.length > 0 ||
-        (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true));
+      (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true);
   let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
   // The transcript already has the instructions. Re-sending them on every
   // wake is a full rerun in token cost even when --resume is set.
@@ -585,11 +581,15 @@ export async function execute(
   // the session id from the stream-json init event before the process can die.
   let streamBuffer = "";
   let checkpointedSessionId: string | null = null;
-  const noteSessionId = async (sessionId: string | null) => {
+  // Only the first id from a system/init event counts. Tool output can echo
+  // other ids; a later one must never replace the real session.
+  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+    if (checkpointedSessionId) return;
+    if (event.type !== "system" || event.subtype !== "init") return;
+    const sessionId = event.sessionId;
     if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
-    if (checkpointedSessionId === sessionId) return;
     checkpointedSessionId = sessionId;
-    if (ctx.onSessionCheckpoint && sessionCheckpointResumeEnabled()) {
+    if (ctx.onSessionCheckpoint && checkpointEnabled) {
       await ctx.onSessionCheckpoint({ sessionId });
     }
   };
@@ -603,12 +603,10 @@ export async function execute(
       if (!trimmed) continue;
       const event = parseHermesStreamJsonLine(trimmed);
       if (!event) {
-        const plain = extractHermesSessionId(trimmed);
-        if (plain) await noteSessionId(plain);
         human.push(line);
         continue;
       }
-      if (event.sessionId) await noteSessionId(event.sessionId);
+      await noteInitSessionId(event);
       const rendered = formatHermesStreamEventForLog(event);
       if (rendered) human.push(rendered);
     }
@@ -619,8 +617,6 @@ export async function execute(
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
-      const stderrSessionId = extractHermesSessionId(trimmed);
-      if (stderrSessionId) await noteSessionId(stderrSessionId);
       // Benign patterns that should NOT appear as errors:
       // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
       // - MCP server registration messages
@@ -635,7 +631,8 @@ export async function execute(
         return ctx.onLog("stdout", chunk);
       }
     }
-    if (stream === "stdout") {
+    // Flag off: forward stdout untouched so the old path is byte-identical.
+    if (stream === "stdout" && checkpointEnabled) {
       return forwardStdoutLines(chunk, false);
     }
     return ctx.onLog(stream, chunk);

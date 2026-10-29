@@ -580,6 +580,7 @@ import {
 import {
   readPaperclipSkillSyncPreference,
   selectPaperclipTaskMarkdown,
+  sessionCheckpointResumeEnabled,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
@@ -5653,12 +5654,55 @@ export function shouldKeepTaskSessionCheckpoint(
   return readNonEmptyString(contextSnapshot?.wakeReason) === "issue_assigned";
 }
 
-export function sessionCheckpointResumeEnabled(
-  env: Record<string, string | undefined> = process.env,
+/**
+ * Adapters key only on paperclipCheckpointResume. Set it when the flag is on and
+ * the wake rotates with a handoff or keeps a task session; with the flag off the
+ * key is removed so every adapter takes the old full-brief path.
+ */
+export function applyCheckpointResumeContext(
+  context: Record<string, unknown>,
+  input: { enabled: boolean; rotated: boolean; keptCheckpoint: boolean },
 ) {
-  const raw = env.PAPERCLIP_SESSION_CHECKPOINT;
-  if (raw == null || raw.trim() === "") return true;
-  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
+  if (input.enabled && (input.rotated || input.keptCheckpoint)) {
+    context.paperclipCheckpointResume = true;
+  } else {
+    delete context.paperclipCheckpointResume;
+  }
+}
+
+export type EarlySessionCheckpoint = {
+  params: Record<string, unknown>;
+  displayId: string;
+};
+
+/** Params for the task-session row written when an adapter reports its session id mid-run. */
+export function buildEarlySessionCheckpoint(input: {
+  enabled: boolean;
+  adapterType: string;
+  sessionId: string;
+  cwd: string | null;
+  configuredModel: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[1];
+  sessionConfigMetadata: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[2];
+}): EarlySessionCheckpoint | null {
+  if (!input.enabled) return null;
+  if (!isCanonicalSessionIdForAdapter(input.adapterType, input.sessionId)) return null;
+  const displayId = truncateDisplayId(input.sessionId);
+  if (!displayId) return null;
+  const params = attachPaperclipSessionMetadataToSessionParams(
+    { sessionId: input.sessionId, ...(input.cwd ? { cwd: input.cwd } : {}) },
+    input.configuredModel,
+    input.sessionConfigMetadata,
+  );
+  if (!params) return null;
+  return { params, displayId };
+}
+
+/** A failed run that returned no session id keeps the checkpoint written mid-run. */
+export function selectPersistedEarlyCheckpoint(
+  early: EarlySessionCheckpoint | null,
+  nextSessionState: { params: unknown; displayId: unknown },
+): EarlySessionCheckpoint | null {
+  return early && !nextSessionState.params && !nextSessionState.displayId ? early : null;
 }
 
 /** A mid-run checkpoint must survive a kill that never returns a new session id. */
@@ -22849,14 +22893,11 @@ export function heartbeatService(
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
       }
-      if (
-        sessionCheckpointResumeEnabled() &&
-        (sessionCompaction.rotate || keepTaskSessionCheckpoint)
-      ) {
-        context.paperclipCheckpointResume = true;
-      } else {
-        delete context.paperclipCheckpointResume;
-      }
+      applyCheckpointResumeContext(context, {
+        enabled: sessionCheckpointResumeEnabled(),
+        rotated: sessionCompaction.rotate,
+        keptCheckpoint: keepTaskSessionCheckpoint,
+      });
 
       const taskSessionCredentialCompatible = isTaskSessionCredentialCompatible(
         taskSession?.sessionParamsJson,
@@ -24603,42 +24644,27 @@ export function heartbeatService(
                     runtimeTools,
                     onLog,
                     onSessionCheckpoint: async (checkpoint: { sessionId: string }) => {
-                      if (!sessionCheckpointResumeEnabled()) return;
-                      const { sessionId } = checkpoint;
                       if (!taskKey) return;
-                      if (
-                        !isCanonicalSessionIdForAdapter(
-                          agent.adapterType,
-                          sessionId,
-                        )
-                      ) {
-                        return;
-                      }
-                      const displayId = truncateDisplayId(sessionId);
-                      if (!displayId) return;
-                      const params =
-                        attachPaperclipSessionMetadataToSessionParams(
-                          {
-                            sessionId,
-                            ...(executionWorkspace?.cwd
-                              ? { cwd: executionWorkspace.cwd }
-                              : {}),
-                          },
-                          configuredModel,
-                          sessionConfigMetadata,
-                        );
-                      if (!params) return;
+                      const early = buildEarlySessionCheckpoint({
+                        enabled: sessionCheckpointResumeEnabled(),
+                        adapterType: agent.adapterType,
+                        sessionId: checkpoint.sessionId,
+                        cwd: executionWorkspace?.cwd ?? null,
+                        configuredModel,
+                        sessionConfigMetadata,
+                      });
+                      if (!early) return;
                       await upsertTaskSession({
                         companyId: agent.companyId,
                         agentId: agent.id,
                         adapterType: agent.adapterType,
                         taskKey,
-                        sessionParamsJson: params,
-                        sessionDisplayId: displayId,
+                        sessionParamsJson: early.params,
+                        sessionDisplayId: early.displayId,
                         lastRunId: run.id,
                         lastError: null,
                       });
-                      earlySessionCheckpoint.current = { params, displayId };
+                      earlySessionCheckpoint.current = early;
                     },
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
@@ -25574,12 +25600,10 @@ export function heartbeatService(
             normalizedUsage,
           );
           if (taskKey) {
-            const persistedCheckpoint =
-              earlySessionCheckpoint.current &&
-              !nextSessionState.params &&
-              !nextSessionState.displayId
-                ? earlySessionCheckpoint.current
-                : null;
+            const persistedCheckpoint = selectPersistedEarlyCheckpoint(
+              earlySessionCheckpoint.current,
+              nextSessionState,
+            );
             if (
               shouldClearTaskSessionAfterRun({
                 clearSession: adapterResult.clearSession === true,

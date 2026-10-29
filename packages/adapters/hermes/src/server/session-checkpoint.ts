@@ -20,16 +20,7 @@ export interface HermesStreamEvent {
   };
 }
 
-const CHECKPOINT_OFF = new Set(["0", "false", "off", "no"]);
-
-/** Default on. Set PAPERCLIP_SESSION_CHECKPOINT=0 to restore full-rerun wakes. */
-export function sessionCheckpointResumeEnabled(
-  env: Record<string, string | undefined> = process.env,
-) {
-  const raw = env.PAPERCLIP_SESSION_CHECKPOINT;
-  if (raw == null || raw.trim() === "") return true;
-  return !CHECKPOINT_OFF.has(raw.trim().toLowerCase());
-}
+export { sessionCheckpointResumeEnabled } from "@paperclipai/adapter-utils/server-utils";
 
 const SESSION_ID_TEXT =
   /session[_ ](?:id|saved)[:\s]+([A-Za-z0-9_-]+)/i;

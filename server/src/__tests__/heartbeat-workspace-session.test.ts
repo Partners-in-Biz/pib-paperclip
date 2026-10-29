@@ -50,6 +50,9 @@ import {
   scrubGitCredentialText,
   buildAnchorFallbackWorkspaceNotes,
   type ResolvedWorkspaceForRun,
+  applyCheckpointResumeContext,
+  buildEarlySessionCheckpoint,
+  selectPersistedEarlyCheckpoint,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
@@ -1929,6 +1932,61 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
     expect(input.workspaceRuntime).toEqual({
       services: [{ name: "web" }],
     });
+  });
+});
+
+describe("session checkpoint context", () => {
+  it("flag on: a rotated or kept-checkpoint wake is a checkpoint resume", () => {
+    const rotated: Record<string, unknown> = {};
+    applyCheckpointResumeContext(rotated, { enabled: true, rotated: true, keptCheckpoint: false });
+    expect(rotated.paperclipCheckpointResume).toBe(true);
+    const kept: Record<string, unknown> = {};
+    applyCheckpointResumeContext(kept, { enabled: true, rotated: false, keptCheckpoint: true });
+    expect(kept.paperclipCheckpointResume).toBe(true);
+  });
+
+  it("flag off: a rotated wake with a handoff does not set the checkpoint key", () => {
+    const context: Record<string, unknown> = {
+      paperclipSessionHandoffMarkdown: "Paperclip session handoff:\n- Rotation reason: raw input",
+      paperclipCheckpointResume: true,
+    };
+    applyCheckpointResumeContext(context, { enabled: false, rotated: true, keptCheckpoint: true });
+    expect("paperclipCheckpointResume" in context).toBe(false);
+  });
+
+  it("builds an early checkpoint with the session id and cwd", () => {
+    const early = buildEarlySessionCheckpoint({
+      enabled: true,
+      adapterType: "hermes_local",
+      sessionId: "20261028_145531_817f3d",
+      cwd: "/work/tree",
+      configuredModel: null,
+      sessionConfigMetadata: null,
+    });
+    expect(early).toEqual({
+      params: { sessionId: "20261028_145531_817f3d", cwd: "/work/tree" },
+      displayId: "20261028_145531_817f3d",
+    });
+  });
+
+  it("skips the early checkpoint when the flag is off or the id is not canonical", () => {
+    const base = {
+      adapterType: "hermes_local",
+      cwd: null,
+      configuredModel: null,
+      sessionConfigMetadata: null,
+    };
+    expect(
+      buildEarlySessionCheckpoint({ ...base, enabled: false, sessionId: "20261028_145531_817f3d" }),
+    ).toBeNull();
+    expect(buildEarlySessionCheckpoint({ ...base, enabled: true, sessionId: "not-a-session" })).toBeNull();
+  });
+
+  it("a failed run with no session id keeps the early checkpoint", () => {
+    const early = { params: { sessionId: "s1" }, displayId: "s1" };
+    expect(selectPersistedEarlyCheckpoint(early, { params: null, displayId: null })).toBe(early);
+    expect(selectPersistedEarlyCheckpoint(early, { params: { sessionId: "s2" }, displayId: "s2" })).toBeNull();
+    expect(selectPersistedEarlyCheckpoint(null, { params: null, displayId: null })).toBeNull();
   });
 });
 

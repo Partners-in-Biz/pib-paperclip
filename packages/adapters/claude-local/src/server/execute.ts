@@ -783,10 +783,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  const checkpointResume =
-    Boolean(sessionId) ||
-    context.paperclipCheckpointResume === true ||
-    asString(context.paperclipSessionHandoffMarkdown, "").trim().length > 0;
+  // The server sets paperclipCheckpointResume only when the checkpoint flag is on.
+  const checkpointResume = Boolean(sessionId) || context.paperclipCheckpointResume === true;
   if (runtimeSessionId && !isValidUuid) {
     await onLog(
       "stdout",
