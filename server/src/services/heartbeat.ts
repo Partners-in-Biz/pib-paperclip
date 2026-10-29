@@ -580,6 +580,7 @@ import {
 import {
   readPaperclipSkillSyncPreference,
   selectPaperclipTaskMarkdown,
+  sessionCheckpointResumeEnabled,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
@@ -5637,6 +5638,81 @@ export function shouldResetTaskSessionForWake(
     return true;
   }
   return false;
+}
+
+/**
+ * issue_assigned resets the session so a brand-new pickup does not inherit
+ * another ticket. A same-issue re-wake already has a task session; discarding
+ * it starts the whole task over. forceFreshSession still wins.
+ */
+export function shouldKeepTaskSessionCheckpoint(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  hasExistingTaskSession: boolean,
+) {
+  if (!hasExistingTaskSession) return false;
+  if (contextSnapshot?.forceFreshSession === true) return false;
+  return readNonEmptyString(contextSnapshot?.wakeReason) === "issue_assigned";
+}
+
+/**
+ * Adapters key only on paperclipCheckpointResume. Set it when the flag is on and
+ * the wake rotates with a handoff or keeps a task session; with the flag off the
+ * key is removed so every adapter takes the old full-brief path.
+ */
+export function applyCheckpointResumeContext(
+  context: Record<string, unknown>,
+  input: { enabled: boolean; rotated: boolean; keptCheckpoint: boolean },
+) {
+  if (input.enabled && (input.rotated || input.keptCheckpoint)) {
+    context.paperclipCheckpointResume = true;
+  } else {
+    delete context.paperclipCheckpointResume;
+  }
+}
+
+export type EarlySessionCheckpoint = {
+  params: Record<string, unknown>;
+  displayId: string;
+};
+
+/** Params for the task-session row written when an adapter reports its session id mid-run. */
+export function buildEarlySessionCheckpoint(input: {
+  enabled: boolean;
+  adapterType: string;
+  sessionId: string;
+  cwd: string | null;
+  configuredModel: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[1];
+  sessionConfigMetadata: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[2];
+}): EarlySessionCheckpoint | null {
+  if (!input.enabled) return null;
+  if (!isCanonicalSessionIdForAdapter(input.adapterType, input.sessionId)) return null;
+  const displayId = truncateDisplayId(input.sessionId);
+  if (!displayId) return null;
+  const params = attachPaperclipSessionMetadataToSessionParams(
+    { sessionId: input.sessionId, ...(input.cwd ? { cwd: input.cwd } : {}) },
+    input.configuredModel,
+    input.sessionConfigMetadata,
+  );
+  if (!params) return null;
+  return { params, displayId };
+}
+
+/** A failed run that returned no session id keeps the checkpoint written mid-run. */
+export function selectPersistedEarlyCheckpoint(
+  early: EarlySessionCheckpoint | null,
+  nextSessionState: { params: unknown; displayId: unknown },
+): EarlySessionCheckpoint | null {
+  return early && !nextSessionState.params && !nextSessionState.displayId ? early : null;
+}
+
+/** A mid-run checkpoint must survive a kill that never returns a new session id. */
+export function shouldClearTaskSessionAfterRun(input: {
+  clearSession: boolean;
+  hasNextSession: boolean;
+  hasEarlyCheckpoint: boolean;
+}) {
+  if (input.clearSession) return true;
+  return !input.hasNextSession && !input.hasEarlyCheckpoint;
 }
 
 function shouldRequireIssueCommentForWake(
@@ -21623,7 +21699,15 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      const wakeSessionResetReason = describeSessionResetReason(context);
+      const keepTaskSessionCheckpoint =
+        sessionCheckpointResumeEnabled() &&
+        shouldKeepTaskSessionCheckpoint(
+          context,
+          taskSession != null,
+        );
+      const wakeSessionResetReason = keepTaskSessionCheckpoint
+        ? null
+        : describeSessionResetReason(context);
       const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,
         configuredModel,
@@ -21635,7 +21719,8 @@ export function heartbeatService(
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
       const resetTaskSession =
-        shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+        sessionConfigFreshness.reset ||
+        (shouldResetTaskSessionForWake(context) && !keepTaskSessionCheckpoint);
       const sessionResetReason =
         sessionConfigFreshness.reasons.join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
@@ -22800,7 +22885,7 @@ export function heartbeatService(
         previousSessionDisplayId = null;
         if (sessionCompaction.reason) {
           runtimeWorkspaceWarnings.push(
-            `Starting a fresh session because ${sessionCompaction.reason}.`,
+            `Rotating session because ${sessionCompaction.reason}. Continuing from the checkpoint handoff, not a full rerun.`,
           );
         }
       } else {
@@ -22808,6 +22893,11 @@ export function heartbeatService(
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
       }
+      applyCheckpointResumeContext(context, {
+        enabled: sessionCheckpointResumeEnabled(),
+        rotated: sessionCompaction.rotate,
+        keptCheckpoint: keepTaskSessionCheckpoint,
+      });
 
       const taskSessionCredentialCompatible = isTaskSessionCredentialCompatible(
         taskSession?.sessionParamsJson,
@@ -22878,6 +22968,12 @@ export function heartbeatService(
 
       let handle: RunLogHandle | null = null;
       const goalCheckpointSession: {
+        current: {
+          params: Record<string, unknown>;
+          displayId: string;
+        } | null;
+      } = { current: null };
+      const earlySessionCheckpoint: {
         current: {
           params: Record<string, unknown>;
           displayId: string;
@@ -24547,6 +24643,29 @@ export function heartbeatService(
                     runtimeMcp,
                     runtimeTools,
                     onLog,
+                    onSessionCheckpoint: async (checkpoint: { sessionId: string }) => {
+                      if (!taskKey) return;
+                      const early = buildEarlySessionCheckpoint({
+                        enabled: sessionCheckpointResumeEnabled(),
+                        adapterType: agent.adapterType,
+                        sessionId: checkpoint.sessionId,
+                        cwd: executionWorkspace?.cwd ?? null,
+                        configuredModel,
+                        sessionConfigMetadata,
+                      });
+                      if (!early) return;
+                      await upsertTaskSession({
+                        companyId: agent.companyId,
+                        agentId: agent.id,
+                        adapterType: agent.adapterType,
+                        taskKey,
+                        sessionParamsJson: early.params,
+                        sessionDisplayId: early.displayId,
+                        lastRunId: run.id,
+                        lastError: null,
+                      });
+                      earlySessionCheckpoint.current = early;
+                    },
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
                     startupTraceContext: getStartupTraceContext(),
@@ -25481,9 +25600,18 @@ export function heartbeatService(
             normalizedUsage,
           );
           if (taskKey) {
+            const persistedCheckpoint = selectPersistedEarlyCheckpoint(
+              earlySessionCheckpoint.current,
+              nextSessionState,
+            );
             if (
-              adapterResult.clearSession ||
-              (!nextSessionState.params && !nextSessionState.displayId)
+              shouldClearTaskSessionAfterRun({
+                clearSession: adapterResult.clearSession === true,
+                hasNextSession: Boolean(
+                  nextSessionState.params || nextSessionState.displayId,
+                ),
+                hasEarlyCheckpoint: earlySessionCheckpoint.current != null,
+              })
             ) {
               await clearTaskSessions(agent.companyId, agent.id, {
                 taskKey,
@@ -25498,11 +25626,12 @@ export function heartbeatService(
                 taskKey,
                 sessionParamsJson:
                   attachPaperclipSessionMetadataToSessionParams(
-                    nextSessionState.params,
+                    persistedCheckpoint?.params ?? nextSessionState.params,
                     configuredModel,
                     sessionConfigMetadata,
                   ),
-                sessionDisplayId: nextSessionState.displayId,
+                sessionDisplayId:
+                  persistedCheckpoint?.displayId ?? nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,
               });
@@ -25815,7 +25944,8 @@ export function heartbeatService(
 
           if (
             taskKey &&
-            (goalCheckpointSession.current ||
+            (earlySessionCheckpoint.current ||
+              goalCheckpointSession.current ||
               previousSessionParams ||
               previousSessionDisplayId ||
               taskSession)
@@ -25826,6 +25956,7 @@ export function heartbeatService(
               adapterType: agent.adapterType,
               taskKey,
               sessionParamsJson:
+                earlySessionCheckpoint.current?.params ??
                 goalCheckpointSession.current?.params ??
                 attachPaperclipSessionMetadataToSessionParams(
                   previousSessionParams,
@@ -25833,6 +25964,7 @@ export function heartbeatService(
                   sessionConfigMetadata,
                 ),
               sessionDisplayId:
+                earlySessionCheckpoint.current?.displayId ??
                 goalCheckpointSession.current?.displayId ??
                 previousSessionDisplayId,
               lastRunId: failedRun.id,
