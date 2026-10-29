@@ -46,10 +46,10 @@ export async function bootCare(options: { store?: Store; routes?: Route[]; confi
 export type Booted = Awaited<ReturnType<typeof bootCare>>;
 
 /** Marks an issue done or cancelled and tells the plugin who did it, as the host's issue.updated event does. */
-export async function decide(harness: Harness, issueId: string, status: "done" | "cancelled", actor: "user" | "agent" = "user") {
+export async function decide(harness: Harness, issueId: string, status: "done" | "cancelled", actor: "user" | "agent" = "user", payload: Record<string, unknown> = {}) {
   const issue = (await harness.ctx.issues.get(issueId, CO))!;
   harness.seed({ issues: [{ ...issue, status }] });
-  await harness.emit("issue.updated", {}, { companyId: CO, entityId: issueId, actorType: actor, actorId: actor === "user" ? OWNER : "am-1" });
+  await harness.emit("issue.updated", payload, { companyId: CO, entityId: issueId, actorType: actor, actorId: actor === "user" ? OWNER : "am-1" });
   return (await harness.ctx.issues.get(issueId, CO))!;
 }
 
