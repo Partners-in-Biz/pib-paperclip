@@ -5199,6 +5199,12 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const result = await instructions.deleteFile(existing, relativePath);
+    await svc.recordInstructionsRevision(existing, {
+      source: "instructions_file_delete",
+      changedKeys: [`instructionsFile:${relativePath}`],
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
