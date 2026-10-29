@@ -2,6 +2,7 @@
 -- Undo: DROP INDEX agent_config_revisions_agent_number_uq; ALTER TABLE agent_config_revisions DROP COLUMN revision_number;
 ALTER TABLE "agent_config_revisions" ADD COLUMN IF NOT EXISTS "revision_number" integer;
 --> statement-breakpoint
+-- Backfill orders by created_at (id only breaks ties); skipped if any row is already numbered.
 UPDATE "agent_config_revisions" r SET "revision_number" = s.n
 FROM (
   SELECT "id", row_number() OVER (PARTITION BY "agent_id" ORDER BY "created_at", "id") AS n

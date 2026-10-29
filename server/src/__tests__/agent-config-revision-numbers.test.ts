@@ -65,4 +65,41 @@ describe("agent config revision numbers", () => {
     expect(rev.revisionNumber).toBe(1);
     expect(rev.changedKeys).toEqual(["instructionsFile:notes.md"]);
   });
+
+  it("refuses to roll back an instruction-file revision", async () => {
+    const service = agentService(db);
+    const agent = await service.create(companyId, { name: "F", role: "engineer", adapterType: "process" });
+    await service.recordInstructionsRevision(agent, {
+      source: "instructions_file_delete",
+      changedKeys: ["instructionsFile:notes.md"],
+    });
+    const [rev] = await service.listConfigRevisions(agent.id);
+    await expect(service.rollbackConfigRevision(agent.id, rev.id, {})).rejects.toThrow(/Nothing to restore/);
+  });
+
+  it("backfills numbers chronologically per agent", async () => {
+    const { sql } = await import("drizzle-orm");
+    const { agentConfigRevisions } = await import("@paperclipai/db");
+    const service = agentService(db);
+    const a = await service.create(companyId, { name: "G1", role: "engineer", adapterType: "process" });
+    const b = await service.create(companyId, { name: "G2", role: "engineer", adapterType: "process" });
+    await db.execute(sql`DROP INDEX IF EXISTS agent_config_revisions_agent_number_uq`);
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    const rows = [[a, 3], [b, 2], [a, 1], [b, 1], [a, 2]] as const;
+    for (const [agent, day] of rows) {
+      await db.insert(agentConfigRevisions).values({
+        companyId, agentId: agent.id, source: "legacy", changedKeys: ["name"],
+        beforeConfig: {}, afterConfig: { day }, createdAt: new Date(base + day * 86_400_000),
+      });
+    }
+    const migration = await (await import("node:fs/promises")).readFile(
+      new URL("../../../packages/db/src/migrations/0285_agent_config_revision_numbers.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
+    for (const agent of [a, b]) {
+      const revs = (await service.listConfigRevisions(agent.id)).sort((x, y) => Number(x.revisionNumber) - Number(y.revisionNumber));
+      expect(revs.map((r) => (r.afterConfig as { day: number }).day)).toEqual(revs.map((_, i) => i + 1));
+    }
+  });
 });

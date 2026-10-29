@@ -1261,6 +1261,9 @@ export function agentService(db: Db) {
         .where(and(eq(agentConfigRevisions.agentId, id), eq(agentConfigRevisions.id, revisionId)))
         .then((rows) => rows[0] ?? null);
       if (!revision) return null;
+      if (revision.source.startsWith("instructions_file_")) {
+        throw unprocessable("Nothing to restore: this revision only records an instruction file change");
+      }
       if (containsRedactedMarker(revision.afterConfig)) {
         throw unprocessable("Cannot roll back a revision that contains redacted secret values");
       }

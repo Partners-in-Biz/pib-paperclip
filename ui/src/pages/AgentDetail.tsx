@@ -1911,20 +1911,22 @@ export function AgentRevisionsTab({
             <div key={revision.id} className="space-y-2 rounded-md border border-border p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-xs text-muted-foreground">
-                  <span className="font-mono">{revision.revisionNumber != null ? `v${revision.revisionNumber}` : revision.id.slice(0, 8)}</span>
+                  <span className="font-mono">{revision.revisionNumber != null ? `v${revision.revisionNumber}` : "legacy"}</span>
                   <span className="mx-1">·</span>
                   <span>{formatDate(revision.createdAt)}</span>
                   <span className="mx-1">·</span>
                   <span>{revision.source}</span>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => rollbackConfig.mutate(revision.id)}
-                  disabled={rollbackConfig.isPending}
-                >
-                  Restore
-                </Button>
+                {revision.source.startsWith("instructions_file_") ? null : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => rollbackConfig.mutate(revision.id)}
+                    disabled={rollbackConfig.isPending}
+                  >
+                    Restore
+                  </Button>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">
                 Changed: {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
