@@ -9,7 +9,7 @@ import { agents, builtInManagedResources, companies, issueThreadInteractions, is
 import { SKILL_POLICY_ACTIONS, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
-import { NIGHTLY_DREAMING_ROUTINE_KEY, nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
+import { NIGHTLY_DREAMING_ROUTINE_KEY, NIGHTLY_DREAMING_STOCK_TITLE, nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
@@ -369,7 +369,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
       },
       routine: {
         routineKey: NIGHTLY_DREAMING_ROUTINE_KEY,
-        title: "Nightly dreaming — draft skill and memory proposals from run logs",
+        title: NIGHTLY_DREAMING_STOCK_TITLE,
         description: REFLECTION_COACH_ROUTINE,
         status: "paused",
         priority: "medium",
