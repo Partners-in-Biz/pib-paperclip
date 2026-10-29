@@ -594,7 +594,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     // the root/company default permissions.
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
-    expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(4);
+    // Root change grants are agents:configure and skills:create. The coach has no default grants.
+    expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(2);
 
     const rootGrantKeys = await permissionKeysForAgent(root.id);
     expect(rootGrantKeys).toEqual(expect.arrayContaining(["agents:configure", "skills:create"]));

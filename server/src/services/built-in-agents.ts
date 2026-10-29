@@ -6,7 +6,7 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
+import { SKILL_POLICY_ACTIONS, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { NIGHTLY_DREAMING_ROUTINE_KEY, nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
@@ -19,6 +19,7 @@ import {
   withBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
+import { companySkillPolicyService } from "./company-skill-policy.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
@@ -473,12 +474,16 @@ const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {};
-// The coach drafts only. These grants are what the instruction and skill routes
-// accept as an apply. Reconcile revokes them so a prompt cannot apply a change.
+// The coach drafts only. Instruction routes 403 without agents:suggest-changes.
+// Skill routes do not: a missing skills:suggest-changes grant is not a platform
+// invariant, and the open skill-policy default allows the write. Reconcile
+// revokes the grants and writes a coach-only skill-policy deny that wins over
+// an owner allow. That deny is the skill apply stop.
 const REFLECTION_COACH_REVOKED_APPLY_GRANTS: PermissionKey[] = [
   "agents:suggest-changes",
   "skills:suggest-changes",
 ];
+const REFLECTION_COACH_SKILL_DENY_RULE_ID = "reflection-coach-never-apply";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -824,12 +829,53 @@ export function builtInAgentService(db: Db) {
     return ensured;
   }
 
+  async function ensureReflectionCoachSkillApplyDenied(agent: Agent) {
+    const skillPolicies = companySkillPolicyService(db);
+    const rule = {
+      id: REFLECTION_COACH_SKILL_DENY_RULE_ID,
+      // Lower priority wins. Reconcile reasserts this so an owner allow cannot
+      // open skill apply while dreaming is draft-only.
+      priority: -1_000_000,
+      effect: "deny" as const,
+      subject: { type: "agents" as const, agentIds: [agent.id] },
+      actions: [...SKILL_POLICY_ACTIONS],
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await skillPolicies.get(agent.companyId);
+      const existing = current.rules.find((item) => item.id === rule.id);
+      if (existing && stableJson(existing) === stableJson(rule)) return;
+      try {
+        await skillPolicies.replace({
+          companyId: agent.companyId,
+          expectedRevision: current.revision,
+          policy: {
+            schemaVersion: 1,
+            defaultEffect: current.defaultEffect,
+            rules: [rule, ...current.rules.filter((item) => item.id !== rule.id)],
+          },
+          activity: {
+            actorType: "system",
+            actorId: "built-in-bundles",
+          },
+        });
+        return;
+      } catch (error) {
+        const details = error instanceof HttpError ? error.details : null;
+        const code = details && typeof details === "object" && "code" in details
+          ? (details as { code?: string }).code
+          : null;
+        if (code !== "skill_policy_revision_conflict" || attempt === 1) throw error;
+      }
+    }
+  }
+
   async function ensureBuiltInAgentDefaultGrants(agent: Agent, definition: BuiltInAgentDefinition) {
     if (agent.status === "pending_approval" || agent.status === "terminated") return 0;
     if (definition.key === "reflection-coach") {
       for (const permissionKey of REFLECTION_COACH_REVOKED_APPLY_GRANTS) {
         await accessSvc.setPrincipalPermission(agent.companyId, "agent", agent.id, permissionKey, false, null);
       }
+      await ensureReflectionCoachSkillApplyDenied(agent);
     }
     return ensureAgentDefaultGrants(
       agent.companyId,

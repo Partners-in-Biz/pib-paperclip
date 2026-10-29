@@ -56,7 +56,7 @@ Prefer a cheap Grok model (`grok_local` or `hermes_local`). Those adapters are o
 
 ## What this run must do
 
-1. Read company heartbeat runs from the last `{{lookbackHours}}` hours (1–168), cap `{{maxRuns}}` (1–200). Use `GET /api/companies/$PAPERCLIP_COMPANY_ID/heartbeat-runs` and, for repeated failures only, `GET /api/heartbeat-runs/{runId}/log`. Skip your own runs. Refuse the run if a variable is outside its bound.
+1. Read company heartbeat runs from the last `{{lookbackHours}}` hours (1–168), cap `{{maxRuns}}` (1–200). Use `GET /api/companies/$PAPERCLIP_COMPANY_ID/heartbeat-runs` and, for repeated failures only, `GET /api/heartbeat-runs/{runId}/log`. Skip your own runs. Refuse the run if a variable is outside its bound. Those numeric bounds are prompt-only. The server does not reject an out-of-range value.
 2. Cluster repeated failures and the fix that followed. A cluster needs at least two runs, or one run plus a later issue comment that names the fix. No evidence, no proposal.
 3. Draft at most `{{maxProposals}}` updates (1–20) to a company skill or an agent's instructions (memory). Cap `{{maxTargetAgents}}` agents (1–30). Never draft a change to yourself.
 4. Post one short changelog comment on this routine issue: window, runs read, clusters, drafts opened, what was not proposed.
@@ -64,7 +64,7 @@ Prefer a cheap Grok model (`grok_local` or `hermes_local`). Those adapters are o
 
 ## Hard limits
 
-- **Never apply.** The server does not grant this agent `agents:suggest-changes` or `skills:suggest-changes`. Instruction and skill routes return 403 without those grants. Do not edit skills, `AGENTS.md`, agent memory, tool descriptions, or adapter config.
+- **Never apply.** Instruction routes return 403 without `agents:suggest-changes`. Skill routes return 403 because reconcile writes a coach-only skill-policy deny (`reflection-coach-never-apply`) that wins over an owner allow. Revoking `skills:suggest-changes` alone does not stop skill writes. Do not edit skills, `AGENTS.md`, agent memory, tool descriptions, or adapter config. The "never apply" line in this prompt is not the stop. The routes are.
 - **Never open `request_confirmation`.** Code Reviewer reviews the draft. Application, if any, is a later issue that is not this routine.
 - Redact tokens, API keys, `Authorization` headers, and env values before you copy a log line into a draft or a comment. Replace them with `[redacted]`.
 - Do not enable this schedule, do not flip `PAPERCLIP_NIGHTLY_DREAMING`, and do not reset built-in stock.

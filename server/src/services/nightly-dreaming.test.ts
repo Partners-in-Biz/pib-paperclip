@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
+import { nightlyDreamingEnabled, nightlyDreamingMaySchedule, nightlyDreamingRunBlocked } from "./nightly-dreaming.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const routinePath = path.resolve(
@@ -27,6 +27,20 @@ describe("nightly dreaming flag", () => {
     expect(nightlyDreamingMaySchedule("nightly-dreaming", {})).toBe(false);
     expect(nightlyDreamingMaySchedule("nightly-dreaming", { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(true);
     expect(nightlyDreamingMaySchedule("recent-agent-reflection", {})).toBe(true);
+  });
+
+  it("blocks a stored dreaming routine by origin when the flag is off", () => {
+    const dreaming = {
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:nightly-dreaming",
+    };
+    expect(nightlyDreamingRunBlocked(dreaming, {})).toBe(true);
+    expect(nightlyDreamingRunBlocked(dreaming, { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+    }, {})).toBe(false);
+    expect(nightlyDreamingRunBlocked({ originKind: "manual", originId: "nightly-dreaming" }, {})).toBe(false);
   });
 });
 

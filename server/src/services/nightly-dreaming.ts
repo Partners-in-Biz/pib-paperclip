@@ -23,3 +23,16 @@ export function nightlyDreamingMaySchedule(
   if (routineKey !== NIGHTLY_DREAMING_ROUTINE_KEY) return true;
   return nightlyDreamingEnabled(env);
 }
+
+/**
+ * True when this stored routine is the nightly dreaming bundle and the flag is off.
+ * Generic routes and the scheduler see origin, not the built-in routine key.
+ */
+export function nightlyDreamingRunBlocked(
+  routine: { originKind?: string | null; originId?: string | null },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (routine.originKind !== "built_in_agent_bundle") return false;
+  if (!routine.originId?.endsWith(`:${NIGHTLY_DREAMING_ROUTINE_KEY}`)) return false;
+  return !nightlyDreamingEnabled(env);
+}
