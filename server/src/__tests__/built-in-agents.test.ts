@@ -594,7 +594,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     // the root/company default permissions.
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
-    expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(4);
+    // Root change grants are agents:configure and skills:create. The coach has no default grants.
+    expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(2);
 
     const rootGrantKeys = await permissionKeysForAgent(root.id);
     expect(rootGrantKeys).toEqual(expect.arrayContaining(["agents:configure", "skills:create"]));
@@ -644,7 +645,7 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
     expect(routine).toMatchObject({
-      title: "Review recent agent trajectories for coaching proposals",
+      title: "Nightly dreaming — draft skill and memory proposals from run logs",
       status: "paused",
       assigneeAgentId: state.agentId,
     });
@@ -652,11 +653,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(trigger).toMatchObject({
       kind: "schedule",
       enabled: false,
-      cronExpression: "0 9 * * 1",
-      timezone: "UTC",
+      cronExpression: "15 3 * * *",
+      timezone: "Africa/Johannesburg",
     });
     const coachGrantKeys = await permissionKeysForAgent(state.agentId!);
-    expect(coachGrantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
+    expect(coachGrantKeys).not.toContain("agents:suggest-changes");
+    expect(coachGrantKeys).not.toContain("skills:suggest-changes");
     expect(coachGrantKeys).not.toContain("agents:configure");
     expect(coachGrantKeys).not.toContain("skills:create");
   });
@@ -1156,22 +1158,23 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
     expect(routine).toMatchObject({
-      title: "Review recent agent trajectories for coaching proposals",
+      title: "Nightly dreaming — draft skill and memory proposals from run logs",
       status: "paused",
       assigneeAgentId: state.agentId,
       originKind: "built_in_agent_bundle",
-      originId: "reflection-coach:recent-agent-reflection",
+      originId: "reflection-coach:nightly-dreaming",
     });
     const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
     expect(trigger).toMatchObject({
       kind: "schedule",
       enabled: false,
-      cronExpression: "0 9 * * 1",
-      timezone: "UTC",
+      cronExpression: "15 3 * * *",
+      timezone: "Africa/Johannesburg",
     });
 
     const grantKeys = await permissionKeysForAgent(state.agentId!);
-    expect(grantKeys).toEqual(expect.arrayContaining(["agents:suggest-changes", "skills:suggest-changes"]));
+    expect(grantKeys).not.toContain("agents:suggest-changes");
+    expect(grantKeys).not.toContain("skills:suggest-changes");
     expect(grantKeys).not.toContain("tasks:assign");
     expect(grantKeys).not.toContain("agents:configure");
     expect(grantKeys).not.toContain("skills:create");
@@ -1292,6 +1295,9 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("controls the Reflection Coach routine schedule without enabling it by default", async () => {
+    const previous = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    process.env.PAPERCLIP_NIGHTLY_DREAMING = "1";
+    try {
     const companyId = await seedCompany();
     await agentService(db).create(companyId, {
       name: "CEO",
@@ -1313,7 +1319,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const enabled = await builtIns.enableRoutineSchedule(
       companyId,
       "reflection-coach",
-      "recent-agent-reflection",
+      "nightly-dreaming",
       { userId: "board-user" },
     );
     expect(enabled.status).toBe("needs_setup");
@@ -1321,7 +1327,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       stockStatus: "stock_current",
       scheduleEnabled: true,
     });
-    const [enabledRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    const [enabledRoutine] = await db.select().from(routines).where(eq(routines.originId, "reflection-coach:nightly-dreaming"));
     const [enabledTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, enabledRoutine!.id));
     expect(enabledRoutine).toMatchObject({ status: "active" });
     expect(enabledTrigger).toMatchObject({ enabled: true });
@@ -1329,7 +1335,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const disabled = await builtIns.disableRoutineSchedule(
       companyId,
       "reflection-coach",
-      "recent-agent-reflection",
+      "nightly-dreaming",
       { userId: "board-user" },
     );
     expect(disabled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
@@ -1340,6 +1346,114 @@ describeEmbeddedPostgres("built-in agents", () => {
     const [disabledTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.id, enabledTrigger!.id));
     expect(disabledRoutine).toMatchObject({ status: "paused" });
     expect(disabledTrigger).toMatchObject({ enabled: false });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previous;
+    }
+  });
+
+  it("refuses to enable or run nightly dreaming when the flag is off, and reconcile turns the trigger back off", async () => {
+    const previous = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    try {
+      const companyId = await seedCompany();
+      await agentService(db).create(companyId, {
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      });
+      const builtIns = builtInAgentService(db);
+      await builtIns.ensure(companyId, "reflection-coach");
+      await expect(builtIns.enableRoutineSchedule(
+        companyId,
+        "reflection-coach",
+        "nightly-dreaming",
+        { userId: "board-user" },
+      )).rejects.toMatchObject({ status: 409, details: { code: "nightly_dreaming_disabled" } });
+      await expect(builtIns.runRoutine(
+        companyId,
+        "reflection-coach",
+        "nightly-dreaming",
+        { userId: "board-user" },
+      )).rejects.toMatchObject({ status: 409, details: { code: "nightly_dreaming_disabled" } });
+
+      process.env.PAPERCLIP_NIGHTLY_DREAMING = "1";
+      await builtIns.enableRoutineSchedule(companyId, "reflection-coach", "nightly-dreaming", { userId: "board-user" });
+      delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      const reconciled = await builtIns.ensure(companyId, "reflection-coach");
+      expect(reconciled.resources.find((resource) => resource.resourceKind === "routine")).toMatchObject({
+        scheduleEnabled: false,
+      });
+      const [routine] = await db.select().from(routines).where(eq(routines.originId, "reflection-coach:nightly-dreaming"));
+      const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+      expect(routine).toMatchObject({ status: "paused" });
+      expect(trigger).toMatchObject({ enabled: false });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previous;
+    }
+  });
+
+  it("does not reset an existing enabled recent-agent-reflection routine when dreaming stock reconciles", async () => {
+    const previous = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    try {
+      const companyId = await seedCompany();
+      const ceo = await agentService(db).create(companyId, {
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+      });
+      const [live] = await db.insert(routines).values({
+        companyId,
+        title: "Review recent agent trajectories for coaching proposals",
+        description: "Weekly reflection. Do not rewrite.",
+        assigneeAgentId: ceo.id,
+        status: "active",
+        originKind: "built_in_agent_bundle",
+        originId: "reflection-coach:recent-agent-reflection",
+        variables: [{ name: "lookbackDays", label: "Lookback window (days)", type: "number", defaultValue: 7, required: false, options: [] }],
+      }).returning();
+      await db.insert(routineTriggers).values({
+        companyId,
+        routineId: live!.id,
+        kind: "schedule",
+        label: "Weekly review",
+        enabled: true,
+        cronExpression: "0 9 * * 1",
+        timezone: "UTC",
+      });
+
+      await builtInAgentService(db).ensure(companyId, "reflection-coach");
+
+      const [preserved] = await db.select().from(routines).where(eq(routines.id, live!.id));
+      const [preservedTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, live!.id));
+      expect(preserved).toMatchObject({
+        title: "Review recent agent trajectories for coaching proposals",
+        status: "active",
+        originId: "reflection-coach:recent-agent-reflection",
+      });
+      expect(preservedTrigger).toMatchObject({
+        enabled: true,
+        cronExpression: "0 9 * * 1",
+        timezone: "UTC",
+      });
+      const [dreaming] = await db.select().from(routines).where(eq(routines.originId, "reflection-coach:nightly-dreaming"));
+      const [dreamingTrigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, dreaming!.id));
+      expect(dreaming).toMatchObject({ status: "paused" });
+      expect(dreamingTrigger).toMatchObject({ enabled: false, cronExpression: "15 3 * * *" });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previous;
+    }
   });
 
   it("surfaces pending Reflection Coach proposal interactions on the routine resource", async () => {
@@ -1612,6 +1726,6 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     expect((await instructionsSvc.readFile(reset.agent!, "AGENTS.md")).content).toContain("You are Reflection Coach");
     const [resetRoutine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
-    expect(resetRoutine?.title).toBe("Review recent agent trajectories for coaching proposals");
+    expect(resetRoutine?.title).toBe("Nightly dreaming — draft skill and memory proposals from run logs");
   });
 });

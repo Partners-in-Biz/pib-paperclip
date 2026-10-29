@@ -6,9 +6,10 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
+import { SKILL_POLICY_ACTIONS, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { NIGHTLY_DREAMING_ROUTINE_KEY, nightlyDreamingEnabled, nightlyDreamingMaySchedule } from "./nightly-dreaming.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
@@ -18,6 +19,7 @@ import {
   withBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
+import { companySkillPolicyService } from "./company-skill-policy.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
@@ -159,9 +161,9 @@ const FALLBACK_REFLECTION_COACH_INSTRUCTIONS = [
 ].join("\n");
 
 const FALLBACK_REFLECTION_COACH_ROUTINE = [
-  "Review recent agent work for coaching opportunities.",
+  "Nightly dreaming: draft skill and memory proposals from the day's run logs.",
   "",
-  "Select recent target agents, inspect their work history and current instructions, then propose small, review-gated improvements that would prevent repeated misses.",
+  "Never apply. Drafts go to Code Reviewer. The schedule ships paused and disabled.",
   "",
 ].join("\n");
 
@@ -344,10 +346,10 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultStatus: "paused",
     defaultManager: "single_root_agent",
-    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "grok_local", "hermes_local", "opencode_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-08",
+      stockVersion: "2026-10-29",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -364,33 +366,26 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
         },
       },
       routine: {
-        routineKey: "recent-agent-reflection",
-        title: "Review recent agent trajectories for coaching proposals",
+        routineKey: NIGHTLY_DREAMING_ROUTINE_KEY,
+        title: "Nightly dreaming — draft skill and memory proposals from run logs",
         description: REFLECTION_COACH_ROUTINE,
         status: "paused",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [
-          { name: "lookbackDays", label: "Lookback days", type: "number", defaultValue: 7, required: true, options: [] },
+          { name: "lookbackHours", label: "Lookback hours", type: "number", defaultValue: 24, required: true, options: [] },
+          { name: "maxRuns", label: "Max runs", type: "number", defaultValue: 40, required: true, options: [] },
+          { name: "maxProposals", label: "Max draft proposals", type: "number", defaultValue: 5, required: true, options: [] },
           { name: "maxTargetAgents", label: "Max target agents", type: "number", defaultValue: 8, required: true, options: [] },
-          {
-            name: "targetAgentMode",
-            label: "Target agent mode",
-            type: "select",
-            defaultValue: "recent_active",
-            required: true,
-            options: ["recent_active", "recent_blocked", "recent_completed"],
-          },
-          { name: "excludeAgentIds", label: "Excluded agent ids", type: "text", defaultValue: "", required: false, options: [] },
         ],
         triggers: [
           {
             kind: "schedule",
-            label: "Weekly reflection review",
+            label: "Nightly dreaming draft",
             enabled: false,
-            cronExpression: "0 9 * * 1",
-            timezone: "UTC",
+            cronExpression: "15 3 * * *",
+            timezone: "Africa/Johannesburg",
           },
         ],
       },
@@ -478,9 +473,17 @@ const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.k
 const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
-const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
-  "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
-};
+const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {};
+// The coach drafts only. Instruction routes 403 without agents:suggest-changes.
+// Skill routes do not: a missing skills:suggest-changes grant is not a platform
+// invariant, and the open skill-policy default allows the write. Reconcile
+// revokes the grants and writes a coach-only skill-policy deny that wins over
+// an owner allow. That deny is the skill apply stop.
+const REFLECTION_COACH_REVOKED_APPLY_GRANTS: PermissionKey[] = [
+  "agents:suggest-changes",
+  "skills:suggest-changes",
+];
+const REFLECTION_COACH_SKILL_DENY_RULE_ID = "reflection-coach-never-apply";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -826,8 +829,54 @@ export function builtInAgentService(db: Db) {
     return ensured;
   }
 
+  async function ensureReflectionCoachSkillApplyDenied(agent: Agent) {
+    const skillPolicies = companySkillPolicyService(db);
+    const rule = {
+      id: REFLECTION_COACH_SKILL_DENY_RULE_ID,
+      // Lower priority wins. Reconcile reasserts this so an owner allow cannot
+      // open skill apply while dreaming is draft-only.
+      priority: -1_000_000,
+      effect: "deny" as const,
+      subject: { type: "agents" as const, agentIds: [agent.id] },
+      actions: [...SKILL_POLICY_ACTIONS],
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await skillPolicies.get(agent.companyId);
+      const existing = current.rules.find((item) => item.id === rule.id);
+      if (existing && stableJson(existing) === stableJson(rule)) return;
+      try {
+        await skillPolicies.replace({
+          companyId: agent.companyId,
+          expectedRevision: current.revision,
+          policy: {
+            schemaVersion: 1,
+            defaultEffect: current.defaultEffect,
+            rules: [rule, ...current.rules.filter((item) => item.id !== rule.id)],
+          },
+          activity: {
+            actorType: "system",
+            actorId: "built-in-bundles",
+          },
+        });
+        return;
+      } catch (error) {
+        const details = error instanceof HttpError ? error.details : null;
+        const code = details && typeof details === "object" && "code" in details
+          ? (details as { code?: string }).code
+          : null;
+        if (code !== "skill_policy_revision_conflict" || attempt === 1) throw error;
+      }
+    }
+  }
+
   async function ensureBuiltInAgentDefaultGrants(agent: Agent, definition: BuiltInAgentDefinition) {
     if (agent.status === "pending_approval" || agent.status === "terminated") return 0;
+    if (definition.key === "reflection-coach") {
+      for (const permissionKey of REFLECTION_COACH_REVOKED_APPLY_GRANTS) {
+        await accessSvc.setPrincipalPermission(agent.companyId, "agent", agent.id, permissionKey, false, null);
+      }
+      await ensureReflectionCoachSkillApplyDenied(agent);
+    }
     return ensureAgentDefaultGrants(
       agent.companyId,
       agent.id,
@@ -1285,13 +1334,15 @@ export function builtInAgentService(db: Db) {
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
     const actor = { agentId: null, userId: "built-in-bundles" };
+    const dreamingOff = routine.routineKey === NIGHTLY_DREAMING_ROUTINE_KEY && !nightlyDreamingEnabled();
+    const status = dreamingOff ? "paused" : routine.status;
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
         title: routine.title,
         description: routine.description,
         assigneeAgentId: agent.id,
         priority: routine.priority,
-        status: routine.status,
+        status,
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
@@ -1301,7 +1352,7 @@ export function builtInAgentService(db: Db) {
         description: routine.description,
         assigneeAgentId: agent.id,
         priority: routine.priority,
-        status: routine.status,
+        status,
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
@@ -1323,10 +1374,11 @@ export function builtInAgentService(db: Db) {
       .then((rows) => rows as RoutineTrigger[]);
     const firstSchedule = currentTriggers.find((trigger) => trigger.kind === "schedule");
     const stockTrigger = routine.triggers[0];
+    const triggerEnabled = dreamingOff ? false : stockTrigger?.enabled;
     if (stockTrigger && firstSchedule) {
       await routineSvc.updateTrigger(firstSchedule.id, {
         label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
+        enabled: triggerEnabled,
         cronExpression: stockTrigger.cronExpression,
         timezone: stockTrigger.timezone,
       }, actor);
@@ -1334,7 +1386,7 @@ export function builtInAgentService(db: Db) {
       await routineSvc.createTrigger(nextRoutine.id, {
         kind: "schedule",
         label: stockTrigger.label,
-        enabled: stockTrigger.enabled,
+        enabled: triggerEnabled,
         cronExpression: stockTrigger.cronExpression,
         timezone: stockTrigger.timezone,
       }, actor);
@@ -1349,7 +1401,7 @@ export function builtInAgentService(db: Db) {
       details: {
         key: definition.key,
         routineKey: routine.routineKey,
-        status: routine.status,
+        status,
       },
     });
     return nextRoutine;
@@ -1383,6 +1435,9 @@ export function builtInAgentService(db: Db) {
     const nextRoutine = shouldWrite
       ? await createOrResetRoutine(agent, definition, routine, mode)
       : routine!;
+    if (bundle.routine.routineKey === NIGHTLY_DREAMING_ROUTINE_KEY && !nightlyDreamingEnabled() && nextRoutine) {
+      await forceNightlyDreamingOff(nextRoutine.id);
+    }
     await upsertManagedResourceBinding({
       companyId: agent.companyId,
       bundleKey: definition.key,
@@ -1866,6 +1921,28 @@ export function builtInAgentService(db: Db) {
     return state(definition, await agentSvc.getById(current.agent.id) as Agent, resources);
   }
 
+  async function forceNightlyDreamingOff(routineId: string) {
+    const actor = { agentId: null, userId: "built-in-bundles" };
+    const routine = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.id, routineId))
+      .then((rows: Routine[]) => rows[0]);
+    if (routine && routine.status !== "paused") {
+      await routineSvc.update(routine.id, { status: "paused" }, actor);
+    }
+    const triggers = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.routineId, routineId))
+      .then((rows: RoutineTrigger[]) => rows);
+    for (const trigger of triggers) {
+      if (trigger.kind === "schedule" && trigger.enabled) {
+        await routineSvc.updateTrigger(trigger.id, { enabled: false }, actor);
+      }
+    }
+  }
+
   async function setRoutineSchedule(
     companyId: string,
     key: string,
@@ -1875,6 +1952,12 @@ export function builtInAgentService(db: Db) {
   ) {
     const { definition, agent, routine, schedule } = await requireBundleRoutine(companyId, key, routineKey);
     if (!schedule) throw notFound("Built-in routine schedule not found");
+    if (enabled && !nightlyDreamingMaySchedule(routineKey)) {
+      throw conflict(
+        "Nightly dreaming is off. Set PAPERCLIP_NIGHTLY_DREAMING=1 before enabling this schedule.",
+        { code: "nightly_dreaming_disabled", routineKey },
+      );
+    }
     if (enabled) {
       await ensureBuiltInAgentAssignable(agent);
       await routineSvc.update(routine.id, { status: "active" }, actor);
@@ -1893,6 +1976,12 @@ export function builtInAgentService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null; runId?: string | null } = {},
   ) {
     const { agent, routine } = await requireBundleRoutine(companyId, key, routineKey);
+    if (!nightlyDreamingMaySchedule(routineKey)) {
+      throw conflict(
+        "Nightly dreaming is off. Set PAPERCLIP_NIGHTLY_DREAMING=1 before running this routine.",
+        { code: "nightly_dreaming_disabled", routineKey },
+      );
+    }
     await ensureBuiltInAgentAssignable(agent);
     return routineSvc.runRoutine(routine.id, { source: "manual" }, actor);
   }
