@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { nightlyDreamingEnabled, nightlyDreamingMaySchedule, nightlyDreamingRunBlocked } from "./nightly-dreaming.js";
+import { nightlyDreamingEnabled, nightlyDreamingMaySchedule, nightlyDreamingRunBlocked, NIGHTLY_DREAMING_STOCK_TITLE, portableRoutineIsNightlyDreaming } from "./nightly-dreaming.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const routinePath = path.resolve(
@@ -41,6 +41,38 @@ describe("nightly dreaming flag", () => {
       originId: "reflection-coach:recent-agent-reflection",
     }, {})).toBe(false);
     expect(nightlyDreamingRunBlocked({ originKind: "manual", originId: "nightly-dreaming" }, {})).toBe(false);
+  });
+
+  it("recognizes an imported copy that has no built-in origin", () => {
+    expect(portableRoutineIsNightlyDreaming({ title: NIGHTLY_DREAMING_STOCK_TITLE })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Renamed copy",
+      description: "Set PAPERCLIP_NIGHTLY_DREAMING before this schedule runs.",
+    })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Other routine",
+      triggerLabels: ["Nightly dreaming draft"],
+    })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Monday Review",
+      description: "Review pipeline health.",
+      triggerLabels: ["Weekly"],
+    })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: null,
+      originId: null,
+      title: NIGHTLY_DREAMING_STOCK_TITLE,
+    }, {})).toBe(true);
+    expect(nightlyDreamingRunBlocked({
+      originKind: null,
+      originId: null,
+      title: NIGHTLY_DREAMING_STOCK_TITLE,
+    }, { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+      title: "Review recent agent trajectories for coaching proposals",
+    }, {})).toBe(false);
   });
 });
 
