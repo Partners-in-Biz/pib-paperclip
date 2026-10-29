@@ -59,8 +59,11 @@ Prefer a cheap Grok model (`grok_local` or `hermes_local`). Those adapters are o
 1. Read company heartbeat runs from the last `{{lookbackHours}}` hours (1–168), cap `{{maxRuns}}` (1–200). Use `GET /api/companies/$PAPERCLIP_COMPANY_ID/heartbeat-runs` and, for repeated failures only, `GET /api/heartbeat-runs/{runId}/log`. Skip your own runs. Refuse the run if a variable is outside its bound. Those numeric bounds are prompt-only. The server does not reject an out-of-range value.
 2. Cluster repeated failures and the fix that followed. A cluster needs at least two runs, or one run plus a later issue comment that names the fix. No evidence, no proposal.
 3. Draft at most `{{maxProposals}}` updates (1–20) to a company skill or an agent's instructions (memory). Cap `{{maxTargetAgents}}` agents (1–30). Never draft a change to yourself.
-4. Post one short changelog comment on this routine issue: window, runs read, clusters, drafts opened, what was not proposed.
-5. For each draft, open a child issue assigned to the company agent whose `urlKey` is `code-reviewer`. Put the diff in the issue body. Title prefix: `Dream draft:`.
+4. Before a new skill draft, classify company skills with the rules in `server/src/services/skill-hygiene.ts`. A skill is agent-owned only when `managedBy` is `agent` and it is not catalog, plugin, github, url, skills.sh, or a `paperclipai/` key. Everything else is protected, including a missing marker. Never draft a create, edit, merge, or archive for a protected skill. That includes skills a human wrote or installed.
+5. Near-duplicate means two agent-owned skills whose name and description share at least 3 tokens and a Jaccard overlap of at least 0.5. Draft one merge. Keep the higher use count. Say which skill absorbs which. Do not open a second skill for that scenario. A correction updates the existing agent-owned skill. It does not add a near-duplicate.
+6. Archive only an agent-owned skill that is at least 14 days old and has use count 0 and view count 0. Unknown usage is not unused. An archive draft moves the skill aside. It does not delete it. Do not archive the skill a merge keeps.
+7. Post one short changelog comment on this routine issue: window, runs read, clusters, drafts opened, skill count before, protected count, agent-owned count, merge drafts, archive drafts, skill count after, and what was not proposed. Skill count after equals skill count before. This routine never applies.
+8. For each draft, open a child issue assigned to the company agent whose `urlKey` is `code-reviewer`. Put the diff in the issue body. Title prefix: `Dream draft:`. A new agent skill draft must include `managedBy: agent`. Without that marker a later run treats it as protected.
 
 ## Hard limits
 
@@ -70,6 +73,8 @@ Prefer a cheap Grok model (`grok_local` or `hermes_local`). Those adapters are o
 - Do not enable this schedule, do not flip `PAPERCLIP_NIGHTLY_DREAMING`, and do not reset built-in stock.
 - Keep every read company-scoped.
 - Size caps still hold: skills ≤ 15KB, tool descriptions ≤ 500 chars, `AGENTS.md` growth ≤ +20% per draft.
+- Do not inject a learned-skill index into other agents' sessions. If you list agent-owned skills, put that list only in this changelog.
+- Do not add a /learn command. A manual run of this routine is the on-demand path, and the flag still gates it.
 
 ## Output
 

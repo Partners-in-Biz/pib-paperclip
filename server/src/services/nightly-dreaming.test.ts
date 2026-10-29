@@ -64,6 +64,19 @@ describe("reflection-coach dreaming stock", () => {
     expect(routine).toContain("Dream draft:");
   });
 
+  it("protects human skills and only drafts merge or archive for agent-owned skills", () => {
+    expect(routine).toContain("skill-hygiene.ts");
+    expect(routine).toContain("managedBy` is `agent`");
+    expect(routine).toContain("Never draft a create, edit, merge, or archive for a protected skill");
+    expect(routine).toContain("at least 0.5");
+    expect(routine).toContain("at least 3 tokens");
+    expect(routine).toContain("at least 14 days old");
+    expect(routine).toContain("Unknown usage is not unused");
+    expect(routine).toContain("Skill count after equals skill count before");
+    expect(routine).toContain("Do not add a /learn command");
+    expect(routine).toContain("Do not inject a learned-skill index");
+  });
+
   it("keeps the built-in definition paused and on the dreaming stock version", () => {
     const block = definition.slice(definition.indexOf('key: "reflection-coach"'));
     expect(block).toContain('stockVersion: "2026-10-29"');
