@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, integer, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -10,6 +10,8 @@ export const agentConfigRevisions = pgTable(
     agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
+    // Per-agent sequence (v1, v2, ...). Nullable so code from before the column keeps inserting.
+    revisionNumber: integer("revision_number"),
     source: text("source").notNull().default("patch"),
     rolledBackFromRevisionId: uuid("rolled_back_from_revision_id"),
     changedKeys: jsonb("changed_keys").$type<string[]>().notNull().default([]),
@@ -24,5 +26,6 @@ export const agentConfigRevisions = pgTable(
       table.createdAt,
     ),
     agentCreatedIdx: index("agent_config_revisions_agent_created_idx").on(table.agentId, table.createdAt),
+    agentNumberUq: uniqueIndex("agent_config_revisions_agent_number_uq").on(table.agentId, table.revisionNumber),
   }),
 );

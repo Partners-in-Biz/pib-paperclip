@@ -149,6 +149,24 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/**
+ * Insert a revision with the next per-agent number. Callers run inside the
+ * transaction that already updated the agent row; that UPDATE holds the row
+ * lock until commit, so two concurrent writers on one agent are serialized and
+ * max+1 cannot collide. The unique (agent_id, revision_number) index is the
+ * backstop.
+ */
+async function insertConfigRevision(
+  txDb: Db,
+  values: Omit<typeof agentConfigRevisions.$inferInsert, "revisionNumber">,
+) {
+  const [{ next }] = await txDb
+    .select({ next: sql<number>`coalesce(max(${agentConfigRevisions.revisionNumber}), 0) + 1` })
+    .from(agentConfigRevisions)
+    .where(eq(agentConfigRevisions.agentId, values.agentId));
+  await txDb.insert(agentConfigRevisions).values({ ...values, revisionNumber: Number(next) });
+}
+
 function buildConfigSnapshot(
   row: Pick<typeof agents.$inferSelect, ConfigRevisionField>,
 ): AgentConfigSnapshot {
@@ -835,7 +853,7 @@ export function agentService(db: Db) {
         const afterConfig = buildConfigSnapshot(normalizedUpdated);
         const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
         if (changedKeys.length > 0) {
-          await txDb.insert(agentConfigRevisions).values({
+          await insertConfigRevision(txDb, {
             companyId: normalizedUpdated.companyId,
             agentId: normalizedUpdated.id,
             createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
@@ -1189,6 +1207,35 @@ export function agentService(db: Db) {
       return updated ? getById(updated.id) : null;
     },
 
+    /**
+     * Record a revision for a change that lives outside the config snapshot
+     * (an instruction file delete). Restoring it does not bring the file back.
+     */
+    recordInstructionsRevision: async (
+      agent: Pick<typeof agents.$inferSelect, ConfigRevisionField | "id" | "companyId">,
+      input: { source: string; changedKeys: string[]; createdByAgentId?: string | null; createdByUserId?: string | null },
+    ) => {
+      const snapshot = buildConfigSnapshot(agent) as unknown as Record<string, unknown>;
+      const run = async (txDb: Db) => {
+        await txDb.execute(sql`select id from ${agents} where id = ${agent.id} for update`);
+        await insertConfigRevision(txDb, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          createdByAgentId: input.createdByAgentId ?? null,
+          createdByUserId: input.createdByUserId ?? null,
+          source: input.source,
+          changedKeys: input.changedKeys,
+          beforeConfig: snapshot,
+          afterConfig: snapshot,
+        });
+      };
+      const transaction = (db as unknown as {
+        transaction?: (callback: (tx: unknown) => Promise<void>) => Promise<void>;
+      }).transaction;
+      if (typeof transaction !== "function") return run(db);
+      return transaction.call(db, async (tx) => run(tx as unknown as Db));
+    },
+
     listConfigRevisions: async (id: string) =>
       db
         .select()
@@ -1214,6 +1261,9 @@ export function agentService(db: Db) {
         .where(and(eq(agentConfigRevisions.agentId, id), eq(agentConfigRevisions.id, revisionId)))
         .then((rows) => rows[0] ?? null);
       if (!revision) return null;
+      if (revision.source.startsWith("instructions_file_")) {
+        throw unprocessable("Nothing to restore: this revision only records an instruction file change");
+      }
       if (containsRedactedMarker(revision.afterConfig)) {
         throw unprocessable("Cannot roll back a revision that contains redacted secret values");
       }
