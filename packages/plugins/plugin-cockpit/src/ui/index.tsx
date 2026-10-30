@@ -8,7 +8,7 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -21,6 +21,7 @@ import { runAlert, runStats } from "./series.js";
 import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { MaintenancePanel } from "./maintenance.js";
+import { PolicyPanel } from "./policy.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
@@ -63,7 +64,7 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance", "hosted"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance", "policy", "hosted"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 /** `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
@@ -118,6 +119,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
+  const [policyTick, setPolicyTick] = useState(0);
   const hosted = useHostedUsage(companyId);
   const showHosted = hostedAllowed(hosted.state);
   const moved = movedTabTarget(location.search);
@@ -145,8 +147,9 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const memoryTab = tab === "memory";
   const profileTab = tab === "profile";
   const maintenanceTab = tab === "maintenance";
+  const policyTab = tab === "policy";
   const hostedTab = tab === "hosted";
-  const pageTab = memoryTab || profileTab || maintenanceTab || hostedTab;
+  const pageTab = memoryTab || profileTab || maintenanceTab || policyTab || hostedTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
@@ -165,7 +168,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : policyTab ? setPolicyTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
               disabled={!pageTab && data.loading}
             >
               {!pageTab && data.loading ? "Loading…" : "Refresh"}
@@ -183,6 +186,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
           { id: "memory", label: "Memory", icon: Lightbulb },
           { id: "notifications", label: "Notifications", icon: Megaphone },
           { id: "maintenance", label: "Maintenance", icon: Wrench },
+          { id: "policy", label: "Policy", icon: ShieldCheck },
           // Owner company only: other companies get no tab (a `?tab=hosted` link there shows "not available").
           ...(showHosted ? [{ id: "hosted", label: "Hosted clients", icon: Building2 }] : []),
         ]}
@@ -193,6 +197,8 @@ function CockpitPageMain({ context }: PluginPageProps) {
         <HostedView key={companyId} state={hosted.state} now={new Date()} onRetry={() => void hosted.reload()} />
       ) : tab === "notifications" ? (
         <NotificationsPage key={companyId} />
+      ) : policyTab ? (
+        <PolicyPanel key={companyId} linkFor={linkFor} refreshKey={policyTick} />
       ) : maintenanceTab ? (
         <MaintenancePanel key={companyId} refreshKey={maintenanceTick} />
       ) : memoryTab ? (
