@@ -18,6 +18,7 @@ vi.mock("../src/ui/audio.js", () => ({
     playing = false;
     flush = vi.fn();
     enqueue = vi.fn();
+    idle = vi.fn(async () => undefined);
   },
 }));
 
@@ -70,6 +71,7 @@ async function make(overrides: { refreshInfo?: (() => Promise<LiveSessionInfo>) 
   const refreshInfo = overrides.refreshInfo === null ? undefined : (overrides.refreshInfo ?? vi.fn(async () => info(++minted)));
   const states: LiveState[] = [];
   const onError = vi.fn();
+  const onTranscript = vi.fn();
   const session = new LiveSession({
     info: info(1),
     instructions: "",
@@ -80,13 +82,13 @@ async function make(overrides: { refreshInfo?: (() => Promise<LiveSessionInfo>) 
     audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) } as never,
     refreshInfo,
     onState: (s) => states.push(s),
-    onTranscript: vi.fn(),
+    onTranscript,
     onLevel: vi.fn(),
     onError,
   });
   await session.start();
   FakeSocket.all[0]!.open();
-  return { session, refreshInfo, states, onError };
+  return { session, refreshInfo, states, onError, onTranscript };
 }
 
 const say = (socket: FakeSocket, msg: unknown) => socket.emit("message", { data: JSON.stringify(msg) });
@@ -141,6 +143,90 @@ describe("LiveSession reconnect", () => {
     await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
     expect(refreshInfo).toHaveBeenCalledTimes(1);
     expect(FakeSocket.all[1]!.protocols[0]).toBe("xai-client-secret.secret-2");
+    session.stop();
+  });
+
+  it("a refused pass (4001) reconnects with a fresh secret", async () => {
+    const { session, refreshInfo, onError } = await make();
+    FakeSocket.all[0]!.emit("close", { code: 4001, reason: "unauthorized", wasClean: false });
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("expired or was refused"));
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    expect(refreshInfo).toHaveBeenCalledTimes(1);
+    expect(FakeSocket.all[1]!.protocols[0]).toBe("xai-client-secret.secret-2");
+    session.stop();
+  });
+
+  it("a socket error while the page is hidden waits for the page, then makes one attempt", async () => {
+    const { session, refreshInfo, states } = await make();
+    setVisibility("hidden");
+    const first = FakeSocket.all[0]!;
+    first.emit("error");
+    first.emit("close", { code: 1006, reason: "", wasClean: false });
+    expect(last(states)).toBe("disconnected");
+    expect(refreshInfo).not.toHaveBeenCalled();
+
+    setVisibility("visible");
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    expect(refreshInfo).toHaveBeenCalledTimes(1);
+    expect((MicCapture as unknown as { instances: number }).instances).toBe(2);
+    session.stop();
+  });
+
+  it("agent replies that arrive during an outage are kept and delivered after the reconnect", async () => {
+    const { session } = await make();
+    const internals = session as unknown as { queuedUpdates: string[]; deliverUpdates(): void };
+    const first = FakeSocket.all[0]!;
+    first.readyState = FakeSocket.CLOSED;
+    first.emit("close", { code: 1006, reason: "", wasClean: false });
+    internals.queuedUpdates.push("[Update] Dev replied on PAR-1: shipped");
+    internals.deliverUpdates();
+    expect(internals.queuedUpdates).toHaveLength(1);
+
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    const second = FakeSocket.all[1]!;
+    second.open();
+    expect(second.sent().some((m) => JSON.stringify(m).includes("shipped"))).toBe(false);
+    // The greeting after the reconnect ends, and the kept update goes out.
+    say(second, { type: "response.done" });
+    await vi.waitFor(() => expect(second.sent().some((m) => m.type === "conversation.item.create" && m.item.content[0].text.includes("shipped"))).toBe(true));
+    expect(internals.queuedUpdates).toHaveLength(0);
+    expect(last(second.sent()).type).toBe("response.create");
+    session.stop();
+  });
+
+  it("nothing runs after hanging up: late frames add no timer, note or stored turn", async () => {
+    const { session, onTranscript } = await make();
+    const first = FakeSocket.all[0]!;
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    session.stop();
+    expect(removeListener).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+
+    const setTimer = vi.spyOn(window, "setTimeout");
+    const transcriptCalls = onTranscript.mock.calls.length;
+    const stored = JSON.stringify({ ...localStorage });
+    first.emit("message", { data: new ArrayBuffer(8) });
+    say(first, { type: "input_audio_buffer.speech_started" });
+    say(first, { type: "conversation.item.input_audio_transcription.completed", item_id: "late", transcript: "too late" });
+    say(first, { type: "error", error: { message: "late" } });
+    expect(setTimer).not.toHaveBeenCalled();
+    expect(onTranscript.mock.calls.length).toBe(transcriptCalls);
+    expect(JSON.stringify({ ...localStorage })).toBe(stored);
+  });
+
+  it("a late close from a replaced socket does not end the call", async () => {
+    const { session, refreshInfo, states } = await make();
+    const first = FakeSocket.all[0]!;
+    first.emit("close", { code: 1006, reason: "", wasClean: false });
+    await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
+    FakeSocket.all[1]!.open();
+    const before = states.length;
+    first.emit("close", { code: 1006, reason: "", wasClean: false });
+    first.emit("error");
+    await Promise.resolve();
+    expect(states.slice(before)).not.toContain("disconnected");
+    expect(states).not.toContain("error");
+    expect(refreshInfo).toHaveBeenCalledTimes(1);
+    expect(FakeSocket.all).toHaveLength(2);
     session.stop();
   });
 

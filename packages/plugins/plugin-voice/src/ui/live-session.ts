@@ -316,6 +316,7 @@ export class LiveSession {
 
   /** Called on every audio frame, so it re-arms the timer at most once a second. */
   private bumpIdle(): void {
+    if (this.closed) return;
     const now = Date.now();
     if (this.idleTimer !== null && now - this.lastBump < 1000) return;
     this.lastBump = now;
@@ -389,6 +390,7 @@ export class LiveSession {
   }
 
   private onMessage(event: MessageEvent): void {
+    if (this.closed) return;
     if (event.data instanceof ArrayBuffer) {
       this.player.enqueue(event.data);
       this.setState("speaking");
@@ -570,8 +572,11 @@ export class LiveSession {
   }
 
   private deliverUpdates(): void {
+    // While the socket is down the queue stays: `send` drops frames, and the greeting after a reconnect
+    // ends in `afterResponse`, which delivers what was kept.
+    if (this.closed || this.ws?.readyState !== WebSocket.OPEN) return;
     const updates = this.queuedUpdates.splice(0);
-    if (updates.length === 0 || this.closed) return;
+    if (updates.length === 0) return;
     this.send({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text: updates.join("\n\n") }] },
