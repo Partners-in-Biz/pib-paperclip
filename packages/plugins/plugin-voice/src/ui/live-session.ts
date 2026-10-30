@@ -1,6 +1,8 @@
 import { base64ToArrayBuffer, LIVE_SAMPLE_RATE, MicCapture, Player } from "./audio.js";
 import { clip, LiveTools, TOOL_DEFINITIONS, type ApiClient } from "./live-tools.js";
+import { pruneBuffers, writeBuffer } from "./transcript-buffer.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
+import type { WakeGuard } from "./wake-lock.js";
 
 export type LiveState = "connecting" | "listening" | "thinking" | "speaking" | "ended" | "error";
 
@@ -34,6 +36,8 @@ export interface LiveSessionOptions {
   onError: (message: string) => void;
   /** Once, when the call ends for any reason, with the whole call (the panel keeps only the last 60 lines). */
   onEnd?: (call: CallRecord, targets: SaveTarget[]) => void;
+  /** Screen lock started in the opening tap; released when the call ends or fails. */
+  wakeLock?: WakeGuard;
   /** How often watched tasks are checked for agent replies. */
   replyPollMs?: number;
 }
@@ -75,6 +79,7 @@ export class LiveSession {
 
   constructor(private readonly opts: LiveSessionOptions) {
     this.player = new Player(opts.audioContext);
+    pruneBuffers();
     this.player.onLevel = (lvl) => {
       this.voiceLevel = lvl;
       if (lvl === 0 && this.state === "speaking" && !this.responseActive) this.setState("listening");
@@ -117,6 +122,7 @@ export class LiveSession {
       if (!this.closed) this.fail("The voice connection dropped.");
     });
     ws.addEventListener("close", (event) => {
+      console.warn("[pib-voice] socket closed", { code: event.code, reason: event.reason, wasClean: event.wasClean, ending: this.closed });
       if (this.closed) return;
       this.fail(event.code === 1008 || event.code === 4001 ? "The voice pass expired or was refused. Try again." : "The voice connection closed.");
     });
@@ -135,6 +141,7 @@ export class LiveSession {
   stop(): void {
     if (this.closed) return;
     this.closed = true;
+    this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
     this.mic?.stop();
@@ -171,6 +178,7 @@ export class LiveSession {
     if (this.closed) return;
     this.opts.onError(message);
     this.closed = true;
+    this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
     this.mic?.stop();
@@ -435,6 +443,7 @@ export class LiveSession {
     const logged = this.fullLog.get(id);
     if (logged) logged.text = text;
     else this.fullLog.set(id, { who, text, at: Date.now() });
+    writeBuffer(this.startedAt, [...this.fullLog.values()]);
     // Keep the panel light on a long call.
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);

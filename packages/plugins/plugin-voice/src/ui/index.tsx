@@ -13,6 +13,7 @@ import {
   trackFieldFocus,
 } from "./composers.js";
 import { buildInstructions } from "./live-instructions.js";
+import { startWakeLock, type WakeGuard } from "./wake-lock.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./live-tools.js";
 import { failureMessage, showSaveNotice } from "./save-notice.js";
@@ -337,11 +338,15 @@ function LivePanel({
   companyId,
   userId,
   audioContext,
+  wakeLock,
+  wakeNotice,
   onClose,
 }: {
   companyId: string;
   userId: string | null;
   audioContext: AudioContext;
+  wakeLock: WakeGuard | null;
+  wakeNotice: string | null;
   onClose: () => void;
 }) {
   const startLive = usePluginAction("live-session");
@@ -374,6 +379,7 @@ function LivePanel({
           userId,
           pageIssueRef,
           audioContext,
+          wakeLock: wakeLock ?? undefined,
           onState: setState,
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
@@ -396,6 +402,7 @@ function LivePanel({
       cancelled = true;
       session.current?.stop();
       session.current = null;
+      wakeLock?.release();
       // stop() closes it once a session exists; close it here too if it never started.
       if (audioContext.state !== "closed") void audioContext.close().catch(() => undefined);
     };
@@ -474,6 +481,11 @@ function LivePanel({
         <div style={{ marginTop: 18, fontSize: 15, fontWeight: 500 }} aria-live="polite">
           {muted && live ? "Muted" : STATE_LABEL[state]}
         </div>
+        {wakeNotice && live ? (
+          <div role="status" style={{ marginTop: 8, fontSize: 12, color: "var(--muted-foreground)", padding: "0 24px", textAlign: "center" }}>
+            {wakeNotice}
+          </div>
+        ) : null}
         {error ? (
           <div role="alert" style={{ marginTop: 8, fontSize: 13, color: "var(--destructive)", padding: "0 24px", textAlign: "center" }}>
             {error}
@@ -619,12 +631,19 @@ export function VoiceOverlay() {
   const showToast = useCallback((message: string) => setToast(message), []);
   const liveAudioRef = useRef<AudioContext | null>(null);
   // Created right here in the tap handler (not in a state updater, which React runs later).
+  const wakeRef = useRef<WakeGuard | null>(null);
+  const [wakeNotice, setWakeNotice] = useState<string | null>(null);
+  // The screen lock starts in the same tap, before any await: iOS refuses it outside a gesture.
   const openLive = useCallback(() => {
     if (liveAudioRef.current) return;
     liveAudioRef.current = createAudioContext();
+    wakeRef.current = startWakeLock({ audioContext: liveAudioRef.current, onNotice: setWakeNotice });
     setLiveAudio(liveAudioRef.current);
   }, []);
   const closeLive = useCallback(() => {
+    wakeRef.current?.release();
+    wakeRef.current = null;
+    setWakeNotice(null);
     liveAudioRef.current = null;
     setLiveAudio(null);
   }, []);
@@ -651,7 +670,7 @@ export function VoiceOverlay() {
         );
       })}
       {liveAudio ? (
-        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} onClose={closeLive} />
+        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} wakeLock={wakeRef.current} wakeNotice={wakeNotice} onClose={closeLive} />
       ) : null}
       {toast ? <Toast message={toast} /> : null}
     </>
