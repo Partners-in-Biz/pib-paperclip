@@ -322,6 +322,8 @@ const STATE_LABEL: Record<LiveState, string> = {
   listening: "Listening",
   thinking: "Thinking…",
   speaking: "Speaking",
+  reconnecting: "Reconnecting…",
+  disconnected: "Disconnected",
   ended: "Call ended",
   error: "Disconnected",
 };
@@ -380,7 +382,12 @@ function LivePanel({
           pageIssueRef,
           audioContext,
           wakeLock: wakeLock ?? undefined,
-          onState: setState,
+          refreshInfo: () => startLive({}) as Promise<LiveSessionInfo>,
+          onState: (next) => {
+            setState(next);
+            // The banner belongs to the outage; a recovered call clears it.
+            if (next !== "disconnected" && next !== "error") setError(null);
+          },
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
           onError: setError,
@@ -475,7 +482,7 @@ function LivePanel({
             border: "1px solid var(--border)",
             transform: `scale(${orbScale})`,
             transition: "transform 90ms linear, background 200ms ease",
-            animation: state === "thinking" || state === "connecting" ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
+            animation: state === "thinking" || state === "connecting" || state === "reconnecting" ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
           }}
         />
         <div style={{ marginTop: 18, fontSize: 15, fontWeight: 500 }} aria-live="polite">
@@ -490,6 +497,15 @@ function LivePanel({
           <div role="alert" style={{ marginTop: 8, fontSize: 13, color: "var(--destructive)", padding: "0 24px", textAlign: "center" }}>
             {error}
           </div>
+        ) : null}
+        {state === "disconnected" ? (
+          <button
+            type="button"
+            onClick={() => session.current?.retry()}
+            style={{ marginTop: 12, padding: "10px 20px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--accent)", color: "var(--foreground)", fontSize: 14, fontWeight: 500 }}
+          >
+            Retry
+          </button>
         ) : null}
       </div>
 

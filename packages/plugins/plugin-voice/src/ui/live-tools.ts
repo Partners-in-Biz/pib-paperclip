@@ -234,6 +234,11 @@ export class LiveTools {
   }
 
   /** Returns the stored action when the id matches and the person spoke since the read-back. */
+  /** A reconnect starts a fresh conversation: a read-back the person heard before the drop must not be confirmable. */
+  clearPending(): void {
+    this.pending = null;
+  }
+
   private takeConfirmed(id: unknown): PendingAction | { error: string } | null {
     if (typeof id !== "string" || !id) return null;
     const p = this.pending;
