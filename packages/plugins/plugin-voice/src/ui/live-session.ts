@@ -1,10 +1,11 @@
 import { base64ToArrayBuffer, LIVE_SAMPLE_RATE, MicCapture, Player } from "./audio.js";
 import { clip, LiveTools, TOOL_DEFINITIONS, type ApiClient } from "./live-tools.js";
-import { pruneBuffers, writeBuffer } from "./transcript-buffer.js";
+import { pruneBuffers, readBuffer, writeBuffer } from "./transcript-buffer.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
 import type { WakeGuard } from "./wake-lock.js";
 
-export type LiveState = "connecting" | "listening" | "thinking" | "speaking" | "ended" | "error";
+/** `disconnected` and `reconnecting` are recoverable; `ended` and `error` are final. */
+export type LiveState = "connecting" | "listening" | "thinking" | "speaking" | "reconnecting" | "disconnected" | "ended" | "error";
 
 export interface TranscriptEntry {
   id: string;
@@ -38,6 +39,11 @@ export interface LiveSessionOptions {
   onEnd?: (call: CallRecord, targets: SaveTarget[]) => void;
   /** Screen lock started in the opening tap; released when the call ends or fails. */
   wakeLock?: WakeGuard;
+  /**
+   * Mints a fresh secret for a reconnect (the first one is single-use and short-lived). Without it a dropped
+   * socket ends the call, as before.
+   */
+  refreshInfo?: () => Promise<LiveSessionInfo>;
   /** How often watched tasks are checked for agent replies. */
   replyPollMs?: number;
 }
@@ -56,6 +62,10 @@ interface Watched {
 
 /** Hang up after this much silence on both sides, so a pocketed phone does not run up a bill. */
 const IDLE_HANGUP_MS = 4 * 60 * 1000;
+/** Earlier turns replayed into a new session after a drop. */
+const REPLAY_TURNS = 20;
+/** A connection that lived this long counts as healthy, so its next drop gets a fresh automatic attempt. */
+const STABLE_MS = 10_000;
 
 export class LiveSession {
   private ws: WebSocket | null = null;
@@ -76,8 +86,18 @@ export class LiveSession {
   private readonly startedAt = Date.now();
   private readonly fullLog = new Map<string, LogEntry>();
   private ended = false;
+  private info: LiveSessionInfo;
+  /** The socket dropped and nothing has replaced it yet. */
+  private dropped = false;
+  private reconnecting = false;
+  /** The automatic attempt of this outage was used; only Retry (or a healthy connection) re-arms it. */
+  private autoTried = false;
+  private droppedHidden = false;
+  private replayOnOpen = false;
+  private connectedAt = 0;
 
   constructor(private readonly opts: LiveSessionOptions) {
+    this.info = opts.info;
     this.player = new Player(opts.audioContext);
     pruneBuffers();
     this.player.onLevel = (lvl) => {
@@ -103,29 +123,12 @@ export class LiveSession {
   }
 
   async start(): Promise<void> {
-    const { info } = this.opts;
     // Mic and socket start together; frames before `open` are dropped, which is fine
     // because the first thing that happens is the voice greeting.
-    this.mic = new MicCapture(this.opts.audioContext, (pcm, lvl) => {
-      this.opts.onLevel(lvl, this.voiceLevel);
-      if (lvl > 0.08) this.bumpIdle();
-      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(pcm);
-    });
+    this.mic = this.makeMic();
     const micReady = this.mic.start();
-
-    const ws = new WebSocket(info.url, [`xai-client-secret.${info.token}`]);
-    ws.binaryType = "arraybuffer";
-    this.ws = ws;
-    ws.addEventListener("open", () => this.configure());
-    ws.addEventListener("message", (event) => this.onMessage(event));
-    ws.addEventListener("error", () => {
-      if (!this.closed) this.fail("The voice connection dropped.");
-    });
-    ws.addEventListener("close", (event) => {
-      console.warn("[pib-voice] socket closed", { code: event.code, reason: event.reason, wasClean: event.wasClean, ending: this.closed });
-      if (this.closed) return;
-      this.fail(event.code === 1008 || event.code === 4001 ? "The voice pass expired or was refused. Try again." : "The voice connection closed.");
-    });
+    this.openSocket(this.info);
+    if (this.opts.refreshInfo) document.addEventListener("visibilitychange", this.onVisibility);
 
     try {
       await micReady;
@@ -138,9 +141,124 @@ export class LiveSession {
     this.bumpIdle();
   }
 
+  private makeMic(): MicCapture {
+    return new MicCapture(this.opts.audioContext, (pcm, lvl) => {
+      this.opts.onLevel(lvl, this.voiceLevel);
+      if (lvl > 0.08) this.bumpIdle();
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(pcm);
+    });
+  }
+
+  /** Handlers ignore a socket that is no longer `this.ws`, so a replaced socket cannot end the call. */
+  private openSocket(info: LiveSessionInfo): void {
+    const ws = new WebSocket(info.url, [`xai-client-secret.${info.token}`]);
+    ws.binaryType = "arraybuffer";
+    this.ws = ws;
+    this.dropped = false;
+    ws.addEventListener("open", () => {
+      if (ws !== this.ws) return;
+      this.connectedAt = Date.now();
+      this.reconnecting = false;
+      this.configure();
+    });
+    ws.addEventListener("message", (event) => {
+      if (ws === this.ws) this.onMessage(event);
+    });
+    ws.addEventListener("error", () => {
+      if (ws === this.ws && !this.closed) this.onDrop("The voice connection dropped.");
+    });
+    ws.addEventListener("close", (event) => {
+      console.warn("[pib-voice] socket closed", { code: event.code, reason: event.reason, wasClean: event.wasClean, ending: this.closed });
+      if (ws !== this.ws || this.closed) return;
+      this.onDrop(event.code === 1008 || event.code === 4001 ? "The voice pass expired or was refused." : "The voice connection closed.");
+    });
+  }
+
+  /**
+   * The socket is gone while the call is still wanted: a screen lock, a network blip or the provider's own
+   * session limit. One automatic attempt while the page is visible (or when it becomes visible again), then
+   * the Retry button. No backoff loop: timers do not run while a phone is locked.
+   */
+  private onDrop(message: string): void {
+    if (this.closed || this.dropped) return;
+    if (!this.opts.refreshInfo) {
+      this.fail(`${message} Try again.`);
+      return;
+    }
+    this.dropped = true;
+    this.reconnecting = false;
+    if (this.connectedAt > 0 && Date.now() - this.connectedAt > STABLE_MS) this.autoTried = false;
+    this.connectedAt = 0;
+    this.droppedHidden = this.droppedHidden || document.visibilityState === "hidden";
+    this.responseActive = false;
+    this.pendingCalls = [];
+    this.tools.clearPending();
+    this.player.flush();
+    try {
+      this.ws?.close();
+    } catch {
+      // Already closed.
+    }
+    this.setState("disconnected");
+    this.opts.onError(message);
+    this.bumpIdle();
+    if (document.visibilityState === "visible" && !this.autoTried) void this.reconnect(true);
+  }
+
+  private readonly onVisibility = (): void => {
+    if (this.closed || document.visibilityState !== "visible") return;
+    void this.opts.audioContext.resume?.()?.catch?.(() => undefined);
+    if (!this.dropped) {
+      // A frozen page can miss the close event: a socket that is not open is a drop.
+      const ready = this.ws?.readyState;
+      if (!this.reconnecting && ready !== undefined && ready !== WebSocket.OPEN && ready !== WebSocket.CONNECTING) {
+        this.droppedHidden = true;
+        this.onDrop("The voice connection closed.");
+      }
+      return;
+    }
+    if (this.state === "disconnected" && !this.autoTried) void this.reconnect(true);
+  };
+
+  /** The Retry button. */
+  retry(): void {
+    if (this.state === "disconnected") void this.reconnect(false);
+  }
+
+  private async reconnect(auto: boolean): Promise<void> {
+    const refresh = this.opts.refreshInfo;
+    if (this.closed || this.reconnecting || !refresh) return;
+    this.reconnecting = true;
+    if (auto) this.autoTried = true;
+    this.setState("reconnecting");
+    try {
+      const info = await refresh();
+      if (this.closed) return;
+      if (this.droppedHidden) {
+        // A locked phone can leave the mic track ended; start it again now that the page is back.
+        const muted = this.mic?.muted ?? false;
+        this.mic?.stop();
+        this.mic = this.makeMic();
+        this.mic.muted = muted;
+        await this.mic.start();
+        if (this.closed) return;
+        this.droppedHidden = false;
+      }
+      this.info = info;
+      this.replayOnOpen = true;
+      this.openSocket(info);
+    } catch (err) {
+      this.reconnecting = false;
+      if (this.closed) return;
+      this.setState("disconnected");
+      this.opts.onError(err instanceof Error && err.message ? `Could not reconnect: ${clip(err.message, 160)}` : "Could not reconnect.");
+    }
+  }
+
   stop(): void {
     if (this.closed) return;
     this.closed = true;
+    document.removeEventListener("visibilitychange", this.onVisibility);
     this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
@@ -178,6 +296,7 @@ export class LiveSession {
     if (this.closed) return;
     this.opts.onError(message);
     this.closed = true;
+    document.removeEventListener("visibilitychange", this.onVisibility);
     this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
@@ -197,6 +316,7 @@ export class LiveSession {
 
   /** Called on every audio frame, so it re-arms the timer at most once a second. */
   private bumpIdle(): void {
+    if (this.closed) return;
     const now = Date.now();
     if (this.idleTimer !== null && now - this.lastBump < 1000) return;
     this.lastBump = now;
@@ -212,7 +332,7 @@ export class LiveSession {
   }
 
   private configure(): void {
-    const { info } = this.opts;
+    const info = this.info;
     const transcription: Record<string, unknown> = {};
     if (info.keyterms.length > 0) transcription.keyterms = info.keyterms.slice(0, 100);
     if (info.language) transcription.language_hint = info.language;
@@ -233,15 +353,44 @@ export class LiveSession {
         },
       },
     });
-    // Open with a one-line greeting so the person knows it is listening.
-    this.send({
-      type: "response.create",
-      response: { instructions: "Greet them in one short sentence and ask what they need. Do not call tools yet." },
-    });
+    const replay = this.replayOnOpen ? this.replayText() : null;
+    this.replayOnOpen = false;
+    if (replay) {
+      // One context message instead of re-created turns: no guessing the provider's assistant item shape.
+      this.send({
+        type: "conversation.item.create",
+        item: { type: "message", role: "user", content: [{ type: "input_text", text: replay }] },
+      });
+      this.addNote("Reconnected.");
+      this.send({
+        type: "response.create",
+        response: {
+          instructions:
+            "The connection dropped and is back. Say in a few words that you are back and carry on from the earlier turns. Do not repeat earlier answers or call tools yet.",
+        },
+      });
+    } else {
+      // Open with a one-line greeting so the person knows it is listening.
+      this.send({
+        type: "response.create",
+        response: { instructions: "Greet them in one short sentence and ask what they need. Do not call tools yet." },
+      });
+    }
     this.setState("thinking");
   }
 
+  /** The last turns of this call, from the localStorage copy (falls back to memory when storage is blocked). */
+  private replayText(): string | null {
+    const stored = readBuffer(this.startedAt)?.entries;
+    const entries = stored && stored.length > 0 ? stored : [...this.fullLog.values()];
+    const turns = entries.filter((e) => e.who !== "note" && e.text.trim()).slice(-REPLAY_TURNS);
+    if (turns.length === 0) return null;
+    const lines = turns.map((e) => `${e.who === "you" ? "Person" : "You"}: ${clip(e.text, 600)}`);
+    return `[Context] Earlier in this same call, before the connection dropped:\n${lines.join("\n")}`;
+  }
+
   private onMessage(event: MessageEvent): void {
+    if (this.closed) return;
     if (event.data instanceof ArrayBuffer) {
       this.player.enqueue(event.data);
       this.setState("speaking");
@@ -423,8 +572,11 @@ export class LiveSession {
   }
 
   private deliverUpdates(): void {
+    // While the socket is down the queue stays: `send` drops frames, and the greeting after a reconnect
+    // ends in `afterResponse`, which delivers what was kept.
+    if (this.closed || this.ws?.readyState !== WebSocket.OPEN) return;
     const updates = this.queuedUpdates.splice(0);
-    if (updates.length === 0 || this.closed) return;
+    if (updates.length === 0) return;
     this.send({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text: updates.join("\n\n") }] },
