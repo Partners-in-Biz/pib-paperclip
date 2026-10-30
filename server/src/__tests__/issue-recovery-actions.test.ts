@@ -665,7 +665,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           preservesSourceAssignee: true,
         }),
       });
-      expect(enqueueWakeup).not.toHaveBeenCalled();
+      // A first workspace-validation failure asks for one retry; nothing else wakes.
+      expect(enqueueWakeup).toHaveBeenCalledTimes(errorCode === "workspace_validation_failed" ? 1 : 0);
     },
   );
 
@@ -1339,6 +1340,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("retries a first workspace-validation failure once and blocks on the second", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const scheduleRecoveryRetry = vi.fn(async () => ({ id: randomUUID() }) as never);
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry });
+    const failedRun = () => ({
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "workspace not ready",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: { issueId: sourceIssue.id },
+      livenessState: "failed",
+      resultJson: { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:retry" } },
+    }) as const;
+    const seedFailedRun = async (run: ReturnType<typeof failedRun>) => {
+      await db.insert(heartbeatRuns).values({
+        id: run.id,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        errorCode: "workspace_validation_failed",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        contextSnapshot: { issueId: sourceIssue.id },
+      });
+    };
+
+    const first = failedRun();
+    await seedFailedRun(first);
+    const afterFirst = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: first,
+      recoveryCause: "workspace_validation_failed",
+    });
+    expect(scheduleRecoveryRetry).toHaveBeenCalledWith(first.id);
+    expect(afterFirst?.status).not.toBe("blocked");
+    const [stillOpen] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(stillOpen?.status).not.toBe("blocked");
+
+    const second = failedRun();
+    await seedFailedRun(second);
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: second,
+      recoveryCause: "workspace_validation_failed",
+    });
+    expect(scheduleRecoveryRetry).toHaveBeenCalledTimes(1);
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(blocked?.status).toBe("blocked");
+  });
+
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
@@ -1446,7 +1501,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       tone: "danger",
       title: "Workspace validation failed",
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    // Each escalation first tries the single retry; the mock queues nothing, so it still blocks.
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
