@@ -39,10 +39,12 @@ concurrency:
 jobs:
   package:
     name: ${{ matrix.package }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, pib-vps]
     timeout-minutes: 25
     strategy:
       fail-fast: false
+      # One VPS runs every package job; a few at a time keeps installs and builds from starving each other.
+      max-parallel: 4
       matrix:
         package:
           # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
@@ -114,7 +116,7 @@ jobs:
 
   telephony-secret-guard:
     name: Telephony secret guard
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, pib-vps]
     timeout-minutes: 5
     steps:
       - name: Check out
@@ -135,7 +137,7 @@ jobs:
     name: PiB plugins CI
     needs: [package, telephony-secret-guard]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, pib-vps]
     timeout-minutes: 5
     steps:
       - name: All packages and guards passed
