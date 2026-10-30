@@ -39,7 +39,7 @@ class FakeSocket {
   }
 }
 
-function make(wakeLock = { release: vi.fn() }) {
+function make(wakeLock = { release: vi.fn() }, extra: Record<string, unknown> = {}) {
   const onError = vi.fn();
   const onEnd = vi.fn();
   const session = new LiveSession({
@@ -56,6 +56,7 @@ function make(wakeLock = { release: vi.fn() }) {
     onLevel: vi.fn(),
     onError,
     onEnd,
+    ...extra,
   });
   return { session, wakeLock, onError, onEnd };
 }
@@ -118,5 +119,60 @@ describe("LiveSession resilience", () => {
     expect(() =>
       FakeSocket.last.emit("message", { data: JSON.stringify({ type: "conversation.item.input_audio_transcription.updated", item_id: "u1", transcript: "x" }) }),
     ).not.toThrow();
+  });
+
+  describe("autosave", () => {
+    const say = (id: string, transcript: string) =>
+      FakeSocket.last.emit("message", { data: JSON.stringify({ type: "conversation.item.input_audio_transcription.updated", item_id: id, transcript }) });
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("autosaves about every 30 s, only when there is something new, and leaves the comment to onEnd", async () => {
+      const onAutosave = vi.fn();
+      const { session, onEnd } = make(undefined, { onAutosave });
+      await session.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(onAutosave).not.toHaveBeenCalled();
+      say("u1", "hello");
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(onAutosave).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onAutosave).toHaveBeenCalledTimes(1);
+      expect(onAutosave.mock.calls[0]![0].entries).toEqual([expect.objectContaining({ text: "hello" })]);
+      // Nothing new: no second write.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onAutosave).toHaveBeenCalledTimes(1);
+      expect(onEnd).not.toHaveBeenCalled();
+      session.stop();
+      expect(onEnd).toHaveBeenCalledTimes(1);
+      say("u2", "late");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(onAutosave).toHaveBeenCalledTimes(1);
+    });
+
+    it("does about six autosaves over a 3-minute call that talks throughout", async () => {
+      const onAutosave = vi.fn();
+      const { session, onEnd } = make(undefined, { onAutosave, replyPollMs: 1_000_000 });
+      await session.start();
+      for (let i = 0; i < 18; i++) {
+        say(`u${i}`, `line ${i}`);
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      expect(onAutosave).toHaveBeenCalledTimes(6);
+      session.stop();
+      expect(onEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries on the next tick when the autosave fails", async () => {
+      const onAutosave = vi.fn().mockRejectedValueOnce(new Error("500")).mockResolvedValue(undefined);
+      const { session } = make(undefined, { onAutosave });
+      await session.start();
+      say("u1", "hello");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(onAutosave).toHaveBeenCalledTimes(2);
+      session.stop();
+    });
   });
 });

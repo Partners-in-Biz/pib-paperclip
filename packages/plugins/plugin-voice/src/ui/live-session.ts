@@ -46,6 +46,12 @@ export interface LiveSessionOptions {
   refreshInfo?: () => Promise<LiveSessionInfo>;
   /** How often watched tasks are checked for agent replies. */
   replyPollMs?: number;
+  /**
+   * Called about every `autosaveMs` while the call has new lines, with the call so far. The host writes the
+   * document only (never a comment); `onEnd` stays the one place the recap comment is posted.
+   */
+  onAutosave?: (call: CallRecord) => void | Promise<void>;
+  autosaveMs?: number;
 }
 
 interface PendingCall {
@@ -66,6 +72,8 @@ const IDLE_HANGUP_MS = 4 * 60 * 1000;
 const REPLAY_TURNS = 20;
 /** A connection that lived this long counts as healthy, so its next drop gets a fresh automatic attempt. */
 const STABLE_MS = 10_000;
+/** How often the call so far is written to the task document. */
+const AUTOSAVE_MS = 30_000;
 
 export class LiveSession {
   private ws: WebSocket | null = null;
@@ -79,6 +87,9 @@ export class LiveSession {
   private queuedUpdates: string[] = [];
   private watched = new Map<string, Watched>();
   private pollTimer: number | null = null;
+  private autosaveTimer: number | null = null;
+  /** Lines changed since the last autosave started. */
+  private unsaved = false;
   private idleTimer: number | null = null;
   private voiceLevel = 0;
   private closed = false;
@@ -138,7 +149,24 @@ export class LiveSession {
     }
     if (this.closed) return;
     this.pollTimer = window.setInterval(() => void this.pollReplies(), this.opts.replyPollMs ?? 10_000);
+    if (this.opts.onAutosave) {
+      this.autosaveTimer = window.setInterval(() => this.autosave(), this.opts.autosaveMs ?? AUTOSAVE_MS);
+    }
     this.bumpIdle();
+  }
+
+  /** Document only, and only when something was said since the last one; a failure is left for the final save. */
+  private autosave(): void {
+    if (this.closed || !this.unsaved) return;
+    this.unsaved = false;
+    const call: CallRecord = { entries: [...this.fullLog.values()].map((e) => ({ ...e })), startedAt: this.startedAt, endedAt: Date.now() };
+    try {
+      void Promise.resolve(this.opts.onAutosave?.(call)).catch(() => {
+        this.unsaved = true;
+      });
+    } catch {
+      this.unsaved = true;
+    }
   }
 
   private makeMic(): MicCapture {
@@ -278,6 +306,7 @@ export class LiveSession {
   private finish(): void {
     if (this.ended) return;
     this.ended = true;
+    if (this.autosaveTimer !== null) window.clearInterval(this.autosaveTimer);
     const targets: SaveTarget[] = [...this.watched].map(([issueId, w]) => ({ issueId, ref: w.ref }));
     try {
       this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now() }, targets);
@@ -595,6 +624,7 @@ export class LiveSession {
     const logged = this.fullLog.get(id);
     if (logged) logged.text = text;
     else this.fullLog.set(id, { who, text, at: Date.now() });
+    this.unsaved = true;
     writeBuffer(this.startedAt, [...this.fullLog.values()]);
     // Keep the panel light on a long call.
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
