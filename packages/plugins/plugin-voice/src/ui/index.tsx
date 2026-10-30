@@ -61,8 +61,40 @@ export const paperclipApi: ReportApi = {
   },
 };
 
+/**
+ * Autosaves and the final save write the same document key, and the host wants the latest revision id each
+ * time, so they run one after another: a save started during a slow autosave would otherwise read a stale id.
+ */
+let saveQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueSave<T>(work: () => Promise<T>): Promise<T> {
+  const run = saveQueue.then(work, work);
+  saveQueue = run.catch(() => undefined);
+  return run;
+}
+
+/** The mid-call write: the document on the task the call was opened from, never a comment. No task, no write. */
+function autosaveCall(call: CallRecord, pageIssueRef: string | null): Promise<void> {
+  if (!pageIssueRef || !hasSpeech(call.entries)) return Promise.resolve();
+  return enqueueSave(async () => {
+    const issue = await paperclipApi.get<{ id: string; identifier?: string | null }>(`/issues/${encodeURIComponent(pageIssueRef)}`);
+    const result = await saveLiveTranscript(
+      paperclipApi,
+      call,
+      [{ issueId: issue.id, ref: issue.identifier ?? pageIssueRef }],
+      { comment: false, changeSummary: "Autosaved during a live voice chat" },
+    );
+    // Left for the final save, which shows the failure and offers Retry.
+    if (result.failed.length > 0) throw new Error(result.failed[0]!.error);
+  });
+}
+
 /** Puts the call on the task it was opened from and on every task it posted to or created. */
-async function saveCall(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
+function saveCall(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
+  return enqueueSave(() => saveCallNow(call, touched, pageIssueRef));
+}
+
+async function saveCallNow(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
   if (!hasSpeech(call.entries)) return;
   const targets = [...touched];
   if (pageIssueRef) {
@@ -391,6 +423,7 @@ function LivePanel({
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
           onError: setError,
+          onAutosave: (call) => autosaveCall(call, pageIssueRef),
           onEnd: (call, touched) =>
             void saveCall(call, touched, pageIssueRef).catch((err) => {
               showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);

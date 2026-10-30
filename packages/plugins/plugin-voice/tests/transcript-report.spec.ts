@@ -144,4 +144,28 @@ describe("transcript report", () => {
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
   });
+
+  it("writes only the document, with the same key, when the comment is off (autosave)", async () => {
+    const { api, put, post } = fakeApi(undefined, "11111111-1111-4111-8111-111111111111");
+    const result = await saveLiveTranscript(api, CALL, [{ issueId: "i1", ref: "PAR-1" }], { comment: false, changeSummary: "Autosaved" });
+    expect(result.saved).toEqual(["PAR-1"]);
+    expect(put.mock.calls[0]![0]).toBe(`/issues/i1/documents/${documentKey(START)}`);
+    expect(put.mock.calls[0]![1]).toMatchObject({ baseRevisionId: "11111111-1111-4111-8111-111111111111", changeSummary: "Autosaved" });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("looks up the latest revision on every autosave and posts the comment once at the end", async () => {
+    const { api, put, post } = fakeApi();
+    const get = api.get as unknown as ReturnType<typeof vi.fn>;
+    const target = [{ issueId: "i1", ref: "PAR-1" }];
+    get.mockRejectedValueOnce(new Error("Paperclip answered 404 for /x"));
+    get.mockResolvedValueOnce({ latestRevisionId: "r1" });
+    get.mockResolvedValueOnce({ latestRevisionId: "r2" });
+    await saveLiveTranscript(api, CALL, target, { comment: false });
+    await saveLiveTranscript(api, CALL, target, { comment: false });
+    expect(post).not.toHaveBeenCalled();
+    await saveLiveTranscript(api, CALL, target);
+    expect(put.mock.calls.map((c) => (c[1] as { baseRevisionId?: string }).baseRevisionId)).toEqual([undefined, "r1", "r2"]);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
 });
