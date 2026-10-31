@@ -353,15 +353,34 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
 
-  it("does not throttle the wake that follows a failed run", async () => {
+  it("caps the wake after a failed run once the hourly cap is reached", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
+    // Three terminal runs inside the rolling hour, including a failed one.
+    // Failed runs count. The no-progress throttle is a separate gate.
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
+
+    const recoveryWake = await assignmentWake(agentId, issueId);
+    expect(recoveryWake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_run_cap");
+  });
+
+  it("does not apply the no-progress throttle after a failed run when under the hourly cap", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    // Older succeeded runs are inside the 6h throttle lookback and outside
+    // the 1h cap, so only the failed run counts toward the cap. If the
+    // throttle did not break its streak on that failed run, this wake
+    // would be issue_rewake_throttled.
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 3700 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 3660 });
     await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
 
     const recoveryWake = await assignmentWake(agentId, issueId);
     expect(recoveryWake).not.toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).not.toBe("issue_rewake_throttled");
   });
 
   it("does not throttle when a recent run produced issue-visible progress", async () => {

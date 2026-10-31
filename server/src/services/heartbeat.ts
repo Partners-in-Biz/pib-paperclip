@@ -17504,10 +17504,18 @@ export function heartbeatService(
             readNonEmptyString(context.retryReason),
             context,
           ) ||
-          readNonEmptyString(context.retryReason) ===
-            "execution_review_participant_recovery" ||
-          readNonEmptyString(context.wakeReason) ===
-            "execution_review_participant_recovery",
+          (
+            // The wakeup route copies a client-supplied reason. Only a
+            // system actor may use the review-participant recovery reason
+            // to skip the assignee check. Server recovery sets that actor.
+            (wakeRequest?.requestedByActorType ?? null) === "system" &&
+            (
+              readNonEmptyString(context.retryReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON ||
+              readNonEmptyString(context.wakeReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
+            )
+          ),
       });
       if (!startIssue || !startDecision.start) {
         if (startIssue && startDecision.reason === "blocked") {

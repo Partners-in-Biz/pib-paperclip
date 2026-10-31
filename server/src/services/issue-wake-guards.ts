@@ -88,9 +88,17 @@ export function evaluateTicketHourlyRunCap(input: {
 const DISPOSITION_REPAIR_WAKE_REASON = "issue_disposition_repair";
 
 /**
- * Claim/enqueue exemption from the hourly cap. retryOfRunId is set by
- * recovery code, not by the wakeup HTTP route. Reason-based exemptions
- * require a system actor because that route copies a client-supplied reason.
+ * Claim/enqueue exemption from the hourly cap.
+ *
+ * retryOfRunId is written by server recovery, not by a client. The wakeup
+ * route (routes/agents.ts) builds contextSnapshot itself and does not copy
+ * a client retryOfRunId. Writers: wake-queue postgres adapter
+ * (queueReviewParticipantRecoveryRun, queueImmediateRecoveryRun),
+ * recovery/service.ts, native-safe-replacement, and heartbeat retry
+ * scheduling. The run column is set from those same server ids
+ * (finishingRun.id / opts.failedRunId), never from req.body.retryOfRunId.
+ * Reason-based exemptions still require a system actor because that route
+ * does copy a client-supplied reason.
  */
 export function isTicketRunCapExempt(input: {
   retryOfRunId?: string | null;
