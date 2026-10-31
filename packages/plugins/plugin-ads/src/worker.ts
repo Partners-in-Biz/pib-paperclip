@@ -68,6 +68,7 @@ import {
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
 import { sweepCaps } from "./sweeper.js";
+import { campaignCapsRecord, setCampaignCap } from "./campaign-caps.js";
 import { syncCompany } from "./sync.js";
 import { SKILLS } from "./skills.js";
 import { ADS_TOOLS } from "./tools.js";
@@ -152,6 +153,8 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
     }
     case "get-ads-summary":
       return summaryRecord(rt, p);
+    case "list-campaigns-without-cap":
+      return campaignCapsRecord(rt);
     case "list-ad-campaigns":
       return campaignsRecord(rt, p);
     case "get-spend-ledger":
@@ -301,6 +304,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     return { ...sync, alertsNew: evaluated.alertsNew, pauseRequests: evaluated.pauseRequests };
   },
   "ads.performance": async (_ctx, rt, _v, p) => ({ summary: await summaryRecord(rt, p), campaigns: await campaignsRecord(rt, p.client === undefined ? {} : { client: p.client }), ledger: await ledgerRecord(rt, { ...(p.client === undefined ? {} : { client: p.client }), limit: 60 }) }),
+  "ads.set-campaign-cap": (_ctx, rt, v, p) => setCampaignCap(rt, { userId: v.userId }, p),
+  "ads.campaign-caps": (_ctx, rt) => campaignCapsRecord(rt),
   "ads.set-cap": (_ctx, rt, v, p) => setBudgetCap(rt, { userId: v.userId }, p),
   "ads.set-allow-writes": (_ctx, rt, v, p) => setAllowWrites(rt, { userId: v.userId }, p),
   "ads.set-signoffs": (_ctx, rt, v, p) => setSignoffs(rt, { userId: v.userId }, p),

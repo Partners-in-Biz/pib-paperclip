@@ -13,6 +13,7 @@ Reads Meta and Google Ads performance into one picture for PiB's own ads and for
 | Reading | |
 |---|---|
 | `list-ad-accounts`, `list-ad-connections` | accounts with scope, currency, status, cap and spend; sign-ins and the accounts each can see |
+| `list-campaigns-without-cap` | read-only: campaigns with no hard cap row, and the caps that exist (a person sets caps; nothing enforces them yet) |
 | `get-ads-summary` | spend, impressions, clicks, conversions, CPC, CPA, ROAS across Meta and Google, grouped by platform, campaign, day, account or scope; totals per currency |
 | `list-ad-campaigns`, `get-spend-ledger` | campaigns with status, budget and 7 days of numbers; the append-only spend ledger |
 | `get-budget-status`, `list-ad-alerts` | cap, spend, pace, projections, headroom; spend spike, no delivery, cost per result over target, budget nearly used, numbers not updating |
