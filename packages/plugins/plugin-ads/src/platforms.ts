@@ -4,7 +4,7 @@
  */
 
 export const PLUGIN_ID = "partnersinbiz.ads";
-export const PLUGIN_VERSION = "0.3.17";
+export const PLUGIN_VERSION = "0.3.18";
 /** Managed project that holds PiB's own ads work (a client's work goes in the client's own project). */
 export const ADS_PROJECT_KEY = "ads";
 export const ADS_ROLE_KEY = "ads-manager";
@@ -84,7 +84,7 @@ export const STATUS_LABELS: Record<ProposalStatus, string> = {
   expired: "Expired",
 };
 
-export const ALERT_KINDS = ["spend_spike", "zero_delivery", "cpa_over_target", "budget_90", "budget_100", "on_track_to_exceed", "sync_failed", "needs_reconnect"] as const;
+export const ALERT_KINDS = ["spend_spike", "zero_delivery", "cpa_over_target", "budget_90", "budget_100", "on_track_to_exceed", "sync_failed", "needs_reconnect", "daily_report"] as const;
 export type AlertKind = (typeof ALERT_KINDS)[number];
 
 export const ALERT_LABELS: Record<AlertKind, string> = {
@@ -96,6 +96,7 @@ export const ALERT_LABELS: Record<AlertKind, string> = {
   on_track_to_exceed: "On track to exceed the budget",
   sync_failed: "Numbers not updating",
   needs_reconnect: "Connection needs signing in again",
+  daily_report: "Daily results",
 };
 
 /** Origin id prefixes of the issues this plugin opens (stable: the done-checks match on them). */
