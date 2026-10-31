@@ -11,18 +11,21 @@ export const ADS_ROLE_KEY = "ads-manager";
 /** Same-origin route the static OAuth bridge page posts to. */
 export const COMPLETE_ROUTE_PATH = `/api/plugins/${PLUGIN_ID}/api/oauth/complete`;
 
-export type AdPlatform = "meta" | "google";
-export const AD_PLATFORMS: AdPlatform[] = ["meta", "google"];
+export type AdPlatform = "meta" | "google" | "apple" | "tiktok" | "linkedin";
+export const AD_PLATFORMS: AdPlatform[] = ["meta", "google", "apple", "tiktok", "linkedin"];
 /** What a connection or account row stores: the two real platforms, and the rehearsal platform (`mock`, off by default). */
 export type StoredPlatform = AdPlatform | "mock";
 
 export const PLATFORM_LABELS: Record<AdPlatform, string> = {
   meta: "Meta (Facebook and Instagram)",
   google: "Google Ads",
+  apple: "Apple Ads",
+  tiktok: "TikTok Ads",
+  linkedin: "LinkedIn Ads",
 };
 
 export function isAdPlatform(value: unknown): value is AdPlatform {
-  return value === "meta" || value === "google";
+  return typeof value === "string" && (AD_PLATFORMS as string[]).includes(value);
 }
 
 export function isStoredPlatform(value: unknown): value is StoredPlatform {
