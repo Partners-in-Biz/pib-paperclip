@@ -328,6 +328,13 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       // A terminal row can precede the execution's final queue/lease cleanup.
       // This test starts independent wakes, not a burst that may be deferred.
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      // PAR-6202 caps a ticket at 3 runs per rolling hour and each attempt
+      // starts a source run plus a repair run. Age them out of the window so
+      // every attempt is an independent wake, as this test intends.
+      await db
+        .update(heartbeatRuns)
+        .set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+        .where(eq(heartbeatRuns.companyId, companyId));
     }
     // The deliberately disposition-free adapter response schedules one bounded
     // repair per source run; the fixture records done on repair. Each retains its identity.

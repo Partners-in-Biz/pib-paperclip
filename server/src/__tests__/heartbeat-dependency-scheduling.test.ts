@@ -196,7 +196,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       id: issueId,
       companyId,
       title: "Resume after native child completion",
-      status: "blocked",
+      // PAR-6202 keeps blocked tickets quiet for non-human wakes, so the parent
+      // is in progress when its native status intents are dispatched.
+      status: "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
@@ -476,6 +478,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       triggerDetail: "system",
       reason: "issue_commented",
       payload: { issueId: blockedIssueId, commentId },
+      // The comment above is from a board user; PAR-6202 only wakes a blocked
+      // ticket for a human actor or a cleared blocker.
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
       contextSnapshot: {
         issueId: blockedIssueId,
         wakeReason: "issue_commented",
@@ -1072,11 +1078,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     ]);
 
     expect(blockedRun?.status).toBe("cancelled");
-    expect(blockedRun?.errorCode).toBe("issue_dependencies_blocked");
+    // PAR-6202: a blocked ticket's queued run is stopped by the blocked-ticket
+    // guard before the dependency check can name the unresolved blockers.
+    expect(blockedRun?.errorCode).toBe("issue_blocked");
     expect(blockedRun?.finishedAt).toBeTruthy();
-    expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked" });
+    expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_blocked" });
     expect(blockedWakeup?.status).toBe("skipped");
-    expect(blockedWakeup?.error).toContain("dependencies are still blocked");
+    expect(blockedWakeup?.error).toContain("blocked tickets start only for a human comment or a cleared blocker");
     expect(blockedIssue).toMatchObject({
       executionRunId: null,
       executionAgentNameKey: null,

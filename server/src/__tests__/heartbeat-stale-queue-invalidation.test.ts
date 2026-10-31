@@ -503,12 +503,15 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   it.each([
     { runtimeMode: "native", status: "done", reassigned: false },
     { runtimeMode: "legacy", status: "done", reassigned: false },
-    { runtimeMode: "native", status: "cancelled", reassigned: false },
+    // PAR-6202: cancelled and blocked tickets are skipped by the earlier wake
+    // guards, with their own reason, before the issue state guard runs.
+    { runtimeMode: "native", status: "cancelled", reassigned: false, guardReason: "issue_cancelled" },
     { runtimeMode: "native", status: "backlog", reassigned: false },
     { runtimeMode: "native", status: "in_review", reassigned: false },
-    { runtimeMode: "native", status: "blocked", reassigned: false },
+    { runtimeMode: "native", status: "blocked", reassigned: false, guardReason: "issue_blocked_no_wake" },
     { runtimeMode: "native", status: "in_progress", reassigned: true },
-  ] as const)("skips stale $runtimeMode productive recovery after status=$status reassigned=$reassigned commits under the enqueue lock", async ({ runtimeMode, status, reassigned }) => {
+  ] as const)("skips stale $runtimeMode productive recovery after status=$status reassigned=$reassigned commits under the enqueue lock", async ({ runtimeMode, status, reassigned, ...rest }) => {
+    const guardReason = "guardReason" in rest ? rest.guardReason : undefined;
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     const runId = randomUUID();
@@ -570,19 +573,23 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(await db.select().from(issueComments)).toHaveLength(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     const [wakeup] = await db.select().from(agentWakeupRequests);
-    expect(wakeup).toMatchObject({
-      status: "skipped",
-      reason: "issue_state_guard_mismatch",
-      runId: null,
-      payload: {
-        heartbeatSkip: {
-          expectedStatuses: ["in_progress"],
-          actualStatus: status,
-          expectedAssigneeAgentId: agentId,
-          actualAssigneeAgentId: reassigned ? null : agentId,
+    if (guardReason) {
+      expect(wakeup).toMatchObject({ status: "skipped", reason: guardReason, runId: null });
+    } else {
+      expect(wakeup).toMatchObject({
+        status: "skipped",
+        reason: "issue_state_guard_mismatch",
+        runId: null,
+        payload: {
+          heartbeatSkip: {
+            expectedStatuses: ["in_progress"],
+            actualStatus: status,
+            expectedAssigneeAgentId: agentId,
+            actualAssigneeAgentId: reassigned ? null : agentId,
+          },
         },
-      },
-    });
+      });
+    }
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue).toMatchObject({ status, assigneeAgentId: reassigned ? null : agentId });
   });

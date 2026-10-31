@@ -10887,7 +10887,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           invocationSource: "automation", triggerDetail: "system", status: "cancelled",
           errorCode: "execution_reconciliation_required",
           contextSnapshot: { issueId, taskId: issueId },
-          createdAt: new Date(Date.now() - (index + 1) * 60_000),
+          // Older than the PAR-6202 cap window (3 runs per ticket per hour), so
+          // these stay churn history without capping the continuation itself.
+          createdAt: new Date(Date.now() - 61 * 60_000 - index * 60_000),
           finishedAt: new Date(),
         })));
       }
@@ -12621,6 +12623,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       (await readChatControlRecoveryStop(db, chatStopScope(source, parentId)))
         .kind,
     ).toBe("unresolved");
+    // The ancestry is old history. Move it out of the PAR-6202 cap window (3
+    // runs per ticket per hour) so the queued tail is held by the ancestry
+    // limit, not cancelled as `issue_run_cap`.
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(sql`${heartbeatRuns.id} <> ${parentId}`);
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     expect(

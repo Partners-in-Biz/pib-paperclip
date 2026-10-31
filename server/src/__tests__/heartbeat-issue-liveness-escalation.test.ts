@@ -564,8 +564,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const { companyId, agentId, blockedIssueId, action } = await seedExecutionWait(status);
     const heartbeat = heartbeatService(db);
     // Different producers and wake keys must not create new attempts or notices.
+    // PAR-6202 drops other system wakes on a blocked ticket before they reach the
+    // hold, so these carry the blockers-resolved reason it lets through.
     await Promise.all(Array.from({ length: 6 }, (_, i) => heartbeat.wakeup(agentId, {
-      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      source: "automation", triggerDetail: "system", reason: "issue_blockers_resolved",
       requestedByActorType: "system", requestedByActorId: "wait-regression",
       idempotencyKey: `producer-${i}`, payload: { issueId: blockedIssueId },
       contextSnapshot: { issueId: blockedIssueId },
@@ -601,8 +603,9 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
 
   it("rechecks every gate after an execution hold clears", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId, action } = await seedExecutionWait();
+    // The blockers-resolved reason lets the PAR-6202 blocked-ticket guard pass the wake to the gates.
     const wake = () => heartbeatService(db).wakeup(agentId, {
-      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      source: "automation", triggerDetail: "system", reason: "issue_blockers_resolved",
       requestedByActorType: "system", requestedByActorId: "wait-regression",
       payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },
     });
