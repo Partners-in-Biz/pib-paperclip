@@ -13206,7 +13206,13 @@ export function issueRoutes(
           db,
           existing,
           normalizedAssigneeAgentId,
-        );
+        ).catch((err) => {
+          logger.warn(
+            { err, issueId: existing.id },
+            "auto review-stage reviewer lookup failed; leaving execution policy unchanged",
+          );
+          return null;
+        });
         if (reviewerAgentId) {
           updateFields.executionPolicy = normalizeIssueExecutionPolicy({
             ...(previousExecutionPolicy ?? {}),

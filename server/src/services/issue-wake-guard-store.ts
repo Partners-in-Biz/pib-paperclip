@@ -1,4 +1,4 @@
-import { and, eq, gt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
 import {
@@ -15,24 +15,29 @@ export async function loadTicketRunCapState(
     now: Date;
     excludeRunId?: string | null;
   },
-): Promise<{ runsStartedInWindow: number; alreadyFlaggedInWindow: boolean }> {
+): Promise<{
+  runsStartedInWindow: number;
+  alreadyFlaggedInWindow: boolean;
+  latestRunStatus: string | null;
+}> {
   const since = new Date(input.now.getTime() - TICKET_RUN_CAP_WINDOW_MS);
+  const runWhere = and(
+    eq(heartbeatRuns.companyId, input.companyId),
+    gt(heartbeatRuns.createdAt, since),
+    sql`(
+      ${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}
+      or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${input.issueId}
+    )`,
+    // Disposition-repair and other retry handoffs are not a new wake loop.
+    sql`${heartbeatRuns.contextSnapshot}->>'retryOfRunId' is null`,
+    input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : undefined,
+  );
   const [runRow] = await db
     .select({
       n: sql<number>`count(*)::int`,
     })
     .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.companyId, input.companyId),
-        gt(heartbeatRuns.createdAt, since),
-        sql`(
-          ${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}
-          or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${input.issueId}
-        )`,
-        input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : undefined,
-      ),
-    );
+    .where(runWhere);
   const [flagRow] = await db
     .select({ id: activityLog.id })
     .from(activityLog)
@@ -46,9 +51,16 @@ export async function loadTicketRunCapState(
       ),
     )
     .limit(1);
+  const [latestRun] = await db
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(runWhere)
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(1);
   return {
     runsStartedInWindow: Number(runRow?.n ?? 0),
     alreadyFlaggedInWindow: Boolean(flagRow),
+    latestRunStatus: latestRun?.status ?? null,
   };
 }
 

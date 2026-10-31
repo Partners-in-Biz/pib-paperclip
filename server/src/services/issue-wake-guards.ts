@@ -25,19 +25,35 @@ export function isHumanBoardActor(actorType: string | null | undefined): boolean
   return actorType === "user" || actorType === "board";
 }
 
+// System recovery still has to land on a blocked ticket. The hourly cap and
+// the execution-hold coalescer bound those wakes; suppressing them here
+// drops continuation, child-completion, and safe-replacement recovery.
+const SYSTEM_RECOVERY_WAKE_REASONS = new Set<string>([
+  "issue_recovery_action_restored",
+  "issue_continuation_needed",
+  "issue_children_completed",
+]);
+
+export function isSystemRecoveryWakeReason(wakeReason: string | null | undefined): boolean {
+  return Boolean(wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(wakeReason));
+}
+
 export function shouldWakeBlockedTicket(input: {
   issueStatus: string | null | undefined;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
 }): {
   wake: boolean;
-  reason: "not_blocked" | "blocker_cleared" | "human" | "blocked_suppressed";
+  reason: "not_blocked" | "blocker_cleared" | "human" | "system_recovery" | "blocked_suppressed";
 } {
   if (input.issueStatus !== "blocked") {
     return { wake: true, reason: "not_blocked" };
   }
   if (input.wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
     return { wake: true, reason: "blocker_cleared" };
+  }
+  if (input.wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)) {
+    return { wake: true, reason: "system_recovery" };
   }
   if (isHumanBoardActor(input.requestedByActorType)) {
     return { wake: true, reason: "human" };
@@ -48,8 +64,13 @@ export function shouldWakeBlockedTicket(input: {
 export function evaluateTicketHourlyRunCap(input: {
   runsStartedInWindow: number;
   alreadyFlaggedInWindow: boolean;
+  latestRunStatus?: string | null;
   maxRuns?: number;
 }): { allow: boolean; flag: boolean; reason: "under_cap" | "capped" } {
+  // A failed latest run means the next wake is recovery, not a productive loop.
+  if (input.latestRunStatus === "failed") {
+    return { allow: true, flag: false, reason: "under_cap" };
+  }
   const maxRuns = input.maxRuns ?? TICKET_RUNS_PER_HOUR_CAP;
   if (input.runsStartedInWindow < maxRuns) {
     return { allow: true, flag: false, reason: "under_cap" };
@@ -80,7 +101,8 @@ export function shouldStartQueuedIssueRun(input: {
   if (
     input.issueStatus === "blocked" &&
     !input.humanWake &&
-    !input.blockerClearedWake
+    !input.blockerClearedWake &&
+    !(input.wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason))
   ) {
     return { start: false, reason: "blocked" };
   }

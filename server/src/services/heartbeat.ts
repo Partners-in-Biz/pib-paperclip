@@ -366,6 +366,7 @@ import {
   ISSUE_RUN_CAP_SKIP_REASON,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
+  isSystemRecoveryWakeReason,
 } from "./issue-wake-guards.js";
 import {
   loadTicketRunCapState,
@@ -17417,16 +17418,17 @@ export function heartbeatService(
       if (settlingOwner) return null;
     }
     if (issueId) {
-      const wakeActorType = run.wakeupRequestId
+      const wakeRequest = run.wakeupRequestId
         ? await db
             .select({
               requestedByActorType: agentWakeupRequests.requestedByActorType,
+              reason: agentWakeupRequests.reason,
             })
             .from(agentWakeupRequests)
             .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
-            .then((rows) => rows[0]?.requestedByActorType ?? null)
+            .then((rows) => rows[0] ?? null)
         : null;
-      const humanWake = isHumanBoardActor(wakeActorType);
+      const humanWake = isHumanBoardActor(wakeRequest?.requestedByActorType ?? null);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,
         issueId,
@@ -17484,7 +17486,9 @@ export function heartbeatService(
         .limit(1);
       const startWakeReason =
         readNonEmptyString(context.wakeReason) ??
-        readNonEmptyString(context.reason);
+        readNonEmptyString(context.reason) ??
+        wakeRequest?.reason ??
+        null;
       const startDecision = shouldStartQueuedIssueRun({
         issueStatus: startIssue?.status ?? null,
         paused: false,
@@ -17494,12 +17498,37 @@ export function heartbeatService(
         humanWake,
         blockerClearedWake:
           startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-        assigneeMismatchExempt: isNonAssigneeWorkspaceBusyRetry(
-          readNonEmptyString(context.retryReason),
-          context,
-        ),
+        assigneeMismatchExempt:
+          isNonAssigneeWorkspaceBusyRetry(
+            readNonEmptyString(context.retryReason),
+            context,
+          ) ||
+          readNonEmptyString(context.retryReason) ===
+            "execution_review_participant_recovery" ||
+          readNonEmptyString(context.wakeReason) ===
+            "execution_review_participant_recovery",
       });
       if (!startIssue || !startDecision.start) {
+        if (startIssue && startDecision.reason === "blocked") {
+          const blockedReadiness = await issuesSvc.listDependencyReadiness(
+            run.companyId,
+            [issueId],
+          );
+          const blockedUnresolved =
+            blockedReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+          if (blockedUnresolved > 0) {
+            await cancelQueuedRunForBlockedDependencies(
+              run,
+              issueId,
+              blockedReadiness.get(issueId)?.unresolvedBlockerIssueIds ?? [],
+            );
+            logger.info(
+              { runId: run.id, issueId, unresolvedBlockerCount: blockedUnresolved },
+              "claimQueuedRun: cancelled blocked queued run with open dependencies",
+            );
+            return null;
+          }
+        }
         const startStopReason =
           !startIssue ||
           startDecision.reason === "ok" ||
@@ -17522,12 +17551,9 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !(
-          humanWake &&
-          allowsIssueInteractionWake(
-            context,
-            ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-          )
+        !allowsIssueInteractionWake(
+          context,
+          ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -17543,13 +17569,21 @@ export function heartbeatService(
       }
 
       const capNow = new Date();
-      const capState = await loadTicketRunCapState(db, {
-        companyId: run.companyId,
-        issueId,
-        now: capNow,
-        excludeRunId: run.id,
-      });
-      const capDecision = evaluateTicketHourlyRunCap(capState);
+      const claimCapExempt =
+        readNonEmptyString(context.retryOfRunId) != null ||
+        readNonEmptyString(context.wakeReason) === "issue_disposition_repair" ||
+        isSystemRecoveryWakeReason(startWakeReason);
+      const capState = claimCapExempt
+        ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false, latestRunStatus: null }
+        : await loadTicketRunCapState(db, {
+            companyId: run.companyId,
+            issueId,
+            now: capNow,
+            excludeRunId: run.id,
+          });
+      const capDecision = claimCapExempt
+        ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+        : evaluateTicketHourlyRunCap(capState);
       if (!capDecision.allow) {
         if (capDecision.flag) {
           await recordWakeLoopFlag(db, {
@@ -27402,9 +27436,10 @@ export function heartbeatService(
             requestedByActorType: opts.requestedByActorType ?? null,
           });
           if (
-            (issue.status === "cancelled" &&
+            !opts.issueStateGuard &&
+            ((issue.status === "cancelled" &&
               !isHumanBoardActor(opts.requestedByActorType)) ||
-            !blockedTicketWake.wake
+              !blockedTicketWake.wake)
           ) {
             const skippedBecauseCancelled =
               issue.status === "cancelled" && blockedTicketWake.wake;
@@ -27442,12 +27477,20 @@ export function heartbeatService(
           }
 
           const capNow = new Date();
-          const capState = await loadTicketRunCapState(tx as unknown as Db, {
-            companyId: agent.companyId,
-            issueId: issue.id,
-            now: capNow,
-          });
-          const capDecision = evaluateTicketHourlyRunCap(capState);
+          const capExempt =
+            readNonEmptyString(enrichedContextSnapshot.retryOfRunId) != null ||
+            enqueueWakeReason === "issue_disposition_repair" ||
+            isSystemRecoveryWakeReason(enqueueWakeReason);
+          const capState = capExempt
+            ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false, latestRunStatus: null }
+            : await loadTicketRunCapState(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                now: capNow,
+              });
+          const capDecision = capExempt
+            ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+            : evaluateTicketHourlyRunCap(capState);
           if (!capDecision.allow) {
             if (capDecision.flag) {
               await recordWakeLoopFlag(tx as unknown as Db, {
@@ -27994,7 +28037,6 @@ export function heartbeatService(
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            isHumanBoardActor(opts.requestedByActorType) &&
             allowsIssueInteractionWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,

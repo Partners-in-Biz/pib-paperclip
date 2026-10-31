@@ -46,6 +46,22 @@ describe("shouldWakeBlockedTicket", () => {
     ).toEqual({ wake: true, reason: "blocker_cleared" });
   });
 
+  it("wakes a blocked ticket for system recovery and continuation", () => {
+    for (const wakeReason of [
+      "issue_recovery_action_restored",
+      "issue_continuation_needed",
+      "issue_children_completed",
+    ]) {
+      expect(
+        shouldWakeBlockedTicket({
+          issueStatus: "blocked",
+          wakeReason,
+          requestedByActorType: "system",
+        }),
+      ).toEqual({ wake: true, reason: "system_recovery" });
+    }
+  });
+
   it("does not treat an agent mention on a blocked ticket as a wake", () => {
     expect(
       shouldWakeBlockedTicket({
@@ -84,6 +100,16 @@ describe("evaluateTicketHourlyRunCap", () => {
         alreadyFlaggedInWindow: true,
       }),
     ).toEqual({ allow: false, flag: false, reason: "capped" });
+  });
+
+  it("allows the wake that follows a failed run even when the hour is full", () => {
+    expect(
+      evaluateTicketHourlyRunCap({
+        runsStartedInWindow: TICKET_RUNS_PER_HOUR_CAP,
+        alreadyFlaggedInWindow: false,
+        latestRunStatus: "failed",
+      }),
+    ).toEqual({ allow: true, flag: false, reason: "under_cap" });
   });
 
   it("allows the 3rd run", () => {
