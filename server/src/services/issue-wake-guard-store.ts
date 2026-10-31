@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, eq, gt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
 import {
@@ -18,7 +18,6 @@ export async function loadTicketRunCapState(
 ): Promise<{
   runsStartedInWindow: number;
   alreadyFlaggedInWindow: boolean;
-  latestRunStatus: string | null;
 }> {
   const since = new Date(input.now.getTime() - TICKET_RUN_CAP_WINDOW_MS);
   const runWhere = and(
@@ -51,16 +50,9 @@ export async function loadTicketRunCapState(
       ),
     )
     .limit(1);
-  const [latestRun] = await db
-    .select({ status: heartbeatRuns.status })
-    .from(heartbeatRuns)
-    .where(runWhere)
-    .orderBy(desc(heartbeatRuns.createdAt))
-    .limit(1);
   return {
     runsStartedInWindow: Number(runRow?.n ?? 0),
     alreadyFlaggedInWindow: Boolean(flagRow),
-    latestRunStatus: latestRun?.status ?? null,
   };
 }
 

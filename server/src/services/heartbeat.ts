@@ -366,7 +366,7 @@ import {
   ISSUE_RUN_CAP_SKIP_REASON,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
-  isSystemRecoveryWakeReason,
+  isTicketRunCapExempt,
 } from "./issue-wake-guards.js";
 import {
   loadTicketRunCapState,
@@ -17498,6 +17498,7 @@ export function heartbeatService(
         humanWake,
         blockerClearedWake:
           startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
         assigneeMismatchExempt:
           isNonAssigneeWorkspaceBusyRetry(
             readNonEmptyString(context.retryReason),
@@ -17551,9 +17552,12 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
-          context,
-          ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+        !(
+          humanWake &&
+          allowsIssueInteractionWake(
+            context,
+            ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          )
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -17569,12 +17573,13 @@ export function heartbeatService(
       }
 
       const capNow = new Date();
-      const claimCapExempt =
-        readNonEmptyString(context.retryOfRunId) != null ||
-        readNonEmptyString(context.wakeReason) === "issue_disposition_repair" ||
-        isSystemRecoveryWakeReason(startWakeReason);
+      const claimCapExempt = isTicketRunCapExempt({
+        retryOfRunId: readNonEmptyString(context.retryOfRunId),
+        wakeReason: startWakeReason,
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+      });
       const capState = claimCapExempt
-        ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false, latestRunStatus: null }
+        ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
         : await loadTicketRunCapState(db, {
             companyId: run.companyId,
             issueId,
@@ -27435,8 +27440,20 @@ export function heartbeatService(
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
           });
+          const guardRejectsCurrentState = Boolean(
+            opts.issueStateGuard &&
+            (
+              !opts.issueStateGuard.statuses.includes(issue.status) ||
+              issue.assigneeAgentId !== opts.issueStateGuard.assigneeAgentId ||
+              (opts.issueStateGuard.statusVersion !== undefined &&
+                issue.statusVersion !== opts.issueStateGuard.statusVersion)
+            ),
+          );
+          // A rejecting guard must record issue_state_guard_mismatch. Callers
+          // whose guard accepts the current status still hit the cancelled
+          // and blocked policy below.
           if (
-            !opts.issueStateGuard &&
+            !guardRejectsCurrentState &&
             ((issue.status === "cancelled" &&
               !isHumanBoardActor(opts.requestedByActorType)) ||
               !blockedTicketWake.wake)
@@ -27477,12 +27494,13 @@ export function heartbeatService(
           }
 
           const capNow = new Date();
-          const capExempt =
-            readNonEmptyString(enrichedContextSnapshot.retryOfRunId) != null ||
-            enqueueWakeReason === "issue_disposition_repair" ||
-            isSystemRecoveryWakeReason(enqueueWakeReason);
+          const capExempt = isTicketRunCapExempt({
+            retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId),
+            wakeReason: enqueueWakeReason,
+            requestedByActorType: opts.requestedByActorType ?? null,
+          });
           const capState = capExempt
-            ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false, latestRunStatus: null }
+            ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
             : await loadTicketRunCapState(tx as unknown as Db, {
                 companyId: agent.companyId,
                 issueId: issue.id,
@@ -28037,6 +28055,7 @@ export function heartbeatService(
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
+            isHumanBoardActor(opts.requestedByActorType) &&
             allowsIssueInteractionWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,

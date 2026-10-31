@@ -476,9 +476,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       triggerDetail: "system",
       reason: "issue_commented",
       payload: { issueId: blockedIssueId, commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
       contextSnapshot: {
         issueId: blockedIssueId,
         wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
       },
     });
     expect(interactionWake).not.toBeNull();

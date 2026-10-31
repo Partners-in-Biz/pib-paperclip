@@ -356,8 +356,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   it("does not throttle the wake that follows a failed run", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
-    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 3700 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 3660 });
     await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
 
     const recoveryWake = await assignmentWake(agentId, issueId);

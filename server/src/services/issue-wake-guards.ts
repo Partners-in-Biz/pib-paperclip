@@ -52,7 +52,13 @@ export function shouldWakeBlockedTicket(input: {
   if (input.wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
     return { wake: true, reason: "blocker_cleared" };
   }
-  if (input.wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)) {
+  // The wakeup HTTP route copies a client-supplied reason. Only a system
+  // actor may use these reasons to land on a blocked ticket.
+  if (
+    input.requestedByActorType === "system" &&
+    input.wakeReason &&
+    SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)
+  ) {
     return { wake: true, reason: "system_recovery" };
   }
   if (isHumanBoardActor(input.requestedByActorType)) {
@@ -64,13 +70,10 @@ export function shouldWakeBlockedTicket(input: {
 export function evaluateTicketHourlyRunCap(input: {
   runsStartedInWindow: number;
   alreadyFlaggedInWindow: boolean;
-  latestRunStatus?: string | null;
   maxRuns?: number;
 }): { allow: boolean; flag: boolean; reason: "under_cap" | "capped" } {
-  // A failed latest run means the next wake is recovery, not a productive loop.
-  if (input.latestRunStatus === "failed") {
-    return { allow: true, flag: false, reason: "under_cap" };
-  }
+  // Failed runs count. A ticket whose runs keep failing is the loop this cap
+  // exists to stop. Retry handoffs are excluded from the count in the store.
   const maxRuns = input.maxRuns ?? TICKET_RUNS_PER_HOUR_CAP;
   if (input.runsStartedInWindow < maxRuns) {
     return { allow: true, flag: false, reason: "under_cap" };
@@ -82,12 +85,33 @@ export function evaluateTicketHourlyRunCap(input: {
   };
 }
 
+const DISPOSITION_REPAIR_WAKE_REASON = "issue_disposition_repair";
+
+/**
+ * Claim/enqueue exemption from the hourly cap. retryOfRunId is set by
+ * recovery code, not by the wakeup HTTP route. Reason-based exemptions
+ * require a system actor because that route copies a client-supplied reason.
+ */
+export function isTicketRunCapExempt(input: {
+  retryOfRunId?: string | null;
+  wakeReason?: string | null;
+  requestedByActorType?: string | null;
+}): boolean {
+  if (input.retryOfRunId) return true;
+  if (input.requestedByActorType !== "system") return false;
+  return (
+    input.wakeReason === DISPOSITION_REPAIR_WAKE_REASON ||
+    isSystemRecoveryWakeReason(input.wakeReason)
+  );
+}
+
 export function shouldStartQueuedIssueRun(input: {
   issueStatus: string | null | undefined;
   paused: boolean;
   assigneeAgentId: string | null;
   runAgentId: string;
   wakeReason?: string | null;
+  requestedByActorType?: string | null;
   humanWake: boolean;
   blockerClearedWake: boolean;
   assigneeMismatchExempt?: boolean;
@@ -102,7 +126,11 @@ export function shouldStartQueuedIssueRun(input: {
     input.issueStatus === "blocked" &&
     !input.humanWake &&
     !input.blockerClearedWake &&
-    !(input.wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason))
+    !(
+      input.requestedByActorType === "system" &&
+      input.wakeReason &&
+      SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)
+    )
   ) {
     return { start: false, reason: "blocked" };
   }
