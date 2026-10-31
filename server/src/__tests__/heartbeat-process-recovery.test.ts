@@ -15433,20 +15433,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         livenessState: "advanced",
       });
       const { companyId, agentId, issueId } = fixture;
-      const newestAt = Date.now() - 25 * MIN;
-      const firstAt = newestAt - (length - 1) * MIN;
       // PAR-6202 stops a ticket at 3 runs in a rolling hour. This suite tests the PAR-1838 chain cap,
-      // so the seeded runs sit just outside that hour; comments and attachments keep the original
-      // timeline (progress window), only the run rows move.
+      // so the whole seeded timeline (runs, comments, attachments) sits 61 minutes further back,
+      // just outside that hour. Relative offsets are unchanged; callers use the returned firstAt/newestAt.
       const runShiftMs = 61 * MIN;
+      const newestAt = Date.now() - 25 * MIN - runShiftMs;
+      const firstAt = newestAt - (length - 1) * MIN;
       // The legacy continuation lane owns non-native runs; only native runs reach the capped lane.
-      await db.update(heartbeatRuns).set({ createdAt: new Date(firstAt - MIN - runShiftMs), runtimeMode: "native" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await db.update(heartbeatRuns).set({ createdAt: new Date(firstAt - MIN), runtimeMode: "native" }).where(eq(heartbeatRuns.id, fixture.runId));
       const chainRunIds: string[] = [];
       let previousId = fixture.runId;
       for (let i = 0; i < length; i += 1) {
         const id = randomUUID();
-        const chainAt = new Date(firstAt + i * MIN);
-        const createdAt = new Date(chainAt.getTime() - runShiftMs);
+        const createdAt = new Date(firstAt + i * MIN);
         await db.insert(heartbeatRuns).values({
           id,
           companyId,
@@ -15474,7 +15473,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         let commentId: string | null = null;
         if (opts.comments !== false) {
           commentId = randomUUID();
-          const commentAt = new Date(opts.commentAgeMs ? Date.now() - opts.commentAgeMs : chainAt.getTime() + 1000);
+          const commentAt = new Date(opts.commentAgeMs ? Date.now() - runShiftMs - opts.commentAgeMs : createdAt.getTime() + 1000);
           await db.insert(issueComments).values({
             id: commentId,
             companyId,
@@ -15509,7 +15508,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         chainRunIds.push(id);
         previousId = id;
       }
-      return { ...fixture, chainRunIds, firstAt, newestAt, runShiftMs };
+      return { ...fixture, chainRunIds, firstAt, newestAt };
     }
 
     async function readState(issueId: string, agentId: string) {
@@ -15550,8 +15549,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     it("a comment or attachment from the run before the chain does not exempt the cap", async () => {
       for (const kind of ["comment", "attachment"] as const) {
-        const { agentId, issueId, runId, firstAt, runShiftMs } = await seedChain(3);
-        const at = new Date(firstAt - runShiftMs - 30 * 1000);
+        const { agentId, issueId, runId, firstAt } = await seedChain(3);
+        const at = new Date(firstAt - 30 * 1000);
         let commentId: string | null = null;
         if (kind === "comment") {
           await db.insert(issueComments).values({
