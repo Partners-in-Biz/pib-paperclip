@@ -53,6 +53,12 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 
+// The db handed to issueRoutes here is a bare transaction stub with no select().
+vi.mock("../services/issue-code-review-gate-context.js", () => ({
+  evaluateIssueCodeReviewGate: vi.fn(async () => ({ allowed: true })),
+  pickAutoReviewStageReviewer: vi.fn(async () => null),
+}));
+
 vi.mock("../services/runner-goals.js", () => ({
   runnerGoalService: () => mockRunnerGoalService,
   RunnerGoalActionError: class RunnerGoalActionError extends Error {},
