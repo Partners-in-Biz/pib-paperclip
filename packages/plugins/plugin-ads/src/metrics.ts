@@ -6,6 +6,8 @@ export interface Totals {
   impressions: number;
   clicks: number;
   conversions: number;
+  /** App installs the platform attributes (0 where the platform reports none). */
+  installs: number;
   /** Conversion value in minor units (revenue the platform attributes). */
   value: number;
 }
@@ -19,13 +21,15 @@ export interface Derived {
   cpm: number | null;
   /** Cost per conversion, minor units */
   cpa: number | null;
+  /** Cost per install, minor units */
+  cpi: number | null;
   /** Conversion value / spend (3.2 means 3.20 back per 1.00 spent) */
   roas: number | null;
 }
 
 export type TotalsWithDerived = Totals & Derived;
 
-export const emptyTotals = (): Totals => ({ spend: 0, impressions: 0, clicks: 0, conversions: 0, value: 0 });
+export const emptyTotals = (): Totals => ({ spend: 0, impressions: 0, clicks: 0, conversions: 0, installs: 0, value: 0 });
 
 export function addTotals(a: Totals, b: Partial<Totals>): Totals {
   return {
@@ -33,6 +37,7 @@ export function addTotals(a: Totals, b: Partial<Totals>): Totals {
     impressions: a.impressions + (b.impressions ?? 0),
     clicks: a.clicks + (b.clicks ?? 0),
     conversions: round2(a.conversions + (b.conversions ?? 0)),
+    installs: a.installs + (b.installs ?? 0),
     value: a.value + (b.value ?? 0),
   };
 }
@@ -45,12 +50,14 @@ export function derive(t: Totals): Derived {
   const cpc = ratio(t.spend, t.clicks);
   const cpm = ratio(t.spend * 1000, t.impressions);
   const cpa = ratio(t.spend, t.conversions);
+  const cpi = ratio(t.spend, t.installs);
   const roas = ratio(t.value, t.spend);
   return {
     ctr: ratio(t.clicks, t.impressions),
     cpc: cpc === null ? null : Math.round(cpc),
     cpm: cpm === null ? null : Math.round(cpm),
     cpa: cpa === null ? null : Math.round(cpa),
+    cpi: cpi === null ? null : Math.round(cpi),
     roas: roas === null ? null : Math.round(roas * 100) / 100,
   };
 }

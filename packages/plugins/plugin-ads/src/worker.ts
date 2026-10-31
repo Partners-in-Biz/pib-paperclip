@@ -42,6 +42,7 @@ import { executeProposal } from "./execute.js";
 import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
 import { ORIGIN_KIND, ensureAdsProject } from "./issues.js";
 import { adsOn, companyUsesAds, knownCompanies, MODULE_OFF_MESSAGE } from "./modules.js";
+import { postDailyReports } from "./report.js";
 import { OAuthFlowError, completeOAuth, connectMock, connectWithToken, startOAuth } from "./oauth.js";
 import { OWN_SCOPE, PLUGIN_ID } from "./platforms.js";
 import { cancelProposal, createProposal, markDoneManually, onApprovalIssue, recordClientRequest, recordReview, recordSignoff, reviseProposal, sweepProposals } from "./proposals.js";
@@ -502,7 +503,12 @@ const plugin = definePlugin({
       const runs = await forEachCompany(ctx, async (rt) => {
         const sync = await syncCompany(rt);
         const evaluated = await evaluateCompany(rt);
-        return { accounts: sync.accounts, ok: sync.ok, failed: sync.failed, skipped: sync.skipped, alertsNew: evaluated.alertsNew, issuesOpened: evaluated.issuesOpened, pauseRequests: evaluated.pauseRequests, errors: evaluated.errors.length };
+        // The daily results report is a convenience on top of the alerts: a failure here must never fail the sync job.
+        const report = await postDailyReports(rt).catch((error) => {
+          rt.ctx.logger.info("Ads daily report skipped", { error: errorMessage(error) });
+          return { day: "", reports: 0 };
+        });
+        return { accounts: sync.accounts, ok: sync.ok, failed: sync.failed, skipped: sync.skipped, alertsNew: evaluated.alertsNew, issuesOpened: evaluated.issuesOpened, pauseRequests: evaluated.pauseRequests, errors: evaluated.errors.length, reports: report.reports };
       });
       return { companies: runs.length, failed: runs.filter((r) => r.error).length, runs };
     });
