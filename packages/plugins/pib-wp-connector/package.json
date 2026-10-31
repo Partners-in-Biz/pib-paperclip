@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node ./build.mjs"
+    "build": "node ./build.mjs",
+    "typecheck": "node --check ./build.mjs && node --check ./tests/sign.mjs"
   }
 }
