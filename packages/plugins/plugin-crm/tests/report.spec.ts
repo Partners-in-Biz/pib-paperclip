@@ -577,6 +577,19 @@ describe("website section in reports", () => {
     expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
     expect((rec.html.match(/Mobile performance improved/g) || []).length).toBe(1);
   });
+
+  it("never prints a domain renewal count in the website line, even when the domain expiry is stored", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: "acme.co.za", domain_expires_at: "2026-11-15T00:00:00Z", domain_checked_at: "2026-09-10T00:00:00Z", domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain("acme.co.za: 100% uptime, security certificate valid until 31 October 2026");
+    expect(rec.markdown).not.toMatch(/renews/i);
+    expect(rec.markdown).not.toMatch(/domain renews/i);
+    expect(rec.html).not.toMatch(/renews/i);
+  });
 });
 
 describe("the monthly job", () => {

@@ -546,7 +546,9 @@ export async function onApprovalIssue(ctx: PluginContext, event: PluginEvent, is
   if (!sequence || sequence.company_id !== event.companyId) return false;
   if (sequenceEmailApproved(sequence)) return true;
   if (issueStatus !== "done" && issueStatus !== "cancelled") return true;
-  if (event.actorType !== "user") {
+  // PAR-6363: an agent under a person's credentials shows as a user but carries an agent or run id; only a human click approves.
+  const via = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
+  if (event.actorType !== "user" || via.agentId || via.runId) {
     const { approverUserId } = await approvalAssignee(ctx, event.companyId);
     const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, userId: approverUserId, what: `email sending for sequence "${sequence.name}"` });
     if (!reopened) ctx.logger.info("Sequence email approval closed by an agent could not be reopened", { sequenceId: sequence.id, actorType: event.actorType ?? null });

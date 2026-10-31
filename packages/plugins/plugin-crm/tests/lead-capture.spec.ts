@@ -141,13 +141,9 @@ describe("a lead from a client's form", () => {
     expect(issues[0]!.description).toContain("never added to our contacts");
     expect(booted.store.client_leads[0]!.issue_id).toBe(issues[0]!.id);
 
-    // Draft-only speed-to-lead: one care approval + draft enqueue; never a send.
-    // (CEO ping is skipped when no live CEO/Elon agent is seeded — that path is covered in speed-to-lead.spec.)
-    const stl = (booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead");
-    expect(stl).toHaveLength(1);
-    expect(stl[0]).toMatchObject({ client_kind: "company", client_ref: "acme" });
-    expect(stl[0]!.issue_id).toBeTruthy();
-    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    // PAR-6363: a client org's lead never gets a speed-to-lead card or draft.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(0);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
     expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
 
     expect(booted.store.consent_records[0]).toMatchObject({ sender_key: "company:acme", granted: true });
@@ -181,9 +177,9 @@ describe("a lead from a client's form", () => {
     const clientIssues = (await crmIssues(booted.harness)).filter((issue) => String(issue.originId ?? "").startsWith("crm:client-lead:"));
     expect(clientIssues).toHaveLength(1);
     expect(booted.store.client_leads[0]!.issue_id).toBe(clientIssues[0]!.id);
-    // Once the issue opens, draft-only speed-to-lead runs for the held lead.
-    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(1);
-    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(1);
+    // PAR-6363: still no speed-to-lead card for a client org's lead once the issue opens.
+    expect((booted.store.care_approvals ?? []).filter((row) => row.kind === "speed_to_lead")).toHaveLength(0);
+    expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.draft.requested")).toHaveLength(0);
     expect(booted.emit.mock.calls.filter((c) => c[0] === "mail.send.requested")).toHaveLength(0);
     // Idempotent: another run opens nothing more.
     expect(await retryClientLeadIssues(booted.harness.ctx)).toBe(0);

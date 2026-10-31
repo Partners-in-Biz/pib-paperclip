@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { configSaved } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
+import { ORIGIN } from "./constants.js";
 import { listRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message, throwIfEveryCompanyFailed } from "./env.js";
@@ -31,6 +32,7 @@ import { updateFact } from "./memory/service.js";
 import { MetricReader, metricBetter, parseMetricKey } from "./metrics.js";
 import { NAMESPACE } from "./namespace.js";
 import { operatorAgentId } from "./roles.js";
+import { TEMPLATE_RECHECK_DAYS } from "./skill-change-model.js";
 
 const T = `${NAMESPACE}.improvements`;
 type Raw = Record<string, unknown>;
@@ -256,6 +258,8 @@ export async function resolveImprovement(env: Env, companyId: string, input: Res
 // ---------------------------------------------------------------------------
 
 export interface RecheckResult {
+  rearmed: number;
+  stalled: number;
   measured: number;
   improved: number;
   noChange: number;
@@ -265,12 +269,133 @@ export interface RecheckResult {
   proposed: number;
 }
 
+// ---------------------------------------------------------------------------
+// Template rollout: the 7-day window starts when the change is applied (C7c)
+// ---------------------------------------------------------------------------
+
+const TEMPLATE_REF = "templatechange:";
+/** The measuring window after a template change is applied. */
+export const TEMPLATE_WINDOW_DAYS = 7;
+/** A template change not applied this long after it was proposed is closed as inconclusive. */
+export const TEMPLATE_STALL_DAYS = 21;
+const DAY_MS = 86_400_000;
+
+/** The `pibPack` Setup stamps on an agent when it applies a template. Anything malformed is "not applied". */
+export function readPibPack(raw: unknown): { key: string; hash: string; appliedAtMs: number } | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.key !== "string" || typeof o.hash !== "string" || !/^[0-9a-f]{16}$/.test(o.hash)) return null;
+  if (typeof o.appliedAt !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(o.appliedAt)) return null;
+  const appliedAtMs = Date.parse(o.appliedAt);
+  return Number.isFinite(appliedAtMs) ? { key: o.key, hash: o.hash, appliedAtMs } : null;
+}
+
+/** When the first agent running exactly this template text got it, or null while none has. */
+function appliedAtOf(agents: ReadonlyArray<{ metadata?: unknown }>, row: ImprovementRow): number | null {
+  const hash = row.sourceRef!.slice(row.sourceRef!.lastIndexOf(":") + 1);
+  let first: number | null = null;
+  for (const agent of agents) {
+    const pack = readPibPack((agent.metadata as { pibPack?: unknown } | null | undefined)?.pibPack);
+    if (pack && pack.key === row.targetRef && pack.hash === hash && (first === null || pack.appliedAtMs < first)) first = pack.appliedAtMs;
+  }
+  return first;
+}
+
+function deliveryLeadId(agents: ReadonlyArray<{ id: string; name?: unknown; title?: unknown }>): string | null {
+  const lead = agents.find((a) => /delivery lead/i.test(`${String(a.title ?? "")} ${String(a.name ?? "")}`));
+  return lead ? lead.id : null;
+}
+
+async function tellDeliveryLead(env: Env, row: ImprovementRow, agents: ReadonlyArray<{ id: string; name?: unknown; title?: unknown }>): Promise<void> {
+  const text = `Rollout stalled: the template change "${row.title}" (${row.sourceRef}) was not applied to any agent ${TEMPLATE_STALL_DAYS} days after it was proposed, so its measuring was closed as inconclusive. Apply it (or drop the change) if it is still wanted.`;
+  if (row.sourceIssueId) {
+    await env.ctx.issues.createComment(row.sourceIssueId, text, row.companyId);
+    return;
+  }
+  const assigneeAgentId = deliveryLeadId(agents);
+  await env.ctx.issues.create({
+    companyId: row.companyId,
+    title: `Template rollout stalled: ${row.targetRef ?? row.title}`.slice(0, 160),
+    description: text,
+    status: "todo",
+    priority: "medium",
+    ...(assigneeAgentId ? { assigneeAgentId } : {}),
+    originKind: ORIGIN.health as `plugin:${string}`,
+    originId: `cockpit:template-rollout:${row.id}`,
+  });
+}
+
+/** Opens the one revert issue for a template change that made things worse; the origin id is the ledger row, so a repeat finds it. */
+async function openRevertIssue(env: Env, row: ImprovementRow, detail: string, agents: ReadonlyArray<{ id: string; name?: unknown; title?: unknown }> | null): Promise<void> {
+  const originId = `cockpit:template-revert:${row.id}`;
+  const existing = (await env.ctx.issues.list({ companyId: row.companyId, originKind: ORIGIN.health as `plugin:${string}`, originId, limit: 1 })) as unknown[];
+  if (existing.length > 0) return;
+  const assigneeAgentId = agents ? deliveryLeadId(agents) : null;
+  const description = [
+    `The template change "${row.title}" (${row.sourceRef}) made the number worse. ${detail}`,
+    "",
+    "Rollback PR (into `development`, never `main`):",
+    `1. Revert the edit to the \`${row.targetRef ?? "template"}\` template text.`,
+    "2. Remove the matching entry from the eval file.",
+    "3. Bump the plugin version and say in the PR that agent instructions change on the next deploy.",
+    "",
+    `Ledger entry: ${row.id}.`,
+  ].join("\n");
+  await env.ctx.issues.create({
+    companyId: row.companyId,
+    title: `Revert: ${row.title}`.slice(0, 160),
+    description,
+    status: "todo",
+    priority: "high",
+    ...(assigneeAgentId ? { assigneeAgentId } : {}),
+    originKind: ORIGIN.health as `plugin:${string}`,
+    originId,
+  });
+}
+
+/**
+ * Starts the 7-day window when the change is applied. Returns the row to go on with (re-armed or as it was),
+ * "wait" while the change is not applied, or "closed" when the rollout stalled. Re-arming sets a date computed
+ * from `appliedAt`, so a second run changes nothing; a re-armed row is never stalled.
+ */
+async function trackRollout(env: Env, row: ImprovementRow, now: Date, agents: ReadonlyArray<{ id: string; name?: unknown; title?: unknown; metadata?: unknown }> | null): Promise<ImprovementRow | "wait" | "closed" | "rearmed"> {
+  if (!agents) return "wait"; // the agents could not be read: look again next run, never guess
+  const appliedAt = appliedAtOf(agents, row);
+  const placeholder = Math.abs(Date.parse(row.recheckAt) - (Date.parse(row.createdAt) + TEMPLATE_RECHECK_DAYS * DAY_MS)) < 60_000;
+  if (appliedAt !== null) {
+    const recheckAt = new Date(appliedAt + TEMPLATE_WINDOW_DAYS * DAY_MS).toISOString();
+    if (Date.parse(row.recheckAt) === Date.parse(recheckAt)) return row;
+    await env.ctx.db.execute(`UPDATE ${T} SET recheck_at = $3, updated_at = $4 WHERE company_id = $1 AND id = $2 AND status = 'open'`, [row.companyId, row.id, recheckAt, now.toISOString()]);
+    return "rearmed";
+  }
+  if (placeholder && now.getTime() - Date.parse(row.createdAt) >= TEMPLATE_STALL_DAYS * DAY_MS) {
+    await finish(env, row, { status: "resolved", outcome: "inconclusive", resultValue: null, note: "rollout stalled" });
+    await tellDeliveryLead(env, row, agents).catch((error) => env.ctx.logger.info("Improvement: the rollout-stalled note was not posted", { companyId: row.companyId, id: row.id, error: message(error) }));
+    return "closed";
+  }
+  return "wait";
+}
+
 /** Re-measures every automatic improvement whose date has come, one company at a time, and writes the verdict with its numbers. */
 export async function recheckCompany(env: Env, companyId: string): Promise<RecheckResult> {
-  const result: RecheckResult = { measured: 0, improved: 0, noChange: 0, worse: 0, unreadable: 0, manual: 0, proposed: 0 };
+  const result: RecheckResult = { rearmed: 0, stalled: 0, measured: 0, improved: 0, noChange: 0, worse: 0, unreadable: 0, manual: 0, proposed: 0 };
   const now = env.now();
   const reader = new MetricReader(env, companyId);
-  for (const row of await listImprovements(env.ctx, companyId, { status: "open", limit: 100 })) {
+  let agents: Awaited<ReturnType<Env["ctx"]["agents"]["list"]>> | null | undefined;
+  for (let row of await listImprovements(env.ctx, companyId, { status: "open", limit: 100 })) {
+    if (row.sourceRef?.startsWith(TEMPLATE_REF)) {
+      if (agents === undefined) agents = await env.ctx.agents.list({ companyId, limit: 500 }).catch(() => null);
+      const tracked = await trackRollout(env, row, now, agents);
+      if (tracked === "closed") {
+        result.stalled += 1;
+        continue;
+      }
+      if (tracked === "wait") continue;
+      if (tracked === "rearmed") {
+        result.rearmed += 1;
+        row = (await getImprovement(env.ctx, companyId, row.id)) ?? row;
+      } else row = tracked;
+    }
     if (!isDue(row, now)) continue;
     if (parseMetricKey(row.metricKey)?.kind === "manual") {
       result.manual += 1;
@@ -287,7 +412,10 @@ export async function recheckCompany(env: Env, companyId: string): Promise<Reche
     const done = await finish(env, row, { status: "resolved", outcome: verdict.outcome, resultValue: reading.value, note: verdict.detail });
     result.measured += 1;
     if (verdict.outcome === "improved") result.improved += 1;
-    else if (verdict.outcome === "worse") result.worse += 1;
+    else if (verdict.outcome === "worse") {
+      result.worse += 1;
+      if (row.sourceRef?.startsWith(TEMPLATE_REF)) await openRevertIssue(env, done, verdict.detail, agents ?? null).catch((error) => env.ctx.logger.info("Improvement: the revert issue was not opened", { companyId, id: row.id, error: message(error) }));
+    }
     else if (verdict.outcome === "no_change") result.noChange += 1;
     await recordActivity(env.ctx, companyId, {
       key: `improvement:${done.id}`,

@@ -13,8 +13,11 @@ import {
   trackFieldFocus,
 } from "./composers.js";
 import { buildInstructions } from "./live-instructions.js";
+import { startWakeLock, type WakeGuard } from "./wake-lock.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./live-tools.js";
+import { failureMessage, showSaveNotice } from "./save-notice.js";
+import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type SaveTarget } from "./transcript-report.js";
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
 
 interface VoiceStatus {
@@ -24,7 +27,7 @@ interface VoiceStatus {
 }
 
 /** Same-origin calls to Paperclip's API with the person's own session. */
-export const paperclipApi: ApiClient = {
+export const paperclipApi: ReportApi = {
   async get<T>(path: string): Promise<T> {
     const res = await fetch(`/api${path}`, { credentials: "include", headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`Paperclip answered ${res.status} for ${path.split("?")[0]}`);
@@ -43,7 +46,75 @@ export const paperclipApi: ApiClient = {
     }
     return (await res.json()) as T;
   },
+  async put<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`/api${path}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null) as { error?: unknown } | null;
+      throw new Error(typeof detail?.error === "string" ? detail.error : `Paperclip answered ${res.status}`);
+    }
+    return (await res.json()) as T;
+  },
 };
+
+/**
+ * Autosaves and the final save write the same document key, and the host wants the latest revision id each
+ * time, so they run one after another: a save started during a slow autosave would otherwise read a stale id.
+ */
+let saveQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueSave<T>(work: () => Promise<T>): Promise<T> {
+  const run = saveQueue.then(work, work);
+  saveQueue = run.catch(() => undefined);
+  return run;
+}
+
+/** The mid-call write: the document on the task the call was opened from, never a comment. No task, no write. */
+function autosaveCall(call: CallRecord, pageIssueRef: string | null): Promise<void> {
+  if (!pageIssueRef || !hasSpeech(call.entries)) return Promise.resolve();
+  return enqueueSave(async () => {
+    const issue = await paperclipApi.get<{ id: string; identifier?: string | null }>(`/issues/${encodeURIComponent(pageIssueRef)}`);
+    const result = await saveLiveTranscript(
+      paperclipApi,
+      call,
+      [{ issueId: issue.id, ref: issue.identifier ?? pageIssueRef }],
+      { comment: false, changeSummary: "Autosaved during a live voice chat" },
+    );
+    // Left for the final save, which shows the failure and offers Retry.
+    if (result.failed.length > 0) throw new Error(result.failed[0]!.error);
+  });
+}
+
+/** Puts the call on the task it was opened from and on every task it posted to or created. */
+function saveCall(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
+  return enqueueSave(() => saveCallNow(call, touched, pageIssueRef));
+}
+
+async function saveCallNow(call: CallRecord, touched: SaveTarget[], pageIssueRef: string | null): Promise<void> {
+  if (!hasSpeech(call.entries)) return;
+  const targets = [...touched];
+  if (pageIssueRef) {
+    try {
+      const issue = await paperclipApi.get<{ id: string; identifier?: string | null }>(`/issues/${encodeURIComponent(pageIssueRef)}`);
+      targets.unshift({ issueId: issue.id, ref: issue.identifier ?? pageIssueRef });
+    } catch {
+      // The task on screen is optional; the tasks the call touched still get the transcript.
+    }
+  }
+  if (targets.length === 0) return;
+  const result = await saveLiveTranscript(paperclipApi, call, targets);
+  if (result.failed.length === 0 && result.skipped === 0) return;
+  const failedRefs = new Set(result.failed.map((f) => f.ref));
+  const retryTargets = targets.filter((t) => failedRefs.has(t.ref));
+  showSaveNotice(
+    failureMessage(result),
+    retryTargets.length > 0 ? async () => void (await saveCall(call, retryTargets, null)) : null,
+  );
+}
 
 function errorText(err: unknown): string {
   if (err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string") {
@@ -283,6 +354,8 @@ const STATE_LABEL: Record<LiveState, string> = {
   listening: "Listening",
   thinking: "Thinking…",
   speaking: "Speaking",
+  reconnecting: "Reconnecting…",
+  disconnected: "Disconnected",
   ended: "Call ended",
   error: "Disconnected",
 };
@@ -299,11 +372,15 @@ function LivePanel({
   companyId,
   userId,
   audioContext,
+  wakeLock,
+  wakeNotice,
   onClose,
 }: {
   companyId: string;
   userId: string | null;
   audioContext: AudioContext;
+  wakeLock: WakeGuard | null;
+  wakeNotice: string | null;
   onClose: () => void;
 }) {
   const startLive = usePluginAction("live-session");
@@ -336,10 +413,21 @@ function LivePanel({
           userId,
           pageIssueRef,
           audioContext,
-          onState: setState,
+          wakeLock: wakeLock ?? undefined,
+          refreshInfo: () => startLive({}) as Promise<LiveSessionInfo>,
+          onState: (next) => {
+            setState(next);
+            // The banner belongs to the outage; a recovered call clears it.
+            if (next !== "disconnected" && next !== "error") setError(null);
+          },
           onTranscript: setEntries,
           onLevel: (mic, voice) => setLevels({ mic, voice }),
           onError: setError,
+          onAutosave: (call) => autosaveCall(call, pageIssueRef),
+          onEnd: (call, touched) =>
+            void saveCall(call, touched, pageIssueRef).catch((err) => {
+              showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
+            }),
         });
         session.current = live;
         await live.start();
@@ -354,6 +442,7 @@ function LivePanel({
       cancelled = true;
       session.current?.stop();
       session.current = null;
+      wakeLock?.release();
       // stop() closes it once a session exists; close it here too if it never started.
       if (audioContext.state !== "closed") void audioContext.close().catch(() => undefined);
     };
@@ -426,16 +515,30 @@ function LivePanel({
             border: "1px solid var(--border)",
             transform: `scale(${orbScale})`,
             transition: "transform 90ms linear, background 200ms ease",
-            animation: state === "thinking" || state === "connecting" ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
+            animation: state === "thinking" || state === "connecting" || state === "reconnecting" ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
           }}
         />
         <div style={{ marginTop: 18, fontSize: 15, fontWeight: 500 }} aria-live="polite">
           {muted && live ? "Muted" : STATE_LABEL[state]}
         </div>
+        {wakeNotice && live ? (
+          <div role="status" style={{ marginTop: 8, fontSize: 12, color: "var(--muted-foreground)", padding: "0 24px", textAlign: "center" }}>
+            {wakeNotice}
+          </div>
+        ) : null}
         {error ? (
           <div role="alert" style={{ marginTop: 8, fontSize: 13, color: "var(--destructive)", padding: "0 24px", textAlign: "center" }}>
             {error}
           </div>
+        ) : null}
+        {state === "disconnected" ? (
+          <button
+            type="button"
+            onClick={() => session.current?.retry()}
+            style={{ marginTop: 12, padding: "10px 20px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--accent)", color: "var(--foreground)", fontSize: 14, fontWeight: 500 }}
+          >
+            Retry
+          </button>
         ) : null}
       </div>
 
@@ -577,12 +680,19 @@ export function VoiceOverlay() {
   const showToast = useCallback((message: string) => setToast(message), []);
   const liveAudioRef = useRef<AudioContext | null>(null);
   // Created right here in the tap handler (not in a state updater, which React runs later).
+  const wakeRef = useRef<WakeGuard | null>(null);
+  const [wakeNotice, setWakeNotice] = useState<string | null>(null);
+  // The screen lock starts in the same tap, before any await: iOS refuses it outside a gesture.
   const openLive = useCallback(() => {
     if (liveAudioRef.current) return;
     liveAudioRef.current = createAudioContext();
+    wakeRef.current = startWakeLock({ audioContext: liveAudioRef.current, onNotice: setWakeNotice });
     setLiveAudio(liveAudioRef.current);
   }, []);
   const closeLive = useCallback(() => {
+    wakeRef.current?.release();
+    wakeRef.current = null;
+    setWakeNotice(null);
     liveAudioRef.current = null;
     setLiveAudio(null);
   }, []);
@@ -609,7 +719,7 @@ export function VoiceOverlay() {
         );
       })}
       {liveAudio ? (
-        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} onClose={closeLive} />
+        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} wakeLock={wakeRef.current} wakeNotice={wakeNotice} onClose={closeLive} />
       ) : null}
       {toast ? <Toast message={toast} /> : null}
     </>

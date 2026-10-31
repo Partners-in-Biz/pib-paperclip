@@ -516,6 +516,8 @@ export interface DailyInput {
   impressions: number;
   clicks: number;
   conversions: number;
+  /** Absent for a platform that reports no installs: stored as 0. */
+  installs?: number;
   valueMinor: number;
 }
 
@@ -525,11 +527,11 @@ export interface DailyInput {
  */
 export async function recordDaily(ctx: PluginContext, companyId: string, account: Pick<AccountRow, "id" | "scope_key" | "currency">, row: DailyInput): Promise<{ ledgerEntry: boolean }> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "daily")} (company_id, account_id, campaign_external_id, day, spend_minor, impressions, clicks, conversions, conversion_value_minor, currency, synced_at)
-     VALUES ($1, $2, $3, $4::date, $5::bigint, $6::bigint, $7::bigint, $8::numeric, $9::bigint, $10, now())
+    `INSERT INTO ${table(ctx, "daily")} (company_id, account_id, campaign_external_id, day, spend_minor, impressions, clicks, conversions, installs, conversion_value_minor, currency, synced_at)
+     VALUES ($1, $2, $3, $4::date, $5::bigint, $6::bigint, $7::bigint, $8::numeric, $9::bigint, $10::bigint, $11, now())
      ON CONFLICT (account_id, campaign_external_id, day) DO UPDATE SET spend_minor = EXCLUDED.spend_minor, impressions = EXCLUDED.impressions, clicks = EXCLUDED.clicks,
-       conversions = EXCLUDED.conversions, conversion_value_minor = EXCLUDED.conversion_value_minor, currency = EXCLUDED.currency, synced_at = now()`,
-    [companyId, account.id, row.campaignExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.valueMinor, account.currency],
+       conversions = EXCLUDED.conversions, installs = EXCLUDED.installs, conversion_value_minor = EXCLUDED.conversion_value_minor, currency = EXCLUDED.currency, synced_at = now()`,
+    [companyId, account.id, row.campaignExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.installs ?? 0, row.valueMinor, account.currency],
   );
   const last = await ctx.db.query<{ seq: number | string; total_minor: number | string }>(
     `SELECT seq, total_minor FROM ${table(ctx, "spend_ledger")} WHERE account_id = $1 AND campaign_external_id = $2 AND day = $3::date ORDER BY seq DESC LIMIT 1`,
@@ -606,6 +608,7 @@ export interface SummaryRow {
   impressions: number;
   clicks: number;
   conversions: number;
+  installs: number;
   value: number;
   scope_key?: string;
   platform?: string;
@@ -649,7 +652,7 @@ export async function summaryRows(
   const rows = await ctx.db.query<Record<string, unknown>>(
     `SELECT ${g.key} AS key, ${g.label} AS label, d.currency AS currency${g.extra ? `, ${g.extra}` : ""},
             sum(d.spend_minor)::text AS spend, sum(d.impressions)::text AS impressions, sum(d.clicks)::text AS clicks,
-            sum(d.conversions)::text AS conversions, sum(d.conversion_value_minor)::text AS value
+            sum(d.conversions)::text AS conversions, sum(d.installs)::text AS installs, sum(d.conversion_value_minor)::text AS value
        FROM ${table(ctx, "daily")} d
        JOIN ${table(ctx, "ad_accounts")} a ON a.id = d.account_id
        LEFT JOIN ${table(ctx, "campaigns")} c ON c.account_id = d.account_id AND c.external_id = d.campaign_external_id
@@ -667,6 +670,7 @@ export async function summaryRows(
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     conversions: toNum(r.conversions),
+    installs: toInt(r.installs),
     value: toInt(r.value),
     ...(r.scope_key !== undefined ? { scope_key: String(r.scope_key) } : {}),
     ...(r.platform !== undefined ? { platform: String(r.platform) } : {}),
@@ -683,6 +687,7 @@ export interface DayRow {
   impressions: number;
   clicks: number;
   conversions: number;
+  installs: number;
   value: number;
 }
 
@@ -695,7 +700,7 @@ export async function dailyRows(ctx: PluginContext, companyId: string, since: st
     where += ` AND account_id = $${params.length}`;
   }
   const rows = await ctx.db.query<Record<string, unknown>>(
-    `SELECT account_id, campaign_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, conversion_value_minor FROM ${table(ctx, "daily")} WHERE ${where} ORDER BY day LIMIT 20000`,
+    `SELECT account_id, campaign_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, installs, conversion_value_minor FROM ${table(ctx, "daily")} WHERE ${where} ORDER BY day LIMIT 20000`,
     params,
   );
   return rows.map((r) => ({
@@ -706,6 +711,7 @@ export async function dailyRows(ctx: PluginContext, companyId: string, since: st
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     conversions: toNum(r.conversions),
+    installs: toInt(r.installs),
     value: toInt(r.conversion_value_minor),
   }));
 }

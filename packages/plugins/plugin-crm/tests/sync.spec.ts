@@ -13,7 +13,22 @@ describe("CRM change events", () => {
       lifecycle: "customer",
       updatedAt: "2026-09-26T05:00:00.000Z",
       billing: { email: null, phone: null, address: null, vatNumber: null, registrationNumber: null },
+      hosted: { companyId: null, plan: null },
     });
+  });
+
+  it("carries the hosted-company link and plan label on the company event", () => {
+    const event = companyEvent({
+      ...NO_BILLING,
+      id: "a",
+      name: "Acme",
+      domain: null,
+      lifecycle: "customer",
+      hosted_company_id: "hosted-1",
+      hosted_plan: "growth",
+      updated_at: "2026-09-26T05:00:00Z",
+    });
+    expect(event.hosted).toEqual({ companyId: "hosted-1", plan: "growth" });
   });
 
   it("carries the five billing details on the company event, null for what is unset", () => {

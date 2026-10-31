@@ -221,6 +221,12 @@ export interface AdapterExecutionContext {
   runtimeMcp?: AdapterRuntimeMcpAccess;
   runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /**
+   * Fired as soon as the provider session id is known, including when the
+   * process is later killed. The server persists it so the next wake resumes
+   * the transcript instead of starting the task over.
+   */
+  onSessionCheckpoint?: (checkpoint: { sessionId: string }) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;

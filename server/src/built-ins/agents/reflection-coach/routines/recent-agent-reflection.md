@@ -1,7 +1,7 @@
 ---
-routineKey: recent-agent-reflection
-title: Review recent agent trajectories for coaching proposals
-description: Bounded reflection sweep over recently active agents that produces evidence-backed coaching proposals only. Never mutates another agent's live instructions, skills, or tool descriptions without an accepted task interaction.
+routineKey: nightly-dreaming
+title: Nightly dreaming — draft skill and memory proposals from run logs
+description: Read the day's run transcripts, cluster repeated failures and the fixes that followed, and draft company skill or agent-memory proposals. Drafts go to Code Reviewer. This routine never applies a change.
 assigneeRef:
   resourceKind: agent
   resourceKey: reflection-coach
@@ -10,68 +10,72 @@ priority: medium
 concurrencyPolicy: coalesce_if_active
 catchUpPolicy: skip_missed
 variables:
-  - name: lookbackDays
-    label: Lookback window (days)
+  - name: lookbackHours
+    label: Lookback window (hours)
     type: number
-    defaultValue: 7
-    required: false
+    defaultValue: 24
+    required: true
+    options: []
+  - name: maxRuns
+    label: Max runs to read
+    type: number
+    defaultValue: 40
+    required: true
+    options: []
+  - name: maxProposals
+    label: Max draft proposals
+    type: number
+    defaultValue: 5
+    required: true
     options: []
   - name: maxTargetAgents
-    label: Max target agents per run
+    label: Max target agents
     type: number
     defaultValue: 8
-    required: false
-    options: []
-  - name: targetAgentMode
-    label: Target selection mode
-    type: select
-    defaultValue: recent_active
-    required: false
-    options:
-      - recent_active
-      - all
-      - explicit
-  - name: excludeAgentIds
-    label: Agent ids to exclude (comma-separated)
-    type: string
-    defaultValue: null
-    required: false
+    required: true
     options: []
 triggers:
   - kind: schedule
-    label: Weekly reflection sweep
+    label: Nightly dreaming draft
     enabled: false
-    cronExpression: "0 9 * * 1"
-    timezone: UTC
+    cronExpression: "15 3 * * *"
+    timezone: Africa/Johannesburg
     signingMode: none
     replayWindowSec: 0
 issueTemplate:
   surfaceVisibility: normal
 ---
 
-# Recent agent reflection sweep
+# Nightly dreaming (draft only)
 
-This routine is **paused by default** and spends no tokens until an operator enables its schedule or triggers a manual run. When it runs, it produces coaching proposals only.
+Feature flag: this schedule ships **disabled** (`enabled: false`, routine `paused`) on routine key `nightly-dreaming`. It is a new key so startup reconcile does not rewrite the older `recent-agent-reflection` row.
+
+`PAPERCLIP_NIGHTLY_DREAMING` (`1`, `true`, or `on`) is the server gate. It defaults off. The enable route and the run route refuse this key unless that function returns true. Reconcile also forces this trigger off when the flag is off, even if a previous enable left it on.
+
+Prefer a cheap Grok model (`grok_local` or `hermes_local`). Those adapters are on the allowlist so an operator can pin this coach to Grok. Do not change your own adapter in this run. If you are not already on a Grok adapter, say so in the changelog and continue.
 
 ## What this run must do
 
-1. Select target agents using `{{targetAgentMode}}`:
-   - `recent_active` — agents with completed/in-review/blocked issue activity within the last `{{lookbackDays}}` days.
-   - `all` — every non-terminated agent in the company.
-   - `explicit` — only agents named in the run inputs.
-   Cap the set at `{{maxTargetAgents}}`. Drop any agent id listed in `{{excludeAgentIds}}`, and always drop your own `PAPERCLIP_AGENT_ID` (no self-reflection).
-2. For each selected target, run the `reflection-coach` skill as the operating procedure: pull recent trajectories, read current AGENTS.md and assigned skills, cluster evidence-backed patterns, and draft the smallest durable change.
-3. Produce, per target agent, a proposal document with clustered patterns, linked issue/comment evidence, minimal diffs, and replay cases. Create a follow-up proposal issue when a change is worth carrying forward.
+1. Read company heartbeat runs from the last `{{lookbackHours}}` hours (1–168), cap `{{maxRuns}}` (1–200). Use `GET /api/companies/$PAPERCLIP_COMPANY_ID/heartbeat-runs` and, for repeated failures only, `GET /api/heartbeat-runs/{runId}/log`. Skip your own runs. Refuse the run if a variable is outside its bound. Those numeric bounds are prompt-only. The server does not reject an out-of-range value.
+2. Cluster repeated failures and the fix that followed. A cluster needs at least two runs, or one run plus a later issue comment that names the fix. No evidence, no proposal.
+3. Draft at most `{{maxProposals}}` updates (1–20) to a company skill or an agent's instructions (memory). Cap `{{maxTargetAgents}}` agents (1–30). Never draft a change to yourself.
+4. Before a new skill draft, classify company skills with the rules in `server/src/services/skill-hygiene.ts`. A skill is agent-owned only when `managedBy` is `agent` and it is not catalog, plugin, github, url, skills_sh, or a `paperclipai/` key. Everything else is protected, including a missing marker. Never draft a create, edit, merge, or archive for a protected skill. That includes skills a human wrote or installed.
+5. Near-duplicate means two agent-owned skills whose name and description share at least 3 tokens and a Jaccard overlap of at least 0.5. Draft one merge. Keep the higher use count. Say which skill absorbs which. Do not open a second skill for that scenario. A correction updates the existing agent-owned skill. It does not add a near-duplicate.
+6. Archive only an agent-owned skill that is at least 14 days old and has use count 0 and view count 0. Unknown usage is not unused. An archive draft moves the skill aside. It does not delete it. Do not archive the skill a merge keeps.
+7. Post one short changelog comment on this routine issue: window, runs read, clusters, drafts opened, skill count before, protected count, agent-owned count, merge drafts, archive drafts, skill count after, and what was not proposed. Skill count after equals skill count before. This routine never applies.
+8. For each draft, open a child issue assigned to the company agent whose `urlKey` is `code-reviewer`. Put the diff in the issue body. Title prefix: `Dream draft:`. A new agent skill draft must include `managedBy: agent`. Without that marker a later run treats it as protected.
 
-## Hard limits for this routine
+## Hard limits
 
-- Proposal-only. This routine must not edit any agent's live AGENTS.md, skill assignments, or tool descriptions directly.
-- Any actual instruction/skill/tool-description change requires a displayed diff and an **accepted** `request_confirmation` task interaction, applied only in a separate follow-up run.
-- Mutation confirmations must bind the exact resource key they will apply, using `agent:<agentId>:instructions`, `agent:<agentId>:profile`, `skill:<skillId>`, `skill-slug:<slug>`, `skill-import:<source>`, or `skills:scan-projects`.
-- Keep every read company-scoped. Do not cross company boundaries.
-- Every proposed rule needs linked issue/comment evidence or it is dropped. No scoring without trajectories.
-- Respect the size caps: AGENTS.md +20% max per proposal, skills 15KB max, tool descriptions 500 chars max.
+- **Never apply.** Instruction routes return 403 without `agents:suggest-changes`. Skill routes return 403 because reconcile writes a coach-only skill-policy deny (`reflection-coach-never-apply`) that wins over an owner allow. Revoking `skills:suggest-changes` alone does not stop skill writes. Do not edit skills, `AGENTS.md`, agent memory, tool descriptions, or adapter config. The "never apply" line in this prompt is not the stop. The routes are.
+- **Never open `request_confirmation`.** Code Reviewer reviews the draft. Application, if any, is a later issue that is not this routine.
+- Redact tokens, API keys, `Authorization` headers, and env values before you copy a log line into a draft or a comment. Replace them with `[redacted]`.
+- Do not enable this schedule, do not flip `PAPERCLIP_NIGHTLY_DREAMING`, and do not reset built-in stock.
+- Keep every read company-scoped.
+- Size caps still hold: skills ≤ 15KB, tool descriptions ≤ 500 chars, `AGENTS.md` growth ≤ +20% per draft.
+- Do not inject a learned-skill index into other agents' sessions. If you list agent-owned skills, put that list only in this changelog.
+- Do not add a /learn command. A manual run of this routine is the on-demand path, and the flag still gates it.
 
 ## Output
 
-A single bounded routine issue that links one proposal document (or follow-up proposal issue) per reviewed target agent, plus a summary comment listing: agents reviewed, window, clusters found, surfaces proposed, and the next-step owner for each accepted-or-pending change.
+A changelog comment on this issue, plus zero or more `Dream draft:` child issues assigned to Code Reviewer. No mutations.
