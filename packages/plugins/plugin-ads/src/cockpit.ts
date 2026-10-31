@@ -88,7 +88,8 @@ async function kpis(rt: AdsRuntime): Promise<CockpitKpi[]> {
   const open = await listProposals(ctx, companyId, { open: true, limit: 200 });
   const waiting = open.filter((p) => p.status === "in_review" || p.status === "approved").length;
   out.push({ key: "ads_changes", label: "Ad changes waiting", value: String(open.length), hint: open.length === 0 ? "None open" : `${waiting} waiting for a person or the Reviewer`, raw: open.length, tone: waiting > 0 ? "warn" : "neutral", href: PROPOSALS, group: "marketing" });
-  const alerts = await listAlerts(ctx, companyId, { status: "open", limit: 200 });
+  // The daily results report is information, not something to look at: it stays out of the tile.
+  const alerts = (await listAlerts(ctx, companyId, { status: "open", limit: 200 })).filter((a) => a.kind !== "daily_report");
   out.push({ key: "ads_alerts", label: "Ad alerts", value: String(alerts.length), hint: alerts.length === 0 ? "Nothing unusual" : `${alerts.filter((a) => a.severity === "bad").length} serious`, raw: alerts.length, tone: alerts.some((a) => a.severity === "bad") ? "bad" : alerts.length ? "warn" : "ok", href: `${ADS}?tab=alerts`, group: "marketing" });
   const disapproved = await listAds(ctx, companyId, { policyStatus: "DISAPPROVED" });
   const pending = await listAds(ctx, companyId, { policyStatus: "PENDING_REVIEW" });

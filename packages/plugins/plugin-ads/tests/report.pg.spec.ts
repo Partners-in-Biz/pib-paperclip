@@ -1,8 +1,9 @@
 /**
- * Installs and the daily results report: the additive `installs` column, cost per install, and one info alert per platform and day that rides the
+ * Installs and the daily results report: the additive `installs` column, cost per install, and one info alert per scope, platform and day that rides the
  * alerts flow without disturbing the zero-delivery rule. Runs only with embedded Postgres (`describe.skipIf`).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { cockpitSnapshot } from "../src/cockpit.js";
 import { evaluateCompany } from "../src/evaluate.js";
 import { dailyRows, getAccount, listAlerts, summaryRows } from "../src/db.js";
 import { postDailyReports } from "../src/report.js";
@@ -60,7 +61,7 @@ describe.skipIf(!available)("installs and the daily results report", () => {
     expect(first).toEqual({ day: DAY, reports: 1 });
     const reports = (await listAlerts(w.ctx, COMPANY, {})).filter((a) => a.kind === "daily_report");
     expect(reports).toHaveLength(1);
-    expect(reports[0]).toMatchObject({ severity: "info", issue_id: null, dedupe_key: `daily_report:mock:ZAR:${DAY}` });
+    expect(reports[0]).toMatchObject({ severity: "info", issue_id: null, dedupe_key: `daily_report:own:mock:ZAR:${DAY}` });
     const detail = reports[0]!.detail as Record<string, number>;
     expect(detail.installs).toBe(8);
     expect(detail.spendMinor).toBe(10_000);
@@ -91,5 +92,24 @@ describe.skipIf(!available)("installs and the daily results report", () => {
     const kinds = (await listAlerts(w.ctx, COMPANY, {})).map((a) => `${a.kind}:${a.campaign_external_id ?? ""}`);
     expect(kinds).toContain("zero_delivery:c1");
     expect(kinds).toContain("daily_report:");
+  });
+
+  it("reports each scope on its own: two scopes on one platform, each alert holds only its own numbers", async () => {
+    await syncedAccount(w, { scope: "company:acme", externalId: "ext-acme", spend: 3000 });
+    expect(await postDailyReports(w.rt())).toEqual({ day: DAY, reports: 2 });
+    const reports = (await listAlerts(w.ctx, COMPANY, {})).filter((a) => a.kind === "daily_report");
+    const spendOf = (scopeKey: string) => (reports.find((a) => a.scope_key === scopeKey)?.detail as Record<string, number> | undefined)?.spendMinor;
+    expect(reports.map((a) => a.scope_key).sort()).toEqual(["company:acme", "own"]);
+    expect(spendOf("own")).toBe(10_000);
+    expect(spendOf("company:acme")).toBe(5000);
+    const acme = await listAlerts(w.ctx, COMPANY, { scopeKey: "company:acme" });
+    expect(acme.filter((a) => a.kind === "daily_report")).toHaveLength(1);
+  });
+
+  it("keeps the daily report out of the Cockpit Ad alerts tile", async () => {
+    await postDailyReports(w.rt());
+    expect((await listAlerts(w.ctx, COMPANY, { status: "open" })).some((a) => a.kind === "daily_report")).toBe(true);
+    const tile = (await cockpitSnapshot(w.ctx, COMPANY, w.rt())).kpis.find((k) => k.key === "ads_alerts");
+    expect(tile).toMatchObject({ raw: 0, tone: "ok", hint: "Nothing unusual" });
   });
 });

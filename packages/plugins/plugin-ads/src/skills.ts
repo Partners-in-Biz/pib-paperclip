@@ -87,7 +87,7 @@ not_approved (status is not approved) / bad_approval (not the owner's yes for th
 
 ## Alerts
 
-spend_spike (a day above 2.5 times the usual, and above the minimum), zero_delivery (active, delivered before, nothing yesterday), cpa_over_target (7-day cost per result more than 25% over the target, or real spend and no result), budget_90 / budget_100 (pause request), on_track_to_exceed (information), sync_failed (numbers stopped updating). One alert per key; an alert not seen for a week resolves itself.
+spend_spike (a day above 2.5 times the usual, and above the minimum), zero_delivery (active, delivered before, nothing yesterday), cpa_over_target (7-day cost per result more than 25% over the target, or real spend and no result), budget_90 / budget_100 (pause request), on_track_to_exceed (information), sync_failed (numbers stopped updating), daily_report (information only: yesterday's spend, impressions, clicks, installs, cost per install, conversions and CPA for one scope and platform; read it, no action needed, and cost per install is n/a until the platform reports installs). One alert per key; an alert not seen for a week resolves itself.
 
 ## Records
 
