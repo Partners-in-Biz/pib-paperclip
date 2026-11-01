@@ -99,13 +99,19 @@ const DISPOSITION_REPAIR_WAKE_REASON = "issue_disposition_repair";
  * (finishingRun.id / opts.failedRunId), never from req.body.retryOfRunId.
  * Reason-based exemptions still require a system actor because that route
  * does copy a client-supplied reason.
+ * A chat conversation issue is user-driven (one run per user message), not an
+ * automated wake loop, so chat wakes are exempt. Identify chat only by the
+ * issue's own conversationAgentId column, not by contextSnapshot flags which
+ * can be forged by clients.
  */
 export function isTicketRunCapExempt(input: {
   retryOfRunId?: string | null;
+  chatConversation?: boolean | null;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
 }): boolean {
   if (input.retryOfRunId) return true;
+  if (input.chatConversation) return true;
   if (input.requestedByActorType !== "system") return false;
   return (
     input.wakeReason === DISPOSITION_REPAIR_WAKE_REASON ||
