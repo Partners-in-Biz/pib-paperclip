@@ -166,6 +166,36 @@ describe("isTicketRunCapExempt", () => {
       }),
     ).toBe(false);
   });
+
+  it("exempts a chat conversation issue even with ordinary wake reasons", () => {
+    expect(isTicketRunCapExempt({ chatConversation: true, wakeReason: "issue_commented" })).toBe(true);
+    expect(
+      isTicketRunCapExempt({
+        chatConversation: true,
+        wakeReason: "issue_commented",
+        requestedByActorType: "agent",
+      }),
+    ).toBe(true);
+    expect(
+      isTicketRunCapExempt({
+        chatConversation: true,
+        wakeReason: "issue_commented",
+        requestedByActorType: "user",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not exempt a non-chat conversation with ordinary wake reasons", () => {
+    expect(isTicketRunCapExempt({ chatConversation: false, wakeReason: "issue_commented" })).toBe(
+      false,
+    );
+    expect(isTicketRunCapExempt({ chatConversation: undefined, wakeReason: "issue_commented" })).toBe(
+      false,
+    );
+    expect(isTicketRunCapExempt({ chatConversation: null, wakeReason: "issue_commented" })).toBe(
+      false,
+    );
+  });
 });
 
 describe("shouldStartQueuedIssueRun", () => {

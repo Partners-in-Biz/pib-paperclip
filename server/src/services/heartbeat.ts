@@ -17529,6 +17529,7 @@ export function heartbeatService(
         .select({
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          conversationAgentId: issues.conversationAgentId,
         })
         .from(issues)
         .where(
@@ -17634,6 +17635,7 @@ export function heartbeatService(
       const capNow = new Date();
       const claimCapExempt = isTicketRunCapExempt({
         retryOfRunId: readNonEmptyString(context.retryOfRunId),
+        chatConversation: Boolean(startIssue?.conversationAgentId),
         wakeReason: startWakeReason,
         requestedByActorType: wakeRequest?.requestedByActorType ?? null,
       });
@@ -27582,6 +27584,7 @@ export function heartbeatService(
           const capNow = new Date();
           const capExempt = isTicketRunCapExempt({
             retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId),
+            chatConversation: Boolean(issue?.conversationAgentId),
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
           });
