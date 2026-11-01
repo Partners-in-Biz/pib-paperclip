@@ -57,7 +57,14 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
   });
 }
 
-/** Invoke a heartbeat run for an agent, returning the run ID. */
+/**
+ * Invoke a heartbeat run for an agent, or reuse an already-queued run to avoid
+ * exceeding the hourly run cap. Returns the run ID.
+ *
+ * When a stage transition queues a new run for the agent, we detect and reuse
+ * that run instead of invoking fresh. If no queued run is found, we invoke a
+ * new heartbeat (used by non-participants in negative-path tests).
+ */
 async function invokeHeartbeat(
   board: APIRequestContext,
   agentId: string,
@@ -155,15 +162,20 @@ async function retryAgentPatchWithCurrentLockOnConflict(
 }
 
 /**
- * PATCH an issue as an agent, using a freshly invoked heartbeat run.
+ * PATCH an issue as an agent, reusing the stage-queued run if available.
  *
- * Invoking a heartbeat starts a background run that races this PATCH for the
- * issue's run-lock: the background run may check the issue out (flipping it to
- * `in_progress` under its own run id) a moment before — or after — this PATCH
- * lands, and the server answers the loser with a 409 ("Issue is checked out by
- * another agent"). With `retries: 0` / `workers: 1` a single transient 409
- * fails the whole shard, so we retry a run-lock 409 under the issue's *current*
- * lock, bounded by escalating backoff to cover the race window.
+ * When a stage transition queues a new run for the agent, we reuse that run's
+ * ID instead of invoking a fresh heartbeat. This avoids exceeding the hourly
+ * run cap on issues.
+ *
+ * If no queued run is found for the agent, falls back to invoking a heartbeat
+ * (used by non-participants in negative-path tests). Invoking a heartbeat starts
+ * a background run that races this PATCH for the issue's run-lock: the background
+ * run may check the issue out (flipping it to `in_progress` under its own run id)
+ * a moment before — or after — this PATCH lands, and the server answers the loser
+ * with a 409 ("Issue is checked out by another agent"). With `retries: 0` /
+ * `workers: 1` a single transient 409 fails the whole shard, so we retry a
+ * run-lock 409 under the issue's *current* lock, bounded by escalating backoff.
  *
  * The retry is intentionally narrow so the suite's negative paths keep failing
  * for the right reason:
@@ -184,7 +196,37 @@ async function agentPatch(
     maxBackoffMs = 500,
   }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  // If the issue is already assigned to this agent, check if there's a queued run.
+  // A stage transition queues a run for the participant, so reuse it to avoid the run cap.
+  let runId: string = "";
+  {
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    if (issueRunLock.assigneeAgentId === agent.agentId) {
+      // Agent is assigned; see if there's an already-queued run
+      const candidates = [
+        issueRunLock.executionRunId,
+        issueRunLock.checkoutRunId,
+      ].filter((id): id is string => Boolean(id));
+
+      for (const candidate of candidates) {
+        const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidate}`);
+        if (runRes.ok()) {
+          const candidateRun = await runRes.json();
+          if (candidateRun.agentId === agent.agentId &&
+              candidateRun.status !== "completed" && candidateRun.status !== "cancelled" && candidateRun.status !== "failed") {
+            runId = candidate;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // If no queued run found, invoke a fresh one
+  if (!runId) {
+    runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  }
+
   const patchWith = (patchRunId: string) =>
     agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
       headers: { "X-Paperclip-Run-Id": patchRunId },
