@@ -209,6 +209,11 @@ vi.mock("../services/external-objects.js", () => ({
   externalObjectService: () => mockExternalObjectService,
 }));
 
+vi.mock("../services/issue-code-review-gate-context.js", () => ({
+  evaluateIssueCodeReviewGate: vi.fn(async () => ({ allowed: true })),
+  pickAutoReviewStageReviewer: vi.fn(async () => null),
+}));
+
 vi.mock("../services/cross-issue-influence-limit.js", () => ({
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
