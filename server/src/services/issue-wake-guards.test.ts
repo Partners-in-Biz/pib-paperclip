@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateTicketHourlyRunCap,
+  isTicketRunCapExempt,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
   TICKET_RUNS_PER_HOUR_CAP,
@@ -46,6 +47,32 @@ describe("shouldWakeBlockedTicket", () => {
     ).toEqual({ wake: true, reason: "blocker_cleared" });
   });
 
+  it("wakes a blocked ticket for system recovery and continuation", () => {
+    for (const wakeReason of [
+      "issue_recovery_action_restored",
+      "issue_continuation_needed",
+      "issue_children_completed",
+    ]) {
+      expect(
+        shouldWakeBlockedTicket({
+          issueStatus: "blocked",
+          wakeReason,
+          requestedByActorType: "system",
+        }),
+      ).toEqual({ wake: true, reason: "system_recovery" });
+    }
+  });
+
+  it("does not treat an agent-forged recovery reason as a system wake", () => {
+    expect(
+      shouldWakeBlockedTicket({
+        issueStatus: "blocked",
+        wakeReason: "issue_continuation_needed",
+        requestedByActorType: "agent",
+      }),
+    ).toEqual({ wake: false, reason: "blocked_suppressed" });
+  });
+
   it("does not treat an agent mention on a blocked ticket as a wake", () => {
     expect(
       shouldWakeBlockedTicket({
@@ -86,6 +113,21 @@ describe("evaluateTicketHourlyRunCap", () => {
     ).toEqual({ allow: false, flag: false, reason: "capped" });
   });
 
+  it("still caps after N consecutive failed runs", () => {
+    expect(
+      evaluateTicketHourlyRunCap({
+        runsStartedInWindow: TICKET_RUNS_PER_HOUR_CAP,
+        alreadyFlaggedInWindow: false,
+      }),
+    ).toEqual({ allow: false, flag: true, reason: "capped" });
+    expect(
+      evaluateTicketHourlyRunCap({
+        runsStartedInWindow: TICKET_RUNS_PER_HOUR_CAP + 2,
+        alreadyFlaggedInWindow: true,
+      }),
+    ).toEqual({ allow: false, flag: false, reason: "capped" });
+  });
+
   it("allows the 3rd run", () => {
     expect(
       evaluateTicketHourlyRunCap({
@@ -93,6 +135,36 @@ describe("evaluateTicketHourlyRunCap", () => {
         alreadyFlaggedInWindow: false,
       }).allow,
     ).toBe(true);
+  });
+});
+
+describe("isTicketRunCapExempt", () => {
+  it("exempts a retry handoff and a system continuation, not an agent-forged reason", () => {
+    expect(isTicketRunCapExempt({ retryOfRunId: "run-1", wakeReason: "issue_assigned" })).toBe(true);
+    expect(
+      isTicketRunCapExempt({
+        wakeReason: "issue_continuation_needed",
+        requestedByActorType: "system",
+      }),
+    ).toBe(true);
+    expect(
+      isTicketRunCapExempt({
+        wakeReason: "issue_disposition_repair",
+        requestedByActorType: "system",
+      }),
+    ).toBe(true);
+    expect(
+      isTicketRunCapExempt({
+        wakeReason: "issue_continuation_needed",
+        requestedByActorType: "agent",
+      }),
+    ).toBe(false);
+    expect(
+      isTicketRunCapExempt({
+        wakeReason: "issue_commented",
+        requestedByActorType: "system",
+      }),
+    ).toBe(false);
   });
 });
 
@@ -156,6 +228,25 @@ describe("shouldStartQueuedIssueRun", () => {
         wakeReason: "issue_blockers_resolved",
       }).start,
     ).toBe(true);
+  });
+
+  it("starts a blocked ticket for a system recovery reason", () => {
+    expect(
+      shouldStartQueuedIssueRun({
+        ...base,
+        issueStatus: "blocked",
+        wakeReason: "issue_continuation_needed",
+        requestedByActorType: "system",
+      }).start,
+    ).toBe(true);
+    expect(
+      shouldStartQueuedIssueRun({
+        ...base,
+        issueStatus: "blocked",
+        wakeReason: "issue_continuation_needed",
+        requestedByActorType: "agent",
+      }).start,
+    ).toBe(false);
   });
 
   it("still starts a mention wake for a non-assignee", () => {

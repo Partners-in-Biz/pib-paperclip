@@ -366,6 +366,7 @@ import {
   ISSUE_RUN_CAP_SKIP_REASON,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
+  isTicketRunCapExempt,
 } from "./issue-wake-guards.js";
 import {
   loadTicketRunCapState,
@@ -17417,16 +17418,17 @@ export function heartbeatService(
       if (settlingOwner) return null;
     }
     if (issueId) {
-      const wakeActorType = run.wakeupRequestId
+      const wakeRequest = run.wakeupRequestId
         ? await db
             .select({
               requestedByActorType: agentWakeupRequests.requestedByActorType,
+              reason: agentWakeupRequests.reason,
             })
             .from(agentWakeupRequests)
             .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
-            .then((rows) => rows[0]?.requestedByActorType ?? null)
+            .then((rows) => rows[0] ?? null)
         : null;
-      const humanWake = isHumanBoardActor(wakeActorType);
+      const humanWake = isHumanBoardActor(wakeRequest?.requestedByActorType ?? null);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,
         issueId,
@@ -17484,7 +17486,9 @@ export function heartbeatService(
         .limit(1);
       const startWakeReason =
         readNonEmptyString(context.wakeReason) ??
-        readNonEmptyString(context.reason);
+        readNonEmptyString(context.reason) ??
+        wakeRequest?.reason ??
+        null;
       const startDecision = shouldStartQueuedIssueRun({
         issueStatus: startIssue?.status ?? null,
         paused: false,
@@ -17494,12 +17498,46 @@ export function heartbeatService(
         humanWake,
         blockerClearedWake:
           startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-        assigneeMismatchExempt: isNonAssigneeWorkspaceBusyRetry(
-          readNonEmptyString(context.retryReason),
-          context,
-        ),
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+        assigneeMismatchExempt:
+          isNonAssigneeWorkspaceBusyRetry(
+            readNonEmptyString(context.retryReason),
+            context,
+          ) ||
+          (
+            // The wakeup route copies a client-supplied reason. Only a
+            // system actor may use the review-participant recovery reason
+            // to skip the assignee check. Server recovery sets that actor.
+            (wakeRequest?.requestedByActorType ?? null) === "system" &&
+            (
+              readNonEmptyString(context.retryReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON ||
+              readNonEmptyString(context.wakeReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
+            )
+          ),
       });
       if (!startIssue || !startDecision.start) {
+        if (startIssue && startDecision.reason === "blocked") {
+          const blockedReadiness = await issuesSvc.listDependencyReadiness(
+            run.companyId,
+            [issueId],
+          );
+          const blockedUnresolved =
+            blockedReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+          if (blockedUnresolved > 0) {
+            await cancelQueuedRunForBlockedDependencies(
+              run,
+              issueId,
+              blockedReadiness.get(issueId)?.unresolvedBlockerIssueIds ?? [],
+            );
+            logger.info(
+              { runId: run.id, issueId, unresolvedBlockerCount: blockedUnresolved },
+              "claimQueuedRun: cancelled blocked queued run with open dependencies",
+            );
+            return null;
+          }
+        }
         const startStopReason =
           !startIssue ||
           startDecision.reason === "ok" ||
@@ -17543,13 +17581,22 @@ export function heartbeatService(
       }
 
       const capNow = new Date();
-      const capState = await loadTicketRunCapState(db, {
-        companyId: run.companyId,
-        issueId,
-        now: capNow,
-        excludeRunId: run.id,
+      const claimCapExempt = isTicketRunCapExempt({
+        retryOfRunId: readNonEmptyString(context.retryOfRunId),
+        wakeReason: startWakeReason,
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
       });
-      const capDecision = evaluateTicketHourlyRunCap(capState);
+      const capState = claimCapExempt
+        ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
+        : await loadTicketRunCapState(db, {
+            companyId: run.companyId,
+            issueId,
+            now: capNow,
+            excludeRunId: run.id,
+          });
+      const capDecision = claimCapExempt
+        ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+        : evaluateTicketHourlyRunCap(capState);
       if (!capDecision.allow) {
         if (capDecision.flag) {
           await recordWakeLoopFlag(db, {
@@ -27401,10 +27448,23 @@ export function heartbeatService(
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
           });
+          const guardRejectsCurrentState = Boolean(
+            opts.issueStateGuard &&
+            (
+              !opts.issueStateGuard.statuses.includes(issue.status) ||
+              issue.assigneeAgentId !== opts.issueStateGuard.assigneeAgentId ||
+              (opts.issueStateGuard.statusVersion !== undefined &&
+                issue.statusVersion !== opts.issueStateGuard.statusVersion)
+            ),
+          );
+          // A rejecting guard must record issue_state_guard_mismatch. Callers
+          // whose guard accepts the current status still hit the cancelled
+          // and blocked policy below.
           if (
-            (issue.status === "cancelled" &&
+            !guardRejectsCurrentState &&
+            ((issue.status === "cancelled" &&
               !isHumanBoardActor(opts.requestedByActorType)) ||
-            !blockedTicketWake.wake
+              !blockedTicketWake.wake)
           ) {
             const skippedBecauseCancelled =
               issue.status === "cancelled" && blockedTicketWake.wake;
@@ -27442,12 +27502,21 @@ export function heartbeatService(
           }
 
           const capNow = new Date();
-          const capState = await loadTicketRunCapState(tx as unknown as Db, {
-            companyId: agent.companyId,
-            issueId: issue.id,
-            now: capNow,
+          const capExempt = isTicketRunCapExempt({
+            retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId),
+            wakeReason: enqueueWakeReason,
+            requestedByActorType: opts.requestedByActorType ?? null,
           });
-          const capDecision = evaluateTicketHourlyRunCap(capState);
+          const capState = capExempt
+            ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
+            : await loadTicketRunCapState(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                now: capNow,
+              });
+          const capDecision = capExempt
+            ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+            : evaluateTicketHourlyRunCap(capState);
           if (!capDecision.allow) {
             if (capDecision.flag) {
               await recordWakeLoopFlag(tx as unknown as Db, {
