@@ -1028,24 +1028,27 @@ export interface SharedWorkspaceHolder {
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
   holder: SharedWorkspaceHolder;
-  projectWorkspaceId: string;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
-    projectWorkspaceId: string;
+    projectWorkspaceId: string | null;
+    executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
   }) {
     super(
-      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+      `${input.executionWorkspaceId ? "Execution" : "Shared project"} workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
       }) is still running`,
     );
     this.name = "WorkspaceBusyDeferral";
     this.holder = input.holder;
     this.projectWorkspaceId = input.projectWorkspaceId;
+    this.executionWorkspaceId = input.executionWorkspaceId ?? null;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
   }
@@ -16281,6 +16284,51 @@ export function heartbeatService(
     };
   }
 
+  // Finds a live running heartbeat run (other than the caller's) whose issue
+  // is bound to the same execution workspace (one git worktree). Two runs must
+  // never mutate one worktree at once, whatever the environment driver, so the
+  // caller defers behind the holder instead of failing on branch contention.
+  async function findExecutionWorkspaceHolder(input: {
+    companyId: string;
+    executionWorkspaceId: string;
+    excludeIssueId: string;
+    excludeRunId: string;
+    now?: Date;
+  }): Promise<SharedWorkspaceHolder | null> {
+    const staleCutoff = new Date(
+      (input.now ?? new Date()).getTime() -
+        WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+    );
+    return await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        issueId: sql<string>`${issues.id}::text`,
+        issueIdentifier: issues.identifier,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, heartbeatRuns.companyId),
+          sql`${issues.id}::text = ${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "running"),
+          ne(heartbeatRuns.id, input.excludeRunId),
+          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+          eq(issues.executionWorkspaceId, input.executionWorkspaceId),
+          ne(sql`${issues.id}::text`, input.excludeIssueId),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   // Finds a running heartbeat run (other than the caller's) whose context
   // issue shares the same project workspace, i.e. the run that currently
   // "holds" the shared working tree. Runs that have been silent past
@@ -16420,6 +16468,9 @@ export function heartbeatService(
         },
         workspaceBusy: {
           projectWorkspaceId: deferral.projectWorkspaceId,
+          ...(deferral.executionWorkspaceId
+            ? { executionWorkspaceId: deferral.executionWorkspaceId }
+            : {}),
           holderRunId: deferral.holder.runId,
           holderIssueId: deferral.holder.issueId,
           deferralAttempt: deferral.deferralAttempt,
@@ -21542,6 +21593,33 @@ export function heartbeatService(
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
       });
+      // Issues bound to one isolated/operator worktree (e.g. a sub-ticket that
+      // opted in to reuse its parent's) take turns: the later run is parked as
+      // a workspace_busy retry rather than colliding on the checked-out branch.
+      if (
+        issueRef &&
+        reusableExistingExecutionWorkspace &&
+        reusableExistingExecutionWorkspace.mode !== "shared_workspace"
+      ) {
+        const executionWorkspaceHolder = await findExecutionWorkspaceHolder({
+          companyId: agent.companyId,
+          executionWorkspaceId: reusableExistingExecutionWorkspace.id,
+          excludeIssueId: issueRef.id,
+          excludeRunId: run.id,
+        });
+        if (executionWorkspaceHolder) {
+          throw new WorkspaceBusyDeferral({
+            holder: executionWorkspaceHolder,
+            projectWorkspaceId: issueRef.projectWorkspaceId ?? null,
+            executionWorkspaceId: reusableExistingExecutionWorkspace.id,
+            deferralAttempt:
+              run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+                ? (run.scheduledRetryAttempt ?? 0)
+                : 0,
+            wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+          });
+        }
+      }
       // A live holder is always consulted for shared workspaces. Depending on policy and the final
       // execution target it either remains the existing deferral gate or becomes dispatch context.
       // Local/SSH folders never take an exclusive workspace lock, including when older
