@@ -12,7 +12,7 @@ on:
         required: true
         type: string
   push:
-    branches: [development]
+    branches: [development, feat/PAR-6866-fork-core-overlay-ci]
 
 permissions:
   contents: write
