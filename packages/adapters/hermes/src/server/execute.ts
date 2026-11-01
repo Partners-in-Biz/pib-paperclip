@@ -470,6 +470,7 @@ export async function execute(
   // its own tokens only. If Hermes' store is readable and no longer has the
   // session (it prunes ended sessions after 90 days), Hermes would stop with
   // "Session not found" on every wake: start a new session instead.
+  // Same env for the baseline and the post-run read, so they cannot drift.
   const userConfigEnv = config.env as Record<string, string> | undefined;
   const hermesStoreEnv: Record<string, string | undefined> = {
     ...process.env,
@@ -703,7 +704,7 @@ export async function execute(
   // The regexes above never match current Hermes output and read prose as cost.
   // Take the session id from the lines Hermes prints, and tokens and cost from
   // its own session record.
-  const metered = await resolveRun(result.stdout || "", result.stderr || "", env, resumeBaseline);
+  const metered = await resolveRun(result.stdout || "", result.stderr || "", hermesStoreEnv, resumeBaseline);
   parsed.sessionId = metered.sessionId ?? undefined;
   parsed.usage = metered.usage;
   parsed.costUsd = metered.costUsd;
