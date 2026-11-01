@@ -288,7 +288,7 @@ d("skill evals (Postgres)", () => {
       expect(await listResults(w.ctx, A, SKILL)).toEqual([]);
     });
 
-    it("parses evals/agents/results.json (enforce off, minPassRate 0.8)", async () => {
+    it("parses evals/agents/results.json (enforce off, minPassRate 0.8, B8 baselines)", async () => {
       // Parse the committed results file from the real location
       const resultsPath = join(fileURLToPath(new URL(".", import.meta.url)), "../evals/agents/results.json");
       const content = readFileSync(resultsPath, "utf8");

@@ -138,7 +138,7 @@ describeEmbeddedPostgres("companyService", () => {
       status: "paused",
       assigneeAgentId: enabled.agentId,
       originKind: "built_in_agent_bundle",
-      originId: "reflection-coach:recent-agent-reflection",
+      originId: "reflection-coach:nightly-dreaming",
     });
     const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
     expect(trigger).toMatchObject({

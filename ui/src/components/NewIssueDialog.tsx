@@ -195,7 +195,9 @@ import {
   type IssueModelLane,
 } from "../lib/issue-assignee-overrides";
 
-const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
+// Any file type: WhatsApp voice notes (.opus), video, Office docs, archives, etc.
+// The server decides what is allowed; the picker must not hide files that drag-and-drop accepts.
+const STAGED_FILE_ACCEPT: string | undefined = undefined;
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [

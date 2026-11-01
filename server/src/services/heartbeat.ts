@@ -360,6 +360,19 @@ import {
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 import {
+  BLOCKED_TICKET_NO_WAKE_REASON,
+  evaluateTicketHourlyRunCap,
+  isHumanBoardActor,
+  ISSUE_RUN_CAP_SKIP_REASON,
+  shouldStartQueuedIssueRun,
+  shouldWakeBlockedTicket,
+  isTicketRunCapExempt,
+} from "./issue-wake-guards.js";
+import {
+  loadTicketRunCapState,
+  recordWakeLoopFlag,
+} from "./issue-wake-guard-store.js";
+import {
   logActivity,
   publishPluginDomainEvent,
   type LogActivityInput,
@@ -568,6 +581,7 @@ import {
 import {
   readPaperclipSkillSyncPreference,
   selectPaperclipTaskMarkdown,
+  sessionCheckpointResumeEnabled,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
@@ -5627,6 +5641,81 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+/**
+ * issue_assigned resets the session so a brand-new pickup does not inherit
+ * another ticket. A same-issue re-wake already has a task session; discarding
+ * it starts the whole task over. forceFreshSession still wins.
+ */
+export function shouldKeepTaskSessionCheckpoint(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  hasExistingTaskSession: boolean,
+) {
+  if (!hasExistingTaskSession) return false;
+  if (contextSnapshot?.forceFreshSession === true) return false;
+  return readNonEmptyString(contextSnapshot?.wakeReason) === "issue_assigned";
+}
+
+/**
+ * Adapters key only on paperclipCheckpointResume. Set it when the flag is on and
+ * the wake rotates with a handoff or keeps a task session; with the flag off the
+ * key is removed so every adapter takes the old full-brief path.
+ */
+export function applyCheckpointResumeContext(
+  context: Record<string, unknown>,
+  input: { enabled: boolean; rotated: boolean; keptCheckpoint: boolean },
+) {
+  if (input.enabled && (input.rotated || input.keptCheckpoint)) {
+    context.paperclipCheckpointResume = true;
+  } else {
+    delete context.paperclipCheckpointResume;
+  }
+}
+
+export type EarlySessionCheckpoint = {
+  params: Record<string, unknown>;
+  displayId: string;
+};
+
+/** Params for the task-session row written when an adapter reports its session id mid-run. */
+export function buildEarlySessionCheckpoint(input: {
+  enabled: boolean;
+  adapterType: string;
+  sessionId: string;
+  cwd: string | null;
+  configuredModel: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[1];
+  sessionConfigMetadata: Parameters<typeof attachPaperclipSessionMetadataToSessionParams>[2];
+}): EarlySessionCheckpoint | null {
+  if (!input.enabled) return null;
+  if (!isCanonicalSessionIdForAdapter(input.adapterType, input.sessionId)) return null;
+  const displayId = truncateDisplayId(input.sessionId);
+  if (!displayId) return null;
+  const params = attachPaperclipSessionMetadataToSessionParams(
+    { sessionId: input.sessionId, ...(input.cwd ? { cwd: input.cwd } : {}) },
+    input.configuredModel,
+    input.sessionConfigMetadata,
+  );
+  if (!params) return null;
+  return { params, displayId };
+}
+
+/** A failed run that returned no session id keeps the checkpoint written mid-run. */
+export function selectPersistedEarlyCheckpoint(
+  early: EarlySessionCheckpoint | null,
+  nextSessionState: { params: unknown; displayId: unknown },
+): EarlySessionCheckpoint | null {
+  return early && !nextSessionState.params && !nextSessionState.displayId ? early : null;
+}
+
+/** A mid-run checkpoint must survive a kill that never returns a new session id. */
+export function shouldClearTaskSessionAfterRun(input: {
+  clearSession: boolean;
+  hasNextSession: boolean;
+  hasEarlyCheckpoint: boolean;
+}) {
+  if (input.clearSession) return true;
+  return !input.hasNextSession && !input.hasEarlyCheckpoint;
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -7871,6 +7960,49 @@ export async function buildPaperclipWakePayload(input: {
     if (attachments?.length) comment.attachments = attachments;
   }
 
+  // Files attached to the task itself (dropped into the New Task dialog or the
+  // issue's attachment area) have no issueCommentId, so the comment lookup above
+  // never sees them. Surface them on the issue so agents don't report an
+  // "empty" task when the request is actually a voice note, video or document.
+  const issueLevelAttachmentRows =
+    !issueId || conversationMode
+      ? []
+      : await input.db
+          .select({
+            id: issueAttachments.id,
+            filename: assets.originalFilename,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+          })
+          .from(issueAttachments)
+          .innerJoin(
+            assets,
+            and(
+              eq(issueAttachments.assetId, assets.id),
+              eq(assets.companyId, input.companyId),
+            ),
+          )
+          .where(
+            and(
+              eq(issueAttachments.companyId, input.companyId),
+              eq(issueAttachments.issueId, issueId),
+              isNull(issueAttachments.issueCommentId),
+            ),
+          )
+          .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
+          .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
+  const issueLevelAttachmentsTruncated =
+    issueLevelAttachmentRows.length > MAX_INLINE_WAKE_ATTACHMENTS;
+  const issueLevelAttachments = issueLevelAttachmentRows
+    .slice(0, MAX_INLINE_WAKE_ATTACHMENTS)
+    .map((attachment) => ({
+      id: attachment.id,
+      filename: attachment.filename?.trim() || "attachment",
+      contentType: attachment.contentType,
+      byteSize: attachment.byteSize,
+      contentPath: `/api/attachments/${attachment.id}/content`,
+    }));
+
   const annotationDeltas =
     annotationCommentId && issueId
       ? await input.db
@@ -8070,6 +8202,8 @@ export async function buildPaperclipWakePayload(input: {
           title: issueSummary.title,
           description: inlineIssueDescription,
           descriptionTruncated: issueDescriptionTruncated,
+          attachments: issueLevelAttachments,
+          attachmentsTruncated: issueLevelAttachmentsTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
@@ -8511,6 +8645,22 @@ function buildRunEventRuntimeProgress(input: {
   };
 }
 
+function readWakeIssueAttachments(issue: unknown) {
+  const raw = parseObject(issue).attachments;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((attachment) => {
+    const descriptor = parseObject(attachment);
+    const id = readNonEmptyString(descriptor.id);
+    const filename = readNonEmptyString(descriptor.filename);
+    const contentType = readNonEmptyString(descriptor.contentType);
+    const contentPath = readNonEmptyString(descriptor.contentPath);
+    const byteSize = descriptor.byteSize;
+    return id && filename && contentType && contentPath && typeof byteSize === "number"
+      ? [{ id, filename, contentType, byteSize, contentPath }]
+      : [];
+  });
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -8519,6 +8669,14 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
+    attachments?: Array<{
+      id: string;
+      filename: string;
+      contentType: string;
+      byteSize: number;
+      contentPath: string;
+    }> | null;
+    attachmentsTruncated?: boolean;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -8762,6 +8920,29 @@ export function buildPaperclipTaskMarkdown(input: {
       input.includeDescription === false || issue.conversationAgentId ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    if (!issue.conversationAgentId && issue.attachments?.length) {
+      lines.push(
+        "",
+        "Files attached to this task (part of the request, read them before answering; a task with only a title and an attachment is NOT empty):",
+      );
+      for (const attachment of issue.attachments) {
+        lines.push(
+          `- ${JSON.stringify({
+            id: attachment.id,
+            filename: attachment.filename,
+            contentType: attachment.contentType,
+            byteSize: attachment.byteSize,
+            contentPath: input.nativeRunner ? undefined : attachment.contentPath,
+          })}`,
+        );
+      }
+      if (issue.attachmentsTruncated) {
+        lines.push("- (more attachments exist: list them with GET /api/issues/{issueId}/attachments)");
+      }
+      lines.push(
+        "Download each with the Paperclip API (GET the contentPath with your run auth) and process it with `handle-attachment --attachment <id>` (see the transcribe-audio skill): transcribe audio/voice notes, sample frames and transcribe video, extract text from PDF/Office docs, view images.",
+      );
     }
     if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
       lines.push(
@@ -17237,12 +17418,24 @@ export function heartbeatService(
       if (settlingOwner) return null;
     }
     if (issueId) {
+      const wakeRequest = run.wakeupRequestId
+        ? await db
+            .select({
+              requestedByActorType: agentWakeupRequests.requestedByActorType,
+              reason: agentWakeupRequests.reason,
+            })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const humanWake = isHumanBoardActor(wakeRequest?.requestedByActorType ?? null);
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,
         issueId,
       );
       const treeHoldInteractionWake =
         activePauseHold &&
+        humanWake &&
         (await isVerifiedIssueTreeControlInteractionWake(db, {
           companyId: run.companyId,
           issueId,
@@ -17281,6 +17474,84 @@ export function heartbeatService(
         return null;
       }
 
+      const [startIssue] = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
+        )
+        .limit(1);
+      const startWakeReason =
+        readNonEmptyString(context.wakeReason) ??
+        readNonEmptyString(context.reason) ??
+        wakeRequest?.reason ??
+        null;
+      const startDecision = shouldStartQueuedIssueRun({
+        issueStatus: startIssue?.status ?? null,
+        paused: false,
+        assigneeAgentId: startIssue?.assigneeAgentId ?? null,
+        runAgentId: run.agentId,
+        wakeReason: startWakeReason,
+        humanWake,
+        blockerClearedWake:
+          startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+        assigneeMismatchExempt:
+          isNonAssigneeWorkspaceBusyRetry(
+            readNonEmptyString(context.retryReason),
+            context,
+          ) ||
+          (
+            // The wakeup route copies a client-supplied reason. Only a
+            // system actor may use the review-participant recovery reason
+            // to skip the assignee check. Server recovery sets that actor.
+            (wakeRequest?.requestedByActorType ?? null) === "system" &&
+            (
+              readNonEmptyString(context.retryReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON ||
+              readNonEmptyString(context.wakeReason) ===
+                EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
+            )
+          ),
+      });
+      if (!startIssue || !startDecision.start) {
+        if (startIssue && startDecision.reason === "blocked") {
+          const blockedReadiness = await issuesSvc.listDependencyReadiness(
+            run.companyId,
+            [issueId],
+          );
+          const blockedUnresolved =
+            blockedReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+          if (blockedUnresolved > 0) {
+            await cancelQueuedRunForBlockedDependencies(
+              run,
+              issueId,
+              blockedReadiness.get(issueId)?.unresolvedBlockerIssueIds ?? [],
+            );
+            logger.info(
+              { runId: run.id, issueId, unresolvedBlockerCount: blockedUnresolved },
+              "claimQueuedRun: cancelled blocked queued run with open dependencies",
+            );
+            return null;
+          }
+        }
+        const startStopReason =
+          !startIssue ||
+          startDecision.reason === "ok" ||
+          startDecision.reason === "paused"
+            ? "missing"
+            : startDecision.reason;
+        await cancelQueuedRunBeforeStart(run, issueId, startStopReason);
+        logger.info(
+          { runId: run.id, issueId, reason: startDecision.reason },
+          "claimQueuedRun: cancelled doomed queued run",
+        );
+        return null;
+      }
+
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(
         run.companyId,
         [issueId],
@@ -17289,9 +17560,12 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
-          context,
-          ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+        !(
+          humanWake &&
+          allowsIssueInteractionWake(
+            context,
+            ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          )
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -17302,6 +17576,46 @@ export function heartbeatService(
         logger.info(
           { runId: run.id, issueId, unresolvedBlockerCount },
           "claimQueuedRun: cancelled blocked queued run",
+        );
+        return null;
+      }
+
+      const capNow = new Date();
+      const claimCapExempt = isTicketRunCapExempt({
+        retryOfRunId: readNonEmptyString(context.retryOfRunId),
+        wakeReason: startWakeReason,
+        requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+      });
+      const capState = claimCapExempt
+        ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
+        : await loadTicketRunCapState(db, {
+            companyId: run.companyId,
+            issueId,
+            now: capNow,
+            excludeRunId: run.id,
+          });
+      const capDecision = claimCapExempt
+        ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+        : evaluateTicketHourlyRunCap(capState);
+      if (!capDecision.allow) {
+        if (capDecision.flag) {
+          await recordWakeLoopFlag(db, {
+            companyId: run.companyId,
+            issueId,
+            agentId: run.agentId,
+            runsStartedInWindow: capState.runsStartedInWindow,
+            now: capNow,
+          });
+        }
+        await cancelQueuedRunBeforeStart(run, issueId, "capped");
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            runsStartedInWindow: capState.runsStartedInWindow,
+            flagged: capDecision.flag,
+          },
+          "claimQueuedRun: skipped by ticket hourly run cap",
         );
         return null;
       }
@@ -17933,6 +18247,75 @@ export function heartbeatService(
       },
     });
 
+    return cancelled;
+  }
+
+  async function cancelQueuedRunBeforeStart(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    reason: "cancelled" | "blocked" | "reassigning" | "missing" | "capped",
+  ) {
+    const now = new Date();
+    const message =
+      reason === "cancelled"
+        ? "Cancelled before start: ticket is cancelled"
+        : reason === "blocked"
+          ? "Cancelled before start: blocked tickets start only for a human comment or a cleared blocker"
+          : reason === "reassigning"
+            ? "Cancelled before start: ticket is being reassigned"
+            : reason === "capped"
+              ? "Cancelled before start: ticket already had 3 runs in the rolling hour"
+              : "Cancelled before start: ticket was not found";
+    const errorCode =
+      reason === "cancelled"
+        ? "issue_cancelled"
+        : reason === "blocked"
+          ? "issue_blocked"
+          : reason === "reassigning"
+            ? "issue_assignee_changed"
+            : reason === "capped"
+              ? ISSUE_RUN_CAP_SKIP_REASON
+              : "issue_execution_issue_not_found";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: message,
+      errorCode,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: errorCode,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "wake_guard",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: message,
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+    await appendRunEvent(cancelled, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message,
+      payload: { issueId, reason, errorCode },
+    });
     return cancelled;
   }
 
@@ -20844,6 +21227,10 @@ export function heartbeatService(
               workMode: issueRef.workMode,
               conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
+              attachments: readWakeIssueAttachments(paperclipWakePayload?.issue),
+              attachmentsTruncated:
+                (paperclipWakePayload?.issue as { attachmentsTruncated?: unknown } | null | undefined)
+                  ?.attachmentsTruncated === true,
             }
           : null,
         ancestors: issueAncestors,
@@ -21455,7 +21842,15 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
-      const wakeSessionResetReason = describeSessionResetReason(context);
+      const keepTaskSessionCheckpoint =
+        sessionCheckpointResumeEnabled() &&
+        shouldKeepTaskSessionCheckpoint(
+          context,
+          taskSession != null,
+        );
+      const wakeSessionResetReason = keepTaskSessionCheckpoint
+        ? null
+        : describeSessionResetReason(context);
       const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,
         configuredModel,
@@ -21467,7 +21862,8 @@ export function heartbeatService(
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
       const resetTaskSession =
-        shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+        sessionConfigFreshness.reset ||
+        (shouldResetTaskSessionForWake(context) && !keepTaskSessionCheckpoint);
       const sessionResetReason =
         sessionConfigFreshness.reasons.join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
@@ -22632,7 +23028,7 @@ export function heartbeatService(
         previousSessionDisplayId = null;
         if (sessionCompaction.reason) {
           runtimeWorkspaceWarnings.push(
-            `Starting a fresh session because ${sessionCompaction.reason}.`,
+            `Rotating session because ${sessionCompaction.reason}. Continuing from the checkpoint handoff, not a full rerun.`,
           );
         }
       } else {
@@ -22640,6 +23036,11 @@ export function heartbeatService(
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
       }
+      applyCheckpointResumeContext(context, {
+        enabled: sessionCheckpointResumeEnabled(),
+        rotated: sessionCompaction.rotate,
+        keptCheckpoint: keepTaskSessionCheckpoint,
+      });
 
       const taskSessionCredentialCompatible = isTaskSessionCredentialCompatible(
         taskSession?.sessionParamsJson,
@@ -22710,6 +23111,12 @@ export function heartbeatService(
 
       let handle: RunLogHandle | null = null;
       const goalCheckpointSession: {
+        current: {
+          params: Record<string, unknown>;
+          displayId: string;
+        } | null;
+      } = { current: null };
+      const earlySessionCheckpoint: {
         current: {
           params: Record<string, unknown>;
           displayId: string;
@@ -24379,6 +24786,29 @@ export function heartbeatService(
                     runtimeMcp,
                     runtimeTools,
                     onLog,
+                    onSessionCheckpoint: async (checkpoint: { sessionId: string }) => {
+                      if (!taskKey) return;
+                      const early = buildEarlySessionCheckpoint({
+                        enabled: sessionCheckpointResumeEnabled(),
+                        adapterType: agent.adapterType,
+                        sessionId: checkpoint.sessionId,
+                        cwd: executionWorkspace?.cwd ?? null,
+                        configuredModel,
+                        sessionConfigMetadata,
+                      });
+                      if (!early) return;
+                      await upsertTaskSession({
+                        companyId: agent.companyId,
+                        agentId: agent.id,
+                        adapterType: agent.adapterType,
+                        taskKey,
+                        sessionParamsJson: early.params,
+                        sessionDisplayId: early.displayId,
+                        lastRunId: run.id,
+                        lastError: null,
+                      });
+                      earlySessionCheckpoint.current = early;
+                    },
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
                     startupTraceContext: getStartupTraceContext(),
@@ -25313,9 +25743,18 @@ export function heartbeatService(
             normalizedUsage,
           );
           if (taskKey) {
+            const persistedCheckpoint = selectPersistedEarlyCheckpoint(
+              earlySessionCheckpoint.current,
+              nextSessionState,
+            );
             if (
-              adapterResult.clearSession ||
-              (!nextSessionState.params && !nextSessionState.displayId)
+              shouldClearTaskSessionAfterRun({
+                clearSession: adapterResult.clearSession === true,
+                hasNextSession: Boolean(
+                  nextSessionState.params || nextSessionState.displayId,
+                ),
+                hasEarlyCheckpoint: earlySessionCheckpoint.current != null,
+              })
             ) {
               await clearTaskSessions(agent.companyId, agent.id, {
                 taskKey,
@@ -25330,11 +25769,12 @@ export function heartbeatService(
                 taskKey,
                 sessionParamsJson:
                   attachPaperclipSessionMetadataToSessionParams(
-                    nextSessionState.params,
+                    persistedCheckpoint?.params ?? nextSessionState.params,
                     configuredModel,
                     sessionConfigMetadata,
                   ),
-                sessionDisplayId: nextSessionState.displayId,
+                sessionDisplayId:
+                  persistedCheckpoint?.displayId ?? nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,
               });
@@ -25647,7 +26087,8 @@ export function heartbeatService(
 
           if (
             taskKey &&
-            (goalCheckpointSession.current ||
+            (earlySessionCheckpoint.current ||
+              goalCheckpointSession.current ||
               previousSessionParams ||
               previousSessionDisplayId ||
               taskSession)
@@ -25658,6 +26099,7 @@ export function heartbeatService(
               adapterType: agent.adapterType,
               taskKey,
               sessionParamsJson:
+                earlySessionCheckpoint.current?.params ??
                 goalCheckpointSession.current?.params ??
                 attachPaperclipSessionMetadataToSessionParams(
                   previousSessionParams,
@@ -25665,6 +26107,7 @@ export function heartbeatService(
                   sessionConfigMetadata,
                 ),
               sessionDisplayId:
+                earlySessionCheckpoint.current?.displayId ??
                 goalCheckpointSession.current?.displayId ??
                 previousSessionDisplayId,
               lastRunId: failedRun.id,
@@ -26998,6 +27441,119 @@ export function heartbeatService(
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
           }
 
+          const enqueueWakeReason =
+            reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason);
+          const blockedTicketWake = shouldWakeBlockedTicket({
+            issueStatus: issue.status,
+            wakeReason: enqueueWakeReason,
+            requestedByActorType: opts.requestedByActorType ?? null,
+          });
+          const guardRejectsCurrentState = Boolean(
+            opts.issueStateGuard &&
+            (
+              !opts.issueStateGuard.statuses.includes(issue.status) ||
+              issue.assigneeAgentId !== opts.issueStateGuard.assigneeAgentId ||
+              (opts.issueStateGuard.statusVersion !== undefined &&
+                issue.statusVersion !== opts.issueStateGuard.statusVersion)
+            ),
+          );
+          // A rejecting guard must record issue_state_guard_mismatch. Callers
+          // whose guard accepts the current status still hit the cancelled
+          // and blocked policy below.
+          if (
+            !guardRejectsCurrentState &&
+            ((issue.status === "cancelled" &&
+              !isHumanBoardActor(opts.requestedByActorType)) ||
+              !blockedTicketWake.wake)
+          ) {
+            const skippedBecauseCancelled =
+              issue.status === "cancelled" && blockedTicketWake.wake;
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: skippedBecauseCancelled
+                ? "issue_cancelled"
+                : BLOCKED_TICKET_NO_WAKE_REASON,
+              payload,
+              status: "skipped",
+              error: skippedBecauseCancelled
+                ? "Skipped: ticket is cancelled"
+                : "Skipped: blocked ticket wakes only for a human comment or a cleared blocker",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            logger.info(
+              {
+                agentId,
+                issueId: issue.id,
+                wakeReason: enqueueWakeReason,
+                issueStatus: issue.status,
+              },
+              skippedBecauseCancelled
+                ? "enqueueWakeup: skipped cancelled-ticket wake"
+                : "enqueueWakeup: skipped blocked-ticket wake",
+            );
+            return { kind: "skipped" as const };
+          }
+
+          const capNow = new Date();
+          const capExempt = isTicketRunCapExempt({
+            retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId),
+            wakeReason: enqueueWakeReason,
+            requestedByActorType: opts.requestedByActorType ?? null,
+          });
+          const capState = capExempt
+            ? { runsStartedInWindow: 0, alreadyFlaggedInWindow: false }
+            : await loadTicketRunCapState(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                now: capNow,
+              });
+          const capDecision = capExempt
+            ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
+            : evaluateTicketHourlyRunCap(capState);
+          if (!capDecision.allow) {
+            if (capDecision.flag) {
+              await recordWakeLoopFlag(tx as unknown as Db, {
+                companyId: agent.companyId,
+                issueId: issue.id,
+                agentId,
+                runsStartedInWindow: capState.runsStartedInWindow,
+                now: capNow,
+              });
+            }
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: ISSUE_RUN_CAP_SKIP_REASON,
+              payload,
+              status: "skipped",
+              error: "Skipped: ticket already had 3 runs in the rolling hour",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: capNow,
+            });
+            logger.info(
+              {
+                agentId,
+                issueId: issue.id,
+                runsStartedInWindow: capState.runsStartedInWindow,
+                flagged: capDecision.flag,
+              },
+              "enqueueWakeup: skipped by ticket hourly run cap",
+            );
+            return { kind: "skipped" as const };
+          }
+
           let reconciledSourceRunId: string | null = null;
           let reconciledRestoreRetryCount: number | null = null;
           if (executionReconciliationWake) {
@@ -27507,6 +28063,7 @@ export function heartbeatService(
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
+            isHumanBoardActor(opts.requestedByActorType) &&
             allowsIssueInteractionWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,

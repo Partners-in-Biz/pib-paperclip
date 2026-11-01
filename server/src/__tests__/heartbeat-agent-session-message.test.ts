@@ -14,6 +14,13 @@ describe("agent session wake messages", () => {
         select: () => ({
           from: () => ({
             where: async () => [],
+            innerJoin: () => ({
+              where: () => ({
+                orderBy: () => ({
+                  limit: async () => [],
+                }),
+              }),
+            }),
           }),
         }),
       } as never,

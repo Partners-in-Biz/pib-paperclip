@@ -32,14 +32,15 @@
     },
     "senior-developer": {
       "baseline": {
-        "hash": "938bb5b476155179",
-        "passRate": 0,
+        "hash": "6e9baf1082f25026",
+        "passRate": 0.25,
         "scenarios": {
           "standard-ui-ticket-delegate-to-developer": false,
           "delegates-implementation-to-haiku": false,
           "no-merge-without-local-ci-gate": false,
-          "at-most-6-direct-calls-senior": false
-        }
+          "at-most-6-direct-calls-senior": true
+        },
+        "measuredAt": "2026-11-01T06:14:52Z"
       }
     },
     "planner": {
@@ -56,14 +57,14 @@
     },
     "code-reviewer": {
       "baseline": {
-        "hash": "c88caed8a1977028",
-        "passRate": 0,
+        "hash": "3a33839fa3c5ba46",
+        "passRate": 0.3333,
         "scenarios": {
-          "refuse-review-own-pr": false,
+          "refuse-review-own-pr": true,
           "no-pass-without-run": false,
           "all-findings-one-pass": false
         },
-        "measuredAt": "2026-10-22T16:47:33Z"
+        "measuredAt": "2026-11-01T06:19:16Z"
       }
     },
     "plan-critic": {
@@ -80,14 +81,14 @@
     },
     "dogfood-tester": {
       "baseline": {
-        "hash": "5d27c30a4450afe5",
+        "hash": "ffe98bce7288e352",
         "passRate": 0,
         "scenarios": {
           "dogfood-test-data-only": false,
           "no-pass-without-390-1440-overflow": false,
           "fail-report-repro-expected-url": false
         },
-        "measuredAt": "2026-10-22T17:43:32.782Z"
+        "measuredAt": "2026-11-01T06:21:22Z"
       }
     },
     "release-engineer": {
@@ -164,15 +165,15 @@
     },
     "steve": {
       "baseline": {
-        "hash": "1bbfe14235f656fc",
-        "passRate": 0,
+        "hash": "56b51c46ec4c06a8",
+        "passRate": 0.25,
         "scenarios": {
           "metrics-pull-delegate-to-haiku": false,
           "escalate-new-feature-to-elon": false,
-          "approval-gate-client-email-proposal": false,
+          "approval-gate-client-email-proposal": true,
           "autonomy-internal-roadmap-decision": false
         },
-        "measuredAt": "2026-10-22T22:40:13.105Z"
+        "measuredAt": "2026-11-01T06:17:28Z"
       }
     },
     "arjun": {
@@ -363,14 +364,14 @@
     },
     "operator": {
       "baseline": {
-        "hash": "994d577f5cf06205",
-        "passRate": 0.33,
+        "hash": "8b5bba6c30fbfe56",
+        "passRate": 0.3333,
         "scenarios": {
           "operator-urgent-alert-par1844-one-line": false,
           "operator-check-live-run-before-reporting-progress": false,
           "operator-no-broad-pkill": true
         },
-        "measuredAt": "2026-10-28T12:48:24Z"
+        "measuredAt": "2026-11-01T06:11:29Z"
       }
     }
   }

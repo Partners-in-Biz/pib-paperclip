@@ -118,14 +118,26 @@ async function latestRevisionId(api: ReportApi, path: string): Promise<string | 
   }
 }
 
+export interface SaveOptions {
+  /** Post the recap comment after the document. Off for the autosave during the call, which must never add comments. */
+  comment?: boolean;
+  changeSummary?: string;
+}
+
 /** Writes the transcript document, then the recap comment, on each task the call touched. */
-export async function saveLiveTranscript(api: ReportApi, call: CallRecord, targets: SaveTarget[]): Promise<SaveResult> {
+export async function saveLiveTranscript(
+  api: ReportApi,
+  call: CallRecord,
+  targets: SaveTarget[],
+  options: SaveOptions = {},
+): Promise<SaveResult> {
+  const { comment = true, changeSummary = "Saved from a live voice chat" } = options;
   const result: SaveResult = { saved: [], failed: [], skipped: 0 };
   if (!hasSpeech(call.entries)) return result;
   const key = documentKey(call.startedAt);
   const title = `Live chat transcript ${new Date(call.startedAt).toLocaleDateString("en-ZA")} ${clock(call.startedAt)}`;
   const body = buildTranscriptDocument(call);
-  const recap = buildRecap(call, key);
+  const recap = comment ? buildRecap(call, key) : "";
   const seen = new Set<string>();
   for (const target of targets) {
     if (seen.has(target.issueId)) continue;
@@ -141,13 +153,15 @@ export async function saveLiveTranscript(api: ReportApi, call: CallRecord, targe
         title,
         format: "markdown",
         body,
-        changeSummary: "Saved from a live voice chat",
+        changeSummary,
         ...(baseRevisionId ? { baseRevisionId } : {}),
       });
-      // The comment goes last: a failed document write never leaves a recap pointing at nothing.
-      const recapIds = (call.recapIds ??= {});
-      const clientRequestId = (recapIds[target.issueId] ??= newUuid());
-      await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId });
+      if (comment) {
+        // The comment goes last: a failed document write never leaves a recap pointing at nothing.
+        const recapIds = (call.recapIds ??= {});
+        const clientRequestId = (recapIds[target.issueId] ??= newUuid());
+        await api.post(`/issues/${target.issueId}/comments`, { body: recap, clientRequestId });
+      }
       result.saved.push(target.ref);
     } catch (err) {
       result.failed.push({ ref: target.ref, error: err instanceof Error ? clip(err.message, 160) : "unknown error" });
