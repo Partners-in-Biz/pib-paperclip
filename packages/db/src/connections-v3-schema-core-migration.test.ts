@@ -39,6 +39,8 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     // AI pools) add FKs on connection_grants and on the composite
     // tool_connections key that 0182 recreates. Rewind them by discovery, so a
     // new dependent table never needs a CASCADE here, and restore them after.
+    // The two-column filter may match FKs unrelated to the 0182 key. That is
+    // harmless: every FK is restored verbatim.
     const laterForeignKeys = await sql<{ table: string; name: string; definition: string }[]>`
       SELECT conrelid::regclass::text AS "table", conname AS name, pg_get_constraintdef(oid) AS definition
       FROM pg_constraint
@@ -49,6 +51,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
           'connection_grants', 'connection_grant_members', 'connection_grant_delegations',
           'ai_provider_defaults', 'ai_connection_defaults', 'chat_endpoints'
         )
+      ORDER BY conrelid::regclass::text, conname
     `;
     expect(laterForeignKeys.map((fk) => fk.name)).toEqual(
       expect.arrayContaining([
@@ -96,7 +99,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
       await sql.unsafe(`ALTER TABLE ${table} ADD CONSTRAINT "${name}" ${definition}`);
     }
 
-    const [connection] =await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
+    const [connection] = await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
       SELECT "uid", "ownership", "transport", "auth_kind" FROM "tool_connections" WHERE "id" = ${connectionId}
     `;
     expect(connection).toMatchObject({ ownership: "customer", transport: "mcp_remote", auth_kind: "oauth" });
