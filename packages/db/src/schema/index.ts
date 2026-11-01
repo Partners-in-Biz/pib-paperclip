@@ -220,3 +220,22 @@ export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_task_handoffs
 export { toolConnectionAppSnapshots, toolConnectionAppSyncs } from "./tool_connection_app_state.js";
 export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
 export { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins } from "./ai_connection_pools.js";
+export {
+  browserUseSessions,
+  browserUseRuns,
+  browserUseBrowsers,
+  browserUseSettings,
+} from "./browser_use.js";
+export { companySkillSources, companySkillSourceEntries } from "./company_skill_sources.js";
+export {
+  mcpOauthClients,
+  mcpOauthGrants,
+  mcpOauthRequests,
+  mcpOauthTokens,
+  mcpOauthDeviceRequests,
+  mcpOauthMetadataAdmissions,
+  mcpMutationReceipts,
+  mcpEventSubscriptions,
+  mcpEventDeliveries,
+  mcpEventAdmissions,
+} from "./mcp_oauth.js";
