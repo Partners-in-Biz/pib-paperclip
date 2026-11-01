@@ -210,3 +210,13 @@ export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export { aiProviderDefaults } from "./ai_provider_defaults.js";
 export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
+export { runnerApiResponseReservations } from "./runner_api_response_reservations.js";
+export {
+  agentInstructionRevisions,
+  agentInstructionHeads,
+  agentInstructionWorkingCopies,
+} from "./agent_instructions.js";
+export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_task_handoffs.js";
+export { toolConnectionAppSnapshots, toolConnectionAppSyncs } from "./tool_connection_app_state.js";
+export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
+export { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins } from "./ai_connection_pools.js";
