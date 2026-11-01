@@ -1,11 +1,12 @@
 /**
  * Server-side execution logic for the Hermes Agent adapter.
  *
- * Spawns `hermes chat -q "..." -Q` as a child process, streams output,
+ * Spawns `hermes chat --query-file <file> -Q` as a child process, streams output,
  * and returns structured results to Paperclip.
  *
  * Verified CLI flags (hermes chat):
- *   -q/--query         single query (non-interactive)
+ *   -q/--query         single query (non-interactive); small-prompt fallback only
+ *   --query-file       read the query from a file (prompts over 128 KB do not fit argv)
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -55,6 +56,7 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
+import { guardEnvStrings, prepareQuery } from "./query-file.js";
 import {
   formatHermesStreamEventForLog,
   isPlausibleHermesSessionId,
@@ -478,7 +480,10 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // -Q is always used (see file header): quiet mode, response + session_id only.
   // config.quiet used to gate this and defaulted false, which leaked `Query:`.
-  const args: string[] = ["chat", "-q", prompt, "-Q"];
+  // The prompt can be over 128 KB; one argv string that long fails with spawn
+  // E2BIG, so Hermes reads it from a private file (--query-file).
+  const query = await prepareQuery(prompt);
+  const args: string[] = ["chat", ...query.args, "-Q"];
 
   if (model) {
     args.push("-m", model);
@@ -638,14 +643,28 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  // Never start Hermes with an environment string the kernel refuses; remove
+  // the query file once the process ends.
+  for (const dropped of guardEnvStrings(env)) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Warning: left out environment variable ${dropped.key} (${dropped.bytes} bytes is over the kernel limit for one string)\n`,
+    );
+  }
+  await ctx.onLog("stdout", `[hermes] Prompt: ${query.bytes} bytes via ${query.via}\n`);
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    await query.cleanup();
+  }
   if (streamBuffer.trim()) {
     await forwardStdoutLines("\n", true);
   }
