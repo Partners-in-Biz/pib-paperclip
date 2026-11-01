@@ -35,6 +35,31 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     expect(chatForeignKey?.definition).toBeTruthy();
     await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
 
+    // Later migrations (0290 browser-use, 0295/0296 app snapshots and syncs, 0299
+    // AI pools) add FKs on connection_grants and on the composite
+    // tool_connections key that 0182 recreates. Rewind them by discovery, so a
+    // new dependent table never needs a CASCADE here, and restore them after.
+    const laterForeignKeys = await sql<{ table: string; name: string; definition: string }[]>`
+      SELECT conrelid::regclass::text AS "table", conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE contype = 'f'
+        AND (confrelid = 'connection_grants'::regclass
+          OR (confrelid = 'tool_connections'::regclass AND array_length(conkey, 1) = 2))
+        AND conrelid::regclass::text NOT IN (
+          'connection_grants', 'connection_grant_members', 'connection_grant_delegations',
+          'ai_provider_defaults', 'ai_connection_defaults', 'chat_endpoints'
+        )
+    `;
+    expect(laterForeignKeys.map((fk) => fk.name)).toEqual(
+      expect.arrayContaining([
+        "browser_use_sessions_grant_id_connection_grants_id_fk",
+        "browser_use_settings_grant_id_connection_grants_id_fk",
+      ]),
+    );
+    for (const { table, name } of laterForeignKeys) {
+      await sql.unsafe(`ALTER TABLE ${table} DROP CONSTRAINT "${name}"`);
+    }
+
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     // AI defaults arrive in 0273/0277 and depend on the composite grant key
     // from 0232. Rewind those tables before recreating the 0182 grant schema.
@@ -67,8 +92,11 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql.unsafe(
       `ALTER TABLE "chat_endpoints" ADD CONSTRAINT "chat_endpoints_company_connection_fk" ${chatForeignKey!.definition}`,
     );
+    for (const { table, name, definition } of laterForeignKeys) {
+      await sql.unsafe(`ALTER TABLE ${table} ADD CONSTRAINT "${name}" ${definition}`);
+    }
 
-    const [connection] = await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
+    const [connection] =await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
       SELECT "uid", "ownership", "transport", "auth_kind" FROM "tool_connections" WHERE "id" = ${connectionId}
     `;
     expect(connection).toMatchObject({ ownership: "customer", transport: "mcp_remote", auth_kind: "oauth" });
@@ -92,6 +120,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     `).rejects.toMatchObject({ code: "23514" });
 
     await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
+    for (const { table, name } of laterForeignKeys) {
+      await sql.unsafe(`ALTER TABLE ${table} DROP CONSTRAINT "${name}"`);
+    }
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;
