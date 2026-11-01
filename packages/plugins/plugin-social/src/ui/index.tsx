@@ -206,6 +206,9 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
     if (!fn) throw new Error(`Unknown action ${key}`);
     try {
       const result = await fn(params);
+      // A rule the worker refused (e.g. too many running experiments) comes back as ok:false, not a thrown 502.
+      const refused = (result as { ok?: unknown; error?: { message?: unknown } } | null)?.ok === false ? (result as { error?: { message?: unknown } }).error?.message : undefined;
+      if (typeof refused === "string") throw new Error(refused);
       if (success) notify(success, "success");
       if (!READ_ONLY.has(key)) await refresh();
       return result;
