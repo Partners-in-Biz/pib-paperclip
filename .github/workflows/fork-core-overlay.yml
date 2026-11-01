@@ -1,0 +1,117 @@
+name: Fork core overlay
+
+# Builds the Rust runner + server + ui in CI and publishes the result as a
+# prerelease asset (fork-core-<sha12>) that pib-fork-core v2 downloads on the
+# production server (no cargo and no build there). PAR-6866.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA to build
+        required: true
+        type: string
+  push:
+    branches: [development]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-core-overlay-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  overlay:
+    runs-on: [self-hosted, pib-vps]
+    timeout-minutes: 90
+    env:
+      CI: "true"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve commit
+        id: rev
+        run: |
+          full="$(git rev-parse HEAD)"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "short=${full:0:12}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Install Rust stable
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cargo --version
+          rustc --version
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build (runner binary, server, ui)
+        run: pnpm build
+
+      - name: Stage overlay
+        env:
+          STAGING: ${{ runner.temp }}/fork-core-staging
+          FULL_SHA: ${{ steps.rev.outputs.full }}
+        run: node .github/scripts/stage-fork-core-overlay.mjs
+
+      - name: Pack
+        id: pack
+        env:
+          SHORT: ${{ steps.rev.outputs.short }}
+        run: |
+          out="${RUNNER_TEMP}/fork-core-out"
+          rm -rf "$out"; mkdir -p "$out"
+          tar -czf "$out/fork-core-overlay-${SHORT}.tar.gz" -C "${RUNNER_TEMP}/fork-core-staging" .
+          (cd "$out" && sha256sum "fork-core-overlay-${SHORT}.tar.gz" > "fork-core-overlay-${SHORT}.tar.gz.sha256")
+          cat "$out/fork-core-overlay-${SHORT}.tar.gz.sha256"
+          ls -l "$out"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Publish prerelease
+        env:
+          SHORT: ${{ steps.rev.outputs.short }}
+          FULL: ${{ steps.rev.outputs.full }}
+          OUT: ${{ steps.pack.outputs.out }}
+        run: |
+          tag="fork-core-${SHORT}"
+          files=("$OUT/fork-core-overlay-${SHORT}.tar.gz" "$OUT/fork-core-overlay-${SHORT}.tar.gz.sha256")
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --prerelease --target "$FULL" \
+              --title "Fork core overlay ${SHORT}" \
+              --notes "Fork core overlay built from ${FULL}. Consumed by pib-fork-core v2; not a product release."
+          fi
+
+      - name: Verify published assets
+        env:
+          SHORT: ${{ steps.rev.outputs.short }}
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/fork-core-${SHORT}"
+          chk="${RUNNER_TEMP}/fork-core-verify"
+          rm -rf "$chk"; mkdir -p "$chk"; cd "$chk"
+          curl -fsSL -O "${base}/fork-core-overlay-${SHORT}.tar.gz"
+          curl -fsSL -O "${base}/fork-core-overlay-${SHORT}.tar.gz.sha256"
+          sha256sum -c "fork-core-overlay-${SHORT}.tar.gz.sha256"
+          {
+            echo "### Fork core overlay ${SHORT}"
+            echo "- ${base}/fork-core-overlay-${SHORT}.tar.gz"
+            echo "- ${base}/fork-core-overlay-${SHORT}.tar.gz.sha256"
+            echo '```'; cat "fork-core-overlay-${SHORT}.tar.gz.sha256"; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
