@@ -367,6 +367,7 @@ import {
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
   isTicketRunCapExempt,
+  isExecutionStageHandoffWake,
 } from "./issue-wake-guards.js";
 import {
   loadTicketRunCapState,
@@ -17636,6 +17637,10 @@ export function heartbeatService(
       const claimCapExempt = isTicketRunCapExempt({
         retryOfRunId: readNonEmptyString(context.retryOfRunId),
         chatConversation: Boolean(startIssue?.conversationAgentId),
+        executionStageHandoff: isExecutionStageHandoffWake({
+          contextSource: context.source,
+          wakeReason: startWakeReason,
+        }),
         wakeReason: startWakeReason,
         requestedByActorType: wakeRequest?.requestedByActorType ?? null,
       });
@@ -27585,6 +27590,10 @@ export function heartbeatService(
           const capExempt = isTicketRunCapExempt({
             retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId),
             chatConversation: Boolean(issue?.conversationAgentId),
+            executionStageHandoff: isExecutionStageHandoffWake({
+              contextSource: enrichedContextSnapshot.source,
+              wakeReason: enqueueWakeReason,
+            }),
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
           });

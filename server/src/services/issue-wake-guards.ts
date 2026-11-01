@@ -103,15 +103,40 @@ const DISPOSITION_REPAIR_WAKE_REASON = "issue_disposition_repair";
  * automated wake loop, so chat wakes are exempt. Identify chat only by the
  * issue's own conversationAgentId column, not by contextSnapshot flags which
  * can be forged by clients.
+ * Execution-stage handoffs (review/approval requested) are issued by the server
+ * in routes/issues.ts only when the policy stage actually changes, so they are
+ * bounded by the number of stages and cannot loop. They are identified by the
+ * server-built contextSnapshot.source "issue.execution_stage" (the wakeup route
+ * never copies a client source) plus the reason. changes_requested is not
+ * exempt, because a review bounce can repeat.
  */
+export const EXECUTION_STAGE_WAKE_SOURCE = "issue.execution_stage";
+const EXECUTION_STAGE_HANDOFF_WAKE_REASONS = new Set([
+  "execution_review_requested",
+  "execution_approval_requested",
+]);
+
+export function isExecutionStageHandoffWake(input: {
+  contextSource?: unknown;
+  wakeReason?: string | null;
+}): boolean {
+  return (
+    input.contextSource === EXECUTION_STAGE_WAKE_SOURCE &&
+    typeof input.wakeReason === "string" &&
+    EXECUTION_STAGE_HANDOFF_WAKE_REASONS.has(input.wakeReason)
+  );
+}
+
 export function isTicketRunCapExempt(input: {
   retryOfRunId?: string | null;
   chatConversation?: boolean | null;
+  executionStageHandoff?: boolean | null;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
 }): boolean {
   if (input.retryOfRunId) return true;
   if (input.chatConversation) return true;
+  if (input.executionStageHandoff) return true;
   if (input.requestedByActorType !== "system") return false;
   return (
     input.wakeReason === DISPOSITION_REPAIR_WAKE_REASON ||
