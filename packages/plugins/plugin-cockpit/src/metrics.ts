@@ -19,8 +19,8 @@ import { listSnapshots } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { isToolBehaviourFact } from "./improvements-model.js";
-import { readAgentRuns, measureReviewCoverage, readLimitFailures } from "./measure.js";
-import { failRate, round } from "./measure-model.js";
+import { readAgentRuns, measureReviewCoverage, readCycleRows, readLimitFailures } from "./measure.js";
+import { cycleHours, failRate, reviewPassRate, round } from "./measure-model.js";
 import { parseSnapshot } from "./merge.js";
 import { memoryStats } from "./memory/store.js";
 import { AGENT_METRICS, COMPANY_METRICS, kpiNumber, parseMetricKey, type AgentMetric, type Better, type CompanyMetric } from "./metrics-keys.js";
@@ -38,6 +38,25 @@ export interface MetricReading {
 }
 
 const WEEK_MS = 7 * 86_400_000;
+
+/**
+ * Blocked issues with no unblock owner, no open question to the owner and no blocker that is
+ * moving (todo, in progress or in review) and held by an assignee. Unlike `blocked_no_way_out`, a blocker parked in
+ * backlog or itself blocked with no way out does not count as cover, so chains that end in
+ * dead ends are counted. This is the number the daily brief trends toward 0 (PAR-5829).
+ */
+export async function countBlockedUncovered(env: Env, companyId: string): Promise<number> {
+  const rows = await env.ctx.db.query<Record<string, unknown>>(
+    `SELECT count(*)::text AS n FROM public.issues i
+      WHERE i.company_id = $1::uuid AND i.status = 'blocked' AND i.hidden_at IS NULL
+        AND jsonb_typeof(i.unblock_descriptor) IS DISTINCT FROM 'object'
+        AND NOT EXISTS (SELECT 1 FROM public.issue_relations r JOIN public.issues b ON b.id = r.issue_id
+                         WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status IN ('todo', 'in_progress', 'in_review') AND (b.assignee_agent_id IS NOT NULL OR b.assignee_user_id IS NOT NULL))
+        AND NOT EXISTS (SELECT 1 FROM ${NAMESPACE}.asks a WHERE a.company_id = i.company_id::text AND a.issue_id = i.id::text AND a.status = 'open')`,
+    [companyId],
+  );
+  return Number(rows[0]?.n ?? 0) || 0;
+}
 
 /** Reads metrics for one company; each expensive read is done once per reader. */
 export class MetricReader {
@@ -137,6 +156,14 @@ export class MetricReader {
         const c = await this.coverage();
         return reading(c?.coverage == null ? null : c.coverage * 100, c?.coverage == null ? "No finished code work in the window (or it could not be read)." : null);
       }
+      case "review_pass_rate": {
+        const rate = reviewPassRate(await this.coverage());
+        return reading(rate, rate === null ? "No finished code work in the window (or it could not be read)." : null);
+      }
+      case "cycle_hours": {
+        const hours = cycleHours(await readCycleRows(this.env.ctx, companyId, new Date(now.getTime() - 30 * 86_400_000).toISOString()));
+        return reading(hours, hours === null ? "No issues finished in the window." : null);
+      }
       case "review_latency_p90_hours": {
         const c = await this.coverage();
         return reading(c?.latencyP90Hours ?? null, c?.latencyP90Hours == null ? "No finished reviews in the window." : null);
@@ -155,6 +182,8 @@ export class MetricReader {
             [companyId],
           ),
         );
+      case "blocked_uncovered":
+        return reading(await countBlockedUncovered(this.env, companyId));
       case "unassigned_old":
         return reading(
           await this.count(

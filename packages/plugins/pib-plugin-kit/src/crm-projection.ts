@@ -47,6 +47,12 @@ export type CrmCompanyBilling = {
   registrationNumber: string | null;
 };
 
+/** A hosted client's link and plan label, as the CRM holds them. Opt-in through `companyHosted`. */
+export type CrmCompanyHosted = {
+  companyId: string | null;
+  plan: string | null;
+};
+
 export interface CrmCompanyEvent {
   id: string;
   name: string;
@@ -54,6 +60,7 @@ export interface CrmCompanyEvent {
   lifecycle: string | null;
   updatedAt: string;
   billing?: CrmCompanyBilling | null;
+  hosted?: CrmCompanyHosted | null;
 }
 
 export interface CrmContactEvent {
@@ -73,6 +80,7 @@ export interface CrmCompanyRow {
   domain: string | null;
   lifecycle: string | null;
   billing?: CrmCompanyBilling | null;
+  hosted?: CrmCompanyHosted | null;
 }
 
 export interface CrmContactRow {
@@ -93,7 +101,9 @@ export function registerCrmProjection(
     contacts?: boolean;
     /** Also keep `billing` on crm_companies; the consumer adds a `billing jsonb` column itself. */
     companyBilling?: boolean;
-  } = { companies: true, contacts: true },
+    /** Also keep `hosted` on crm_companies; the consumer adds a `hosted jsonb` column itself. */
+    companyHosted?: boolean;
+  } ={ companies: true, contacts: true },
 ): void {
   const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
     try {
@@ -106,24 +116,26 @@ export function registerCrmProjection(
     ctx.events.on(`plugin.${CRM_PLUGIN_ID}.company.upserted`, guard("company.upserted", async (event) => {
       const p = event.payload as CrmCompanyEvent;
       if (!p?.id || !event.companyId) return;
-      if (options.companyBilling === true) {
-        await ctx.db.execute(
-          `INSERT INTO ${namespace}.crm_companies (id, company_id, name, domain, lifecycle, updated_at, deleted, billing)
-           VALUES ($1, $2, $3, $4, $5, $6, false, $7::jsonb)
-           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, domain = EXCLUDED.domain, lifecycle = EXCLUDED.lifecycle,
-             updated_at = EXCLUDED.updated_at, deleted = false, billing = EXCLUDED.billing
-           WHERE ${namespace}.crm_companies.updated_at <= EXCLUDED.updated_at`,
-          [p.id, event.companyId, p.name, p.domain ?? null, p.lifecycle ?? null, p.updatedAt, JSON.stringify(p.billing ?? null)],
-        );
-        return;
+      const columns = ["id", "company_id", "name", "domain", "lifecycle", "updated_at", "deleted"];
+      const values = ["$1", "$2", "$3", "$4", "$5", "$6", "false"];
+      const updates = ["name", "domain", "lifecycle", "updated_at"].map((column) => `${column} = EXCLUDED.${column}`);
+      updates.push("deleted = false");
+      const params: unknown[] = [p.id, event.companyId, p.name, p.domain ?? null, p.lifecycle ?? null, p.updatedAt];
+      const optional: Array<[string, unknown]> = [];
+      if (options.companyBilling === true) optional.push(["billing", p.billing ?? null]);
+      if (options.companyHosted === true) optional.push(["hosted", p.hosted ?? null]);
+      for (const [column, value] of optional) {
+        params.push(JSON.stringify(value));
+        columns.push(column);
+        values.push(`$${params.length}::jsonb`);
+        updates.push(`${column} = EXCLUDED.${column}`);
       }
       await ctx.db.execute(
-        `INSERT INTO ${namespace}.crm_companies (id, company_id, name, domain, lifecycle, updated_at, deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, false)
-         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, domain = EXCLUDED.domain, lifecycle = EXCLUDED.lifecycle,
-           updated_at = EXCLUDED.updated_at, deleted = false
+        `INSERT INTO ${namespace}.crm_companies (${columns.join(", ")})
+         VALUES (${values.join(", ")})
+         ON CONFLICT (id) DO UPDATE SET ${updates.join(", ")}
          WHERE ${namespace}.crm_companies.updated_at <= EXCLUDED.updated_at`,
-        [p.id, event.companyId, p.name, p.domain ?? null, p.lifecycle ?? null, p.updatedAt],
+        params,
       );
     }));
     ctx.events.on(`plugin.${CRM_PLUGIN_ID}.company.deleted`, guard("company.deleted", async (event) => {

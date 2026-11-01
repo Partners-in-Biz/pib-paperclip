@@ -1945,7 +1945,10 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
-  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
+  executionWorkspaceInheritanceMode?:
+    | "linkage"
+    | "strategy_only"
+    | "reuse_parent";
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
@@ -4891,6 +4894,7 @@ const issueListSelect = {
   originIdentityContextId: issues.originIdentityContextId,
   continuationIdentityContextId: issues.continuationIdentityContextId,
   originFingerprint: issues.originFingerprint,
+  titleNeedsGeneration: issues.titleNeedsGeneration,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
@@ -9306,7 +9310,9 @@ export function issueService(db: Db) {
           : {}),
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
-          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
+          : executionWorkspaceInheritanceMode === "reuse_parent"
+            ? { inheritExecutionWorkspaceFromIssueId: parent.id }
+            : {}),
       });
 
       if (blockParentUntilDone) {
@@ -9869,6 +9875,9 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
+        const reuseSourceExecutionWorkspace =
+          !skipExecutionWorkspaceInheritance &&
+          inheritExecutionWorkspaceFromIssueId != null;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(
             tx,
@@ -9913,7 +9922,7 @@ export function issueService(db: Db) {
                 ),
               )
               .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
+            if (sourceWorkspace && reuseSourceExecutionWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
@@ -9922,6 +9931,22 @@ export function issueService(db: Db) {
                 mode: issueExecutionWorkspaceModeForPersistedWorkspace(
                   sourceWorkspace.mode,
                 ),
+              };
+            } else if (
+              sourceWorkspace &&
+              sourceWorkspace.mode !== "shared_workspace"
+            ) {
+              // A plain child (parentId only) never shares the parent's
+              // worktree: sibling sub-tickets reusing one branch collide.
+              // It gets its own isolated worktree; reuse needs an explicit
+              // opt-in (executionWorkspaceId/preference/settings, or
+              // inheritExecutionWorkspaceFromIssueId).
+              executionWorkspacePreference = "isolated_workspace";
+              executionWorkspaceSettings = {
+                ...(buildPreRealizationExecutionWorkspaceSettings(
+                  workspaceSource.executionWorkspaceSettings,
+                ) ?? {}),
+                mode: "isolated_workspace",
               };
             }
           }

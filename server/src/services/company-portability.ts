@@ -89,6 +89,7 @@ import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
+import { nightlyDreamingEnabled, portableRoutineIsNightlyDreaming } from "./nightly-dreaming.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -5981,6 +5982,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               variables: null,
               triggers: [],
             };
+            // A copy has no built-in origin, so the origin-keyed 409 gate does
+            // not see it. Pause the copy here. Do not set origin: that would
+            // make reconcile treat this row as the live Reflection Coach routine.
+            const pauseDreamingCopy = portableRoutineIsNightlyDreaming({
+              title: manifestIssue.title,
+              description,
+              triggerLabels: routineDefinition.triggers.map((trigger) => trigger.label),
+            }) && !nightlyDreamingEnabled();
+            if (pauseDreamingCopy) {
+              warnings.push(
+                `Recurring task ${manifestIssue.slug} matches the nightly-dreaming routine. PAPERCLIP_NIGHTLY_DREAMING is off, so the import paused it and disabled its triggers. The live Reflection Coach routine was not changed.`,
+              );
+            }
             const createdRoutine = await routines.create(targetCompany.id, {
               projectId,
               goalId: null,
@@ -5991,7 +6005,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
                 ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
                 : "medium",
-              status: pauseAutomations
+              status: pauseAutomations || pauseDreamingCopy
                 ? "paused"
                 : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
                 ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
@@ -6024,7 +6038,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 await routines.createTrigger(createdRoutine.id, {
                   kind: "schedule",
                   label: trigger.label,
-                  enabled: trigger.enabled,
+                  enabled: pauseDreamingCopy ? false : trigger.enabled,
                   cronExpression: trigger.cronExpression!,
                   timezone: trigger.timezone!,
                 }, {
@@ -6037,7 +6051,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 await routines.createTrigger(createdRoutine.id, {
                   kind: "webhook",
                   label: trigger.label,
-                  enabled: trigger.enabled,
+                  enabled: pauseDreamingCopy ? false : trigger.enabled,
                   signingMode:
                     trigger.signingMode && ROUTINE_TRIGGER_SIGNING_MODES.includes(trigger.signingMode as any)
                       ? trigger.signingMode as typeof ROUTINE_TRIGGER_SIGNING_MODES[number]
@@ -6052,7 +6066,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               await routines.createTrigger(createdRoutine.id, {
                 kind: "api",
                 label: trigger.label,
-                enabled: trigger.enabled,
+                enabled: pauseDreamingCopy ? false : trigger.enabled,
               }, {
                 agentId: null,
                 userId: actorUserId ?? null,

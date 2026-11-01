@@ -284,7 +284,7 @@ describe.skipIf(!available)("connecting a platform", () => {
     const off = await world(pg, { config: settings({ platforms: { meta: { enabled: false, appId: "a", appSecret: "s".repeat(20) } } }) });
     await expect(act(off, "ads.oauth-start", { platform: "meta" }, userActor)).rejects.toThrow(/switched off/);
     await expect(act(off, "ads.oauth-start", { platform: "google" }, userActor)).rejects.toThrow(/switched off/);
-    await expect(act(off, "ads.oauth-start", { platform: "tiktok" }, userActor)).rejects.toThrow(/Unsupported platform/);
+    await expect(act(off, "ads.oauth-start", { platform: "snapchat" }, userActor)).rejects.toThrow(/Unsupported platform/);
     await expect(act(off, "ads.connect-mock", {}, userActor)).rejects.toThrow(/test platform is switched off/);
   });
 

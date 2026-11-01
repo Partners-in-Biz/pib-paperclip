@@ -42,6 +42,7 @@ import { executeProposal } from "./execute.js";
 import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
 import { ORIGIN_KIND, ensureAdsProject } from "./issues.js";
 import { adsOn, companyUsesAds, knownCompanies, MODULE_OFF_MESSAGE } from "./modules.js";
+import { postDailyReports } from "./report.js";
 import { OAuthFlowError, completeOAuth, connectMock, connectWithToken, startOAuth } from "./oauth.js";
 import { OWN_SCOPE, PLUGIN_ID } from "./platforms.js";
 import { cancelProposal, createProposal, markDoneManually, onApprovalIssue, recordClientRequest, recordReview, recordSignoff, reviseProposal, sweepProposals } from "./proposals.js";
@@ -67,6 +68,7 @@ import {
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
 import { sweepCaps } from "./sweeper.js";
+import { campaignCapsRecord, setCampaignCap } from "./campaign-caps.js";
 import { syncCompany } from "./sync.js";
 import { SKILLS } from "./skills.js";
 import { ADS_TOOLS } from "./tools.js";
@@ -151,6 +153,8 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
     }
     case "get-ads-summary":
       return summaryRecord(rt, p);
+    case "list-campaigns-without-cap":
+      return campaignCapsRecord(rt);
     case "list-ad-campaigns":
       return campaignsRecord(rt, p);
     case "get-spend-ledger":
@@ -300,6 +304,8 @@ const ACTIONS: Record<string, ActionHandler> = {
     return { ...sync, alertsNew: evaluated.alertsNew, pauseRequests: evaluated.pauseRequests };
   },
   "ads.performance": async (_ctx, rt, _v, p) => ({ summary: await summaryRecord(rt, p), campaigns: await campaignsRecord(rt, p.client === undefined ? {} : { client: p.client }), ledger: await ledgerRecord(rt, { ...(p.client === undefined ? {} : { client: p.client }), limit: 60 }) }),
+  "ads.set-campaign-cap": (_ctx, rt, v, p) => setCampaignCap(rt, { userId: v.userId }, p),
+  "ads.campaign-caps": (_ctx, rt) => campaignCapsRecord(rt),
   "ads.set-cap": (_ctx, rt, v, p) => setBudgetCap(rt, { userId: v.userId }, p),
   "ads.set-allow-writes": (_ctx, rt, v, p) => setAllowWrites(rt, { userId: v.userId }, p),
   "ads.set-signoffs": (_ctx, rt, v, p) => setSignoffs(rt, { userId: v.userId }, p),
@@ -502,7 +508,12 @@ const plugin = definePlugin({
       const runs = await forEachCompany(ctx, async (rt) => {
         const sync = await syncCompany(rt);
         const evaluated = await evaluateCompany(rt);
-        return { accounts: sync.accounts, ok: sync.ok, failed: sync.failed, skipped: sync.skipped, alertsNew: evaluated.alertsNew, issuesOpened: evaluated.issuesOpened, pauseRequests: evaluated.pauseRequests, errors: evaluated.errors.length };
+        // The daily results report is a convenience on top of the alerts: a failure here must never fail the sync job.
+        const report = await postDailyReports(rt).catch((error) => {
+          rt.ctx.logger.info("Ads daily report skipped", { error: errorMessage(error) });
+          return { day: "", reports: 0 };
+        });
+        return { accounts: sync.accounts, ok: sync.ok, failed: sync.failed, skipped: sync.skipped, alertsNew: evaluated.alertsNew, issuesOpened: evaluated.issuesOpened, pauseRequests: evaluated.pauseRequests, errors: evaluated.errors.length, reports: report.reports };
       });
       return { companies: runs.length, failed: runs.filter((r) => r.error).length, runs };
     });

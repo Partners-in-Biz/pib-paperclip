@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
@@ -252,7 +251,6 @@ export function Layout() {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
@@ -462,7 +460,6 @@ export function Layout() {
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
-    enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
@@ -633,7 +630,7 @@ export function Layout() {
 
   return (
     <ChatSetupSidebarProvider>
-    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
+    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled: true }}>
       <div
         className={cn(
           "bg-background text-foreground pt-(--sz-safe-top)",

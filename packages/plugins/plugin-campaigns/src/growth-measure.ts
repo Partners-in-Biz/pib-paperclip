@@ -9,10 +9,11 @@ import { isModuleEnabled, measureExperiment, type GrowthStore, type KitExperimen
 import { getCampaign, table } from "./db.js";
 import { CampaignError } from "./domain.js";
 import { BATCH, readStepEvents, WINDOW_DAYS, type StepEvent } from "./growth-adapter.js";
-import { campaignsGrowthEnv, campaignsGrowthStore, type CampaignsGrowthEnv } from "./growth-host.js";
+import { campaignsGrowthEnv, campaignsGrowthStore, LINK_KIND, type CampaignsGrowthEnv } from "./growth-host.js";
+
+export { LINK_KIND };
 import { PLUGIN_ID } from "./namespace.js";
 
-export const LINK_KIND = "campaign_link";
 const DAY_MS = 86_400_000;
 const LINKABLE = ["proposed", "running"];
 

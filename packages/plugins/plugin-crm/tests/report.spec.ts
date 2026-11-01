@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { runClientCareJob } from "../src/care-jobs.js";
 import { isFormNotification, reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
-import { atAGlance, currentPeriod, EMPTY_NARRATIVE, escapeHtml, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type ReportData } from "../src/report-render.js";
+import { atAGlance, currentPeriod, EMPTY_NARRATIVE, escapeHtml, formatExpiryDate, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type ReportData } from "../src/report-render.js";
 import { answerSend, bootCare, careSeed, CO, company, contact, DAY, decide, issuesWith, OWNER, sentMail, tool, toolRaw, type Booted, type Route } from "./helpers/care.js";
 
 const NOW = new Date();
 const PERIOD = currentPeriod(NOW);
+// Always a few weeks after the period ends, so the certificate stays valid whatever month the suite runs in.
+const CERT_VALID_UNTIL = new Date(Date.parse(periodBounds(PERIOD).to) + 20 * DAY).toISOString();
 
 const WORK: Route = [/FROM public\.issues/, () => [{ identifier: "PAR-12", title: "Fix the header menu" }, { identifier: "PAR-14", title: "New landing page" }]];
 const COST: Route = [/FROM public\.cost_events/, () => [{ cost_cents: 250, input_tokens: 10_000, output_tokens: 2_500 }, { cost_cents: 100, input_tokens: 4_000, output_tokens: 800 }]];
@@ -534,10 +536,10 @@ describe("certificate and domain expiry display", () => {
   it("shows the actual certificate expiry date, not a stale day count", async () => {
     const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
     const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
-    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: CERT_VALID_UNTIL, tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
     const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
     const result = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD, dryRun: true });
-    expect(result.preview).toContain("security certificate valid until 31 October 2026");
+    expect(result.preview).toContain(`security certificate valid until ${formatExpiryDate(CERT_VALID_UNTIL)}`);
     expect(result.preview).not.toMatch(/more days/);
   });
 
@@ -565,17 +567,30 @@ describe("website section in reports", () => {
   it("monitors and a website signal are combined into a single section, not duplicated", async () => {
     const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
     const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
-    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: "2026-10-31T23:05:37Z", tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: CERT_VALID_UNTIL, tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: null, domain_expires_at: null, domain_checked_at: null, domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
     const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
     await tool(booted.harness, "record-client-signal", { client: "company:acme", module: "website", period: PERIOD, headline: [{ label: "Page load time", value: "1.2s" }], bullets: ["Mobile performance improved."] });
     const built = await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
     const rec = booted.store.client_reports![0]!;
     expect(rec.markdown).toContain("## Your website");
     expect(rec.markdown).toContain("Mobile performance improved.");
-    expect(rec.markdown).toContain("acme.co.za: 100% uptime, security certificate valid until 31 October 2026");
+    expect(rec.markdown).toContain(`acme.co.za: 100% uptime, security certificate valid until ${formatExpiryDate(CERT_VALID_UNTIL)}`);
     // Verify the signal bullet appears exactly once in the markdown and HTML
     expect((rec.markdown.match(/Mobile performance improved/g) || []).length).toBe(1);
     expect((rec.html.match(/Mobile performance improved/g) || []).length).toBe(1);
+  });
+
+  it("never prints a domain renewal count in the website line, even when the domain expiry is stored", async () => {
+    const site = { id: "site-1", company_id: CO, client_kind: "company", client_ref: "acme", label: null, url: "https://acme.co.za/", project_id: null, created_at: "2026-09-01T00:00:00Z" };
+    const uptime = { id: `site-1:${PERIOD}-10`, site_id: "site-1", company_id: CO, day: `${PERIOD}-10`, checks: 288, failed: 0 };
+    const monitor = { site_id: "site-1", company_id: CO, enabled: true, status: "up", http_status: 200, response_ms: 100, last_error: null, last_checked_at: "2026-09-10T00:00:00Z", last_ok_at: "2026-09-10T00:00:00Z", down_since: null, failures: 0, tls_expires_at: CERT_VALID_UNTIL, tls_error: null, tls_checked_at: "2026-09-10T00:00:00Z", domain: "acme.co.za", domain_expires_at: "2026-11-15T00:00:00Z", domain_checked_at: "2026-09-10T00:00:00Z", domain_error: null, domain_manual: false, updated_at: "2026-09-10T00:00:00Z" };
+    const booted = await bootCare({ store: reportSeed({ client_sites: [site], site_uptime_days: [uptime], site_monitor: [monitor] }) });
+    await tool<Record<string, any>>(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
+    const rec = booted.store.client_reports![0]!;
+    expect(rec.markdown).toContain(`acme.co.za: 100% uptime, security certificate valid until ${formatExpiryDate(CERT_VALID_UNTIL)}`);
+    expect(rec.markdown).not.toMatch(/renews/i);
+    expect(rec.markdown).not.toMatch(/domain renews/i);
+    expect(rec.html).not.toMatch(/renews/i);
   });
 });
 

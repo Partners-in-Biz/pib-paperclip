@@ -53,6 +53,12 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 
+// The db handed to issueRoutes here is a bare transaction stub with no select().
+vi.mock("../services/issue-code-review-gate-context.js", () => ({
+  evaluateIssueCodeReviewGate: vi.fn(async () => ({ allowed: true })),
+  pickAutoReviewStageReviewer: vi.fn(async () => null),
+}));
+
 vi.mock("../services/runner-goals.js", () => ({
   runnerGoalService: () => mockRunnerGoalService,
   RunnerGoalActionError: class RunnerGoalActionError extends Error {},
@@ -201,6 +207,25 @@ function registerModuleMocks() {
   }));
 }
 
+function emptySelect() {
+  const query: {
+    from: () => typeof query;
+    where: () => typeof query;
+    innerJoin: () => typeof query;
+    orderBy: () => typeof query;
+    limit: () => Promise<never[]>;
+    then: (resolve: (value: never[]) => unknown, reject?: (err: unknown) => unknown) => Promise<unknown>;
+  } = {
+    from: () => query,
+    where: () => query,
+    innerJoin: () => query,
+    orderBy: () => query,
+    limit: () => Promise.resolve([]),
+    then: (resolve, reject) => Promise.resolve([]).then(resolve, reject),
+  };
+  return query;
+}
+
 async function createApp() {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -220,7 +245,9 @@ async function createApp() {
     next();
   });
   app.use("/api", issueRoutes({
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    select: () => emptySelect(),
+    transaction: async (callback: (tx: { select: () => ReturnType<typeof emptySelect> }) => Promise<unknown>) =>
+      callback({ select: () => emptySelect() }),
   } as any, {} as any));
   app.use(errorHandler);
   return app;
