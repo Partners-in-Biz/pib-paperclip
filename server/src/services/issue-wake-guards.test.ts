@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateTicketHourlyRunCap,
+  isExecutionStageHandoffWake,
   isTicketRunCapExempt,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
@@ -195,6 +196,38 @@ describe("isTicketRunCapExempt", () => {
     expect(isTicketRunCapExempt({ chatConversation: null, wakeReason: "issue_commented" })).toBe(
       false,
     );
+  });
+});
+
+describe("execution stage handoff cap exemption", () => {
+  it("exempts server-issued review and approval handoffs", () => {
+    for (const wakeReason of ["execution_review_requested", "execution_approval_requested"]) {
+      const handoff = isExecutionStageHandoffWake({ contextSource: "issue.execution_stage", wakeReason });
+      expect(handoff).toBe(true);
+      expect(
+        isTicketRunCapExempt({ executionStageHandoff: handoff, wakeReason, requestedByActorType: "agent" }),
+      ).toBe(true);
+    }
+  });
+
+  it("does not exempt a handoff reason without the server-built stage source", () => {
+    for (const contextSource of [undefined, null, "", "manual", "issue.execution_stage "]) {
+      const handoff = isExecutionStageHandoffWake({ contextSource, wakeReason: "execution_approval_requested" });
+      expect(handoff).toBe(false);
+      expect(
+        isTicketRunCapExempt({
+          executionStageHandoff: handoff,
+          wakeReason: "execution_approval_requested",
+          requestedByActorType: "agent",
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("does not exempt changes_requested or other reasons from the stage source", () => {
+    for (const wakeReason of ["execution_changes_requested", "issue_commented", null]) {
+      expect(isExecutionStageHandoffWake({ contextSource: "issue.execution_stage", wakeReason })).toBe(false);
+    }
   });
 });
 
