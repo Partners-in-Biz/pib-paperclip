@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stringifyPaperclipWakePayload } from "./server-utils.js";
+import { stringifyPaperclipWakePayload, stringifyPaperclipWakePayloadForEnv } from "./server-utils.js";
 import {
   WAKE_ENV_DEFAULT_MAX_BYTES,
   boundWakePayloadJson,
@@ -117,23 +117,26 @@ describe("boundWakePayloadJson", () => {
   });
 });
 
-describe("stringifyPaperclipWakePayload bound", () => {
+describe("stringifyPaperclipWakePayloadForEnv", () => {
+  const huge = {
+    reason: "issue_assigned",
+    issue: { id: "i1", identifier: "PAR-3", title: "Big", description: "w".repeat(180000) },
+  };
+
   it("leaves a small payload without an envTruncation note", () => {
-    const json = stringifyPaperclipWakePayload({
+    const json = stringifyPaperclipWakePayloadForEnv({
       reason: "issue_assigned",
       issue: { id: "i1", identifier: "PAR-2", title: "Small" },
     });
-    expect(json).not.toBeNull();
     expect(JSON.parse(json!).envTruncation).toBeUndefined();
   });
 
-  it("keeps the prompt-embedded copy (omitIssueDescription) unbounded", () => {
-    const description = "w".repeat(180000);
-    const json = stringifyPaperclipWakePayload(
-      { reason: "issue_assigned", issue: { id: "i1", identifier: "PAR-3", title: "Big", description } },
-      { omitIssueDescription: true },
-    );
-    expect(json).not.toBeNull();
-    expect(JSON.parse(json!).envTruncation).toBeUndefined();
+  it("bounds the env copy but never the prompt copy", () => {
+    const env = stringifyPaperclipWakePayloadForEnv(huge)!;
+    expect(bytes(env)).toBeLessThanOrEqual(WAKE_ENV_DEFAULT_MAX_BYTES);
+    expect(JSON.parse(env).envTruncation.truncatedForEnv).toBe(true);
+    const prompt = stringifyPaperclipWakePayload(huge)!;
+    expect(JSON.parse(prompt).envTruncation).toBeUndefined();
+    expect(bytes(prompt)).toBeGreaterThan(KERNEL_STRING_LIMIT);
   });
 });
