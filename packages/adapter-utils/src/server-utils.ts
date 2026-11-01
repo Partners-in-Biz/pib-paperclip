@@ -12,6 +12,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { boundWakePayloadJson } from "./wake-payload-bound.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -1943,6 +1944,16 @@ export function stringifyPaperclipWakePayload(
     });
   }
   return JSON.stringify(normalized);
+}
+
+/**
+ * Bounded copy for an environment variable (PAPERCLIP_WAKE_PAYLOAD_JSON). Linux
+ * refuses to start a process when one env string is over 131072 bytes (spawn
+ * E2BIG). Prompt copies must keep using stringifyPaperclipWakePayload, which
+ * is never shortened.
+ */
+export function stringifyPaperclipWakePayloadForEnv(value: unknown): string | null {
+  return boundWakePayloadJson(stringifyPaperclipWakePayload(value));
 }
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {
