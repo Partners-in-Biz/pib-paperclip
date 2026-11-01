@@ -246,12 +246,11 @@ describe("managed Codex credentials", () => {
   });
 
   it("fails before auth mutation when two quorum candidates are occupied", async () => {
-    const fixture = await credentialFixture();
-    const destination = join(fixture.home, "auth.json");
-    await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
-    const ports = credentialLeasePorts(await realpath(fixture.home));
-    const first = await listenSilently(ports[0]);
-    const second = await listenSilently(ports[1]);
+    // Candidate ports are derived from the random temp home, so an unrelated
+    // process on the CI host can already hold one (EADDRINUSE). Retry with a
+    // fresh home until this test owns both candidates, like
+    // silentPrimaryQuorumFixture does.
+    const { fixture, destination, first, second } = await occupyTwoQuorumCandidates();
     try {
       await expect(
         stageManagedCodexCredential({
@@ -1650,6 +1649,27 @@ async function credentialFixture(): Promise<{ root: string; home: string }> {
   await mkdir(home, { mode: 0o700 });
   await chmod(home, 0o700);
   return { root, home: await realpath(home) };
+}
+
+async function occupyTwoQuorumCandidates() {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const fixture = await credentialFixture();
+    const destination = join(fixture.home, "auth.json");
+    await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
+    const ports = credentialLeasePorts(await realpath(fixture.home));
+    let first: { close(): Promise<void> } | undefined;
+    try {
+      first = await listenSilently(ports[0]);
+      const second = await listenSilently(ports[1]);
+      return { fixture, destination, first, second };
+    } catch (error) {
+      await first?.close();
+      if ((error as NodeJS.ErrnoException)?.code !== "EADDRINUSE") throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function silentPrimaryQuorumFixture(
