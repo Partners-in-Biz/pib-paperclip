@@ -1394,6 +1394,45 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(blocked?.status).toBe("blocked");
   });
 
+  it("does not retry a workspace-validation failure whose run lacks the bootstrap marker", async () => {
+    // A failure thrown after the adapter ran (for example worktree branch incoherence)
+    // carries no executionRecovery marker: provider work may have happened, so block.
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const scheduleRecoveryRetry = vi.fn(async () => ({ id: randomUUID() }) as never);
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: { issueId: sourceIssue.id },
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: runId,
+        agentId: coderId,
+        status: "failed",
+        error: "worktree branch incoherent",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { issueId: sourceIssue.id },
+        livenessState: "failed",
+        resultJson: { workspaceValidation: { reason: "git_worktree_branch_incoherence", fingerprint: "workspace:nomarker" } },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(scheduleRecoveryRetry).not.toHaveBeenCalled();
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(blocked?.status).toBe("blocked");
+  });
+
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
