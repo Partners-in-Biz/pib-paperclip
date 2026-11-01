@@ -46,6 +46,10 @@ const LIMITS: Record<AdPlatform, Array<{ field: keyof CreativeInput; max: number
     { field: "headline", max: 30, hard: true, label: "headline" },
     { field: "description", max: 90, hard: true, label: "description" },
   ],
+  // No copy limits yet: each platform's own ticket adds them.
+  apple: [],
+  tiktok: [],
+  linkedin: [],
 };
 
 /** Topics that need a special ad category declared on Meta (and that Google restricts). */
