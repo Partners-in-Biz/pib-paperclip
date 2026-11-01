@@ -77,7 +77,7 @@ const missing = required.filter((n) => !staged.includes(n));
 if (missing.length) throw new Error(`required packages missing from overlay: ${missing.join(", ")}`);
 if (!staged.includes("@paperclipai/hermes-paperclip-adapter")) console.warn("::warning::@paperclipai/hermes-paperclip-adapter not staged");
 if (!staged.some((n) => n.startsWith("@paperclipai/adapter-"))) throw new Error("no @paperclipai/adapter-* packages staged");
-const runner = path.join(staging, "@paperclipai/server/dist/vendor/paperclip-runner/dist/bin/paperclip-runnerd");
+const runner = path.join(staging, "@paperclipai/server/dist/vendor/paperclip-runner/bin/paperclip-runnerd");
 if (!existsSync(runner)) throw new Error(`runner binary missing from overlay: ${runner}`);
 
 console.log(`staged ${staged.length} packages:\n${staged.sort().map((n) => `  ${n}`).join("\n")}`);
