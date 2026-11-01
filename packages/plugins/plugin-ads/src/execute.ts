@@ -25,6 +25,7 @@ import { providerEnv, type AdsRuntime } from "./runtime.js";
 import { reviewStands, signoffState } from "./signoffs.js";
 import { saveCreativeToDrive } from "./drive.js";
 import { syncAccount } from "./sync.js";
+import { writeProposalCap } from "./campaign-caps.js";
 import { isOwnerDelegateApproval, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
 
@@ -149,6 +150,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   await audit(rt.ctx, rt.companyId, { actor: actorText(actor), action: "write.started", scopeKey: p.scope_key, subject: p.id, detail: { kind: p.kind, approvalId: approval.id, approvedBy: approval.decided_by } });
 
   const results: ExecuteResult["results"] = [];
+  let capNote = "";
   const startedAt = rt.now().toISOString();
   const touched = new Map<string, AccountRow>();
   for (const t of targets) {
@@ -162,6 +164,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           specialAdCategories: (p.payload.specialAdCategories as string[]) ?? [],
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
+        capNote = await recordProposalCap(rt, p, t.account.platform, created.externalId, approval.decided_by);
       } else if (p.kind === "change_budget") {
         await t.provider.setCampaignBudget(t.env, t.token, t.ref, String(p.payload.campaignExternalId), Number(p.payload.newDailyBudgetMinor));
         results.push({ what: `Set the daily budget of "${String(p.payload.campaignName)}" to ${Number(p.payload.newDailyBudgetMinor)} minor units`, ok: true, externalId: String(p.payload.campaignExternalId) });
@@ -265,8 +268,20 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
     proposalId: p.id,
     status: ok ? "executed" : "failed",
     results,
-    message: ok ? "Done. Nothing else runs by itself: a created campaign is paused until a separate approved change switches it on." : `Did not complete: ${failed?.error ?? "not every part ran"}. The approval is used up; ask for a new one to try again.`,
+    message: ok ? `Done. Nothing else runs by itself: a created campaign is paused until a separate approved change switches it on.${capNote}` : `Did not complete: ${failed?.error ?? "not every part ran"}. The approval is used up; ask for a new one to try again.`,
   };
+}
+
+/** The cap a create_campaign proposal carried, written once the campaign exists. It never fails the run: the campaign is already made. */
+async function recordProposalCap(rt: AdsRuntime, p: ProposalRow, platform: string, externalCampaignId: string, approvedBy: string): Promise<string> {
+  const capMinor = Number(p.payload.capMinor);
+  if (!(capMinor > 0)) return "";
+  try {
+    const written = await writeProposalCap(rt, { platform, externalCampaignId, capMinor, approvedBy, proposalId: p.id, scopeKey: p.scope_key });
+    return written ? ` The campaign cap of ${capMinor} (minor units) is recorded.` : " The campaign has no cap yet: only the owner's own approval records one. Ask the owner to set it.";
+  } catch (error) {
+    return ` The campaign cap could not be recorded (${errorMessage(error).slice(0, 120)}). Ask the owner to set it.`;
+  }
 }
 
 interface ResolvedTarget {

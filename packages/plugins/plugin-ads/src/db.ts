@@ -1290,3 +1290,65 @@ export async function listVariants(ctx: PluginContext, companyId: string, option
     creative_ref: (r.creative_ref as string | null) ?? null,
   }));
 }
+
+// ── campaign caps ───────────────────────────────────────────────────────────
+
+export interface CampaignCapRow {
+  id: string;
+  company_id: string;
+  platform: StoredPlatform;
+  external_campaign_id: string;
+  cap_minor: number;
+  created_at: string;
+  set_by: string;
+  proposal_id: string | null;
+}
+
+function campaignCapRow(r: Record<string, unknown>): CampaignCapRow {
+  return {
+    id: String(r.id),
+    company_id: String(r.company_id),
+    platform: String(r.platform) as StoredPlatform,
+    external_campaign_id: String(r.external_campaign_id),
+    cap_minor: toInt(r.cap_minor),
+    created_at: isoTime(r.created_at) ?? "",
+    set_by: String(r.set_by),
+    proposal_id: r.proposal_id === null || r.proposal_id === undefined ? null : String(r.proposal_id),
+  };
+}
+
+/** One row per campaign. Setting it again changes the cap and who set it; `created_at` (the start of the spend window) stays. */
+export async function upsertCampaignCap(ctx: PluginContext, companyId: string, c: { platform: string; externalCampaignId: string; capMinor: number; setBy: string; proposalId: string | null }): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "campaign_caps")} (id, company_id, platform, external_campaign_id, cap_minor, set_by, proposal_id) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, platform, external_campaign_id) DO UPDATE SET cap_minor = EXCLUDED.cap_minor, set_by = EXCLUDED.set_by, proposal_id = EXCLUDED.proposal_id`,
+    [randomUUID(), companyId, c.platform, c.externalCampaignId, c.capMinor, c.setBy, c.proposalId],
+  );
+}
+
+export async function getCampaignCap(ctx: PluginContext, companyId: string, platform: string, externalCampaignId: string): Promise<CampaignCapRow | null> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "campaign_caps")} WHERE company_id = $1 AND platform = $2 AND external_campaign_id = $3`, [companyId, platform, externalCampaignId]);
+  return rows[0] ? campaignCapRow(rows[0]) : null;
+}
+
+export async function listCampaignCaps(ctx: PluginContext, companyId: string): Promise<CampaignCapRow[]> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "campaign_caps")} WHERE company_id = $1 ORDER BY created_at DESC, id`, [companyId]);
+  return rows.map(campaignCapRow);
+}
+
+/** Campaigns we know of (not archived) that have no cap row. */
+export async function listCampaignsWithoutCap(ctx: PluginContext, companyId: string, platform?: string): Promise<Array<{ accountId: string; platform: string; externalId: string; name: string; status: string }>> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT c.account_id, a.platform, c.external_id, c.name, c.status FROM ${table(ctx, "campaigns")} c JOIN ${table(ctx, "ad_accounts")} a ON a.id = c.account_id AND a.company_id = c.company_id
+     WHERE c.company_id = $1 AND c.status <> 'archived' AND ($2::text IS NULL OR a.platform = $2)
+       AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "campaign_caps")} k WHERE k.company_id = c.company_id AND k.platform = a.platform AND k.external_campaign_id = c.external_id)
+     ORDER BY a.platform, c.name, c.external_id`,
+    [companyId, platform ?? null],
+  );
+  return rows.map((r) => ({ accountId: String(r.account_id), platform: String(r.platform), externalId: String(r.external_id), name: String(r.name), status: String(r.status) }));
+}
+
+export async function campaignKnown(ctx: PluginContext, companyId: string, accountId: string, externalId: string): Promise<boolean> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT 1 AS one FROM ${table(ctx, "campaigns")} WHERE company_id = $1 AND account_id = $2 AND external_id = $3 LIMIT 1`, [companyId, accountId, externalId]);
+  return rows.length > 0;
+}
