@@ -12,6 +12,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { boundWakePayloadJson } from "./wake-payload-bound.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -1942,7 +1943,9 @@ export function stringifyPaperclipWakePayload(
       },
     });
   }
-  return JSON.stringify(normalized);
+  // Env copies (PAPERCLIP_WAKE_PAYLOAD_JSON) must stay under the kernel's
+  // per-string limit (spawn E2BIG); prompt-embedded copies above keep the full text.
+  return boundWakePayloadJson(JSON.stringify(normalized));
 }
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {
