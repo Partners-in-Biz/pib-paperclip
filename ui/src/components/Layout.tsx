@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -241,7 +240,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = true;
 
   useLayoutEffect(() => {
     setForceCollapsed(!streamlinedUiEnabled && hasSecondarySidebar);

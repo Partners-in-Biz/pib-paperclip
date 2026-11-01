@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
@@ -252,7 +251,7 @@ export function Layout() {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route

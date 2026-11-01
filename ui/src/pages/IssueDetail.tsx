@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentIdentity } from "@/components/AgentIdentity";
@@ -3383,7 +3382,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!issueId,
     retry: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference =
