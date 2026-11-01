@@ -213,7 +213,7 @@ async function agentPatch(
         if (runRes.ok()) {
           const candidateRun = await runRes.json();
           if (candidateRun.agentId === agent.agentId &&
-              candidateRun.status !== "completed" && candidateRun.status !== "cancelled" && candidateRun.status !== "failed") {
+              (candidateRun.status === "queued" || candidateRun.status === "running")) {
             runId = candidate;
             break;
           }
