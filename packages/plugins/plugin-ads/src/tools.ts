@@ -150,7 +150,7 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-campaigns-without-cap",
     displayName: "Campaigns without a cap",
-    description: "Read-only. Campaigns we know of that have no hard cap row yet, and the caps that exist. Only a signed-in person sets a cap (on the Ads page); an agent cannot. A cap is only a record for now: nothing refuses a change because of it yet.",
+    description: "Read-only. Campaigns we know of that have no hard cap row yet, and the caps that exist. Only a signed-in board user sets a cap, through the ads.set-campaign-cap page action (no button on the Ads page yet); an agent cannot. A cap is only a record for now: nothing refuses a change because of it yet.",
     parametersSchema: schema([], {}),
   },
   {

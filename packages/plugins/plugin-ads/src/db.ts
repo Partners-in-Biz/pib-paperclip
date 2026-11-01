@@ -1339,7 +1339,7 @@ export async function listCampaignCaps(ctx: PluginContext, companyId: string): P
 /** Campaigns we know of (not archived) that have no cap row. */
 export async function listCampaignsWithoutCap(ctx: PluginContext, companyId: string, platform?: string): Promise<Array<{ accountId: string; platform: string; externalId: string; name: string; status: string }>> {
   const rows = await ctx.db.query<Record<string, unknown>>(
-    `SELECT c.account_id, a.platform, c.external_id, c.name, c.status FROM ${table(ctx, "campaigns")} c JOIN ${table(ctx, "ad_accounts")} a ON a.id = c.account_id
+    `SELECT c.account_id, a.platform, c.external_id, c.name, c.status FROM ${table(ctx, "campaigns")} c JOIN ${table(ctx, "ad_accounts")} a ON a.id = c.account_id AND a.company_id = c.company_id
      WHERE c.company_id = $1 AND c.status <> 'archived' AND ($2::text IS NULL OR a.platform = $2)
        AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "campaign_caps")} k WHERE k.company_id = c.company_id AND k.platform = a.platform AND k.external_campaign_id = c.external_id)
      ORDER BY a.platform, c.name, c.external_id`,

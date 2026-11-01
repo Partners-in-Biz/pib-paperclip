@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-ads",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "private": true,
   "type": "module",
   "description": "Paid ads (Meta, Google Ads): read-only reporting into daily rollups and a spend ledger, monthly budget caps with pacing, anomaly alerts, and governed change proposals. Nothing that spends money runs without a recorded human approval.",
