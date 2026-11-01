@@ -23,7 +23,8 @@ concurrency:
 
 jobs:
   overlay:
-    runs-on: [self-hosted, pib-vps]
+    # GitHub-hosted: this repo is not in the pib-vps runner group (self-hosted jobs queue forever) and is public, so hosted minutes are free.
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       CI: "true"
