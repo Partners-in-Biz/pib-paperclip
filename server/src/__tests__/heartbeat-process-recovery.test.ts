@@ -5163,6 +5163,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(issues.id, issueId));
 
+    // The first workspace-validation failure in the retry window queues a retry
+    // (PAR-5960). Seed one earlier failed run and move the run under test into
+    // the window, so this one is the second failure and blocks.
+    const failureAt = Date.now();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      error: "workspace validation failed before dispatch",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      createdAt: new Date(failureAt - 60_000),
+      updatedAt: new Date(failureAt - 60_000),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(failureAt) })
+      .where(eq(heartbeatRuns.id, runId));
+
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
