@@ -81,6 +81,17 @@ const instanceConfigSchema: JsonSchema = {
       description: "Warn when a customer's notional AI spend over 30 days is at least this share of what they paid in the same time (default 0.5, half).",
       minimum: 0,
     },
+    githubCi: {
+      type: "object",
+      title: "GitHub CI webhook",
+      description: "Lets a failed GitHub check comment on the ticket. Webhook URL: /api/plugins/partnersinbiz.cockpit/webhooks/github-ci, event: Check suites.",
+      properties: {
+        webhookSecret: secretField("Webhook secret", "The company secret GitHub signs deliveries with."),
+        previousWebhookSecret: secretField("Previous webhook secret", "The old secret, still accepted for 24 hours after the rotation time below."),
+        rotatedAt: { type: "string", title: "Rotated at (ISO time)", description: "When the secret was changed. The previous secret stops working 24 hours later." },
+        allowedOwners: { type: "array", title: "Allowed GitHub owners", items: { type: "string" }, default: ["Partners-in-Biz"] },
+      },
+    },
     credentialSeed: {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
@@ -227,6 +238,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "secrets.read-ref",
+    // 0.16.0: GitHub check_suite webhook (POST .../webhooks/github-ci); a new capability, so the host asks for approval on upgrade.
+    "webhooks.receive",
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
@@ -234,6 +247,13 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] },
   tools: COCKPIT_TOOLS,
+  webhooks: [
+    {
+      endpointKey: "github-ci",
+      displayName: "GitHub CI failures",
+      description: "POST /api/plugins/partnersinbiz.cockpit/webhooks/github-ci: GitHub check_suite events. Checked by X-Hub-Signature-256 against the secret in settings (githubCi.webhookSecret). A failed, timed out or cancelled suite on a feat/PAR-<n>- branch comments once per commit on that open issue.",
+    },
+  ],
   jobs: [
     {
       jobKey: JOBS.reemitRoles,

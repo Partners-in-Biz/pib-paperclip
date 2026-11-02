@@ -207,7 +207,7 @@ export function fakeCtx(options: {
         state.delete(stateKey(key));
       },
     },
-    companies: { get: async (companyId: string) => ({ id: companyId, name: `Company ${companyId}`, issuePrefix: options.prefixes?.[companyId] ?? null }) },
+    companies: { list: async () => Object.keys(options.savedConfigs ?? {}).map((id) => ({ id, name: `Company ${id}`, issuePrefix: options.prefixes?.[id] ?? null })), get: async (companyId: string) => ({ id: companyId, name: `Company ${companyId}`, issuePrefix: options.prefixes?.[companyId] ?? null }) },
     agents: {
       list: async ({ companyId }: { companyId: string }) => agents.filter((a) => a.companyId === companyId).map((a) => ({ createdAt: "2026-01-01T00:00:00.000Z", ...a })),
       get: async (id: string, companyId: string) => {
