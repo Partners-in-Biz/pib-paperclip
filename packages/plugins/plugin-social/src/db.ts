@@ -1032,6 +1032,28 @@ export async function publishedDestinationsForMetrics(ctx: PluginContext, sinceD
   );
 }
 
+/** Backfill selection: the company's published destinations with an external id and a token, newest first. Includes fully-marked ones. */
+export async function recollectDestinations(ctx: PluginContext, companyId: string, sinceDays: number, limit: number, destinationId?: string): Promise<Array<DestinationRow & { platform: string }>> {
+  const params: unknown[] = [companyId, sinceDays, limit];
+  let only = "";
+  if (destinationId) {
+    params.push(destinationId);
+    only = ` AND d.id = $${params.length}`;
+  }
+  return ctx.db.query<DestinationRow & { platform: string }>(
+    `SELECT d.id, d.company_id, d.post_id, d.account_id, d.status, d.result, d.attempts, d.next_attempt_at, d.external_id, d.external_url,
+            d.last_error, d.published_at, d.issue_id, d.metric_windows, d.created_at, d.updated_at, a.platform
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "accounts")} a ON a.id = d.account_id
+      WHERE d.company_id = $1 AND d.status = 'published' AND d.external_id IS NOT NULL AND d.published_at IS NOT NULL
+        AND d.published_at >= now() - make_interval(days => $2)
+        AND a.token_enc IS NOT NULL${only}
+      ORDER BY d.published_at DESC
+      LIMIT $3`,
+    params,
+  );
+}
+
 export async function recentPublishedForAccount(ctx: PluginContext, accountId: string, days = 14, limit = 20): Promise<DestinationRow[]> {
   return ctx.db.query<DestinationRow>(
     `SELECT ${DEST_COLS} FROM ${table(ctx, "destinations")}
