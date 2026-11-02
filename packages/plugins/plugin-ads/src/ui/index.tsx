@@ -43,8 +43,8 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, OWN_SCOPE } from "../platforms.js";
-import { ACTION_TEXT, BUDGET_STATE_TEXT, CONNECTION_TEXT, budgetToneOf, capConfirmText, capMinorFromInput, connectionTone, inputFromMinor, minorFromInput, spendSeries, statusTone } from "./series.js";
-import type { AccountInfo, AuditEntry, BudgetInfo, ConnectionInfo, Overview, ProposalDetail, ProposalSummary, Summary, SummaryGroup } from "./types.js";
+import { ACTION_TEXT, BUDGET_STATE_TEXT, CONNECTION_TEXT, budgetToneOf, capConfirmText, capMinorFromInput, capSubmitStep, connectionTone, inputFromMinor, minorFromInput, spendSeries, statusTone } from "./series.js";
+import type { AccountInfo, CampaignRow, AuditEntry, BudgetInfo, ConnectionInfo, Overview, ProposalDetail, ProposalSummary, Summary, SummaryGroup } from "./types.js";
 
 const ACTION_KEYS = [
   "ads.load",
@@ -303,7 +303,7 @@ function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
   const [period, setPeriod] = useState("last_30d");
   const [groupBy, setGroupBy] = useState("platform");
   const [client, setClient] = useState("all");
-  const [state, setState] = useState<{ summary: Summary; campaigns: { campaigns: any[] }; ledger: { entries: any[] } } | null>(null);
+  const [state, setState] = useState<{ summary: Summary; campaigns: { campaigns: CampaignRow[] }; ledger: { entries: any[] } } | null>(null);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const scopes = useMemo(() => [...new Set(data.budgets.map((b) => b.scopeKey))], [data.budgets]);
@@ -438,8 +438,8 @@ function ChangesTab({ data, run, narrow, openProposal }: { data: Overview; run: 
 }
 
 /** Active Meta and Google campaigns with their cap; the only place a person sets one. */
-function CampaignCapsCard({ campaigns, run, onSet }: { campaigns: any[]; run: Run; onSet: () => void }) {
-  const [editing, setEditing] = useState<any | null>(null);
+function CampaignCapsCard({ campaigns, run, onSet }: { campaigns: CampaignRow[]; run: Run; onSet: () => void }) {
+  const [editing, setEditing] = useState<CampaignRow | null>(null);
   const rows = useMemo(
     () => campaigns
       .filter((c) => c.status === "active" && (c.platform === "meta" || c.platform === "google"))
@@ -470,7 +470,7 @@ function CampaignCapsCard({ campaigns, run, onSet }: { campaigns: any[]; run: Ru
   );
 }
 
-function CapModal({ campaign, run, onClose, onSet }: { campaign: any | null; run: Run; onClose: () => void; onSet: () => void }) {
+function CapModal({ campaign, run, onClose, onSet }: { campaign: CampaignRow | null; run: Run; onClose: () => void; onSet: () => void }) {
   const [text, setText] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
@@ -484,20 +484,12 @@ function CapModal({ campaign, run, onClose, onSet }: { campaign: any | null; run
   const exponent: number = campaign.currencyExponent ?? 2;
   const minor = capMinorFromInput(text, exponent);
   const submit = async () => {
-    if (minor === null) {
-      setError(`Type an amount in ${campaign.currency} above zero${exponent ? `, with at most ${exponent} decimal${exponent === 1 ? "" : "s"}` : ", without decimals"}.`);
-      return;
-    }
-    if (!confirming) {
-      setError("");
-      setConfirming(true);
-      return;
-    }
     setBusy(true);
     try {
-      await run("ads.set-campaign-cap", { accountId: campaign.accountId, campaignExternalId: campaign.campaignExternalId, capMinor: minor }, "Cap set");
-      onSet();
-      onClose();
+      const step = await capSubmitStep(campaign, minor, confirming, run);
+      if (step === "invalid") setError(`Type an amount in ${campaign.currency} above zero${exponent ? `, with at most ${exponent} decimal${exponent === 1 ? "" : "s"}` : ", without decimals"}.`);
+      else if (step === "confirm") { setError(""); setConfirming(true); }
+      else { onSet(); onClose(); }
     } catch (e) {
       setError(errorText(e));
       setConfirming(false);

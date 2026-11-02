@@ -107,3 +107,16 @@ export const ACTION_TEXT: Record<string, string> = {
   pause_requested: "Asked to pause ads",
   "alert.raised": "Raised an alert",
 };
+
+/** One press of the cap button: first press asks to confirm, second press writes. Returns what the modal should do next. */
+export async function capSubmitStep(
+  campaign: { accountId: string; campaignExternalId: string },
+  minor: number | null,
+  confirming: boolean,
+  run: (key: "ads.set-campaign-cap", params: Record<string, unknown>, success: string) => Promise<unknown>,
+): Promise<"invalid" | "confirm" | "done"> {
+  if (minor === null) return "invalid";
+  if (!confirming) return "confirm";
+  await run("ads.set-campaign-cap", { accountId: campaign.accountId, campaignExternalId: campaign.campaignExternalId, capMinor: minor }, "Cap set");
+  return "done";
+}

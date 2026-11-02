@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { budgetAlerts, detectCpaOverTarget, detectSpendSpike, detectZeroDelivery, type SeriesPoint } from "../src/alerts.js";
 import { activeDaysThisMonth, capImpact, monthPace } from "../src/budgets.js";
 import { checkCreative } from "../src/creative.js";
@@ -366,5 +366,19 @@ describe("campaign cap conversion", () => {
     expect(capMinorFromInput("1000000000.01", 2)).toBeNull();
     expect(capConfirmText("Brand", "ZAR", 2, 150000)).toBe("You are setting ZAR 1500.00 (150000 minor units) on Brand");
     expect(capConfirmText("Yen", "JPY", 0, 1500)).toBe("You are setting JPY 1500 (1500 minor units) on Yen");
+  });
+});
+
+describe("campaign cap submit step", () => {
+  it("first press confirms without writing, second writes capMinor", async () => {
+    const { capSubmitStep } = await import("../src/ui/series.js");
+    const run = vi.fn(async () => ({}));
+    const c = { accountId: "a1", campaignExternalId: "c1" };
+    expect(await capSubmitStep(c, null, false, run)).toBe("invalid");
+    expect(await capSubmitStep(c, 150000, false, run)).toBe("confirm");
+    expect(run).not.toHaveBeenCalled();
+    expect(await capSubmitStep(c, 150000, true, run)).toBe("done");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("ads.set-campaign-cap", { accountId: "a1", campaignExternalId: "c1", capMinor: 150000 }, "Cap set");
   });
 });

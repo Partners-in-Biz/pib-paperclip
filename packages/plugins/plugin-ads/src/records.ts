@@ -166,7 +166,9 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
   for (const r of rows) sums.set(key(r.account_id, r.campaign_external_id), sumRows([sums.get(key(r.account_id, r.campaign_external_id)) ?? emptyTotals(), r]));
   return {
     last7Days: { since, until: today(rt) },
-    campaigns: campaigns.map((c) => ({
+    campaigns: campaigns.map((c) => {
+      const cap = capByCampaign.get(`${c.platform}|${c.external_id}`);
+      return {
       accountId: c.account_id,
       accountName: c.account_name,
       platform: c.platform,
@@ -179,10 +181,11 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
       dailyBudget: c.daily_budget_minor === null ? null : formatMoney(c.daily_budget_minor, c.currency),
       currency: c.currency,
       currencyExponent: currencyExponent(c.currency),
-      capMinor: capByCampaign.get(`${c.platform}|${c.external_id}`) ?? null,
-      cap: capByCampaign.has(`${c.platform}|${c.external_id}`) ? formatMoney(capByCampaign.get(`${c.platform}|${c.external_id}`)!, c.currency) : null,
+      capMinor: cap ?? null,
+      cap: cap === undefined ? null : formatMoney(cap, c.currency),
       ...shaped(sums.get(key(c.account_id, c.external_id)) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, installs: 0, value: 0 }, c.currency),
-    })),
+      };
+    }),
   };
 }
 
