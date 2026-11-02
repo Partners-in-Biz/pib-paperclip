@@ -72,6 +72,7 @@ export const FACEBOOK_SCOPES = [
   "instagram_content_publish",
   "instagram_manage_comments",
   "instagram_manage_insights",
+  "read_insights",
 ];
 
 interface MetaPage {
@@ -292,20 +293,42 @@ export const facebookProvider: SocialProvider = {
       shares: count(data.shares?.count),
       raw: { fields: data },
     };
+    type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
+    const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
+    // Call 1: impressions and reach. Isolated so a bad clicks metric never blanks them.
     const insights = await bestEffort(() =>
-      metaGet<{ data?: Array<{ name: string; values?: Array<{ value?: number }> }> }>(`${base}/${externalId}/insights`, {
-        metric: "post_impressions,post_impressions_unique,post_clicks",
+      metaGet<InsightRows>(`${base}/${externalId}/insights`, {
+        metric: "post_media_view,post_total_media_view_unique",
         access_token: token,
       }, "Facebook insights"),
     );
-    for (const row of insights.value?.data ?? []) {
-      const value = optionalCount(row.values?.[0]?.value);
-      if (row.name === "post_impressions") {
-        snapshot.impressions = value;
-        snapshot.views = value ?? 0;
+    if (insights.error !== undefined) {
+      snapshot.insightsError = cleanError(insights.error);
+    } else {
+      const rows = insights.value?.data ?? [];
+      const read = (name: string) => {
+        const row = rows.find((r) => r.name === name);
+        return row ? optionalCount(row.values?.[0]?.value ?? row.total_value?.value) : undefined;
+      };
+      const media = read("post_media_view");
+      const unique = read("post_total_media_view_unique");
+      if (media === undefined || media === null) snapshot.insightsError = "insights: missing post_media_view";
+      else {
+        snapshot.impressions = media;
+        snapshot.views = media;
       }
-      if (row.name === "post_impressions_unique") snapshot.reach = value;
-      if (row.name === "post_clicks") snapshot.clicks = value;
+      if (unique === undefined || unique === null) snapshot.insightsError ??= "insights: missing post_total_media_view_unique";
+      else snapshot.reach = unique;
+    }
+    // Call 2: clicks, on its own so an invalid-metric error cannot affect call 1.
+    const clicks = await bestEffort(() =>
+      metaGet<InsightRows>(`${base}/${externalId}/insights`, { metric: "post_clicks", access_token: token }, "Facebook insights"),
+    );
+    if (clicks.error !== undefined) {
+      snapshot.insightsError ??= cleanError(clicks.error);
+    } else {
+      const row = clicks.value?.data?.find((r) => r.name === "post_clicks");
+      snapshot.clicks = optionalCount(row?.values?.[0]?.value ?? row?.total_value?.value);
     }
     return snapshot;
   },
