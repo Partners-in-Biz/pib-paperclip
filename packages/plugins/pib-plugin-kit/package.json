@@ -20,7 +20,8 @@
     "./run-profile": "./src/run-profile.ts",
     "./privacy": "./src/privacy.ts",
     "./escalate": "./src/escalate.ts",
-    "./redact": "./src/redact.ts"
+    "./redact": "./src/redact.ts",
+    "./permissions": "./src/permissions.ts"
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",
