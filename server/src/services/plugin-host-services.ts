@@ -34,6 +34,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { resolvePluginIssueWindow } from "./plugin-issue-window.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
@@ -1904,7 +1905,8 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // Page in SQL: the service applies limit/offset itself, so do not window the rows again.
+        return (await issues.list(companyId, { ...(params as any), ...resolvePluginIssueWindow(params) })) as Issue[];
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
