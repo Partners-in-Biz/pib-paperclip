@@ -3,7 +3,7 @@
  * printable document, sending through the Mailbox after approval, voiding,
  * and recurring copies that keep every field.
  */
-import { invoiceNumberLabel } from "./invoice-number.js";
+import { invoiceNumberLabel, NO_NUMBER_YET } from "./invoice-number.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
@@ -34,7 +34,7 @@ import { docFileName, FALLBACK_SENDER_NAME, renderDocument, type DocKind, type D
 import { BillingError, buildInvoiceHtml, canSeeInvoice, isOpenStatus, markSent, mergeCustomer, nextRunDate, type InvoiceState, type RecurringFrequency } from "./domain.js";
 import { invoiceEmail, parseAddresses, queueMail, quoteEmail, type EmailContent, type MailKind } from "./mail.js";
 import { assertTaxCode, computeDocument, isTaxCodeValue, type DocumentTotals } from "./money.js";
-import { nextDocumentNumber } from "./numbering.js";
+import { ensureInvoiceNumber, nextDocumentNumber } from "./numbering.js";
 import { emitQuoteAccepted } from "./handoff.js";
 import { emitInvoiceItem } from "./openitems.js";
 import { postInvoiceIssue, postInvoiceVoid } from "./posting.js";
@@ -266,7 +266,7 @@ export async function createInvoice(ctx: PluginContext, context: PluginPerformAc
   const row: InvoiceRow = {
     id: randomUUID(),
     company_id: companyId,
-    number: await nextDocumentNumber(ctx, companyId, "invoice", { kind: customerKind, ref: customerRef, name: String(customer.name) }, settings),
+    number: NO_NUMBER_YET,
     status: "draft",
     currency,
     customer_kind: customerKind,
@@ -575,7 +575,7 @@ export async function convertQuote(ctx: PluginContext, context: PluginPerformAct
   return {
     quote: publicQuote(quote),
     invoice: publicInvoice({ ...invoice, created_at: new Date().toISOString() }),
-    next: `Check draft invoice ${invoice.number} (invoice-detail), then ask for it to be sent with request-invoice-send.`,
+    next: `Check draft invoice ${invoiceNumberLabel(invoice.number)} (invoice-detail), then ask for it to be sent with request-invoice-send.`,
   };
 }
 
@@ -598,7 +598,7 @@ export async function convertQuoteRow(ctx: PluginContext, quote: QuoteRow, optio
     invoice = {
       id: options.invoiceId ?? randomUUID(),
       company_id: quote.company_id,
-      number: await nextDocumentNumber(ctx, quote.company_id, "invoice", { kind: quote.customer_kind, ref: quote.customer_ref, name: String(customer.name ?? quote.customer_ref) }, settings),
+      number: NO_NUMBER_YET,
       status: "draft",
       currency: quote.currency,
       customer_kind: quote.customer_kind,
@@ -834,6 +834,8 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
   if (!invoice) throw new BillingError("Invoice was not found");
   if (invoice.status !== "draft") throw new BillingError("Only a draft invoice can be sent");
   const { settings, resolver } = await loadBilling(ctx, invoice.company_id);
+  // The number is claimed here, after the person's "done", and before the snapshot and PDF so both carry it.
+  await ensureInvoiceNumber(ctx, invoice, settings);
   const frozen = await freeze(ctx, invoice, settings);
   await ctx.db.execute(
     `UPDATE ${table(ctx, "invoices")} SET sender_snapshot = $2::jsonb, customer_snapshot = $3::jsonb, updated_at = now() WHERE id = $1`,
@@ -948,6 +950,7 @@ export async function markSentAction(ctx: PluginContext, context: PluginPerformA
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   if (invoice.status !== "draft") throw new BillingError("Only a draft invoice can be marked sent");
   const { settings } = await loadBilling(ctx, companyId);
+  await ensureInvoiceNumber(ctx, invoice, settings);
   const frozen = await freeze(ctx, invoice, settings);
   await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET sender_snapshot = $2::jsonb, customer_snapshot = $3::jsonb WHERE id = $1`, [invoice.id, JSON.stringify(frozen.sender), JSON.stringify(frozen.customer)]);
   const fresh = await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
@@ -1128,7 +1131,7 @@ export async function invoiceHtmlOf(ctx: PluginContext, invoice: InvoiceRow, set
 export function invoiceHtmlFrom(invoice: InvoiceRow, view: DocView): string {
   return buildInvoiceHtml({
     kind: "Invoice",
-    number: invoice.number,
+    number: invoiceNumberLabel(invoice.number),
     status: invoice.status,
     currency: invoice.currency,
     sender: view.sender,

@@ -11,7 +11,7 @@ import { insertInvoice, insertLine, table, type InvoiceRow } from "./db.js";
 import { BillingError } from "./domain.js";
 import { customerFrom, defaultDueAt, defaultTax, describePeriod, recomputeInvoice, senderFrom, startInvoiceSend } from "./invoices.js";
 import { assertTaxCode } from "./money.js";
-import { nextDocumentNumber } from "./numbering.js";
+import { NO_NUMBER_YET } from "./invoice-number.js";
 import { actorLabel, currencyCode, integer, optionalBoolean, optionalDate, optionalString, readClientScope, requiredCompany, requiredString, requirePerson } from "./util.js";
 import { nextRunDate, type RecurringFrequency } from "./domain.js";
 
@@ -212,7 +212,7 @@ export async function runSubscriptions(ctx: PluginContext, companyId: string, no
       const invoice: InvoiceRow = {
         id: randomUUID(),
         company_id: companyId,
-        number: await nextDocumentNumber(ctx, companyId, "invoice", { kind: sub.customer_kind, ref: sub.customer_ref, name: String(customer.name) }, settings),
+        number: NO_NUMBER_YET,
         status: "draft",
         currency: sub.currency,
         customer_kind: sub.customer_kind,

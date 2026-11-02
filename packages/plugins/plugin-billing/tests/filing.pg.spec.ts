@@ -7,7 +7,7 @@ import plugin from "../src/worker.js";
 import { getInvoice } from "../src/db.js";
 import { openInvoiceFilingIssue } from "../src/filing.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const ORIGIN = "billing:drive-file:invoice:";
@@ -41,6 +41,7 @@ describe.skipIf(!available)("paid invoice filing issue (postgres)", () => {
   async function sent(customerRef = "ct-lumen") {
     const invoice = await draft(customerRef);
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     return invoice;
   }
   const pay = (invoiceId: string, key = "all") => h.call("billing.record-payment", { invoiceId, amountMinor: 115_000, paymentKey: key });

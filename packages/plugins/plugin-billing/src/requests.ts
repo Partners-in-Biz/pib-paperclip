@@ -20,6 +20,7 @@ import { asObject, getInvoice, table } from "./db.js";
 import { assertPaymentAmount, BillingError, daysPastDue, isOpenStatus } from "./domain.js";
 import { DUNNABLE, optedOutClients, queueReminderStage, reminderVars, requestStage, sentStages } from "./dunning.js";
 import { recipientsFor, requireOwnInvoice, requireQuote } from "./invoices.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { parseAddresses, renderTemplate } from "./mail.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { closePopIssues, getPop, listPops, recordDecisionIssue, recordPop } from "./pop.js";
@@ -148,8 +149,8 @@ const SEND_NEXT = "Wait for the approval. When a person marks the issue done, Bi
 export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>): Promise<SendRequestResult> {
   const companyId = requiredCompany(context);
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
-  if (invoice.status === "cancelled") throw new BillingError(`Invoice ${invoice.number} is cancelled`);
-  if (invoice.status !== "draft") throw new BillingError(`Invoice ${invoice.number} is already sent (${invoice.status}). Only a draft can be sent.`);
+  if (invoice.status === "cancelled") throw new BillingError(`Invoice ${invoiceNumberLabel(invoice.number)} is cancelled`);
+  if (invoice.status !== "draft") throw new BillingError(`Invoice ${invoiceNumberLabel(invoice.number)} is already sent (${invoice.status}). Only a draft can be sent.`);
   if (invoice.delivery_status === "queued") throw new BillingError("This invoice is already being sent");
   if (Number(invoice.total_minor) <= 0) throw new BillingError("Add a line before sending the invoice");
   const { settings } = await loadBilling(ctx, companyId);
@@ -196,11 +197,11 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     [invoice.id, issue.id, staleIssue],
   );
   if ((claim.rowCount ?? 0) === 0) {
-    await withdrawIssue(ctx, companyId, issue.id, `invoice ${invoice.number} changed while this was opened (another send request, or it was sent).`);
+    await withdrawIssue(ctx, companyId, issue.id, `invoice ${invoiceNumberLabel(invoice.number)} changed while this was opened (another send request, or it was sent).`);
     const fresh = await getInvoice(ctx, invoice.id);
     const other = fresh?.pending_action === "send" ? await openIssue(ctx, companyId, fresh.approval_issue_id) : null;
     if (other) return { invoiceId: invoice.id, number: invoice.number, issueId: other.id, issue: issuePath(prefix, other), pendingAction: "send", recipients, reviewer: false, already: true, next: SEND_NEXT };
-    throw new BillingError(`Invoice ${invoice.number} changed while asking (it may be sent already). Check it with invoice-detail.`);
+    throw new BillingError(`Invoice ${invoiceNumberLabel(invoice.number)} changed while asking (it may be sent already). Check it with invoice-detail.`);
   }
   const ref = await issueRef(ctx, companyId, issue.id);
   return { invoiceId: invoice.id, number: invoice.number, issueId: issue.id, issue: issuePath(prefix, ref), pendingAction: "send", recipients, reviewer: route.reviewer, already: false, next: SEND_NEXT };
@@ -418,7 +419,7 @@ export async function requestCreditDecision(ctx: PluginContext, context: PluginP
 export async function requestPaymentCheck(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
-  if (invoice.status === "draft") throw new BillingError(`Invoice ${invoice.number} is still a draft: it was never sent, so nothing can be paid on it yet`);
+  if (invoice.status === "draft") throw new BillingError(`Invoice ${invoiceNumberLabel(invoice.number)} is still a draft: it was never sent, so nothing can be paid on it yet`);
   if (invoice.status === "cancelled") throw new BillingError(`Invoice ${invoice.number} is cancelled`);
   if (!isOpenStatus(invoice.status)) throw new BillingError(`Invoice ${invoice.number} is already ${invoice.status.replace(/_/g, " ")}. Nothing to check.`);
   const note = requiredString(params, "note").slice(0, 1000);

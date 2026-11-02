@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const ROLES = "plugin.partnersinbiz.cockpit.roles.updated";
@@ -56,6 +56,7 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
   async function sent(unitAmountMinor = 100_000) {
     const invoice = await draft(unitAmountMinor);
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     return invoice;
   }
 
@@ -77,7 +78,7 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
       const asked = await tool("request-invoice-send", { invoiceId: invoice.id });
       expect(asked.error).toBeUndefined();
       expect(asked.content).toBe("Send approval issue opened for a person");
-      expect(asked.data).toMatchObject({ invoiceId: invoice.id, number: "LUM-001", pendingAction: "send", already: false, recipients: [{ email: "ap@lumen.test", name: "Lumen Digital" }] });
+      expect(asked.data).toMatchObject({ invoiceId: invoice.id, number: null, pendingAction: "send", already: false, recipients: [{ email: "ap@lumen.test", name: "Lumen Digital" }] });
       expect(asked.data.issue).toMatch(/^\/PIB\/issues\/PIB-\d+$/);
       const issue = h.issues.get(asked.data.issueId)!;
       // A draft's number means nothing to the person yet: the title names the client and the amount.
@@ -388,6 +389,7 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
       const converted = (await tool("convert-quote", { quoteId: quote.id })).data as { invoice: { id: string; dealId: string } };
       expect(converted.invoice.dealId).toBe("deal-42");
       await h.call("billing.mark-sent", { invoiceId: converted.invoice.id });
+      converted.invoice.number = (await invoiceNumber(h, converted.invoice.id))!;
       await h.call("billing.record-payment", { invoiceId: converted.invoice.id, amountMinor: 1_000_000, paymentKey: "part" });
       expect(handoffs("invoice.paid")).toHaveLength(0);
       await h.call("billing.record-payment", { invoiceId: converted.invoice.id, amountMinor: 1_300_000, paymentKey: "rest" });
@@ -425,14 +427,14 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
   it("keeps agent tool results compact and actionable", async () => {
     const invoice = await draft();
     const detail = (await tool("invoice-detail", { invoiceId: invoice.id })).data;
-    expect(detail).toMatchObject({ mode: "compact", invoice: { id: invoice.id, number: "LUM-001", status: "draft" } });
+    expect(detail).toMatchObject({ mode: "compact", invoice: { id: invoice.id, status: "draft" } });
     // Everything stays reachable by id: the full detail is one parameter away.
     const full = (await tool("invoice-detail", { invoiceId: invoice.id, compact: false })).data;
-    expect(full.invoice).toMatchObject({ id: invoice.id, number: "LUM-001", status: "draft", createdAt: expect.any(String) });
+    expect(full.invoice).toMatchObject({ id: invoice.id, number: null, status: "draft", createdAt: expect.any(String) });
     const created = await tool("create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-unknown" });
     expect(created.data.error).toBe("customerName is required (the customer is not in the CRM client list yet)");
     const named = await tool("create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-unknown", customerName: "New Client" });
-    expect(named.data.number).toMatch(/^NEW-001$/);
+    expect(named.data.number).toBeNull(); // numbered when sent
     void agentContext;
   });
 });
