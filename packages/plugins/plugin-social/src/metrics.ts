@@ -14,11 +14,12 @@ import {
   iso,
   markMetricWindows,
   publishedDestinationsForMetrics,
+  recollectDestinations,
   setDestinationExternal,
   setDestinationMetricsError,
   type DestinationRow,
 } from "./db.js";
-import { dueMetricWindow } from "./domain.js";
+import { dueMetricWindow, SocialError } from "./domain.js";
 import { ProviderHttpError, PublishRejected } from "./oauth/http.js";
 import { providerFor } from "./oauth/registry.js";
 import { socialOn } from "./modules.js";
@@ -134,4 +135,92 @@ export async function collectMetricsJob(ctx: PluginContext, ensureCompany: (comp
     }
   }
   return summary;
+}
+
+// ── recollect-post-metrics (admin backfill) ─────────────────────────────────
+
+export interface RecollectItem {
+  destinationId: string;
+  platform: string;
+  window: string | null;
+  action: "inserted" | "filled" | "unchanged" | "skipped" | "error";
+  message?: string;
+}
+
+function clampInt(value: unknown, key: string, fallback: number, max: number): number {
+  if (value == null || value === "") return fallback;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new SocialError(`${key} must be a whole number from 1 to ${max}`);
+  return Math.min(n, max);
+}
+
+/**
+ * Re-read the provider's numbers for the latest passed window of recent published
+ * destinations and fill NULL cells (insertMetrics never overwrites a number).
+ * Older window rows are not repaired.
+ */
+export async function recollectPostMetrics(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const sinceDays = clampInt(params.sinceDays, "sinceDays", 14, 32);
+  const limit = clampInt(params.limit, "limit", 50, 50);
+  const destinationId = typeof params.destinationId === "string" && params.destinationId.trim() ? params.destinationId.trim() : undefined;
+  const config = await loadSocialConfig(ctx, companyId);
+  const rows = await recollectDestinations(ctx, companyId, sinceDays, limit, destinationId);
+  const items: RecollectItem[] = [];
+  for (const dest of rows.slice(0, limit)) items.push(await recollectOne(ctx, config, dest));
+  const totals: Record<string, number> = { inserted: 0, filled: 0, unchanged: 0, skipped: 0, error: 0 };
+  for (const item of items) totals[item.action] = (totals[item.action] ?? 0) + 1;
+  return { sinceDays, limit, destinations: items, totals };
+}
+
+async function recollectOne(ctx: PluginContext, config: SocialConfig, dest: DestinationRow & { platform: string }): Promise<RecollectItem> {
+  const base = { destinationId: dest.id, platform: dest.platform };
+  const decision = dueMetricWindow(iso(dest.published_at), []);
+  const window = decision.capture;
+  if (!window) return { ...base, window: null, action: "skipped", message: "no metric window has passed yet" };
+  if (!isSocialPlatform(dest.platform)) return { ...base, window, action: "skipped", message: "platform has no metrics" };
+  const provider = providerFor(dest.platform);
+  if (!provider.metrics || !dest.external_id) return { ...base, window, action: "skipped", message: "platform has no metrics API" };
+  const row = await getAccount(ctx, config.companyId, dest.account_id);
+  if (!row || !row.token_enc || row.status === "disabled") return { ...base, window, action: "skipped", message: "account is disconnected or disabled" };
+  if (dest.platform === "linkedin" && accountMeta(row).kind !== "organization") {
+    return { ...base, window, action: "skipped", message: "LinkedIn personal-profile analytics are not available to this app" };
+  }
+  try {
+    const account = await freshAccount(ctx, config, row);
+    const env = await envFor(config, dest.platform, account.meta);
+    const snapshot = await provider.metrics(env, account, dest.external_id);
+    if (!snapshot) return { ...base, window, action: "skipped", message: "provider returned no metrics yet" };
+    const action = await insertMetrics(ctx, {
+      companyId: config.companyId,
+      postId: dest.post_id,
+      destinationId: dest.id,
+      accountId: dest.account_id,
+      platform: dest.platform,
+      window,
+      views: snapshot.views,
+      likes: snapshot.likes,
+      comments: snapshot.comments,
+      shares: snapshot.shares,
+      impressions: snapshot.impressions ?? null,
+      reach: snapshot.reach ?? null,
+      saves: snapshot.saves ?? null,
+      clicks: snapshot.clicks ?? null,
+      raw: { ...(snapshot.raw ?? {}), backfill: true },
+    });
+    if (snapshot.insightsError) {
+      const message = sanitizeMetricsMessage(snapshot.insightsError);
+      await setDestinationMetricsError(ctx, dest.id, { at: new Date().toISOString(), window, kind: "insights", message });
+      return { ...base, window, action, message };
+    }
+    await clearDestinationMetricsError(ctx, dest.id);
+    await markMetricWindows(ctx, dest.id, [window]);
+    return { ...base, window, action };
+  } catch (error) {
+    const message = sanitizeMetricsMessage(error instanceof Error ? error.message : String(error));
+    await setDestinationMetricsError(ctx, dest.id, {
+      at: new Date().toISOString(), window, kind: "provider",
+      ...(error instanceof ProviderHttpError ? { status: error.status } : {}), message,
+    }).catch(() => undefined);
+    return { ...base, window, action: "error", message };
+  }
 }
