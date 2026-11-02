@@ -1,4 +1,5 @@
 /** The actions and tools behind online payments: make a link, list links, withdraw one, record a refund, rehearse a payment. */
+import { invoiceNumberLabel } from "../invoice-number.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { isCanaryCustomer } from "../canary.js";
@@ -50,7 +51,7 @@ function providerParam(params: Record<string, unknown>): ProviderKey | null {
 export async function createPaymentLinkAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
-  if (invoice.status === "draft") throw new BillingError(`Invoice ${invoice.number} is still a draft. Its payment link is made when it is sent, for what it owes then.`);
+  if (invoice.status === "draft") throw new BillingError(`Invoice ${invoiceNumberLabel(invoice.number)} is still a draft. Its payment link is made when it is sent, for what it owes then.`);
   if (!isOpenStatus(invoice.status)) throw new BillingError(`Invoice ${invoice.number} is ${invoice.status.replace(/_/g, " ")}, so there is nothing to pay online.`);
   const { settings } = await loadBilling(ctx, companyId);
   const on = enabledProviderKeys(settings);

@@ -16,7 +16,7 @@ import { CANARY_SKIPPED } from "../src/followups.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { APPROVAL_ORIGINS, WORK_ORIGINS } from "../src/origins.js";
 import plugin from "../src/worker.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const ROLES = "plugin.partnersinbiz.cockpit.roles.updated";
@@ -99,6 +99,7 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
   async function overdue(ref: string, daysAgo: number, kind: "company" | "contact" = "company") {
     const invoice = await draft(ref, kind);
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     await h.client.query(`UPDATE ${NAMESPACE}.invoices SET due_at = now() - ($2 || ' days')::interval WHERE id = $1`, [invoice.id, String(daysAgo)]);
     return invoice;
   }
@@ -245,8 +246,8 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
       const row = (await workIssue(`billing:drafts-to-send:${COMPANY}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue.title).toBe("Drafts to send: 1 invoice waiting");
-      expect(issue.description).toContain(`Invoice ${real.number}`);
-      for (const number of [canaryInvoice.number, canaryContactInvoice.number, canaryQuote.number, canaryAccepted.number]) expect(issue.description).not.toContain(number);
+      expect(issue.description).toContain(`Invoice Draft (\`${real.id}\`)`);
+      for (const id of [canaryInvoice.id, canaryContactInvoice.id, canaryQuote.number, canaryAccepted.number]) expect(issue.description).not.toContain(id);
       expect(h.wakeups).toEqual([row.issue_id]);
     });
   });
@@ -338,14 +339,17 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
     it("never include a canary invoice, so no real bank line can be matched to it; a real sent invoice is still sent", async () => {
       const canary = await draft(CANARY);
       await h.call("billing.mark-sent", { invoiceId: canary.id });
+      canary.number = (await invoiceNumber(h, canary.id))!;
       const canaryContact = await draft(CANARY_CONTACT, "contact");
       await h.call("billing.mark-sent", { invoiceId: canaryContact.id });
+      canaryContact.number = (await invoiceNumber(h, canaryContact.id))!;
       await h.runJob("emit-open-items");
       await h.runJob("emit-open-items-all");
       expect(items()).toEqual([]);
 
       const real = await draft("ct-lumen", "contact");
       await h.call("billing.mark-sent", { invoiceId: real.id });
+      real.number = (await invoiceNumber(h, real.id))!;
       await h.runJob("emit-open-items-all");
       expect(items().map((item) => item.key)).toContain(`invoice:${real.id}`);
       expect(items().map((item) => item.key)).not.toContain(`invoice:${canary.id}`);

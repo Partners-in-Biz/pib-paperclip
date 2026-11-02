@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { isBalanced, type LedgerPostRequested } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const MAILBOX_RESULT = "plugin.partnersinbiz.mailbox.mail.send.result";
@@ -52,7 +52,16 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
   async function sentInvoice(customerRef = "ct-lumen", lines?: Parameters<typeof draft>[1]) {
     const invoice = await draft(customerRef, lines);
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id)); // claimed by the send
     return invoice;
+  }
+
+  /** A draft taken through the send, which is when it gets its number. */
+  async function numbered(customerRef = "ct-lumen") {
+    const invoice = await draft(customerRef, []);
+    expect(invoice.number).toBeNull();
+    await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    return (await invoiceNumber(h, invoice.id));
   }
 
   async function detail(invoiceId: string) {
@@ -61,18 +70,18 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
 
   describe("numbering", () => {
     it("numbers per client prefix, deduplicates prefixes and keeps kinds apart", async () => {
-      const a = await draft("ct-lumen", []);
-      const b = await draft("ct-lumen", []);
-      const c = await draft("ct-lumos", []);
-      expect(a.number).toBe("LUM-001");
-      expect(b.number).toBe("LUM-002");
-      expect(c.number).toBe("LUO-001");
+      const a = await numbered("ct-lumen");
+      const b = await numbered("ct-lumen");
+      const c = await numbered("ct-lumos");
+      expect(a).toBe("LUM-001");
+      expect(b).toBe("LUM-002");
+      expect(c).toBe("LUO-001");
       const quote = await h.call<{ number: string }>("billing.create-quote", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" });
       expect(quote.number).toBe("Q-LUM-001");
     });
 
-    it("never issues a number twice under concurrent drafting", async () => {
-      const numbers = await Promise.all(Array.from({ length: 8 }, () => draft("ct-lumen", []).then((i) => i.number)));
+    it("never issues a number twice under concurrent sends", async () => {
+      const numbers = await Promise.all(Array.from({ length: 8 }, () => numbered("ct-lumen")));
       expect(new Set(numbers).size).toBe(8);
       expect(numbers.sort()).toEqual(["LUM-001", "LUM-002", "LUM-003", "LUM-004", "LUM-005", "LUM-006", "LUM-007", "LUM-008"]);
     });
@@ -82,9 +91,9 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
         `INSERT INTO ${NAMESPACE}.invoices (id, company_id, number, status, currency, customer_kind, customer_ref) VALUES ('old-1', $1, 'LUM-007', 'paid', 'ZAR', 'contact', 'ct-lumen'), ('old-2', $1, 'INV-0003', 'paid', 'ZAR', 'contact', 'ct-lumen')`,
         [COMPANY],
       );
-      expect((await draft("ct-lumen", [])).number).toBe("LUM-008");
+      expect(await numbered()).toBe("LUM-008");
       h.config.set(COMPANY, { ...SETTINGS, numbering: { mode: "sequential" } });
-      expect((await draft("ct-lumen", [])).number).toBe("INV-0004");
+      expect(await numbered()).toBe("INV-0004");
       const old = await h.client.query(`SELECT number FROM ${NAMESPACE}.invoices WHERE id IN ('old-1', 'old-2') ORDER BY id`);
       expect(old.rows.map((r: any) => r.number)).toEqual(["LUM-007", "INV-0003"]);
     });
@@ -92,11 +101,11 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
 
   describe("set numbering", () => {
     it("sets the letters and continues from a start number", async () => {
-      await draft("ct-lumen", []);
+      await numbered();
       const set = await h.call<{ prefix: string; next: string }>("billing.set-numbering", { client: "contact:ct-lumen", prefix: "abc", nextNumber: 150 });
       expect(set).toMatchObject({ prefix: "ABC", next: "ABC-150" });
-      expect((await draft("ct-lumen", [])).number).toBe("ABC-150");
-      expect((await draft("ct-lumen", [])).number).toBe("ABC-151");
+      expect(await numbered()).toBe("ABC-150");
+      expect(await numbered()).toBe("ABC-151");
       await expect(h.call("billing.set-numbering", { client: "contact:ct-lumen", nextNumber: 100 })).rejects.toThrow(/already used/);
       await expect(h.call("billing.set-numbering", { client: "contact:ct-lumen", prefix: "AB1" })).rejects.toThrow(/three letters/);
       await draft("ct-lumos", []);
@@ -443,7 +452,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       await h.runJob("run-recurring");
       const rows = (await h.client.query(`SELECT id, number, notes, send_to, prices_include_vat, total_minor, recurring_key FROM ${NAMESPACE}.invoices WHERE recurring_id IS NOT NULL ORDER BY created_at`)).rows as any[];
       expect(rows).toHaveLength(2); // Aug and Sep (one period per run, catching up); Oct is not due yet
-      expect(rows[0]).toMatchObject({ number: "LUM-002", notes: "Thanks!", prices_include_vat: true, recurring_key: expect.stringMatching(/2026-08-01$/) });
+      expect(rows[0]).toMatchObject({ number: null, notes: "Thanks!", prices_include_vat: true, recurring_key: expect.stringMatching(/2026-08-01$/) });
       expect(rows[1].recurring_key).toMatch(/2026-09-01$/);
       expect(rows[0].send_to).toEqual([{ email: "ap@lumen.test", name: null }, { email: "cfo@lumen.test", name: null }]);
       const lines = (await h.client.query(`SELECT description, tax_code FROM ${NAMESPACE}.invoice_lines WHERE invoice_id = $1 ORDER BY created_at`, [rows[0].id])).rows;
@@ -667,11 +676,11 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     const listed = (await h.tools.get("list-open-invoices")!({}, run)) as { data: { items: unknown[]; count: number } };
     expect(listed.data).toEqual({ mode: "compact", total: 0, count: 0, offset: 0, items: [] });
     const created = (await h.tools.get("create-invoice")!({ currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen", customerName: "Lumen Digital" }, run)) as { data: { id: string; number: string } };
-    expect(created.data.number).toBe("LUM-001");
+    expect(created.data.number).toBeNull(); // numbered when it is sent
     const line = (await h.tools.get("add-line")!({ invoiceId: created.data.id, description: "Work", quantity: 1, unitAmountMinor: 1_000 }, run)) as { data: { totalMinor: number } };
     expect(line.data.totalMinor).toBe(1_150);
     const html = (await h.tools.get("invoice-html")!({ invoiceId: created.data.id }, run)) as { data: { html: string } };
-    expect(html.data.html).toContain("Invoice LUM-001");
+    expect(html.data.html).toContain("Draft");
     const report = (await h.tools.get("billing-report")!({}, run)) as { data: { agedDebtors: unknown } };
     expect(report.data.agedDebtors).toBeTruthy();
     void userContext;

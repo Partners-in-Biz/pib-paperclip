@@ -2,6 +2,8 @@
 
 Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
+**0.14.0** (billing send approval, step 2 of 4, PAR-6992): an invoice draft is created with no number (`invoices.number` NULL, shown as "Draft"); the number is claimed from the org sequence by `ensureInvoiceNumber` inside the send that follows a person's "done" (and in mark-sent). Quotes and credit notes are still numbered at creation. Rollback: see "Rolling back 0.14.0" below; do not re-pin 0.13.0 or older while NULL drafts exist.
+
 **0.13.0** (billing send approval, step 1 of 4, PAR-6991): `invoices.number` may be null and `invoices` gains `approval_recipients`, `sent_to` and `sent_message_id` (migration 017). **No behaviour change**: every creation site still assigns a number, and the previous release runs on the migrated schema. Rollback: redeploy 0.12.0; the columns stay unused.
 
 **0.7.1** (audit Q1b-2 / Q5-1 canary, "a rehearsal is harmless"): nothing the canary client does opens an issue or wakes anyone any more (see "The canary rehearsal", below). The Acceptance agent's quote-to-invoice journey accepts a canary quote, converts it itself and asks for the send approval; when the CRM marked the canary deal won, Billing opened "Deal won: … convert quote" and woke the Account Manager, which converted the quote at the same moment, so the journey's own `convert-quote` was refused ("Only an accepted quote can be converted") and the journey failed. A won canary deal now opens no issue and the other event and daily paths leave the canary out too. **No migration, no new capability, no new core read table**: a src-only release (rsync, then the plugin upgrade call). The skill gained one sentence (sync skills after the deploy).
@@ -11,6 +13,14 @@ Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: i
 **0.6.0** (audit Q5-6, Q8-11, Q10-6 money in, Q10-13, Q1b-2 canary): approvals can no longer open unassigned (kit routing), agent list tools return small paged answers, customers can pay an invoice online (PayFast ZAR / PayPal USD·EUR·GBP — see Online payments), a confirmed payment is matched and posted by itself, refunds are recorded, and a POPIA erasure request is handled. One new migration (`012`), **one new capability: `webhooks.receive` (stop-first deploy)**. A pre-existing bug is fixed too: the first send of an invoice showed "R 0.00" as the amount due in its email and PDF (the document was made while the row was still a draft); a test now holds it.
 
 Agents draft and ask. A person approves every send, every money change and voids. Billing has no agent role of its own: the Account Manager (CRM plugin) carries the `pib-invoice-draft` skill, and Billing's work goes to it (else the Bookkeeper, the Operator, the owner).
+
+## Rolling back 0.14.0 (numbers claimed at send)
+Older versions read `invoices.number` as non-null and throw on a NULL (`documents.ts:185`, `openitems.ts:45`, `ui/series.ts:263`). With 0.14.0 still deployed:
+1. List the unnumbered drafts: `SELECT id, customer_ref, created_at FROM invoices WHERE number IS NULL` (in the plugin schema).
+2. Approve (send) or delete each one through the UI. Sending numbers it; deleting an unnumbered draft removes the row and its lines and burns no number.
+3. Only when that query returns zero rows, re-pin the previous plugin version.
+The same zero-row check must pass before any future `ALTER TABLE invoices ALTER COLUMN number SET NOT NULL`.
+Known limit: `nextDocumentNumber` bumps `numbering_counters` and inserts `number_claims` before the invoice UPDATE, and the plugin db client has no transaction helper, so a crash between the two leaves one gap in the sequence, never a duplicate.
 
 ## Pages
 

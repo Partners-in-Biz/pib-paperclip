@@ -23,7 +23,7 @@ import { ONLINE_PAYMENTS_REFERENCE } from "../src/skills.js";
 import { applyProviderEvent } from "../src/pay/confirm.js";
 import { getLink } from "../src/pay/store.js";
 import { decimalFromMinor } from "../src/pay/types.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const WEBHOOK_SECRET = "secret-wh"; // the harness resolves a secret ref to `secret-<id>`
@@ -124,6 +124,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await h.call<{ id: string; number: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "SEO sprint", quantity: 1, unitAmountMinor });
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     return invoice;
   }
 
@@ -233,12 +234,12 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     // The send freezes the row as "sent" in memory before the database says so.
     const view = await invoiceView(h.ctx, { ...draft, status: "sent" }, await billingSettings(h.ctx, COMPANY));
     expect(view.outstandingMinor).toBe(115_000);
-    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain("invoice Draft for $1,150.00");
     expect(documentPdfSpec(view).totals!.find((t) => t.label === "Balance due")).toMatchObject({ value: "$1,150.00" });
     // and the mail that really goes out says the same
     await startInvoiceSend(h.ctx, invoice.id, "user:u1");
     const mail = (await outbox("mail.send.requested"))[0]!.payload as { text: string };
-    expect(mail.text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(mail.text).toContain(`invoice ${await invoiceNumber(h, invoice.id)} for $1,150.00`);
     expect(mail.text).not.toContain("$0.00");
   });
 
@@ -590,6 +591,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const canary = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: canary.id, description: "Test", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: canary.id });
+    canary.number = (await invoiceNumber(h, canary.id))!;
     const canaryLink = await h.call<{ links: Array<{ provider: string }> }>("billing.create-payment-link", { invoiceId: canary.id }, userContext());
     expect(canaryLink.links.map((l) => l.provider)).toEqual(["mock"]);
     expect((await invoiceView(h.ctx, (await getInvoice(h.ctx, canary.id))!, settings)).paymentLinks).toEqual([expect.objectContaining({ provider: "mock" })]);
@@ -597,6 +599,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const other = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: other.id, description: "Test 2", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: other.id });
+    other.number = (await invoiceNumber(h, other.id))!;
     await expect(h.call("billing.create-payment-link", { invoiceId: other.id }, userContext())).rejects.toThrow(/canary \(test\) client.*test provider is off/);
     expect(orderCalls()).toEqual([]);
   });

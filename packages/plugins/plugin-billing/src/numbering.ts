@@ -267,3 +267,25 @@ export async function setClientNumbering(
   const now = await clientNumbering(ctx, companyId, customer, settings);
   return { prefix, nextNumber: now.nextNumber, next: now.next ?? formatDocNumber("invoice", prefix, now.nextNumber, digitsOf(settings)) };
 }
+
+/**
+ * An invoice's number, claimed from the org sequence the first time it is needed (the send that follows a person's "done").
+ * Drafts are created with `number = null`; a draft that already holds a number keeps it and claims nothing, and a second call
+ * returns the number the first one wrote. Limit: `nextDocumentNumber` bumps the counter and inserts `number_claims` before the
+ * UPDATE and the plugin db client has no transaction, so a crash in between leaves one gap in the sequence, never a duplicate.
+ */
+export async function ensureInvoiceNumber(
+  ctx: PluginContext,
+  invoice: { id: string; company_id: string; number: string | null; customer_kind: string; customer_ref: string; customer: unknown },
+  settings: BillingSettings,
+): Promise<string> {
+  if (invoice.number) return invoice.number;
+  const customer = invoice.customer && typeof invoice.customer === "object" ? (invoice.customer as Record<string, unknown>) : {};
+  const claimed = await nextDocumentNumber(ctx, invoice.company_id, "invoice", { kind: invoice.customer_kind, ref: invoice.customer_ref, name: String(customer.name ?? invoice.customer_ref) }, settings);
+  await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET number = $2, updated_at = now() WHERE id = $1 AND number IS NULL`, [invoice.id, claimed]);
+  const rows = await ctx.db.query<{ number: string | null }>(`SELECT number FROM ${table(ctx, "invoices")} WHERE id = $1 LIMIT 1`, [invoice.id]);
+  const number = rows[0]?.number;
+  if (!number) throw new BillingError("Could not assign an invoice number");
+  invoice.number = number;
+  return number;
+}

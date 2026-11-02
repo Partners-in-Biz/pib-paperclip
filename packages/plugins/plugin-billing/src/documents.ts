@@ -154,7 +154,7 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
     const pay = paymentLines(view.payment, invoiceNumberLabel(view.number));
     if (pay.length) {
       sections.push({ heading: "Payment details (EFT)", lines: pay });
-      sections.push({ heading: "Proof of payment", lines: [`Use ${view.number} as your payment reference, then reply to our email with your proof of payment.`] });
+      sections.push({ heading: "Proof of payment", lines: [`Use ${invoiceNumberLabel(view.number)} as your payment reference, then reply to our email with your proof of payment.`] });
     }
   }
   if (view.kind === "credit_note" && view.reason) sections.push({ heading: "Reason", lines: [view.reason] });
@@ -162,7 +162,7 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
   const footerParts = [text(view.sender.name), text(view.sender.vatNumber) ? `VAT ${text(view.sender.vatNumber)}` : "", text(view.sender.registrationNumber) ? `Reg ${text(view.sender.registrationNumber)}` : ""].filter(Boolean);
   return {
     title: docTitle(view),
-    number: view.number,
+    number: invoiceNumberLabel(view.number),
     details,
     parties: [
       { heading: "From", lines: partyLines(view.sender, FALLBACK_SENDER_NAME) },

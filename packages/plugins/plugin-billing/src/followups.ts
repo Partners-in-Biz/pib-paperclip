@@ -20,6 +20,7 @@
  * leave the canary's documents out, so their done checks do too.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { formatMoneyMinor, HANDOFF_EVENTS, PIB_PLUGINS, pluginEvent, receiveOnce, type DealWon, type MailReceived } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalances, iso } from "./balances.js";
 import { billingSettings, dunningStages, type BillingSettings } from "./config.js";
@@ -84,7 +85,7 @@ export interface DraftItem {
  * what it drafts (the Cockpit cancels its send request when the run ends), so they would sit here and wake a real agent next morning.
  */
 export async function draftsWaiting(ctx: PluginContext, companyId: string, olderThanHours = DRAFT_AGE_HOURS): Promise<DraftItem[]> {
-  const invoices = await ctx.db.query<{ id: string; number: string; customer: unknown; customer_kind: string; customer_ref: string; total_minor: string | number; currency: string; created_at: unknown; recurring_id: string | null; subscription_id: string | null; quote_id: string | null; deal_id: string | null; approval_issue_id: string | null }>(
+  const invoices = await ctx.db.query<{ id: string; number: string | null; customer: unknown; customer_kind: string; customer_ref: string; total_minor: string | number; currency: string; created_at: unknown; recurring_id: string | null; subscription_id: string | null; quote_id: string | null; deal_id: string | null; approval_issue_id: string | null }>(
     `SELECT i.id, i.number, i.customer, i.customer_kind, i.customer_ref, i.total_minor, i.currency, i.created_at, i.recurring_id, i.subscription_id, i.quote_id, i.deal_id, i.approval_issue_id
        FROM ${table(ctx, "invoices")} i
       WHERE i.company_id = $1 AND i.status = 'draft' AND i.pending_action IS NULL AND COALESCE(i.delivery_status, '') <> 'queued'
@@ -124,7 +125,7 @@ export async function draftsWaiting(ctx: PluginContext, companyId: string, older
       kind: "invoice" as const,
       stage: "draft" as const,
       id: row.id,
-      number: row.number,
+      number: invoiceNumberLabel(row.number),
       customerName: nameOf(row.customer, row.customer_ref),
       client: clientRef(row.customer_kind, row.customer_ref),
       totalMinor: Number(row.total_minor),
@@ -438,13 +439,13 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
     `SELECT id, number, status, converted_invoice_id FROM ${table(ctx, "quotes")} WHERE company_id = $1 AND deal_id = $2 ORDER BY created_at DESC`,
     [companyId, deal.dealId],
   );
-  const invoices = await ctx.db.query<{ id: string; number: string; status: string }>(
+  const invoices = await ctx.db.query<{ id: string; number: string | null; status: string }>(
     `SELECT id, number, status FROM ${table(ctx, "invoices")} WHERE company_id = $1 AND deal_id = $2 AND status <> 'cancelled' ORDER BY created_at DESC`,
     [companyId, deal.dealId],
   );
   const issued = invoices.find((i) => i.status !== "draft");
   // Already invoiced (the quote was accepted and the invoice went out): nothing to draft.
-  if (issued) return { dealId: deal.dealId, skipped: `invoice ${issued.number} is already ${issued.status}` };
+  if (issued) return { dealId: deal.dealId, skipped: `invoice ${invoiceNumberLabel(issued.number)} is already ${issued.status}` };
   // The client signed first and Billing drafted the invoice itself: that signature has its own issue, so nothing is asked here twice.
   const signed = await draftedForDeal(ctx, companyId, deal.dealId);
   if (signed) return { dealId: deal.dealId, skipped: `an invoice was drafted from the document the client signed (${signed.document_id})` };
@@ -461,9 +462,9 @@ export async function openDealWonIssue(ctx: PluginContext, companyId: string, de
   if (draft || accepted) {
     // Already drafted: one next step only, so nobody drafts a second invoice for the same sale.
     const step = draft
-      ? `Invoice ${draft.number} (\`${draft.id}\`) is already drafted for this deal: check it with \`partnersinbiz.billing:invoice-detail\` and ask for approval with \`request-invoice-send\`. Do not draft another invoice for this deal.`
+      ? `Invoice ${invoiceNumberLabel(draft.number)} (\`${draft.id}\`) is already drafted for this deal: check it with \`partnersinbiz.billing:invoice-detail\` and ask for approval with \`request-invoice-send\`. Do not draft another invoice for this deal.`
       : `Quote ${accepted!.number} (\`${accepted!.id}\`) for this deal is accepted: \`convert-quote\` it, check the draft invoice and \`request-invoice-send\`. Do not draft another invoice for this deal.`;
-    title = draft ? `${prefixTitle}: send invoice ${draft.number}` : `${prefixTitle}: convert quote ${accepted!.number} and send the invoice`;
+    title = draft ? `${prefixTitle}: send invoice ${invoiceNumberLabel(draft.number)}` : `${prefixTitle}: convert quote ${accepted!.number} and send the invoice`;
     lines = [head, "", step, "", links, "Done when the invoice is waiting for approval. Billing checks that when you close it."];
   } else {
     title = `${prefixTitle}: draft the quote, invoice or retainer`;

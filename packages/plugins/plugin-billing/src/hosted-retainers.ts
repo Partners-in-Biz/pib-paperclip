@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { defaultTaxCode, loadBilling } from "./config.js";
 import { insertInvoice, insertLine, table, type InvoiceRow } from "./db.js";
 import { customerFrom, defaultDueAt, defaultTax, describePeriod, recomputeInvoice, senderFrom } from "./invoices.js";
-import { nextDocumentNumber } from "./numbering.js";
+import { NO_NUMBER_YET } from "./invoice-number.js";
 
 /** Monthly retainer per plan label, ZAR cents, excluding VAT (Peet, PAR-5300). The one place prices live. */
 export const HOSTED_PLAN_PRICES_MINOR = {
@@ -90,7 +90,7 @@ export async function runHostedRetainers(
       const invoice: InvoiceRow = {
         id: randomUUID(),
         company_id: companyId,
-        number: await nextDocumentNumber(ctx, companyId, "invoice", { kind: "company", ref: client.id, name: String(customer.name) }, settings),
+        number: NO_NUMBER_YET,
         status: "draft",
         currency: HOSTED_RETAINER_CURRENCY,
         customer_kind: "company",

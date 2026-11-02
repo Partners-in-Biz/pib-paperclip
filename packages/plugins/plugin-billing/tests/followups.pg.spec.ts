@@ -8,7 +8,7 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import type { CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const ROLES = "plugin.partnersinbiz.cockpit.roles.updated";
@@ -87,13 +87,13 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const row = (await workIssue(`billing:drafts-to-send:${COMPANY}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ assigneeAgentId: "agent-am", title: "Drafts to send: 2 invoices and 2 quotes waiting" });
-      expect(issue.description).toContain(`Invoice ${stale.number}`);
+      expect(issue.description).toContain(`Invoice Draft (\`${stale.id}\`)`);
       expect(issue.description).toContain("retainer");
       expect(issue.description).toContain(`Quote ${q.number}`);
       expect(issue.description).toContain("accepted: `convert-quote`, then `request-invoice-send`");
-      expect(issue.description).not.toContain(`Invoice ${fresh.number} (`);
-      expect(issue.description).not.toContain(`Invoice ${asked.number} (`);
-      expect(issue.description).not.toContain(`Invoice ${template.number} (`);
+      expect(issue.description).not.toContain(`\`${fresh.id}\``);
+      expect(issue.description).not.toContain(`\`${asked.id}\``);
+      expect(issue.description).not.toContain(`\`${template.id}\``);
       expect(issue.description).toContain("/PIB/billing?tab=invoices");
       expect(h.wakeups).toContain(row.issue_id);
 
@@ -107,7 +107,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await age("invoices", fresh.id, 30);
       await h.runJob("drafts-to-send");
       expect(h.issues.get(row.issue_id)!.title).toBe("Drafts to send: 3 invoices and 2 quotes waiting");
-      expect(commentsOn(row.issue_id).join("\n")).toContain(`New drafts waiting: ${fresh.number}`);
+      expect(commentsOn(row.issue_id).join("\n")).toContain(`New drafts waiting: Draft`);
       expect(h.wakeups.length).toBe(wakes + 1);
 
       // Everything handled: closed with a note.
@@ -159,6 +159,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
     async function overdue(days: number, customerRef = "ct-lumen") {
       const invoice = await draft(customerRef);
       await h.call("billing.mark-sent", { invoiceId: invoice.id });
+      invoice.number = (await invoiceNumber(h, invoice.id))!;
       await h.client.query(`UPDATE ${NAMESPACE}.invoices SET due_at = now() - ($2 || ' days')::interval WHERE id = $1`, [invoice.id, String(days)]);
       return invoice;
     }
@@ -295,6 +296,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen", dealId: "deal-2" });
       await h.call("billing.add-line", { invoiceId: invoice.id, description: "x", quantity: 1, unitAmountMinor: 100 });
       await h.call("billing.mark-sent", { invoiceId: invoice.id });
+      invoice.number = (await invoiceNumber(h, invoice.id))!;
       await h.deliver(DEAL_WON, COMPANY, won({ key: "crm:deal:deal-2:won", dealId: "deal-2" }));
       expect(await workIssue("billing:deal-won:deal-2")).toBeUndefined();
 
@@ -311,6 +313,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.deliver(MODULES, COMPANY, { companyId: COMPANY, modules: { accounting: false }, updatedAt: new Date().toISOString() });
       const a = await draft();
       await h.call("billing.mark-sent", { invoiceId: a.id });
+      a.number = (await invoiceNumber(h, a.id))!;
       await h.call("billing.record-payment", { invoiceId: a.id, amountMinor: 50_000, paymentKey: "k1" });
       await h.call("billing.create-credit-note", { invoiceId: a.id, amountMinor: 5_000, reason: "Discount" });
       await h.call("billing.write-off", { invoiceId: a.id, reason: "Closed" });
@@ -321,6 +324,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await h.call("billing.create-expense", { description: "Figma", amountMinor: 23_000, vatMinor: 3_000, category: "software", vatClaimable: true });
       const voided = await draft();
       await h.call("billing.mark-sent", { invoiceId: voided.id });
+      voided.number = (await invoiceNumber(h, voided.id))!;
       await h.call("billing.cancel-invoice", { invoiceId: voided.id, reason: "Wrong" });
       expect(await journalKeys()).toEqual([]);
 
@@ -346,6 +350,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       h.config.set(COMPANY, { ...SETTINGS, ledger: { enabled: false } });
       const a = await draft();
       await h.call("billing.mark-sent", { invoiceId: a.id });
+      a.number = (await invoiceNumber(h, a.id))!;
       await h.runJob("post-missing-journals");
       expect(await journalKeys()).toEqual([]);
       h.config.set(COMPANY, { ...SETTINGS, ledger: { enabled: true } });
@@ -366,6 +371,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       await draft();
       const sent = await draft();
       await h.call("billing.mark-sent", { invoiceId: sent.id });
+      sent.number = (await invoiceNumber(h, sent.id))!;
       await h.client.query(`UPDATE ${NAMESPACE}.invoices SET due_at = now() - interval '10 days' WHERE id = $1`, [sent.id]);
       const agent = { agentId: "agent-am", runId: "r", companyId: COMPANY, projectId: "p" };
       await h.tools.get("record-payment")!({ invoiceId: sent.id, amountMinor: 10_000 }, agent);

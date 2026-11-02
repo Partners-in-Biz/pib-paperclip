@@ -15,7 +15,7 @@ import { NAMESPACE } from "../src/namespace.js";
 import { INVOICE_DRAFT_SKILL } from "../src/skills.js";
 import { BILLING_TOOLS } from "../src/tools.js";
 import plugin from "../src/worker.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 import { validateMigration } from "./helpers/sql-guard.js";
 
 const available = await embeddedAvailable();
@@ -110,6 +110,7 @@ describe.skipIf(!available)("billing graph (postgres)", () => {
   async function overdue(days: number, customerRef = "ct-lumen") {
     const invoice = await draft(customerRef);
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     await h.client.query(`UPDATE ${NAMESPACE}.invoices SET due_at = now() - ($2 || ' days')::interval WHERE id = $1`, [invoice.id, String(days)]);
     return invoice;
   }
@@ -165,6 +166,7 @@ describe.skipIf(!available)("billing graph (postgres)", () => {
       await overdue(12);
       const notDue = await draft("ct-lumen", 50_000);
       await h.call("billing.mark-sent", { invoiceId: notDue.id });
+      notDue.number = (await invoiceNumber(h, notDue.id))!;
 
       const s = await route();
       expect(stage(s, "invoice.draft")).toEqual({ stage: "invoice.draft", count: 2, stuck: 1, stuckReason: "1 over a day old", amountMinor: 138_000, currency: "ZAR", oldestDays: 2 });

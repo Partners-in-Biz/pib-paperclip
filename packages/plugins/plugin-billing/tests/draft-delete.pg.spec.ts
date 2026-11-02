@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { BILLING_TOOLS } from "../src/tools.js";
 import plugin from "../src/worker.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const AGENT = { agentId: "agent-am", runId: "run-am", companyId: COMPANY, projectId: "p" };
@@ -84,8 +84,8 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
       const inv = await draft(invalidEmailContact);
       await h.call("billing.add-line", { invoiceId: inv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
 
-      // Verify it's numbered
-      expect(inv.number).toMatch(/^[A-Z]+-/);
+      // A legacy draft that already holds a number
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET number = 'LEG-001' WHERE id = $1`, [inv.id]);
 
       // Delete the draft (should hard-delete because email is .invalid, not void despite having a number)
       const result = await tool<{ deleted: boolean; voided?: boolean }>("delete-draft-invoice", { invoiceId: inv.id });
@@ -119,7 +119,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
 
     it("voids a non-canary draft invoice with a number", async () => {
       const inv = await draft("ct-lumen");
-      expect(inv.number).toMatch(/^[A-Z]+-/); // Should have a proper number
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET number = 'LEG-002' WHERE id = $1`, [inv.id]); // a legacy numbered draft
 
       // Add a line so the invoice is numbered
       await h.call("billing.add-line", { invoiceId: inv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
@@ -127,7 +127,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
       // Delete the draft
       const result = await tool<{ voided: boolean; id: string; number: string; status?: string }>("delete-draft-invoice", { invoiceId: inv.id });
       expect(result.voided).toBe(true);
-      expect(result.number).toBe(inv.number);
+      expect(result.number).toBe("LEG-002");
 
       // Verify it was voided, not deleted
       const rows = await h.client.query(
@@ -145,6 +145,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
 
       // Mark as sent
       await h.call("billing.mark-sent", { invoiceId: inv.id });
+      inv.number = (await invoiceNumber(h, inv.id))!;
 
       // Try to delete
       const error = await tool("delete-draft-invoice", { invoiceId: inv.id }).catch((e) => e.message);
@@ -169,6 +170,7 @@ describe.skipIf(!available)("delete-draft-invoice and delete-draft-quote (postgr
     it("voids a draft with a pending approval instead of hard-deleting", async () => {
       const inv = await draft("ct-lumen");
       await h.call("billing.add-line", { invoiceId: inv.id, description: "Work", quantity: 1, unitAmountMinor: 100_000 });
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET number = 'LEG-003' WHERE id = $1`, [inv.id]); // a legacy numbered draft
 
       // Request send (creates approval issue and pending_action)
       await h.call("billing.request-send", { invoiceId: inv.id });

@@ -30,7 +30,7 @@ import { asObject, getInvoice, getQuote, insertInvoice, insertLine, linesFor, sa
 import { dealWonKey } from "./followups.js";
 import { convertQuoteRow, customerFrom, customerNameOf, defaultDueAt, defaultTax, recomputeInvoice, senderFrom } from "./invoices.js";
 import { computeDocument } from "./money.js";
-import { nextDocumentNumber } from "./numbering.js";
+import { invoiceNumberLabel, NO_NUMBER_YET } from "./invoice-number.js";
 import { WORK_ORIGINS } from "./origins.js";
 import { billingPath, companyPrefix, workRoute } from "./routing.js";
 import { billingOn } from "./setup.js";
@@ -214,7 +214,7 @@ async function decideFromDeal(ctx: PluginContext, companyId: string, acc: Accept
     invoice = {
       id: invoiceId,
       company_id: companyId,
-      number: await nextDocumentNumber(ctx, companyId, "invoice", { kind: acc.clientKind, ref: acc.clientRef, name: String(customer.name) }, settings),
+      number: NO_NUMBER_YET,
       status: "draft",
       currency,
       customer_kind: acc.clientKind,
@@ -265,12 +265,12 @@ export function signedInvoiceIssue(input: { acc: Acceptance; client: string; cli
   const { acc, invoice, quote, client } = input;
   const what = whatWasSigned(acc, quote);
   const total = formatMoneyMinor(Number(invoice.total_minor), invoice.currency);
-  const title = `Signed: ${what} for ${client}: check invoice ${invoice.number} and ask for approval to send`;
+  const title = `Signed: ${what} for ${client}: check invoice ${invoiceNumberLabel(invoice.number)} and ask for approval to send`;
   const basis = quote
     ? `Quote ${quote.number} (\`${quote.id}\`) matched the signed amount and client, was marked accepted by the signature and converted.`
     : `The document named no Billing quote, so the invoice has one line for the signed amount${acc.dealId ? ` and is linked to deal \`${acc.dealId}\`` : ""}. Its prices include VAT, so the total is exactly what was signed.`;
   const description = [
-    `${acc.signerName ?? "The client"} signed ${what} for ${client} on ${day(acc.signedAt)}. Billing drafted invoice ${invoice.number} (${total}) automatically. **It is a draft: nothing was sent.**`,
+    `${acc.signerName ?? "The client"} signed ${what} for ${client} on ${day(acc.signedAt)}. Billing drafted invoice ${invoiceNumberLabel(invoice.number)} (${total}) automatically. **It is a draft: nothing was sent.**`,
     "",
     "What was signed",
     `- ${basis}`,
@@ -344,7 +344,7 @@ async function announce(ctx: PluginContext, companyId: string, acc: Acceptance, 
     });
     // The won-deal issue told the Account Manager to draft what Billing has just drafted: close it, so nobody makes a second invoice.
     if (acc.dealId) {
-      await closeStandingIssue(ctx, dealWonKey(acc.dealId), companyId, `Billing drafted invoice ${decision.invoice.number} from the document the client signed, so there is nothing left to draft here. The work continues in the issue for that signature (${issue.issueId}): check the invoice there and ask for it to be sent. Do not draft another invoice.`);
+      await closeStandingIssue(ctx, dealWonKey(acc.dealId), companyId, `Billing drafted invoice ${invoiceNumberLabel(decision.invoice.number)} from the document the client signed, so there is nothing left to draft here. The work continues in the issue for that signature (${issue.issueId}): check the invoice there and ask for it to be sent. Do not draft another invoice.`);
     }
     return;
   }

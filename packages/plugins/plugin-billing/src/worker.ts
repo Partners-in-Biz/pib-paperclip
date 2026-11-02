@@ -154,7 +154,8 @@ import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { clientNumbering, nextDocumentNumber, setClientNumbering } from "./numbering.js";
+import { clientNumbering, setClientNumbering } from "./numbering.js";
+import { NO_NUMBER_YET } from "./invoice-number.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -998,7 +999,7 @@ async function runRecurring(ctx: PluginContext) {
         const customer = asObject(template.customer);
         const invoice: InvoiceRow = copyInvoiceFields(template, {
           id: randomUUID(),
-          number: await nextDocumentNumber(ctx, schedule.company_id, "invoice", { kind: template.customer_kind, ref: template.customer_ref, name: String(customer.name ?? template.customer_ref) }, settings),
+          number: NO_NUMBER_YET,
           recurring_id: schedule.id,
           recurring_key: key,
         });
