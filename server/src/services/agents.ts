@@ -1236,12 +1236,14 @@ export function agentService(db: Db) {
       return transaction.call(db, async (tx) => run(tx as unknown as Db));
     },
 
-    listConfigRevisions: async (id: string) =>
-      db
+    listConfigRevisions: async (id: string, opts?: { limit?: number }) => {
+      const query = db
         .select()
         .from(agentConfigRevisions)
         .where(eq(agentConfigRevisions.agentId, id))
-        .orderBy(desc(agentConfigRevisions.createdAt)),
+        .orderBy(desc(agentConfigRevisions.createdAt));
+      return opts?.limit ? query.limit(opts.limit) : query;
+    },
 
     getConfigRevision: async (id: string, revisionId: string) =>
       db

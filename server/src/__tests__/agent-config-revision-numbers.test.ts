@@ -74,7 +74,14 @@ describe("agent config revision numbers", () => {
       changedKeys: ["instructionsFile:notes.md"],
     });
     const [rev] = await service.listConfigRevisions(agent.id);
-    await expect(service.rollbackConfigRevision(agent.id, rev.id, {})).rejects.toThrow(/Nothing to restore/);
+    await expect(service.rollbackConfigRevision(agent.id, rev.id, {})).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/Nothing to restore/),
+    });
+    const after = await service.getById(agent.id);
+    expect(after?.adapterConfig).toEqual(agent.adapterConfig);
+    expect(after?.runtimeConfig).toEqual(agent.runtimeConfig);
+    expect(await service.listConfigRevisions(agent.id)).toHaveLength(1);
   });
 
   it("backfills numbers chronologically per agent", async () => {
@@ -93,7 +100,7 @@ describe("agent config revision numbers", () => {
       });
     }
     const migration = await (await import("node:fs/promises")).readFile(
-      new URL("../../../packages/db/src/migrations/0285_agent_config_revision_numbers.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0306_agent_config_revision_numbers.sql", import.meta.url),
       "utf8",
     );
     for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));

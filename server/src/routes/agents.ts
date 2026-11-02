@@ -5144,7 +5144,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, existing);
 
     const actor = getActorInfo(req);
-    const latestRevisionBefore = (await svc.listConfigRevisions(id))[0]?.id ?? null;
+    const latestRevisionBefore = (await svc.listConfigRevisions(id, { limit: 1 }))[0]?.id ?? null;
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,
     });
@@ -5166,7 +5166,7 @@ export function agentRoutes(
     );
     // A content-only write leaves the config snapshot unchanged and so records
     // no revision above; log it so the history shows the file change.
-    if (((await svc.listConfigRevisions(id))[0]?.id ?? null) === latestRevisionBefore) {
+    if (((await svc.listConfigRevisions(id, { limit: 1 }))[0]?.id ?? null) === latestRevisionBefore) {
       await svc.recordInstructionsRevision(existing, {
         source: "instructions_file_put",
         changedKeys: [`instructionsFile:${result.file.path}`],
