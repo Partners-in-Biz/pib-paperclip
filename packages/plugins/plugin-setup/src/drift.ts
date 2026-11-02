@@ -24,7 +24,13 @@ export interface PibPack {
   hash: string;
   appliedAt: string;
   evalFile?: string;
+  // How the agent's live text relates to the template. Not `AgentTemplate.distilled` (templates.ts),
+  // which marks a template FILE as a skeleton. `rendered` (default): live text is the rendered template.
+  // `distilled`: live text is a hand-distilled version of it; the hash still tracks the render it came from.
+  mode: PibPackMode;
 }
+
+export type PibPackMode = "rendered" | "distilled";
 
 export function parsePibPack(raw: unknown): PibPack | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -49,7 +55,9 @@ export function parsePibPack(raw: unknown): PibPack | null {
     )
       return null;
   }
+  if (obj.mode !== undefined && obj.mode !== "rendered" && obj.mode !== "distilled") return null;
   return {
+    mode: (obj.mode as PibPackMode | undefined) ?? "rendered",
     pack: obj.pack,
     version: obj.version as number,
     key: obj.key,
@@ -74,17 +82,27 @@ export interface AgentDrift {
   reasons: DriftReason[];
   midRun: boolean;
   drifted: boolean;
+  mode: PibPackMode;
 }
 
-type DriftAgent = AgentLike & Partial<AgentRunLike> & { metadata?: { pibPack?: unknown } | null };
+export interface SkippedAgent {
+  agentId: string;
+  templateKey: string;
+  reason: "built_in" | "plugin_managed";
+}
+
+export type DriftResult = AgentDrift[] & { skipped: SkippedAgent[] };
+
+type DriftAgent = AgentLike & Partial<AgentRunLike> & { metadata?: { pibPack?: unknown; paperclipBuiltInAgent?: unknown; pluginManagedAgent?: unknown } | null };
 
 export function computeDrift(input: {
   templates: AgentTemplate[];
   agents: readonly AgentLike[];
   vars: TemplateVars;
   attachedSkills: Record<string, string[]>;
-}): AgentDrift[] {
-  const results: AgentDrift[] = [];
+}): DriftResult {
+  const results = [] as unknown as DriftResult;
+  results.skipped = [];
 
   for (const template of input.templates) {
     if (template.hostOwned) continue;
@@ -93,6 +111,17 @@ export function computeDrift(input: {
 
     const agentId = matched.id;
     const agent = matched as DriftAgent;
+
+    // Only after the match, so the template still counts as staffed.
+    const skipReason = agent.metadata?.paperclipBuiltInAgent
+      ? "built_in"
+      : agent.metadata?.pluginManagedAgent
+        ? "plugin_managed"
+        : null;
+    if (skipReason) {
+      results.skipped.push({ agentId, templateKey: template.key, reason: skipReason });
+      continue;
+    }
     const reasons: DriftReason[] = [];
 
     // Parse and validate pibPack
@@ -154,7 +183,7 @@ export function computeDrift(input: {
     }
 
     const drifted = reasons.some((r) => r.code !== "mid_run");
-    results.push({ agentId, templateKey: template.key, reasons, midRun, drifted });
+    results.push({ agentId, templateKey: template.key, reasons, midRun, drifted, mode: pibPack?.mode ?? "rendered" });
   }
 
   return results;

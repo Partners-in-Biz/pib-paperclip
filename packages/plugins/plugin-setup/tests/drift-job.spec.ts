@@ -52,13 +52,31 @@ describe("template drift job", () => {
   it("opens one issue for a drifted agent, with the work list and the hash from template-get's render", async () => {
     const { ctx, issues, emitted } = fakeCtx({ companies, agents: { [A]: [ceo()] } });
     const out = await refreshDriftIssue(ctx, A, templates);
-    expect(out).toEqual({ result: "created", drifted: 1 });
+    expect(out).toEqual({ result: "created", drifted: 1, skipped: [] });
     expect(issues.size).toBe(1);
     const issue = [...issues.values()][0]!;
     expect(issue.title).toBe(driftTitle(1));
     expect(issue.description).toContain("agent-ceo");
     expect(issue.description).toContain(await currentHash(ctx));
     expect(healthOf(emitted, A)?.status).toBe("warn");
+  });
+
+  it("distilled stale row: work row has mode distilled, text says re-distill, not apply", async () => {
+    const { ctx, issues } = fakeCtx({ companies, agents: { [A]: [ceo({ metadata: { pibPack: { ...pibPack("0000000000000000"), mode: "distilled" } } })] } });
+    await refreshDriftIssue(ctx, A, templates);
+    const text = [...issues.values()][0]!.description as string;
+    expect(text).toContain('"mode": "distilled"');
+    expect(text).toContain("Planner re-distills the file against the new render");
+    expect(text).toContain("Do not apply the rendered text.");
+    expect(text).toContain("Rows with mode distilled are never overwritten");
+  });
+
+  it("built-in and plugin-managed agents are not listed and are reported as skipped", async () => {
+    const { ctx, issues } = fakeCtx({ companies, agents: { [A]: [ceo({ metadata: { paperclipBuiltInAgent: true } })] } });
+    const out = await refreshDriftIssue(ctx, A, templates);
+    expect(out.result).toBe("none");
+    expect(out.skipped.map((s) => s.reason)).toEqual(["built_in"]);
+    expect(issues.size).toBe(0);
   });
 
   it("a second run updates or leaves the issue and never opens a duplicate", async () => {
@@ -99,7 +117,7 @@ describe("template drift job", () => {
 
   it("a company with no pack agents gets no issue", async () => {
     const { ctx, issues } = fakeCtx({ companies, agents: { [B]: [{ id: "x", name: "Someone", title: null, role: "general", status: "idle" }] } });
-    expect(await refreshDriftIssue(ctx, B, templates)).toEqual({ result: "none", drifted: 0 });
+    expect(await refreshDriftIssue(ctx, B, templates)).toEqual({ result: "none", drifted: 0, skipped: [] });
     expect(issues.size).toBe(0);
   });
 
