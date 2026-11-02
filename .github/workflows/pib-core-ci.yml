@@ -83,11 +83,20 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
+          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` also runs
+          # `typecheck:rust` (cargo fmt/check), so the core job runs its `typecheck:typescript` half instead
+          # (PAR-7290). The Rust half stays in release-verify.yml.
+          RUNNER='@paperclipai/paperclip-runner'
           if [ "$MODE" = "affected" ]; then
             pnpm run preflight:workspace-links
-            pnpm --filter "...[origin/${BASE_REF}]" --if-present typecheck
+            pnpm --filter "...[origin/${BASE_REF}]" --filter "!${RUNNER}" --if-present typecheck
+            if pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -e --arg n "$RUNNER" 'any(.[]; .name == $n)' >/dev/null; then
+              pnpm --filter "$RUNNER" typecheck:typescript
+            fi
           else
-            pnpm typecheck
+            pnpm run preflight:workspace-links
+            pnpm -r --filter "!${RUNNER}" typecheck
+            pnpm --filter "$RUNNER" typecheck:typescript
           fi
 
       # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
