@@ -235,7 +235,7 @@ export function useCockpitData(companyId: string | null | undefined, options: { 
 // ---------------------------------------------------------------------------
 
 const SIDEBAR_TTL_MS = 30_000;
-const SIDEBAR_REFRESH_MS = 60_000;
+export const SIDEBAR_REFRESH_MS = 120_000;
 const sidebarCache = new Map<string, { at: number; promise: Promise<CockpitView | null> }>();
 
 /**
@@ -262,14 +262,28 @@ export function clearSidebarCache(): void {
   liveCache.clear();
 }
 
-/** Refreshes when you move between pages and once a minute (within the 30-second sharing window). */
+/** True when the browser tab is in the background and a refresh would be wasted. */
+export function isTabHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+/** Refreshes when you move between pages and every two minutes while the tab is visible (within the 30-second sharing window). */
 export function useSidebarView(companyId: string | null | undefined, pathname: string): CockpitView | null {
   const loadAction = usePluginAction("cockpit.load") as LoadAction;
   const [view, setView] = useState<CockpitView | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setTick((n) => n + 1), SIDEBAR_REFRESH_MS);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      if (!isTabHidden()) setTick((n) => n + 1);
+    }, SIDEBAR_REFRESH_MS);
+    const onVisible = () => {
+      if (!isTabHidden()) setTick((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
   useEffect(() => {
     if (!companyId) {
