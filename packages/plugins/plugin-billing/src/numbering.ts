@@ -193,7 +193,9 @@ export async function nextDocumentNumber(
   const counterKey = legacy ? `${kind}:legacy` : kind;
   for (let attempt = 0; attempt < 25; attempt += 1) {
     const n = await claimSequence(ctx, companyId, counterKey, prefix, () => highestExisting(ctx, companyId, kind, prefix, legacy));
-    const number = legacy ? `${prefix}-${String(n).padStart(4, "0")}` : formatDocNumber(kind, prefix, n, digitsOf(settings));
+    const number = legacy
+      ? `${prefix}-${String(n).padStart(kind === "invoice" ? digitsOf(settings) : 4, "0")}`
+      : formatDocNumber(kind, prefix, n, digitsOf(settings));
     if (await claimNumber(ctx, companyId, kind, number)) return number;
   }
   throw new BillingError("Could not assign a document number");
@@ -266,4 +268,38 @@ export async function setClientNumbering(
   }
   const now = await clientNumbering(ctx, companyId, customer, settings);
   return { prefix, nextNumber: now.nextNumber, next: now.next ?? formatDocNumber("invoice", prefix, now.nextNumber, digitsOf(settings)) };
+}
+
+export type SequenceNumbering = { mode: "client" | "sequential"; prefix: "INV"; next: number; highestExisting: number };
+
+/** The company-wide INV- sequence: the mode, and the number the next sequential invoice gets. */
+export async function sequenceNumbering(ctx: PluginContext, companyId: string, settings: BillingSettings): Promise<SequenceNumbering> {
+  const highest = await highestExisting(ctx, companyId, "invoice", "INV", true);
+  const rows = await ctx.db.query<{ n: string | number }>(
+    `SELECT n FROM ${table(ctx, "numbering_counters")} WHERE company_id = $1 AND kind = 'invoice:legacy' AND prefix = 'INV'`,
+    [companyId],
+  );
+  const next = rows[0] ? Number(rows[0].n) + 1 : highest + 1;
+  return { mode: numberingMode(settings), prefix: "INV", next, highestExisting: highest };
+}
+
+/** Seed the INV- sequence so the next sequential invoice gets `nextNumber`. Issued numbers never change. */
+export async function setSequenceNumbering(
+  ctx: PluginContext,
+  companyId: string,
+  input: { nextNumber: number },
+  settings: BillingSettings,
+): Promise<SequenceNumbering> {
+  const start = Number(input.nextNumber);
+  if (!Number.isInteger(start) || start < 1 || start > 99_999_999) throw new BillingError("The next number must be a whole number from 1");
+  const highest = await highestExisting(ctx, companyId, "invoice", "INV", true);
+  if (start <= highest) {
+    throw new BillingError(`INV-${String(highest).padStart(digitsOf(settings), "0")} is already used. Start at ${highest + 1} or higher`);
+  }
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "numbering_counters")} (company_id, kind, prefix, n) VALUES ($1, 'invoice:legacy', 'INV', $2)
+     ON CONFLICT (company_id, kind, prefix) DO UPDATE SET n = EXCLUDED.n, updated_at = now()`,
+    [companyId, start - 1],
+  );
+  return sequenceNumbering(ctx, companyId, settings);
 }
