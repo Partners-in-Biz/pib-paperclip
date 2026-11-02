@@ -1,6 +1,6 @@
 # Paid ads
 
-Paperclip plugin `partnersinbiz.ads`. Version 0.3.19.
+Paperclip plugin `partnersinbiz.ads`. Version 0.3.20.
 
 Reads Meta and Google Ads performance into one picture for PiB's own ads and for each client's, keeps monthly budget caps with pacing, raises anomaly alerts, and turns every campaign or budget change into a **proposal with the numbers** that goes to the Reviewer, then a person (and the client, through the CRM, where the scope asks). It is the governed-spend module the audit asked for (Q1a-7, Q9-4, Q10-14), not a port of the old 91-route Ads manager.
 
@@ -61,7 +61,7 @@ Reading rules: every sync re-reads everything since the last **good** read plus 
 
 - **CRM**: client names and projects through the kit's projections; the CRM's `create-client-action` carries the client ask. The plugin listens for `plugin.partnersinbiz.crm.client.brand.updated` (`{ clientKind, clientRef, bannedWords, brandNote }`, a contract the CRM does not emit yet) so banned words reach a scope without trusting an agent to copy them.
 - **Cockpit**: snapshot with spend, budget, waiting changes, alerts and health; the Reviewer and Operator roles come from the roles copy (`registerRoleWatch`).
-- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count. The role `ads-manager` and the module `ads` are not in the kit yet (see "Shared pieces to add").
+- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count.
 
 ## Not in version 0.1
 
