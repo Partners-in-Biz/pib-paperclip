@@ -57,6 +57,7 @@ import {
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 import { guardEnvStrings, prepareQuery } from "./query-file.js";
+import { readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
 import {
   formatHermesStreamEventForLog,
   isPlausibleHermesSessionId,
@@ -464,16 +465,42 @@ export async function execute(
     }
   }
 
+  // ── Resume baseline ────────────────────────────────────────────────────
+  // What the resumed session had used before this run, so the run is booked for
+  // its own tokens only. If Hermes' store is readable and no longer has the
+  // session (it prunes ended sessions after 90 days), Hermes would stop with
+  // "Session not found" on every wake: start a new session instead.
+  // Same env for the baseline and the post-run read, so they cannot drift.
+  const userConfigEnv = config.env as Record<string, string> | undefined;
+  const hermesStoreEnv: Record<string, string | undefined> = {
+    ...process.env,
+    ...(userConfigEnv && typeof userConfigEnv === "object" ? userConfigEnv : {}),
+  };
+  let resumeSessionId = prevSessionId;
+  let resumeBaseline: SessionRow | null = null;
+  if (persistSession && prevSessionId) {
+    const rows = await readSessionLineage(hermesStoreEnv, prevSessionId, prevSessionId);
+    if (rows && rows.length === 0) {
+      resumeSessionId = undefined;
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Warning: session ${prevSessionId} is not in Hermes' session store any more, so this run starts a new session.\n`,
+      );
+    } else {
+      resumeBaseline = rows && rows.length > 0 ? rows[0] : null;
+    }
+  }
+
   // ── Build prompt ───────────────────────────────────────────────────────
   const checkpointEnabled = sessionCheckpointResumeEnabled();
   const checkpointResume =
-    Boolean(prevSessionId) ||
+    Boolean(resumeSessionId) ||
     (checkpointEnabled &&
       (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true);
   let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
   // The transcript already has the instructions. Re-sending them on every
   // wake is a full rerun in token cost even when --resume is set.
-  if (agentInstructions && !(checkpointEnabled && prevSessionId)) {
+  if (agentInstructions && !(checkpointEnabled && resumeSessionId)) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
 
@@ -518,8 +545,11 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
+  if (persistSession && resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+    // Without this, Hermes changes into the directory the old session recorded
+    // instead of staying in the run's workspace.
+    args.push("--no-restore-cwd");
   }
   // Init event carries session_id before any model work, so a kill still
   // leaves a checkpoint the next wake can resume.
@@ -572,10 +602,10 @@ export async function execute(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
-  if (prevSessionId) {
+  if (resumeSessionId) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Resuming session: ${prevSessionId}\n`,
+      `[hermes] Resuming session: ${resumeSessionId}\n`,
     );
   }
 
@@ -671,6 +701,19 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  // The regexes above never match current Hermes output and read prose as cost.
+  // Take the session id from the lines Hermes prints, and tokens and cost from
+  // its own session record.
+  const metered = await resolveRun(result.stdout || "", result.stderr || "", hermesStoreEnv, resumeBaseline);
+  parsed.sessionId = metered.sessionId ?? undefined;
+  parsed.usage = metered.usage;
+  parsed.costUsd = metered.costUsd;
+  if (metered.usage) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Usage: input ${metered.usage.inputTokens}, cached ${metered.usage.cachedInputTokens ?? 0}, output ${metered.usage.outputTokens}${metered.costUsd !== undefined ? `, cost $${metered.costUsd.toFixed(4)} (Hermes estimate)` : ""}\n`,
+    );
+  }
   const streamed = parseHermesStreamJsonOutput(`${result.stdout || ""}\n${result.stderr || ""}`);
   if (!parsed.sessionId && (streamed.sessionId || checkpointedSessionId)) {
     parsed.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
@@ -704,6 +747,14 @@ export async function execute(
 
   if (parsed.usage) {
     executionResult.usage = parsed.usage;
+    // This is the run's own usage, not a session total (the host would
+    // otherwise subtract the previous run's).
+    executionResult.usageBasis = "per_run";
+    // Unset means "subscription_included": Hermes agents run on the company's
+    // subscription, so the host keeps the tokens and books no cents. Set
+    // adapterConfig.billingType (e.g. "api") to override.
+    executionResult.billingType =
+      (cfgString(config.billingType) as AdapterExecutionResult["billingType"]) || "subscription_included";
   }
 
   if (parsed.costUsd !== undefined) {
