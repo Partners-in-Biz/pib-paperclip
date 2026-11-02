@@ -36,6 +36,11 @@ describe("isSandboxProviderSupportedForAdapter", () => {
     ).toBe(true);
   });
 
+  it("lets hermes_local run on ssh environments (PAR-7017)", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("hermes_local")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("hermes_local")).toContain("ssh");
+  });
+
   it("includes grok_local sandbox support in environment capabilities", () => {
     const capabilities = getEnvironmentCapabilities(["grok_local"], {
       sandboxProviders: {

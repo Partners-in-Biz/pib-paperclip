@@ -38,6 +38,9 @@ const USAGE_COLUMNS = [
 
 export type SessionRow = { id: string } & Partial<Record<(typeof USAGE_COLUMNS)[number], unknown>>;
 
+/** Reads the same rows from a remote host's state.db (ssh). `home` is "" for the default. null = unreadable. */
+export type RemoteSessionReader = (home: string, sessionId: string, stopAtId?: string) => Promise<SessionRow[] | null>;
+
 function lines(text: string | null | undefined): string[] {
   return String(text ?? "").split(/\r?\n/);
 }
@@ -84,7 +87,11 @@ export async function readSessionLineage(
   env: Record<string, string | undefined>,
   sessionId: string,
   stopAtId?: string,
+  remoteReader?: RemoteSessionReader,
 ): Promise<SessionRow[] | null> {
+  if (remoteReader) {
+    return remoteReader(typeof env.HERMES_HOME === "string" ? env.HERMES_HOME : "", sessionId, stopAtId);
+  }
   let db: import("node:sqlite").DatabaseSync | undefined;
   try {
     const home =
@@ -179,12 +186,13 @@ export async function resolveRun(
   stderr: string,
   env: Record<string, string | undefined>,
   baseline: SessionRow | null,
+  remoteReader?: RemoteSessionReader,
 ): Promise<{ sessionId: string | null; usage?: UsageSummary; costUsd?: number }> {
   const sessionId = parseSessionId(stdout, stderr);
   let usage: UsageSummary | undefined;
   let costUsd: number | undefined;
   if (sessionId) {
-    const rows = await readSessionLineage(env, sessionId, baseline?.id);
+    const rows = await readSessionLineage(env, sessionId, baseline?.id, remoteReader);
     const used = usageFromLineage(rows, baseline);
     if (used) {
       usage = used.usage;

@@ -18,6 +18,14 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+/** Keep the ssh/sandbox identity a remote session was created on; local sessions carry none. */
+function remoteIdentity(record: Record<string, unknown>): { remoteExecution?: Record<string, unknown> } {
+  const remote = record.remoteExecution;
+  return remote && typeof remote === "object" && !Array.isArray(remote) && Object.keys(remote).length > 0
+    ? { remoteExecution: remote as Record<string, unknown> }
+    : {};
+}
+
 /**
  * Session codec for structured validation and migration of session parameters.
  *
@@ -32,7 +40,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.sessionId) ??
       readNonEmptyString(record.session_id);
     if (!sessionId) return null;
-    return { sessionId };
+    return { sessionId, ...remoteIdentity(record) };
   },
   serialize(params: Record<string, unknown> | null) {
     if (!params) return null;
@@ -40,7 +48,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id);
     if (!sessionId) return null;
-    return { sessionId };
+    return { sessionId, ...remoteIdentity(params) };
   },
   getDisplayId(params: Record<string, unknown> | null) {
     if (!params) return null;
