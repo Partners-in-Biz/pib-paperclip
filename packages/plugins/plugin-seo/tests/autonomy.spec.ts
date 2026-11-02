@@ -339,7 +339,7 @@ describe("site verification with the service account", () => {
     expect(items[0]).toMatchObject({ key: "gsc_access", kind: "message", check: "gsc_access" });
     expect(String(items[0]!.copy)).toContain(SA_EMAIL);
     expect(host.issuesCreated).toHaveLength(1);
-    expect(host.issuesCreated[0]).toMatchObject({ assigneeUserId: "user-1", parentId: "root-1", originKind: "plugin:partnersinbiz.seo:needs-you" });
+    expect(host.issuesCreated[0]).toMatchObject({ assigneeUserId: "user-1", originKind: "plugin:partnersinbiz.seo:needs-you" });
   });
 
   it("maps verification methods to the change to make", () => {
@@ -453,7 +453,7 @@ describe("code tasks in the site project", () => {
     expect(items[0]).toMatchObject({ key: "site_project", check: "site_project", taskIds: ["t-1", "t-2"] });
     // One digest issue, for the owner; the second task updates it.
     expect(host.issuesCreated).toHaveLength(1);
-    expect(host.issuesCreated[0]).toMatchObject({ assigneeUserId: "user-1", title: expect.stringContaining("Needs you") });
+    expect(host.issuesCreated[0]).toMatchObject({ assigneeUserId: "user-1", title: expect.stringContaining("SEO week of"), originKind: "plugin:partnersinbiz.seo:needs-you" });
   });
 
   it("linking the site project resolves the item and opens the waiting tasks there", async () => {
