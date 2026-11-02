@@ -40,6 +40,8 @@ export const CRM_ORIGINS = {
   serviceOnboard: "crm:service-onboard:",
   /** `crm:client-report:<kind>:<client id>:<YYYY-MM>`: write and send the month's report for a client (Account Manager). */
   clientReport: "crm:client-report:",
+  /** `crm:report-batch:<period>[:n]`: the one approval card for every client report of a month. */
+  reportBatch: "crm:report-batch:",
   /** `crm:support-case:<case id>`: work a support case that did not come by mail (mail cases use the Mailbox's Reply-needed issue). */
   supportCase: "crm:support-case:",
   /** `crm:support-breach:<case id>:<first|resolution>`: a support SLA ran out (escalation for the Account Manager). */
@@ -86,6 +88,7 @@ export const originFor = {
   duplicates: (date: string) => `${CRM_ORIGINS.duplicates}${date}`,
   hygiene: (date: string) => `${CRM_ORIGINS.hygiene}${date}`,
   clientLead: (leadKey: string) => `${CRM_ORIGINS.clientLead}${leadKey}`,
+  reportBatch: (period: string, round: number) => `${CRM_ORIGINS.reportBatch}${period}${round > 1 ? `:${round}` : ""}`,
   clientReport: (kind: string, clientId: string, period: string) => `${CRM_ORIGINS.clientReport}${kind}:${clientId}:${period}`,
   supportCase: (caseId: string) => `${CRM_ORIGINS.supportCase}${caseId}`,
   supportBreach: (caseId: string, which: "first" | "resolution") => `${CRM_ORIGINS.supportBreach}${caseId}:${which}`,

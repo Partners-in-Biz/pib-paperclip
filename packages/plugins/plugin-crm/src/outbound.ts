@@ -73,6 +73,8 @@ export interface ApprovalRequest {
   actorUserId?: string | null;
   projectId?: string | null;
   wakeReason?: string;
+  /** The issue is not opened per approval: a monthly card lists many (see report-batch.ts). `payload.batch` marks the row. */
+  deferIssue?: boolean;
 }
 
 export interface ApprovalOpened {
@@ -112,12 +114,13 @@ const MAIL_DONE_NOTE = "**Approve** by marking this issue **done**: the email is
 export async function requestApproval(ctx: PluginContext, request: ApprovalRequest): Promise<ApprovalOpened> {
   const seq = request.seq ?? 1;
   const id = randomUUID();
-  const payload = { ...(request.payload ?? {}), title: request.title, ...(request.draft ? { draft: request.draft } : {}), intro: request.intro, checks: request.checks, outward: request.outward };
+  const payload = { ...(request.payload ?? {}), ...(request.deferIssue ? { batch: true } : {}), title: request.title, ...(request.draft ? { draft: request.draft } : {}), intro: request.intro, checks: request.checks, outward: request.outward };
   const inserted = await insertApproval(ctx, { id, companyId: request.companyId, kind: request.kind, client: request.client, subjectId: request.subjectId, seq, payload });
   if (!inserted) {
     const existing = await approvalForSubject(ctx, request.companyId, request.kind, request.subjectId, seq);
     return { approvalId: existing?.id ?? id, issueId: existing?.issueId ?? null, created: false, status: existing?.status ?? "open", assignedTo: null };
   }
+  if (request.deferIssue) return { approvalId: id, issueId: null, created: true, status: "open", assignedTo: null };
   const issue = await openApprovalIssueFor(ctx, { id, companyId: request.companyId, title: request.title, payload, outward: request.outward, actorUserId: request.actorUserId ?? null, projectId: request.projectId ?? null, wakeReason: request.wakeReason });
   return { approvalId: id, issueId: issue?.id ?? null, created: true, status: "open", assignedTo: issue?.assignedTo ?? null };
 }
@@ -154,7 +157,7 @@ async function openApprovalIssueFor(
 export async function repairApprovalIssues(ctx: PluginContext, companyId: string, open: ApprovalRecord[]): Promise<number> {
   let repaired = 0;
   for (const approval of open) {
-    if (approval.issueId) continue;
+    if (approval.issueId || approval.payload.batch === true) continue;
     const opened = await openApprovalIssueFor(ctx, {
       id: approval.id,
       companyId,
@@ -181,7 +184,10 @@ export async function withdrawOpenApprovals(ctx: PluginContext, companyId: strin
     for (const approval of await approvalsOfSubject(ctx, companyId, kind, subjectId)) {
       if (approval.status !== "open") continue;
       await updateApproval(ctx, companyId, approval.id, { status: "refused", decidedBy: `system:${decidedBy}` });
-      if (approval.issueId) {
+      if (approval.issueId && approval.payload.batch === true) {
+        // The card is shared with other clients: it stays open for them.
+        await ctx.issues.createComment(approval.issueId, `${String(approval.payload.clientName ?? "A client")} was withdrawn, nothing was sent: ${why}`, companyId).catch(() => undefined);
+      } else if (approval.issueId) {
         await ctx.issues.createComment(approval.issueId, `Withdrawn, nothing was sent: ${why}`, companyId).catch(() => undefined);
         await ctx.issues.update(approval.issueId, { status: "cancelled" }, companyId).catch(() => undefined);
       }
