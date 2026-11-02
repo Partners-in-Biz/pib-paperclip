@@ -18,6 +18,7 @@ import {
   listApprovals,
   listAudit,
   listCampaigns,
+  listCampaignCaps,
   listConnections,
   listLedger,
   listProposals,
@@ -36,7 +37,7 @@ import { addDays, isDay, isMonth, monthEnd, monthOf, monthStart, todayIn } from 
 import { connectionView, requireConnection } from "./connections.js";
 import { describeAccounts } from "./accounts.js";
 import { derive, emptyTotals, sumRows, withDerived, type Totals } from "./metrics.js";
-import { formatMoney, pct } from "./money.js";
+import { currencyExponent, formatMoney, pct } from "./money.js";
 import { scopePace } from "./pacing.js";
 import { OWN_SCOPE, PROPOSAL_KIND_LABELS, STATUS_LABELS, platformLabel, type ScopeKey } from "./platforms.js";
 import { impactLines, impactOf, numberLines, clientMessage } from "./proposal-text.js";
@@ -160,6 +161,7 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
   const since = addDays(today(rt), -6);
   const rows = await dailyRows(rt.ctx, rt.companyId, since);
   const key = (accountId_: string, ext: string) => `${accountId_}|${ext}`;
+  const capByCampaign = new Map<string, number>((await listCampaignCaps(rt.ctx, rt.companyId)).map((k) => [`${k.platform}|${k.external_campaign_id}`, k.cap_minor]));
   const sums = new Map<string, Totals>();
   for (const r of rows) sums.set(key(r.account_id, r.campaign_external_id), sumRows([sums.get(key(r.account_id, r.campaign_external_id)) ?? emptyTotals(), r]));
   return {
@@ -176,6 +178,9 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
       dailyBudgetMinor: c.daily_budget_minor,
       dailyBudget: c.daily_budget_minor === null ? null : formatMoney(c.daily_budget_minor, c.currency),
       currency: c.currency,
+      currencyExponent: currencyExponent(c.currency),
+      capMinor: capByCampaign.get(`${c.platform}|${c.external_id}`) ?? null,
+      cap: capByCampaign.has(`${c.platform}|${c.external_id}`) ? formatMoney(capByCampaign.get(`${c.platform}|${c.external_id}`)!, c.currency) : null,
       ...shaped(sums.get(key(c.account_id, c.external_id)) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, installs: 0, value: 0 }, c.currency),
     })),
   };

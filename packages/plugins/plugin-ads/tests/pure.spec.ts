@@ -350,3 +350,21 @@ describe("cost per install", () => {
     expect(sumRows([t, { installs: 2 }]).installs).toBe(10);
   });
 });
+
+describe("campaign cap conversion", () => {
+  it("converts strictly", async () => {
+    const { capMinorFromInput, capConfirmText } = await import("../src/ui/series.js");
+    expect(capMinorFromInput("1500", 2)).toBe(150000);
+    expect(capMinorFromInput("1500.00", 2)).toBe(150000);
+    expect(capMinorFromInput("1500,5", 2)).toBe(150050);
+    expect(capMinorFromInput("12.567", 2)).toBeNull();
+    for (const bad of ["0", "-5", "", "abc", "1e3", "0.00"]) expect(capMinorFromInput(bad, 2)).toBeNull();
+    expect(capMinorFromInput("1500", 0)).toBe(1500);
+    expect(capMinorFromInput("15.5", 0)).toBeNull();
+    expect(capMinorFromInput("1.234", 3)).toBe(1234);
+    expect(capMinorFromInput("1000000000", 2)).toBe(100_000_000_000);
+    expect(capMinorFromInput("1000000000.01", 2)).toBeNull();
+    expect(capConfirmText("Brand", "ZAR", 2, 150000)).toBe("You are setting ZAR 1500.00 (150000 minor units) on Brand");
+    expect(capConfirmText("Yen", "JPY", 0, 1500)).toBe("You are setting JPY 1500 (1500 minor units) on Yen");
+  });
+});

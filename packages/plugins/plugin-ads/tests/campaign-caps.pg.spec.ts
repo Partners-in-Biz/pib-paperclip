@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { campaignCapsRecord, setCampaignCap, writeProposalCap } from "../src/campaign-caps.js";
 import { getCampaignCap } from "../src/db.js";
+import { campaignsRecord } from "../src/records.js";
 import { executeProposal } from "../src/execute.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { recordReview, recordSignoff } from "../src/proposals.js";
@@ -115,5 +116,16 @@ describe.skipIf(!available)("campaign caps", () => {
     await expect(pg.client.query(`INSERT INTO ${NAMESPACE}.campaign_caps (id, company_id, platform, external_campaign_id, cap_minor, set_by) VALUES ('d', 'c', 'apple', 'y', 0, 'user:p')`)).rejects.toThrow(/campaign_caps_positive/);
     // Old code never names the table: its inserts into the earlier tables run unchanged on this schema (the 009 spec covers the CHECKs).
     await pg.client.query(`INSERT INTO ${NAMESPACE}.connections (id, company_id, platform, label) VALUES ('old', 'c', 'meta', 'label')`);
+  });
+  it("campaignsRecord carries cap, formatted cap and exponent; a returned row's ids are what the action accepts", async () => {
+    await setCampaignCap(w.rt(), { userId: OWNER }, { accountId, campaignExternalId: "c1", capMinor: 250_000 });
+    const { campaigns } = await campaignsRecord(w.rt(), {});
+    const c1 = campaigns.find((c) => c.campaignExternalId === "c1")!;
+    const c2 = campaigns.find((c) => c.campaignExternalId === "c2")!;
+    expect(c1).toMatchObject({ capMinor: 250_000, currencyExponent: expect.any(Number) });
+    expect(c1.cap).toEqual(expect.any(String));
+    expect(c2).toMatchObject({ capMinor: null, cap: null });
+    const again = await setCampaignCap(w.rt(), { userId: OWNER }, { accountId: c2.accountId, campaignExternalId: c2.campaignExternalId, capMinor: 5000 });
+    expect(again.ok).toBe(true);
   });
 });

@@ -65,6 +65,25 @@ export function inputFromMinor(minor: number | null, exponent = 2): string {
   return `${Math.floor(minor / scale)}${exponent ? `.${String(minor % scale).padStart(exponent, "0")}` : ""}`;
 }
 
+/** Largest cap the server accepts, in minor units (campaign-caps.ts). */
+export const CAP_MAX_MINOR = 100_000_000_000;
+
+/** Strict major -> minor for a campaign cap. Never rounds or truncates: more decimals than the currency has, zero, negatives and junk give null. */
+export function capMinorFromInput(text: string, exponent = 2): number | null {
+  const t = text.trim().replace(/\s/g, "").replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  const [whole, frac = ""] = t.split(".");
+  if (frac.length > exponent) return null;
+  const minor = Number(whole + frac.padEnd(exponent, "0"));
+  if (!Number.isSafeInteger(minor) || minor <= 0 || minor > CAP_MAX_MINOR) return null;
+  return minor;
+}
+
+/** The second-step line shown before a cap is sent: both the major amount and the minor units. */
+export function capConfirmText(name: string, currency: string, exponent: number, capMinor: number): string {
+  return `You are setting ${currency} ${inputFromMinor(capMinor, exponent)} (${capMinor} minor units) on ${name}`;
+}
+
 export const ACTION_TEXT: Record<string, string> = {
   "write.executed": "Ran an approved change",
   "write.failed": "A change did not complete",
