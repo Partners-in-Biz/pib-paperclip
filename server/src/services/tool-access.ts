@@ -190,6 +190,10 @@ import {
 } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  assertValidConnectionAuthorizationPayload,
+  connectionAuthorizationTargetKey,
+} from "./connection-authorization-target.js";
 import { logActivity } from "./activity-log.js";
 import { isSlackMcpAccessDisabledResponse } from "./slack-mcp-error.js";
 import {
@@ -14535,7 +14539,7 @@ export function toolAccessService(
             )
             .limit(1)
         : [undefined];
-      const payload = {
+      const payload = assertValidConnectionAuthorizationPayload({
         version: 1 as const,
         prompt: `Connect your ${providerName} to continue`,
         acceptLabel: `Connect ${providerName}`,
@@ -14554,12 +14558,15 @@ export function toolAccessService(
         },
         target: {
           type: "custom" as const,
-          key: `connection:${connection.uid}:user:${authorizationSubjectUserId}`,
+          key: connectionAuthorizationTargetKey(
+            connection.uid,
+            authorizationSubjectUserId,
+          ),
           revisionId: state,
           label: `Connect ${providerName}`,
           href: authorizationUrl.toString(),
         },
-      };
+      });
       const [existingInteraction] = await db
         .select()
         .from(issueThreadInteractions)
