@@ -2982,20 +2982,33 @@ export function issueThreadInteractionService(
           .then((issueRows) => issueRows[0]?.status ?? null),
       ]);
 
-      return rows.map((row) =>
-        hydrateInteraction(
-          issueStatus &&
-            isTerminalIssueStatus(issueStatus) &&
-            row.status === "pending"
-            ? {
-                ...row,
-                status: "expired",
-                result: buildAdministrativeOutcomeResult(row, "issue_closed"),
-                resolvedAt: row.updatedAt,
-              }
-            : row,
-        ),
-      );
+      const interactions: IssueThreadInteraction[] = [];
+      for (const row of rows) {
+        // One stored row that no longer parses must not 500 the whole thread
+        // (PAR-6922): log it and list the rest.
+        try {
+          interactions.push(
+            hydrateInteraction(
+              issueStatus &&
+                isTerminalIssueStatus(issueStatus) &&
+                row.status === "pending"
+                ? {
+                    ...row,
+                    status: "expired",
+                    result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+                    resolvedAt: row.updatedAt,
+                  }
+                : row,
+            ),
+          );
+        } catch (err) {
+          console.warn(
+            `[paperclip] Skipping unparseable ${row.kind} interaction ${row.id} on issue ${issueId}`,
+            err,
+          );
+        }
+      }
+      return interactions;
     },
 
     getById: async (interactionId: string) => {
@@ -3255,6 +3268,19 @@ export function issueThreadInteractionService(
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
+        // This runs on every server boot. One row whose stored payload no
+        // longer parses must not stop startup (PAR-6922): log it, leave it
+        // pending and carry on with the rest.
+        const payloadCheck = requestConfirmationPayloadSchema.safeParse(
+          row.payload,
+        );
+        if (!payloadCheck.success) {
+          console.warn(
+            `[paperclip] Skipping supersede sweep for unparseable request_confirmation interaction ${row.id}`,
+            payloadCheck.error.issues,
+          );
+          continue;
+        }
         const updated = await db.transaction(async (tx) => {
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
