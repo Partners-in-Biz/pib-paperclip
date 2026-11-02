@@ -4,10 +4,10 @@
  * payment check), and the hand-offs a sale produces (quote.accepted with the
  * deal, invoice.paid). A person's "done" applies each; an agent's is undone.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const ROLES = "plugin.partnersinbiz.cockpit.roles.updated";
@@ -27,10 +27,15 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
     await h?.stop();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(async () => {
     await h.reset();
     for (const key of [...h.state.keys()]) if (/:pib-(setup|cockpit|cockpit-jobs):/.test(key)) h.state.delete(key);
-    h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9" });
+    h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9", r2: R2_SETTINGS });
+    vi.stubGlobal("fetch", async () => new Response()); // R2 accepts the PDF
     await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
   });
 

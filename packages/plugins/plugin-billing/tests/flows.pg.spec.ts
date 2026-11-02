@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { isBalanced, type LedgerPostRequested } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const MAILBOX_RESULT = "plugin.partnersinbiz.mailbox.mail.send.result";
@@ -182,8 +182,8 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       const invoice = await sentInvoice();
       const { issueId } = await h.call<{ issueId: string }>("billing.request-pay", { invoiceId: invoice.id });
       h.issues.get(issueId)!.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
       const d = await detail(invoice.id);
       expect(d.invoice.status).toBe("paid");
       expect(d.payments).toHaveLength(1);
@@ -200,7 +200,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
         const invoice = await draft();
         const { issueId } = await h.call<{ issueId: string; recipients: Array<{ email: string }> }>("billing.request-send", { invoiceId: invoice.id });
         h.issues.get(issueId)!.status = "done";
-        await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+        await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
         const mails = await outbox("mail.send.requested");
         expect(mails).toHaveLength(1);
         const mail = mails[0]!.payload as any;
@@ -232,10 +232,14 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     });
 
     it("shows a permanent failure and retries under a new key", async () => {
+      h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS });
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async () => new Response()) as typeof fetch;
+      try {
       const invoice = await draft();
       const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: invoice.id });
       h.issues.get(issueId)!.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
       const key = `billing:mail:invoice:${invoice.id}:1`;
       const context = { plugin: "partnersinbiz.billing", kind: "invoice", id: invoice.id };
       await h.deliver(MAILBOX_RESULT, COMPANY, { key, status: "failed", error: "Rate limited", permanent: false, context });
@@ -245,6 +249,9 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       await h.call("billing.retry-send", { kind: "invoice", id: invoice.id });
       const keys = (await outbox("mail.send.requested")).map((r) => r.key);
       expect(keys).toEqual([key, `billing:mail:invoice:${invoice.id}:2`]);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
     });
   });
 
@@ -274,7 +281,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       const issue = h.issues.get(pops[0]!.issueId)!;
       expect(issue.title).toBe(`Check proof of payment for ${invoice.number} (Lumen Digital)`);
       issue.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issue.id });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issue.id, actorType: "user" });
       const d = await detail(invoice.id);
       expect(d.invoice.status).toBe("paid");
       expect(d.payments).toHaveLength(1);
@@ -288,7 +295,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       });
       const [pop] = await h.call<Array<{ id: string; issueId: string }>>("billing.pops", {});
       h.issues.get(pop!.issueId)!.status = "cancelled";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: pop!.issueId });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: pop!.issueId, actorType: "user" });
       expect((await h.call<Array<{ status: string }>>("billing.pops", {}))[0]!.status).toBe("rejected");
       expect((await detail(invoice.id)).invoice.status).toBe("sent");
     });
@@ -336,7 +343,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       expect((await detail(invoice.id)).payments).toHaveLength(0);
       const review = [...h.issues.values()].find((i) => i.description?.includes("bank line tx-1 "))!;
       review.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: review.id });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: review.id, actorType: "user" });
       expect((await detail(invoice.id)).invoice.status).toBe("paid");
       expect(h.emitted.filter((e) => e.name === "bank.match.result").at(-1)!.payload).toMatchObject({ key: "k-amount", status: "settled" });
     });
@@ -587,7 +594,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     expect(detailQ.quote.totalMinor).toBe(46_000);
     const { issueId } = await run("billing.request-quote-send", { quoteId: quote.id });
     h.issues.get(issueId)!.status = "done";
-    await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+    await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
     const qKey = `billing:mail:quote:${quote.id}:1`;
     await h.deliver(MAILBOX_RESULT, COMPANY, { key: qKey, status: "sent", sentAt: "2026-09-26T10:00:00Z", context: { plugin: "partnersinbiz.billing", kind: "quote", id: quote.id } });
     expect((await run("billing.quote-detail", { quoteId: quote.id })).quote).toMatchObject({ status: "sent", deliveryStatus: "sent" });
@@ -643,7 +650,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     await run("billing.request-bill-approval", { billId: bill.id });
     const issue = [...h.issues.values()].find((i) => i.title.startsWith("Approve bill"))!;
     issue.status = "done";
-    await h.deliver("issue.updated", COMPANY, {}, { entityId: issue.id });
+    await h.deliver("issue.updated", COMPANY, {}, { entityId: issue.id, actorType: "user" });
     expect((await run("billing.bill-detail", { billId: bill.id })).status).toBe("approved");
     const other = await run("billing.create-bill", { supplierName: "Temp" });
     await run("billing.cancel-bill", { billId: other.id });

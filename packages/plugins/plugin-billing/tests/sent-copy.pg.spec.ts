@@ -46,7 +46,7 @@ describe.skipIf(!available)("sent-copy flows (postgres)", () => {
       const idKey = kind === "invoice" ? "invoiceId" : "quoteId";
       const { issueId } = await h.call<{ issueId: string }>(reqFn, { [idKey]: doc.id }, kind === "quote" ? userContext() : undefined);
       h.issues.get(issueId)!.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
       expect(r2.put).toHaveBeenCalledTimes(1);
       await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalledTimes(1));
       const opts = fakeDriveSave.mock.calls[0]![1];
@@ -68,7 +68,7 @@ describe.skipIf(!available)("sent-copy flows (postgres)", () => {
     const doc = await createDoc("invoice", "ct-lumen");
     const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: doc.id });
     h.issues.get(issueId)!.status = "done";
-    await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+    await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
     expect(fakeDriveSave).not.toHaveBeenCalled();
   });
 
@@ -88,7 +88,7 @@ describe.skipIf(!available)("sent-copy flows (postgres)", () => {
       const doc = await createDoc("invoice", "ct-lumen");
       const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: doc.id });
       h.issues.get(issueId)!.status = "done";
-      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId });
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: issueId, actorType: "user" });
       const d = await h.call<{ invoice: any }>("billing.invoice-detail", { invoiceId: doc.id });
       expect(d.invoice.deliveryStatus).toBe("queued");
     } finally {
