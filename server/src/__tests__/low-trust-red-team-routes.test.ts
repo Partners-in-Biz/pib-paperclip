@@ -1945,6 +1945,12 @@ describeEmbeddedPostgres(
           })
           .where(eq(heartbeatRuns.id, fixture.runs.standard.id));
 
+        // PAR-6202 wake guard cancels a queued run when the woken agent is not the assignee.
+        await db
+          .update(issues)
+          .set({ assigneeAgentId: fixture.agents.standard.id, updatedAt: new Date() })
+          .where(eq(issues.id, fixture.issues.reviewRoot.id));
+
         const run = await heartbeat.wakeup(fixture.agents.standard.id, {
           source: "automation",
           triggerDetail: "system",

@@ -15,7 +15,7 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { escalate } from "./escalate.js";
 import { routeWork } from "./cockpit.js";
-import { wakeIssue } from "./issues.js";
+import { wakeIssueWhenIdle } from "./issues.js";
 
 export interface DoneCheckIssue {
   id: string;
@@ -116,7 +116,7 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
       `**Still not done** (${ruleLabel}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
       companyId,
     );
-    if (route.assigneeAgentId) await wakeIssue(ctx, issue.id, companyId, "Done check: closed early again");
+    if (route.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, "Done check: closed early again");
   }
 
   if (attempts >= DONE_CHECK_MAX_REOPENS) {
@@ -212,7 +212,7 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
     `**Not done yet** (${rule.label}):\n${list}\n\nThe issue is open again. Finish these, then close it.`,
     companyId,
   );
-  if (issue.assigneeAgentId) await wakeIssue(ctx, issue.id, companyId, "Done check: not finished");
+  if (issue.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, "Done check: not finished");
   return "reopened";
 }
 

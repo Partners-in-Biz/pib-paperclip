@@ -1,6 +1,7 @@
 /**
  * Escalation model: when a blocked issue has no way out after 24h, escalate to
- * the next manager in the chain or the owner. Caps at 20 per day per company,
+ * the next manager in the chain, last of all to the COO agent (PiB). No level is
+ * ever assigned to a user. Caps at 20 per day per company,
  * with 24h cooldown per level per issue.
  */
 import { teamRoleHealth } from "./team.js";
@@ -10,54 +11,42 @@ export const ESCALATION_COOLDOWN_MS = 24 * 3600_000;
 export const ESCALATION_DAILY_CAP = 20;
 export const ESCALATION_DEADLINE_MS = 24 * 3600_000;
 
-export type EscalationTarget = { kind: "agent"; agentId: string } | { kind: "owner" };
+export type EscalationTarget = { kind: "agent"; agentId: string } | { kind: "coo"; agentId: string };
 export type EscalationLevel = { level: number; target: EscalationTarget };
 export type AgentHealthInput = { agentStatus: string | null | undefined; hireOpen: boolean; missingSkills?: number };
-export type StartLevel = number | "owner";
+export type StartLevel = number | "coo";
 
 /**
  * Chain managers (nearest first, head last; assignee not included).
- * Keeps only managers with teamRoleHealth === "ok", numbers them 1..n,
- * then appends owner as level n+1. Empty chain or no usable manager
- * returns owner only. startLevel number drops levels < n; "owner" returns
- * only the owner level.
+ * Keeps only managers with teamRoleHealth === "ok" (the COO agent itself is
+ * dropped from the chain), numbers them 1..n, then appends the COO agent as
+ * level n+1: the last level, always an agent, never a user. No usable manager
+ * returns the COO level only. With no `cooAgentId` there is no last level.
+ * startLevel number drops levels < n; "coo" returns only the COO level.
  */
 export function pickLevels(
   chain: readonly string[],
   healthByAgent: Readonly<Record<string, AgentHealthInput | undefined>>,
   startLevel?: StartLevel,
+  cooAgentId?: string | null,
 ): EscalationLevel[] {
   const kept: string[] = [];
   for (const agentId of chain) {
+    if (agentId === cooAgentId) continue;
     const health = healthByAgent[agentId];
     if (health === undefined) continue;
-    const status = teamRoleHealth(health);
-    if (status === "ok") {
-      kept.push(agentId);
-    }
+    if (teamRoleHealth(health) === "ok") kept.push(agentId);
   }
 
   const levels: EscalationLevel[] = kept.map((agentId, i) => ({
     level: i + 1,
     target: { kind: "agent" as const, agentId },
   }));
+  if (cooAgentId) levels.push({ level: levels.length + 1, target: { kind: "coo", agentId: cooAgentId } });
 
-  const ownerLevel = levels.length + 1;
-  levels.push({ level: ownerLevel, target: { kind: "owner" } });
-
-  if (levels.length === 1) {
-    return [{ level: 1, target: { kind: "owner" } }];
-  }
-
-  if (startLevel === undefined) {
-    return levels;
-  }
-
-  if (typeof startLevel === "number") {
-    return levels.filter((l) => l.level >= startLevel);
-  }
-
-  return levels.filter((l) => l.target.kind === "owner");
+  if (startLevel === undefined) return levels;
+  if (typeof startLevel === "number") return levels.filter((l) => l.level >= startLevel);
+  return levels.filter((l) => l.target.kind === "coo");
 }
 
 export function escalationOriginId(issueId: string, level: number): string {
@@ -88,7 +77,7 @@ export function escalationDecide(input: {
     if (typeof startLevel === "number" && level.level < startLevel) {
       return { action: "skip", reason: "below-start", originId };
     }
-    if (startLevel === "owner" && level.target.kind !== "owner") {
+    if (startLevel === "coo" && level.target.kind !== "coo") {
       return { action: "skip", reason: "below-start", originId };
     }
   }

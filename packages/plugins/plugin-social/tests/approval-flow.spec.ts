@@ -67,8 +67,10 @@ describe("the Reviewer's pass comes first when the policy says so", () => {
     expect(result).toMatchObject({ recorded: true, verdict: "pass" });
     expect(w.post.status).toBe("review");
     expect(w.outcomes).toMatchObject([{ stage: "reviewer", outcome: "approved", via: "tool", actor_agent_id: "rev-1", note: "Reads well." }]);
-    expect(w.updates).toEqual([{ id: "iss-9", patch: { status: "todo", assigneeAgentId: null, assigneeUserId: "owner-1" } }]);
-    expect(w.comments[0]!.body).toContain("Next: a team member's approval");
+    // The person's sign-off goes on their weekly issue; the post's own issue is finished.
+    expect(w.updates).toEqual([{ id: "iss-9", patch: { status: "done" } }]);
+    expect(w.created[0]).toMatchObject({ title: expect.stringContaining("Review social posts: week of "), assigneeUserId: "owner-1", originId: expect.stringContaining("review-week:owner-1:") });
+    expect(String(w.created[0]!.description)).toContain("- [ ] ");
     // The person's approval now completes it.
     await approvePostByPerson(w.ctx, ACTOR, postRow(w));
     expect(w.post.status).toBe("approved");

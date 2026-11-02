@@ -315,9 +315,8 @@ describe("applying the client's answer (the 5-minute job)", () => {
     expect(summary).toMatchObject({ delivered: 1, approved: 1 });
     expect(w.post.status).toBe("review");
     expect(w.links[0]!.applied).toBe("approved_waiting_owner");
-    expect(w.updates.at(-1)).toEqual({ id: "iss-9", patch: { status: "todo", assigneeAgentId: null, assigneeUserId: "owner-1" } });
-    expect(w.comments.at(-1)!.body).toContain("approved the post");
-    expect(w.comments.at(-1)!.body).toContain("Next: a team member's approval");
+    expect(w.updates.at(-1)).toEqual({ id: "iss-9", patch: { status: "done" } });
+    expect(w.created[0]).toMatchObject({ title: expect.stringContaining("Review social posts: week of "), assigneeUserId: "owner-1" });
   });
 
   it("a request for changes sends the post back to draft with the client's note, and wakes the Social agent", async () => {

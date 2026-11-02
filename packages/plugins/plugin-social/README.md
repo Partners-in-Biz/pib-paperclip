@@ -189,3 +189,15 @@ One workspace, three kinds of space. Every tab (Posts, Calendar, Accounts, Inbox
 Actions take `space: "me"` next to (or instead of) `client`; `spaceOf()` in `src/space.ts` is the one place that reads it. Personal rows exist in accounts, posts, destinations (through their post), inbox items (copied from the account at sync), media, feeds, templates. Nobody else, including agents and other team members, can read, change or publish them.
 
 **Rollback:** migrations 016 and 017 add only defaulted columns and indexes, so rollback = deploy 0.8.3 (which ignores them). 016 still has its rollback comments. 017's indexes are `accounts_org_external` and `accounts_personal_external`.
+
+## Metrics errors (0.10.11)
+
+When a metrics snapshot cannot be captured, the destination keeps a `metricsError` (`at`, `window`, `kind`, optional `status`, `message`) inside its `result`, and `post-analytics` returns it per destination with `metricWindows`. Kinds: `provider` (the API call failed), `insights` (counts were stored but a best-effort sub-call such as impressions failed; the window stays open and is retried, and a later snapshot fills only the null columns), `unsupported` (LinkedIn personal profiles: analytics are not available to this app, so no call is made). A clean snapshot clears the error. Messages never contain URL query strings or tokens. The `collect-metrics` job summary adds `partial` and `errorsByPlatform`.
+
+## Facebook insights (0.10.12)
+
+Facebook post snapshots read `post_media_view` (stored as impressions and views) and `post_total_media_view_unique` (reach) in one Insights call, and `post_clicks` (clicks) in a second call, so a failing clicks metric cannot blank impressions or reach. A failure or missing metric is stored as `insightsError` (kind `insights`). The Facebook login now also asks for `read_insights`. A Page connected before 0.10.12 may need one reconnect; do it only when the persisted `metricsError` on a Facebook destination shows a permission error.
+
+## LinkedIn organization statistics (0.10.13)
+
+LinkedIn Page (organization) posts read `organizationalEntityShareStatistics` (impressions, unique impressions as reach, clicks, likes, comments, shares) for `urn:li:share:` and `urn:li:ugcPost:` posts. Organization pages only: personal profiles have no analytics. A missing element or an API error is stored as `insightsError` and the window is retried; values are never written as zeros. Needs a connected LinkedIn organization account.

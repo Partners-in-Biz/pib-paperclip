@@ -131,6 +131,7 @@ export const toolConnections = pgTable(
     enabled: boolean("enabled").notNull().default(false),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     transportConfig: jsonb("transport_config").$type<Record<string, unknown>>().notNull().default({}),
+    agentInstructions: jsonb("agent_instructions").$type<Record<string, unknown>>(),
     credentialRefs: jsonb("credential_refs").$type<McpConnectionCredentialRef[]>().notNull().default([]),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
     healthStatus: text("health_status").$type<ToolConnectionHealthStatus>().notNull().default("unchecked"),
@@ -566,6 +567,7 @@ export const toolMcpGatewayTokens = pgTable(
     index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
     index("tool_mcp_gateway_tokens_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
     index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),
+    index("tool_mcp_gateway_tokens_expiry_idx").on(table.expiresAt, table.id),
   ],
 );
 

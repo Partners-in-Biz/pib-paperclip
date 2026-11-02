@@ -66,7 +66,7 @@ import { spaceOf } from "./space.js";
 import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
-import { collectMetricsJob } from "./metrics.js";
+import { collectMetricsJob, recollectPostMetrics } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
 import { planSweep } from "./plan-trigger.js";
@@ -121,6 +121,7 @@ import {
   validatePostRecord,
   type Viewer,
 } from "./service.js";
+import { growthAction } from "./growth/action.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
 import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
@@ -270,6 +271,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return replyInboxRecord(ctx, viewer, p);
     case "record-post-metrics":
       return recordMetricsRecord(ctx, viewer, p);
+    case "recollect-post-metrics":
+      return recollectPostMetrics(ctx, viewer.companyId, p);
     case "post-analytics":
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":
@@ -427,25 +430,25 @@ const ACTIONS: Record<string, ActionHandler> = {
     correctTriage(ctx, v.companyId, requireUser(v, "correct a triage"), { itemId: requiredString(p, "itemId"), key: requiredString(p, "key"), value: requiredString(p, "value") }),
   // Growth Lab (people): the Growth tab.
   "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
-  "social.growth-update-program": (ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p),
-  "social.growth-save-playbook": (ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p),
-  "social.growth-approve-experiment": (ctx, v, p) => {
+  "social.growth-update-program": growthAction((ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p)),
+  "social.growth-save-playbook": growthAction((ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p)),
+  "social.growth-approve-experiment": growthAction((ctx, v, p) => {
     requireUser(v, "approve an experiment");
     return approveExperiment(growthEnv(ctx), v, p);
-  },
-  "social.growth-reject-experiment": (ctx, v, p) => {
+  }),
+  "social.growth-reject-experiment": growthAction((ctx, v, p) => {
     requireUser(v, "reject an experiment");
     return rejectExperiment(growthEnv(ctx), v, p);
-  },
-  "social.growth-abandon-experiment": (ctx, v, p) => abandonExperiment(growthEnv(ctx), v, p),
-  "social.growth-decide-change": (ctx, v, p) => {
+  }),
+  "social.growth-abandon-experiment": growthAction((ctx, v, p) => abandonExperiment(growthEnv(ctx), v, p)),
+  "social.growth-decide-change": growthAction((ctx, v, p) => {
     requireUser(v, "decide a playbook change");
     return decidePlaybookChange(growthEnv(ctx), v, p);
-  },
-  "social.growth-retire-question": (ctx, v, p) => {
+  }),
+  "social.growth-retire-question": growthAction((ctx, v, p) => {
     requireUser(v, "retire a feature question");
     return proposeFeatureQuestion(growthEnv(ctx), v, { ...p, op: "retire" });
-  },
+  }),
   // Hiring: a normal task spells out the agent; the plugin links it when it appears, or a person links one by hand.
   "social.hire-options": (ctx, v) => {
     requireUser(v, "hire the Social agent");

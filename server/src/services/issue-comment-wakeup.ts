@@ -1,3 +1,5 @@
+import { shouldWakeBlockedTicket } from "./issue-wake-guards.js";
+
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;
   resumeRequested: boolean;
@@ -8,6 +10,7 @@ export function shouldWakeAssigneeForIssueComment(input: {
   };
   reopened: boolean;
   currentStatus: string | null | undefined;
+  commentAuthorType?: string | null;
 }) {
   const sourceRunId = input.commentCreatedByRunId;
   const commentIsFromCurrentIssueRun = Boolean(
@@ -21,6 +24,14 @@ export function shouldWakeAssigneeForIssueComment(input: {
   ) {
     return false;
   }
+  const blockedWake = shouldWakeBlockedTicket({
+    issueStatus: input.currentStatus,
+    wakeReason: input.reopened
+      ? "issue_reopened_via_comment"
+      : "issue_commented",
+    requestedByActorType: input.commentAuthorType ?? null,
+  });
+  if (!blockedWake.wake) return false;
   return (
     input.reopened ||
     (input.currentStatus !== "done" && input.currentStatus !== "cancelled")

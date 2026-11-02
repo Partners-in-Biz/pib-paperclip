@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escalate, type EscalateOptions, type EscalateResult } from "../src/escalate.js";
+import { cancelUnblocksOnResolve, escalate, type EscalateOptions, type EscalateResult } from "../src/escalate.js";
 import { fakeCtx, stateKeyOf } from "./helpers/fake-ctx.js";
 
 describe("escalate", () => {
@@ -132,54 +132,85 @@ describe("escalate", () => {
     });
   });
 
-  describe("(d) head's manager absent, routes to owner with user assignee, no wakeup", () => {
-    it("escalates to owner when chain ends", async () => {
+  describe("(d) end of the chain goes to the COO agent, never a user", () => {
+    it("assigns the last level to the COO agent with no assigneeUserId", async () => {
       const fake = fakeCtx({
         companies: { "co-1": { name: "Test Co", issuePrefix: "TST", defaultResponsibleUserId: "owner-user" } },
         agents: [
-          { id: "agent1", reportsTo: null, status: "ok" }, // no manager above agent1
+          { id: "agent1", reportsTo: null, status: "ok" },
+          { id: "pib", role: "coo", reportsTo: null, status: "ok" },
         ],
       });
+      const stuckIssue = await fake.ctx.issues.create({ companyId: "co-1", title: "Stuck", assigneeAgentId: "agent1", status: "todo" });
 
-      const stuckIssue = await fake.ctx.issues.create({
-        companyId: "co-1",
-        title: "Stuck",
-        assigneeAgentId: "agent1",
-        status: "todo",
+      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", { companyId: "co-1", now });
+
+      expect(result).toEqual(expect.objectContaining({ created: true, level: 1 }));
+      const created = fake.issues.find((i) => i.id !== stuckIssue.id) as any;
+      expect(created.assigneeAgentId).toBe("pib");
+      expect(created.assigneeUserId ?? null).toBeNull();
+    });
+
+    it("no level of a reportsTo chain carries assigneeUserId", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST", defaultResponsibleUserId: "owner-user" } },
+        agents: [
+          { id: "agent1", reportsTo: "agent2", status: "ok" },
+          { id: "agent2", reportsTo: "agent3", status: "ok" },
+          { id: "agent3", reportsTo: null, status: "ok" },
+          { id: "pib", role: "coo", reportsTo: null, status: "ok" },
+        ],
       });
+      const stuckIssue = await fake.ctx.issues.create({ companyId: "co-1", title: "Stuck", assigneeAgentId: "agent1", status: "todo" });
+      for (const startLevel of [1, 2, 3, "coo"] as const) {
+        await escalate(fake.ctx, stuckIssue.id, "blocked", { companyId: "co-1", now, startLevel });
+      }
+      const created = fake.issues.filter((i) => i.id !== stuckIssue.id) as any[];
+      expect(created.map((c) => c.assigneeAgentId)).toEqual(["agent2", "agent3", "pib"]);
+      for (const c of created) expect(c.assigneeUserId ?? null).toBeNull();
+    });
 
-      // Set owner in roles
-      await fake.ctx.state.set(
-        {
-          scopeKind: "company" as const,
-          scopeId: "co-1",
-          namespace: "pib-cockpit",
-          stateKey: "roles",
-        },
-        {
-          companyId: "co-1",
-          operatorAgentId: null,
-          reviewerAgentId: null,
-          ownerUserId: "owner-user",
-          reviewOutward: false,
-          updatedAt: new Date().toISOString(),
-          receivedAt: new Date().toISOString(),
-        },
-      );
-
-      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", {
-        companyId: "co-1",
-        now,
+    it("no COO agent: no user fallback, returns no-target", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST", defaultResponsibleUserId: "owner-user" } },
+        agents: [{ id: "agent1", reportsTo: null, status: "ok" }],
       });
+      const stuckIssue = await fake.ctx.issues.create({ companyId: "co-1", title: "Stuck", assigneeAgentId: "agent1", status: "todo" });
+      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", { companyId: "co-1", now });
+      expect(result).toEqual({ skipped: "no-target" });
+      expect(fake.issues.length).toBe(1);
+    });
 
-      expect(result).toEqual(expect.objectContaining({ created: true }));
-      // Should be assigned to owner user, not an agent
-      const created = fake.issues.find((i) => i.id !== stuckIssue.id);
-      expect((created as any).assigneeUserId).toBe("owner-user");
-      expect((created as any).assigneeAgentId).toBeNull();
+    it("no second Unblock for the same source and level inside the cooldown", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [{ id: "agent1", reportsTo: null, status: "ok" }, { id: "pib", role: "coo", reportsTo: null, status: "ok" }],
+      });
+      const stuckIssue = await fake.ctx.issues.create({ companyId: "co-1", title: "Stuck", assigneeAgentId: "agent1", status: "todo" });
+      const first = (await escalate(fake.ctx, stuckIssue.id, "blocked", { companyId: "co-1", now })) as any;
+      await cancelUnblocksOnResolve(fake.ctx, stuckIssue.id, "co-1");
+      const later = new Date(now.getTime() + 3600_000);
+      const second = await escalate(fake.ctx, stuckIssue.id, "blocked again", { companyId: "co-1", now: later });
+      expect(second).toEqual({ skipped: "no-target" });
+      expect(fake.issues.filter((i) => (i as any).originId).length).toBe(1);
+      expect(first.created).toBe(true);
+    });
+  });
 
-      // Check that no wakeup was requested for the owner assignment
-      expect(fake.wakeups).toEqual([]); // Owner doesn't get woken
+  describe("cancelUnblocksOnResolve", () => {
+    it("cancels the open Unblock issue with a reason comment and closes its record", async () => {
+      const fake = fakeCtx({
+        companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
+        agents: [{ id: "agent1", reportsTo: null, status: "ok" }, { id: "pib", role: "coo", reportsTo: null, status: "ok" }],
+      });
+      const stuckIssue = await fake.ctx.issues.create({ companyId: "co-1", title: "Stuck", assigneeAgentId: "agent1", status: "todo" });
+      const r = (await escalate(fake.ctx, stuckIssue.id, "blocked", { companyId: "co-1", now })) as any;
+      const cancelled = await cancelUnblocksOnResolve(fake.ctx, stuckIssue.id, "co-1");
+      expect(cancelled).toEqual([r.id]);
+      expect(fake.issues.find((i) => i.id === r.id)!.status).toBe("cancelled");
+      expect(JSON.stringify(fake.comments ?? fake.updates)).toMatch(/no longer blocked|cancelled/);
+      // a second call finds nothing open
+      expect(await cancelUnblocksOnResolve(fake.ctx, stuckIssue.id, "co-1")).toEqual([]);
     });
   });
 
@@ -418,34 +449,6 @@ describe("escalate", () => {
       });
 
       expect(result).toEqual({ skipped: "no-issue" });
-    });
-  });
-
-  describe("returns no-owner when ownerUserFor returns no user", () => {
-    it("returns skipped:no-owner when escalating to owner with no user found", async () => {
-      const fake = fakeCtx({
-        companies: { "co-1": { name: "Test Co", issuePrefix: "TST", defaultResponsibleUserId: null } },
-        agents: [
-          { id: "agent1", reportsTo: "agent2", status: "ok" },
-          { id: "agent2", reportsTo: null, status: "ok" },
-        ],
-      });
-
-      // Don't set owner in roles
-      const stuckIssue = await fake.ctx.issues.create({
-        companyId: "co-1",
-        title: "Stuck",
-        assigneeAgentId: "agent1",
-        status: "todo",
-      });
-
-      const result = await escalate(fake.ctx, stuckIssue.id, "blocked", {
-        companyId: "co-1",
-        now,
-        startLevel: "owner",
-      });
-
-      expect(result).toEqual({ skipped: "no-owner" });
     });
   });
 

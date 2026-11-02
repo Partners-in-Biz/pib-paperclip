@@ -444,6 +444,7 @@ export interface GrowthSnapshot {
   bottom: GrowthPost[];
   featureLifts: Array<{ key: string; count: number; medianLift: number }>;
   runningExperiments: GrowthExperiment[];
+  maxRunning: number;
   proposedExperiments: GrowthExperiment[];
   pendingChanges: GrowthChange[];
   rankedHypothesisTypes: RankedType[];

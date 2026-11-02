@@ -35,7 +35,7 @@ import { AdsError, actorText, minorField, optionalChoice, scopeKeyOf, scopeLabel
 import { addDays, isDay, isMonth, monthEnd, monthOf, monthStart, todayIn } from "./dates.js";
 import { connectionView, requireConnection } from "./connections.js";
 import { describeAccounts } from "./accounts.js";
-import { derive, sumRows, withDerived, type Totals } from "./metrics.js";
+import { derive, emptyTotals, sumRows, withDerived, type Totals } from "./metrics.js";
 import { formatMoney, pct } from "./money.js";
 import { scopePace } from "./pacing.js";
 import { OWN_SCOPE, PROPOSAL_KIND_LABELS, STATUS_LABELS, platformLabel, type ScopeKey } from "./platforms.js";
@@ -96,11 +96,11 @@ export function periodFrom(params: Record<string, unknown>, today: string): Peri
 
 const today = (rt: AdsRuntime) => todayIn(rt.config.timezone, rt.now());
 
-function totalsOf(row: { spend: number; impressions: number; clicks: number; conversions: number; value: number }): Totals {
-  return { spend: row.spend, impressions: row.impressions, clicks: row.clicks, conversions: row.conversions, value: row.value };
+function totalsOf(row: Totals): Totals {
+  return { spend: row.spend, impressions: row.impressions, clicks: row.clicks, conversions: row.conversions, installs: row.installs, value: row.value };
 }
 
-function shaped(row: { spend: number; impressions: number; clicks: number; conversions: number; value: number }, currency: string) {
+function shaped(row: Totals, currency: string) {
   const t = withDerived(totalsOf(row));
   return {
     spendMinor: t.spend,
@@ -108,6 +108,9 @@ function shaped(row: { spend: number; impressions: number; clicks: number; conve
     impressions: t.impressions,
     clicks: t.clicks,
     conversions: t.conversions,
+    installs: t.installs,
+    cpiMinor: t.cpi,
+    cpi: t.cpi === null ? null : formatMoney(t.cpi, currency),
     ctr: t.ctr === null ? null : Math.round(t.ctr * 10_000) / 10_000,
     cpcMinor: t.cpc,
     cpc: t.cpc === null ? null : formatMoney(t.cpc, currency),
@@ -127,7 +130,7 @@ export async function summaryRecord(rt: AdsRuntime, params: Record<string, unkno
   const rows = await summaryRows(rt.ctx, rt.companyId, { since: period.since, until: period.until, groupBy, ...(scopeKey ? { scopeKey } : {}), ...(platform ? { platform } : {}) });
   const names = await clientNames(rt.ctx, rt.companyId);
   const byCurrency = new Map<string, Totals>();
-  for (const r of rows) byCurrency.set(r.currency, sumRows([byCurrency.get(r.currency) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, value: 0 }, totalsOf(r)]));
+  for (const r of rows) byCurrency.set(r.currency, sumRows([byCurrency.get(r.currency) ?? emptyTotals(), totalsOf(r)]));
   return {
     period,
     groupBy,
@@ -158,7 +161,7 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
   const rows = await dailyRows(rt.ctx, rt.companyId, since);
   const key = (accountId_: string, ext: string) => `${accountId_}|${ext}`;
   const sums = new Map<string, Totals>();
-  for (const r of rows) sums.set(key(r.account_id, r.campaign_external_id), sumRows([sums.get(key(r.account_id, r.campaign_external_id)) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, value: 0 }, r]));
+  for (const r of rows) sums.set(key(r.account_id, r.campaign_external_id), sumRows([sums.get(key(r.account_id, r.campaign_external_id)) ?? emptyTotals(), r]));
   return {
     last7Days: { since, until: today(rt) },
     campaigns: campaigns.map((c) => ({
@@ -173,7 +176,7 @@ export async function campaignsRecord(rt: AdsRuntime, params: Record<string, unk
       dailyBudgetMinor: c.daily_budget_minor,
       dailyBudget: c.daily_budget_minor === null ? null : formatMoney(c.daily_budget_minor, c.currency),
       currency: c.currency,
-      ...shaped(sums.get(key(c.account_id, c.external_id)) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, value: 0 }, c.currency),
+      ...shaped(sums.get(key(c.account_id, c.external_id)) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0, installs: 0, value: 0 }, c.currency),
     })),
   };
 }

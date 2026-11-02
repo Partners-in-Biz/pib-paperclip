@@ -246,6 +246,7 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { shouldWakeBlockedTicket } from "../services/issue-wake-guards.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -299,6 +300,10 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import {
+  evaluateIssueCodeReviewGate,
+  pickAutoReviewStageReviewer,
+} from "../services/issue-code-review-gate-context.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -13189,6 +13194,32 @@ export function issueRoutes(
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
+      // PAR-5969: an engineer newly assigned code work gets a Code Reviewer review stage,
+      // unless the caller sets the policy itself or a review stage is already there.
+      if (
+        req.body.executionPolicy === undefined &&
+        normalizedAssigneeAgentId &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId &&
+        !previousExecutionPolicy?.stages.some((stage) => stage.type === "review")
+      ) {
+        const reviewerAgentId = await pickAutoReviewStageReviewer(
+          db,
+          existing,
+          normalizedAssigneeAgentId,
+        );
+        if (reviewerAgentId) {
+          updateFields.executionPolicy = normalizeIssueExecutionPolicy({
+            ...(previousExecutionPolicy ?? {}),
+            stages: [
+              ...(previousExecutionPolicy?.stages ?? []),
+              {
+                type: "review",
+                participants: [{ type: "agent", agentId: reviewerAgentId }],
+              },
+            ],
+          });
+        }
+      }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
@@ -13248,6 +13279,21 @@ export function issueRoutes(
       Object.assign(updateFields, transition.patch);
 
       const nextStatus = updateFields.status ?? existing.status;
+      // PAR-5969: the assignee cannot close code work without a Code Reviewer PASS. Board
+      // actors and other agents (including the Code Reviewer completing its own stage) are
+      // not gated; a review stage turns the assignee's done into in_review before this point.
+      if (
+        nextStatus === "done" &&
+        existing.status !== "done" &&
+        req.actor.type === "agent" &&
+        actor.agentId &&
+        actor.agentId === existing.assigneeAgentId
+      ) {
+        const gate = await evaluateIssueCodeReviewGate(db, existing, existing.assigneeAgentId);
+        if (!gate.allowed) {
+          throw unprocessable(gate.reason ?? "Code Reviewer review is required");
+        }
+      }
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -14714,6 +14760,7 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              commentAuthorType: actor.actorType,
             });
 
           if (
@@ -14783,6 +14830,15 @@ export function issueRoutes(
           }
 
           for (const mentionedId of mentionedIds) {
+            if (
+              !shouldWakeBlockedTicket({
+                issueStatus: issue.status,
+                wakeReason: "issue_comment_mentioned",
+                requestedByActorType: actor.actorType,
+              }).wake
+            ) {
+              continue;
+            }
             if (
               (actor.actorType === "agent" && actor.actorId === mentionedId) ||
               (commentIsFromAssigneeRun && mentionedId === assigneeId)
@@ -18127,6 +18183,7 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          commentAuthorType: actor.actorType,
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {
@@ -18217,6 +18274,15 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
+          if (
+            !shouldWakeBlockedTicket({
+              issueStatus: wakeIssueSnapshot.status,
+              wakeReason: "issue_comment_mentioned",
+              requestedByActorType: actor.actorType,
+            }).wake
+          ) {
+            continue;
+          }
           if (
             (actorIsAgent && actor.actorId === mentionedId) ||
             (commentIsFromAssigneeRun && mentionedId === assigneeId)

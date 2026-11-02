@@ -1,16 +1,33 @@
-import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, not, notInArray, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
 import { heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
 
-/** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
+/** Outcomes recorded when a person or verified replacement closed the recovery for real. */
+const SETTLED_RECOVERY_OUTCOMES = ["restored", "handed_back"] as const;
+
+/**
+ * Resolved recovery bookkeeping can still carry an effective no-replay hold: the automatic
+ * disposition (resolved with outcome "blocked" or "cancelled") deliberately keeps blocking
+ * until verified evidence arrives. A cancelled row, or a resolved row that was restored or
+ * handed back, is settled, so its stale `replay: "blocked"` marker must not block wakes.
+ */
 export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
     or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+      and(
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+        ne(issueRecoveryActions.status, "cancelled"),
+        or(
+          ne(issueRecoveryActions.status, "resolved"),
+          isNull(issueRecoveryActions.outcome),
+          notInArray(issueRecoveryActions.outcome, [...SETTLED_RECOVERY_OUTCOMES]),
+          sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+        ),
+      )),
   );
 }
 

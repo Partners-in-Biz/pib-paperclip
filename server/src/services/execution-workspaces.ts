@@ -1,4 +1,7 @@
-import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
+import {
+  createWorkspaceGitInspectionCache,
+  WORKSPACE_GIT_SWEEP_CACHE_TTL_MS,
+} from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -1275,6 +1278,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const inspectDisplay = opts.inspectGitCloseReadiness
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
     : inspectGitForDisplay;
+  // The reaper re-checks every terminal candidate each sweep. Serve a 30s
+  // single-flight result for that read-only decision; the destructive step
+  // (assertTerminalCleanupGitStateUnchanged) and getCloseReadiness stay uncached.
+  const inspectForSweep = createWorkspaceGitInspectionCache(
+    inspectGitCloseReadiness,
+    {
+      ttlMs: WORKSPACE_GIT_SWEEP_CACHE_TTL_MS,
+      shouldRetain: (result) => result.statusInspectionSucceeded,
+    },
+  );
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
@@ -2612,7 +2625,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectForSweep(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           continue;

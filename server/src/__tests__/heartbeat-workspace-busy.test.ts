@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -599,6 +599,54 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         .then((rows) => rows[0] ?? null);
       expect(wakeup?.status).toBe("cancelled");
     }
+  });
+
+  it("queues a run whose issue shares an isolated execution workspace with a live run", async () => {
+    const fixture = await seedWorkspaceFixture({ issueWorkspaceSettings: { mode: "isolated_workspace" } });
+    const executionWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId: fixture.companyId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Shared issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+      providerRef: workspaceCwd,
+      cwd: workspaceCwd,
+    });
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId, executionWorkspacePreference: "reuse_existing" })
+      .where(inArray(issues.id, [fixture.issueId, fixture.holderIssueId]));
+
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+
+    // Not failed, not frozen: the run is parked and a scheduled retry waits
+    // for the holder, and the adapter never touched the busy worktree.
+    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+    expect(finishedRun?.status).toBe("cancelled");
+    expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect((finishedRun?.resultJson as Record<string, unknown> | null)?.workspaceBusy).toMatchObject({
+      executionWorkspaceId,
+      holderRunId: fixture.holderRunId,
+      holderIssueId: fixture.holderIssueId,
+    });
+    expect(executedRunIds).not.toContain(run!.id);
+    const retryRun = await waitForRetryRun(run!.id);
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
+    });
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
   });
 
   it("executes the scheduled retry once the holder has finished", async () => {

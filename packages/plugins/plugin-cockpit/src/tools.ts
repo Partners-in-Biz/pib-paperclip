@@ -57,7 +57,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.health,
     displayName: "Health issues",
     description:
-      "System health problems across every PiB plugin, worst first: failing jobs, stuck deliveries, expired connections, plugins not reporting, agents in error or at 80%+ of their budget. Each has detail, a link and what to do.",
+      "System health problems across every PiB plugin, worst first: failing jobs, stuck deliveries, expired connections, plugins not reporting, agents in error or at 80%+ of their budget. Each has detail, a link and what to do. When sections are unavailable (timed out), they are listed in degraded.",
     parametersSchema: schema([], {
       includeWarnings: { type: "boolean", description: "Include warnings as well as problems (default true)" },
     }),
@@ -66,7 +66,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.waiting,
     displayName: "Waiting on the owner",
     description:
-      "What waits on a person right now, deduped: questions agents asked the owner first, then money, legal, grants, judgement, reviews (oldest first): approval issues, open Paperclip approvals, issues assigned to the owner, unassigned work, missing setup items. Check each one: if an agent could do it, hand it to that agent instead.",
+      "What waits on a person right now, deduped: questions agents asked the owner first, then money, legal, grants, judgement, reviews (oldest first): approval issues, open Paperclip approvals, issues assigned to the owner, unassigned work, missing setup items. Check each one: if an agent could do it, hand it to that agent instead. When sections are unavailable (timed out), they are listed in degraded.",
     parametersSchema: schema([], {}),
   },
   {

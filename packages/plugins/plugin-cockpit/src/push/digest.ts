@@ -8,7 +8,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { getOvernightWindow } from "./policy.js";
 import { listDeferredSince, listSubscriptionsForCompany, updatePushLogStatus } from "./store.js";
 import { sendPush } from "./send.js";
+import { isOwnerCompany } from "@partnersinbiz/pib-plugin-kit";
 import { listRoles } from "../db.js";
+import { attentionLine, countAttention } from "./attention.js";
 
 export interface PushDigestDeps {
   now?: () => Date;
@@ -46,7 +48,9 @@ export async function runPushDigestForCompany(
   const count = deferredRows.length;
   const payload = {
     title: `${count} item${count === 1 ? "" : "s"} waited overnight`,
-    body: "Items waiting for you to review",
+    body: (await isOwnerCompany(ctx, companyId))
+      ? `Items waiting for you to review\n${attentionLine(await countAttention(ctx, companyId, now))}`
+      : "Items waiting for you to review",
     url: "/cockpit",
     tag: "digest",
     class: "digest" as const,

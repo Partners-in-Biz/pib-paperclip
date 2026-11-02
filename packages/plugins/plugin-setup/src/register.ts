@@ -1,9 +1,10 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { operatorDowngrade } from "./entitlements.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
+import { templateDrift } from "./drift-job.js";
 import { JOBS } from "./manifest.js";
 import { effectiveModules, ForbiddenError, SetupError } from "./modules.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -13,6 +14,8 @@ import { backfillEntitlements, loadSetup, message, moduleView, setEntitlements, 
 
 /** Registers everything; exported for tests. */
 export function registerSetup(ctx: PluginContext): void {
+  // The template-drift job assigns its issue to the Operator, so Setup keeps the Cockpit's roles copy.
+  registerRoleWatch(ctx);
   for (const pluginKey of Object.values(PIB_PLUGINS)) {
     ctx.events.on(pluginEvent(pluginKey, SETUP_EVENTS.status), async (event) => {
       try {
@@ -95,6 +98,9 @@ export function registerSetup(ctx: PluginContext): void {
   });
   ctx.jobs.register(JOBS.weeklyFinishSetup, async () => {
     ctx.logger.info("Weekly Finish setup", await weeklyFinishSetup(ctx));
+  });
+  ctx.jobs.register(JOBS.templateDrift, async () => {
+    ctx.logger.info("Template drift", await templateDrift(ctx));
   });
 }
 

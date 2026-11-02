@@ -24,6 +24,7 @@ import { createIssueSafely, ORIGIN_KIND, personAssignee, projectIdForRow, scopeL
 import { socialPath } from "./oauth/flow.js";
 import { isSocialPlatform, PLATFORM_LABELS, type PostStatus } from "./platforms.js";
 import { summarizeTarget } from "./post-target.js";
+import { addWeeklyReviewItem, closeWeeklyReviewItem } from "./weekly-review.js";
 
 export const POST_REVIEW_CHECKS = [
   "Platform limits: length, hashtags, media format and count fit every destination (run `validate-post`).",
@@ -171,7 +172,7 @@ async function destinationNames(ctx: PluginContext, companyId: string, post: Pos
 export async function handReviewIssue(
   ctx: PluginContext,
   companyId: string,
-  post: Pick<PostRow, "id" | "owner_user_id">,
+  post: PostRow,
   to: { agentId: string } | { userId: string },
   comment: string,
   wakeReason: string,
@@ -179,10 +180,18 @@ export async function handReviewIssue(
   try {
     const issueId = await reviewIssueOf(ctx, companyId, post.id);
     if (!issueId || !(await issueOpen(ctx, companyId, issueId))) return false;
-    const patch = "agentId" in to ? { status: "todo" as const, assigneeAgentId: to.agentId, assigneeUserId: null } : { status: "todo" as const, assigneeAgentId: null, assigneeUserId: to.userId };
+    if ("userId" in to) {
+      // A person signs off: the post joins their one issue for the week, and its own review issue is finished.
+      const weekly = await addWeeklyReviewItem(ctx, companyId, post, to.userId, comment);
+      await ctx.issues.createComment(issueId, `This post moved to the weekly review issue (${weekly}); sign it off there.`, companyId);
+      await ctx.issues.update(issueId, { status: "done" }, companyId);
+      await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = NULL WHERE id = $1 AND company_id = $2`, [post.id, companyId]);
+      return true;
+    }
+    const patch = { status: "todo" as const, assigneeAgentId: to.agentId, assigneeUserId: null };
     await ctx.issues.update(issueId, patch, companyId);
     await ctx.issues.createComment(issueId, comment, companyId);
-    if ("agentId" in to) await wakeIssue(ctx, issueId, companyId, wakeReason);
+    await wakeIssue(ctx, issueId, companyId, wakeReason);
     return true;
   } catch (error) {
     ctx.logger.info("Social review hand-off skipped", { postId: post.id, error: errorMessage(error) });
@@ -331,6 +340,7 @@ export async function closePostReview(ctx: PluginContext, actor: ReviewActor, po
   const companyId = actor.companyId;
   const byPerson = !actor.isAgent && Boolean(actor.userId);
   try {
+    await closeWeeklyReviewItem(ctx, companyId, post.id, to === "approved" ? approvedNote ?? "A person approved the post." : "The post went back to draft for changes. A new review opens when it is sent for review again.");
     const issueId = await reviewIssueOf(ctx, companyId, post.id);
     const returned = to === "draft" && byPerson ? 1 : 0;
     if (!issueId && !returned) return;

@@ -26,6 +26,7 @@ import {
   round,
   splitAuthorsReviewers,
   type AgentMeasure,
+  type CycleRow,
   type DoneIssueReview,
   type LimitFailures,
   type MeasureReport,
@@ -424,6 +425,17 @@ export async function readReviewRows(ctx: PluginContext, companyId: string, sinc
     reviewCreatedAt: iso(r.review_created_at),
     reviewCompletedAt: iso(r.review_completed_at),
   }));
+}
+
+/** Created and completed times of issues finished in the window, newest first. */
+export async function readCycleRows(ctx: PluginContext, companyId: string, since: string, limit = 500): Promise<CycleRow[]> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT created_at, completed_at FROM public.issues
+      WHERE company_id = $1::uuid AND status = 'done' AND hidden_at IS NULL AND completed_at >= $2::timestamptz
+      ORDER BY completed_at DESC LIMIT $3`,
+    [companyId, since, limit],
+  );
+  return rows.map((r) => ({ createdAt: iso(r.created_at), completedAt: iso(r.completed_at) }));
 }
 
 /** Review coverage and latency for the last `days` days: who counts as an author and a reviewer comes from the agent list. */

@@ -107,6 +107,8 @@ export interface MetricsSnapshot {
   saves?: number | null;
   clicks?: number | null;
   raw?: Record<string, unknown>;
+  /** Set when a best-effort sub-call failed or returned no usable element; the main counts are still valid. */
+  insightsError?: string;
   /** Updated external id (TikTok resolves the public post id later). */
   externalId?: string;
   url?: string;

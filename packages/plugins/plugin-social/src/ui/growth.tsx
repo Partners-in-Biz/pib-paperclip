@@ -120,7 +120,7 @@ function ArmLine({ experiment }: { experiment: GrowthExperiment }) {
   );
 }
 
-function ExperimentCard({ experiment, canDecide, act }: { experiment: GrowthExperiment; canDecide: boolean; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
+function ExperimentCard({ experiment, canDecide, act, full = false, maxRunning = 0 }: { experiment: GrowthExperiment; canDecide: boolean; full?: boolean; maxRunning?: number; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
   const [reason, setReason] = useState("");
   return (
     <Card style={{ gap: 6, borderLeft: `3px solid ${tone(experiment.verdict ? toneOf(VERDICT_TONE, experiment.verdict) : toneOf(EXPERIMENT_TONE, experiment.status)).solid}` }}>
@@ -139,10 +139,16 @@ function ExperimentCard({ experiment, canDecide, act }: { experiment: GrowthExpe
       {experiment.note ? <Muted>Note: {experiment.note}</Muted> : null}
       {canDecide && experiment.status === "proposed" ? (
         <Row>
-          <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void act("social.growth-approve-experiment", { experimentId: experiment.experimentId }, "Experiment started")}>Approve</Button>
+          <Button type="button" disabled={full} style={{ height: 28, fontSize: 12 }} onClick={() => void act("social.growth-approve-experiment", { experimentId: experiment.experimentId }, "Experiment started")}>Approve</Button>
           <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason to reject" style={{ flex: "1 1 200px", height: 28 }} />
           <SmallButton disabled={!reason.trim()} onClick={() => void act("social.growth-reject-experiment", { experimentId: experiment.experimentId, reason }, "Experiment rejected")}>Reject</SmallButton>
         </Row>
+      ) : null}
+      {canDecide && experiment.status === "proposed" && full ? (
+        <Muted>
+          {maxRunning} experiments are already running, so this one cannot start yet. Wait for one to be measured, or{" "}
+          <SmallButton onClick={() => document.getElementById("running-experiments")?.scrollIntoView({ behavior: "smooth", block: "start" })}>abandon one below</SmallButton>.
+        </Muted>
       ) : null}
       {canDecide && experiment.status === "running" ? (
         <Row>
@@ -239,6 +245,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
   if (error) return <EmptyState tone="bad" title="Growth could not load" description={error} />;
   if (!data) return <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>;
 
+  const atCapacity = data.runningExperiments.length >= data.maxRunning;
   const waiting = data.proposedExperiments.length + data.pendingChanges.length;
   const version = viewVersion !== null ? data.versions.find((v) => v.version === viewVersion) ?? null : null;
   const open = data.experiments.filter((e) => e.status === "proposed" || e.status === "running");
@@ -280,7 +287,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
       {waiting ? (
         <div style={{ display: "grid", gap: 8 }}>
           <strong style={{ fontSize: 13 }}>Waiting for a decision</strong>
-          {data.proposedExperiments.map((e) => <ExperimentCard key={e.experimentId} experiment={e} canDecide={data.canDecide} act={act} />)}
+          {data.proposedExperiments.map((e) => <ExperimentCard key={e.experimentId} experiment={e} canDecide={data.canDecide} act={act} full={atCapacity} maxRunning={data.maxRunning} />)}
           {data.pendingChanges.map((c) => <ChangeCard key={c.changeId} change={c} canDecide={data.canDecide} act={act} />)}
         </div>
       ) : null}
@@ -304,7 +311,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         </div>
       </Card>
 
-      <div style={{ display: "grid", gap: 8 }}>
+      <div id="running-experiments" style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 13 }}>Experiments</strong>
         {data.experiments.length === 0 ? <Muted>No experiments yet. The Social agent proposes them in its weekly review.</Muted> : null}
         {open.filter((e) => e.status === "running").map((e) => <ExperimentCard key={e.experimentId} experiment={e} canDecide={data.canDecide} act={act} />)}

@@ -234,6 +234,8 @@ type ResolvedDependencyWakeBackstopOptions = {
   source?: ResolvedDependencyWakeBackstopSource;
 };
 
+const WORKSPACE_VALIDATION_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000;
+
 type LatestIssueRun =
   | (Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -4065,6 +4067,46 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  /**
+   * Workspace validation can fail on a transient (a checkout race, a
+   * half-synced worktree). Block only on the second failure inside the
+   * window: the first one queues a single retry of the same run. Returns true
+   * when a retry was queued and the caller must not block.
+   */
+  async function retryWorkspaceValidationOnce(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    const agentId = issue.assigneeAgentId;
+    if (!latestRun || !agentId || latestRun.agentId !== agentId) return false;
+    const since = new Date(Date.now() - WORKSPACE_VALIDATION_RETRY_WINDOW_MS);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.errorCode, "workspace_validation_failed"),
+          gte(heartbeatRuns.createdAt, since),
+          or(
+            eq(heartbeatRuns.nativeIssueId, issue.id),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+          ),
+        ),
+      );
+    if ((row?.count ?? 0) > 1) return false;
+    const queued = await enqueueStrandedIssueRecovery({
+      issueId: issue.id,
+      agentId,
+      reason: "issue_assignment_recovery",
+      retryReason: "assignment_recovery",
+      source: "issue.workspace_validation_retry",
+      retryOfRunId: latestRun.id,
+    });
+    return Boolean(queued);
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -4087,6 +4129,14 @@ export function recoveryService(
       input.latestRun,
       input.recoveryCause,
     );
+    if (
+      recoveryCause === "workspace_validation_failed" &&
+      (await retryWorkspaceValidationOnce(input.issue, input.latestRun))
+    ) {
+      // First workspace-validation failure in the window: a retry is queued,
+      // so leave the issue unblocked. A second failure blocks as before.
+      return input.issue;
+    }
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,

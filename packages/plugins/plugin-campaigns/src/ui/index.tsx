@@ -49,6 +49,7 @@ import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
 import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
+import { WeeklyReview } from "./weekly-review.js";
 import { CampaignDetail, audienceText, type CampaignDetailData } from "./detail.js";
 
 const PLUGIN_ID = "partnersinbiz.campaigns";
@@ -97,7 +98,7 @@ interface WorkspaceClient {
 }
 
 interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null; series?: CampaignSeries; suppressed?: number }
-type TabId = "overview" | "campaigns" | "preferences";
+type TabId = "overview" | "campaigns" | "review" | "preferences";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
 function defaultAudience(scope: ClientScope): AudienceMode {
@@ -167,7 +168,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const [abError, setAbError] = useState("");
   const [busy, setBusy] = useState(false);
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
-  const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns"] : ["overview", "campaigns", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
+  const [tab, setTab] = useUrlTab<TabId>(scope ? ["overview", "campaigns", "review"] : ["overview", "campaigns", "review", "preferences"], "overview", { path: "/campaigns", search: location.search, navigate: navigation.navigate });
   // `?campaign=<id>` opens that campaign's detail, so an approval can link straight to what goes out.
   const openId = new URLSearchParams(location.search).get("campaign");
   // "Finish setting up Campaigns" on the overview until its required setup is done.
@@ -330,6 +331,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
           { id: "campaigns", label: "Campaigns", icon: Send, count: waitingCount || null, countTone: "warn" },
+          { id: "review", label: "Weekly review", icon: CircleCheckBig },
           ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
         ]}
         active={tab}
@@ -350,6 +352,8 @@ function CampaignsPageMain({ context }: PluginPageProps) {
           />
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p>
       ) : null}
+
+      {tab === "review" ? <WeeklyReview client={scope ? formatClientParam(scope) : null} /> : null}
 
       {tab === "preferences" ? (
         <PreferencesPanel

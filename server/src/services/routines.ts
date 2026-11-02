@@ -61,6 +61,7 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { nightlyDreamingRunBlocked } from "./nightly-dreaming.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -110,6 +111,14 @@ export function routineWebhookUrl(publicId: string): string {
   const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
   if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
   return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
+}
+
+function assertNightlyDreamingMayRun(routine: { originKind?: string | null; originId?: string | null }) {
+  if (!nightlyDreamingRunBlocked(routine)) return;
+  throw conflict(
+    "Nightly dreaming is off. Set PAPERCLIP_NIGHTLY_DREAMING=1 before enabling or running this routine.",
+    { code: "nightly_dreaming_disabled", routineKey: "nightly-dreaming" },
+  );
 }
 
 type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
@@ -2265,6 +2274,9 @@ export function routineService(
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
+      if (patch.status === "active" && existing.status !== "active") {
+        assertNightlyDreamingMayRun(existing);
+      }
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
       const nextFolderId = patch.folderId === undefined ? existing.folderId : patch.folderId;
       const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
@@ -2451,6 +2463,9 @@ export function routineService(
     ): Promise<{ trigger: RoutineTrigger; secretMaterial: RoutineTriggerSecretMaterial | null; revision: RoutineRevision }> => {
       const routine = await getRoutineById(routineId);
       if (!routine) throw notFound("Routine not found");
+      if ((input.enabled ?? true) === true) {
+        assertNightlyDreamingMayRun(routine);
+      }
 
       let secretMaterial: RoutineTriggerSecretMaterial | null = null;
       let secretId: string | null = null;
@@ -2523,6 +2538,11 @@ export function routineService(
     ): Promise<{ trigger: RoutineTrigger; revision: RoutineRevision } | null> => {
       const existing = await getTriggerById(id);
       if (!existing) return null;
+      if ((patch.enabled ?? existing.enabled) === true && patch.archived !== true) {
+        const routine = await getRoutineById(existing.routineId);
+        if (!routine) throw notFound("Routine not found");
+        assertNightlyDreamingMayRun(routine);
+      }
 
       let nextRunAt = existing.nextRunAt;
       let cronExpression = existing.cronExpression;
@@ -2705,6 +2725,15 @@ export function routineService(
 
       const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
+      if (
+        nightlyDreamingRunBlocked(existingRoutine)
+        && (
+          routineSnapshot.status === "active"
+          || snapshot.triggers.some((trigger) => trigger.enabled)
+        )
+      ) {
+        assertNightlyDreamingMayRun(existingRoutine);
+      }
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
 
       const result = await db.transaction(async (tx) => {
@@ -2854,6 +2883,7 @@ export function routineService(
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
+      assertNightlyDreamingMayRun(routine);
       await assertProject(routine.companyId, input.projectId ?? null);
       const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
       await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
@@ -2882,6 +2912,7 @@ export function routineService(
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
+      assertNightlyDreamingMayRun(routine);
       await assertProject(routine.companyId, input.projectId ?? null);
       const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
       await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
@@ -3053,12 +3084,12 @@ export function routineService(
       const { routine, trigger, hmacReplayKey, deliveryKey, payload } = accepted;
 
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
-      if (!eligibility.eligible) {
+      if (!eligibility.eligible || nightlyDreamingRunBlocked(routine)) {
         return recordSuppressedAutomaticRun({
           routine,
           trigger,
           source: "webhook",
-          reason: "worktree_execution_cutoff",
+          reason: nightlyDreamingRunBlocked(routine) ? "nightly_dreaming_disabled" : "worktree_execution_cutoff",
           idempotencyKey: deliveryKey,
           rejectIdempotencyReplay: hmacReplayKey !== null,
         });
@@ -3247,12 +3278,16 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
 
-        if (projectPaused || worktreeSuppressed) {
+        if (projectPaused || worktreeSuppressed || nightlyDreamingRunBlocked(row.routine)) {
           await recordSuppressedAutomaticRun({
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
-            reason: worktreeSuppressed ? "worktree_execution_cutoff" : "paused",
+            reason: nightlyDreamingRunBlocked(row.routine)
+              ? "nightly_dreaming_disabled"
+              : worktreeSuppressed
+                ? "worktree_execution_cutoff"
+                : "paused",
             nextRunAt: claimedNextRunAt,
           });
           continue;

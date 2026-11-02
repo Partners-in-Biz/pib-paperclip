@@ -321,6 +321,19 @@ describe("spike done-check (pure)", () => {
     expect(result.missing?.some((m) => m.includes("partnersinbiz.setup") && m.includes("not recorded"))).toBe(true);
   });
 
+  it("does not treat a merged PR comment as a deploy", () => {
+    const result = spikeResult({
+      startedAt: "2026-10-20T10:00:00Z",
+      comments: [
+        { body: "**Evidence:** live check", createdAt: "2026-10-20T11:00:00Z" },
+        { body: "PR #12 merged: https://github.com/Partners-in-Biz/pib-paperclip/pull/12", createdAt: "2026-10-20T12:00:00Z" },
+      ],
+      attachments: [],
+      deployedAt: [{ plugin: "partnersinbiz.crm", at: "2026-10-20T10:30:00Z" }],
+    });
+    expect(result.done).toBe(true);
+  });
+
   it("rejects evidence posted before startedAt", () => {
     const startedAt = "2026-10-20T12:00:00Z";
     const beforeStarted = "2026-10-20T10:00:00Z";

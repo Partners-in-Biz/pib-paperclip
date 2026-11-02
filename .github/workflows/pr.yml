@@ -22,4 +22,11 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'full-upstream-ci')
     # Master requires CODEOWNERS review for .github/**, including this workflow.
     # The AWS runner group permits pr-trusted.yml@refs/heads/master.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master
+    # PAR-6844: pinned to an upstream sha instead of @master. Upstream master now
+    # needs ci-routing.yml, setup-ci-dependencies, run-ci-task, ci-profile scripts
+    # and group general-workspaces-c, none of which this fork has, so @master broke
+    # policy, Docker context integrity, Build and workspaces-c on release PRs.
+    # e3d8fb08 (22 Sep 2026) is the newest upstream pr-trusted.yml whose referenced
+    # scripts and test groups all exist on development. Bump deliberately, together
+    # with an upstream merge of the files the new sha needs.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@e3d8fb08767e9293183ea8345a50314d9aa9777a

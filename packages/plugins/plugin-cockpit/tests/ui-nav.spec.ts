@@ -40,11 +40,12 @@ describe("grouped sidebar", () => {
     const members = Object.values(NAV_GROUPS).flatMap((g) => g.members.map((m) => m.pluginKey));
     expect(new Set(members).size).toBe(members.length);
     expect(members.sort()).toEqual([
-      "partnersinbiz.accounting", "partnersinbiz.billing", "partnersinbiz.campaigns", "partnersinbiz.crm", "partnersinbiz.mailbox",
+      "partnersinbiz.accounting", "partnersinbiz.ads", "partnersinbiz.billing", "partnersinbiz.campaigns", "partnersinbiz.crm", "partnersinbiz.mailbox",
       "partnersinbiz.partners", "partnersinbiz.payroll", "partnersinbiz.seo", "partnersinbiz.social",
     ]);
     expect(navGroupOf("partnersinbiz.payroll")?.label).toBe("Finance");
     expect(navGroupOf("partnersinbiz.seo")?.label).toBe("Marketing");
+    expect(navGroupOf("partnersinbiz.ads")?.label).toBe("Marketing");
     expect(navGroupOf("partnersinbiz.mailbox")?.label).toBe("Clients");
     expect(navGroupOf("partnersinbiz.cockpit")).toBeNull();
   });
@@ -74,6 +75,20 @@ describe("grouped sidebar", () => {
     expect(visibleMembers(finance, contributions, null).map((m) => m.label)).toEqual(["Billing", "Accounting"]); // Payroll not installed
     expect(visibleMembers(finance, contributions, { accounting: false }).map((m) => m.label)).toEqual(["Billing"]);
     expect(visibleMembers(finance, null, { payroll: false }).map((m) => m.label)).toEqual(["Billing", "Accounting"]); // unknown installs: trust the modules
+  });
+
+  it("lists Paid ads under Marketing after Campaigns, and its own top-level row hides", () => {
+    const marketing = NAV_GROUPS.marketing;
+    expect(marketing.members.map((m) => m.label)).toEqual(["Social", "SEO", "Campaigns", "Paid ads"]);
+    const ads = marketing.members[3]!;
+    expect(ads.route).toBe("/ads"); // the page route is unchanged
+    expect(memberIcon(ads)).not.toBe(memberIcon(marketing.members[2]!));
+    expect(groupedNavPresent([COCKPIT_WITH_GROUPS], "partnersinbiz.ads")).toBe(true);
+    expect(groupedNavPresent(null, "partnersinbiz.ads")).toBe(false); // could not read: ads keeps its own row
+    const contributions = [COCKPIT_WITH_GROUPS, page("partnersinbiz.social", "social"), page("partnersinbiz.ads", "ads")];
+    expect(visibleMembers(marketing, contributions, null).map((m) => m.label)).toEqual(["Social", "Paid ads"]);
+    expect(visibleMembers(marketing, contributions, { ads: false }).map((m) => m.label)).toEqual(["Social"]);
+    expect(isActivePath(ads.route, "/ads/accounts")).toBe(true); // Paid ads pages light up the row, and so the group
   });
 
   it("parses the host's ui-contributions and shares one request per minute", async () => {

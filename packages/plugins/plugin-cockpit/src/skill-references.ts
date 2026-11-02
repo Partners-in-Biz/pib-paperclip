@@ -377,7 +377,7 @@ Every skill belongs to a plugin, and the plugin puts its own text back at each s
 ## One-time setup (the owner, once: put it on the brief with these links)
 
 1. Provision the coach: \`POST /api/companies/{companyId}/built-in-agents/reflection-coach/provision\` (needs \`agents:create\`: the owner, or the CEO agent). Pin its run profile like every agent (model claude-sonnet-5-5, timeout 3600 s, turn cap 200). It starts paused: resume it once its model key works.
-2. Enable its weekly routine (board only): \`POST /api/companies/{companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/enable\`. Mondays 09:00 UTC. It stays off until a board user does this.
+2. Do not enable the routine yet. Stock key is nightly-dreaming (not the older recent-agent-reflection row). Schedule is nightly 03:15 Africa/Johannesburg and ships disabled. PAPERCLIP_NIGHTLY_DREAMING defaults off; the enable route refuses until that flag is on. It drafts for Code Reviewer and never applies. Enable it only after the PAR-6228 tests have passed on development.
 3. The skill policy: the Cockpit prints the exact PUT body (the \`cockpit.skill-policy-plan\` action); the owner applies it with \`PUT /api/companies/{companyId}/skill-policy\`. It denies every agent creating, editing, importing, installing, resetting or removing skills, except the Operator (who makes the test copies the evals use and the coach's own safe paths), and lets agents run skill tests.
 Until all three are done the loop does not run: say so in the retro, once.
 

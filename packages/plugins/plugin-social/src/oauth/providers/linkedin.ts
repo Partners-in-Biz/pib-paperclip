@@ -29,7 +29,7 @@ import {
   type PublishRequest,
   type SocialProvider,
 } from "../types.js";
-import { bestEffort, count, guard, images, requireCode, videos } from "./common.js";
+import { bestEffort, count, guard, images, optionalCount, requireCode, videos } from "./common.js";
 
 const API = "https://api.linkedin.com";
 const TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
@@ -334,16 +334,76 @@ export const linkedinProvider: SocialProvider = {
   },
   publish: (env, account, req) => guard(() => linkedinPublish(env, account, req)),
   async metrics(env, account, externalId): Promise<MetricsSnapshot | null> {
-    const data = await liJson<{
+    type Actions = {
       likesSummary?: { totalLikes?: number };
       commentsSummary?: { totalFirstLevelComments?: number; aggregatedTotalComments?: number };
-    }>(env, account.token.accessToken, `/rest/socialActions/${encodeURIComponent(externalId)}`, "LinkedIn social actions");
-    return {
-      views: 0,
-      likes: count(data.likesSummary?.totalLikes),
-      comments: count(data.commentsSummary?.aggregatedTotalComments ?? data.commentsSummary?.totalFirstLevelComments),
-      shares: 0,
-      raw: { socialActions: data },
     };
+    const token = account.token.accessToken;
+    const orgUrn = str(account.meta.authorUrn) ?? "";
+    const isOrg = /^urn:li:organization(Brand)?:/.test(orgUrn);
+    if (!isOrg) {
+      const data = await liJson<Actions>(env, token, `/rest/socialActions/${encodeURIComponent(externalId)}`, "LinkedIn social actions");
+      return {
+        views: 0,
+        likes: count(data.likesSummary?.totalLikes),
+        comments: count(data.commentsSummary?.aggregatedTotalComments ?? data.commentsSummary?.totalFirstLevelComments),
+        shares: 0,
+        raw: { socialActions: data },
+      };
+    }
+    const cleanError = (message: string) =>
+      message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
+    const snapshot: MetricsSnapshot = { views: 0, likes: 0, comments: 0, shares: 0 };
+    const raw: Record<string, unknown> = {};
+    let gotCounts = false;
+    const key = externalId.startsWith("urn:li:share:") ? "share" : externalId.startsWith("urn:li:ugcPost:") ? "ugcPost" : null;
+    if (!key) {
+      const prefix = externalId.split(":").slice(0, 3).join(":");
+      snapshot.insightsError = `unsupported LinkedIn URN ${prefix}`.slice(0, 200);
+    } else {
+      const param = key === "share" ? "shares" : "ugcPosts";
+      const path =
+        `/rest/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(orgUrn)}` +
+        `&${param}=List(${encodeURIComponent(externalId)})`;
+      type Stats = Record<string, unknown>;
+      const stats = await bestEffort(() => liJson<{ elements?: Array<Stats & { totalShareStatistics?: Stats }> }>(env, token, path, "LinkedIn share statistics"));
+      if (stats.error !== undefined) {
+        snapshot.insightsError = cleanError(stats.error);
+      } else {
+        const el = (stats.value?.elements ?? []).find((e) => e[key] === externalId);
+        if (!el) {
+          snapshot.insightsError = `share statistics: no element for ${externalId}`;
+        } else {
+          const t = (el.totalShareStatistics ?? el) as Stats;
+          raw.shareStatistics = t;
+          const impressions = optionalCount(t.impressionCount);
+          if (impressions !== null) {
+            snapshot.impressions = impressions;
+            snapshot.views = impressions;
+          }
+          const reach = optionalCount(t.uniqueImpressionsCount);
+          if (reach !== null) snapshot.reach = reach;
+          const clicks = optionalCount(t.clickCount);
+          if (clicks !== null) snapshot.clicks = clicks;
+          snapshot.likes = count(t.likeCount);
+          snapshot.comments = count(t.commentCount);
+          snapshot.shares = count(t.shareCount);
+          gotCounts = t.likeCount != null || t.commentCount != null;
+          if (impressions === null) snapshot.insightsError = `share statistics: no element for ${externalId}`;
+        }
+      }
+    }
+    if (!gotCounts) {
+      const actions = await bestEffort(() => liJson<Actions>(env, token, `/rest/socialActions/${encodeURIComponent(externalId)}`, "LinkedIn social actions"));
+      if (actions.value) {
+        raw.socialActions = actions.value;
+        snapshot.likes = count(actions.value.likesSummary?.totalLikes);
+        snapshot.comments = count(actions.value.commentsSummary?.aggregatedTotalComments ?? actions.value.commentsSummary?.totalFirstLevelComments);
+      } else if (actions.error !== undefined) {
+        raw.socialActionsError = cleanError(actions.error);
+      }
+    }
+    if (Object.keys(raw).length) snapshot.raw = raw;
+    return snapshot;
   },
 };

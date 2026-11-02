@@ -83,6 +83,11 @@ function registerModuleMocks() {
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
+  vi.doMock("../services/issue-code-review-gate-context.js", () => ({
+    evaluateIssueCodeReviewGate: vi.fn(async () => ({ allowed: true })),
+    pickAutoReviewStageReviewer: vi.fn(async () => null),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),

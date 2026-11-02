@@ -110,8 +110,8 @@ export async function syncAccount(rt: AdsRuntime, account: AccountRow, options: 
     // returned something for the window: an empty answer for every day (a permission gone quiet, an outage that answers 200) must never wipe real spend.
     if (insights.length > 0) {
       for (const old of await dailyRows(rt.ctx, rt.companyId, since, account.id)) {
-        if (old.day > until || seen.has(`${old.campaign_external_id}|${old.day}`) || (old.spend === 0 && old.impressions === 0 && old.clicks === 0)) continue;
-        ledgerEntries += (await recordDaily(rt.ctx, rt.companyId, account, { campaignExternalId: old.campaign_external_id, day: old.day, spendMinor: 0, impressions: 0, clicks: 0, conversions: 0, valueMinor: 0 })).ledgerEntry ? 1 : 0;
+        if (old.day > until || seen.has(`${old.campaign_external_id}|${old.day}`) || (old.spend === 0 && old.impressions === 0 && old.clicks === 0 && old.installs === 0)) continue;
+        ledgerEntries += (await recordDaily(rt.ctx, rt.companyId, account, { campaignExternalId: old.campaign_external_id, day: old.day, spendMinor: 0, impressions: 0, clicks: 0, conversions: 0, installs: 0, valueMinor: 0 })).ledgerEntry ? 1 : 0;
       }
     }
 
@@ -150,7 +150,7 @@ export async function syncAccount(rt: AdsRuntime, account: AccountRow, options: 
 }
 
 function toDaily(row: InsightRow) {
-  return { campaignExternalId: row.campaignExternalId, day: row.day, spendMinor: row.spendMinor, impressions: row.impressions, clicks: row.clicks, conversions: row.conversions, valueMinor: row.valueMinor };
+  return { campaignExternalId: row.campaignExternalId, day: row.day, spendMinor: row.spendMinor, impressions: row.impressions, clicks: row.clicks, conversions: row.conversions, installs: row.installs ?? 0, valueMinor: row.valueMinor };
 }
 
 export interface CompanySync {

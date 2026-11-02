@@ -58,6 +58,11 @@ function registerModuleMocks() {
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
+  vi.doMock("../services/issue-code-review-gate-context.js", () => ({
+    evaluateIssueCodeReviewGate: vi.fn(async () => ({ allowed: true })),
+    pickAutoReviewStageReviewer: vi.fn(async () => null),
+  }));
+
   vi.doMock("../services/runner-goals.js", () => ({
     runnerGoalService: () => mockRunnerGoalService,
     RunnerGoalActionError: class RunnerGoalActionError extends Error {},

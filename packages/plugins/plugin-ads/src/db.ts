@@ -516,6 +516,8 @@ export interface DailyInput {
   impressions: number;
   clicks: number;
   conversions: number;
+  /** Absent for a platform that reports no installs: stored as 0. */
+  installs?: number;
   valueMinor: number;
 }
 
@@ -525,11 +527,11 @@ export interface DailyInput {
  */
 export async function recordDaily(ctx: PluginContext, companyId: string, account: Pick<AccountRow, "id" | "scope_key" | "currency">, row: DailyInput): Promise<{ ledgerEntry: boolean }> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "daily")} (company_id, account_id, campaign_external_id, day, spend_minor, impressions, clicks, conversions, conversion_value_minor, currency, synced_at)
-     VALUES ($1, $2, $3, $4::date, $5::bigint, $6::bigint, $7::bigint, $8::numeric, $9::bigint, $10, now())
+    `INSERT INTO ${table(ctx, "daily")} (company_id, account_id, campaign_external_id, day, spend_minor, impressions, clicks, conversions, installs, conversion_value_minor, currency, synced_at)
+     VALUES ($1, $2, $3, $4::date, $5::bigint, $6::bigint, $7::bigint, $8::numeric, $9::bigint, $10::bigint, $11, now())
      ON CONFLICT (account_id, campaign_external_id, day) DO UPDATE SET spend_minor = EXCLUDED.spend_minor, impressions = EXCLUDED.impressions, clicks = EXCLUDED.clicks,
-       conversions = EXCLUDED.conversions, conversion_value_minor = EXCLUDED.conversion_value_minor, currency = EXCLUDED.currency, synced_at = now()`,
-    [companyId, account.id, row.campaignExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.valueMinor, account.currency],
+       conversions = EXCLUDED.conversions, installs = EXCLUDED.installs, conversion_value_minor = EXCLUDED.conversion_value_minor, currency = EXCLUDED.currency, synced_at = now()`,
+    [companyId, account.id, row.campaignExternalId, row.day, row.spendMinor, row.impressions, row.clicks, row.conversions, row.installs ?? 0, row.valueMinor, account.currency],
   );
   const last = await ctx.db.query<{ seq: number | string; total_minor: number | string }>(
     `SELECT seq, total_minor FROM ${table(ctx, "spend_ledger")} WHERE account_id = $1 AND campaign_external_id = $2 AND day = $3::date ORDER BY seq DESC LIMIT 1`,
@@ -606,6 +608,7 @@ export interface SummaryRow {
   impressions: number;
   clicks: number;
   conversions: number;
+  installs: number;
   value: number;
   scope_key?: string;
   platform?: string;
@@ -649,7 +652,7 @@ export async function summaryRows(
   const rows = await ctx.db.query<Record<string, unknown>>(
     `SELECT ${g.key} AS key, ${g.label} AS label, d.currency AS currency${g.extra ? `, ${g.extra}` : ""},
             sum(d.spend_minor)::text AS spend, sum(d.impressions)::text AS impressions, sum(d.clicks)::text AS clicks,
-            sum(d.conversions)::text AS conversions, sum(d.conversion_value_minor)::text AS value
+            sum(d.conversions)::text AS conversions, sum(d.installs)::text AS installs, sum(d.conversion_value_minor)::text AS value
        FROM ${table(ctx, "daily")} d
        JOIN ${table(ctx, "ad_accounts")} a ON a.id = d.account_id
        LEFT JOIN ${table(ctx, "campaigns")} c ON c.account_id = d.account_id AND c.external_id = d.campaign_external_id
@@ -667,6 +670,7 @@ export async function summaryRows(
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     conversions: toNum(r.conversions),
+    installs: toInt(r.installs),
     value: toInt(r.value),
     ...(r.scope_key !== undefined ? { scope_key: String(r.scope_key) } : {}),
     ...(r.platform !== undefined ? { platform: String(r.platform) } : {}),
@@ -683,6 +687,7 @@ export interface DayRow {
   impressions: number;
   clicks: number;
   conversions: number;
+  installs: number;
   value: number;
 }
 
@@ -695,7 +700,7 @@ export async function dailyRows(ctx: PluginContext, companyId: string, since: st
     where += ` AND account_id = $${params.length}`;
   }
   const rows = await ctx.db.query<Record<string, unknown>>(
-    `SELECT account_id, campaign_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, conversion_value_minor FROM ${table(ctx, "daily")} WHERE ${where} ORDER BY day LIMIT 20000`,
+    `SELECT account_id, campaign_external_id, day::text AS day, spend_minor, impressions, clicks, conversions, installs, conversion_value_minor FROM ${table(ctx, "daily")} WHERE ${where} ORDER BY day LIMIT 20000`,
     params,
   );
   return rows.map((r) => ({
@@ -706,6 +711,7 @@ export async function dailyRows(ctx: PluginContext, companyId: string, since: st
     impressions: toInt(r.impressions),
     clicks: toInt(r.clicks),
     conversions: toNum(r.conversions),
+    installs: toInt(r.installs),
     value: toInt(r.conversion_value_minor),
   }));
 }
@@ -1283,4 +1289,66 @@ export async function listVariants(ctx: PluginContext, companyId: string, option
     axis_values: jsonObject(r.axis_values),
     creative_ref: (r.creative_ref as string | null) ?? null,
   }));
+}
+
+// ── campaign caps ───────────────────────────────────────────────────────────
+
+export interface CampaignCapRow {
+  id: string;
+  company_id: string;
+  platform: StoredPlatform;
+  external_campaign_id: string;
+  cap_minor: number;
+  created_at: string;
+  set_by: string;
+  proposal_id: string | null;
+}
+
+function campaignCapRow(r: Record<string, unknown>): CampaignCapRow {
+  return {
+    id: String(r.id),
+    company_id: String(r.company_id),
+    platform: String(r.platform) as StoredPlatform,
+    external_campaign_id: String(r.external_campaign_id),
+    cap_minor: toInt(r.cap_minor),
+    created_at: isoTime(r.created_at) ?? "",
+    set_by: String(r.set_by),
+    proposal_id: r.proposal_id === null || r.proposal_id === undefined ? null : String(r.proposal_id),
+  };
+}
+
+/** One row per campaign. Setting it again changes the cap and who set it; `created_at` (the start of the spend window) stays. */
+export async function upsertCampaignCap(ctx: PluginContext, companyId: string, c: { platform: string; externalCampaignId: string; capMinor: number; setBy: string; proposalId: string | null }): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "campaign_caps")} (id, company_id, platform, external_campaign_id, cap_minor, set_by, proposal_id) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, platform, external_campaign_id) DO UPDATE SET cap_minor = EXCLUDED.cap_minor, set_by = EXCLUDED.set_by, proposal_id = EXCLUDED.proposal_id`,
+    [randomUUID(), companyId, c.platform, c.externalCampaignId, c.capMinor, c.setBy, c.proposalId],
+  );
+}
+
+export async function getCampaignCap(ctx: PluginContext, companyId: string, platform: string, externalCampaignId: string): Promise<CampaignCapRow | null> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "campaign_caps")} WHERE company_id = $1 AND platform = $2 AND external_campaign_id = $3`, [companyId, platform, externalCampaignId]);
+  return rows[0] ? campaignCapRow(rows[0]) : null;
+}
+
+export async function listCampaignCaps(ctx: PluginContext, companyId: string): Promise<CampaignCapRow[]> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT * FROM ${table(ctx, "campaign_caps")} WHERE company_id = $1 ORDER BY created_at DESC, id`, [companyId]);
+  return rows.map(campaignCapRow);
+}
+
+/** Campaigns we know of (not archived) that have no cap row. */
+export async function listCampaignsWithoutCap(ctx: PluginContext, companyId: string, platform?: string): Promise<Array<{ accountId: string; platform: string; externalId: string; name: string; status: string }>> {
+  const rows = await ctx.db.query<Record<string, unknown>>(
+    `SELECT c.account_id, a.platform, c.external_id, c.name, c.status FROM ${table(ctx, "campaigns")} c JOIN ${table(ctx, "ad_accounts")} a ON a.id = c.account_id AND a.company_id = c.company_id
+     WHERE c.company_id = $1 AND c.status <> 'archived' AND ($2::text IS NULL OR a.platform = $2)
+       AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "campaign_caps")} k WHERE k.company_id = c.company_id AND k.platform = a.platform AND k.external_campaign_id = c.external_id)
+     ORDER BY a.platform, c.name, c.external_id`,
+    [companyId, platform ?? null],
+  );
+  return rows.map((r) => ({ accountId: String(r.account_id), platform: String(r.platform), externalId: String(r.external_id), name: String(r.name), status: String(r.status) }));
+}
+
+export async function campaignKnown(ctx: PluginContext, companyId: string, accountId: string, externalId: string): Promise<boolean> {
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT 1 AS one FROM ${table(ctx, "campaigns")} WHERE company_id = $1 AND account_id = $2 AND external_id = $3 LIMIT 1`, [companyId, accountId, externalId]);
+  return rows.length > 0;
 }

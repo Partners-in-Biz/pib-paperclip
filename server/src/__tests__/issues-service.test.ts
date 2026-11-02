@@ -3002,7 +3002,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
-  it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
+  it("gives a child its own isolated workspace instead of the parent's when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
@@ -3070,8 +3070,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(child.parentId).toBe(parentIssueId);
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBe("isolated_workspace");
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
@@ -3757,7 +3757,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Child helper",
       status: "todo",
       description: "Implement the helper.",
-      acceptanceCriteria: ["Uses the parent issue as parentId", "Reuses the parent execution workspace"],
+      acceptanceCriteria: ["Uses the parent issue as parentId", "Gets its own isolated workspace"],
       blockParentUntilDone: true,
     });
 
@@ -3769,8 +3769,32 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.description).toContain("## Acceptance Criteria");
     expect(child.description).toContain("- Uses the parent issue as parentId");
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
+    // Sub-tickets get their own isolated worktree by default; they must not
+    // share the parent's execution workspace (sibling runs collide on it).
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBe("isolated_workspace");
+    expect(child.executionWorkspaceSettings).toMatchObject({ mode: "isolated_workspace" });
+
+    const plainChild = await svc.create(companyId, { title: "Plain child", parentId: parentIssueId });
+    expect(plainChild.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(plainChild.executionWorkspaceId).toBeNull();
+    expect(plainChild.executionWorkspacePreference).toBe("isolated_workspace");
+
+    // Explicit opt-in keeps the parent's worktree.
+    const { issue: reusingChild } = await svc.createChild(parentIssueId, {
+      title: "Reusing child",
+      executionWorkspaceInheritanceMode: "reuse_parent",
+    });
+    expect(reusingChild.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(reusingChild.executionWorkspacePreference).toBe("reuse_existing");
+
+    // An explicit executionWorkspaceId on the child wins too.
+    const { issue: explicitChild } = await svc.createChild(parentIssueId, {
+      title: "Explicit child",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    expect(explicitChild.executionWorkspaceId).toBe(executionWorkspaceId);
 
     const parentRelations = await svc.getRelationSummaries(parentIssueId);
     expect(parentRelations.blockedBy).toEqual([
@@ -4891,7 +4915,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
-  it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
+  it("gives a child its own isolated workspace instead of the parent's when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
@@ -4959,15 +4983,15 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(child.parentId).toBe(parentIssueId);
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBe("isolated_workspace");
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
     });
   });
 
-  it("preserves the parent project when a generic child create inherits workspace linkage", async () => {
+  it("preserves the parent project when a generic child create inherits project workspace linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
@@ -5032,7 +5056,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.parentId).toBe(parentIssueId);
     expect(child.projectId).toBe(projectId);
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
   });
 
   it("uses the target project's own workspaces for a cross-project child instead of inheriting the parent's", async () => {

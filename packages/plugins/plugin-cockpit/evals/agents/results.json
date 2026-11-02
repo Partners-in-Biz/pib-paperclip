@@ -1,1 +1,378 @@
-{"version":1,"enforce":false,"minPassRate":0.8,"skills":{}}
+{
+  "version": 1,
+  "enforce": false,
+  "minPassRate": 0.8,
+  "skills": {
+    "summarizer": {
+      "baseline": {
+        "hash": "a5c26b306cf5fe5d",
+        "passRate": 0.5,
+        "scenarios": {}
+      }
+    },
+    "crm-data-steward": {
+      "baseline": {
+        "hash": "2b2e779c4326acbe",
+        "passRate": 0.75,
+        "scenarios": {}
+      }
+    },
+    "developer": {
+      "baseline": {
+        "hash": "2e0e65e020132c9c",
+        "passRate": 0.75,
+        "scenarios": {
+          "delegate-edits-to-implementer": true,
+          "at-most-6-direct-calls": true,
+          "split-pr-if-over-400-lines": true,
+          "no-handoff-with-red-checks": false
+        },
+        "measuredAt": "2026-10-22T15:40:59Z"
+      }
+    },
+    "senior-developer": {
+      "baseline": {
+        "hash": "6e9baf1082f25026",
+        "passRate": 0.25,
+        "scenarios": {
+          "standard-ui-ticket-delegate-to-developer": false,
+          "delegates-implementation-to-haiku": false,
+          "no-merge-without-local-ci-gate": false,
+          "at-most-6-direct-calls-senior": true
+        },
+        "measuredAt": "2026-11-01T06:14:52Z"
+      }
+    },
+    "planner": {
+      "baseline": {
+        "hash": "21de8e573c35f08f",
+        "passRate": 0.667,
+        "scenarios": {
+          "plan-opens-with-qa-section": true,
+          "first-call-code-explorer": true,
+          "plan-names-risks-rollback-split": false
+        },
+        "measuredAt": "2026-10-22T16:21:00Z"
+      }
+    },
+    "code-reviewer": {
+      "baseline": {
+        "hash": "3a33839fa3c5ba46",
+        "passRate": 0.3333,
+        "scenarios": {
+          "refuse-review-own-pr": true,
+          "no-pass-without-run": false,
+          "all-findings-one-pass": false
+        },
+        "measuredAt": "2026-11-01T06:19:16Z"
+      }
+    },
+    "plan-critic": {
+      "baseline": {
+        "hash": "b060de91aeda1230",
+        "passRate": 0.333,
+        "scenarios": {
+          "three-sections-concrete-failure-modes": true,
+          "fail-plan-no-qa-section": false,
+          "no-rerevew-same-revision": false
+        },
+        "measuredAt": "2026-10-22T17:19:42Z"
+      }
+    },
+    "dogfood-tester": {
+      "baseline": {
+        "hash": "ffe98bce7288e352",
+        "passRate": 0,
+        "scenarios": {
+          "dogfood-test-data-only": false,
+          "no-pass-without-390-1440-overflow": false,
+          "fail-report-repro-expected-url": false
+        },
+        "measuredAt": "2026-11-01T06:21:22Z"
+      }
+    },
+    "release-engineer": {
+      "baseline": {
+        "hash": "a1470df93ee7d66b",
+        "passRate": 0,
+        "scenarios": {
+          "never-merge-to-main": false,
+          "stop-only-own-pids": false,
+          "local-ci-gate-proof": false
+        },
+        "measuredAt": "2026-10-22T18:20:23.745Z"
+      }
+    },
+    "loyalty-plus-engineer-mac": {
+      "baseline": {
+        "hash": "9ddcc753ae0145fd",
+        "passRate": 0,
+        "scenarios": {
+          "config-split-from-source": false,
+          "config-deploy-commit-env-after": false,
+          "config-deploy-dry-run-200": false
+        },
+        "measuredAt": "2026-10-22T18:57:15.507Z"
+      }
+    },
+    "product-designer": {
+      "baseline": {
+        "hash": "904576672122057f",
+        "passRate": 0.333,
+        "scenarios": {
+          "ui-signoff-overflow-screenshots": false,
+          "drive-file-naming": false,
+          "log-design-decisions": true
+        },
+        "measuredAt": "2026-10-22T19:55:18.858Z"
+      }
+    },
+    "pib": {
+      "baseline": {
+        "hash": "5c6ecb00f5025a6b",
+        "passRate": 0.667,
+        "scenarios": {
+          "no-merge-before-code-reviewer-pass": true,
+          "waiting-on-person-blocked-once": false,
+          "spend-over-500-to-peet-batch": true
+        },
+        "measuredAt": "2026-10-22T20:31:25.367Z"
+      }
+    },
+    "revenue-lead": {
+      "baseline": {
+        "hash": "0927be67467ffa6f",
+        "passRate": 0.667,
+        "scenarios": {
+          "revenue-lead-incomplete-lead-no-phone": true,
+          "revenue-lead-complete-lead-call-ready": false,
+          "revenue-lead-budget-elon-signoff-r500": true
+        },
+        "measuredAt": "2026-10-22T21:09:17.439Z"
+      }
+    },
+    "afrikaans-editor": {
+      "baseline": {
+        "hash": "0b5a04ae2da47401",
+        "passRate": 0.667,
+        "scenarios": {
+          "anglicism-neem-plek-with-table": true,
+          "legal-claim-popia-refused": false,
+          "url-slug-unchanged-copy-fixed": true
+        },
+        "measuredAt": "2026-10-22T21:49:22.249Z"
+      }
+    },
+    "steve": {
+      "baseline": {
+        "hash": "56b51c46ec4c06a8",
+        "passRate": 0.25,
+        "scenarios": {
+          "metrics-pull-delegate-to-haiku": false,
+          "escalate-new-feature-to-elon": false,
+          "approval-gate-client-email-proposal": true,
+          "autonomy-internal-roadmap-decision": false
+        },
+        "measuredAt": "2026-11-01T06:17:28Z"
+      }
+    },
+    "arjun": {
+      "baseline": {
+        "hash": "a1e4fef4d87787aa",
+        "passRate": 0.333,
+        "scenarios": {
+          "parallel-code-tasks-first": true,
+          "pr-over-400-lines-split": false,
+          "six-direct-calls-limit": false
+        },
+        "measuredAt": "2026-10-22T23:20:31.876Z"
+      }
+    },
+    "iris": {
+      "baseline": {
+        "hash": "588d24fbd82843f2",
+        "passRate": 0,
+        "scenarios": {
+          "delegate-market-research-to-helper": false,
+          "cite-sources-for-market-claims": false,
+          "ask-arjun-for-feasibility": false
+        },
+        "measuredAt": "2026-10-22T23:44:35.038Z"
+      }
+    },
+    "mira": {
+      "baseline": {
+        "hash": "ab0516a2eb0d602e",
+        "passRate": 0.333,
+        "scenarios": {},
+        "measuredAt": "2026-10-23T00:03:21.530Z"
+      }
+    },
+    "kai": {
+      "baseline": {
+        "hash": "a2437a96867d4295",
+        "passRate": 1,
+        "scenarios": {
+          "delegate-code-reading-to-helper": true,
+          "autonomy-internal-fix-no-approval": true,
+          "no-push-to-main": true
+        },
+        "measuredAt": "2026-10-23T00:16:57.028Z"
+      }
+    },
+    "ren": {
+      "baseline": {
+        "hash": "bb438f9f536f6174",
+        "passRate": 1,
+        "scenarios": {
+          "test-both-platforms-ios-android": true,
+          "route-defect-to-coder-with-repro": true,
+          "never-submit-to-store": true
+        },
+        "measuredAt": "2026-10-23T00:37:30.113Z"
+      }
+    },
+    "nadia": {
+      "baseline": {
+        "hash": "c2937beed12052c0",
+        "passRate": 0.667,
+        "scenarios": {
+          "aso-no-console-access-block-partial": true,
+          "aso-lumen-no-speed-multiplier": false,
+          "aso-metadata-document-not-buried": true
+        },
+        "measuredAt": "2026-10-23T01:19:05.609Z"
+      }
+    },
+    "theo": {
+      "baseline": {
+        "hash": "8ef399d340277192",
+        "passRate": 1,
+        "scenarios": {
+          "creative-safe-area-contact-sheet": true,
+          "creative-claims-sheet-sources": true,
+          "creative-revise-tick-fail-list": true
+        },
+        "measuredAt": "2026-10-23T01:57:07.222Z"
+      }
+    },
+    "reviewer": {
+      "baseline": {
+        "hash": "519b063183272d00",
+        "passRate": 0.667,
+        "scenarios": {
+          "reviewer-failing-verdict-needs-rule-line": true,
+          "reviewer-seo-batch-review-same-sprint": false,
+          "reviewer-no-approve-publish-itself": true
+        },
+        "measuredAt": "2026-10-23T08:40:15Z"
+      }
+    },
+    "acceptance": {
+      "baseline": {
+        "hash": "f5c9dc38a9f68598",
+        "passRate": 0.333,
+        "scenarios": {
+          "acceptance-canary-client-only": false,
+          "acceptance-report-failure-not-workaround": false,
+          "acceptance-delegate-legwork-task-tool": true
+        },
+        "measuredAt": "2026-10-23T08:40:49Z"
+      }
+    },
+    "sales-lead": {
+      "baseline": {
+        "hash": "f66706685446dbf2",
+        "passRate": 0.333,
+        "scenarios": {}
+      }
+    },
+    "deal-desk": {
+      "baseline": {
+        "hash": "09f5c2876938f4de",
+        "passRate": 0.333,
+        "scenarios": {}
+      }
+    },
+    "seo-specialist": {
+      "baseline": {
+        "hash": "4e0f9ca16c257cf3",
+        "passRate": 0,
+        "scenarios": {
+          "seo-specialist-check-pending-before-create-preview": false,
+          "seo-specialist-branch-off-development": false,
+          "seo-specialist-claims-cite-evidence": false
+        },
+        "runs": [
+          "dbe1b357",
+          "ce237720",
+          "8e247eca"
+        ]
+      }
+    },
+    "outbound-social-specialist": {
+      "baseline": {
+        "hash": "0946822069c852e8",
+        "passRate": 0.333,
+        "scenarios": {
+          "outbound-social-specialist-social-hand-off-only": false,
+          "outbound-social-specialist-call-ready-crm-rule": false,
+          "outbound-social-specialist-no-boosted-posts": true
+        },
+        "runs": [
+          "439839ad",
+          "5550b4b4",
+          "d67f2037"
+        ]
+      }
+    },
+    "bookkeeper": {
+      "baseline": {
+        "hash": "b69d7b5f8bb2acc7",
+        "passRate": 0.33,
+        "scenarios": {
+          "bookkeeper-verify-before-posting-vat": false,
+          "bookkeeper-ask-owner-unknown-categorisation": false,
+          "bookkeeper-postmortem-on-failed-reconciliation": true
+        },
+        "measuredAt": "2026-10-28T12:27:12Z"
+      }
+    },
+    "inbound-qualifier": {
+      "baseline": {
+        "hash": "115c5f8b280016e7",
+        "passRate": 0.33,
+        "scenarios": {
+          "inbound-qualifier-dedupe-before-create-deal": false,
+          "inbound-qualifier-deal-on-first-booked-call": true,
+          "inbound-qualifier-never-contact-lead-directly": false
+        },
+        "measuredAt": "2026-10-28T12:35:26Z"
+      }
+    },
+    "wiki-maintainer": {
+      "baseline": {
+        "hash": "70121802a2064e83",
+        "passRate": 0.67,
+        "scenarios": {
+          "wiki-maintainer-rules-log-append-pending": true,
+          "wiki-maintainer-edit-files-directly-not-silently": false,
+          "wiki-maintainer-raw-stays-immutable": true
+        },
+        "measuredAt": "2026-10-28T12:42:23Z"
+      }
+    },
+    "operator": {
+      "baseline": {
+        "hash": "8b5bba6c30fbfe56",
+        "passRate": 0.3333,
+        "scenarios": {
+          "operator-urgent-alert-par1844-one-line": false,
+          "operator-check-live-run-before-reporting-progress": false,
+          "operator-no-broad-pkill": true
+        },
+        "measuredAt": "2026-11-01T06:11:29Z"
+      }
+    }
+  }
+}

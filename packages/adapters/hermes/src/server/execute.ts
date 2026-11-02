@@ -1,11 +1,12 @@
 /**
  * Server-side execution logic for the Hermes Agent adapter.
  *
- * Spawns `hermes chat -q "..." -Q` as a child process, streams output,
+ * Spawns `hermes chat --query-file <file> -Q` as a child process, streams output,
  * and returns structured results to Paperclip.
  *
  * Verified CLI flags (hermes chat):
- *   -q/--query         single query (non-interactive)
+ *   -q/--query         single query (non-interactive); small-prompt fallback only
+ *   --query-file       read the query from a file (prompts over 128 KB do not fit argv)
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -26,6 +27,22 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+
+import {
+  adapterExecutionTargetIsRemote,
+  adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  overrideAdapterExecutionTargetRemoteCwd,
+  prepareAdapterExecutionTargetRuntime,
+  readAdapterExecutionTarget,
+  runAdapterExecutionTargetProcess,
+  startAdapterExecutionTargetPaperclipBridge,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  type AdapterExecutionTarget,
+} from "@paperclipai/adapter-utils/execution-target";
 
 import {
   runChildProcess,
@@ -55,6 +72,23 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
+import { guardEnvStrings, prepareQuery } from "./query-file.js";
+import { readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
+import {
+  createRemoteSessionReader,
+  killRemoteTree,
+  removeRemoteDir,
+  stageRemoteQuery,
+  wrapWithPidFile,
+  type RemoteRun,
+} from "./remote.js";
+import {
+  formatHermesStreamEventForLog,
+  isPlausibleHermesSessionId,
+  parseHermesStreamJsonLine,
+  parseHermesStreamJsonOutput,
+  sessionCheckpointResumeEnabled,
+} from "./session-checkpoint.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -358,8 +392,98 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 // Main execute
 // ---------------------------------------------------------------------------
 
+/** Set when this run executes on a remote (ssh) target instead of the server. */
+interface RemoteHermes {
+  /** Target with its cwd pointing at the synced remote workspace. */
+  target: AdapterExecutionTarget;
+  /**
+   * The environment as configured. Session identity uses this one: the synced
+   * workspace path above changes on every run, the configured target does not.
+   */
+  identity: AdapterExecutionTarget;
+  cwd: string;
+  run: RemoteRun;
+  bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>>;
+}
+
 export async function execute(
   ctx: AdapterExecutionContext,
+): Promise<AdapterExecutionResult> {
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  // Local agents (every server-side Hermes agent) take the unchanged path.
+  if (!executionTarget || !adapterExecutionTargetIsRemote(executionTarget)) {
+    return executeHermes(ctx, null);
+  }
+  return executeRemote(ctx, executionTarget);
+}
+
+async function executeRemote(
+  ctx: AdapterExecutionContext,
+  executionTarget: AdapterExecutionTarget,
+): Promise<AdapterExecutionResult> {
+  const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+  const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+  const localCwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  const where = describeAdapterExecutionTarget(executionTarget);
+
+  await ctx.onLog("stdout", `[hermes] Syncing workspace to ${where}.\n`);
+  const prepared = await prepareAdapterExecutionTargetRuntime({
+    runId: ctx.runId,
+    target: executionTarget,
+    adapterKey: "hermes",
+    timeoutSec,
+    workspaceLocalDir: localCwd,
+    onProgress: (line) => ctx.onLog("stdout", line),
+    onRuntimeProgress: ctx.onRuntimeProgress,
+  });
+  let bridge: RemoteHermes["bridge"] = null;
+  try {
+    const remoteCwd = prepared.workspaceRemoteDir ?? (executionTarget as { remoteCwd?: string }).remoteCwd ?? localCwd;
+    const runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, remoteCwd) ?? executionTarget;
+    // Helper commands (stage prompt, read sessions, kill) use their own run id
+    // so they never replace the main process in the cancel registry.
+    const run: RemoteRun = (command, args, options = {}) =>
+      runAdapterExecutionTargetProcess(`${ctx.runId}:hermes-aux`, runtimeTarget, command, args, {
+        cwd: remoteCwd,
+        env: {},
+        stdin: options.stdin,
+        timeoutSec: options.timeoutSec ?? 30,
+        graceSec: 5,
+        onLog: async () => undefined,
+      });
+    const hostToken = (ctx as { authToken?: string }).authToken;
+    if (hostToken) {
+      bridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId: ctx.runId,
+        target: runtimeTarget,
+        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeTarget),
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeTarget),
+        runtimeRootDir: prepared.runtimeRootDir,
+        adapterKey: "hermes",
+        timeoutSec,
+        hostApiToken: hostToken,
+        onLog: ctx.onLog,
+      });
+    }
+    return await executeHermes(ctx, { target: runtimeTarget, identity: executionTarget, cwd: remoteCwd, run, bridge });
+  } finally {
+    if (bridge) await bridge.stop().catch(() => undefined);
+    await ctx.onLog("stdout", `[hermes] Restoring workspace changes from ${where}.\n`);
+    await prepared.restoreWorkspace((line) => ctx.onLog("stdout", line)).catch(async (err) => {
+      await ctx.onLog(
+        "stderr",
+        `[hermes] Could not restore workspace changes: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    });
+  }
+}
+
+async function executeHermes(
+  ctx: AdapterExecutionContext,
+  remote: RemoteHermes | null,
 ): Promise<AdapterExecutionResult> {
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
 
@@ -374,14 +498,31 @@ export async function execute(
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
-  const prevSessionId = cfgString(
-    (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
-  );
+  const savedSessionParams = (ctx.runtime?.sessionParams as Record<string, unknown> | null) ?? null;
+  let prevSessionId = cfgString(savedSessionParams?.sessionId);
+  // A session lives in one host's state.db. Only resume it where it was made:
+  // a local run never resumes a remote session (and the reverse), and a remote
+  // run only on the same ssh host / user / port. Sessions without an identity
+  // (every existing local one) resume as before.
+  if (prevSessionId && (remote || savedSessionParams?.remoteExecution !== undefined)) {
+    const savedIdentity = savedSessionParams?.remoteExecution;
+    const sameHost = remote
+      ? adapterExecutionTargetSessionMatches(savedIdentity, remote.identity)
+      : adapterExecutionTargetSessionMatches(savedIdentity, null);
+    if (!sameHost) {
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Warning: session ${prevSessionId} was created on a different host and is not resumed here; starting a new session.\n`,
+      );
+      prevSessionId = undefined;
+    }
+  }
 
   // The server adds this runtime inventory at the run boundary. Requiring the
   // marker avoids touching a developer's real Hermes home in direct unit or
   // library calls that did not opt into Paperclip runtime skills.
-  if (Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
+  // Remote runs use the skills already installed in the remote Hermes home.
+  if (!remote && Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     try {
       const selectedSkills = await reconcileHermesPaperclipSkills(config);
       if (selectedSkills.length > 0) {
@@ -410,7 +551,9 @@ export async function execute(
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  // The server's own config.yaml says nothing about a remote host's Hermes, so
+  // remote runs skip detection and pass only what adapterConfig names.
+  if (!explicitProvider && !remote) {
     try {
       detectedConfig = await detectModel();
     } catch {
@@ -455,16 +598,64 @@ export async function execute(
     }
   }
 
+  // ── Resume baseline ────────────────────────────────────────────────────
+  // What the resumed session had used before this run, so the run is booked for
+  // its own tokens only. If Hermes' store is readable and no longer has the
+  // session (it prunes ended sessions after 90 days), Hermes would stop with
+  // "Session not found" on every wake: start a new session instead.
+  // Same env for the baseline and the post-run read, so they cannot drift.
+  const userConfigEnv = config.env as Record<string, string> | undefined;
+  const hermesStoreEnv: Record<string, string | undefined> = {
+    // A remote store is found through the configured HERMES_HOME only, never
+    // through the server's own environment.
+    ...(remote ? {} : process.env),
+    ...(userConfigEnv && typeof userConfigEnv === "object" ? userConfigEnv : {}),
+  };
+  const remoteSessions = remote ? createRemoteSessionReader(remote.run) : undefined;
+  let resumeSessionId = prevSessionId;
+  let resumeBaseline: SessionRow | null = null;
+  if (persistSession && prevSessionId) {
+    const rows = await readSessionLineage(hermesStoreEnv, prevSessionId, prevSessionId, remoteSessions);
+    if (rows && rows.length === 0) {
+      resumeSessionId = undefined;
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Warning: session ${prevSessionId} is not in Hermes' session store any more, so this run starts a new session.\n`,
+      );
+    } else {
+      resumeBaseline = rows && rows.length > 0 ? rows[0] : null;
+    }
+  }
+
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
-  if (agentInstructions) {
+  const checkpointEnabled = sessionCheckpointResumeEnabled();
+  const checkpointResume =
+    Boolean(resumeSessionId) ||
+    (checkpointEnabled &&
+      (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true);
+  let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
+  // The transcript already has the instructions. Re-sending them on every
+  // wake is a full rerun in token cost even when --resume is set.
+  if (agentInstructions && !(checkpointEnabled && resumeSessionId)) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
 
   // ── Build command args ─────────────────────────────────────────────────
   // -Q is always used (see file header): quiet mode, response + session_id only.
   // config.quiet used to gate this and defaulted false, which leaked `Query:`.
-  const args: string[] = ["chat", "-q", prompt, "-Q"];
+  // The prompt can be over 128 KB; one argv string that long fails with spawn
+  // E2BIG, so Hermes reads it from a private file (--query-file).
+  // Remote: the prompt goes to a private file on the remote host instead.
+  const remoteQuery = remote ? await stageRemoteQuery(remote.run, prompt) : null;
+  const query = remoteQuery
+    ? {
+        args: ["--query-file", remoteQuery.queryFile],
+        bytes: remoteQuery.bytes,
+        via: "--query-file" as const,
+        cleanup: async () => removeRemoteDir(remote!.run, remoteQuery.dir),
+      }
+    : await prepareQuery(prompt);
+  const args: string[] = ["chat", ...query.args, "-Q"];
 
   if (model) {
     args.push("-m", model);
@@ -499,8 +690,16 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
+  if (persistSession && resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+    // Without this, Hermes changes into the directory the old session recorded
+    // instead of staying in the run's workspace.
+    args.push("--no-restore-cwd");
+  }
+  // Init event carries session_id before any model work, so a kill still
+  // leaves a checkpoint the next wake can resume.
+  if (persistSession && sessionCheckpointResumeEnabled() && !extraArgs?.includes("--format")) {
+    args.push("--format", "stream-json");
   }
 
   if (extraArgs?.length) {
@@ -510,7 +709,8 @@ export async function execute(
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    // Remote: never hand the server's environment (PATH, HOME, keys) to another host.
+    ...(remote ? {} : (process.env as Record<string, string>)),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
@@ -524,6 +724,8 @@ export async function execute(
   // Wake context travels in the prompt; drop both inherited and configured copies.
   delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
+  // Remote: the bridge env points the CLI at the callback bridge with its own token, not the host token.
+  if (remote?.bridge) Object.assign(env, remote.bridge.env);
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
   const ctxContext = (ctx as any).context || {};
@@ -535,12 +737,15 @@ export async function execute(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
-  try {
-    await ensureAbsoluteDirectory(cwd);
-  } catch {
-    // Non-fatal
+  const cwd = remote
+    ? remote.cwd
+    : cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  if (!remote) {
+    try {
+      await ensureAbsoluteDirectory(cwd);
+    } catch {
+      // Non-fatal
+    }
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
@@ -548,17 +753,53 @@ export async function execute(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
-  if (prevSessionId) {
+  if (resumeSessionId) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Resuming session: ${prevSessionId}\n`,
+      `[hermes] Resuming session: ${resumeSessionId}\n`,
     );
   }
 
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
-  // Wrap onLog to reclassify benign stderr lines as stdout.
+  // Wrap onLog to reclassify benign stderr lines as stdout, and to checkpoint
+  // the session id from the stream-json init event before the process can die.
+  let streamBuffer = "";
+  let checkpointedSessionId: string | null = null;
+  // Only the first id from a system/init event counts. Tool output can echo
+  // other ids; a later one must never replace the real session.
+  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+    if (checkpointedSessionId) return;
+    if (event.type !== "system" || event.subtype !== "init") return;
+    const sessionId = event.sessionId;
+    if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
+    checkpointedSessionId = sessionId;
+    if (ctx.onSessionCheckpoint && checkpointEnabled) {
+      await ctx.onSessionCheckpoint({ sessionId });
+    }
+  };
+  const forwardStdoutLines = async (raw: string, flushTail: boolean) => {
+    streamBuffer += raw;
+    const lines = streamBuffer.split("\n");
+    streamBuffer = flushTail ? "" : (lines.pop() ?? "");
+    const human: string[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = parseHermesStreamJsonLine(trimmed);
+      if (!event) {
+        human.push(line);
+        continue;
+      }
+      await noteInitSessionId(event);
+      const rendered = formatHermesStreamEventForLog(event);
+      if (rendered) human.push(rendered);
+    }
+    if (human.length > 0) {
+      await ctx.onLog("stdout", `${human.join("\n")}\n`);
+    }
+  };
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
@@ -576,20 +817,88 @@ export async function execute(
         return ctx.onLog("stdout", chunk);
       }
     }
+    // Flag off: forward stdout untouched so the old path is byte-identical.
+    if (stream === "stdout" && checkpointEnabled) {
+      return forwardStdoutLines(chunk, false);
+    }
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  // Never start Hermes with an environment string the kernel refuses; remove
+  // the query file once the process ends.
+  for (const dropped of guardEnvStrings(env)) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Warning: left out environment variable ${dropped.key} (${dropped.bytes} bytes is over the kernel limit for one string)\n`,
+    );
+  }
+  await ctx.onLog("stdout", `[hermes] Prompt: ${query.bytes} bytes via ${query.via}\n`);
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    if (remote && remoteQuery) {
+      // Fail early with a clear message when hermes is not installed on the host.
+      await ensureAdapterExecutionTargetCommandResolvable(hermesCmd, remote.target, remote.cwd, env, {
+        timeoutSec: 30,
+      });
+      await ctx.onLog("stdout", `[hermes] Running on ${describeAdapterExecutionTarget(remote.target)} in ${remote.cwd}\n`);
+      const wrapped = wrapWithPidFile(remoteQuery.pidFile, hermesCmd, args);
+      result = await runAdapterExecutionTargetProcess(ctx.runId, remote.target, wrapped.command, wrapped.args, {
+        cwd: remote.cwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog: wrappedOnLog,
+        onSpawn: ctx.onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
+        runLogTail: remote.bridge?.runLogTail,
+        settleRunDisposition: remote.bridge?.settleRunDisposition,
+      });
+      // Timeout or cancel only ends the local ssh client; end the remote tree too.
+      if (result.timedOut || result.signal) {
+        await killRemoteTree(remote.run, remoteQuery.pidFile, graceSec);
+      }
+    } else {
+      result = await runChildProcess(ctx.runId, hermesCmd, args, {
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+        onLog: wrappedOnLog,
+        onSpawn: ctx.onSpawn,
+      });
+    }
+  } catch (err) {
+    if (remote && remoteQuery) await killRemoteTree(remote.run, remoteQuery.pidFile, graceSec);
+    throw err;
+  } finally {
+    await query.cleanup();
+  }
+  if (streamBuffer.trim()) {
+    await forwardStdoutLines("\n", true);
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  // The regexes above never match current Hermes output and read prose as cost.
+  // Take the session id from the lines Hermes prints, and tokens and cost from
+  // its own session record.
+  const metered = await resolveRun(result.stdout || "", result.stderr || "", hermesStoreEnv, resumeBaseline, remoteSessions);
+  parsed.sessionId = metered.sessionId ?? undefined;
+  parsed.usage = metered.usage;
+  parsed.costUsd = metered.costUsd;
+  if (metered.usage) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Usage: input ${metered.usage.inputTokens}, cached ${metered.usage.cachedInputTokens ?? 0}, output ${metered.usage.outputTokens}${metered.costUsd !== undefined ? `, cost $${metered.costUsd.toFixed(4)} (Hermes estimate)` : ""}\n`,
+    );
+  }
+  const streamed = parseHermesStreamJsonOutput(`${result.stdout || ""}\n${result.stderr || ""}`);
+  if (!parsed.sessionId && (streamed.sessionId || checkpointedSessionId)) {
+    parsed.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
+  }
+  if (!parsed.response && streamed.response) parsed.response = streamed.response;
+  if (!parsed.usage && streamed.usage) parsed.usage = streamed.usage;
+  if (!parsed.errorMessage && streamed.errorMessage) parsed.errorMessage = streamed.errorMessage;
 
   await ctx.onLog(
     "stdout",
@@ -616,6 +925,14 @@ export async function execute(
 
   if (parsed.usage) {
     executionResult.usage = parsed.usage;
+    // This is the run's own usage, not a session total (the host would
+    // otherwise subtract the previous run's).
+    executionResult.usageBasis = "per_run";
+    // Unset means "subscription_included": Hermes agents run on the company's
+    // subscription, so the host keeps the tokens and books no cents. Set
+    // adapterConfig.billingType (e.g. "api") to override.
+    executionResult.billingType =
+      (cfgString(config.billingType) as AdapterExecutionResult["billingType"]) || "subscription_included";
   }
 
   if (parsed.costUsd !== undefined) {
@@ -643,7 +960,10 @@ export async function execute(
 
   // Store session ID for next run
   if (persistSession && parsed.sessionId) {
-    executionResult.sessionParams = { sessionId: parsed.sessionId };
+    executionResult.sessionParams = {
+      sessionId: parsed.sessionId,
+      ...(remote ? { remoteExecution: adapterExecutionTargetSessionIdentity(remote.identity) } : {}),
+    };
     executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
   }
 

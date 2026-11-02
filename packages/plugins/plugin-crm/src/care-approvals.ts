@@ -18,6 +18,7 @@ import { esignEmailProblem, esignHooks, onEsignReply, prepareEsignDraft } from "
 import {
   approvalBySendKey,
   approvalByIssue,
+  approvalsByIssue,
   approvalsByStatus,
   getApproval,
   updateApproval,
@@ -32,6 +33,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { executeApprovedErasure, redactErasureApproval } from "./privacy.js";
 import { reportEmailProblem, reportHooks } from "./report.js";
 import { teamAssignee } from "./routing.js";
+import { decideReportCard, isReportBatch, type BatchActions } from "./report-batch.js";
 import { speedToLeadHooks } from "./speed-to-lead.js";
 import { feedbackHooks, onFeedbackReply } from "./support.js";
 
@@ -73,9 +75,14 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   if (!event.entityId) return false;
   const approval = await approvalByIssue(ctx, event.entityId);
   if (!approval || approval.companyId !== event.companyId) return false;
+  // The monthly report card holds many approvals: look at the ones still open, not at whichever row came first.
+  if (isReportBatch(approval)) return onReportCardIssue(ctx, event, issueStatus, approval);
   if (approval.status !== "open") return true;
   if (issueStatus !== "done" && issueStatus !== "cancelled") return true;
-  if (event.actorType !== "user") {
+  // An agent acting under a person's credentials still shows as a user, but its calls carry an agent or run id: only a human click sends.
+  const payload = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
+  const byAgentSession = Boolean(payload.agentId) || Boolean(payload.runId);
+  if (event.actorType !== "user" || byAgentSession) {
     const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, what: String(approval.payload.title ?? "a client approval") });
     if (!reopened) ctx.logger.info("A client approval closed by an agent could not be reopened", { approvalId: approval.id, actorType: event.actorType ?? null });
     return true;
@@ -91,8 +98,38 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   return true;
 }
 
+/** What a person's "done" or "cancelled" on the report card does, and how the card's ticks are applied (settleReportCards). */
+async function onReportCardIssue(ctx: PluginContext, event: PluginEvent, issueStatus: string, first: ApprovalRecord): Promise<boolean> {
+  const open = (await approvalsByIssue(ctx, first.issueId as string)).filter((a) => a.status === "open");
+  if (!open.length || (issueStatus !== "done" && issueStatus !== "cancelled")) return true;
+  const payload = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
+  if (event.actorType !== "user" || payload.agentId || payload.runId) {
+    if (!(await reopenApprovalForPerson(ctx, { issueId: event.entityId as string, companyId: event.companyId, what: "client reports" }))) ctx.logger.info("The client report card closed by an agent could not be reopened", { issueId: event.entityId });
+    return true;
+  }
+  await decideReportCard(ctx, event.companyId, first.issueId as string, issueStatus === "done" ? "all" : new Set<string>(), `user:${event.actorId ?? "unknown"}`, reportCardActionsFor(ctx));
+  return true;
+}
+
+export function reportCardActionsFor(ctx: PluginContext): BatchActions {
+  return {
+    send: (approval, by) => queueEmail(ctx, approval, by),
+    hold: async (approval, by) => {
+      await updateApproval(ctx, approval.companyId, approval.id, { status: "refused", decidedBy: by });
+      await HOOKS[approval.kind]?.onRefused(ctx, approval, by);
+    },
+  };
+}
+
 async function queueEmail(ctx: PluginContext, approval: ApprovalRecord, by: string): Promise<void> {
   const hooks = HOOKS[approval.kind];
+  // PAR-6363: a reply card made for a client org's lead (older cards) never sends.
+  if (approval.kind === "speed_to_lead" && approval.payload.clientChannel === true) {
+    const why = "this is a reply to a client's own lead; Partners in Biz does not reply to it.";
+    await updateApproval(ctx, approval.companyId, approval.id, { status: "refused", decidedBy: "system:client-org-lead", error: why });
+    await comment(ctx, approval, `Not sent: ${why} Nothing went to the lead.`);
+    return;
+  }
   // The approval was written for one state of the request or report. If it moved on while the approval waited (the client answered, the
   // request was finished, the report skipped), the email is wrong now: a person's "done" does not send it.
   const stale = (await actionEmailProblem(ctx, approval).catch(() => null)) ?? (await reportEmailProblem(ctx, approval).catch(() => null)) ?? (await esignEmailProblem(ctx, approval).catch(() => null));

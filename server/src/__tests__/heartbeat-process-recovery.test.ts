@@ -5163,6 +5163,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(issues.id, issueId));
 
+    // The first workspace-validation failure in the retry window queues a retry
+    // (PAR-5960). Seed one earlier failed run and move the run under test into
+    // the window, so this one is the second failure and blocks.
+    const failureAt = Date.now();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      error: "workspace validation failed before dispatch",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      createdAt: new Date(failureAt - 60_000),
+      updatedAt: new Date(failureAt - 60_000),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(failureAt) })
+      .where(eq(heartbeatRuns.id, runId));
+
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
@@ -15433,7 +15455,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         livenessState: "advanced",
       });
       const { companyId, agentId, issueId } = fixture;
-      const newestAt = Date.now() - 25 * MIN;
+      // PAR-6202 stops a ticket at 3 runs in a rolling hour. This suite tests the PAR-1838 chain cap,
+      // so the whole seeded timeline (runs, comments, attachments) sits 61 minutes further back,
+      // just outside that hour. Relative offsets are unchanged; callers use the returned firstAt/newestAt.
+      const runShiftMs = 61 * MIN;
+      const newestAt = Date.now() - 25 * MIN - runShiftMs;
       const firstAt = newestAt - (length - 1) * MIN;
       // The legacy continuation lane owns non-native runs; only native runs reach the capped lane.
       await db.update(heartbeatRuns).set({ createdAt: new Date(firstAt - MIN), runtimeMode: "native" }).where(eq(heartbeatRuns.id, fixture.runId));
@@ -15469,7 +15495,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         let commentId: string | null = null;
         if (opts.comments !== false) {
           commentId = randomUUID();
-          const commentAt = new Date(opts.commentAgeMs ? Date.now() - opts.commentAgeMs : createdAt.getTime() + 1000);
+          const commentAt = new Date(opts.commentAgeMs ? Date.now() - runShiftMs - opts.commentAgeMs : createdAt.getTime() + 1000);
           await db.insert(issueComments).values({
             id: commentId,
             companyId,

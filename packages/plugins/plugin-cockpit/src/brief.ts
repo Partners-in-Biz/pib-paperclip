@@ -4,17 +4,20 @@
  * agent tools.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { emptySnapshot, isModuleEnabled, TEAM_ROLES, toolFail, toolOk, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import { formatAmount } from "./activity.js";
 import { askWaitingItem, type AskView } from "./ask-model.js";
 import { openAskViews } from "./asks.js";
-import { assignableUser, ORIGIN } from "./constants.js";
+import { assignableUser, ORIGIN, PLUGIN_KEY } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
+import { briefBudget, type BriefBudget } from "./budget.js";
 import { message, type Env } from "./env.js";
 import { listRepairs, type RepairRow } from "./repairs.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
 import { goalViews, goalViewsBrief } from "./goals.js";
+import { countBlockedUncovered } from "./metrics.js";
 import { collectProblems, expectedPlugins, linkFor, listAgents, storedSnapshots } from "./health.js";
+import { readHoldsUp } from "./holds-up.js";
 import { improvementsBrief } from "./improvements.js";
 import { agentMeasureBriefs, type AgentMeasureBrief } from "./measure.js";
 import {
@@ -66,28 +69,49 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
   }
 }
 
-/** Open issues assigned to a person (core read of public.issues). */
-export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<IssueLite[]> {
-  if (!userId) return [];
+/** Most owner issues listed; past this the rest are counted but not shown. */
+export const OWNER_ISSUE_CEILING = 500;
+const OWNER_ISSUE_PAGE = 100;
+
+/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. `total` is the real count; `more` is set when some are not shown. */
+export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<{ items: IssueLite[]; total: number; more: boolean }> {
+  if (!userId) return { items: [], total: 0, more: false };
+  const items: IssueLite[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  let offset = 0;
   try {
-    const rows = await ctx.db.query<Record<string, unknown>>(
-      `SELECT id, identifier, title, status, priority, updated_at, created_at FROM public.issues
-        WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
-        ORDER BY updated_at DESC LIMIT 50`,
-      [companyId, userId],
-    );
-    return rows.map((row) => ({
-      id: String(row.id),
-      identifier: row.identifier == null ? null : String(row.identifier),
-      title: String(row.title ?? ""),
-      status: String(row.status ?? ""),
-      priority: row.priority == null ? null : String(row.priority),
-      updatedAt: iso(row.updated_at),
-      createdAt: iso(row.created_at),
-    }));
+    while (offset < OWNER_ISSUE_CEILING) {
+      const rows = await ctx.db.query<Record<string, unknown>>(
+        `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
+          WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
+          ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
+        [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - offset), offset],
+      );
+      if (!rows.length) break;
+      total = Number(rows[0]!.total) || offset + rows.length;
+      offset += rows.length;
+      for (const row of rows) {
+        // Rows can shift between pages (updated_at moves): keep each issue once.
+        if (seen.has(String(row.id))) continue;
+        seen.add(String(row.id));
+        items.push({
+          id: String(row.id),
+          identifier: row.identifier == null ? null : String(row.identifier),
+          title: String(row.title ?? ""),
+          status: String(row.status ?? ""),
+          priority: row.priority == null ? null : String(row.priority),
+          updatedAt: iso(row.updated_at),
+          createdAt: iso(row.created_at),
+        });
+      }
+      if (offset >= total) break;
+    }
+    return { items, total: Math.max(total, items.length), more: total > offset };
   } catch (error) {
     ctx.logger.info("Cockpit issue read failed", { companyId, error: message(error) });
-    return [];
+    // Keep the pages already read; the rest are not shown.
+    return { items, total: Math.max(total, items.length), more: true };
   }
 }
 
@@ -187,6 +211,10 @@ async function enabledModules(env: Env, companyId: string, keys: string[]): Prom
   return out;
 }
 
+function newBudget(env: Env, options: { sectionMs?: number; totalMs?: number } = {}): BriefBudget {
+  return briefBudget((text, meta) => env.ctx.logger.info(text, meta), options);
+}
+
 export interface CompanyData {
   snapshots: CockpitSnapshot[];
   receivedAt: Record<string, string>;
@@ -195,7 +223,11 @@ export interface CompanyData {
   runStats: RunStat[];
   approvals: ApprovalLite[];
   ownerIssues: IssueLite[];
-  setupMissing: number;
+  /** All open owner issues counted, and whether the list was cut at the ceiling. */
+  ownerIssuesTotal?: number;
+  ownerIssuesMore?: boolean;
+  /** Setup count; null when setup, modules or setupSummary is degraded. */
+  setupMissing: number | null;
   /** The open Finish setup issue (from the Setup plugin's count), listed once as the setup item. */
   setupIssueId?: string | null;
   ownerUserId: string | null;
@@ -208,30 +240,36 @@ export interface CompanyData {
   repairs: RepairRow[];
 }
 
-export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24): Promise<CompanyData> {
-  const roles = await getRoles(env.ctx, companyId);
-  const stored = await storedSnapshots(env, companyId);
-  const own = await ownSnapshot(env, companyId);
-  const [agents, runStats, approvals, ownerIssues, statuses, asks, unassigned, repairs] = await Promise.all([
-    listAgents(env, companyId),
-    listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }),
-    listApprovals(env.ctx, companyId),
-    listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null),
-    setupStatuses(env, companyId),
-    openAskViews(env, companyId).catch((error) => {
-      env.ctx.logger.info("Cockpit asks read failed", { companyId, error: message(error) });
-      return [] as AskView[];
-    }),
-    listUnassigned(env.ctx, companyId),
-    listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }).catch((error) => {
-      env.ctx.logger.info("Cockpit repairs read failed", { companyId, error: message(error) });
-      return [] as RepairRow[];
-    }),
+/** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
+export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
+  const { guard } = budget;
+  const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
+    guard("snapshots", () => storedSnapshots(env, companyId), []),
+    // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
+    guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
+    guard("agents", () => listAgents(env, companyId), []),
+    guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
+    guard("approvals", () => listApprovals(env.ctx, companyId), []),
+    guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
+    guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
+    guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
+    guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
+    guard("setupSummary", () => readSetupSummaryThrows(env, companyId), null),
+    guard("ownerRoles", () => getRoles(env.ctx, companyId), null),
   ]);
-  const enabled = await enabledModules(env, companyId, Object.keys(statuses));
+  // ownerIssues depends on roles, so fetch it after roles are available
+  const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
+  const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
+  const now = env.now().getTime();
+  const ownerIssues = ownerList.items.map((i) => {
+    const since = Date.parse(i.updatedAt ?? i.createdAt ?? "");
+    return { ...i, holdsUp: holds.get(i.id) ?? 0, ageHours: Number.isFinite(since) ? Math.max(0, Math.floor((now - since) / 3_600_000)) : null };
+  });
+  const enabled = await guard("modules", () => enabledModules(env, companyId, Object.keys(statuses)), {} as Record<string, boolean>);
   // The Setup plugin's own count (the number the Setup page shows) when it has sent one; else the same kit count over what the Cockpit stored.
-  const setup = await readSetupSummary(env, companyId);
-  const missing = setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
+  const missing = budget.degraded.includes("setup") || budget.degraded.includes("modules") || budget.degraded.includes("setupSummary")
+    ? null
+    : setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
     snapshots: [...stored.map((s) => s.snapshot), own],
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
@@ -239,6 +277,8 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     runStats,
     approvals,
     ownerIssues,
+    ownerIssuesTotal: ownerList.total,
+    ownerIssuesMore: ownerList.more,
     setupMissing: missing,
     setupIssueId: setup?.finishIssueId ?? null,
     ownerUserId: roles?.ownerUserId ?? null,
@@ -307,9 +347,15 @@ export async function onSetupSummary(env: Env, companyId: string | null | undefi
   return true;
 }
 
+/** Throws errors for use in guarded reads (e.g., in loadCompanyData). */
+async function readSetupSummaryThrows(env: Env, companyId: string): Promise<SetupSummaryCopy | null> {
+  return parseSetupSummary(await env.ctx.state.get(SETUP_SUMMARY_STATE(companyId)));
+}
+
+/** Safe wrapper that returns null on error (for non-guarded callers). */
 export async function readSetupSummary(env: Env, companyId: string): Promise<SetupSummaryCopy | null> {
   try {
-    return parseSetupSummary(await env.ctx.state.get(SETUP_SUMMARY_STATE(companyId)));
+    return await readSetupSummaryThrows(env, companyId);
   } catch {
     return null;
   }
@@ -368,49 +414,44 @@ export function repairLines(rows: RepairRow[], max: number = 10): string[] {
 }
 
 /** Compact JSON for the Operator: waiting, health, KPIs, activity, agents incl. spend/budget. */
-export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number } = {}) {
+export async function companyBrief(env: Env, companyId: string, options: { windowHours?: number; sectionMs?: number; totalMs?: number } = {}) {
   const windowHours = Math.min(Math.max(Math.round(options.windowHours ?? 24), 1), 720);
-  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours);
+  const budget = newBudget(env, options);
+  const { guard } = budget;
+  const data = await loadCompanyData(env, companyId, Math.ceil(windowHours / 24), windowHours, budget);
   const now = env.now();
-  const company = await env.ctx.companies.get(companyId).catch(() => null);
+
+  // The slow reads run side by side, each against its own time limit. Unreadable gives none (or null), not zeros or a guess.
+  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected, company] = await Promise.all([
+    guard("blockedUncovered", () => countBlockedUncovered(env, companyId), null),
+    guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [], keys: [] }),
+    // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue).
+    guard("agentMeasures", () => agentMeasureBriefs(env, companyId, windowHours), new Map<string, AgentMeasureBrief>()),
+    guard("roles", () => currentRoles(env, companyId), null),
+    // Changes recorded with a number to move (overdue first) and the company's goals against their numbers: what the weekly retro walks through.
+    guard("improvements", () => improvementsBrief(env, companyId), null),
+    guard("goals", () => goalViews(env, companyId, ["active", "proposed"]).then((views) => goalViewsBrief(views)), null),
+    guard("repairs", () => listRepairs(env.ctx, companyId, { limit: 100 }).then((rows) => repairLines(rows)), [] as string[]),
+    guard("expectedPlugins", () => expectedPlugins(env, companyId, Object.keys(data.receivedAt)), [] as Awaited<ReturnType<typeof expectedPlugins>>),
+    guard("company", () => env.ctx.companies.get(companyId), null),
+  ]);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
-
-  const expected = await expectedPlugins(env, companyId, Object.keys(data.receivedAt));
-  const stale = staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
+  // When snapshots is degraded, skip stale checks (they would be false alarms).
+  const stale = budget.degraded.includes("snapshots")
+    ? []
+    : staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
-  const problems = await collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince });
   const waiting = waitingFrom(data);
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
-  // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue). Unreadable gives none, not zeros.
-  const measures = await agentMeasureBriefs(env, companyId, windowHours).catch((error) => {
-    env.ctx.logger.info("Brief: agent measures unreadable", { companyId, error: message(error) });
-    return new Map<string, AgentMeasureBrief>();
-  });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
   const health = worstOf(groups.map((g) => g.status));
+  // Mark health unavailable when snapshots or ownChecks is degraded.
+  const healthAvailable = !budget.degraded.includes("snapshots") && !budget.degraded.includes("ownChecks");
   const problemCount = problems.entries.filter((e) => e.status === "bad").length;
-  const roles = await currentRoles(env, companyId).catch(() => null);
   const names = new Map(data.agents.map((a) => [a.id, a.name]));
   const graph = buildFlows({ snapshots: data.snapshots, roles, agents: data.agents });
-  // Changes recorded with a number to move (overdue first) and the company's goals against their numbers: what the weekly retro walks through. Unreadable gives null, not a guess.
-  const improvements = await improvementsBrief(env, companyId).catch((error) => {
-    env.ctx.logger.info("Brief: improvements unreadable", { companyId, error: message(error) });
-    return null;
-  });
-  const goals = await goalViews(env, companyId, ["active", "proposed"])
-    .then((views) => goalViewsBrief(views))
-    .catch((error) => {
-      env.ctx.logger.info("Brief: goals unreadable", { companyId, error: message(error) });
-      return null;
-    });
-  const repairs = await listRepairs(env.ctx, companyId, { limit: 100 })
-    .then((rows) => repairLines(rows))
-    .catch((error) => {
-      env.ctx.logger.info("Brief: repairs unreadable", { companyId, error: message(error) });
-      return [];
-    });
 
   return {
     company: { id: companyId, name: company?.name ?? null, prefix },
@@ -418,6 +459,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     today: todayLine({
       waiting: waiting.length,
       health,
+      healthAvailable,
+      degraded: budget.degraded,
       problems: problemCount,
       agentAlerts: agents.filter((a) => a.alert).length,
       activeAgents: agents.filter((a) => ["active", "running", "idle"].includes(a.status)).length,
@@ -430,9 +473,12 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       issueId: w.issueId ?? null,
       since: w.since ?? null,
       from: w.sourceTitle,
+      ...(w.rank ? { identifier: w.rank.identifier, link: link(w.rank.link), holdsUp: w.rank.holdsUp, ageHours: w.rank.ageHours, recommended: w.rank.recommended } : {}),
       ...(w.ask ? { question: { askKind: w.ask.kind, options: w.ask.options, askedBy: w.ask.askedBy, dueBy: w.ask.dueBy } } : {}),
       ...(w.examples ? { examples: w.examples.map((e) => ({ title: e.title, href: link(e.href), since: e.since ?? null })) } : {}),
     })),
+    /** Owner issues counted, and whether some are not shown (list stops at the ceiling). */
+    ownerIssues: { total: data.ownerIssuesTotal ?? data.ownerIssues.length, moreNotShown: data.ownerIssuesMore ?? false },
     /** Questions agents asked the owner, oldest first: answered on the issue, they go back to the agent. */
     asks: data.asks.map((a) => ({
       askId: a.id,
@@ -454,6 +500,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       count: data.unassigned.count,
       items: data.unassigned.items.slice(0, 5).map((i) => ({ issue: i.identifier ?? i.id, title: i.title, status: i.status, priority: i.priority, createdAt: i.createdAt, href: link(`/issues/${i.identifier ?? i.id}`) })),
     },
+    /** Blocked issues with no unblock owner, open question or moving blocker. The daily brief states this number so the trend toward 0 is readable; null when it could not be read. */
+    blockedUncovered,
     /** Who holds each team role (for hand-offs); an unstaffed sales role names who covers it (`coveredBy`). */
     team: Object.fromEntries(
       TEAM_ROLES.map((role) => {
@@ -467,7 +515,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       }),
     ),
     health: {
-      status: health,
+      status: healthAvailable ? health : "unavailable",
+      healthAvailable,
       problems: groups.flatMap((g) => g.checks.filter((c) => c.status !== "ok").map((c) => ({ plugin: g.title, status: c.status, title: c.title, detail: c.detail ?? null, fix: c.fix ?? null, href: link(c.href), since: c.since ?? null }))),
       agentAlerts: problems.entries.filter((e) => e.plugin === "agents").map((e) => ({ title: e.title, detail: e.detail ?? null, error: e.raw ?? null, href: link(e.href) })),
     },
@@ -501,6 +550,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     goals,
     /** System repairs from the last 7 days, formatted as lines. */
     repairs,
+    /** Sections that gave no answer in time or failed (so their lists above are empty or null, not "nothing there"). Empty when everything answered. Say so in the brief instead of dropping it. */
+    degraded: [...budget.degraded],
     setupMissing: data.setupMissing,
     links: { cockpit: link("/cockpit"), flows: link("/cockpit?tab=flows"), setup: link("/setup") },
   };
@@ -523,7 +574,9 @@ export async function ensureBriefIssue(env: Env, companyId: string): Promise<{ i
     const issue = await env.ctx.issues.get(existing, companyId).catch(() => null);
     if (issue && !["cancelled"].includes(String(issue.status))) return { issueId: existing, created: false };
   }
-  const roles = await getRoles(env.ctx, companyId);
+  // Guard getRoles with a time limit; fall back to null on timeout.
+  const budget = newBudget(env, { sectionMs: 1000, totalMs: 3000 });
+  const roles = await budget.guard("ownerRoles", () => getRoles(env.ctx, companyId), null);
   const owner = assignableUser(roles?.ownerUserId ?? null);
   const issue = await env.ctx.issues.create({
     companyId,
@@ -569,23 +622,56 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
   const p = params(raw);
   try {
     if (name === TOOL_NAMES.brief) {
-      const brief = await companyBrief(env, companyId, { windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined });
+      const brief = await companyBrief(env, companyId, {
+        windowHours: typeof p.windowHours === "number" ? p.windowHours : undefined,
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
       const stuck = brief.stuckFlows.length ? ` ${brief.stuckFlows.length} stuck ${brief.stuckFlows.length === 1 ? "stage" : "stages"} in the flows.` : "";
-      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${brief.health.status}, ${brief.agents.length} agents.${stuck}`, brief);
+      const healthText = brief.health.healthAvailable === false ? "unavailable" : brief.health.status;
+      return toolOk(`${brief.today} ${brief.waiting.length} waiting, health ${healthText}, ${brief.agents.length} agents.${stuck}`, brief);
     }
     if (name === TOOL_NAMES.health) {
-      const brief = await companyBrief(env, companyId);
+      const brief = await companyBrief(env, companyId, {
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
       const include = p.includeWarnings !== false;
       const problems = brief.health.problems.filter((c) => include || c.status === "bad");
-      return toolOk(problems.length === 0 && brief.health.agentAlerts.length === 0 ? "All systems ok." : `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.`, {
+      const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
+      const degradedText = brief.degraded.length > 0 ? ` ${brief.degraded.join(", ")} unavailable (timed out).` : "";
+      let summary: string;
+      if (unavailableSections.length > 0) {
+        summary = `health unavailable (${unavailableSections.join(", ")} timed out).`;
+      } else if (brief.degraded.length > 0 || problems.length > 0 || brief.health.agentAlerts.length > 0) {
+        summary = `${problems.length} health ${problems.length === 1 ? "item" : "items"}, ${brief.health.agentAlerts.length} agent ${brief.health.agentAlerts.length === 1 ? "alert" : "alerts"}.${degradedText}`;
+      } else {
+        summary = "All systems ok.";
+      }
+      return toolOk(summary, {
         status: brief.health.status,
+        healthAvailable: brief.health.healthAvailable,
         problems,
         agentAlerts: brief.health.agentAlerts,
+        degraded: brief.degraded,
       });
     }
     if (name === TOOL_NAMES.waiting) {
-      const brief = await companyBrief(env, companyId);
-      return toolOk(brief.waiting.length === 0 ? "Nothing waits on the owner." : `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.`, { items: brief.waiting, count: brief.waiting.length });
+      const brief = await companyBrief(env, companyId, {
+        sectionMs: typeof p.sectionMs === "number" ? p.sectionMs : undefined,
+        totalMs: typeof p.totalMs === "number" ? p.totalMs : undefined,
+      });
+      const unavailableSections = brief.degraded.filter((s) => s === "snapshots" || s === "ownChecks");
+      let summary: string;
+      if (unavailableSections.length > 0) {
+        summary = `Waiting list incomplete: ${unavailableSections.join(", ")} unavailable (timed out).`;
+      } else if (brief.waiting.length === 0 && brief.degraded.length === 0) {
+        summary = "Nothing waits on the owner.";
+      } else {
+        const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
+        summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
+      }
+      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {
       const brief = await companyBrief(env, companyId, { windowHours: 168 });

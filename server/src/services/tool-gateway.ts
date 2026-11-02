@@ -13,6 +13,10 @@ import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
+import {
+  assertValidConnectionAuthorizationPayload,
+  connectionAuthorizationTargetKey,
+} from "./connection-authorization-target.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -4339,7 +4343,7 @@ export function createToolGatewayService(
       .limit(1);
     const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/permissions`;
     const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
-    const payload = {
+    const payload = assertValidConnectionAuthorizationPayload({
       version: 1 as const,
       prompt:
         grantKind === "organization"
@@ -4356,12 +4360,12 @@ export function createToolGatewayService(
           : "This run needs your personal authorization. Paperclip will not use another user's identity.",
       target: {
         type: "custom" as const,
-        key: `connection:${connection.uid}:user:${userId}`,
+        key: connectionAuthorizationTargetKey(connection.uid, userId),
         revisionId: connection.updatedAt.toISOString(),
         label: `Connect ${connection.name}`,
         href,
       },
-    };
+    });
     const [existing] = await db
       .select({ id: issueThreadInteractions.id })
       .from(issueThreadInteractions)

@@ -1,4 +1,3 @@
-import { useUserPreferences } from "../hooks/useUserPreferences";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -241,7 +240,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useUserPreferences().data?.keyboardShortcuts === true;
 
   useLayoutEffect(() => {
     setForceCollapsed(!streamlinedUiEnabled && hasSecondarySidebar);
@@ -450,7 +448,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
-    enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
@@ -615,7 +612,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
   return (
     <ChatSetupSidebarProvider>
-    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
+    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled: true }}>
       <div
       className={cn(
         "bg-background text-foreground pt-(--sz-safe-top)",

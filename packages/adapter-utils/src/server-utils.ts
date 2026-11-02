@@ -12,6 +12,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { boundWakePayloadJson } from "./wake-payload-bound.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -1945,6 +1946,16 @@ export function stringifyPaperclipWakePayload(
   return JSON.stringify(normalized);
 }
 
+/**
+ * Bounded copy for an environment variable (PAPERCLIP_WAKE_PAYLOAD_JSON). Linux
+ * refuses to start a process when one env string is over 131072 bytes (spawn
+ * E2BIG). Prompt copies must keep using stringifyPaperclipWakePayload, which
+ * is never shortened.
+ */
+export function stringifyPaperclipWakePayloadForEnv(value: unknown): string | null {
+  return boundWakePayloadJson(stringifyPaperclipWakePayload(value));
+}
+
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {
   const normalized = normalizePaperclipWakePayload(value);
   return Boolean(
@@ -2168,6 +2179,17 @@ export function selectInitialCommunicationGuidance(
     ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
 }
 
+const SESSION_CHECKPOINT_OFF_VALUES = new Set(["0", "false", "off", "no"]);
+
+/** Default on. Set PAPERCLIP_SESSION_CHECKPOINT=0 to restore full-rerun wakes. */
+export function sessionCheckpointResumeEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.PAPERCLIP_SESSION_CHECKPOINT;
+  if (raw == null || raw.trim() === "") return true;
+  return !SESSION_CHECKPOINT_OFF_VALUES.has(raw.trim().toLowerCase());
+}
+
 // Picks the task-context markdown variant for adapters that inject it into the
 // prompt. Fresh sessions, assignment-shaped wakes, and recovery wakes get the
 // full brief; other resume deltas get the compact variant (description
@@ -2179,7 +2201,11 @@ export function selectPaperclipTaskMarkdown(
 ): string {
   const full = asString(context?.paperclipTaskMarkdown, "").trim();
   if (!full) return "";
-  if (options.resumedSession !== true) {
+  // The server sets paperclipCheckpointResume only when the checkpoint flag is
+  // on and the wake keeps a saved transcript or rotates with a handoff. Keying
+  // on the handoff text alone would change flag-off rotated wakes.
+  const checkpointResume = context?.paperclipCheckpointResume === true;
+  if (options.resumedSession !== true && !checkpointResume) {
     const guidance = options.includeCommunicationGuidance === false
       ? "" : selectInitialCommunicationGuidance(context, options);
     return joinPromptSections([guidance, full]);
@@ -2187,8 +2213,9 @@ export function selectPaperclipTaskMarkdown(
   const wake = normalizePaperclipWakePayload(context?.paperclipWake);
   if (!wake) return full;
   if (
-    isAssignmentShapedPaperclipWakeReason(wake.reason) ||
-    isPaperclipRecoveryWakePayload(context?.paperclipWake)
+    !checkpointResume &&
+    (isAssignmentShapedPaperclipWakeReason(wake.reason) ||
+      isPaperclipRecoveryWakePayload(context?.paperclipWake))
   ) {
     return full;
   }
