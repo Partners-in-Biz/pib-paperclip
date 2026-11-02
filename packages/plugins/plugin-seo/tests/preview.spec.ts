@@ -66,9 +66,16 @@ describe("Google Translate widget filtering", () => {
     const statsWithoutWidget = previewStats(liveWithoutWidget, previewHtml);
 
     // Both should have the same kept percentage since the widget words should be ignored
-    expect(statsWithWidget.liveWords).toBe(statsWithoutWidget.liveWords);
+    expect(statsWithWidget.liveWords).toBe(4);
+    expect(statsWithoutWidget.liveWords).toBe(4);
     expect(statsWithWidget.keptPct).toBe(statsWithoutWidget.keptPct);
     expect(statsWithWidget.keptPct).toBeGreaterThan(90);
+  });
+
+  it("handles single-quoted attributes, nesting and apostrophes", () => {
+    const live = `<body><p>don't stop</p><div id='google_translate_element'><div><select><option>English</option><option>Spanish</option></select></div></div><p>after it</p></body>`;
+    const stats = previewStats(live, "<body><p>x</p></body>");
+    expect(stats.liveWords).toBe(4);
   });
 
   it("ignores elements with VIpgJd classes (Google Translate generated UI)", () => {
