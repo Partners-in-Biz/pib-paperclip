@@ -120,10 +120,10 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       expect((await h.client.query(`SELECT 1 FROM ${NAMESPACE}.numbering_counters WHERE kind = 'invoice:legacy'`)).rows).toHaveLength(0);
       const set = await h.call("billing.set-numbering", { nextNumber: 180 });
       expect(set).toMatchObject({ mode: "client", prefix: "INV", next: 180, highestExisting: 0 });
-      expect((await draft("ct-lumen", [])).number).toBe("LUM-001");
+      expect(await numbered()).toBe("LUM-001");
       h.config.set(COMPANY, { ...SETTINGS, numbering: { mode: "sequential" } });
-      expect((await draft("ct-lumen", [])).number).toBe("INV-180");
-      expect((await draft("ct-lumen", [])).number).toBe("INV-181");
+      expect(await numbered()).toBe("INV-180");
+      expect(await numbered()).toBe("INV-181");
       expect(await h.call("billing.get-numbering", {})).toMatchObject({ mode: "sequential", prefix: "INV", next: 182, highestExisting: 181 });
       await expect(h.call("billing.set-numbering", { nextNumber: 181 })).rejects.toThrow(/already used/);
     });
