@@ -16,7 +16,7 @@ Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: i
 
 Agents draft and ask. A person approves every send, every money change and voids. Billing has no agent role of its own: the Account Manager (CRM plugin) carries the `pib-invoice-draft` skill, and Billing's work goes to it (else the Bookkeeper, the Operator, the owner).
 
-## Rolling back 0.14.0 (numbers claimed at send)
+## Rolling back 0.18.0 (numbers claimed at send)
 Older versions read `invoices.number` as non-null and throw on a NULL (`documents.ts:185`, `openitems.ts:45`, `ui/series.ts:263`). With 0.14.0 still deployed:
 1. List the unnumbered drafts: `SELECT id, customer_ref, created_at FROM invoices WHERE number IS NULL` (in the plugin schema).
 2. Approve (send) or delete each one through the UI. Sending numbers it; deleting an unnumbered draft removes the row and its lines and burns no number.
