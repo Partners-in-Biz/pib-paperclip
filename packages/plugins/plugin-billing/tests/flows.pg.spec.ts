@@ -84,7 +84,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       );
       expect((await draft("ct-lumen", [])).number).toBe("LUM-008");
       h.config.set(COMPANY, { ...SETTINGS, numbering: { mode: "sequential" } });
-      expect((await draft("ct-lumen", [])).number).toBe("INV-0004");
+      expect((await draft("ct-lumen", [])).number).toBe("INV-004");
       const old = await h.client.query(`SELECT number FROM ${NAMESPACE}.invoices WHERE id IN ('old-1', 'old-2') ORDER BY id`);
       expect(old.rows.map((r: any) => r.number)).toEqual(["LUM-007", "INV-0003"]);
     });
@@ -101,6 +101,22 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       await expect(h.call("billing.set-numbering", { client: "contact:ct-lumen", prefix: "AB1" })).rejects.toThrow(/three letters/);
       await draft("ct-lumos", []);
       await expect(h.call("billing.set-numbering", { client: "contact:ct-lumos", prefix: "ABC" })).rejects.toThrow(/another client/);
+    });
+  });
+
+  describe("seed the invoice sequence", () => {
+    it("seeds INV- from 180 without touching client mode, person only", async () => {
+      await expect(h.call("billing.set-numbering", { nextNumber: 180 }, agentContext())).rejects.toThrow(/Agents may not/);
+      await expect(h.call("billing.set-numbering", { nextNumber: 180, prefix: "ABC" })).rejects.toThrow(/always uses INV/);
+      expect((await h.client.query(`SELECT 1 FROM ${NAMESPACE}.numbering_counters WHERE kind = 'invoice:legacy'`)).rows).toHaveLength(0);
+      const set = await h.call("billing.set-numbering", { nextNumber: 180 });
+      expect(set).toMatchObject({ mode: "client", prefix: "INV", next: 180, highestExisting: 0 });
+      expect((await draft("ct-lumen", [])).number).toBe("LUM-001");
+      h.config.set(COMPANY, { ...SETTINGS, numbering: { mode: "sequential" } });
+      expect((await draft("ct-lumen", [])).number).toBe("INV-180");
+      expect((await draft("ct-lumen", [])).number).toBe("INV-181");
+      expect(await h.call("billing.get-numbering", {})).toMatchObject({ mode: "sequential", prefix: "INV", next: 182, highestExisting: 181 });
+      await expect(h.call("billing.set-numbering", { nextNumber: 181 })).rejects.toThrow(/already used/);
     });
   });
 
