@@ -1135,20 +1135,66 @@ export async function insertMetrics(ctx: PluginContext, input: {
   saves?: number | null;
   clicks?: number | null;
   raw?: Record<string, unknown>;
-}): Promise<boolean> {
+}): Promise<MetricsInsertOutcome> {
+  // ctx.db.execute has no RETURNING, so a pre-read tells "inserted" from "filled" (informational only).
+  let existed = false;
+  if (input.destinationId && input.window) {
+    const found = await ctx.db.query<{ id: string }>(
+      `SELECT id FROM ${table(ctx, "post_metrics")} WHERE destination_id = $1 AND metric_window = $2 LIMIT 1`,
+      [input.destinationId, input.window],
+    );
+    existed = found.length > 0;
+  }
   const result = await ctx.db.execute(
     `INSERT INTO ${table(ctx, "post_metrics")}
       (id, company_id, post_id, destination_id, account_id, platform, metric_window, views, likes, comments, shares,
        impressions, reach, saves, clicks, raw)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
-     ON CONFLICT (destination_id, metric_window) DO NOTHING`,
+     ON CONFLICT (destination_id, metric_window) DO UPDATE SET
+       impressions = COALESCE(post_metrics.impressions, EXCLUDED.impressions),
+       reach = COALESCE(post_metrics.reach, EXCLUDED.reach),
+       clicks = COALESCE(post_metrics.clicks, EXCLUDED.clicks),
+       saves = COALESCE(post_metrics.saves, EXCLUDED.saves),
+       views = CASE WHEN post_metrics.views = 0 THEN EXCLUDED.views ELSE post_metrics.views END,
+       raw = post_metrics.raw || jsonb_build_object('filledAt', now())
+     WHERE post_metrics.impressions IS NULL OR post_metrics.reach IS NULL OR post_metrics.clicks IS NULL OR post_metrics.saves IS NULL`,
     [
       randomUUID(), input.companyId, input.postId, input.destinationId ?? null, input.accountId ?? null, input.platform ?? null,
       input.window ?? null, input.views, input.likes, input.comments, input.shares, input.impressions ?? null, input.reach ?? null,
       input.saves ?? null, input.clicks ?? null, JSON.stringify(input.raw ?? {}),
     ],
   );
-  return result.rowCount === 1;
+  if (result.rowCount !== 1) return "unchanged";
+  return existed ? "filled" : "inserted";
+}
+
+export type MetricsInsertOutcome = "inserted" | "filled" | "unchanged";
+
+export interface MetricsErrorRecord {
+  at: string;
+  window: string;
+  kind: "provider" | "insights" | "unsupported";
+  status?: number;
+  message: string;
+}
+
+/** Atomic jsonb merge: never read-modify-write `result` (publish.ts keeps firstCommentId/firstCommentError there). */
+export async function setDestinationMetricsError(ctx: PluginContext, destinationId: string, error: MetricsErrorRecord): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET result = COALESCE(result, '{}'::jsonb) || jsonb_build_object('metricsError', $2::jsonb), updated_at = now()
+      WHERE id = $1`,
+    [destinationId, JSON.stringify(error)],
+  );
+}
+
+export async function clearDestinationMetricsError(ctx: PluginContext, destinationId: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET result = result - 'metricsError', updated_at = now()
+      WHERE id = $1 AND result ? 'metricsError'`,
+    [destinationId],
+  );
 }
 
 export async function metricsForPost(ctx: PluginContext, companyId: string, postId: string): Promise<MetricsRow[]> {
