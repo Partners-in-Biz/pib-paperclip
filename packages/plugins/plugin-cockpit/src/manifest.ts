@@ -84,7 +84,7 @@ const instanceConfigSchema: JsonSchema = {
     githubCi: {
       type: "object",
       title: "GitHub CI webhook",
-      description: "Lets a failed GitHub check comment on the ticket. Webhook URL: /api/plugins/partnersinbiz.cockpit/webhooks/github-ci, event: Check suites.",
+      description: "Lets a failed GitHub check comment on the ticket. Webhook URL: /api/plugins/partnersinbiz.cockpit/webhooks/github-ci, events: Check suites, Pull request review comments, Pull request reviews.",
       properties: {
         webhookSecret: secretField("Webhook secret", "The company secret GitHub signs deliveries with."),
         previousWebhookSecret: secretField("Previous webhook secret", "The old secret, still accepted for 24 hours after the rotation time below."),
@@ -251,7 +251,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       endpointKey: "github-ci",
       displayName: "GitHub CI failures",
-      description: "POST /api/plugins/partnersinbiz.cockpit/webhooks/github-ci: GitHub check_suite events. Checked by X-Hub-Signature-256 against the secret in settings (githubCi.webhookSecret). A failed, timed out or cancelled suite on a feat/PAR-<n>- branch comments once per commit on that open issue.",
+      description: "POST /api/plugins/partnersinbiz.cockpit/webhooks/github-ci: GitHub check_suite, pull_request_review_comment and pull_request_review events (the review ones comment once per GitHub id and wake the assignee). Checked by X-Hub-Signature-256 against the secret in settings (githubCi.webhookSecret). A failed, timed out or cancelled suite on a feat/PAR-<n>- branch comments once per commit on that open issue.",
     },
   ],
   jobs: [
