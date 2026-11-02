@@ -25,7 +25,7 @@
   },
   "scripts": {
     "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test:contract": "vitest run --config ./vitest.contract.config.ts"
   },
   "devDependencies": {
