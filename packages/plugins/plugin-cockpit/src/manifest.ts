@@ -41,6 +41,15 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save this once for each company. Saving is what lets the Cockpit act for that company on its own: the hourly System health issue and team roles, answers to agents' questions, client onboarding, and the CRM client list company memory uses.",
   properties: {
+    escalation: {
+      type: "object",
+      title: "Escalation ladder",
+      description: "Blocked issues with no way out go up the reporting chain; the last level is the COO agent. No Unblock issue is assigned to a person.",
+      properties: {
+        enabled: { type: "boolean", title: "Escalate stuck blocked issues", description: "Turn off to stop the ladder creating Unblock issues.", default: true },
+        cooAgentId: { type: "string", title: "COO agent (optional)", description: "The agent for the last level. Left blank, the company's active agent with role COO is used." },
+      },
+    },
     healthIssue: {
       type: "boolean",
       title: "System health issue",

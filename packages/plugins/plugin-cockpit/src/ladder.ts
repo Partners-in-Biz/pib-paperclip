@@ -4,7 +4,7 @@
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { escalate } from "@partnersinbiz/pib-plugin-kit";
+import { escalate, cancelUnblocksOnResolve } from "@partnersinbiz/pib-plugin-kit";
 import { nextAction, BLOCKED_ESCALATE_HOURS, classifyUnblock, type Level, type UnblockInput } from "./ladder-model.js";
 import { recordRepair, listRepairs } from "./repairs.js";
 import { ownerPushedWithin, recordOwnerPush } from "./register-w1c-deadlines.js";
@@ -197,6 +197,15 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         noneReasons.set(action.reason, (noneReasons.get(action.reason) ?? 0) + 1);
       } else if (action.type === "resolved") {
         stage = "resolved";
+        // The source left `blocked`: its open Unblock issues are no longer needed
+        const openIds = issue.unblocks
+          .filter((u) => !["done", "cancelled"].includes(u.status))
+          .filter((u) => {
+            const c = classifyUnblock(u);
+            return c.kind === "unblock" && c.issueId === issue.stuck.id;
+          })
+          .map((u) => u.id);
+        counts.cancelled += (await cancelUnblocksOnResolve(env.ctx, issue.stuck.id, companyId, openIds)).length;
         // Only if stuck has marker children
         const hasMarkers = issue.unblocks.some((u) => markerIds.has(u.id));
         if (hasMarkers) {
@@ -216,7 +225,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
       } else if (action.type === "create") {
         stage = "create";
         const reason = `Blocked over ${BLOCKED_ESCALATE_HOURS} hours with no open blocker.`;
-        const startLevel = action.level === 4 ? "owner" : action.level;
+        const startLevel = action.level === 4 ? "coo" : action.level;
 
         // Level 4: skip if owner already pushed in last 24h
         if (action.level === 4 && await ownerPushedWithin(env.ctx, companyId, issue.stuck.id, now)) {
@@ -253,7 +262,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         }
       } else if (action.type === "advance") {
         stage = "advance";
-        const startLevel = action.level === 4 ? "owner" : action.level;
+        const startLevel = action.level === 4 ? "coo" : action.level;
 
         // Level 4: skip if owner already pushed in last 24h
         if (action.level === 4 && await ownerPushedWithin(env.ctx, companyId, issue.stuck.id, now)) {
