@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NIGHTLY_DREAMING_STOCK_TITLE } from "../services/nightly-dreaming.js";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 const companySvc = {
@@ -2738,6 +2739,177 @@ describe("company portability", () => {
     expect(result.routines).toEqual([
       { slug: "monday-review", id: "routine-created", action: "created", title: "Monday Review", status: "paused" },
     ]);
+  });
+
+  it("pauses an imported nightly-dreaming copy when the flag is off", async () => {
+    const previous = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    try {
+      const portability = companyPortabilityService({} as any);
+      companySvc.create.mockResolvedValue({
+        id: "company-imported",
+        name: "Imported Paperclip",
+      });
+      accessSvc.ensureMembership.mockResolvedValue(undefined);
+      agentSvc.create.mockResolvedValue({
+        id: "agent-created",
+        name: "ClaudeCoder",
+      });
+      projectSvc.create.mockResolvedValue({
+        id: "project-created",
+        name: "Launch",
+        urlKey: "launch",
+      });
+      agentSvc.list.mockResolvedValue([]);
+      projectSvc.list.mockResolvedValue([]);
+
+      const files = {
+        "COMPANY.md": [
+          "---",
+          'schema: "agentcompanies/v1"',
+          'name: "Imported Paperclip"',
+          "---",
+          "",
+        ].join("\n"),
+        "agents/claudecoder/AGENTS.md": [
+          "---",
+          'name: "ClaudeCoder"',
+          "---",
+          "",
+          "You write code.",
+          "",
+        ].join("\n"),
+        "projects/launch/PROJECT.md": [
+          "---",
+          'name: "Launch"',
+          "---",
+          "",
+        ].join("\n"),
+        "tasks/nightly-dreaming/TASK.md": [
+          "---",
+          `name: "${NIGHTLY_DREAMING_STOCK_TITLE}"`,
+          'project: "launch"',
+          'assignee: "claudecoder"',
+          "recurring: true",
+          "---",
+          "",
+          "Draft proposals. The server gate is PAPERCLIP_NIGHTLY_DREAMING.",
+          "",
+        ].join("\n"),
+        ".paperclip.yaml": [
+          'schema: "paperclip/v1"',
+          "routines:",
+          "  nightly-dreaming:",
+          "    triggers:",
+          "      - kind: schedule",
+          '        label: "Nightly dreaming draft"',
+          '        cronExpression: "15 3 * * *"',
+          '        timezone: "Africa/Johannesburg"',
+          "",
+        ].join("\n"),
+      };
+
+      const result = await portability.importBundle({
+        source: { type: "inline", rootPath: "paperclip-demo", files },
+        include: { company: true, agents: true, projects: true, issues: true, skills: false },
+        target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+        agents: "all",
+        collisionStrategy: "rename",
+      }, "user-1");
+
+      expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+        title: NIGHTLY_DREAMING_STOCK_TITLE,
+        status: "paused",
+      }), expect.any(Object));
+      const createInput = routineSvc.create.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(createInput.originKind).toBeUndefined();
+      expect(createInput.originId).toBeUndefined();
+      expect(routineSvc.createTrigger).toHaveBeenCalledWith("routine-created", expect.objectContaining({
+        kind: "schedule",
+        label: "Nightly dreaming draft",
+        enabled: false,
+        cronExpression: "15 3 * * *",
+        timezone: "Africa/Johannesburg",
+      }), expect.any(Object));
+      expect(result.routines).toEqual([
+        {
+          slug: "nightly-dreaming",
+          id: "routine-created",
+          action: "created",
+          title: NIGHTLY_DREAMING_STOCK_TITLE,
+          status: "paused",
+        },
+      ]);
+      expect(result.warnings).toContain(
+        "Recurring task nightly-dreaming matches the nightly-dreaming routine. PAPERCLIP_NIGHTLY_DREAMING is off, so the import paused it and disabled its triggers. The live Reflection Coach routine was not changed.",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previous;
+    }
+  });
+
+  it("keeps an imported nightly-dreaming copy active when the flag is on", async () => {
+    const previous = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    process.env.PAPERCLIP_NIGHTLY_DREAMING = "1";
+    try {
+      const portability = companyPortabilityService({} as any);
+      companySvc.create.mockResolvedValue({
+        id: "company-imported",
+        name: "Imported Paperclip",
+      });
+      accessSvc.ensureMembership.mockResolvedValue(undefined);
+      agentSvc.list.mockResolvedValue([]);
+      projectSvc.list.mockResolvedValue([]);
+
+      const files = {
+        "COMPANY.md": [
+          "---",
+          'schema: "agentcompanies/v1"',
+          'name: "Imported Paperclip"',
+          "---",
+          "",
+        ].join("\n"),
+        "tasks/nightly-dreaming/TASK.md": [
+          "---",
+          `name: "${NIGHTLY_DREAMING_STOCK_TITLE}"`,
+          "recurring: true",
+          "---",
+          "",
+          "Draft proposals.",
+          "",
+        ].join("\n"),
+        ".paperclip.yaml": [
+          'schema: "paperclip/v1"',
+          "routines:",
+          "  nightly-dreaming:",
+          "    triggers:",
+          "      - kind: schedule",
+          '        cronExpression: "15 3 * * *"',
+          '        timezone: "Africa/Johannesburg"',
+          "",
+        ].join("\n"),
+      };
+
+      await portability.importBundle({
+        source: { type: "inline", rootPath: "paperclip-demo", files },
+        include: { company: true, agents: false, projects: false, issues: true, skills: false },
+        target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+        agents: "none",
+        collisionStrategy: "rename",
+      }, "user-1");
+
+      expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+        title: NIGHTLY_DREAMING_STOCK_TITLE,
+        status: "active",
+      }), expect.any(Object));
+      expect(routineSvc.createTrigger).toHaveBeenCalledWith("routine-created", expect.objectContaining({
+        enabled: true,
+      }), expect.any(Object));
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previous;
+    }
   });
 
   it("suffixes a manifest-derived company name that collides with an existing company", async () => {

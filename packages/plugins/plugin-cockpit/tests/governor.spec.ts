@@ -341,7 +341,7 @@ describe("governor resume with canary", () => {
     }
     expect(allInvokes).toHaveLength(3);
     expect(escalateCalls).toHaveLength(1);
-    expect(escalateCalls[0]).toMatchObject({ reason: "governor_stuck", opts: { companyId: A, startLevel: "owner" } });
+    expect(escalateCalls[0]).toMatchObject({ reason: "governor_stuck", opts: { companyId: A, startLevel: "coo" } });
     const tMore = await tick(env, { recordRepair: record, escalate: escalateMock });
     expect(tMore.outcome).toBe("stuck");
     expect(escalateCalls).toHaveLength(1);
@@ -360,7 +360,7 @@ describe("governor resume with canary", () => {
     const t1 = await tick(env, { escalate: escalateMock });
     expect(t1.outcome).toBe("stuck");
     expect(escalateCalls).toHaveLength(1);
-    expect(escalateCalls[0]).toMatchObject({ reason: "governor_stuck", opts: { companyId: A, startLevel: "owner" } });
+    expect(escalateCalls[0]).toMatchObject({ reason: "governor_stuck", opts: { companyId: A, startLevel: "coo" } });
     const t2 = await tick(env, { escalate: escalateMock });
     expect(t2.outcome).toBe("stuck");
     expect(escalateCalls).toHaveLength(1);

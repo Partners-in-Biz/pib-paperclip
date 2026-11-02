@@ -132,6 +132,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.update",
     "issues.wakeup",
     "issue.comments.create",
+    // One approval card per month for all client reports (0.32.8: a stop-first deploy, like any new capability).
+    "issue.interactions.create",
+    "issue.interactions.read",
     // The monthly client report is stored as a document on its issue (new in 0.13.0: a stop-first deploy, like webhooks.receive).
     "issue.documents.write",
     "api.routes.register",

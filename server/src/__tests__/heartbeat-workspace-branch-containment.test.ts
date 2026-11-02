@@ -297,6 +297,38 @@ function readAdapterWorkspace(input: unknown) {
   return { cwd, branchName, executionWorkspaceId };
 }
 
+// The first workspace-validation failure inside the retry window queues a retry
+// instead of blocking (PAR-5960). Seed one earlier failed run for the issue and
+// move the run under test into the window, so it counts as the second failure.
+async function seedEarlierWorkspaceValidationFailure(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string; sourceIssueId: string },
+) {
+  const now = Date.now();
+  await db.insert(heartbeatRuns).values({
+    id: randomUUID(),
+    companyId: input.companyId,
+    agentId: input.agentId,
+    invocationSource: "assignment",
+    triggerDetail: "system",
+    status: "failed",
+    error: "workspace validation failed before dispatch",
+    errorCode: "workspace_validation_failed",
+    contextSnapshot: {
+      issueId: input.sourceIssueId,
+      taskId: input.sourceIssueId,
+      wakeReason: "issue_assigned",
+    },
+    responsibleUserId: "responsible-user",
+    createdAt: new Date(now - 60_000),
+    updatedAt: new Date(now - 60_000),
+  });
+  await db
+    .update(heartbeatRuns)
+    .set({ createdAt: new Date(now) })
+    .where(eq(heartbeatRuns.id, input.runId));
+}
+
 async function seedBranchContainmentRun(
   db: Db,
   repoRoot: string,
@@ -1058,6 +1090,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
     const seeded = await seedBranchContainmentRun(db, repoRoot, callSite);
+    await seedEarlierWorkspaceValidationFailure(db, seeded);
 
     if (callSite === "finalize") {
       adapterExecute.mockImplementationOnce(async (adapterInput) => {

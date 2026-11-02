@@ -72,6 +72,17 @@ async function takeSlot(ctx: PluginContext, cls: PolicyClass, windowStart: Date)
   return takeRateSlot(ctx, RATE_KEY_ALL, windowStart, HOURLY_CAP);
 }
 
+/**
+ * Paperclip routes are `/<PREFIX>/...`. A bare relative path such as `/cockpit`
+ * is read as company prefix "COCKPIT" and 404s, so prefix relative paths here.
+ */
+export function withCompanyPrefix(url: string, prefix: string | null): string {
+  if (!prefix || !url.startsWith("/") || url.startsWith("//")) return url;
+  const p = `/${prefix}`;
+  if (url === p || url.toUpperCase().startsWith(`${p.toUpperCase()}/`)) return url;
+  return url === "/" ? `${p}/dashboard` : `${p}${url}`;
+}
+
 export async function sendPush(
   ctx: PluginContext,
   companyId: string,
@@ -86,10 +97,13 @@ export async function sendPush(
   const config = (await ctx.config.get(companyId)) as Record<string, unknown> | undefined;
   if (config?.pushEnabled !== true) return { disabled: true, capped: false, devices: [] };
 
+  const company = await ctx.companies?.get(companyId).catch(() => null);
+  const url = withCompanyPrefix(payload.url, company?.issuePrefix ?? null);
+
   const plaintext = JSON.stringify({
     title: payload.title,
     body: payload.body,
-    url: payload.url,
+    url,
     tag: payload.tag,
     class: payload.class,
   });

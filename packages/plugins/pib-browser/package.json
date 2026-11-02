@@ -4,6 +4,9 @@
   "type": "commonjs",
   "description": "PIB browser policy and authorization engine",
   "main": "src/policy.cjs",
+  "engines": {
+    "node": ">=24.11.0"
+  },
   "bin": {
     "pib-browser": "bin/pib-browser.cjs",
     "pib-evidence": "bin/pib-evidence.cjs"

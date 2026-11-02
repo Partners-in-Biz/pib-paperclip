@@ -1,0 +1,136 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { nightlyDreamingEnabled, nightlyDreamingMaySchedule, nightlyDreamingRunBlocked, NIGHTLY_DREAMING_STOCK_TITLE, portableRoutineIsNightlyDreaming } from "./nightly-dreaming.js";
+import {
+  SKILL_HYGIENE_MERGE_OVERLAP,
+  SKILL_HYGIENE_MIN_SHARED_TOKENS,
+  SKILL_HYGIENE_PROBATION_DAYS,
+} from "./skill-hygiene.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const routinePath = path.resolve(
+  here,
+  "../built-ins/agents/reflection-coach/routines/recent-agent-reflection.md",
+);
+const definitionPath = path.resolve(here, "built-in-agents.ts");
+
+describe("nightly dreaming flag", () => {
+  it("defaults off and accepts only the explicit on values", () => {
+    expect(nightlyDreamingEnabled({})).toBe(false);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "" })).toBe(false);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "0" })).toBe(false);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "off" })).toBe(false);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "yes" })).toBe(false);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(true);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "true" })).toBe(true);
+    expect(nightlyDreamingEnabled({ PAPERCLIP_NIGHTLY_DREAMING: "on" })).toBe(true);
+  });
+
+  it("gates only the dreaming routine key", () => {
+    expect(nightlyDreamingMaySchedule("nightly-dreaming", {})).toBe(false);
+    expect(nightlyDreamingMaySchedule("nightly-dreaming", { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(true);
+    expect(nightlyDreamingMaySchedule("recent-agent-reflection", {})).toBe(true);
+  });
+
+  it("blocks a stored dreaming routine by origin when the flag is off", () => {
+    const dreaming = {
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:nightly-dreaming",
+    };
+    expect(nightlyDreamingRunBlocked(dreaming, {})).toBe(true);
+    expect(nightlyDreamingRunBlocked(dreaming, { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+    }, {})).toBe(false);
+    expect(nightlyDreamingRunBlocked({ originKind: "manual", originId: "nightly-dreaming" }, {})).toBe(false);
+  });
+
+  it("recognizes an imported copy that has no built-in origin", () => {
+    expect(portableRoutineIsNightlyDreaming({ title: NIGHTLY_DREAMING_STOCK_TITLE })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Renamed copy",
+      description: "Set PAPERCLIP_NIGHTLY_DREAMING before this schedule runs.",
+    })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Other routine",
+      triggerLabels: ["Nightly dreaming draft"],
+    })).toBe(true);
+    expect(portableRoutineIsNightlyDreaming({
+      title: "Monday Review",
+      description: "Review pipeline health.",
+      triggerLabels: ["Weekly"],
+    })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: null,
+      originId: null,
+      title: NIGHTLY_DREAMING_STOCK_TITLE,
+    }, {})).toBe(true);
+    expect(nightlyDreamingRunBlocked({
+      originKind: null,
+      originId: null,
+      title: NIGHTLY_DREAMING_STOCK_TITLE,
+    }, { PAPERCLIP_NIGHTLY_DREAMING: "1" })).toBe(false);
+    expect(nightlyDreamingRunBlocked({
+      originKind: "built_in_agent_bundle",
+      originId: "reflection-coach:recent-agent-reflection",
+      title: "Review recent agent trajectories for coaching proposals",
+    }, {})).toBe(false);
+  });
+});
+
+describe("reflection-coach dreaming stock", () => {
+  const routine = readFileSync(routinePath, "utf8");
+  const definition = readFileSync(definitionPath, "utf8");
+
+  it("ships paused, with the nightly schedule disabled", () => {
+    expect(routine).toContain("status: paused");
+    expect(routine).toContain("enabled: false");
+    expect(routine).toContain('cronExpression: "15 3 * * *"');
+    expect(routine).toContain("timezone: Africa/Johannesburg");
+    expect(routine).not.toContain("enabled: true");
+    expect(routine).not.toMatch(/0 9 \* \* 1/);
+  });
+
+  it("drafts for Code Reviewer and never applies", () => {
+    expect(routine).toMatch(/Never apply/);
+    expect(routine).toContain("code-reviewer");
+    expect(routine).toContain("Never open `request_confirmation`");
+    expect(routine).toContain("Dream draft:");
+  });
+
+  it("protects human skills and only drafts merge or archive for agent-owned skills", () => {
+    expect(routine).toContain("skill-hygiene.ts");
+    expect(routine).toContain("managedBy` is `agent`");
+    expect(routine).toContain("Never draft a create, edit, merge, or archive for a protected skill");
+    expect(routine).toContain("at least 0.5");
+    expect(routine).toContain("at least 3 tokens");
+    expect(routine).toContain("at least 14 days old");
+    expect(routine).toContain("Unknown usage is not unused");
+    expect(routine).toContain("Skill count after equals skill count before");
+    expect(routine).toContain("Do not add a /learn command");
+    expect(routine).toContain("Do not inject a learned-skill index");
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_MIN_SHARED_TOKENS} tokens`);
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_MERGE_OVERLAP}`);
+    expect(routine).toContain(`at least ${SKILL_HYGIENE_PROBATION_DAYS} days old`);
+    expect(routine).toContain("skills_sh");
+    expect(routine).not.toContain("skills.sh");
+  });
+
+  it("keeps the built-in definition paused and on the dreaming stock version", () => {
+    const block = definition.slice(definition.indexOf('key: "reflection-coach"'));
+    expect(block).toContain('stockVersion: "2026-10-29"');
+    expect(block).toContain('status: "paused"');
+    expect(block).toContain("enabled: false");
+    expect(block).toContain('cronExpression: "15 3 * * *"');
+    expect(block).toContain('timezone: "Africa/Johannesburg"');
+    expect(routine).toContain("routineKey: nightly-dreaming");
+    expect(routine).toContain("[redacted]");
+    expect(definition).toContain("\"grok_local\"");
+    expect(definition).toContain("\"hermes_local\"");
+    expect(definition).toContain("REFLECTION_COACH_REVOKED_APPLY_GRANTS");
+    expect(definition).toContain("nightlyDreamingMaySchedule");
+  });
+});

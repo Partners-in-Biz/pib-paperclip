@@ -42,3 +42,34 @@ it("retries failed inspections and bounds retained entries", async () => {
   await read(workspace);
   expect(inspect).toHaveBeenCalledTimes(259);
 });
+
+it("serves a 30s sweep TTL, shares in-flight calls, and expires", async () => {
+  let clock = 1_000;
+  const inspect = vi.fn(async () => ({ statusInspectionSucceeded: true }));
+  const read = createWorkspaceGitInspectionCache(inspect, { ttlMs: 30_000, now: () => clock });
+  await Promise.all(Array.from({ length: 117 }, () => read(workspace)));
+  expect(inspect).toHaveBeenCalledTimes(1);
+  clock += 29_999;
+  await read(workspace);
+  expect(inspect).toHaveBeenCalledTimes(1);
+  clock += 1;
+  await read(workspace);
+  expect(inspect).toHaveBeenCalledTimes(2);
+});
+
+it("does not retain results rejected by shouldRetain and honours maxEntries", async () => {
+  const inspect = vi.fn(async () => ({ ok: false }));
+  const read = createWorkspaceGitInspectionCache(inspect, { shouldRetain: (r) => r.ok, maxEntries: 2 });
+  await Promise.all([read(workspace), read(workspace)]);
+  expect(inspect).toHaveBeenCalledTimes(1);
+  await read(workspace);
+  expect(inspect).toHaveBeenCalledTimes(2);
+
+  const okInspect = vi.fn(async () => ({ ok: true }));
+  const bounded = createWorkspaceGitInspectionCache(okInspect, { maxEntries: 2 });
+  await bounded({ ...workspace, id: "a" });
+  await bounded({ ...workspace, id: "b" });
+  await bounded({ ...workspace, id: "c" });
+  await bounded({ ...workspace, id: "a" });
+  expect(okInspect).toHaveBeenCalledTimes(4);
+});

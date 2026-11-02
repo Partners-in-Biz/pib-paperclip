@@ -1355,6 +1355,32 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("does not inject run workspace inheritance for agent-created sub-tickets with a parentId", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        issueId,
+        executionWorkspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    );
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Sub-ticket gets its own worktree",
+        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        parentId: issueId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockIssueService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(createInput).toMatchObject({ parentId: issueId });
+    // No implicit reuse: the service default gives the child an isolated worktree.
+    expect(createInput).not.toHaveProperty("inheritExecutionWorkspaceFromIssueId");
+    expect(createInput).not.toHaveProperty("executionWorkspaceId");
+  });
+
   it("authorizes child creation through the shared visible-issue write path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
 

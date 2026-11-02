@@ -1,6 +1,6 @@
 # Paid ads
 
-Paperclip plugin `partnersinbiz.ads`. Version 0.3.15.
+Paperclip plugin `partnersinbiz.ads`. Version 0.3.19.
 
 Reads Meta and Google Ads performance into one picture for PiB's own ads and for each client's, keeps monthly budget caps with pacing, raises anomaly alerts, and turns every campaign or budget change into a **proposal with the numbers** that goes to the Reviewer, then a person (and the client, through the CRM, where the scope asks). It is the governed-spend module the audit asked for (Q1a-7, Q9-4, Q10-14), not a port of the old 91-route Ads manager.
 
@@ -13,6 +13,7 @@ Reads Meta and Google Ads performance into one picture for PiB's own ads and for
 | Reading | |
 |---|---|
 | `list-ad-accounts`, `list-ad-connections` | accounts with scope, currency, status, cap and spend; sign-ins and the accounts each can see |
+| `list-campaigns-without-cap` | read-only: campaigns with no hard cap row, and the caps that exist (a person sets caps; nothing enforces them yet) |
 | `get-ads-summary` | spend, impressions, clicks, conversions, CPC, CPA, ROAS across Meta and Google, grouped by platform, campaign, day, account or scope; totals per currency |
 | `list-ad-campaigns`, `get-spend-ledger` | campaigns with status, budget and 7 days of numbers; the append-only spend ledger |
 | `get-budget-status`, `list-ad-alerts` | cap, spend, pace, projections, headroom; spend spike, no delivery, cost per result over target, budget nearly used, numbers not updating |

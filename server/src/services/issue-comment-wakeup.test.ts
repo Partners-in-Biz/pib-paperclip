@@ -61,4 +61,30 @@ describe("shouldWakeAssigneeForIssueComment", () => {
       true,
     );
   });
+
+  it("does not wake a blocked ticket for an agent comment", () => {
+    expect(
+      shouldWakeAssigneeForIssueComment({
+        selfComment: false,
+        resumeRequested: false,
+        issueAtCommentStart: {},
+        reopened: false,
+        currentStatus: "blocked",
+        commentAuthorType: "agent",
+      }),
+    ).toBe(false);
+  });
+
+  it("wakes a blocked ticket for a human comment", () => {
+    expect(
+      shouldWakeAssigneeForIssueComment({
+        selfComment: false,
+        resumeRequested: false,
+        issueAtCommentStart: {},
+        reopened: false,
+        currentStatus: "blocked",
+        commentAuthorType: "user",
+      }),
+    ).toBe(true);
+  });
 });

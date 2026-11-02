@@ -339,6 +339,28 @@ export function reviewCoverage(rows: DoneIssueReview[]): ReviewCoverage {
   };
 }
 
+/** The share of finished code work that was reviewed, in percent (0 to 100): `reviewCoverage`'s coverage; null with nothing done or no reading. */
+export function reviewPassRate(c: Pick<ReviewCoverage, "coverage"> | null): number | null {
+  return c?.coverage == null ? null : c.coverage * 100;
+}
+
+export interface CycleRow {
+  createdAt: string | null;
+  completedAt: string | null;
+}
+
+/** Median hours from an issue being created to it being done; null when no row has both times in order (never 0 for an empty set). */
+export function cycleHours(rows: CycleRow[]): number | null {
+  const hours: number[] = [];
+  for (const row of rows) {
+    if (!row.createdAt || !row.completedAt) continue;
+    const h = (Date.parse(row.completedAt) - Date.parse(row.createdAt)) / 3_600_000;
+    if (Number.isFinite(h) && h >= 0) hours.push(h);
+  }
+  const p50 = percentile(hours, 0.5);
+  return p50 === null ? null : round(p50, 1);
+}
+
 /** Review coverage below this share is a health warning (over `COVERAGE_MIN_DONE` or more done issues). */
 export const COVERAGE_WARN = 0.7;
 export const COVERAGE_MIN_DONE = 8;

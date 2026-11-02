@@ -15,6 +15,7 @@ import {
   Search,
   Send,
   Share2,
+  Target,
   Users,
   Wallet,
 } from "lucide-react";
@@ -128,6 +129,7 @@ export const MODULE_ICONS: Record<ModuleKey, LucideIcon> = {
   social: Share2,
   seo: Search,
   campaigns: Send,
+  ads: Target,
   billing: Receipt,
   accounting: Calculator,
   payroll: Wallet,

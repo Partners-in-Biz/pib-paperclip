@@ -438,6 +438,17 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "recollect-post-metrics",
+    displayName: "Recollect post metrics",
+    description:
+      "Admin backfill: re-read the platform's numbers for the latest passed snapshot window of recently published destinations and fill empty (null) cells. Never overwrites a number. Run it after a provider fix, an account reconnect or a new page connect. Returns one result per destination and totals.",
+    parametersSchema: schema([], {
+      destinationId: text("Only this destination (omit for all recent published ones)"),
+      sinceDays: int("Published within this many days, 1-32 (default 14)"),
+      limit: int("Most destinations to process, 1-50 (default 50)"),
+    }),
+  },
+  {
     name: "post-analytics",
     displayName: "Post analytics",
     description: `Latest engagement per destination for one post, or totals for one scope, from snapshots at 1h, 24h, 7d and 30d.${OWN}`,

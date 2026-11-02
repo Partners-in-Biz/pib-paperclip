@@ -109,6 +109,8 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     if (endDate && !isDay(endDate)) throw new AdsError("endDate must be YYYY-MM-DD");
     if (startDate && endDate && endDate < startDate) throw new AdsError("endDate is before startDate");
     const categories = stringList(input.specialAdCategories, 8, 40).map((c) => c.toUpperCase());
+    const capMinor = minorField(input, "capMinor") ?? null;
+    if (capMinor !== null && capMinor <= 0) throw new AdsError("capMinor must be more than zero");
     const creative = creativeFrom(input.creative);
     const days = startDate && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1 : null;
     return {
@@ -127,6 +129,7 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
         endDate: endDate ?? null,
         plannedDays: days,
         totalCommitmentMinor: days ? dailyBudgetMinor * days : null,
+        capMinor,
         specialAdCategories: categories,
         audience: optionalString(input, "audience", 1000) ?? null,
         creative,

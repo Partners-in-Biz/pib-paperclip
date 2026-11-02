@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { currentPeriod } from "../src/report-render.js";
-import { answerSend, bootCare, careSeed, CO, decide, issuesWith, sentMail, tool, type Booted, type Route } from "./helpers/care.js";
+import { answerSend, bootCare, careSeed, CO, decide, reportCard, issuesWith, sentMail, tool, type Booted, type Route } from "./helpers/care.js";
 
 const PERIOD = currentPeriod(new Date());
 const WORK: Route = [/FROM public\.issues/, () => []];
@@ -20,7 +20,7 @@ async function approveReport(booted: Booted, client: string) {
   if (client === "company:acme") await tool(booted.harness, "record-client-signal", SEO);
   await tool(booted.harness, "set-report-narrative", { client, period: PERIOD, summary });
   const sent = await tool<Record<string, any>>(booted.harness, "send-client-report", { client, period: PERIOD });
-  await decide(booted.harness, sent.approvalIssueId, "done", "user");
+  await decide(booted.harness, await reportCard(booted.harness), "done", "user");
   return sent;
 }
 

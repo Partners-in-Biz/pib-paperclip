@@ -30,7 +30,7 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
-  /** @deprecated Legacy instance value. Use /auth/preferences for personal shortcuts. */
+  /** @deprecated Legacy instance value. Shortcuts are always enabled for signed-in users. */
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;

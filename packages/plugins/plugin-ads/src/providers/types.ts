@@ -76,6 +76,8 @@ export interface InsightRow {
   impressions: number;
   clicks: number;
   conversions: number;
+  /** App installs; absent from a platform that reports none (stored as 0). */
+  installs?: number;
   valueMinor: number;
 }
 

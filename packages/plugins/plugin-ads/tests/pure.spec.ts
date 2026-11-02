@@ -66,9 +66,9 @@ describe("dates", () => {
 describe("metrics", () => {
   it("derives CPC, CPA, ROAS and CTR and leaves out what has no denominator", () => {
     const t = sumRows([{ spend: 10_000, impressions: 5000, clicks: 100, conversions: 4, value: 40_000 }, { spend: 5000, impressions: 2500, clicks: 50, conversions: 1, value: 10_000 }]);
-    expect(t).toEqual({ spend: 15_000, impressions: 7500, clicks: 150, conversions: 5, value: 50_000 });
-    expect(derive(t)).toEqual({ ctr: 0.02, cpc: 100, cpm: 2000, cpa: 3000, roas: 3.33 });
-    const none = derive({ spend: 500, impressions: 0, clicks: 0, conversions: 0, value: 0 });
+    expect(t).toEqual({ spend: 15_000, impressions: 7500, clicks: 150, conversions: 5, installs: 0, value: 50_000 });
+    expect(derive(t)).toEqual({ ctr: 0.02, cpc: 100, cpm: 2000, cpa: 3000, cpi: null, roas: 3.33 });
+    const none = derive({ spend: 500, impressions: 0, clicks: 0, conversions: 0, installs: 0, value: 0 });
     expect(none).toMatchObject({ ctr: null, cpc: null, cpa: null, cpm: null });
     expect(none.roas).toBe(0);
   });
@@ -339,5 +339,14 @@ describe("how far back a sync reads", () => {
 
   it("a clock that reads earlier than the last good read still reads a normal window", () => {
     expect(read("2026-10-20T00:00:00Z", "2026-10-15")).toMatchObject({ days: 3, gapDays: 0 });
+  });
+});
+
+describe("cost per install", () => {
+  it("divides spend by installs, and is null with no installs", () => {
+    const t = { spend: 10_000, impressions: 1000, clicks: 100, conversions: 2, installs: 8, value: 0 };
+    expect(derive(t).cpi).toBe(1250);
+    expect(derive({ ...t, installs: 0 }).cpi).toBeNull();
+    expect(sumRows([t, { installs: 2 }]).installs).toBe(10);
   });
 });

@@ -2,6 +2,7 @@
  * A booted CRM for the client care specs: a customer company with a person who can be written to, the Account Manager
  * linked, an owner for approvals, and helpers to decide approvals and answer for the Mailbox.
  */
+import { openReportCards } from "../../src/report-batch.js";
 import { expect, vi } from "vitest";
 import type { Row, Route, Store } from "./fake-db.js";
 import { ago, BOARD, boot, CO, company, contact, crmIssues, seed, setRoles, tool, toolRaw, type Harness } from "./crm.js";
@@ -46,10 +47,10 @@ export async function bootCare(options: { store?: Store; routes?: Route[]; confi
 export type Booted = Awaited<ReturnType<typeof bootCare>>;
 
 /** Marks an issue done or cancelled and tells the plugin who did it, as the host's issue.updated event does. */
-export async function decide(harness: Harness, issueId: string, status: "done" | "cancelled", actor: "user" | "agent" = "user") {
+export async function decide(harness: Harness, issueId: string, status: "done" | "cancelled", actor: "user" | "agent" = "user", payload: Record<string, unknown> = {}) {
   const issue = (await harness.ctx.issues.get(issueId, CO))!;
   harness.seed({ issues: [{ ...issue, status }] });
-  await harness.emit("issue.updated", {}, { companyId: CO, entityId: issueId, actorType: actor, actorId: actor === "user" ? OWNER : "am-1" });
+  await harness.emit("issue.updated", payload, { companyId: CO, entityId: issueId, actorType: actor, actorId: actor === "user" ? OWNER : "am-1" });
   return (await harness.ctx.issues.get(issueId, CO))!;
 }
 
@@ -70,4 +71,12 @@ export async function answerSend(harness: Harness, key: string, status: "sent" |
 
 export function expectNoSecrets(value: unknown) {
   expect(JSON.stringify(value)).not.toMatch(/pibs_|pibc_|secret|password/i);
+}
+
+/** The care job puts the month's client reports on their one approval card; returns that issue's id. */
+export async function reportCard(harness: Harness): Promise<string> {
+  await openReportCards(harness.ctx, CO);
+  const [card] = await issuesWith(harness, "crm:report-batch:");
+  if (!card) throw new Error("no report card was opened");
+  return card.id;
 }

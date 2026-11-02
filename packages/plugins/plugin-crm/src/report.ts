@@ -182,8 +182,6 @@ export async function gatherReportData(ctx: PluginContext, companyId: string, in
           }
         }
       }
-      const domain = daysUntil(state?.domainExpiresAt ?? null, toMs);
-      if (domain !== null) parts.push(`domain renews in ${Math.max(0, domain)} days`);
       if (parts.length) bullets.push(`${host}: ${parts.join(", ")}`);
     }
     if (bullets.length) {
@@ -500,6 +498,9 @@ export async function sendClientReportTool(ctx: PluginContext, viewer: Viewer, p
     ],
     outward: true,
     actorUserId: viewer.userId,
+    // One card per month for every client (report-batch.ts), not one issue per client.
+    deferIssue: true,
+    payload: { period, clientName: name, to: `${contact.name} <${email}>`, reportIssueId: built.record.issueId ?? null },
     wakeReason: "A client report needs checking before it is sent",
   });
   await setReportStatus(ctx, viewer.companyId, built.record.id, { status: "awaiting_approval", approvalId: opened.approvalId });
@@ -511,7 +512,7 @@ export async function sendClientReportTool(ctx: PluginContext, viewer: Viewer, p
     to: `${contact.name} <${email}>`,
     approvalIssueId: opened.issueId,
     approvalLink: await approvalLink(ctx, viewer.companyId, opened.issueId),
-    next: "A person approves by marking the approval issue done; the Mailbox then sends it. Leave your report issue open until it is sent: closing it earlier is reopened.",
+    next: "The report joins this month's one approval card ('Approve client reports'); a person ticks it there and the Mailbox then sends it. Leave your report issue open until it is sent: closing it earlier is reopened.",
   };
 }
 

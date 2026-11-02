@@ -349,3 +349,36 @@ describe("feature tagging", () => {
     expect(w.db.features.map((f) => f.key)).toEqual(["format", "length", "daypart"]);
   });
 });
+
+describe("expected growth rules reach the page as a message", () => {
+  it("growthAction returns a GrowthError as ok:false and rethrows anything else", async () => {
+    const { growthAction } = await import("../src/growth/action.js");
+    const { GrowthError } = await import("@partnersinbiz/pib-plugin-kit");
+    const refused = growthAction(() => { throw new GrowthError("3 experiments are already running for own work."); });
+    await expect(refused({} as never, {} as never, {})).resolves.toEqual({ ok: false, error: { code: "GROWTH_RULE", message: "3 experiments are already running for own work." } });
+    const broken = growthAction(async () => { throw new Error("db down"); });
+    await expect(broken({} as never, {} as never, {})).rejects.toThrow("db down");
+    const fine = growthAction(async () => ({ ok: true }));
+    await expect(fine({} as never, {} as never, {})).resolves.toEqual({ ok: true });
+  });
+
+  it("the fourth approval is refused with the MAX_RUNNING message", async () => {
+    const { growthAction } = await import("../src/growth/action.js");
+    const { MAX_RUNNING } = await import("@partnersinbiz/pib-plugin-kit");
+    const w = setup();
+    seedBaseline(w);
+    const types = ["hook:question", "format:video", "cta:soft", "length:short"];
+    const ids: string[] = [];
+    const propose = async (i: number) => ((await proposeExperiment(w.env, AGENT, proposal({ hypothesis: `Hypothesis number ${i} for the test`, hypothesisType: types[i], variable: `v${i}` }))) as { experimentId: string }).experimentId;
+    // The program takes at most MAX_RUNNING proposals at once and refuses new ones while full, so the fourth is proposed after two start.
+    for (let i = 0; i < MAX_RUNNING; i++) ids.push(await propose(i));
+    await approveExperiment(w.env, PERSON, { experimentId: ids[0]! });
+    await approveExperiment(w.env, PERSON, { experimentId: ids[1]! });
+    ids.push(await propose(MAX_RUNNING));
+    await approveExperiment(w.env, PERSON, { experimentId: ids[2]! });
+    const approve = growthAction(() => approveExperiment(w.env, PERSON, { experimentId: ids[MAX_RUNNING]! }));
+    const result = (await approve({} as never, {} as never, {})) as { ok: boolean; error: { message: string } };
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toContain(`${MAX_RUNNING} experiments are already running`);
+  });
+});

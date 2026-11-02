@@ -316,6 +316,26 @@ describe("ladder state transitions", () => {
     expect(counts2.resolved).toBe(0);
   });
 
+  it("State 7b: stuck leaves blocked -> its open Unblock issue is cancelled with a reason comment", async () => {
+    const s = setup();
+    const unblockDesc = `<!-- pib:escalation {"issue":"stuck-1","level":1,"deadline":"2026-09-26T12:00:00.000Z"} -->`;
+    const made = await s.ctx.issues.create({ companyId: A, title: "Unblock: stuck", description: unblockDesc, status: "todo" } as never);
+    mockReadLadderIssues.mockResolvedValue([
+      {
+        stuck: { id: "stuck-1", identifier: "PAR-100", status: "todo", blockedSince: NOW, openBlockers: 0, closedBlockers: 0 } as StuckInput,
+        unblocks: [
+          { id: made.id, identifier: "PAR-1001", title: "Unblock L1", status: "todo", description: unblockDesc, createdAt: NOW, blockedNoPath: false, inStorm: false } as UnblockInput,
+        ],
+      } as LadderIssue,
+    ]);
+
+    const counts = await ladderTick(s.env, A);
+
+    expect(counts.cancelled).toBe(1);
+    expect((await s.ctx.issues.get(made.id, A))!.status).toBe("cancelled");
+    expect(s.comments.some((c) => c.issueId === made.id && /no longer blocked/.test(c.body))).toBe(true);
+  });
+
   it("State 8: escalate returns {skipped:'cooldown'} -> one row per day, second tick same day adds none", async () => {
     const s = setup();
     const now = new Date(NOW);

@@ -60,6 +60,7 @@ export const NAV_GROUPS: Record<NavGroupKey, NavGroup> = {
       { module: "social", pluginKey: "partnersinbiz.social", label: "Social", route: "/social" },
       { module: "seo", pluginKey: "partnersinbiz.seo", label: "SEO", route: "/seo" },
       { module: "campaigns", pluginKey: "partnersinbiz.campaigns", label: "Campaigns", route: "/campaigns" },
+      { module: "ads", pluginKey: "partnersinbiz.ads", label: "Paid ads", route: "/ads" },
     ],
   },
   finance: {

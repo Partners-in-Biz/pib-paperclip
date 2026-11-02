@@ -14,7 +14,7 @@
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, readConfig, type HealthCheck, type MailReceived, type WaitingItem } from "@partnersinbiz/pib-plugin-kit";
-import { onClientMailReply, settleStuckMessages } from "./care-approvals.js";
+import { onClientMailReply, reportCardActionsFor, settleStuckMessages } from "./care-approvals.js";
 import { approvalsByStatus, listActionsByStatus } from "./care-store.js";
 import { clientActionsHealth, repliedActionItems, runActionReminders } from "./client-actions.js";
 import { clientsAtRiskHealth, runHealthScores } from "./health-score.js";
@@ -24,6 +24,7 @@ import { asMailReceived, matchContact } from "./mail.js";
 import { runSiteMonitor, siteMonitorHealth } from "./monitor.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { repairApprovalIssues } from "./outbound.js";
+import { openReportCards, settleReportCards } from "./report-batch.js";
 import { privacyHealth, reannounceAll } from "./privacy.js";
 import { seedRegister } from "./register.js";
 import { reportsHealth, runMonthlyReports } from "./report.js";
@@ -94,6 +95,10 @@ export async function runClientCareJob(ctx: PluginContext, now = new Date()): Pr
       }
     };
     await step("approval issues", async () => void (await repairApprovalIssues(ctx, companyId, await approvalsByStatus(ctx, companyId, "open"))));
+    await step("report card", async () => {
+      await openReportCards(ctx, companyId);
+      await settleReportCards(ctx, companyId, reportCardActionsFor(ctx));
+    });
     await step("messages", async () => void (total.settled += await settleStuckMessages(ctx, companyId)));
     await step("support", async () => {
       const sla = await runSupportSla(ctx, companyId, now);

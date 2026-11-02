@@ -87,6 +87,9 @@ export function validateDestination(platform: SocialPlatform, request: PublishRe
   const problems: string[] = [];
   const targetProblem = unsupportedTargetProblem(platform, request);
   if (targetProblem) problems.push(targetProblem);
+  if (platform === "x" && !request.replyToUrl && !request.quoteUrl && /^\s*(reply(ing)? to|in reply to)\s*(:|@|https?:)/i.test(request.text)) {
+    problems.push("This reads like a reply but would go out as a normal post. Pass the post link as replyToUrl and write only the reply text.");
+  }
   const imgs = request.media.filter((m) => m.kind === "image").length;
   const vids = request.media.filter((m) => m.kind === "video").length;
   if (limits.needsMedia === "any" && request.media.length === 0) problems.push(`${label} needs an image or a video`);

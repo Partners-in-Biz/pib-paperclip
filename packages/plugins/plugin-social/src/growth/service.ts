@@ -41,7 +41,7 @@ import {
   isSection, applyPlaybookChange, rankedHypotheses, jevFeatureKeys, topAndBottom,
   liftsByFeature, codeFeatures, CODE_FEATURES, reviewPosts, usableFeatures, BASELINE_MIN,
   featureValuesFrom, featureQuestionsFor, captionState, FEATURE_PURPOSE, normalizeFeatureQuestion,
-  scoreDestinations, GROWTH_CHANNEL, MAX_ACTIVE_QUESTIONS,
+  scoreDestinations, GROWTH_CHANNEL, MAX_ACTIVE_QUESTIONS, MAX_RUNNING,
 } from "@partnersinbiz/pib-plugin-kit";
 
 // Re-export types from host for backward compatibility
@@ -487,6 +487,7 @@ async function reviewFor(env: GrowthEnv, program: Program, periodDays: number) {
     bottom: bottom.map(toOut),
     featureLifts: lifts,
     runningExperiments: experiments.filter((e) => e.status === "running"),
+    maxRunning: MAX_RUNNING,
     proposedExperiments: experiments.filter((e) => e.status === "proposed"),
     pendingChanges: pending.map(changeOut),
     rankedHypothesisTypes,

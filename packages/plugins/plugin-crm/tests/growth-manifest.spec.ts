@@ -12,9 +12,9 @@ const NEW_TOOLS = [...ESIGN_TOOLS, ...GROWTH_TOOLS];
 
 describe("what 0.14.0 declares", () => {
   it("is the next version, in the package and the manifest", async () => {
-    expect(PLUGIN_VERSION).toBe("0.32.5");
+    expect(PLUGIN_VERSION).toBe("0.32.8");
     const pkg = JSON.parse((await import("node:fs")).readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-    expect(PLUGIN_VERSION).toBe("0.32.5");
+    expect(PLUGIN_VERSION).toBe("0.32.8");
   });
 
   it("adds no capability and no core table: the host already lets this plugin do all of it", () => {
@@ -22,7 +22,7 @@ describe("what 0.14.0 declares", () => {
     expect(manifest.capabilities).toEqual([
       "companies.read", "access.members.read", "agents.read", "authorization.grants.read", "authorization.grants.write", "database.namespace.migrate", "database.namespace.read",
       "database.namespace.write", "agent.tools.register", "skills.managed", "jobs.schedule", "events.subscribe", "events.emit", "plugin.state.read", "plugin.state.write", "secrets.read-ref",
-      "projects.read", "http.outbound", "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "issue.documents.write", "api.routes.register",
+      "projects.read", "http.outbound", "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "issue.interactions.create", "issue.interactions.read", "issue.documents.write", "api.routes.register",
       "webhooks.receive", "ui.page.register", "ui.sidebar.register",
     ]);
     expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs", "issues", "cost_events"]);
