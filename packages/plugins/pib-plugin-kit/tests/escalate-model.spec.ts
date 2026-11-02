@@ -30,20 +30,20 @@ const baseInput = () => ({
 describe("escalate-model", () => {
   describe("pickLevels", () => {
     it.each([
-      { name: "skip paused and hireOpen, number rest 1..n then owner", chain: ["ok", "paused", "hireOpen", "ok"], h: health, expect: [{ level: 1, target: { kind: "agent", agentId: "ok" } }, { level: 2, target: { kind: "agent", agentId: "ok" } }, { level: 3, target: { kind: "owner" } }] },
-      { name: "skip undefined health", chain: ["ok", undefined as any, "ok"], h: { ok: health.ok }, expect: [{ level: 1, target: { kind: "agent", agentId: "ok" } }, { level: 2, target: { kind: "agent", agentId: "ok" } }, { level: 3, target: { kind: "owner" } }] },
-      { name: "empty chain", chain: [] as any[], h: {}, expect: [{ level: 1, target: { kind: "owner" } }] },
-      { name: "all unusable", chain: ["paused", "hireOpen"], h: { paused: health.paused, hireOpen: health.hireOpen }, expect: [{ level: 1, target: { kind: "owner" } }] },
+      { name: "skip paused and hireOpen, number rest 1..n then owner", chain: ["ok", "paused", "hireOpen", "ok"], h: health, expect: [{ level: 1, target: { kind: "agent", agentId: "ok" } }, { level: 2, target: { kind: "agent", agentId: "ok" } }, { level: 3, target: { kind: "coo", agentId: "pib" } }] },
+      { name: "skip undefined health", chain: ["ok", undefined as any, "ok"], h: { ok: health.ok }, expect: [{ level: 1, target: { kind: "agent", agentId: "ok" } }, { level: 2, target: { kind: "agent", agentId: "ok" } }, { level: 3, target: { kind: "coo", agentId: "pib" } }] },
+      { name: "empty chain", chain: [] as any[], h: {}, expect: [{ level: 1, target: { kind: "coo", agentId: "pib" } }] },
+      { name: "all unusable", chain: ["paused", "hireOpen"], h: { paused: health.paused, hireOpen: health.hireOpen }, expect: [{ level: 1, target: { kind: "coo", agentId: "pib" } }] },
     ] as const)("$name", ({ chain, h, expect: expected }) => {
-      expect(pickLevels(chain, h)).toEqual(expected);
+      expect(pickLevels(chain, h, undefined, "pib")).toEqual(expected);
     });
 
     it.each([
-      { startLevel: 2 as const, desc: "startLevel number drops levels below it", expected: [{ level: 2, target: { kind: "agent", agentId: "a3" } }, { level: 3, target: { kind: "owner" } }] },
-      { startLevel: "owner" as const, desc: "startLevel 'owner' returns only owner", expected: [{ level: 3, target: { kind: "owner" } }] },
+      { startLevel: 2 as const, desc: "startLevel number drops levels below it", expected: [{ level: 2, target: { kind: "agent", agentId: "a3" } }, { level: 3, target: { kind: "coo", agentId: "pib" } }] },
+      { startLevel: "coo" as const, desc: "startLevel 'owner' returns only owner", expected: [{ level: 3, target: { kind: "coo", agentId: "pib" } }] },
     ])("$desc", ({ startLevel, expected }) => {
       const h = { a2: health.ok, a3: health.ok };
-      expect(pickLevels(["a2", "a3"], h, startLevel)).toEqual(expected);
+      expect(pickLevels(["a2", "a3"], h, startLevel, "pib")).toEqual(expected);
     });
   });
 
@@ -71,16 +71,16 @@ describe("escalate-model", () => {
 
     it.each([
       { name: "below-start: number < startLevel", level: { level: 1, target: { kind: "agent", agentId: "a1" } } as const, startLevel: 2 as const },
-      { name: "below-start: agent with startLevel='owner'", level: { level: 1, target: { kind: "agent", agentId: "a1" } } as const, startLevel: "owner" as const },
+      { name: "below-start: agent with startLevel='coo'", level: { level: 1, target: { kind: "agent", agentId: "a1" } } as const, startLevel: "coo" as const },
     ])("$name", ({ level: lev, startLevel }) => {
       const result = escalationDecide({ issueId: "issue-123", existing: [], now: new Date(), todayCount: 0, level: lev, startLevel });
       expect(result.action).toBe("skip");
       expect((result as any).reason).toBe("below-start");
     });
 
-    it("pass: owner with startLevel='owner'", () => {
-      const ownerLevel: EscalationLevel = { level: 3, target: { kind: "owner" } };
-      const result = escalationDecide({ issueId: "issue-123", existing: [], now: new Date(), todayCount: 0, level: ownerLevel, startLevel: "owner" });
+    it("pass: owner with startLevel='coo'", () => {
+      const ownerLevel: EscalationLevel = { level: 3, target: { kind: "coo", agentId: "pib" } };
+      const result = escalationDecide({ issueId: "issue-123", existing: [], now: new Date(), todayCount: 0, level: ownerLevel, startLevel: "coo" });
       expect(result.action).toBe("create");
     });
 
