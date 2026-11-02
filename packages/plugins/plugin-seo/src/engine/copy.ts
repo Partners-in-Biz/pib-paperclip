@@ -236,46 +236,6 @@ export function completionComment(input: { summary: string; links: string[]; art
   return lines.join("\n");
 }
 
-export interface ProposalCopy {
-  id: string;
-  signalType: string;
-  severity: string;
-  hypothesis: string;
-  proposedAction: string;
-  evidence: Record<string, unknown>;
-  taskTitles: string[];
-}
-
-export function approvalIssueTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">, weekLabel: string): string {
-  return capTitle(withClientPrefix(`Approve SEO optimizations: ${sprintLabel(sprint)} (${weekLabel})`, sprint.clientName));
-}
-
-export function approvalIssueDescription(sprint: SprintCopy, proposals: ProposalCopy[], cockpitPath: string | null, numbers: string[] = []): string {
-  const lines = [
-    `The weekly SEO review found ${proposals.length} optimization${proposals.length === 1 ? "" : "s"} worth testing on **${sprint.siteName}**. Each one becomes tasks for this week once approved; the result is measured 14 days later (win: position +2 or impressions +20%).`,
-    "",
-  ];
-  // What the week looked like beyond rankings: organic traffic and key events (GA4) and AI-search readiness, when there are numbers.
-  if (numbers.length > 0) lines.push("**This week's numbers**", ...numbers.map((n) => `- ${n}`), "");
-  for (const p of proposals) {
-    lines.push(
-      `### ${p.hypothesis}`,
-      `- Signal: \`${p.signalType}\` (${p.severity})`,
-      `- Action: ${p.proposedAction}`,
-      `- Evidence: \`${JSON.stringify(p.evidence)}\``,
-      `- Tasks: ${p.taskTitles.join("; ")}`,
-      `- optimizationId: \`${p.id}\``,
-      "",
-    );
-  }
-  lines.push(
-    cockpitPath
-      ? `Approve or reject each one on the [SEO page → Optimizations](${cockpitPath}&tab=optimizations), or ask the SEO Specialist (tools \`approve-optimization\` / \`reject-optimization\`). Closing this issue does not approve anything.`
-      : "Approve or reject each one on the SEO page → Optimizations tab. Closing this issue does not approve anything.",
-  );
-  return lines.join("\n");
-}
-
 export function reconnectIssueTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">): string {
   return capTitle(withClientPrefix(`Reconnect Google Search Console: ${sprintLabel(sprint)}`, sprint.clientName));
 }

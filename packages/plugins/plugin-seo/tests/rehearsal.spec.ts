@@ -152,7 +152,7 @@ describe("create-sprint", () => {
 /** The issues a real local client's new sprint gets: its root issue, the weekly Needs you issue, then the tasks for the agent. Snapshot of 0.23.1. */
 const REAL_CLIENT_ISSUES: Array<Record<string, unknown>> = [
   { title: "SEO sprint: Agri Studies", originKind: "plugin:partnersinbiz.seo:sprint", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: null, projectId: "proj-seo", status: "todo", priority: null },
-  { title: "Needs you: SEO Agri Studies (week of 2026-09-28)", originKind: "plugin:partnersinbiz.seo:needs-you", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: "issue-101", projectId: "proj-seo", status: "todo", priority: "high" },
+  { title: "SEO week of 2026-09-28", originKind: "plugin:partnersinbiz.seo:needs-you", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: null, projectId: "proj-seo", status: "todo", priority: "high" },
   { title: "SEO W0 \u00b7 Submit the sitemap to Google Search Console \u2014 Agri Studies", originKind: "plugin:partnersinbiz.seo:task", assigneeAgentId: "agent-1", assigneeUserId: null, parentId: "issue-101", projectId: "proj-seo", status: "todo", priority: null },
   { title: "SEO W0 \u00b7 Claim and verify the Google Business Profile \u2014 Agri Studies", originKind: "plugin:partnersinbiz.seo:task", assigneeAgentId: "agent-1", assigneeUserId: null, parentId: "issue-101", projectId: "proj-seo", status: "todo", priority: null },
 ];
@@ -343,13 +343,12 @@ describe("the weekly review and the Social hand-off", () => {
     [/FROM plugin_seo_8099f8879a\.optimizations WHERE id = \$1 AND company_id = \$2/, (p: unknown[]) => [{ id: p[0], company_id: "co-1", sprint_id: sprintId, signal_type: "zero_impression_content", severity: "medium", subject: "c1", evidence: {}, hypothesis: "The page earned no impressions", hypothesis_type: "title", proposed_action: "Rewrite the title", proposed_tasks: [{ title: "Rewrite the title" }], target_keyword_ids: [], status: "proposed", approval_issue_id: null }]],
   ] as never;
 
-  it("a real sprint with a page that earned nothing gets a proposal and an approval issue for the owner (the control)", async () => {
+  it("a real sprint with a page that earned nothing gets a proposal and no approval issue (the control)", async () => {
     const w = world({ sprints: [sprintFor("real", { root_issue_id: "root-1" })], routes: [...GSC, ...proposalRoutes("sp-real")] });
     const info = await companyInfo(w.env, "co-1");
     const result = await detectSignals(w.env, info, (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!, { propose: true });
     expect(result.proposalsCreated).toHaveLength(1);
-    expect(w.created).toHaveLength(1);
-    expect(w.created[0]!.input.originKind).toBe("plugin:partnersinbiz.seo:approval");
+    expect(w.created).toHaveLength(0);
   });
 
   it("a rehearsal sprint with the same page proposes nothing and opens no approval issue", async () => {
@@ -377,8 +376,7 @@ describe("the weekly review and the Social hand-off", () => {
     });
     const result = await runWeeklyJob(w.env, { force: true });
     expect(result).toEqual({ processed: 1, proposals: 1, errors: [] });
-    expect(w.created).toHaveLength(1);
-    expect(w.created[0]!.input.title).toMatch(/Agri Studies/);
+    expect(w.created).toHaveLength(0);
   });
 
   async function handoff(kind: "rehearsal" | "real") {

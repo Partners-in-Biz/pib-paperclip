@@ -314,7 +314,7 @@ describe("learned playbook service", () => {
     const open = items().filter((i) => i.key === PLAYBOOK_ITEM_KEY && i.status === "open");
     expect(open).toHaveLength(1); // one item for both changes
     expect(open[0]!.title).toBe("Keep or discard 2 learned SEO playbook changes");
-    expect(issuesCreated.filter((i) => String(i.title).includes("Needs you"))).toHaveLength(1);
+    expect(issuesCreated.filter((i) => String(i.title).startsWith("SEO week of"))).toHaveLength(1);
 
     await expect(decidePlaybookChangeTool(env, "co-1", agent, { changeId: proposed.changeId, decision: "keep" })).rejects.toThrow(/Only a person/);
     const kept = await decidePlaybookChangeTool(env, "co-1", person, { changeId: proposed.changeId, decision: "keep" });
