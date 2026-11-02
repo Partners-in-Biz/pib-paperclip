@@ -3,6 +3,7 @@
  * printable document, sending through the Mailbox after approval, voiding,
  * and recurring copies that keep every field.
  */
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
@@ -861,7 +862,7 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
     void saveSentCopy(ctx, {
       companyId: invoice.company_id,
       kind: "invoice",
-      number: view.number,
+      number: invoiceNumberLabel(view.number),
       seq,
       bytes: pdf.data,
       customerKind: invoice.customer_kind,
@@ -930,7 +931,7 @@ export async function startQuoteSend(ctx: PluginContext, quoteId: string, create
     void saveSentCopy(ctx, {
       companyId: quote.company_id,
       kind: "quote",
-      number: view.number,
+      number: invoiceNumberLabel(view.number),
       seq,
       bytes: pdf.data,
       customerKind: quote.customer_kind,
@@ -977,7 +978,7 @@ export async function retrySend(ctx: PluginContext, context: PluginPerformAction
       void saveSentCopy(ctx, {
         companyId: invoice.company_id,
         kind: "invoice",
-        number: view.number,
+        number: invoiceNumberLabel(view.number),
         seq,
         bytes: pdf.data,
         customerKind: invoice.customer_kind,

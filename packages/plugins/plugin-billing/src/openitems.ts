@@ -42,7 +42,7 @@ function day(value: unknown): string | null {
 export function receivableItem(balance: InvoiceBalance): OpenItemUpserted {
   const invoice = balance.invoice;
   const customer = asObject(invoice.customer_snapshot ?? invoice.customer);
-  const references = [invoice.number, invoice.number.replace(/-/g, "")];
+  const references = invoice.number ? [invoice.number, invoice.number.replace(/-/g, "")] : [];
   if (typeof customer.name === "string" && customer.name) references.push(customer.name);
   return {
     key: `invoice:${invoice.id}`,
