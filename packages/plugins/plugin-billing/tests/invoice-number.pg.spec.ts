@@ -1,11 +1,11 @@
 /** PAR-6992: an invoice draft has no number; the first send claims it from the org sequence, a second send never claims again. */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getInvoice } from "../src/db.js";
 import { startInvoiceSend } from "../src/invoices.js";
 import { ensureInvoiceNumber } from "../src/numbering.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const AGENT = { agentId: "agent-am", runId: "run-am", companyId: COMPANY, projectId: "p" };
@@ -19,9 +19,14 @@ describe.skipIf(!available)("invoice number claimed at send approval (postgres)"
   afterAll(async () => {
     await h?.stop();
   });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   beforeEach(async () => {
     await h.reset();
-    h.config.set(COMPANY, { ...SETTINGS });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS });
+    vi.stubGlobal("fetch", async () => new Response()); // R2 accepts the PDF
     await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
   });
 

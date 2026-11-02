@@ -23,13 +23,14 @@ import { ONLINE_PAYMENTS_REFERENCE } from "../src/skills.js";
 import { applyProviderEvent } from "../src/pay/confirm.js";
 import { getLink } from "../src/pay/store.js";
 import { decimalFromMinor } from "../src/pay/types.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const WEBHOOK_SECRET = "secret-wh"; // the harness resolves a secret ref to `secret-<id>`
 
 const PAYPAL_SETTINGS = {
   ...SETTINGS,
+  r2: R2_SETTINGS,
   payments: {
     publicBaseUrl: "https://paperclip.test",
     paypal: {
@@ -244,7 +245,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   });
 
   it("a link PayPal refuses never blocks the invoice: it goes out with EFT only and the failure is shown", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "Client Authentication failed" }) }) as Response);
+    vi.stubGlobal("fetch", async (url: string) => !String(url).includes("paypal") ? new Response() : ({ ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "Client Authentication failed" }) }) as Response);
     const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");
@@ -462,7 +463,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   });
 
   it("the test provider rehearses the whole path, including the provider's fee in the books", async () => {
-    h.config.set(COMPANY, { ...SETTINGS, payments: { mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS, payments: { mock: { enabled: true } } });
     const invoice = await sentInvoice();
     const link = (await h.call<{ links: Array<{ id: string; url: string }> }>("billing.create-payment-link", { invoiceId: invoice.id }, userContext())).links[0]!;
     expect(link.url).toMatch(/^https:\/\/pay\.invalid\/mock\//);
@@ -565,7 +566,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   // ── The test provider stays away from real customers ───────────────────────
 
   it("the test provider's link is never made on a real customer's send, and never shown on its email or PDF even when made by hand", async () => {
-    h.config.set(COMPANY, { ...SETTINGS, payments: { mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS, payments: { mock: { enabled: true } } });
     const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");

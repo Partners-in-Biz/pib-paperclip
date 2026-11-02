@@ -225,6 +225,9 @@ export async function startHarness(): Promise<Harness> {
 
 export const COMPANY = "11111111-1111-1111-1111-111111111111";
 
+/** A private bucket for tests that send an invoice: the send needs its PDF stored first (PAR-6993). */
+export const R2_SETTINGS = { accountId: "acc", bucket: "private-docs", accessKeyId: "AK", secretAccessKey: "sk-raw", prefix: "billing" };
+
 export const SETTINGS = {
   defaultCurrency: "ZAR",
   defaultTaxRate: 15,

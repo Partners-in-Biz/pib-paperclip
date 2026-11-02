@@ -3,14 +3,14 @@
  * states, waiting items, the hourly push, and Reviewer routing for sending
  * invoices and quotes (only a person's completion counts).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, type CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { shortDayText } from "../src/domain.js";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, invoiceNumber, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, invoiceNumber, type Harness } from "./helpers/harness.js";
 import { readFileSync } from "node:fs";
 const PKG_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
@@ -36,6 +36,10 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
 
   afterAll(async () => {
     await h?.stop();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   beforeEach(async () => {
@@ -236,7 +240,8 @@ describe.skipIf(!available)("billing cockpit (postgres)", () => {
 
   describe("Reviewer routing", () => {
     beforeEach(async () => {
-      h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9" });
+      h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9", r2: R2_SETTINGS });
+      vi.stubGlobal("fetch", async () => new Response()); // R2 accepts the PDF
       await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
     });
 

@@ -2,6 +2,8 @@
 
 Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
+**0.19.0** (billing send approval, step 3 of 4, PAR-6993): only a person's "done" sends an invoice (an agent, system or plugin close reopens the ticket); a failure before the mail is queued (no PDF, R2 down or unset with email on, or a permanent mail failure) reopens the ticket with the error and leaves the invoice a draft with its number. Orgs without R2 now get a failed send and a reopened ticket instead of an email without the PDF.
+
 **0.18.0** (billing send approval, step 2 of 4, PAR-6992): an invoice draft is created with no number (`invoices.number` NULL, shown as "Draft"); the number is claimed from the org sequence by `ensureInvoiceNumber` inside the send that follows a person's "done" (and in mark-sent). Quotes and credit notes are still numbered at creation. Rollback: see "Rolling back 0.14.0" below; do not re-pin 0.13.0 or older while NULL drafts exist.
 
 **0.17.0** (billing send approval, step 1 of 4, PAR-6991): `invoices.number` may be null and `invoices` gains `approval_recipients`, `sent_to` and `sent_message_id` (migration 017). **No behaviour change**: every creation site still assigns a number, and the previous release runs on the migrated schema. Rollback: redeploy 0.16.0; the columns stay unused.
