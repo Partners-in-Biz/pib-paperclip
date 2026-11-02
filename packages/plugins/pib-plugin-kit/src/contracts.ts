@@ -14,6 +14,7 @@ export const PIB_PLUGINS = {
   crm: "partnersinbiz.crm",
   social: "partnersinbiz.social",
   seo: "partnersinbiz.seo",
+  ads: "partnersinbiz.ads",
   campaigns: "partnersinbiz.campaigns",
   billing: "partnersinbiz.billing",
   mailbox: "partnersinbiz.mailbox",

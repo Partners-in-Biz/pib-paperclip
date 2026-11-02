@@ -197,6 +197,7 @@ export const SKILL_SYNC_ACTIONS: Record<string, string> = {
   "partnersinbiz.mailbox": "mailbox.sync-skills",
   "partnersinbiz.social": "social.sync-skills",
   "partnersinbiz.seo": "seo.sync-skills",
+  "partnersinbiz.ads": "ads.sync-skills",
   "partnersinbiz.campaigns": "campaigns.sync-skills",
   "partnersinbiz.billing": "billing.sync-skills",
   "partnersinbiz.accounting": "accounting.sync-skills",
