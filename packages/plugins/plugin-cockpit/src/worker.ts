@@ -21,8 +21,9 @@ const plugin = definePlugin({
     if (input.endpointKey !== GITHUB_CI_ENDPOINT) throw new Error(`Unknown webhook endpoint ${input.endpointKey}`);
     if (!env) throw new Error("Cockpit plugin is not ready; GitHub will send this again.");
     const result = await handleGithubCi(env.ctx, input, env.now());
-    // The host maps a thrown error to a failed delivery; a bad signature must not look accepted.
-    if (result.status !== 200) throw new Error(`GitHub CI webhook refused (${result.status}): ${result.outcome}`);
+    // The host maps any throw to HTTP 502 and GitHub retries 502, so a refused delivery (bad signature) is logged and
+    // returned as handled: a retry could never succeed. Only real failures (no env, a failed post) throw.
+    if (result.status !== 200) env.ctx.logger.warn("GitHub CI webhook refused", { status: result.status, outcome: result.outcome });
   },
   async onApiRequest(input) {
     if (!env) return { status: 503, body: { error: "Cockpit plugin is not ready" } };
