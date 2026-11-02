@@ -155,7 +155,6 @@ import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
 import { clientNumbering, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
-import { NO_NUMBER_YET } from "./invoice-number.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -182,6 +181,7 @@ import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import {
   actorLabel,
   errorMessage,
@@ -624,7 +624,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       visible.push({ ...publicInvoice(invoice), paidMinor: 0, creditedMinor: 0, writtenOffMinor: 0, outstandingMinor: 0, pendingPops: 0, shared: true });
     }
   }
-  const numbers = new Map(own.map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map(own.map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   const quotes = await listQuotes(ctx, companyId, scope);
   const expenses = scope ? [] : await listExpenses(ctx, companyId);
   const recurring = await listRecurring(ctx, companyId, scope);
@@ -1004,7 +1004,7 @@ async function runRecurring(ctx: PluginContext) {
         const customer = asObject(template.customer);
         const invoice: InvoiceRow = copyInvoiceFields(template, {
           id: randomUUID(),
-          number: NO_NUMBER_YET,
+          number: null,
           recurring_id: schedule.id,
           recurring_key: key,
         });
@@ -1084,7 +1084,7 @@ async function dunningStatus(ctx: PluginContext, context: PluginPerformActionCon
     `SELECT r.invoice_id, r.stage, r.status, r.created_at, r.error FROM ${table(ctx, "reminders")} r WHERE r.company_id = $1 ORDER BY r.created_at DESC LIMIT 100`,
     [companyId],
   );
-  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   void params;
   return {
     enabled: settings.dunning?.enabled === true,

@@ -22,7 +22,7 @@ export type InvoiceStatus =
 export interface InvoiceRow {
   id: string;
   company_id: string;
-  number: string;
+  number: string | null;
   status: InvoiceStatus;
   currency: string;
   customer_kind: string;

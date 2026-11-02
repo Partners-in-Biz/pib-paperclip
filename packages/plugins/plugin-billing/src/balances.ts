@@ -17,6 +17,7 @@ import { iso } from "./dates.js";
 import { openInvoiceFilingIssue } from "./filing.js";
 import { emitInvoicePaid } from "./handoff.js";
 import { retireInvoiceLinks, retireLinksForOtherAmount } from "./pay/links.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export interface InvoiceBalanceRow extends InvoiceRow {
   paid_minor: number | string | null;
@@ -181,7 +182,7 @@ export async function refreshInvoiceStatus(ctx: PluginContext, invoiceId: string
       ctx.logger.info("Invoice filing issue not opened", { invoiceId, error: error instanceof Error ? error.message : String(error) }),
     );
     // Payment and reminder decisions still open for it are not needed any more.
-    await withdrawPaidDecisions(ctx, balance.invoice.company_id, invoiceId, balance.invoice.number).catch((error) =>
+    await withdrawPaidDecisions(ctx, balance.invoice.company_id, invoiceId, invoiceNumberLabel(balance.invoice.number)).catch((error) =>
       ctx.logger.info("Open decisions not withdrawn", { invoiceId, error: error instanceof Error ? error.message : String(error) }),
     );
   }
