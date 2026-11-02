@@ -193,3 +193,7 @@ Actions take `space: "me"` next to (or instead of) `client`; `spaceOf()` in `src
 ## Metrics errors (0.10.11)
 
 When a metrics snapshot cannot be captured, the destination keeps a `metricsError` (`at`, `window`, `kind`, optional `status`, `message`) inside its `result`, and `post-analytics` returns it per destination with `metricWindows`. Kinds: `provider` (the API call failed), `insights` (counts were stored but a best-effort sub-call such as impressions failed; the window stays open and is retried, and a later snapshot fills only the null columns), `unsupported` (LinkedIn personal profiles: analytics are not available to this app, so no call is made). A clean snapshot clears the error. Messages never contain URL query strings or tokens. The `collect-metrics` job summary adds `partial` and `errorsByPlatform`.
+
+## Facebook insights (0.10.12)
+
+Facebook post snapshots read `post_media_view` (stored as impressions and views) and `post_total_media_view_unique` (reach) in one Insights call, and `post_clicks` (clicks) in a second call, so a failing clicks metric cannot blank impressions or reach. A failure or missing metric is stored as `insightsError` (kind `insights`). The Facebook login now also asks for `read_insights`. A Page connected before 0.10.12 may need one reconnect; do it only when the persisted `metricsError` on a Facebook destination shows a permission error.
