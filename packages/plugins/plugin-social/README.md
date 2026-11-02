@@ -197,3 +197,7 @@ When a metrics snapshot cannot be captured, the destination keeps a `metricsErro
 ## Facebook insights (0.10.12)
 
 Facebook post snapshots read `post_media_view` (stored as impressions and views) and `post_total_media_view_unique` (reach) in one Insights call, and `post_clicks` (clicks) in a second call, so a failing clicks metric cannot blank impressions or reach. A failure or missing metric is stored as `insightsError` (kind `insights`). The Facebook login now also asks for `read_insights`. A Page connected before 0.10.12 may need one reconnect; do it only when the persisted `metricsError` on a Facebook destination shows a permission error.
+
+## LinkedIn organization statistics (0.10.13)
+
+LinkedIn Page (organization) posts read `organizationalEntityShareStatistics` (impressions, unique impressions as reach, clicks, likes, comments, shares) for `urn:li:share:` and `urn:li:ugcPost:` posts. Organization pages only: personal profiles have no analytics. A missing element or an API error is stored as `insightsError` and the window is retried; values are never written as zeros. Needs a connected LinkedIn organization account.
