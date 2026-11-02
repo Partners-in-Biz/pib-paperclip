@@ -2,6 +2,7 @@
  * Chart series and status tones for the Billing pages (pure, no React), so
  * they can be unit tested. Money stays in minor units until it is shown.
  */
+import { invoiceNumberLabel } from "../invoice-number.js";
 import type { FuturePayment, Invoice, Snapshot } from "./types.js";
 
 /** The page's money formatter (`formatMoney` from the UI kit); passed in so this file stays pure. */
@@ -16,8 +17,8 @@ export type Tone = "ok" | "warn" | "bad" | "info" | "neutral";
  * draft as "Draft · Northwind · R 1,500.00" (its number means nothing until
  * it is sent, and older drafts carry codes like INV-9F0D9A85).
  */
-export function documentLabel(doc: { status: string; number: string; customerName?: string | null; customerRef: string; totalMinor: number; currency: string }, money: MoneyText): string {
-  if (doc.status !== "draft") return doc.number;
+export function documentLabel(doc: { status: string; number: string | null; customerName?: string | null; customerRef: string; totalMinor: number; currency: string }, money: MoneyText): string {
+  if (doc.status !== "draft") return invoiceNumberLabel(doc.number);
   return `Draft · ${doc.customerName ?? doc.customerRef} · ${money(doc.totalMinor, doc.currency)}`;
 }
 
@@ -235,7 +236,7 @@ export function waitingOnPerson(snapshot: Snapshot, money: MoneyText): WaitingEn
 export interface DraftEntry {
   kind: "invoice" | "quote";
   id: string;
-  number: string;
+  number: string | null;
   who: string;
   totalMinor: number;
   currency: string;
@@ -260,5 +261,5 @@ export function draftsToSend(snapshot: Snapshot, now = Date.now()): DraftEntry[]
     if (!accepted && (quote.status !== "draft" || quote.pendingAction || quote.deliveryStatus === "queued")) continue;
     out.push({ kind: "quote", id: quote.id, number: quote.number, who: quote.customerName ?? quote.customerRef, totalMinor: quote.totalMinor, currency: quote.currency, createdAt: quote.createdAt ?? null, stale: stale(accepted ? quote.acceptedAt ?? quote.createdAt : quote.createdAt), note: accepted ? "Accepted: convert to an invoice" : quote.totalMinor <= 0 ? "No lines yet" : null });
   }
-  return out.sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "") || a.number.localeCompare(b.number));
+  return out.sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "") || invoiceNumberLabel(a.number).localeCompare(invoiceNumberLabel(b.number)));
 }

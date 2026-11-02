@@ -306,7 +306,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: { invoiceId: string; onClo
       {draft && !detail.readOnly && inv.deliveryStatus !== "queued" ? <SmallButton disabled={busy || inv.totalMinor <= 0} onClick={() => void act(() => call("billing.mark-sent", { invoiceId: inv.id }), "Marked sent. It is now in the books.")}>Mark sent (no email)</SmallButton> : null}
       {inv.deliveryStatus === "failed" ? <SmallButton onClick={() => void act(() => call("billing.retry-send", { kind: "invoice", id: inv.id }), "Email queued again")}>Retry email</SmallButton> : null}
       {!draft && inv.status !== "cancelled" && inv.deliveryStatus !== "queued" && inv.deliveryStatus !== "failed" ? <SmallButton onClick={() => void act(() => call("billing.retry-send", { kind: "invoice", id: inv.id }), "Email queued")}>Email again</SmallButton> : null}
-      {open ? <SmallButton onClick={() => { setAmount(minorToInput(inv.outstandingMinor)); setReference(inv.number); setDialog("pay"); }}>Record payment</SmallButton> : null}
+      {open ? <SmallButton onClick={() => { setAmount(minorToInput(inv.outstandingMinor)); setReference(inv.number ?? ""); setDialog("pay"); }}>Record payment</SmallButton> : null}
       {open && snapshot.features?.r2 ? <SmallButton onClick={() => { setAmount(minorToInput(inv.outstandingMinor)); setDialog("pop"); }}>Upload proof of payment</SmallButton> : null}
       {open && !inv.pendingAction ? <SmallButton onClick={() => void act(() => call("billing.request-pay", { invoiceId: inv.id }), "Payment approval issue opened")}>Request pay approval</SmallButton> : null}
       {!draft && inv.status !== "cancelled" ? <SmallButton onClick={() => { setAmount(""); setReason(""); setDialog("credit"); }}>Credit note</SmallButton> : null}
