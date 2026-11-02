@@ -188,10 +188,10 @@ export async function handReviewIssue(
       await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = NULL WHERE id = $1 AND company_id = $2`, [post.id, companyId]);
       return true;
     }
-    const patch = "agentId" in to ? { status: "todo" as const, assigneeAgentId: to.agentId, assigneeUserId: null } : { status: "todo" as const, assigneeAgentId: null, assigneeUserId: to.userId };
+    const patch = { status: "todo" as const, assigneeAgentId: to.agentId, assigneeUserId: null };
     await ctx.issues.update(issueId, patch, companyId);
     await ctx.issues.createComment(issueId, comment, companyId);
-    if ("agentId" in to) await wakeIssue(ctx, issueId, companyId, wakeReason);
+    await wakeIssue(ctx, issueId, companyId, wakeReason);
     return true;
   } catch (error) {
     ctx.logger.info("Social review hand-off skipped", { postId: post.id, error: errorMessage(error) });
