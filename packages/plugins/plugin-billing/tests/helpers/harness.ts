@@ -225,6 +225,9 @@ export async function startHarness(): Promise<Harness> {
 
 export const COMPANY = "11111111-1111-1111-1111-111111111111";
 
+/** A private bucket for tests that send an invoice: the send needs its PDF stored first (PAR-6993). */
+export const R2_SETTINGS = { accountId: "acc", bucket: "private-docs", accessKeyId: "AK", secretAccessKey: "sk-raw", prefix: "billing" };
+
 export const SETTINGS = {
   defaultCurrency: "ZAR",
   defaultTaxRate: 15,
@@ -253,4 +256,10 @@ export function userContext(companyId = COMPANY) {
 
 export function agentContext(companyId = COMPANY) {
   return { companyId, actor: { type: "agent" as const, userId: null, agentId: "agent-1", runId: "run-1", companyId } };
+}
+
+/** The number an invoice holds now (a draft has none until its send claims one). */
+export async function invoiceNumber(h: Harness, invoiceId: string): Promise<string | null> {
+  const res = await h.client.query(`SELECT number FROM ${NAMESPACE}.invoices WHERE id = $1`, [invoiceId]);
+  return (res.rows[0] as { number: string | null } | undefined)?.number ?? null;
 }

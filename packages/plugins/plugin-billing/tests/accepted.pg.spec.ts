@@ -162,7 +162,7 @@ describe.skipIf(!available)("signed documents become draft invoices (postgres)",
       const row = (await workIssue(`billing:signed:${doc}`))!;
       const issue = h.issues.get(row.issue_id)!;
       expect(issue).toMatchObject({ assigneeAgentId: "agent-am", status: "todo", originId: `billing:signed:${doc}` });
-      expect(issue.title).toBe(`Signed: quote ${quote.number} for Acme Holdings: check invoice ${invoice!.number} and ask for approval to send`);
+      expect(issue.title).toBe(`Signed: quote ${quote.number} for Acme Holdings: check invoice ${invoice!.number ?? "Draft"} and ask for approval to send`);
       expect(issue.description).toContain(`invoiceId \`${invoice!.id}\``);
       expect(issue.description).toContain(`Document \`${doc}\``);
       expect(issue.description).toContain("**It is a draft: nothing was sent.**");
@@ -400,7 +400,7 @@ describe.skipIf(!available)("signed documents become draft invoices (postgres)",
       await h.deliver(CRM_QUOTE, COMPANY, quoteEvent(doc, quote));
       expect(h.issues.get(dealIssue.issue_id)!.status).toBe("done");
       const [invoice] = await invoicesFor("quote_id", quote.id);
-      expect(commentsOn(dealIssue.issue_id).join("\n")).toContain(`Billing drafted invoice ${invoice!.number} from the document the client signed`);
+      expect(commentsOn(dealIssue.issue_id).join("\n")).toContain(`Billing drafted invoice ${invoice!.number ?? "Draft"} from the document the client signed`);
       expect(commentsOn(dealIssue.issue_id).join("\n")).toContain("Do not draft another invoice");
     });
 
@@ -560,7 +560,7 @@ describe.skipIf(!available)("signed documents become draft invoices (postgres)",
     it("is reopened by the check while the invoice has no send request, and passes once it is asked to send", async () => {
       const { invoice, issueId } = await drafted();
       expect((await closes(issueId)).status).toBe("todo");
-      expect(commentsOn(issueId).at(-1)).toContain(`Invoice ${invoice.number} (R 1,150.00, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet`);
+      expect(commentsOn(issueId).at(-1)).toContain(`Invoice ${invoice.number ?? "Draft"} (R 1,150.00, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet`);
       await tool("request-invoice-send", { invoiceId: invoice.id });
       expect((await closes(issueId)).status).toBe("done");
     });

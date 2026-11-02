@@ -2,12 +2,12 @@
  * The Bill to block: the CRM company's billing details reach drafts, quote conversions and recurring copies,
  * are frozen into customer_snapshot at the send boundary, and never change a document that was sent.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { getInvoice } from "../src/db.js";
 import { invoiceView, markInvoiceSent } from "../src/invoices.js";
-import { COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
+import { COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const COMPANY_UPSERTED = "plugin.partnersinbiz.crm.company.upserted";
@@ -33,9 +33,14 @@ describe.skipIf(!available)("billing customer details (postgres)", () => {
     await h?.stop();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(async () => {
     await h.reset();
-    h.config.set(COMPANY, { ...SETTINGS });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS });
+    vi.stubGlobal("fetch", async () => new Response()); // R2 accepts the PDF
   });
 
   /** A company.upserted event as the CRM sends it, through the registered handler. */

@@ -154,7 +154,7 @@ export function InvoicesTab({ openId, setOpenId, onCreate }: { openId: string | 
   const [numbering, setNumbering] = useState(false);
   const q = search.trim().toLowerCase();
   const rows = useMemo(() => snapshot.invoices.filter((invoice) => {
-    if (q && !`${invoice.number} ${invoice.status} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)) return false;
+    if (q && !`${invoice.number ?? "Draft"} ${invoice.status} ${invoice.customerName ?? ""}`.toLowerCase().includes(q)) return false;
     if (filter === "draft") return invoice.status === "draft";
     if (filter === "open") return OPEN.has(invoice.status);
     if (filter === "checking") return invoice.status === "payment_pending_verification";

@@ -23,13 +23,14 @@ import { ONLINE_PAYMENTS_REFERENCE } from "../src/skills.js";
 import { applyProviderEvent } from "../src/pay/confirm.js";
 import { getLink } from "../src/pay/store.js";
 import { decimalFromMinor } from "../src/pay/types.js";
-import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
+import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, R2_SETTINGS, startHarness, userContext, invoiceNumber, type Harness } from "./helpers/harness.js";
 
 const available = await embeddedAvailable();
 const WEBHOOK_SECRET = "secret-wh"; // the harness resolves a secret ref to `secret-<id>`
 
 const PAYPAL_SETTINGS = {
   ...SETTINGS,
+  r2: R2_SETTINGS,
   payments: {
     publicBaseUrl: "https://paperclip.test",
     paypal: {
@@ -124,6 +125,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     const invoice = await h.call<{ id: string; number: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "SEO sprint", quantity: 1, unitAmountMinor });
     await h.call("billing.mark-sent", { invoiceId: invoice.id });
+    invoice.number = (await invoiceNumber(h, invoice.id))!;
     return invoice;
   }
 
@@ -233,17 +235,17 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     // The send freezes the row as "sent" in memory before the database says so.
     const view = await invoiceView(h.ctx, { ...draft, status: "sent" }, await billingSettings(h.ctx, COMPANY));
     expect(view.outstandingMinor).toBe(115_000);
-    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(invoiceEmail(view, { hasAttachment: true }).text).toContain("invoice Draft for $1,150.00");
     expect(documentPdfSpec(view).totals!.find((t) => t.label === "Balance due")).toMatchObject({ value: "$1,150.00" });
     // and the mail that really goes out says the same
     await startInvoiceSend(h.ctx, invoice.id, "user:u1");
     const mail = (await outbox("mail.send.requested"))[0]!.payload as { text: string };
-    expect(mail.text).toContain(`invoice ${draft.number} for $1,150.00`);
+    expect(mail.text).toContain(`invoice ${await invoiceNumber(h, invoice.id)} for $1,150.00`);
     expect(mail.text).not.toContain("$0.00");
   });
 
   it("a link PayPal refuses never blocks the invoice: it goes out with EFT only and the failure is shown", async () => {
-    vi.stubGlobal("fetch", async () => ({ ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "Client Authentication failed" }) }) as Response);
+    vi.stubGlobal("fetch", async (url: string) => !String(url).includes("paypal") ? new Response() : ({ ok: false, status: 401, json: async () => ({ error: "invalid_client", error_description: "Client Authentication failed" }) }) as Response);
     const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");
@@ -461,7 +463,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   });
 
   it("the test provider rehearses the whole path, including the provider's fee in the books", async () => {
-    h.config.set(COMPANY, { ...SETTINGS, payments: { mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS, payments: { mock: { enabled: true } } });
     const invoice = await sentInvoice();
     const link = (await h.call<{ links: Array<{ id: string; url: string }> }>("billing.create-payment-link", { invoiceId: invoice.id }, userContext())).links[0]!;
     expect(link.url).toMatch(/^https:\/\/pay\.invalid\/mock\//);
@@ -564,7 +566,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
   // ── The test provider stays away from real customers ───────────────────────
 
   it("the test provider's link is never made on a real customer's send, and never shown on its email or PDF even when made by hand", async () => {
-    h.config.set(COMPANY, { ...SETTINGS, payments: { mock: { enabled: true } } });
+    h.config.set(COMPANY, { ...SETTINGS, r2: R2_SETTINGS, payments: { mock: { enabled: true } } });
     const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "contact", customerRef: "ct-lumen" });
     await h.call("billing.add-line", { invoiceId: invoice.id, description: "Retainer", quantity: 1, unitAmountMinor: 100_000 });
     expect((await startInvoiceSend(h.ctx, invoice.id, "user:u1")).mode).toBe("queued");
@@ -587,16 +589,18 @@ describe.skipIf(!available)("online payments (postgres)", () => {
 
     // The canary client is the one that gets it, and only when the test provider is on.
     await seedClient(h, { id: "canary-ab12cd34", name: "PiB Canary Co", kind: "company" });
-    const canary = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    const canary = await h.call<{ id: string; number?: string | null }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: canary.id, description: "Test", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: canary.id });
+    canary.number = (await invoiceNumber(h, canary.id))!;
     const canaryLink = await h.call<{ links: Array<{ provider: string }> }>("billing.create-payment-link", { invoiceId: canary.id }, userContext());
     expect(canaryLink.links.map((l) => l.provider)).toEqual(["mock"]);
     expect((await invoiceView(h.ctx, (await getInvoice(h.ctx, canary.id))!, settings)).paymentLinks).toEqual([expect.objectContaining({ provider: "mock" })]);
     h.config.set(COMPANY, { ...PAYPAL_SETTINGS });
-    const other = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    const other = await h.call<{ id: string; number?: string | null }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: other.id, description: "Test 2", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: other.id });
+    other.number = (await invoiceNumber(h, other.id))!;
     await expect(h.call("billing.create-payment-link", { invoiceId: other.id }, userContext())).rejects.toThrow(/canary \(test\) client.*test provider is off/);
     expect(orderCalls()).toEqual([]);
   });
