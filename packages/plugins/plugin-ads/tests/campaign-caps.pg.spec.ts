@@ -1,12 +1,12 @@
 /** The per-campaign cap row (PAR-6680): only a person writes it, it is read back, old inserts and old code are unaffected. Nothing enforces it yet. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { campaignCapsRecord, setCampaignCap } from "../src/campaign-caps.js";
+import { campaignCapsRecord, setCampaignCap, writeProposalCap } from "../src/campaign-caps.js";
 import { getCampaignCap } from "../src/db.js";
 import { executeProposal } from "../src/execute.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { recordReview, recordSignoff } from "../src/proposals.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
-import { ADS_AGENT, COMPANY, OWNER, REVIEWER, world, type World } from "./helpers/world.js";
+import { ADMIN, ADS_AGENT, COMPANY, MEMBER, OWNER, REVIEWER, world, type World } from "./helpers/world.js";
 import { CREATE, propose, syncedAccount } from "./helpers/scenario.js";
 
 const available = await embeddedAvailable();
@@ -38,6 +38,34 @@ describe.skipIf(!available)("campaign caps", () => {
       await expect(setCampaignCap(w.rt(), actor, { accountId, campaignExternalId: "c1", capMinor: 1000 })).rejects.toThrow(/Only a signed-in person/);
     }
     expect(await getCampaignCap(w.ctx, COMPANY, "mock", "c1")).toBeNull();
+  });
+
+  it("an admin may set a cap; another signed-in member and an unknown user are refused, nothing is written (PAR-7300)", async () => {
+    await expect(setCampaignCap(w.rt(), { userId: ADMIN }, { accountId, campaignExternalId: "c1", capMinor: 1000 })).resolves.toMatchObject({ ok: true, cap: { setBy: `user:${ADMIN}` } });
+    await pg.reset();
+    w = await world(pg);
+    ({ accountId } = await syncedAccount(w));
+    for (const userId of [MEMBER, "user-stranger"]) {
+      await expect(setCampaignCap(w.rt(), { userId }, { accountId, campaignExternalId: "c1", capMinor: 1000 })).rejects.toThrow(/owner or an admin/);
+    }
+    expect(await getCampaignCap(w.ctx, COMPANY, "mock", "c1")).toBeNull();
+  });
+
+  it("fails closed when the role cannot be read (capability missing)", async () => {
+    (w.ctx.access.members as { list: unknown }).list = async () => {
+      throw new Error("capability missing");
+    };
+    await expect(setCampaignCap(w.rt(), { userId: OWNER }, { accountId, campaignExternalId: "c1", capMinor: 1000 })).rejects.toThrow(/owner or an admin/);
+    expect(await getCampaignCap(w.ctx, COMPANY, "mock", "c1")).toBeNull();
+  });
+
+  it("writeProposalCap writes for an owner or admin, not for another member or an agent", async () => {
+    const input = (approvedBy: string) => ({ platform: "mock", externalCampaignId: "c1", capMinor: 5000, approvedBy, proposalId: "p1", scopeKey: "s" });
+    expect(await writeProposalCap(w.rt(), input(`agent:${ADS_AGENT}`))).toBe(false);
+    expect(await writeProposalCap(w.rt(), input(`user:${MEMBER}`))).toBe(false);
+    expect(await getCampaignCap(w.ctx, COMPANY, "mock", "c1")).toBeNull();
+    expect(await writeProposalCap(w.rt(), input(`user:${ADMIN}`))).toBe(true);
+    expect(await writeProposalCap(w.rt(), input(`user:${OWNER}`))).toBe(true);
   });
 
   it("refuses a zero cap, an unknown campaign and an unknown account", async () => {

@@ -13,6 +13,10 @@ import type { Pg } from "./pg.js";
 
 export const COMPANY = "11111111-1111-1111-1111-111111111111";
 export const OWNER = "user-owner";
+export const ADMIN = "user-admin";
+export const MEMBER = "user-member";
+const member = (principalId: string, membershipRole: string) =>
+  ({ id: `${COMPANY}:${principalId}`, companyId: COMPANY, principalType: "user", principalId, status: "active", membershipRole, grants: [] }) as never;
 export const REVIEWER = "agent-reviewer";
 export const OPERATOR = "agent-operator";
 export const ADS_AGENT = "agent-ads";
@@ -62,6 +66,7 @@ export async function world(pg: Pg, options: { config?: Record<string, unknown>;
       { id: AM_AGENT, companyId: COMPANY, name: "Account Manager", status: "idle", role: "general" } as never,
     ],
   });
+  harness.seed({ accessMembers: [member(OWNER, "owner"), member(ADMIN, "admin"), member(MEMBER, "member")] });
   (harness.ctx as unknown as { db: unknown }).db = pg.db;
   const commentLog = new Map<string, string[]>();
   const issuesClient = harness.ctx.issues as unknown as { createComment: (issueId: string, body: string, companyId: string, ...rest: unknown[]) => Promise<unknown> };
