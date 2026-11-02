@@ -7,7 +7,7 @@ export interface Address {
 
 export interface Invoice {
   id: string;
-  number: string;
+  number: string | null;
   status: string;
   currency: string;
   customerKind?: string;

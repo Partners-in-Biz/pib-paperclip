@@ -7,6 +7,7 @@
  * permanent failure gets a fresh key the Mailbox has not seen). The Mailbox
  * answers with `mail.send.result`; `settleMailResult` records it.
  */
+import { invoiceNumberLabel } from "./invoice-number.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   enqueue,
@@ -145,7 +146,7 @@ export function invoiceEmail(view: DocView, options: { hasAttachment: boolean; s
   const how = online.text
     ? `You can pay online with the link below, or by EFT: use ${view.number} as the payment reference and, when you have paid by EFT, reply to this email with your proof of payment.`
     : `Please pay by EFT and use ${view.number} as the payment reference. When you have paid, reply to this email with your proof of payment.`;
-  const eft = eftTable(view.payment, view.number);
+  const eft = eftTable(view.payment, invoiceNumberLabel(view.number));
   const lines = options.hasAttachment ? "" : view.lines.map((l) => `- ${l.description}: ${formatMoneyMinor(view.pricesIncludeVat ? l.grossMinor : l.netMinor, view.currency)}`).join("\n");
   const textBody = [intro, lines, how, online.text, eft.text, view.notes ?? "", signOff(view.sender, options.signature)].filter(Boolean).join("\n\n");
   const html = wrap(`${paragraphs(intro)}${lines ? paragraphs(lines) : ""}${paragraphs(how)}${online.html}${eft.html}${view.notes ? `<div style="margin-top:16px">${paragraphs(view.notes)}</div>` : ""}<div style="margin-top:18px">${paragraphs(signOff(view.sender, options.signature))}</div>`);

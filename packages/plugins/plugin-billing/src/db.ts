@@ -104,7 +104,10 @@ export async function getInvoice(ctx: PluginContext, id: string): Promise<Invoic
   return rows[0] ?? null;
 }
 
-export async function insertInvoice(ctx: PluginContext, row: InvoiceRow): Promise<number> {
+/** Insert shape: `number` may be null (a draft numbered on approval, billing 0.13+). Reads stay `string` until the later tickets write nulls. */
+export type InvoiceInsert = Omit<InvoiceRow, "number"> & { number: string | null };
+
+export async function insertInvoice(ctx: PluginContext, row: InvoiceInsert): Promise<number> {
   const res = await ctx.db.execute(
     `INSERT INTO ${table(ctx, "invoices")}
       (id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer, total_minor, tax_rate, due_at,
