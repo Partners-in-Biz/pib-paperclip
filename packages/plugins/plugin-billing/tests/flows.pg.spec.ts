@@ -44,7 +44,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
   }
 
   async function draft(customerRef = "ct-lumen", lines: Array<{ description: string; quantity: number; unitAmountMinor: number; taxCode?: string }> = [{ description: "SEO sprint", quantity: 1, unitAmountMinor: 100_000 }]) {
-    const invoice = await h.call<{ id: string; number: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef });
+    const invoice = await h.call<{ id: string; number: string | null }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef });
     for (const line of lines) await h.call("billing.add-line", { invoiceId: invoice.id, ...line });
     return invoice;
   }
@@ -300,7 +300,7 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       const invoice = await sentInvoice();
       await h.deliver(MAIL_RECEIVED, COMPANY, {
         key: "mbx:2", accountAddress: "peet@pib.test", messageId: "gm-pop-2", threadId: "t", from: { email: "someone@else.test" }, to: [],
-        subject: `Paid ${invoice.number.replace("-", " ")}`, snippet: "", receivedAt: new Date().toISOString(), attachments: [], triage: { category: null, urgency: null, needsReply: null, phishing: null, confidence: null },
+        subject: `Paid ${invoice.number!.replace("-", " ")}`, snippet: "", receivedAt: new Date().toISOString(), attachments: [], triage: { category: null, urgency: null, needsReply: null, phishing: null, confidence: null },
       });
       const [pop] = await h.call<Array<{ id: string; issueId: string }>>("billing.pops", {});
       h.issues.get(pop!.issueId)!.status = "cancelled";

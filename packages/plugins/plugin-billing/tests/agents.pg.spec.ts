@@ -386,7 +386,7 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ key: `billing:quote:${quote.id}:accepted`, quoteId: quote.id, number: "Q-LUM-001", dealId: "deal-42", clientKind: "contact", clientRef: "ct-lumen", totalMinor: 2_300_000, currency: "ZAR" });
 
-      const converted = (await tool("convert-quote", { quoteId: quote.id })).data as { invoice: { id: string; dealId: string } };
+      const converted = (await tool("convert-quote", { quoteId: quote.id })).data as { invoice: { id: string; dealId: string; number?: string | null } };
       expect(converted.invoice.dealId).toBe("deal-42");
       await h.call("billing.mark-sent", { invoiceId: converted.invoice.id });
       converted.invoice.number = (await invoiceNumber(h, converted.invoice.id))!;

@@ -293,7 +293,7 @@ describe.skipIf(!available)("billing follow-ups (postgres)", () => {
       expect(tailored.description).not.toContain("Draft what was sold");
       expect(tailored.title).toBe(`Deal won: Website rebuild for Lumen Digital, R 25,000.00: convert quote ${q.number} and send the invoice`);
 
-      const invoice = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen", dealId: "deal-2" });
+      const invoice = await h.call<{ id: string; number?: string | null }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen", dealId: "deal-2" });
       await h.call("billing.add-line", { invoiceId: invoice.id, description: "x", quantity: 1, unitAmountMinor: 100 });
       await h.call("billing.mark-sent", { invoiceId: invoice.id });
       invoice.number = (await invoiceNumber(h, invoice.id))!;
