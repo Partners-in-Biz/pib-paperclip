@@ -7,6 +7,7 @@ import { storedRates, rateFrom } from "./fx.js";
 import { billBalanceSelect, billOutstanding, type BillBalanceRow } from "./openitems.js";
 import { ageing, converterFor, expenseSummary, monthsBetween, mrrMetrics, mrrTrend, revenueByClient, revenueByMonth, type ExpenseItem, type RecurringRevenue, type RevenuePayment } from "./reports.js";
 import { allSubscriptions } from "./retainers.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export async function latestRates(ctx: PluginContext, book: string, currencies: string[]): Promise<Record<string, number | null>> {
   const out: Record<string, number | null> = {};
@@ -77,7 +78,7 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
   const debtors = ageing(
     balances.map((b) => ({
       id: b.invoice.id,
-      number: b.invoice.number,
+      number: invoiceNumberLabel(b.invoice.number),
       party: String(asObject(b.invoice.customer_snapshot ?? b.invoice.customer).name ?? b.invoice.customer_ref),
       partyKey: clientKey(b.invoice.customer_kind, b.invoice.customer_ref),
       currency: b.invoice.currency,

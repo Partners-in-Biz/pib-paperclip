@@ -19,6 +19,7 @@ import { buildProvider, enabledProviderKeys } from "./settings.js";
 import { StripeProvider } from "./stripe.js";
 import { insertLink, linksForCompany, linksForInvoice, markLinkRemoteOff, retireStaleLinks, setLinkCreated, setLinkStatus, type PaymentLinkRow } from "./store.js";
 import { PROVIDER_LABELS, type PaymentProvider, type ProviderKey } from "./types.js";
+import { invoiceNumberLabel } from "../invoice-number.js";
 
 /** What a document shows: where to pay online, and with which provider. */
 export interface PaymentLinkView {
@@ -112,7 +113,7 @@ export async function ensurePaymentLinks(
       const id = randomUUID();
       await insertLink(ctx, { id, companyId: invoice.company_id, invoiceId: invoice.id, provider: key, amountMinor: amount, currency: invoice.currency, createdBy: options.createdBy ?? null });
       try {
-        const created = await provider.createLink({ linkId: id, invoiceNumber: invoice.number, amountMinor: amount, currency: invoice.currency, description: `Invoice ${invoice.number}` });
+        const created = await provider.createLink({ linkId: id, invoiceNumber: invoiceNumberLabel(invoice.number), amountMinor: amount, currency: invoice.currency, description: `Invoice ${invoiceNumberLabel(invoice.number)}` });
         await setLinkCreated(ctx, id, created);
         result.links.push({ id, provider: key, label: PROVIDER_LABELS[key], url: created.url, amountMinor: amount });
       } catch (error) {

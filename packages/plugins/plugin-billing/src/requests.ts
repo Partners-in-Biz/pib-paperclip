@@ -133,7 +133,7 @@ export function sendReviewBrief(what: string, emailed: boolean, approver: string
 export interface SendRequestResult {
   invoiceId?: string;
   quoteId?: string;
-  number: string;
+  number: string | null;
   issueId: string;
   issue: string;
   pendingAction: "send";

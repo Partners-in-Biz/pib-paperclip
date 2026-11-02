@@ -13,6 +13,7 @@ import { OPEN_ITEM_EVENTS, type OpenItemUpserted } from "@partnersinbiz/pib-plug
 import { invoiceBalance, invoiceBalances, iso, type InvoiceBalance } from "./balances.js";
 import { isCanaryCustomer, isCanarySql } from "./canary.js";
 import { asObject, table } from "./db.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export interface BillBalanceRow {
   id: string;
@@ -48,7 +49,7 @@ export function receivableItem(balance: InvoiceBalance): OpenItemUpserted {
     key: `invoice:${invoice.id}`,
     kind: "receivable",
     id: invoice.id,
-    number: invoice.number,
+    number: invoiceNumberLabel(invoice.number),
     counterpartyName: typeof customer.name === "string" ? customer.name : invoice.customer_ref,
     clientKind: invoice.customer_kind === "contact" ? "contact" : "company",
     clientRef: invoice.customer_ref,

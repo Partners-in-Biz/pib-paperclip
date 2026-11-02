@@ -272,7 +272,7 @@ export async function overdueInvoices(ctx: PluginContext, companyId: string, set
     }
     items.push({
       id: b.invoice.id,
-      number: b.invoice.number,
+      number: invoiceNumberLabel(b.invoice.number),
       customerName: nameOf(b.invoice.customer_snapshot ?? b.invoice.customer, b.invoice.customer_ref),
       client: clientRef(b.invoice.customer_kind, b.invoice.customer_ref),
       outstandingMinor: b.outstandingMinor,

@@ -28,6 +28,7 @@ import {
   ymd,
 } from "./ledger.js";
 import { computeDocument, splitByGroups, type DocumentTotals } from "./money.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export function customerName(invoice: Pick<InvoiceRow, "customer" | "customer_snapshot" | "customer_ref">): string {
   const customer = asObject(invoice.customer_snapshot ?? invoice.customer);
@@ -76,7 +77,7 @@ export async function postInvoiceIssue(ctx: PluginContext, invoice: InvoiceRow, 
   const fxRate = invoice.fx_rate != null ? Number(invoice.fx_rate) : await bookRate(ctx, settings, invoice.currency, date);
   const journal = invoiceIssueJournal({
     id: invoice.id,
-    number: invoice.number,
+    number: invoiceNumberLabel(invoice.number),
     date,
     currency: invoice.currency,
     fxRate,
@@ -100,7 +101,7 @@ export async function postInvoiceVoid(ctx: PluginContext, invoice: InvoiceRow, s
   if (totals.totalMinor <= 0) return;
   const issue = invoiceIssueJournal({
     id: invoice.id,
-    number: invoice.number,
+    number: invoiceNumberLabel(invoice.number),
     date: invoice.sent_at ?? new Date(),
     currency: invoice.currency,
     fxRate: invoice.fx_rate == null ? null : Number(invoice.fx_rate),
@@ -110,7 +111,7 @@ export async function postInvoiceVoid(ctx: PluginContext, invoice: InvoiceRow, s
     totalMinor: totals.totalMinor,
     groups: totals.groups,
   });
-  await postJournal(ctx, invoice.company_id, invoiceVoidJournal(issue, { id: invoice.id, number: invoice.number, date: new Date() }));
+  await postJournal(ctx, invoice.company_id, invoiceVoidJournal(issue, { id: invoice.id, number: invoiceNumberLabel(invoice.number), date: new Date() }));
 }
 
 export interface BankSide {
@@ -121,7 +122,7 @@ export interface BankSide {
 function paymentPayload(invoice: InvoiceRow, payment: PaymentRow, fxRate: number | null, bank: BankSide & { bankTxId?: string | null; keySuffix?: string | null }) {
   return paymentJournal({
     id: payment.id,
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     date: ymd(payment.paid_at),
     currency: invoice.currency,
     fxRate,
@@ -151,7 +152,7 @@ export async function postPayment(ctx: PluginContext, invoice: InvoiceRow, payme
   if (fxRate && issueRate) {
     const fx = realisedFxJournal({
       paymentId: payment.id,
-      invoiceNumber: invoice.number,
+      invoiceNumber: invoiceNumberLabel(invoice.number),
       date,
       bookCurrency: reportingCurrency(settings),
       allocatedMinor: Number(payment.allocated_minor ?? payment.amount_minor),
@@ -168,7 +169,7 @@ export async function postPayment(ctx: PluginContext, invoice: InvoiceRow, payme
 export async function postGatewayFee(ctx: PluginContext, invoice: InvoiceRow, payment: PaymentRow, feeMinor: number, provider: string, clearingAccountCode: string, settings: BillingSettings): Promise<void> {
   if (feeMinor <= 0 || isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const date = ymd(payment.paid_at);
-  await postJournal(ctx, invoice.company_id, gatewayFeeJournal({ paymentId: payment.id, invoiceNumber: invoice.number, date, currency: invoice.currency, fxRate: payment.fx_rate == null ? null : Number(payment.fx_rate), feeMinor, clearingAccountCode, provider }));
+  await postJournal(ctx, invoice.company_id, gatewayFeeJournal({ paymentId: payment.id, invoiceNumber: invoiceNumberLabel(invoice.number), date, currency: invoice.currency, fxRate: payment.fx_rate == null ? null : Number(payment.fx_rate), feeMinor, clearingAccountCode, provider }));
 }
 
 /** Money refunded through the provider: the receivable is back, the clearing account pays it out. */
@@ -182,7 +183,7 @@ export async function postRefund(
   if (isCanaryCustomer(invoice) || !(await ledgerOn(ctx, invoice.company_id, settings))) return;
   const date = ymd(refund.date);
   const fxRate = invoice.fx_rate != null ? Number(invoice.fx_rate) : await bookRate(ctx, settings, invoice.currency, date);
-  await postJournal(ctx, invoice.company_id, refundJournal({ id: refund.id, invoiceNumber: invoice.number, date, currency: invoice.currency, fxRate, amountMinor: refund.amountMinor, customerKind: invoice.customer_kind, customerRef: invoice.customer_ref, clearingAccountCode, provider: refund.provider, reason: refund.reason }));
+  await postJournal(ctx, invoice.company_id, refundJournal({ id: refund.id, invoiceNumber: invoiceNumberLabel(invoice.number), date, currency: invoice.currency, fxRate, amountMinor: refund.amountMinor, customerKind: invoice.customer_kind, customerRef: invoice.customer_ref, clearingAccountCode, provider: refund.provider, reason: refund.reason }));
 }
 
 /**
@@ -216,7 +217,7 @@ export async function postCreditNote(
   await postJournal(ctx, invoice.company_id, creditNoteJournal({
     id: note.id,
     number: note.number,
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     date: note.created_at ?? new Date(),
     currency: invoice.currency,
     fxRate: invoice.fx_rate == null ? null : Number(invoice.fx_rate),
@@ -234,7 +235,7 @@ export async function postWriteOff(ctx: PluginContext, invoice: InvoiceRow, amou
   await postJournal(ctx, invoice.company_id, writeOffJournal({
     split: splitByGroups(amountMinor, totals.groups),
     invoiceId: invoice.id,
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     date: new Date(),
     currency: invoice.currency,
     fxRate: invoice.fx_rate == null ? null : Number(invoice.fx_rate),

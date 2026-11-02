@@ -18,6 +18,7 @@ import { afterCreditNote, creditedOnInvoice } from "./settle.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
 import { actorLabel, integer, optionalString, readClientScope, requiredCompany, requiredString, requirePerson } from "./util.js";
 import { renderDocumentPdf, type ClientRef } from "@partnersinbiz/pib-plugin-kit";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 /** A person issues a credit note on the page (agents go through `requestCreditDecision`). */
 export async function createCreditNoteAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -224,7 +225,7 @@ export async function statementData(ctx: PluginContext, companyId: string, clien
     if (entry.date < from) opening += entry.debitMinor - entry.creditMinor;
     else if (entry.date <= to) entries.push(entry);
   };
-  for (const b of mine) push({ date: dayStr(b.invoice.sent_at ?? b.invoice.created_at), kind: "invoice", reference: b.invoice.number, description: "Invoice", debitMinor: Number(b.invoice.total_minor), creditMinor: 0 });
+  for (const b of mine) push({ date: dayStr(b.invoice.sent_at ?? b.invoice.created_at), kind: "invoice", reference: invoiceNumberLabel(b.invoice.number), description: "Invoice", debitMinor: Number(b.invoice.total_minor), creditMinor: 0 });
   if (ids.length) {
     const payments = await ctx.db.query<{ invoice_id: string; amount_minor: string | number; paid_at: unknown; reference: string | null }>(
       `SELECT invoice_id, amount_minor, paid_at, reference FROM ${table(ctx, "payments")} WHERE invoice_id IN (SELECT jsonb_array_elements_text($1::jsonb))`,
