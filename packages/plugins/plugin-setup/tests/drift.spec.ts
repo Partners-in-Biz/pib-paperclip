@@ -30,10 +30,11 @@ const validPibPack = (): PibPack => ({
   key: "ceo",
   hash: validHash,
   appliedAt: "2026-10-20T10:00:00.000Z",
+  mode: "rendered",
 });
 
 describe("parsePibPack", () => {
-  it("accepts valid pibPack, returns as-is (strict, no normalization)", () => {
+  it("accepts valid pibPack (mode defaults to rendered; unknown keys are dropped, not rejected)", () => {
     const input = {
       pack: "Q7-5",
       version: 2,
@@ -42,7 +43,15 @@ describe("parsePibPack", () => {
       appliedAt: "2026-10-20T10:00:00.000Z",
       evalFile: "eval.json",
     };
-    expect(parsePibPack(input)).toEqual(input);
+    expect(parsePibPack(input)).toEqual({ ...input, mode: "rendered" });
+  });
+
+  it("accepts mode distilled and rendered, rejects other modes, absent means rendered", () => {
+    const base = { pack: "p", version: 1, key: "k", hash: "a1b2c3d4e5f6a1b2", appliedAt: "2026-10-20T10:00:00.000Z" };
+    expect(parsePibPack({ ...base, mode: "distilled" })?.mode).toBe("distilled");
+    expect(parsePibPack({ ...base, mode: "rendered" })?.mode).toBe("rendered");
+    expect(parsePibPack({ ...base, mode: "x" })).toBeNull();
+    expect(parsePibPack(base)?.mode).toBe("rendered");
   });
 
   it("rejects uppercase hex hash", () => {
@@ -83,6 +92,32 @@ describe("parsePibPack", () => {
 });
 
 describe("computeDrift", () => {
+  const run = (a: AgentLike) => computeDrift({ templates: [ceoTemplate], agents: [a], vars, attachedSkills: {} });
+
+  it("skips built-in agents after match", () => {
+    const r = run(agent("id", "CEO", { name: "CEO", metadata: { paperclipBuiltInAgent: true } }));
+    expect(r).toHaveLength(0);
+    expect(r.skipped).toEqual([{ agentId: "id", templateKey: "ceo", reason: "built_in" }]);
+  });
+
+  it("skips plugin-managed agents", () => {
+    const r = run(agent("id", "CEO", { name: "CEO", metadata: { pluginManagedAgent: { plugin: "x" } } }));
+    expect(r).toHaveLength(0);
+    expect(r.skipped).toEqual([{ agentId: "id", templateKey: "ceo", reason: "plugin_managed" }]);
+  });
+
+  it("distilled stamp with matching hash: no hash drift", () => {
+    const r = run(agent("id", "CEO", { name: "CEO", metadata: { pibPack: { ...validPibPack(), mode: "distilled" } } }));
+    expect(r[0]!.mode).toBe("distilled");
+    expect(r[0]!.reasons.some((x) => x.code === "hash_mismatch")).toBe(false);
+  });
+
+  it("distilled stamp with stale hash: hash_mismatch, mode distilled", () => {
+    const r = run(agent("id", "CEO", { name: "CEO", metadata: { pibPack: { ...validPibPack(), mode: "distilled", hash: "0000000000000000" } } }));
+    expect(r[0]!.mode).toBe("distilled");
+    expect(r[0]!.reasons.some((x) => x.code === "hash_mismatch")).toBe(true);
+  });
+
   it("skips host-owned templates", () => {
     const r = computeDrift({
       templates: [{ ...ceoTemplate, hostOwned: true }],

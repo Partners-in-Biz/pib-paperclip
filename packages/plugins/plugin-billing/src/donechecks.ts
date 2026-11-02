@@ -10,6 +10,7 @@
  * `log-follow-up` for what leaves no other trace (a reply drafted in the
  * Mailbox, what the owner decided).
  */
+import { invoiceNumberLabel } from "./invoice-number.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatMoneyMinor, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
 import { getAcceptance } from "./accepted-store.js";
@@ -219,7 +220,7 @@ export async function checkSignedDocument(ctx: PluginContext, issue: DoneCheckIs
     if (!invoice || invoice.company_id !== issue.companyId || invoice.status !== "draft" || invoice.pending_action === "send" || invoice.delivery_status === "queued") return done;
     if ((await notedSince(ctx, issue.companyId, "invoice", [invoice.id], since)).size > 0) return done;
     return notDone([
-      `Invoice ${invoice.number} (${formatMoneyMinor(Number(invoice.total_minor), invoice.currency)}, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet: check it with \`invoice-detail\`, then \`request-invoice-send\`. If it must not go out, say why with \`log-follow-up\` (invoiceId, note).`,
+      `Invoice ${invoiceNumberLabel(invoice.number)} (${formatMoneyMinor(Number(invoice.total_minor), invoice.currency)}, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet: check it with \`invoice-detail\`, then \`request-invoice-send\`. If it must not go out, say why with \`log-follow-up\` (invoiceId, note).`,
     ]);
   }
   if (acceptance.status !== "needs_attention") return done;

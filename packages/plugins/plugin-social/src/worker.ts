@@ -66,7 +66,7 @@ import { spaceOf } from "./space.js";
 import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
-import { collectMetricsJob } from "./metrics.js";
+import { collectMetricsJob, recollectPostMetrics } from "./metrics.js";
 import { completeOAuth, confirmPicker, connectBlueskyAccount, OAuthFlowError, pendingOptions, startOAuth } from "./oauth/flow.js";
 import { publishDueJob } from "./publish.js";
 import { planSweep } from "./plan-trigger.js";
@@ -271,6 +271,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return replyInboxRecord(ctx, viewer, p);
     case "record-post-metrics":
       return recordMetricsRecord(ctx, viewer, p);
+    case "recollect-post-metrics":
+      return recollectPostMetrics(ctx, viewer.companyId, p);
     case "post-analytics":
       return postAnalyticsRecord(ctx, viewer, p);
     case "account-analytics":

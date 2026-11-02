@@ -4,7 +4,6 @@
  */
 import { describe, expect, it } from "vitest";
 import * as db from "../src/db.js";
-import { approvalIssueDescription, type ProposalCopy } from "../src/engine/copy.js";
 import { companyInfo } from "../src/service/common.js";
 import { sprintCopy } from "../src/service/context.js";
 import { detectSignals, detectSignalsTool, weeklyNumbers } from "../src/service/optimize.js";
@@ -59,30 +58,11 @@ describe("the numbers beyond rankings", () => {
     expect(result.numbers[1]).toContain("AI-search readiness 72/100");
   });
 
-  it("lead the approval issue the owner reads, ahead of the proposals", async () => {
+  it("no longer open an approval issue of their own: the proposals wait on the SEO page", async () => {
     const h = host([...withNumbers(), ...proposalRoutes]);
     const info = await companyInfo(h.env, "co-1");
     const result = await detectSignals(h.env, info, await sprintOf(h), { propose: true });
     expect(result.proposalsCreated).toHaveLength(1);
-    const issue = h.created.find((c) => /optimiz|SEO/i.test(String(c.input.title)) && /optimizationId/.test(String(c.input.description)));
-    expect(issue).toBeDefined();
-    const text = String(issue!.input.description);
-    expect(text).toContain("**This week's numbers**");
-    expect(text).toContain("- Organic traffic (GA4) week of 2026-09-21");
-    expect(text).toContain("- AI-search readiness 72/100");
-    expect(text.indexOf("This week's numbers")).toBeLessThan(text.indexOf("### "));
-  });
-});
-
-describe("the approval issue text", () => {
-  const sprint = sprintCopy({ id: "sp-1", siteName: "Acme", siteUrl: "https://acme.co.za", clientName: null, autopilotMode: "safe", notes: null, templateId: "outrank-90" } as never);
-  const proposal: ProposalCopy = { id: "o-1", signalType: "stuck_page", severity: "high", hypothesis: "H", proposedAction: "A", evidence: { url: "https://acme.co.za/" }, taskTitles: ["T1", "T2"] };
-
-  it("shows the numbers only when there are some", () => {
-    const without = approvalIssueDescription(sprint, [proposal], null);
-    expect(without).not.toContain("This week's numbers");
-    const withNumbers = approvalIssueDescription(sprint, [proposal], null, ["Organic traffic is up", "AI readiness 70/100"]);
-    expect(withNumbers).toContain("**This week's numbers**\n- Organic traffic is up\n- AI readiness 70/100\n");
-    expect(withNumbers).toContain("### H");
+    expect(h.created.filter((c) => /approval/.test(String(c.input.originKind)))).toEqual([]);
   });
 });

@@ -1098,9 +1098,14 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
     const post = await requirePost(ctx, viewer, postId);
     const rows = await metricsForPost(ctx, viewer.companyId, post.id);
     const latest = latestPerDestination(rows);
+    const dests = await destinationsForPost(ctx, post.id);
     return {
       postId: post.id,
       ...aggregateMetrics(latest.map(metricNumbers)),
+      destinations: dests.map((d) => {
+        const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
+        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null };
+      }),
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };
   }

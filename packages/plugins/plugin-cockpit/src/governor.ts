@@ -85,7 +85,7 @@ async function escalateStuck(env: Env, companyId: string, state: GovernorState, 
       status: "blocked",
     });
     const escalateFn = deps.escalate || escalate;
-    await escalateFn(env.ctx, issue.id, "governor_stuck", { companyId, startLevel: "owner" });
+    await escalateFn(env.ctx, issue.id, "governor_stuck", { companyId, startLevel: "coo" });
     await repair(env.ctx, companyId, {
       kind: "governor",
       targetKind: "agent",

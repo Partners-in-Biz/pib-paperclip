@@ -18,6 +18,7 @@ import { esignEmailProblem, esignHooks, onEsignReply, prepareEsignDraft } from "
 import {
   approvalBySendKey,
   approvalByIssue,
+  approvalsByIssue,
   approvalsByStatus,
   getApproval,
   updateApproval,
@@ -32,6 +33,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { executeApprovedErasure, redactErasureApproval } from "./privacy.js";
 import { reportEmailProblem, reportHooks } from "./report.js";
 import { teamAssignee } from "./routing.js";
+import { decideReportCard, isReportBatch, type BatchActions } from "./report-batch.js";
 import { speedToLeadHooks } from "./speed-to-lead.js";
 import { feedbackHooks, onFeedbackReply } from "./support.js";
 
@@ -73,6 +75,8 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   if (!event.entityId) return false;
   const approval = await approvalByIssue(ctx, event.entityId);
   if (!approval || approval.companyId !== event.companyId) return false;
+  // The monthly report card holds many approvals: look at the ones still open, not at whichever row came first.
+  if (isReportBatch(approval)) return onReportCardIssue(ctx, event, issueStatus, approval);
   if (approval.status !== "open") return true;
   if (issueStatus !== "done" && issueStatus !== "cancelled") return true;
   // An agent acting under a person's credentials still shows as a user, but its calls carry an agent or run id: only a human click sends.
@@ -92,6 +96,29 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   if (approval.kind === "erasure") await carryOutErasure(ctx, approval, by);
   else await queueEmail(ctx, approval, by);
   return true;
+}
+
+/** What a person's "done" or "cancelled" on the report card does, and how the card's ticks are applied (settleReportCards). */
+async function onReportCardIssue(ctx: PluginContext, event: PluginEvent, issueStatus: string, first: ApprovalRecord): Promise<boolean> {
+  const open = (await approvalsByIssue(ctx, first.issueId as string)).filter((a) => a.status === "open");
+  if (!open.length || (issueStatus !== "done" && issueStatus !== "cancelled")) return true;
+  const payload = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
+  if (event.actorType !== "user" || payload.agentId || payload.runId) {
+    if (!(await reopenApprovalForPerson(ctx, { issueId: event.entityId as string, companyId: event.companyId, what: "client reports" }))) ctx.logger.info("The client report card closed by an agent could not be reopened", { issueId: event.entityId });
+    return true;
+  }
+  await decideReportCard(ctx, event.companyId, first.issueId as string, issueStatus === "done" ? "all" : new Set<string>(), `user:${event.actorId ?? "unknown"}`, reportCardActionsFor(ctx));
+  return true;
+}
+
+export function reportCardActionsFor(ctx: PluginContext): BatchActions {
+  return {
+    send: (approval, by) => queueEmail(ctx, approval, by),
+    hold: async (approval, by) => {
+      await updateApproval(ctx, approval.companyId, approval.id, { status: "refused", decidedBy: by });
+      await HOOKS[approval.kind]?.onRefused(ctx, approval, by);
+    },
+  };
 }
 
 async function queueEmail(ctx: PluginContext, approval: ApprovalRecord, by: string): Promise<void> {

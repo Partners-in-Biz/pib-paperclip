@@ -35,6 +35,7 @@ import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from ".
 import { ensureSetupIssue } from "./bootstrap.js";
 import { forgetChecks } from "./checks.js";
 import { closeoutSweep, onIssueClosed, onProjectUpdated } from "./closeout.js";
+import { agentResearch } from "./agent-research.js";
 import { credentialsCheck } from "./credentials.js";
 import { registerCockpitEffects, resolveOpenCockpitAsks } from "./effects.js";
 import { activateGoals, businessReviews } from "./goals.js";
@@ -75,6 +76,7 @@ import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
+import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 
@@ -210,6 +212,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   ]);
   // Edge watch: announce when new blocker edges are created.
   registerW1cEdge(env);
+  // The owner's standing-approval policy: written only by the owner, through these two actions.
+  registerW1cPolicy(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -538,6 +542,10 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
   ctx.jobs.register(JOBS.improvementsRecheck, async () => {
     ctx.logger.info("Improvements re-check", await trackJob(ctx, JOBS.improvementsRecheck, () => recheckImprovements(env)));
+  });
+  ctx.jobs.register(JOBS.agentResearch, async () => {
+    const result = await trackJob(ctx, JOBS.agentResearch, () => agentResearch(env));
+    ctx.logger.info(result.opened === 0 ? "Agent research: nothing opened (no eligible agent, or this week's issues already exist)" : "Agent research", result);
   });
   ctx.jobs.register(JOBS.credentialsCheck, async () => {
     ctx.logger.info("Credentials check", await trackJob(ctx, JOBS.credentialsCheck, () => credentialsCheck(env)));

@@ -189,10 +189,10 @@ describe("the weekly proposals keep running on a manual sprint", () => {
     [/FROM plugin_seo_8099f8879a\.optimizations WHERE id = \$1 AND company_id = \$2/, (p: unknown[]) => [{ id: p[0], company_id: "co-1", sprint_id: "sp-real", signal_type: "zero_impression_content", severity: "medium", subject: "c1", evidence: {}, hypothesis: "The page earned no impressions", hypothesis_type: "title", proposed_action: "Rewrite the title", proposed_tasks: [{ title: "Rewrite the title" }], target_keyword_ids: [], status: "proposed", approval_issue_id: null }]],
   ] as never;
 
-  it.each(["manual", "auto"])("a %s sprint gets its weekly proposal and approval issue", async (pacing) => {
+  it.each(["manual", "auto"])("a %s sprint gets its weekly proposal and no approval issue", async (pacing) => {
     const rows = [sprintFor("real", { root_issue_id: "root-1", pacing })];
     const w = world({ sprints: rows, tasks: planTasks("sp-real"), routes: routes(rows) });
     expect(await runWeeklyJob(w.env, { force: true })).toEqual({ processed: 1, proposals: 1, errors: [] });
-    expect(w.created.map((c) => c.input.originKind)).toEqual(["plugin:partnersinbiz.seo:approval"]);
+    expect(w.created).toEqual([]); // proposals are decided on the SEO page; no per-sprint approval issue
   });
 });

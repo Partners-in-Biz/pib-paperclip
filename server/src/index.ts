@@ -705,10 +705,15 @@ async function startServerWithDatabaseTeardown(
   if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
     logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
   }
-  const confirmationSweep = await issueThreadInteractionService(db as any)
-    .sweepSupersededPendingRequestConfirmations();
-  if (confirmationSweep.expired > 0) {
-    logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
+  try {
+    const confirmationSweep = await issueThreadInteractionService(db as any)
+      .sweepSupersededPendingRequestConfirmations();
+    if (confirmationSweep.expired > 0) {
+      logger.info(confirmationSweep, "Expired pending confirmations superseded by newer agent requests");
+    }
+  } catch (err) {
+    // Housekeeping only: a bad row must never keep the server from booting (PAR-6922).
+    logger.error({ err }, "Superseded confirmation sweep failed at startup; continuing");
   }
   if (config.deploymentMode === "authenticated") {
     const {

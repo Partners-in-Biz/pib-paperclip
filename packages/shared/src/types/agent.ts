@@ -125,6 +125,8 @@ export interface AgentConfigRevision {
   agentId: string;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Per-agent sequence number (v1, v2, ...); null only for rows written before numbering. */
+  revisionNumber: number | null;
   source: string;
   rolledBackFromRevisionId: string | null;
   changedKeys: string[];

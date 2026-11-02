@@ -41,6 +41,15 @@ const instanceConfigSchema: JsonSchema = {
   description:
     "Save this once for each company. Saving is what lets the Cockpit act for that company on its own: the hourly System health issue and team roles, answers to agents' questions, client onboarding, and the CRM client list company memory uses.",
   properties: {
+    escalation: {
+      type: "object",
+      title: "Escalation ladder",
+      description: "Blocked issues with no way out go up the reporting chain; the last level is the COO agent. No Unblock issue is assigned to a person.",
+      properties: {
+        enabled: { type: "boolean", title: "Escalate stuck blocked issues", description: "Turn off to stop the ladder creating Unblock issues.", default: true },
+        cooAgentId: { type: "string", title: "COO agent (optional)", description: "The agent for the last level. Left blank, the company's active agent with role COO is used." },
+      },
+    },
     healthIssue: {
       type: "boolean",
       title: "System health issue",
@@ -71,6 +80,17 @@ const instanceConfigSchema: JsonSchema = {
       title: "Client effort alert (share of what they paid)",
       description: "Warn when a customer's notional AI spend over 30 days is at least this share of what they paid in the same time (default 0.5, half).",
       minimum: 0,
+    },
+    githubCi: {
+      type: "object",
+      title: "GitHub CI webhook",
+      description: "Lets a failed GitHub check comment on the ticket. Webhook URL: /api/plugins/partnersinbiz.cockpit/webhooks/github-ci, events: Check suites, Pull request review comments, Pull request reviews.",
+      properties: {
+        webhookSecret: secretField("Webhook secret", "The company secret GitHub signs deliveries with."),
+        previousWebhookSecret: secretField("Previous webhook secret", "The old secret, still accepted for 24 hours after the rotation time below."),
+        rotatedAt: { type: "string", title: "Rotated at (ISO time)", description: "When the secret was changed. The previous secret stops working 24 hours later." },
+        allowedOwners: { type: "array", title: "Allowed GitHub owners", items: { type: "string" }, default: ["Partners-in-Biz"] },
+      },
     },
     credentialSeed: {
       type: "boolean",
@@ -218,6 +238,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "secrets.read-ref",
+    // 0.16.0: GitHub check_suite webhook (POST .../webhooks/github-ci); a new capability, so the host asks for approval on upgrade.
+    "webhooks.receive",
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
@@ -225,6 +247,13 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] },
   tools: COCKPIT_TOOLS,
+  webhooks: [
+    {
+      endpointKey: "github-ci",
+      displayName: "GitHub CI failures",
+      description: "POST /api/plugins/partnersinbiz.cockpit/webhooks/github-ci: GitHub check_suite, pull_request_review_comment and pull_request_review events (the review ones comment once per GitHub id and wake the assignee). Checked by X-Hub-Signature-256 against the secret in settings (githubCi.webhookSecret). A failed, timed out or cancelled suite on a feat/PAR-<n>- branch comments once per commit on that open issue.",
+    },
+  ],
   jobs: [
     {
       jobKey: JOBS.reemitRoles,
@@ -255,6 +284,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Improvements re-check",
       description: "Daily: measures again every improvement whose re-check date has come and records improved, no change or worse with both numbers; opens an improvement for a pinned fact that describes how a tool behaves.",
       schedule: "40 4 * * *",
+    },
+    {
+      jobKey: JOBS.agentResearch,
+      displayName: "Weekly agent research",
+      description: "Monday 06:00 SAST: for the five distilled agents that failed most in the last 7 days (at least 20 runs, no open improvement or Distill: issue), opens one issue for the Reflection Coach with the measure brief, the failure breakdown and the current template hash. At most one per agent per week.",
+      schedule: "0 4 * * 1",
     },
     {
       jobKey: JOBS.credentialsCheck,

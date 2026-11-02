@@ -32,6 +32,8 @@ export const SOCIAL_ORIGINS = {
   escalation: "inbox-escalate:",
   /** The Reviewer's check of a post: `review:<postId>`. */
   review: "review:",
+  /** A person's weekly list of posts to sign off: `review-week:<userId>:<Monday>`. */
+  weeklyReview: "review-week:",
   /** A Growth Lab week's decisions for a person: `growth:<programId>:<week>`. */
   growth: "growth:",
   /** The Account Manager's task to draft the email that carries a client's link (a Mailbox draft): `client-link-email:<postId>`. (No "approv" in the key: the kit treats such origins as approvals only a person may close.) */

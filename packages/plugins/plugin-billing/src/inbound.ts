@@ -23,7 +23,7 @@ import { billingSettings, type BillingSettings } from "./config.js";
 import { approveBill, billByApproval, draftBillFromEmail } from "./costs.js";
 import { asObject, getQuote, invoiceByApproval, quoteByApproval, saveQuoteStatus, table } from "./db.js";
 import { openQuoteReplyIssue, quoteForReply } from "./followups.js";
-import { markInvoiceSent, startInvoiceSend, startQuoteSend } from "./invoices.js";
+import { markInvoiceSent, reopenSendApproval, startInvoiceSend, startQuoteSend } from "./invoices.js";
 import { parseMailKey, settleMailResult } from "./mail.js";
 import { onLedgerResult } from "./posting.js";
 import { choosePopInvoice, closePopIssues, confirmPop, getPop, lookupSender, looksLikePop, mailText, openInvoiceCandidates, recordPop, rejectPop, threadInvoiceId } from "./pop.js";
@@ -55,7 +55,16 @@ export async function onMailResult(ctx: PluginContext, event: PluginEvent): Prom
   const settings = await billingSettings(ctx, event.companyId || done.delivery.company_id);
   if (parsed.kind === "invoice") {
     if (done.status === "sent") await markInvoiceSent(ctx, parsed.id, result.sentAt ?? null, "sent", settings);
-    else await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET delivery_status = 'failed', delivery_error = $3 WHERE id = $1 AND delivery_key = $2`, [parsed.id, result.key, String(result.error ?? "Sending failed")]);
+    else {
+      const error = String(result.error ?? "Sending failed");
+      // The mail is dead: the invoice is still a draft, so the person is asked again (the next "done" mints the next key).
+      const res = await ctx.db.execute(
+        `UPDATE ${table(ctx, "invoices")} SET delivery_status = 'failed', delivery_error = $3, pending_action = CASE WHEN status = 'draft' AND approval_issue_id IS NOT NULL THEN 'send' ELSE pending_action END, updated_at = now() WHERE id = $1 AND delivery_key = $2`,
+        [parsed.id, result.key, error],
+      );
+      const row = (res.rowCount ?? 0) > 0 ? (await ctx.db.query<{ status: string; approval_issue_id: string | null }>(`SELECT status, approval_issue_id FROM ${table(ctx, "invoices")} WHERE id = $1`, [parsed.id]))[0] : undefined;
+      if (row?.status === "draft" && row.approval_issue_id) await reopenSendApproval(ctx, done.delivery.company_id, row.approval_issue_id, error);
+    }
     return;
   }
   if (parsed.kind === "quote") {
@@ -206,12 +215,13 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
   if (!issueId || !companyId) return;
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue || (issue.status !== "done" && issue.status !== "cancelled")) return;
-  // Only a person decides an approval. An agent (e.g. the Reviewer) closing it is undone and handed to the person.
-  if (actorType === "agent") {
+  // Only a person decides an approval. An agent (e.g. the Reviewer) closing it is undone and handed to the person; so is anyone
+  // but a person closing an invoice send (system, plugin, unknown), because a send is what leaves the company.
+  if (actorType !== "user") {
     const what = await openApprovalWhat(ctx, issue.id);
-    if (what) {
+    if (what && (actorType === "agent" || what.startsWith("sending invoice"))) {
       const settings = await billingSettings(ctx, companyId);
-      const reopened = await reopenApprovalForPerson(ctx, { issueId: issue.id, companyId, userId: settings.reviewerUserId?.trim() || null, what });
+      const reopened = await reopenApprovalForPerson(ctx, { issueId: issue.id, companyId, userId: issue.assigneeUserId || settings.reviewerUserId?.trim() || null, what });
       if (!reopened) ctx.logger.info("Could not hand the approval back to a person", { issueId: issue.id });
       return;
     }
@@ -229,7 +239,10 @@ export async function onIssueUpdated(ctx: PluginContext, issueId: string | undef
     );
     if ((claim.rowCount ?? 0) === 0 || !done) return;
     if (action === "send") {
-      if (invoice.status === "draft" && invoice.delivery_status !== "queued") await startInvoiceSend(ctx, invoice.id, actor);
+      if (invoice.status === "draft" && invoice.delivery_status !== "queued") {
+        // A failure before the mail is queued has already reopened the ticket; nothing more to do here.
+        await startInvoiceSend(ctx, invoice.id, actor, issue.id).catch((error: unknown) => ctx.logger.info("Invoice send failed", { invoiceId: invoice.id, reason: errorMessage(error) }));
+      }
       return;
     }
     if (action === "pay") {

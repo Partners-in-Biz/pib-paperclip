@@ -3,6 +3,7 @@
  * PDF specs for the kit's `renderDocumentPdf`, plus the plain names used for
  * files and emails. Pure: the worker loads the rows and stores the bytes.
  */
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { formatMoneyMinor, renderDocumentPdf, type PdfDocumentSpec } from "@partnersinbiz/pib-plugin-kit";
 import { taxLabel, type TaxGroup } from "./money.js";
 import type { TaxCode } from "@partnersinbiz/pib-plugin-kit";
@@ -25,7 +26,7 @@ export interface DocLineView {
 
 export interface DocView {
   kind: DocKind;
-  number: string;
+  number: string | null;
   status: string;
   currency: string;
   issuedAt: string | null;
@@ -113,7 +114,7 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
   const details: Array<[string, string]> = [];
   if (view.issuedAt) details.push(["Date", day(view.issuedAt)]);
   if (view.dueAt) details.push([view.kind === "quote" ? "Valid until" : "Due", day(view.dueAt)]);
-  if (view.kind === "invoice") details.push(["Reference", view.number]);
+  if (view.kind === "invoice") details.push(["Reference", invoiceNumberLabel(view.number)]);
   if (view.kind === "credit_note" && view.againstNumber) details.push(["Credits invoice", view.againstNumber]);
   details.push(["Currency", view.currency]);
   const showVat = !view.legacy || view.vatMinor > 0;
@@ -150,10 +151,10 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
     if (online.length) {
       sections.push({ heading: "Pay online", lines: online.map((link) => (link.url.length <= 160 ? `${link.label}: ${link.url}` : `${link.label}: use the link in the email this invoice came with.`)) });
     }
-    const pay = paymentLines(view.payment, view.number);
+    const pay = paymentLines(view.payment, invoiceNumberLabel(view.number));
     if (pay.length) {
       sections.push({ heading: "Payment details (EFT)", lines: pay });
-      sections.push({ heading: "Proof of payment", lines: [`Use ${view.number} as your payment reference, then reply to our email with your proof of payment.`] });
+      sections.push({ heading: "Proof of payment", lines: [`Use ${invoiceNumberLabel(view.number)} as your payment reference, then reply to our email with your proof of payment.`] });
     }
   }
   if (view.kind === "credit_note" && view.reason) sections.push({ heading: "Reason", lines: [view.reason] });
@@ -161,7 +162,7 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
   const footerParts = [text(view.sender.name), text(view.sender.vatNumber) ? `VAT ${text(view.sender.vatNumber)}` : "", text(view.sender.registrationNumber) ? `Reg ${text(view.sender.registrationNumber)}` : ""].filter(Boolean);
   return {
     title: docTitle(view),
-    number: view.number,
+    number: invoiceNumberLabel(view.number),
     details,
     parties: [
       { heading: "From", lines: partyLines(view.sender, FALLBACK_SENDER_NAME) },
@@ -182,7 +183,7 @@ export async function renderDocument(view: DocView): Promise<Uint8Array> {
 
 export function docFileName(view: Pick<DocView, "kind" | "number">): string {
   const label = view.kind === "quote" ? "Quote" : view.kind === "credit_note" ? "Credit-note" : "Invoice";
-  return `${label}-${view.number.replace(/[^A-Za-z0-9-]/g, "")}.pdf`;
+  return `${label}-${invoiceNumberLabel(view.number).replace(/[^A-Za-z0-9-]/g, "")}.pdf`;
 }
 
 // ── Statements ──────────────────────────────────────────────────────────────

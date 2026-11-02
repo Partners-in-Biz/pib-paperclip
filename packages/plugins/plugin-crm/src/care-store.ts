@@ -362,6 +362,12 @@ export async function approvalByIssue(ctx: PluginContext, issueId: string): Prom
   return rows[0] ? mapApproval(rows[0]) : null;
 }
 
+/** Every approval that shares one issue (the monthly report card). */
+export async function approvalsByIssue(ctx: PluginContext, issueId: string): Promise<ApprovalRecord[]> {
+  const rows = await ctx.db.query<ApprovalRow>(`SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")} WHERE issue_id = $1 ORDER BY created_at`, [issueId]);
+  return rows.map(mapApproval);
+}
+
 export async function approvalBySendKey(ctx: PluginContext, sendKey: string): Promise<ApprovalRecord | null> {
   const rows = await ctx.db.query<ApprovalRow>(`SELECT ${APPROVAL_COLUMNS} FROM ${table(ctx, "care_approvals")} WHERE send_key = $1 LIMIT 1`, [sendKey]);
   return rows[0] ? mapApproval(rows[0]) : null;

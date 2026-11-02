@@ -84,6 +84,7 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
       agents: [
         { id: OP, companyId: A, name: "Olive", status: "active", role: "general" },
         { id: SEO, companyId: A, name: "Sam", status: "active", role: "general" },
+        { id: "00000000-0000-4000-8000-0000000000c0", companyId: A, name: "PiB", status: "active", role: "coo" },
       ],
     });
     await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");

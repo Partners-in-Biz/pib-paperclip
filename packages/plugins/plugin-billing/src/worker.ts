@@ -154,7 +154,8 @@ import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { clientNumbering, nextDocumentNumber, setClientNumbering } from "./numbering.js";
+import { clientNumbering, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
+import { NO_NUMBER_YET } from "./invoice-number.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -350,14 +351,19 @@ const ACTIONS: Record<string, Handler> = {
   "billing.get-numbering": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const scope = readClientScope(params);
-    if (!scope) throw new BillingError("client is required");
+    if (!scope) return sequenceNumbering(ctx, companyId, await billingSettings(ctx, companyId));
     return clientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, await billingSettings(ctx, companyId));
   },
   "billing.set-numbering": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const scope = readClientScope(params);
-    if (!scope) throw new BillingError("client is required");
     const nextNumber = optionalInteger(params, "nextNumber");
+    if (!scope) {
+      requirePerson(context, "seed the invoice sequence");
+      if (optionalString(params, "prefix") !== undefined) throw new BillingError("The invoice sequence always uses INV. Give a client to set letters");
+      if (nextNumber === undefined) throw new BillingError("nextNumber is required");
+      return setSequenceNumbering(ctx, companyId, { nextNumber }, await billingSettings(ctx, companyId));
+    }
     return setClientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, { prefix: optionalString(params, "prefix"), nextNumber }, await billingSettings(ctx, companyId));
   },
   "billing.run-dunning": async (ctx, context) => {
@@ -998,7 +1004,7 @@ async function runRecurring(ctx: PluginContext) {
         const customer = asObject(template.customer);
         const invoice: InvoiceRow = copyInvoiceFields(template, {
           id: randomUUID(),
-          number: await nextDocumentNumber(ctx, schedule.company_id, "invoice", { kind: template.customer_kind, ref: template.customer_ref, name: String(customer.name ?? template.customer_ref) }, settings),
+          number: NO_NUMBER_YET,
           recurring_id: schedule.id,
           recurring_key: key,
         });

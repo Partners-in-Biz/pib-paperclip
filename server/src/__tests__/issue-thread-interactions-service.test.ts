@@ -1780,6 +1780,79 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(interactions.find((interaction) => interaction.id === checkboxId)?.status).toBe("pending");
   });
 
+  it("does not let a stored 132-char connection target key block the startup sweep or the thread list (PAR-6922)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Over-long target key sweep");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Key agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const longKey = `connection:app-gallery:google-drive:${randomUUID()}/google-drive-${randomUUID().slice(0, 8)}:user:${"u".repeat(30)}`;
+    expect(longKey.length).toBeGreaterThan(120);
+
+    const badId = randomUUID();
+    const olderId = randomUUID();
+    const newestId = randomUUID();
+    const base = {
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+    };
+    await db.insert(issueThreadInteractions).values([
+      {
+        ...base,
+        id: badId,
+        payload: {
+          version: 1 as const,
+          prompt: "Connect Google Drive",
+          target: { type: "custom", key: longKey },
+        },
+        createdAt: new Date("2026-07-01T12:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+      {
+        ...base,
+        id: olderId,
+        payload: { version: 1 as const, prompt: "Older draft" },
+        createdAt: new Date("2026-07-01T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:01:00.000Z"),
+      },
+      {
+        ...base,
+        id: newestId,
+        payload: { version: 1 as const, prompt: "Newest draft" },
+        createdAt: new Date("2026-07-01T12:02:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:02:00.000Z"),
+      },
+    ]);
+
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 1 });
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows.find((row) => row.id === badId)?.status).toBe("pending");
+    expect(rows.find((row) => row.id === olderId)?.status).toBe("expired");
+    expect(rows.find((row) => row.id === newestId)?.status).toBe("pending");
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed.map((interaction) => interaction.id).sort()).toEqual(
+      [olderId, newestId].sort(),
+    );
+  });
+
   it("refuses to create an interaction on a closed issue", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Closed issue create guard");
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));

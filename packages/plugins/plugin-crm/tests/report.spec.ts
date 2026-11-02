@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runClientCareJob } from "../src/care-jobs.js";
 import { isFormNotification, reportIssueResolved, reportsHealth, runMonthlyReports, saveReportDocument, worthReporting, expectedModules } from "../src/report.js";
 import { atAGlance, currentPeriod, EMPTY_NARRATIVE, escapeHtml, formatExpiryDate, periodBounds, periodLabel, previousPeriod, renderClientMarkdown, renderHtml, renderInternalMarkdown, type ReportData } from "../src/report-render.js";
-import { answerSend, bootCare, careSeed, CO, company, contact, DAY, decide, issuesWith, OWNER, sentMail, tool, toolRaw, type Booted, type Route } from "./helpers/care.js";
+import { answerSend, bootCare, careSeed, CO, company, contact, DAY, decide, reportCard, issuesWith, OWNER, sentMail, tool, toolRaw, type Booted, type Route } from "./helpers/care.js";
 
 const NOW = new Date();
 const PERIOD = currentPeriod(NOW);
@@ -374,9 +374,10 @@ describe("the sender's name", () => {
     await tool(booted.harness, "build-client-report", { client: "company:acme", period: PERIOD });
     await tool(booted.harness, "set-report-narrative", { client: "company:acme", period: PERIOD, summary: "A good month: more people found you on Google and every support request was answered the same day." });
     const sent = await tool<Record<string, any>>(booted.harness, "send-client-report", { client: "company:acme", period: PERIOD });
-    const issue = (await booted.harness.ctx.issues.get(sent.approvalIssueId, CO))!;
-    expect(issue.description).toContain(`**Subject:** Your ${periodLabel(PERIOD)} report from Dune Digital`);
-    expect(issue.description).not.toMatch(/Partners in (Biz|Apps)/);
+    expect(sent.approvalIssueId).toBeNull();
+    const draft = JSON.stringify(booted.store.care_approvals![0]!.payload);
+    expect(draft).toContain(`Your ${periodLabel(PERIOD)} report from Dune Digital`);
+    expect(draft).not.toMatch(/Partners in (Biz|Apps)/);
   });
 });
 
@@ -412,21 +413,23 @@ describe("writing and sending the report", () => {
     const sent = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD, message: "Ada, here is the month." });
     expect(sent).toMatchObject({ status: "awaiting_approval", to: "Ada Lovelace <ada@acme.co.za>" });
     expect(store.client_reports![0]).toMatchObject({ status: "awaiting_approval" });
-    const issue = (await harness.ctx.issues.get(sent.approvalIssueId, CO))!;
-    expect(issue).toMatchObject({ assigneeUserId: OWNER, title: `Approve report email to Acme Plumbing: ${periodLabel(PERIOD)}` });
-    expect(issue.description).toContain("**Subject:** Your");
-    expect(issue.description).toContain("Hi Ada,");
-    expect(issue.description).toContain("Ada, here is the month.");
-    expect(issue.description).toContain("Clicks: 1,240 (+18% on last month)");
-    expect(issue.description).toMatch(/\*\*Not in the report:\*\* Social media/);
+    // No per-client issue: the report joins the month's one card.
+    expect(sent.approvalIssueId).toBeNull();
+    expect(await issuesWith(harness, "crm:approval:")).toHaveLength(0);
+    const draft = JSON.stringify(store.care_approvals![0]!.payload);
+    expect(draft).toContain("Hi Ada,");
+    expect(draft).toContain("Ada, here is the month.");
+    expect(draft).toContain("Clicks: 1,240 (+18% on last month)");
+    const cardId = await reportCard(harness);
+    expect(await harness.ctx.issues.get(cardId, CO)).toMatchObject({ assigneeUserId: OWNER, title: `Approve client reports: ${periodLabel(PERIOD)}` });
     expect(sentMail(emit)).toHaveLength(0);
     expect(store.outbox).toHaveLength(0);
     // Asking again while it waits returns the same approval.
     const again = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
-    expect(again).toMatchObject({ note: "This report is already waiting for approval.", approvalIssueId: sent.approvalIssueId });
+    expect(again).toMatchObject({ note: "This report is already waiting for approval." });
     expect(store.care_approvals).toHaveLength(1);
 
-    await decide(harness, sent.approvalIssueId, "done", "user");
+    await decide(harness, cardId, "done", "user");
     const [mail] = sentMail(emit);
     expect(mail).toMatchObject({ to: [{ email: "ada@acme.co.za", name: "Ada Lovelace" }], marketing: false, subject: `Your ${periodLabel(PERIOD)} report from ${BRAND}` });
     expect(mail.html).toContain(`${BRAND} · Monthly report`);
@@ -455,12 +458,12 @@ describe("writing and sending the report", () => {
     const { harness, store } = booted;
     await tool(harness, "set-report-narrative", { client: "company:acme", period: PERIOD, summary });
     const sent = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
-    await decide(harness, sent.approvalIssueId, "cancelled", "user");
+    await decide(harness, await reportCard(harness), "cancelled", "user");
     expect(store.client_reports![0]!.status).toBe("built");
     expect(store.outbox).toHaveLength(0);
     // They can send it again after fixing it: a new approval, attempt two.
     const second = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
-    expect(second.approvalIssueId).not.toBe(sent.approvalIssueId);
+    expect(second.status).toBe("awaiting_approval");
     expect(store.care_approvals!.map((row) => row.seq)).toEqual([1, 2]);
   });
 
@@ -470,7 +473,7 @@ describe("writing and sending the report", () => {
     await tool(booted.harness, "build-client-report", { client: canary.client, period: PERIOD });
     await tool(booted.harness, "set-report-narrative", { client: canary.client, period: PERIOD, summary });
     const sent = await tool<Record<string, any>>(booted.harness, "send-client-report", { client: canary.client, period: PERIOD });
-    await decide(booted.harness, sent.approvalIssueId, "done", "user");
+    await decide(booted.harness, await reportCard(booted.harness), "done", "user");
     expect(booted.store.outbox).toHaveLength(0);
     expect(booted.store.client_reports![0]).toMatchObject({ status: "dry_run" });
   });
@@ -493,8 +496,8 @@ describe("writing and sending the report", () => {
     expect(store.client_reports![0]!.status).toBe("awaiting_approval");
     await tool(harness, "skip-client-report", { client: "company:acme", period: PERIOD, reason: "The client paused the service this month." });
     expect(store.care_approvals![0]).toMatchObject({ status: "refused", decided_by: "system:report-skipped" });
-    expect((await harness.ctx.issues.get(sent.approvalIssueId, CO))!.status).toBe("cancelled");
-    await decide(harness, sent.approvalIssueId, "done", "user");
+    // Nothing waits any more, so no card is opened for it.
+    await expect(reportCard(harness)).rejects.toThrow(/no report card/);
     expect(sentMail(emit)).toHaveLength(0);
     expect(store.outbox).toHaveLength(0);
     expect(store.client_reports![0]!.status).toBe("skipped");
@@ -505,7 +508,7 @@ describe("writing and sending the report", () => {
     const { harness, store, emit } = booted;
     await tool(harness, "set-report-narrative", { client: "company:acme", period: PERIOD, summary });
     const sent = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
-    await decide(harness, sent.approvalIssueId, "done", "user");
+    await decide(harness, await reportCard(harness), "done", "user");
     expect(sentMail(emit)).toHaveLength(1);
     expect((await toolRaw(harness, "skip-client-report", { client: "company:acme", period: PERIOD, reason: "Changed my mind about this month." })).error).toMatch(/already approved and queued/);
     expect(store.client_reports![0]!.status).toBe("awaiting_approval");
@@ -518,7 +521,7 @@ describe("writing and sending the report", () => {
       await tool(harness, "set-report-narrative", { client: "company:acme", period: PERIOD, summary });
       const sent = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
       store.client_reports![0]!.status = status;
-      await decide(harness, sent.approvalIssueId, "done", "user");
+      await decide(harness, await reportCard(harness), "done", "user");
       expect(sentMail(emit), status).toHaveLength(0);
       expect(store.care_approvals![0], status).toMatchObject({ status: "refused", decided_by: "system:action-closed" });
       expect(store.care_approvals![0]!.error, status).toMatch(why);
@@ -759,7 +762,7 @@ describe("closing a report issue", () => {
     expect(((await reportIssueResolved(harness.ctx, CO, originId)) as { missing: string[] }).missing[0]).toMatch(/built but not sent/);
     const sent = await tool<Record<string, any>>(harness, "send-client-report", { client: "company:acme", period: PERIOD });
     expect(((await reportIssueResolved(harness.ctx, CO, originId)) as { missing: string[] }).missing[0]).toMatch(/waiting for a person's approval. Leave this issue open/);
-    await decide(harness, sent.approvalIssueId, "done", "user");
+    await decide(harness, await reportCard(harness), "done", "user");
     await answerSend(harness, `crm:msg:${booted.store.care_approvals![0]!.id}`, "sent");
     expect(await reportIssueResolved(harness.ctx, CO, originId)).toEqual({ done: true });
   });

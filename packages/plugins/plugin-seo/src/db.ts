@@ -2104,9 +2104,16 @@ export async function recentNeedsYouDigests(db: SeoDb, companyId: string, sprint
   return rows.map(needsYouFrom);
 }
 
-export async function getNeedsYouByIssue(db: SeoDb, companyId: string, issueId: string): Promise<NeedsYouDigest | null> {
-  const rows = await db.query(`SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND issue_id = $2 LIMIT 1`, [companyId, issueId]);
-  return rows[0] ? needsYouFrom(rows[0]) : null;
+/** Every sprint's digest that shares one weekly issue. */
+export async function getNeedsYouByIssue(db: SeoDb, companyId: string, issueId: string): Promise<NeedsYouDigest[]> {
+  const rows = await db.query(`SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND issue_id = $2`, [companyId, issueId]);
+  return rows.map(needsYouFrom);
+}
+
+/** All sprints' digests of one week (Monday date): they share the week's single Needs you issue. */
+export async function getNeedsYouForWeek(db: SeoDb, companyId: string, weekStart: string): Promise<NeedsYouDigest[]> {
+  const rows = await db.query(`SELECT ${NEEDS_YOU_SELECT} FROM ${t("needs_you")} WHERE company_id = $1 AND week_start = $2::date`, [companyId, weekStart]);
+  return rows.map(needsYouFrom);
 }
 
 /** One statement: insert this week's digest or replace its items / issue. */

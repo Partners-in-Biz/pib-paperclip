@@ -4,9 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { comparableUrl } from "../checks/parse.js";
-import { ORIGIN } from "../constants.js";
 import * as db from "../db.js";
-import { approvalIssueDescription, approvalIssueTitle, type ProposalCopy } from "../engine/copy.js";
 import { buildMetricSet, classifyOutcome, updateScoreboard, type MetricSet, type Scoreboard } from "../engine/measure.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { isRunning, proposalAllowance } from "../engine/sprint.js";
@@ -18,9 +16,7 @@ import { resolveAgent } from "./agent.js";
 import {
   actorId,
   actorLabel,
-  assignableUser,
   bool,
-  cockpitPath,
   companyInfo,
   errorMessage,
   oneOf,
@@ -32,8 +28,9 @@ import {
   type Env,
   type Params,
 } from "./common.js";
-import { clockFor, requireSprint, sprintCopy } from "./context.js";
-import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { clockFor, requireSprint } from "./context.js";
+import { commentOn, getIssue, OPEN_ISSUE_STATUSES, patchIssue } from "./issues.js";
+import { refreshNeedsYouIssue } from "./needs-you.js";
 import { draftFromMeasurement, type DraftResult } from "./playbook.js";
 import { ga4Line } from "./analytics.js";
 import { geoSummary } from "./geo.js";
@@ -41,7 +38,6 @@ import { geoLine } from "../engine/geo.js";
 import { materialiseDueTasks } from "./tasks.js";
 
 /** The weekly proposals posted as a comment on an approval issue that is already open (each proposal carries its evidence). */
-const PROPOSALS_COMMENT_MAX = 4_000;
 
 export async function detectorInput(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<DetectorInput> {
   const clock = clockFor(sprint, info.today);
@@ -131,18 +127,6 @@ export async function detectSignals(env: Env, info: CompanyInfo, sprint: db.Spri
   };
 }
 
-function proposalCopy(o: db.Optimization): ProposalCopy {
-  return {
-    id: o.id,
-    signalType: o.signalType,
-    severity: o.severity,
-    hypothesis: o.hypothesis,
-    proposedAction: o.proposedAction,
-    evidence: o.evidence,
-    taskTitles: o.proposedTasks.map((t) => t.title),
-  };
-}
-
 /** The week's numbers beyond rankings: GA4 organic traffic and key events, and AI-search readiness. Empty without either. */
 export async function weeklyNumbers(env: Env, sprint: db.Sprint): Promise<string[]> {
   // Each line only where a person switched its extra on for this sprint.
@@ -150,41 +134,16 @@ export async function weeklyNumbers(env: Env, sprint: db.Sprint): Promise<string
   return [traffic, geo && (geo.score != null || geo.mentions) ? `${geoLine(geo)}.` : null].filter((line): line is string => Boolean(line));
 }
 
-/** One approval issue per sprint: reuse an open one (comment) or open a new one for the owner. */
-async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint, created: db.Optimization[]): Promise<void> {
-  const numbers = await weeklyNumbers(env, sprint);
-  const pending = await db.listOptimizations(env.ctx.db, sprint.companyId, sprint.id, { status: "proposed" });
-  const existingIssueId = pending.map((o) => o.approvalIssueId).find((id) => id) ?? null;
-  let issueId: string | null = null;
-  if (existingIssueId) {
-    const issue = await getIssue(env, sprint.companyId, existingIssueId);
-    if (issue && OPEN_ISSUE_STATUSES.has(String(issue.status))) {
-      issueId = existingIssueId;
-      await commentOn(env, sprint.companyId, existingIssueId, approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint), numbers), { max: PROPOSALS_COMMENT_MAX, pointer: "every proposal is on the SEO page → Optimizations tab" });
-    }
+/**
+ * New proposals no longer open their own issue: the week's single Needs you issue links the SEO page (Optimizations tab)
+ * where each one is approved or rejected. Refresh that issue's description when it exists.
+ */
+async function announceProposals(env: Env, info: CompanyInfo, sprint: db.Sprint, _created: db.Optimization[]): Promise<void> {
+  try {
+    await refreshNeedsYouIssue(env, info, sprint);
+  } catch (error) {
+    env.ctx.logger.info("SEO weekly issue not refreshed", { sprintId: sprint.id, error: errorMessage(error) });
   }
-  if (!issueId) {
-    try {
-      const clock = clockFor(sprint, info.today);
-      const opened = await openIssue(env, {
-        companyId: sprint.companyId,
-        sprint,
-        title: approvalIssueTitle(sprint, `week ${clock.week}`),
-        description: approvalIssueDescription(sprintCopy(sprint), created.map(proposalCopy), cockpitPath(info, sprint), numbers),
-        originKind: ORIGIN.approval,
-        originId: sprint.id,
-        projectId: sprint.projectId,
-        parentId: sprint.rootIssueId,
-        assigneeUserId: assignableUser(sprint.ownerUserId),
-        wake: false,
-      });
-      issueId = opened.id;
-    } catch (error) {
-      env.ctx.logger.info("SEO approval issue not created", { sprintId: sprint.id, error: errorMessage(error) });
-      return;
-    }
-  }
-  for (const o of created) await db.updateOptimization(env.ctx.db, sprint.companyId, o.id, { approval_issue_id: issueId });
 }
 
 export async function detectSignalsTool(env: Env, companyId: string, params: Params) {

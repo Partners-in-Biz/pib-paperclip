@@ -4,7 +4,7 @@
  * messages from personal accounts). Pure: merge, resolve, render.
  */
 import { addDays } from "./time.js";
-import { sprintLabel, withClientPrefix, type SprintCopy } from "./copy.js";
+import { sprintLabel, type SprintCopy } from "./copy.js";
 
 /** How the plugin knows an item is done without asking. `manual` = a person says so. */
 export type NeedsYouCheck = "manual" | "site_project" | "service_account" | "gsc_access" | "bing_key" | "github_token" | "task_done" | "playbook_decided" | "wp_connector" | "wp_sftp" | "ga4_access" | "geo_firewall";
@@ -117,9 +117,26 @@ export function carryOver(previous: NeedsYouItem[], current: NeedsYouItem[]): Ne
   return [...current, ...openItems(previous).filter((i) => !keys.has(i.key))];
 }
 
-export function needsYouTitle(sprint: Pick<SprintCopy, "siteName" | "clientName">, week: string): string {
-  const title = withClientPrefix(`Needs you: SEO ${sprintLabel(sprint)} (week of ${week})`, sprint.clientName);
-  return title.length > 240 ? `${title.slice(0, 237)}…` : title;
+/** The one issue of the week, shared by every sprint of the company. */
+export function needsYouTitle(week: string): string {
+  return `SEO week of ${week}`;
+}
+
+/** The weekly issue: one section per sprint (client), each rendered as the sprint's own digest. Sections without items are left out. */
+export function weeklyNeedsYouDescription(groups: Array<{ sprint: SprintCopy; items: NeedsYouItem[]; cockpitPath: string | null; proposals?: number }>, week: string): string {
+  const shown = groups.filter((g) => g.items.length > 0 || (g.proposals ?? 0) > 0).sort((a, b) => sprintLabel(a.sprint).localeCompare(sprintLabel(b.sprint)));
+  const lines = [`Everything the SEO Specialist needs from a person this week (week of ${week}), grouped by client. Close this issue when every item is done: it reopens if any item is not.`, ""];
+  if (shown.length === 0) lines.push("Nothing needs you right now.");
+  for (const g of shown) {
+    lines.push(`## ${sprintLabel(g.sprint)}`, "");
+    if (g.items.length > 0) lines.push(needsYouDescription(g.sprint, g.items, { week, cockpitPath: g.cockpitPath }), "");
+    const n = g.proposals ?? 0;
+    if (n > 0) {
+      const target = g.cockpitPath ? `[SEO page → Optimizations](${g.cockpitPath}&tab=optimizations)` : "the SEO page → Optimizations tab";
+      lines.push(`${n} optimization proposal${n === 1 ? "" : "s"} waiting: approve or reject on ${target}. Closing this issue does not approve anything.`, "");
+    }
+  }
+  return lines.join("\n");
 }
 
 export function needsYouDescription(sprint: SprintCopy, items: NeedsYouItem[], input: { week: string; cockpitPath: string | null }): string {
