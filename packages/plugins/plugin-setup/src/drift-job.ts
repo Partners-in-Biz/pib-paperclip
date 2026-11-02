@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { COCKPIT_EVENTS, configSaved, createWorkIssue, emptySnapshot, readCompanyRoles, type HealthCheck } from "@partnersinbiz/pib-plugin-kit";
-import { computeDrift, type AgentDrift, type DriftReason } from "./drift.js";
+import { computeDrift, type AgentDrift, type DriftReason, type SkippedAgent } from "./drift.js";
 import { listChoices } from "./db.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { varsFor } from "./new-company.js";
@@ -45,16 +45,20 @@ export function driftBody(input: { companyId: string; rows: Array<{ drift: Agent
     templateKey: drift.templateKey,
     expectedHash,
     midRun: drift.midRun,
+    mode: drift.mode,
     reasons: drift.reasons.filter((r) => r.code !== "mid_run").map((r) => r.code),
   }));
   const lines = input.rows.map(({ drift, name, expectedHash }) => {
     const reasons = drift.reasons.filter((r) => r.code !== "mid_run").map(reasonText).join(", ");
-    return `- ${name} (\`${drift.agentId}\`), template \`${drift.templateKey}\`, expected hash \`${expectedHash}\`: ${reasons}${drift.midRun ? " **[running now: sync after the run]**" : ""}`;
+    const redistill = drift.mode === "distilled" && drift.reasons.some((r) => r.code === "hash_mismatch")
+      ? " **[distilled from an older template: Planner re-distills the file against the new render, then re-stamp with the new renderHash. Do not apply the rendered text.]**"
+      : "";
+    return `- ${name} (\`${drift.agentId}\`), template \`${drift.templateKey}\`, expected hash \`${expectedHash}\`: ${reasons}${drift.midRun ? " **[running now: sync after the run]**" : ""}${redistill}`;
   });
   return [
     "Agents whose instructions no longer match the team template pack. Kept up to date by the Setup plugin's hourly `template-drift` job; it closes this issue when nothing is behind.",
     "",
-    "For the sync script: call `partnersinbiz.setup:template-get` with `key` and this company's `companyId` for each row, apply the rendered text and stamp `metadata.pibPack` with the returned `renderHash`. Do not use the hash from `template-list` (it renders with default variables). Skip rows marked running now and pick them up next hour.",
+    "For the sync script: call `partnersinbiz.setup:template-get` with `key` and this company's `companyId` for each row, apply the rendered text and stamp `metadata.pibPack` with the returned `renderHash`. Do not use the hash from `template-list` (it renders with default variables). Skip rows marked running now and pick them up next hour. Rows with mode distilled are never overwritten; built-in and plugin-managed agents are not listed.",
     "",
     ...lines,
     "",
@@ -101,11 +105,11 @@ async function operatorAgentId(ctx: PluginContext, companyId: string): Promise<s
 }
 
 /** One company: compute drift, then open, update or close its single drift issue. */
-export async function refreshDriftIssue(ctx: PluginContext, companyId: string, templates: AgentTemplate[]): Promise<{ result: DriftCompanyResult; drifted: number }> {
+export async function refreshDriftIssue(ctx: PluginContext, companyId: string, templates: AgentTemplate[]): Promise<{ result: DriftCompanyResult; drifted: number; skipped: SkippedAgent[] }> {
   const agents = (await ctx.agents.list({ companyId, limit: AGENT_PAGE })) as unknown as Array<AgentLike & { metadata?: { pibPack?: unknown } | null }>;
   const live = agents.filter((agent) => agent.status !== "terminated");
   const { found, vars } = await varsFor(ctx, { companyId, key: null });
-  if (!found) return { result: "skipped", drifted: 0 };
+  if (!found) return { result: "skipped", drifted: 0, skipped: [] };
 
   const results = computeDrift({ templates, agents: live, vars, attachedSkills: {} });
   const byKey = new Map(templates.map((template) => [template.key, template]));
@@ -163,7 +167,7 @@ export async function refreshDriftIssue(ctx: PluginContext, companyId: string, t
     }
   }
   await publishHealth(ctx, companyId, healthCheck(actionable, midRun, issueId));
-  return { result, drifted: rows.length };
+  return { result, drifted: rows.length, skipped: results.skipped };
 }
 
 /** Hourly job: every company with saved Setup settings (host rule). One failing company does not stop the rest. */
@@ -182,7 +186,15 @@ export async function templateDrift(ctx: PluginContext): Promise<Record<string, 
       key = "skipped";
     } else {
       try {
-        key = (await refreshDriftIssue(ctx, choice.companyId, templates)).result;
+        const refreshed = await refreshDriftIssue(ctx, choice.companyId, templates);
+        key = refreshed.result;
+        if (refreshed.skipped.length > 0) {
+          ctx.logger.info("Template drift skipped built-in and plugin-managed agents", {
+            companyId: choice.companyId,
+            count: refreshed.skipped.length,
+            agents: refreshed.skipped.map((s) => `${s.templateKey}:${s.agentId} (${s.reason})`),
+          });
+        }
       } catch (error) {
         key = "failed";
         ctx.logger.info("Template drift failed", { companyId: choice.companyId, error: message(error) });
