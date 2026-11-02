@@ -83,20 +83,36 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
-          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` also runs
-          # `typecheck:rust` (cargo fmt/check), so the core job runs its `typecheck:typescript` half instead
-          # (PAR-7290). The Rust half stays in release-verify.yml.
+          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` runs
+          # `typecheck:rust` (cargo fmt/check) and server's `typecheck` first runs the runner's full `build`
+          # (cargo build --release). On this runner both run only their TypeScript halves: the runner's
+          # `typecheck:typescript`, and for server `build:typescript` of the runner (emits the d.ts server
+          # imports) plus `tsc --noEmit` (PAR-7290). The Rust half stays in release-verify.yml.
           RUNNER='@paperclipai/paperclip-runner'
+          SERVER='@paperclipai/server'
+          ts_only() {
+            pnpm --filter "$RUNNER" typecheck:typescript
+            if [ "$1" = server ]; then
+              pnpm --filter "$RUNNER" build:typescript
+              pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+              pnpm --filter "$SERVER" exec tsc --noEmit
+            fi
+          }
+          pnpm run preflight:workspace-links
           if [ "$MODE" = "affected" ]; then
-            pnpm run preflight:workspace-links
-            pnpm --filter "...[origin/${BASE_REF}]" --filter "!${RUNNER}" --if-present typecheck
-            if pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -e --arg n "$RUNNER" 'any(.[]; .name == $n)' >/dev/null; then
+            pnpm --filter "...[origin/${BASE_REF}]" --filter "!${RUNNER}" --filter "!${SERVER}" --if-present typecheck
+            affected="$(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1)"
+            if echo "$affected" | jq -e --arg n "$RUNNER" 'any(.[]; .name == $n)' >/dev/null; then
               pnpm --filter "$RUNNER" typecheck:typescript
             fi
+            if echo "$affected" | jq -e --arg n "$SERVER" 'any(.[]; .name == $n)' >/dev/null; then
+              pnpm --filter "$RUNNER" build:typescript
+              pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+              pnpm --filter "$SERVER" exec tsc --noEmit
+            fi
           else
-            pnpm run preflight:workspace-links
-            pnpm -r --filter "!${RUNNER}" typecheck
-            pnpm --filter "$RUNNER" typecheck:typescript
+            pnpm -r --filter "!${RUNNER}" --filter "!${SERVER}" typecheck
+            ts_only server
           fi
 
       # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
