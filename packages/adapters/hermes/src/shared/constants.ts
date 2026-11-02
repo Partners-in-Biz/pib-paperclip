@@ -45,6 +45,9 @@ export const VALID_PROVIDERS = [
   "minimax",
   "minimax-cn",
   "kilocode",
+  // Paperclip's Claude-subscription plugin. Without this entry an explicit
+  // provider of this name is rewritten to "anthropic".
+  "claude-subscription-directsdk-experimental",
 ] as const;
 
 /**
