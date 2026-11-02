@@ -588,7 +588,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
 
     // The canary client is the one that gets it, and only when the test provider is on.
     await seedClient(h, { id: "canary-ab12cd34", name: "PiB Canary Co", kind: "company" });
-    const canary = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    const canary = await h.call<{ id: string; number?: string | null }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: canary.id, description: "Test", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: canary.id });
     canary.number = (await invoiceNumber(h, canary.id))!;
@@ -596,7 +596,7 @@ describe.skipIf(!available)("online payments (postgres)", () => {
     expect(canaryLink.links.map((l) => l.provider)).toEqual(["mock"]);
     expect((await invoiceView(h.ctx, (await getInvoice(h.ctx, canary.id))!, settings)).paymentLinks).toEqual([expect.objectContaining({ provider: "mock" })]);
     h.config.set(COMPANY, { ...PAYPAL_SETTINGS });
-    const other = await h.call<{ id: string }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
+    const other = await h.call<{ id: string; number?: string | null }>("billing.create-invoice", { currency: "USD", customerKind: "company", customerRef: "canary-ab12cd34", customerName: "PiB Canary Co" });
     await h.call("billing.add-line", { invoiceId: other.id, description: "Test 2", quantity: 1, unitAmountMinor: 100_000 });
     await h.call("billing.mark-sent", { invoiceId: other.id });
     other.number = (await invoiceNumber(h, other.id))!;
