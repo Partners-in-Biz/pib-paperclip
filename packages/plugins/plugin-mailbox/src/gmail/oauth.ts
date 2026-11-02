@@ -9,7 +9,7 @@ import { pluginUiBase, requirePublicBaseUrl, TokenKeyError } from "@partnersinbi
 import { gmailRedirectUri, loadMailboxConfig } from "../config.js";
 import { ensureDefaultDelegations } from "../delegations.js";
 import { MailboxError } from "../domain.js";
-import { buildGoogleAuthorizeUrl, exchangeGoogleCode, getProfile, GMAIL_MODIFY_SCOPE, GMAIL_SEND_SCOPE, GmailApiError } from "./api.js";
+import { buildGoogleAuthorizeUrl, exchangeGoogleCode, getProfile, GMAIL_MODIFY_SCOPE, GmailApiError } from "./api.js";
 import { errorMessage, type Env } from "./env.js";
 import { closeReconnectIssue, googleClient, keyringFor, sealTokens } from "./tokens.js";
 
@@ -70,8 +70,8 @@ export async function oauthComplete(env: Env, input: PluginApiRequestInput): Pro
       return apiError(400, "Google did not return a refresh token. Remove this app at myaccount.google.com/permissions for that Google account, then connect again.");
     }
     const granted = tokens.scope.split(/\s+/);
-    if (!granted.includes(GMAIL_MODIFY_SCOPE) || !granted.includes(GMAIL_SEND_SCOPE)) {
-      return apiError(400, "Gmail read and send access were not both granted. Connect again and tick every permission.");
+    if (!granted.includes(GMAIL_MODIFY_SCOPE)) {
+      return apiError(400, "Gmail access was not granted. Connect again and tick the permission.");
     }
     const profile = await getProfile(env.fetch, tokens.accessToken);
     if (!profile.emailAddress) return apiError(400, "Gmail did not return the account address");

@@ -41,7 +41,7 @@ The Mailbox is the company's Gmail. Every PiB plugin sends and receives mail thr
 
 ### Connect Gmail
 
-Mailbox page → **Connect Gmail**. Scopes: `gmail.modify`, `gmail.send`, `openid`, `email` (`access_type=offline`, `prompt=consent`). The callback is the kit OAuth bridge page; register this redirect URI on the Google Web client (shown on the page):
+Mailbox page → **Connect Gmail**. Scopes: `gmail.modify` (covers read and send), `openid`, `email` (`access_type=offline`, `prompt=consent`). The callback is the kit OAuth bridge page; register this redirect URI on the Google Web client (shown on the page):
 
 `<publicBaseUrl>/_plugins/<installation uuid>/ui/oauth-callback.html`
 
