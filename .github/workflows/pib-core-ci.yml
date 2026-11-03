@@ -99,6 +99,9 @@ jobs:
             fi
           }
           pnpm run preflight:workspace-links
+          # cli (and others) typecheck ../server/src, which imports the runner's emitted d.ts: build it first.
+          pnpm --filter "$RUNNER" build:typescript
+          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
           if [ "$MODE" = "affected" ]; then
             pnpm --filter "...[origin/${BASE_REF}]" --filter "!${RUNNER}" --filter "!${SERVER}" --if-present typecheck
             affected="$(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1)"
