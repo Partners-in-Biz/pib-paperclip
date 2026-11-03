@@ -2,6 +2,7 @@
  * The hard cap of one campaign, as a row. Only a signed-in person writes one (an agent, the owner's delegate included, cannot). Nothing enforces it yet:
  * these rows are what a later check will read. A create_campaign proposal may carry `capMinor`; the row is written when the owner's own yes has run it.
  */
+import { resolveAccess } from "@partnersinbiz/pib-plugin-kit";
 import { audit, campaignKnown, getAccount, getCampaignCap, listCampaignCaps, listCampaignsWithoutCap, upsertCampaignCap, type CampaignCapRow } from "./db.js";
 import { AdsError, minorField, optionalString } from "./domain.js";
 import { formatMoney } from "./money.js";
@@ -11,9 +12,22 @@ export function capView(row: CampaignCapRow, currency?: string) {
   return { platform: row.platform, campaignExternalId: row.external_campaign_id, capMinor: row.cap_minor, ...(currency ? { cap: formatMoney(row.cap_minor, currency) } : {}), createdAt: row.created_at, setBy: row.set_by, proposalId: row.proposal_id };
 }
 
+/**
+ * Who may set a cap (PAR-7300): the company's owner or an admin, and nobody else. Another signed-in member, however much access the Ads page gave them, is refused;
+ * so is anyone whose role cannot be read (fail closed). The kit's `resolveAccess` reads the role from the host (`access.members.read`); `bypass` is true only
+ * for owner, admin and the local board. Refusals go to the activity log (`activity.log.write`), best effort.
+ */
+export async function requireCapSetter(rt: AdsRuntime, userId: string, what: string): Promise<void> {
+  const access = await resolveAccess(rt.ctx, rt.companyId, { type: "user", userId });
+  if (access.bypass) return;
+  await rt.ctx.activity.log({ companyId: rt.companyId, message: `Refused: ${userId} tried to ${what} (owner or admin only)`, entityType: "plugin_ads_cap", entityId: userId, metadata: { reason: access.reason ?? "not owner or admin" } }).catch(() => undefined);
+  throw new AdsError("Only the company owner or an admin can set a campaign cap.");
+}
+
 /** Sets (or changes) the cap of a known campaign and returns the row read back from the table. */
 export async function setCampaignCap(rt: AdsRuntime, actor: { userId: string | null }, params: Record<string, unknown>) {
   if (!actor.userId) throw new AdsError("Only a signed-in person sets a campaign cap. An agent cannot.");
+  await requireCapSetter(rt, actor.userId, "set a campaign cap");
   const accountId = optionalString(params, "accountId", 80);
   const externalId = optionalString(params, "campaignExternalId", 120);
   if (!accountId || !externalId) throw new AdsError("accountId and campaignExternalId are required (from list-ad-campaigns).");
@@ -33,6 +47,11 @@ export async function setCampaignCap(rt: AdsRuntime, actor: { userId: string | n
 /** What a create_campaign approval writes, once the campaign has an external id. `approvedBy` must be a person; the owner's delegate does not set caps. */
 export async function writeProposalCap(rt: AdsRuntime, input: { platform: string; externalCampaignId: string; capMinor: number; approvedBy: string; proposalId: string; scopeKey: string }): Promise<boolean> {
   if (!input.approvedBy.startsWith("user:")) return false;
+  try {
+    await requireCapSetter(rt, input.approvedBy.slice("user:".length), "record a proposal cap");
+  } catch {
+    return false;
+  }
   await upsertCampaignCap(rt.ctx, rt.companyId, { platform: input.platform, externalCampaignId: input.externalCampaignId, capMinor: input.capMinor, setBy: input.approvedBy, proposalId: input.proposalId });
   await audit(rt.ctx, rt.companyId, { actor: input.approvedBy, action: "campaign.cap_set", scopeKey: input.scopeKey, subject: input.externalCampaignId, detail: { platform: input.platform, capMinor: input.capMinor, proposalId: input.proposalId } });
   return true;

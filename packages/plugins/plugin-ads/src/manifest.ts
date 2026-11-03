@@ -19,6 +19,9 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: buildInstanceConfigSchema(),
   capabilities: [
     "companies.read",
+    // 0.3.20 (PAR-7300): the cap gate reads the caller's role (access.members.list) and logs refusals. New capabilities: a stop-first deploy.
+    "access.members.read",
+    "activity.log.write",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
