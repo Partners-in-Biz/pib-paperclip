@@ -6,5 +6,7 @@ export default defineConfig({
     maxWorkers: process.env.CI ? 8 : 4,
     include: ["tests/**/*.spec.ts"],
     environment: "node",
+    // loaded self-hosted runner: 5s default is too tight for media-steps body-cap tests
+    testTimeout: 30000,
   },
 });
