@@ -10,24 +10,30 @@
  * (ok / invalid / unreachable) and, when the provider says it, the expiry. The
  * value is never stored, logged or returned, and a response body is never kept.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { configSaved, isModuleEnabled, isOwnerCompany, MODULES, readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
 import { CLIENT_CREDENTIAL_TEMPLATE, CREDENTIAL_SEED, type SeedCredential } from "./credentials-seed.js";
 import {
+  BROWSER_SEED_PREFIX,
+  browserVerdict,
+  parseBrowserStatus,
   CredentialError,
   credentialBrief,
   credentialChecks,
   parseCredentialInput,
   type CredentialRow,
   type CredentialStatus,
+  type TokenProvider,
   type VerifyProvider,
   type VerifyStatus,
 } from "./credentials-model.js";
 import { getRoles, listRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message, throwIfEveryCompanyFailed } from "./env.js";
+import { openCockpitAsk } from "./effects.js";
 import { refreshHealthIssue } from "./health.js";
 import { NAMESPACE } from "./namespace.js";
 
@@ -229,7 +235,7 @@ function dateOnly(value: string | null | undefined): string | null {
   return m && !Number.isNaN(Date.parse(`${m[1]}T00:00:00Z`)) ? m[1]! : null;
 }
 
-export const VERIFIERS: Record<VerifyProvider, (token: string, fetchImpl: FetchLike) => Promise<VerifyResult>> = {
+export const VERIFIERS: Record<TokenProvider, (token: string, fetchImpl: FetchLike) => Promise<VerifyResult>> = {
   // GET /user answers 200 for a live token and sends its expiry in a header.
   async github(token, fetchImpl) {
     const res = await call(fetchImpl, "https://api.github.com/user", { authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" });
@@ -263,7 +269,7 @@ export const VERIFIERS: Record<VerifyProvider, (token: string, fetchImpl: FetchL
   },
 };
 
-export const VERIFY_SECRET_PATH = (provider: VerifyProvider): string => `credentialChecks.${provider}`;
+export const VERIFY_SECRET_PATH = (provider: TokenProvider): string => `credentialChecks.${provider}`;
 
 /**
  * Verifies one row. `not_configured` when its provider's secret is not set in
@@ -272,11 +278,11 @@ export const VERIFY_SECRET_PATH = (provider: VerifyProvider): string => `credent
  */
 export async function verifyCredential(env: Env, companyId: string, row: CredentialRow, secrets: SecretResolver): Promise<VerifyResult> {
   if (!row.verifyWith) return { status: "unsupported", detail: "No provider check exists for this one." };
-  const verifier = VERIFIERS[row.verifyWith];
+  const verifier = row.verifyWith === "browser" ? undefined : VERIFIERS[row.verifyWith];
   if (!verifier) return { status: "unsupported", detail: "No provider check exists for this one." };
   let token: string | undefined;
   try {
-    token = await secrets.get(VERIFY_SECRET_PATH(row.verifyWith));
+    token = await secrets.get(VERIFY_SECRET_PATH(row.verifyWith as TokenProvider));
   } catch (error) {
     // The error can name a secret reference, never its value; keep it short.
     return { status: "not_configured", detail: `The settings secret could not be read (${message(error).slice(0, 80)}).` };
@@ -304,7 +310,7 @@ export async function verifyCompany(env: Env, companyId: string, options: { only
   const secrets = new SecretResolver(env.ctx, companyId, config);
   const nowDate = env.now();
   const now = nowDate.toISOString();
-  const candidates = (await listCredentials(env.ctx, companyId)).filter((r) => r.status !== "retired" && r.verifyWith && (!options.only || options.only.includes(r.id)));
+  const candidates = (await listCredentials(env.ctx, companyId)).filter((r) => r.status !== "retired" && r.verifyWith && r.verifyWith !== "browser" && (!options.only || options.only.includes(r.id)));
   // A tool call may ask for a fresh check, but a provider is not called again for a credential that was really checked a moment ago.
   const recent = (r: CredentialRow) => options.skipCheckedWithinMs !== undefined && (r.lastVerifyStatus === "ok" || r.lastVerifyStatus === "invalid") && !!r.lastVerifiedAt && nowDate.getTime() - Date.parse(r.lastVerifiedAt) < options.skipCheckedWithinMs;
   result.skippedRecent = candidates.filter(recent).length;
@@ -351,6 +357,66 @@ export async function credentialHealth(env: Env, companyId: string): Promise<Ret
   }
 }
 
+// ---------------------------------------------------------------------------
+// Provider "browser": the pib-browser status file (no secret, no provider call)
+// ---------------------------------------------------------------------------
+
+export const BROWSER_STATUS_PATH = "/home/paperclip/pib-tools/browser-status.json";
+const MAX_STATUS_BYTES = 64_000;
+
+async function readStatus(env: Env, path: string): Promise<string | null> {
+  try {
+    if (env.readStatusFile) return await env.readStatusFile(path);
+    const text = await readFile(path, "utf8");
+    return text.length > MAX_STATUS_BYTES ? "" : text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the status file `pib-evidence status` writes and records one register row per browser identity (no secret):
+ * ok -> verified; not ok, or a file older than 36 hours -> expired, with one owner card per expired identity (deduped
+ * while open). A missing or unreadable file changes nothing and opens no card: "unverified" is not "expired".
+ * Only the owner company has the browser, so only it gets these rows.
+ */
+export async function syncBrowserIdentities(env: Env, companyId: string, path = process.env.PIB_BROWSER_STATUS || BROWSER_STATUS_PATH): Promise<{ identities: number; expired: number; cards: number } | null> {
+  if (!(await isOwnerCompany(env.ctx, companyId))) return null;
+  const status = parseBrowserStatus(await readStatus(env, path), env.now());
+  if (status.state !== "read") return null;
+  const now = env.now().toISOString();
+  const out = { identities: 0, expired: 0, cards: 0 };
+  for (const id of status.identities) {
+    const verdict = browserVerdict(status, id);
+    const name = `Browser login: ${id.identity}`;
+    await env.ctx.db.execute(
+      `INSERT INTO ${T} (id, company_id, seed_key, name, system, lives_in, owner, rotate_how, verify_with, status, last_verified_at, last_verify_status, last_verify_detail, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'browser', 'active', $9, $10, $11, $12, $12)
+       ON CONFLICT (company_id, seed_key) WHERE seed_key IS NOT NULL DO UPDATE SET last_verified_at = $9, last_verify_status = $10, last_verify_detail = $11, updated_at = $12`,
+      [newId(), companyId, `${BROWSER_SEED_PREFIX}${id.identity}`, name, "pib-browser", "The pib-browser profile on the server", "Owner", "Log in again in the pib-browser profile on the server (hand-off mode).", status.checkedAt, verdict.status, verdict.detail, now],
+    );
+    out.identities += 1;
+    if (verdict.status !== "expired") continue;
+    out.expired += 1;
+    const hash = createHash("sha1").update(id.identity).digest("hex").slice(0, 8);
+    const card = await openCockpitAsk(env, companyId, {
+      originKey: `browser-login-${hash}`,
+      title: `Log in again: ${id.identity}`,
+      card: {
+        kind: "grant",
+        question: `The browser's login for ${id.identity} no longer works. Browser steps for it fail until someone logs in again.`,
+        why: "The daily browser check could not use this login (expired, signed out or checked too long ago). Without it the agents cannot take confirmation screenshots for this account.",
+        options: ["I will log in again now"],
+        links: [{ label: "Credentials", href: "/cockpit" }],
+        steps: [`Put the browser in hand-off mode and log in to ${id.identity} (see the pib-browser README).`, "Run the browser status check again.", "Press the button once done; it only records that you have seen this."],
+        effect: { key: `cockpit.browser-login-${hash}`, params: { identity: id.identity } },
+      },
+    });
+    if (card.action === "opened") out.cards += 1;
+  }
+  return out;
+}
+
 /** Daily job: verify and settle the alerts for every company with saved Cockpit settings, and load the starting list where `credentialSeed` is ticked. */
 export async function credentialsCheck(env: Env): Promise<Record<string, number>> {
   const total: Record<string, number> = { companies: 0, seeded: 0, verified: 0, ok: 0, invalid: 0, unreachable: 0, notConfigured: 0, failed: 0 };
@@ -361,6 +427,14 @@ export async function credentialsCheck(env: Env): Promise<Record<string, number>
       const seeded = await seedCredentials(env, row.companyId);
       const r = await verifyCompany(env, row.companyId);
       r.seeded = seeded;
+      const browser = await syncBrowserIdentities(env, row.companyId).catch((error) => {
+        env.ctx.logger.info("Credential check: browser status not read", { companyId: row.companyId, error: message(error) });
+        return null;
+      });
+      if (browser) {
+        total.browserIdentities = (total.browserIdentities ?? 0) + browser.identities;
+        total.browserExpired = (total.browserExpired ?? 0) + browser.expired;
+      }
       for (const [key, value] of Object.entries(r)) total[key] = (total[key] ?? 0) + value;
       // Put a new alert on the System health issue now, not at the next hour.
       await refreshHealthIssue(env, row.companyId).catch((error) => env.ctx.logger.info("Credential check: health refresh failed", { error: message(error) }));

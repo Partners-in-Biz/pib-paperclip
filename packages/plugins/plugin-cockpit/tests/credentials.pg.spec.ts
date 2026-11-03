@@ -8,7 +8,8 @@ import { extraChecks } from "../src/checks.js";
 import { collectProblems, refreshHealthIssue } from "../src/health.js";
 import { ORIGIN } from "../src/constants.js";
 import { CREDENTIAL_SEED } from "../src/credentials-seed.js";
-import { credentialList, listCredentials, seedCredentials, verifyCompany, VERIFIERS } from "../src/credentials.js";
+import { readFileSync } from "node:fs";
+import { credentialList, listCredentials, seedCredentials, syncBrowserIdentities, verifyCompany, VERIFIERS } from "../src/credentials.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
@@ -51,6 +52,8 @@ const ref = (id: string) => ({ type: "secret_ref", secretId: id, version: "lates
 const CHECKS_CONFIG = { healthIssue: true, credentialSeed: true, credentialChecks: { github: ref("sec-gh"), cloudflare: ref("sec-cf"), resend: ref("sec-rs") } };
 const SECRETS = { "sec-gh": GITHUB_VALUE, "sec-cf": CF_VALUE, "sec-rs": RESEND_VALUE };
 
+const w0 = (hoursAgo: number) => new Date(Date.parse("2026-10-03T12:00:00.000Z") - hoursAgo * 3_600_000).toISOString();
+
 d("the credentials register (Postgres)", () => {
   let worlds: Awaited<ReturnType<typeof startWorlds>>;
   beforeAll(async () => {
@@ -72,6 +75,7 @@ d("the credentials register (Postgres)", () => {
         { id: OP_B, companyId: B, name: "Client operator", status: "active", role: "general" },
       ],
     });
+    w.env.readStatusFile = async () => null; // never read the server's real browser status file
     await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");
     if (otherConfigs[B]) await saveTeam(w.env, B, { operatorAgentId: OP_B }, "user-owner-b");
     const logs: string[] = [];
@@ -500,6 +504,44 @@ d("the credentials register (Postgres)", () => {
       const problems = await collectProblems(w.env, A, { trackWarnings: true });
       expect(problems.entries.find((e) => e.key === `credential:${soon.data!.id}:expiry`)).toMatchObject({ status: "bad" });
       expect(problems.entries.find((e) => e.key === `credential:${lapsed.data!.id}:expiry`)).toMatchObject({ status: "bad", title: "Old token expired 4 days ago" });
+    });
+  });
+
+  describe("provider browser (pib-browser status file)", () => {
+    const FIXTURE = readFileSync(new URL("../../pib-browser/test/fixtures/browser-status.json", import.meta.url), "utf8");
+    const at = (iso: string) => ({ ...JSON.parse(FIXTURE), checkedAt: iso });
+    async function setup(file: string | null) {
+      const w = await make();
+      await w.client.query(`INSERT INTO ${NAMESPACE}.roles (company_id, owner_user_id) VALUES ($1, 'owner-user') ON CONFLICT (company_id) DO UPDATE SET owner_user_id = 'owner-user'`, [A]);
+      w.env.readStatusFile = async () => file;
+      return w;
+    }
+    const rows = async (w: Hybrid) => (await w.client.query(`SELECT seed_key, last_verify_status, last_verify_detail FROM ${NAMESPACE}.credentials WHERE company_id = $1 AND verify_with = 'browser' ORDER BY seed_key`, [A])).rows as Array<Record<string, any>>;
+    const cards = async (w: Hybrid) => Number(((await w.client.query(`SELECT count(*) AS n FROM ${NAMESPACE}.asks WHERE company_id = $1 AND source = 'cockpit' AND effect ->> 'key' LIKE 'cockpit.browser-login-%'`, [A])).rows as Array<Record<string, any>>)[0]!.n);
+
+    it("fresh file: ok identity is verified, the failed one is expired with exactly one card, and a second run opens none", async () => {
+      const w = await setup(JSON.stringify(at(w0(36 - 1))));
+      const first = await syncBrowserIdentities(w.env, A, "x");
+      expect(first).toEqual({ identities: 2, expired: 1, cards: 1 });
+      expect((await rows(w)).map((r) => [r.seed_key, r.last_verify_status])).toEqual([["browser:client:ca:google-ads", "expired"], ["browser:pib:meta", "ok"]]);
+      expect(await syncBrowserIdentities(w.env, A, "x")).toMatchObject({ cards: 0 });
+      expect(await cards(w)).toBe(1);
+      expect(await everything(w as never)).not.toMatch(/cookie|password/i);
+    });
+
+    it("missing or broken file: nothing recorded (unverified), no card", async () => {
+      for (const file of [null, "not json", "{}"]) {
+        const w = await setup(file);
+        expect(await syncBrowserIdentities(w.env, A, "x")).toBeNull();
+        expect(await rows(w)).toEqual([]);
+        expect(await cards(w)).toBe(0);
+      }
+    });
+
+    it("a file older than 36 hours marks every identity expired", async () => {
+      const w = await setup(JSON.stringify(at(w0(40))));
+      expect(await syncBrowserIdentities(w.env, A, "x")).toMatchObject({ identities: 2, expired: 2, cards: 2 });
+      expect((await rows(w)).every((r) => r.last_verify_status === "expired")).toBe(true);
     });
   });
 });
