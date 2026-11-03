@@ -61,7 +61,7 @@ Reading rules: every sync re-reads everything since the last **good** read plus 
 
 - **CRM**: client names and projects through the kit's projections; the CRM's `create-client-action` carries the client ask. The plugin listens for `plugin.partnersinbiz.crm.client.brand.updated` (`{ clientKind, clientRef, bannedWords, brandNote }`, a contract the CRM does not emit yet) so banned words reach a scope without trusting an agent to copy them.
 - **Cockpit**: snapshot with spend, budget, waiting changes, alerts and health; the Reviewer and Operator roles come from the roles copy (`registerRoleWatch`).
-- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count.
+- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count. The module accent, icon and Marketing nav entry ("Paid ads", `/ads`) are already in `pib-plugin-ui`.
 
 ## Not in version 0.1
 
@@ -69,7 +69,7 @@ Ad sets, audiences, creatives and ads are built in the platform (a created campa
 
 ## Shared pieces to add (not part of this package)
 
-Kit: `MODULES.ads` and `PIB_PLUGINS.ads`; `TEAM_ROLES` entry `ads-manager` (see the wiki for the exact text); the plugin in the contract tests' `PLUGINS` lists. UI package: an `ads` module accent and icon, and a Marketing nav entry. Ops: `deploy-plugins.sh` and `smoke-plugins.sh` learn the plugin name, and a first-install path.
+Kit: `MODULES.ads` and `PIB_PLUGINS.ads`; `TEAM_ROLES` entry `ads-manager` (see the wiki for the exact text); the plugin in the contract tests' `PLUGINS` lists. Ops: `deploy-plugins.sh` and `smoke-plugins.sh` learn the plugin name, and a first-install path.
 
 ## Tests
 
