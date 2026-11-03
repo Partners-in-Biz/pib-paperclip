@@ -43,8 +43,8 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, OWN_SCOPE } from "../platforms.js";
-import { ACTION_TEXT, BUDGET_STATE_TEXT, CONNECTION_TEXT, budgetToneOf, connectionTone, inputFromMinor, minorFromInput, spendSeries, statusTone } from "./series.js";
-import type { AccountInfo, AuditEntry, BudgetInfo, ConnectionInfo, Overview, ProposalDetail, ProposalSummary, Summary, SummaryGroup } from "./types.js";
+import { ACTION_TEXT, BUDGET_STATE_TEXT, CONNECTION_TEXT, budgetToneOf, capConfirmText, capMinorFromInput, capSubmitStep, connectionTone, inputFromMinor, minorFromInput, spendSeries, statusTone } from "./series.js";
+import type { AccountInfo, CampaignRow, AuditEntry, BudgetInfo, ConnectionInfo, Overview, ProposalDetail, ProposalSummary, Summary, SummaryGroup } from "./types.js";
 
 const ACTION_KEYS = [
   "ads.load",
@@ -67,6 +67,7 @@ const ACTION_KEYS = [
   "ads.mark-done",
   "ads.execute",
   "ads.ack-alert",
+  "ads.set-campaign-cap",
 ] as const;
 type ActionKey = (typeof ACTION_KEYS)[number];
 type Run = (key: ActionKey, params?: Record<string, unknown>, success?: string) => Promise<any>;
@@ -302,8 +303,9 @@ function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
   const [period, setPeriod] = useState("last_30d");
   const [groupBy, setGroupBy] = useState("platform");
   const [client, setClient] = useState("all");
-  const [state, setState] = useState<{ summary: Summary; campaigns: { campaigns: any[] }; ledger: { entries: any[] } } | null>(null);
+  const [state, setState] = useState<{ summary: Summary; campaigns: { campaigns: CampaignRow[] }; ledger: { entries: any[] } } | null>(null);
   const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
   const scopes = useMemo(() => [...new Set(data.budgets.map((b) => b.scopeKey))], [data.budgets]);
   useEffect(() => {
     let live = true;
@@ -315,7 +317,7 @@ function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, groupBy, client]);
+  }, [period, groupBy, client, reload]);
   return (
     <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -329,6 +331,7 @@ function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
         </Select>
       </div>
       {error ? <Muted>{error}</Muted> : null}
+      {state ? <CampaignCapsCard campaigns={state.campaigns.campaigns} run={run} onSet={() => setReload((n) => n + 1)} /> : null}
       {!state ? <Muted>Loading…</Muted> : !state.summary.hasData ? (
         <EmptyState title="No numbers in this period" description="Numbers appear after the first read of a registered ad account (within three hours), and only for days the platform reported." icon={Activity} />
       ) : (
@@ -431,6 +434,91 @@ function ChangesTab({ data, run, narrow, openProposal }: { data: Overview; run: 
         />
       )}
     </div>
+  );
+}
+
+/** Active Meta and Google campaigns with their cap; the only place a person sets one. */
+function CampaignCapsCard({ campaigns, run, onSet }: { campaigns: CampaignRow[]; run: Run; onSet: () => void }) {
+  const [editing, setEditing] = useState<CampaignRow | null>(null);
+  const rows = useMemo(
+    () => campaigns
+      .filter((c) => c.status === "active" && (c.platform === "meta" || c.platform === "google"))
+      .sort((a, b) => Number(a.capMinor !== null) - Number(b.capMinor !== null)),
+    [campaigns],
+  );
+  const missing = rows.filter((c) => c.capMinor === null).length;
+  return (
+    <SectionCard title="Campaign caps" subtitle={rows.length === 0 ? undefined : missing ? `${missing} active campaign${missing === 1 ? " has" : "s have"} no cap` : "Every active campaign has a cap"}>
+      {rows.length === 0 ? <Muted>No active Meta or Google campaigns.</Muted> : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {rows.map((c) => (
+            <div key={`${c.accountId}|${c.campaignExternalId}`} style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+              <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                <strong style={{ fontSize: 13, overflowWrap: "anywhere" }}>{c.name}</strong>
+                <div style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>{c.platform} · {c.accountName} · Daily budget {c.dailyBudget ?? "none"}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                {c.capMinor === null ? <Pill tone="warn" dot>No cap</Pill> : <span style={{ fontSize: 13, overflowWrap: "anywhere" }}>{c.cap}</span>}
+                <Button type="button" variant="secondary" onClick={() => setEditing(c)}>{c.capMinor === null ? "Set cap" : "Change cap"}</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <CapModal campaign={editing} run={run} onClose={() => setEditing(null)} onSet={onSet} />
+    </SectionCard>
+  );
+}
+
+function CapModal({ campaign, run, onClose, onSet }: { campaign: CampaignRow | null; run: Run; onClose: () => void; onSet: () => void }) {
+  const [text, setText] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setText(campaign && campaign.capMinor !== null ? inputFromMinor(campaign.capMinor, campaign.currencyExponent) : "");
+    setConfirming(false);
+    setError("");
+  }, [campaign]);
+  if (!campaign) return null;
+  const exponent: number = campaign.currencyExponent ?? 2;
+  const minor = capMinorFromInput(text, exponent);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const step = await capSubmitStep(campaign, minor, confirming, run);
+      if (step === "invalid") setError(`Type an amount in ${campaign.currency} above zero${exponent ? `, with at most ${exponent} decimal${exponent === 1 ? "" : "s"}` : ", without decimals"}.`);
+      else if (step === "confirm") { setError(""); setConfirming(true); }
+      else { onSet(); onClose(); }
+    } catch (e) {
+      setError(errorText(e));
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      open
+      title="Set campaign cap"
+      description={`${campaign.name} · ${campaign.platform} · ${campaign.accountName}`}
+      onClose={onClose}
+      footer={(
+        <>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={busy} onClick={() => void submit()}>{confirming ? "Confirm cap" : "Set cap"}</Button>
+        </>
+      )}
+    >
+      <div style={{ display: "grid", gap: 10 }}>
+        <Muted>Currency: {campaign.currency}. Current cap: {campaign.cap ?? "none"}.</Muted>
+        <Field label={`Cap (${campaign.currency}, in major units, for example ${exponent ? "1500." + "0".repeat(exponent) : "1500"})`}>
+          <Input value={text} disabled={confirming || busy} inputMode="decimal" onChange={(e) => { setText(e.target.value); setError(""); }} />
+        </Field>
+        {confirming && minor !== null ? <strong style={{ fontSize: 13, overflowWrap: "anywhere" }}>{capConfirmText(campaign.name, campaign.currency, exponent, minor)}</strong> : null}
+        {error ? <Muted>{error}</Muted> : null}
+      </div>
+    </Modal>
   );
 }
 
