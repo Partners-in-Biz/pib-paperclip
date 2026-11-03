@@ -648,7 +648,7 @@ export function postOverrides(row: Pick<PostRow, "overrides">): Partial<Record<S
   return raw as Partial<Record<SocialPlatform, PlatformOverride>>;
 }
 
-/** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. Excludes personal posts unless explicitly filtered. */
+/** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. Excludes personal posts unless includePersonal (own work is the company's posts, never a person's My Social drafts). */
 export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
   let where = "company_id = $1";
@@ -657,9 +657,7 @@ export async function listPosts(ctx: PluginContext, companyId: string, filter: {
     where += ` AND status = $${params.length}`;
   }
   where += scopeClause(filter.scope, params);
-  if (!filter.includePersonal && filter.scope === undefined) {
-    where += orgOnlyClause();
-  }
+  if (!filter.includePersonal) where += orgOnlyClause();
   params.push(Math.min(Math.max(filter.limit ?? 500, 1), 1000));
   return ctx.db.query<PostRow>(
     `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
@@ -913,7 +911,7 @@ export async function destinationsForScope(ctx: PluginContext, companyId: string
     `SELECT ${DEST_COLS.split(", ").map((c) => `d.${c}`).join(", ")}
        FROM ${table(ctx, "destinations")} d
        JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
-      WHERE d.company_id = $1 AND ${w.sql}
+      WHERE d.company_id = $1 AND ${w.sql}${orgOnlyClause("p")}
       ORDER BY d.created_at`,
     params,
   );
@@ -1241,7 +1239,7 @@ export async function metricsForCompany(ctx: PluginContext, companyId: string, s
     `SELECT ${METRIC_COLS.split(", ").map((c) => `m.${c}`).join(", ")}
        FROM ${table(ctx, "post_metrics")} m
        JOIN ${table(ctx, "posts")} p ON p.id = m.post_id
-      WHERE m.company_id = $1 AND ${w.sql}
+      WHERE m.company_id = $1 AND ${w.sql}${orgOnlyClause("p")}
       ORDER BY m.recorded_at`,
     params,
   );
@@ -1686,6 +1684,8 @@ export async function scopeSummary(ctx: PluginContext, companyId: string, scope:
   const params: unknown[] = [companyId];
   const w = clientWhere(scope, params.length + 1);
   params.push(...w.params);
+  // Own work is the company's rows: a person's My Social accounts and posts never count.
+  w.sql += orgOnlyClause();
   const accounts = table(ctx, "accounts");
   const posts = table(ctx, "posts");
   const rows = await ctx.db.query<ScopeSummaryRow>(
