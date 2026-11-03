@@ -61,7 +61,7 @@ Reading rules: every sync re-reads everything since the last **good** read plus 
 
 - **CRM**: client names and projects through the kit's projections; the CRM's `create-client-action` carries the client ask. The plugin listens for `plugin.partnersinbiz.crm.client.brand.updated` (`{ clientKind, clientRef, bannedWords, brandNote }`, a contract the CRM does not emit yet) so banned words reach a scope without trusting an agent to copy them.
 - **Cockpit**: snapshot with spend, budget, waiting changes, alerts and health; the Reviewer and Operator roles come from the roles copy (`registerRoleWatch`).
-- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count. The role `ads-manager` and the module `ads` are not in the kit yet (see "Shared pieces to add").
+- **Setup**: `GET /setup-status` and the hourly event. Until the settings are saved the plugin reports one optional item, so a company that does not run ads never sees a "steps left" count.
 
 ## Not in version 0.1
 

@@ -31,6 +31,7 @@ export type TeamRoleKey =
   | "deal-desk"
   | "revenue-lead"
   | "seo-specialist"
+  | "ads-manager"
   | "social"
   | "creative-producer"
   | "bookkeeper"
@@ -225,6 +226,19 @@ export const TEAM_ROLES: TeamRole[] = [
     actions: pluginActions("seo", "seo.activate-agent"),
     pagePath: "/seo",
     runProfile: RUN_PROFILES["seo-specialist"],
+  },
+  {
+    key: "ads-manager",
+    pluginKey: PIB_PLUGINS.ads,
+    module: "ads",
+    title: "Paid Ads Manager",
+    summary: "Watches ad results and proposes changes for approval.",
+    required: false,
+    setupItemKey: "agent",
+    skills: withOs(teamSkillKey(PIB_PLUGINS.ads, "ads")),
+    actions: pluginActions("ads", "ads.resync-agent"),
+    pagePath: "/ads",
+    runProfile: RUN_PROFILES["ads-manager"],
   },
   {
     key: "social",
