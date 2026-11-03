@@ -156,6 +156,17 @@ export const CARE_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "move-support-case",
+    displayName: "Move support case",
+    description:
+      "Re-file a support case that was filed under the wrong client, to another customer company. Its timeline and feedback go with it; title, status, SLA targets and the linked issue stay as they are (the issue's project is not changed). An answered or resolved case moves too. The new client's timeline gets one event with the reason, and the linked issue a one-line comment. If a call stops half-way, re-run it with the same arguments to finish.",
+    parametersSchema: schema(["caseId", "client", "reason"], {
+      caseId: text("The case id (from list-support-cases)."),
+      client: text("The customer company it belongs to: company:<id> (from find-records)."),
+      reason: text("Why it belongs there, one sentence. Logged on the new client's timeline and the issue."),
+    }),
+  },
+  {
     name: "list-support-cases",
     displayName: "List support cases",
     description: "Support cases with where each stands against its targets (met, ok, at risk, breached, paused). Default: open cases.",
