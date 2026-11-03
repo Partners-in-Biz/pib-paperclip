@@ -33,9 +33,49 @@ export interface PreviewStats {
 
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
 
+/** Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced). */
+function stripElements(html: string, openRe: RegExp): string {
+  const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
+  let out = "";
+  let pos = 0;
+  openRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(html))) {
+    if (m.index < pos) continue;
+    let end = m.index + m[0].length;
+    if (!VOID.test(m[1]) && !/\/>$/.test(m[0])) {
+      const tagRe = new RegExp("<(/?)" + m[1] + "\\b[^>]*>", "gi");
+      tagRe.lastIndex = end;
+      let depth = 1;
+      let t: RegExpExecArray | null;
+      end = html.length;
+      while ((t = tagRe.exec(html))) {
+        if (t[1]) depth--;
+        else if (!/\/>$/.test(t[0])) depth++;
+        if (depth === 0) { end = t.index + t[0].length; break; }
+      }
+    }
+    out += html.slice(pos, m.index) + " ";
+    pos = end;
+    openRe.lastIndex = end;
+  }
+  return out + html.slice(pos);
+}
+
+/** Remove Google Translate widget elements to avoid counting their text as page content. */
+function stripGoogleTranslateWidget(html: string): string {
+  // Main widget container
+  html = stripElements(html, /<(div)\b[^>]*\bid\s*=\s*["']?google_translate_element\b[^>]*>/gi);
+  // Elements with the skiptranslate class
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*skiptranslate[^"'>]*["']?[^>]*>/gi);
+  // Generated goog-te-* / VIpgJd UI
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*(?:goog-te|VIpgJd)[^"'>]*["']?[^>]*>/gi);
+  return html;
+}
+
 /** Visible words of a page: no scripts, styles, tags or the preview's own bar. */
 export function visibleWords(html: string): string[] {
-  const text = html
+  const text = stripGoogleTranslateWidget(html)
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
