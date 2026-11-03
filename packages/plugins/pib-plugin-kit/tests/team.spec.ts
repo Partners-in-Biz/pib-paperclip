@@ -13,7 +13,7 @@ import {
 
 describe("team roles", () => {
   it("lists every recommended PiB agent once, with its plugin's actions", () => {
-    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "social", "creative-producer", "bookkeeper", "payroll-clerk"]);
+    expect(TEAM_ROLES.map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "ads-manager", "social", "creative-producer", "bookkeeper", "payroll-clerk"]);
     expect(new Set(TEAM_ROLES.map((r) => `${r.pluginKey}:${r.setupItemKey}`)).size).toBe(TEAM_ROLES.length);
     for (const role of TEAM_ROLES) {
       expect(role.actions.options).toMatch(/\.hire-options$/);
@@ -63,13 +63,14 @@ describe("team roles", () => {
     expect(teamRoleForSetupItem("partnersinbiz.cockpit", "operator_agent")?.key).toBe("operator");
     expect(teamRoleForSetupItem("partnersinbiz.seo", "agent")?.key).toBe("seo-specialist");
     expect(teamRoleForSetupItem("partnersinbiz.social", "agent")?.key).toBe("social");
+    expect(teamRoleForSetupItem("partnersinbiz.ads", "agent")?.key).toBe("ads-manager");
     expect(teamRoleForSetupItem("partnersinbiz.payroll", "clerk")?.key).toBe("payroll-clerk");
     expect(teamRoleForSetupItem("partnersinbiz.seo", "settings")).toBeNull();
   });
 
   it("keeps roles for switched-on modules only", () => {
     expect(activeTeamRoles(null)).toHaveLength(TEAM_ROLES.length);
-    expect(activeTeamRoles({ payroll: false, social: false }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "bookkeeper"]);
+    expect(activeTeamRoles({ payroll: false, social: false }).map((r) => r.key)).toEqual(["operator", "reviewer", "account-manager", "sales-lead", "inbound-qualifier", "crm-data-steward", "deal-desk", "revenue-lead", "seo-specialist", "ads-manager", "bookkeeper"]);
     expect(activeTeamRoles({ crm: false }).some((r) => r.pluginKey === "partnersinbiz.crm")).toBe(false);
   });
 

@@ -141,8 +141,8 @@ describe.skipIf(!available)("the agent's tool surface", () => {
 
   it("refuses when the module is switched off for the company", async () => {
     await w.ctx.state.set({ scopeKind: "company", scopeId: COMPANY, namespace: "pib-setup", stateKey: "modules" }, { companyId: COMPANY, modules: { ads: false }, updatedAt: "2026-10-15T00:00:00Z" });
-    // The module is not in the kit's registry yet, so the switch is not honoured: the tool still answers (documented in the README).
-    expect((await tool(w, "list-ad-accounts")).error).toBeUndefined();
+    // The module is in the kit's registry, so the switch is honoured.
+    expect((await tool(w, "list-ad-accounts")).error).toMatch(/switched off/);
   });
 });
 

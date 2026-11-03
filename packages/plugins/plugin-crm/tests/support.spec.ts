@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SupportCase } from "../src/care-store.js";
 import { applyStatus, breachResolved, caseIssueResolved, caseSla, feedbackEmail, isSupportMail, LOW_SCORE, npsOf, parseScore, runSupportSla, SLA_HOURS, slaDueDates, supportHealth } from "../src/support.js";
-import { answerSend, bootCare, careSeed, CO, decide, issuesWith, MAILBOX, OWNER, tool, toolRaw, type Booted } from "./helpers/care.js";
+import { answerSend, bootCare, careSeed, CO, company, decide, issuesWith, MAILBOX, OWNER, tool, toolRaw, type Booted } from "./helpers/care.js";
 
 const HOUR = 3_600_000;
 const OPENED = new Date("2026-10-01T08:00:00.000Z");
@@ -354,5 +354,153 @@ describe("NPS and CSAT", () => {
     expect(feedbackEmail("nps", "Ada Lovelace", null).text).toMatch(/recommend us to a friend[\s\S]*Thank you,\nThe team$/);
     expect(feedbackEmail("nps", "Ada Lovelace", null, "Partners in Apps").text).not.toContain("Partners in Biz");
     expect(feedbackEmail("csat", "Ada Lovelace", "Form").text).toMatch(/"Form"[\s\S]*1 \(very unhappy\) to 5/);
+  });
+});
+
+describe("move-support-case", () => {
+  /** Acme (customer) has a case with an issue, a timeline and a feedback row; Hunt and Third are customers, Globex is not. */
+  async function setup() {
+    const store = careSeed();
+    store.companies!.push(company("hunt", "Hunt and Gun", { lifecycle: "customer" }), company("third", "Third Co", { lifecycle: "customer" }));
+    const booted = await bootCare({ store });
+    const made = await tool<Record<string, any>>(booted.harness, "open-support-case", { client: "company:acme", title: "Seller login", severity: "high" });
+    await tool(booted.harness, "update-support-case", { caseId: made.caseId, note: "Asked for a screenshot." });
+    (booted.store.client_feedback ??= []).push({ id: "fb-1", company_id: CO, client_kind: "company", client_ref: "acme", kind: "csat", case_id: made.caseId, status: "draft" });
+    const comments = vi.spyOn(booted.harness.ctx.issues, "createComment");
+    return { booted, id: made.caseId as string, comments };
+  }
+  const row = (b: Booted) => b.store.support_cases![0]!;
+  const trail = (b: Booted, id: string) => b.store.activities!.filter((a) => String(a.source_key ?? "").startsWith(`care:case:${id}:`));
+  const moveEvents = (b: Booted, id: string) => trail(b, id).filter((a) => String(a.source_key).startsWith(`care:case:${id}:moved:`));
+  const params = (id: string, extra: Record<string, unknown> = {}) => ({ caseId: id, client: "company:hunt", reason: "Mis-filed: a Hunt and Gun seller replied", ...extra });
+  /** Runs `hook` once, just before the first statement whose SQL matches `pattern` (after `skip` earlier matches). */
+  function before(b: Booted, pattern: RegExp, hook: () => void, skip = 0) {
+    const db = b.harness.ctx.db;
+    const real = db.execute.bind(db);
+    let seen = 0;
+    return vi.spyOn(db, "execute").mockImplementation(async (sql: string, p?: unknown[]) => {
+      if (pattern.test(sql) && seen++ === skip) hook();
+      return real(sql, p);
+    });
+  }
+
+  it("re-files the case, its timeline and its feedback; everything else on the case stays", async () => {
+    const { booted, id, comments } = await setup();
+    const was = { ...row(booted) };
+    const out = await tool<Record<string, any>>(booted.harness, "move-support-case", params(id));
+    expect(out).toMatchObject({ moved: true, from: "company:acme", to: "company:hunt", toName: "Hunt and Gun" });
+    const { client_ref, updated_at, ...rest } = row(booted);
+    expect(client_ref).toBe("hunt");
+    const { client_ref: _r, updated_at: _u, ...wasRest } = was;
+    expect(rest).toEqual(wasRest);
+    expect(trail(booted, id).filter((a) => a.record_id === "acme")).toEqual([]);
+    expect(booted.store.client_feedback!.filter((f) => f.client_ref === "acme")).toEqual([]);
+    expect(moveEvents(booted, id)).toHaveLength(1);
+    expect(moveEvents(booted, id)[0]).toMatchObject({ record_id: "hunt", kind: "care_event" });
+    expect((await tool<Record<string, any>>(booted.harness, "list-support-cases", { client: "company:acme", status: "all" })).count).toBe(0);
+    expect((await tool<Record<string, any>>(booted.harness, "list-support-cases", { client: "company:hunt", status: "all" })).count).toBe(1);
+    expect(comments).toHaveBeenCalledWith(was.issue_id, expect.stringMatching(/re-filed from Acme Plumbing to Hunt and Gun: Mis-filed/), CO);
+  });
+
+  it("moves an answered case and a resolved case as they are", async () => {
+    const { booted, id } = await setup();
+    await tool(booted.harness, "update-support-case", { caseId: id, firstResponse: true });
+    await tool(booted.harness, "move-support-case", params(id));
+    expect(row(booted)).toMatchObject({ client_ref: "hunt", status: "open" });
+    expect(row(booted).first_response_at).toBeTruthy();
+    await tool(booted.harness, "update-support-case", { caseId: id, status: "resolved", resolution: "Reset the seller's password." });
+    await tool(booted.harness, "move-support-case", params(id, { client: "company:acme" }));
+    expect(row(booted)).toMatchObject({ client_ref: "acme", status: "resolved" });
+  });
+
+  it("is a no-op when the case is already there", async () => {
+    const { booted, id, comments } = await setup();
+    const activities = booted.store.activities!.length;
+    const out = await tool<Record<string, any>>(booted.harness, "move-support-case", params(id, { client: "company:acme" }));
+    expect(out).toMatchObject({ moved: false });
+    expect(out.note).toMatch(/Already filed under Acme Plumbing/);
+    expect(booted.store.activities!.length).toBe(activities);
+    expect(comments).not.toHaveBeenCalled();
+  });
+
+  it("refuses a target that is not a visible customer company, a source not visible, and an empty reason, writing nothing", async () => {
+    const { booted, id } = await setup();
+    const executes = vi.spyOn(booted.harness.ctx.db, "execute");
+    const refuse = async (extra: Record<string, unknown>, error: RegExp, caseId = id) => expect((await toolRaw(booted.harness, "move-support-case", params(caseId, extra))).error).toMatch(error);
+    await refuse({ client: "contact:ada" }, /must be company:<id>/);
+    await refuse({ client: "company:nope" }, /not found or is not visible/);
+    await refuse({ client: "company:globex" }, /Globex is not a customer/);
+    await refuse({ client: "company:foreign" }, /not found or is not visible/);
+    await refuse({ reason: "  " }, /reason is required/);
+    booted.store.support_cases!.push({ ...row(booted), id: "c-foreign", client_ref: "foreign", source_key: null });
+    await refuse({}, /not found or is not visible/, "c-foreign");
+    expect(executes).not.toHaveBeenCalled();
+    expect(row(booted).client_ref).toBe("acme");
+  });
+
+  it("a move that stops before the case row moved is finished by the same call", async () => {
+    const { booted, id } = await setup();
+    const spy = before(booted, /UPDATE \S+client_feedback/, () => { throw new Error("connection reset"); });
+    expect((await toolRaw(booted.harness, "move-support-case", params(id))).error).toMatch(/still filed under Acme Plumbing.*Re-run the same call/);
+    expect(row(booted).client_ref).toBe("acme");
+    spy.mockRestore();
+    await tool(booted.harness, "move-support-case", params(id));
+    expect(row(booted).client_ref).toBe("hunt");
+    expect(trail(booted, id).filter((a) => a.record_id === "acme")).toEqual([]);
+    expect(booted.store.client_feedback!.every((f) => f.client_ref === "hunt")).toBe(true);
+    expect(moveEvents(booted, id)).toHaveLength(1);
+  });
+
+  it("a move that stops after the case row moved is repaired by the same call, event included", async () => {
+    const { booted, id } = await setup();
+    // The sweep after the case row moved fails, with a reopen row just written under the old client, and the move event is lost.
+    const spy = before(booted, /UPDATE \S+activities/, () => {
+      booted.store.activities!.push({ id: "late", company_id: CO, record_type: "company", record_id: "acme", kind: "care_event", body: "late", source_key: `care:case:${id}:reopened:m-2` });
+      throw new Error("connection reset");
+    }, 1);
+    expect((await toolRaw(booted.harness, "move-support-case", params(id))).error).toMatch(/moved to Hunt and Gun.*Re-run the same call/);
+    expect(row(booted).client_ref).toBe("hunt");
+    spy.mockRestore();
+    booted.store.activities = booted.store.activities!.filter((a) => !String(a.source_key).includes(":moved:"));
+    const out = await tool<Record<string, any>>(booted.harness, "move-support-case", params(id));
+    expect(out.note).toMatch(/Finished the trail/);
+    expect(trail(booted, id).filter((a) => a.record_id === "acme")).toEqual([]);
+    expect(moveEvents(booted, id)).toHaveLength(1);
+  });
+
+  it("sweeps a reopen row the mail path wrote under the old client while the move ran", async () => {
+    const { booted, id } = await setup();
+    before(booted, /UPDATE \S+support_cases/, () => {
+      booted.store.activities!.push({ id: "reopen", company_id: CO, record_type: "company", record_id: "acme", kind: "care_event", body: "reopened", source_key: `care:case:${id}:reopened:m-9` });
+    });
+    await tool(booted.harness, "move-support-case", params(id));
+    expect(booted.store.activities!.find((a) => a.id === "reopen")).toMatchObject({ record_id: "hunt" });
+  });
+
+  it("loses to a concurrent move to a third client and writes nothing further", async () => {
+    const { booted, id, comments } = await setup();
+    let after = -1;
+    const spy = before(booted, /UPDATE \S+support_cases/, () => {
+      row(booted).client_ref = "third";
+      after = (booted.harness.ctx.db.execute as any).mock.calls.length;
+    });
+    expect((await toolRaw(booted.harness, "move-support-case", params(id))).error).toMatch(/now filed under company:third.*another change moved it/);
+    expect(row(booted).client_ref).toBe("third");
+    expect(spy.mock.calls.length).toBe(after);
+    expect(moveEvents(booted, id)).toEqual([]);
+    expect(comments).not.toHaveBeenCalled();
+  });
+
+  it("a failed issue comment is a warning and the move stands; a case with no issue gets no comment", async () => {
+    const { booted, id, comments } = await setup();
+    comments.mockRejectedValueOnce(new Error("issue locked"));
+    const out = await tool<Record<string, any>>(booted.harness, "move-support-case", params(id));
+    expect(out.warning).toMatch(/comment on its issue failed \(issue locked\)/);
+    expect(row(booted).client_ref).toBe("hunt");
+    comments.mockClear();
+    row(booted).issue_id = null;
+    await tool(booted.harness, "move-support-case", params(id, { client: "company:acme" }));
+    expect(row(booted).client_ref).toBe("acme");
+    expect(comments).not.toHaveBeenCalled();
   });
 });

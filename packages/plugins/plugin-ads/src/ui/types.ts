@@ -159,3 +159,21 @@ export interface Overview {
   publicBaseUrlError: string | null;
   encryptionKey: boolean;
 }
+
+/** One row of `ads.campaigns`; cap fields are null when no cap is set. */
+export interface CampaignRow {
+  accountId: string;
+  accountName: string;
+  platform: string;
+  campaignExternalId: string;
+  name: string;
+  status: string;
+  dailyBudget: string | null;
+  currency: string;
+  currencyExponent: number;
+  capMinor: number | null;
+  cap: string | null;
+  spend: string;
+  conversions: number;
+  cpa: string | null;
+}

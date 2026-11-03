@@ -28,6 +28,7 @@ import {
 import { mediaFromAssetIds } from "./media.js";
 import type { PostStatus } from "./platforms.js";
 import { targetFromParams } from "./post-target.js";
+import { assertClientFiling, overrideTexts } from "./client-filing.js";
 
 /**
  * Create a draft in a board user's personal My Social queue.
@@ -45,7 +46,15 @@ export async function createPersonalDraftRecord(ctx: PluginContext, viewer: View
     throw new SocialError("You can only create drafts in your own queue");
   }
 
-  // Personal drafts must not have a client (own work only)
+  // Personal drafts must not have a client (own work only): a client's post goes in the client's space.
+  if (viewer.isAgent) {
+    await assertClientFiling(ctx, viewer.companyId, {
+      texts: [body, optionalString(params, "firstComment"), optionalString(params, "note"), ...overrideTexts(params.overrides)],
+      scope: null,
+      personal: true,
+      onPurpose: params.namesClientOnPurpose,
+    });
+  }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, null)) ?? [];
   const overrides = normalizeOverrides(params.overrides) ?? {};
   const targetFields = targetFromParams(params);

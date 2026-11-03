@@ -8,12 +8,10 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/gmail.send",
   "openid",
   "email",
 ];
 export const GMAIL_MODIFY_SCOPE = GMAIL_SCOPES[0]!;
-export const GMAIL_SEND_SCOPE = GMAIL_SCOPES[1]!;
 export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";

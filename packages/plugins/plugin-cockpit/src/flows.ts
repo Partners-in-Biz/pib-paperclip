@@ -126,6 +126,7 @@ export const MODULE_NAME: Record<ModuleKey, string> = {
   mailbox: "Mailbox",
   social: "Social",
   seo: "SEO",
+  ads: "Ads",
   campaigns: "Campaigns",
   billing: "Billing",
   accounting: "Accounting",

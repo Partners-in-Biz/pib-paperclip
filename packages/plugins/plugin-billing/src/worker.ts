@@ -906,6 +906,8 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
       lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
       taxRate: view.legacy ? Number(quote.tax_rate ?? 0) : 0,
       totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
+      payment: view.payment ?? null,
+      notes: view.notes ?? null,
       dueAt: iso(quote.valid_until),
     }),
   };
