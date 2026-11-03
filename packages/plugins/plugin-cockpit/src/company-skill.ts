@@ -177,6 +177,7 @@ Roles are staffed in **Setup → Team**. If your role's tools or skills are miss
 - If you are stuck, say exactly what you need on the issue; the **Operator** (who reviews the company every morning) routes it.
 - **Done-checks**: closing an issue a module opened runs its done-check. If the issue reopens, it lists what is missing: finish those items, then close it. Work that leaves no other trace goes in the module's log tool (Billing \`log-follow-up\`, Campaigns \`log-reply\`, SEO \`complete-task\`). **Cockpit → Flows** shows every flow stage by stage.
 - **Look at what you built.** You can open a browser: \`pib-shot <url> --viewport mobile\` (and desktop; \`references/screenshots.md\`). Run it before closing UI work and paste its \`--json\` line; "not checked" is no reason.
+- **Outward work needs evidence.** Before you close work that publishes, goes live, submits or pays, capture a screenshot of the result: \`references/evidence.md\`.
 
 ## Where knowledge lives
 | Kind | Where | Who keeps it |
