@@ -38,34 +38,14 @@ concurrency:
 
 jobs:
   package:
-    name: ${{ matrix.package }}
+    name: Plugins typecheck, test, build
     runs-on: [self-hosted, pib-vps]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      # One VPS runs every package job; a few at a time keeps installs and builds from starving each other.
-      max-parallel: 4
-      matrix:
-        package:
-          # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
-          - pib-plugin-kit
-          - pib-browser
-          - plugin-accounting
-          - plugin-ads
-          - plugin-billing
-          - plugin-campaigns
-          - plugin-cockpit
-          - plugin-crm
-          - plugin-crm-telephony
-          - plugin-mailbox
-          - plugin-partners
-          - plugin-payroll
-          - plugin-seo
-          - plugin-setup
-          - plugin-social
-          - plugin-voice
-          - pib-wp-connector
     steps:
+      - name: Root disk before
+        run: df -h /
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -89,22 +69,21 @@ jobs:
       - name: Build the plugin SDK
         run: pnpm --filter @paperclipai/plugin-sdk run build
 
-      # The scripts a package does not have are skipped (--if-present): the kit and the UI package have no build, the
-      # connector has only a build. The kit's `test` runs its unit tests and then the cross-plugin contract tests
-      # (skill text against registered tools) that read every PiB plugin's sources.
+      # One job for all PiB packages (@partnersinbiz/*, under packages/plugins/). Two at a time at most (one runner).
+      # The scripts a package does not have are skipped (--if-present). The kit's `test` also runs the cross-plugin
+      # contract tests (skill text against registered tools) that read every PiB plugin's sources.
       - name: Typecheck
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present typecheck
+        run: pnpm -r --workspace-concurrency=2 --filter "@partnersinbiz/*" --filter pib-browser --if-present run typecheck
 
       - name: Test
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present test
+        run: pnpm -r --workspace-concurrency=2 --filter "@partnersinbiz/*" --filter pib-browser --if-present run test
 
       - name: Build
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present build
+        run: pnpm -r --workspace-concurrency=2 --filter "@partnersinbiz/*" --filter pib-browser --if-present run build
 
       # The connector is PHP. Its own tests run on the runner's PHP; the zip it ships (inside the CRM bundle) must be
       # byte-for-byte the same on every build, because the CRM hands its sha256 to the sites that self-update.
       - name: Connector tests and reproducible zip
-        if: matrix.package == 'pib-wp-connector'
         run: |
           php --version
           php packages/plugins/pib-wp-connector/tests/run.php
@@ -114,9 +93,21 @@ jobs:
           second="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
           test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
 
+      - name: Prune pnpm store
+        if: always()
+        run: pnpm store prune || true
+
+      - name: Root disk after (must stay under 80%)
+        if: always()
+        run: |
+          df -h /
+          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
+          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }
+
   telephony-secret-guard:
     name: Telephony secret guard
     runs-on: [self-hosted, pib-vps]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 5
     steps:
       - name: Check out
