@@ -736,6 +736,44 @@ export async function listCasesByStatus(ctx: PluginContext, companyId: string, s
   return rows.map(mapCase);
 }
 
+/** A value for a LIKE pattern, taken literally (`_` and `%` are wildcards; case ids are plain, but a pattern must never widen). */
+function likeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * Re-files a case's trail under `to`: its timeline rows (`care:case:<id>:...`, except the move events, which stay on the client they
+ * were written for) and its feedback rows. Every statement is idempotent, so a re-run finishes a move that stopped half-way.
+ * Returns the clients timeline rows were still under before (none when the trail was already complete).
+ */
+export async function moveCaseTrail(ctx: PluginContext, companyId: string, caseId: string, to: ClientKey): Promise<ClientKey[]> {
+  const prefix = `care:case:${likeLiteral(caseId)}:`;
+  const before = await ctx.db.query<{ record_type: string; record_id: string }>(
+    `SELECT record_type, record_id FROM ${table(ctx, "activities")} WHERE company_id = $1 AND source_key LIKE $2 AND source_key NOT LIKE $3`,
+    [companyId, `${prefix}%`, `${prefix}moved:%`],
+  );
+  const stragglers = new Map<string, ClientKey>();
+  for (const row of before) {
+    if (row.record_type === to.kind && row.record_id === to.id) continue;
+    stragglers.set(`${row.record_type}:${row.record_id}`, { kind: row.record_type === "contact" ? "contact" : "company", id: row.record_id });
+  }
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "activities")} SET record_type = $3, record_id = $4 WHERE company_id = $1 AND source_key LIKE $2 AND source_key NOT LIKE $5`,
+    [companyId, `${prefix}%`, to.kind, to.id, `${prefix}moved:%`],
+  );
+  await ctx.db.execute(`UPDATE ${table(ctx, "client_feedback")} SET client_kind = $3, client_ref = $4, updated_at = now() WHERE company_id = $1 AND case_id = $2`, [companyId, caseId, to.kind, to.id]);
+  return [...stragglers.values()];
+}
+
+/** Re-files the case row under `to`, only while it is still under `from` (a move that raced another loses). Returns the row as it is now. */
+export async function refileCase(ctx: PluginContext, companyId: string, caseId: string, from: ClientKey, to: ClientKey): Promise<SupportCase | null> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "support_cases")} SET client_kind = $3, client_ref = $4, updated_at = now() WHERE company_id = $1 AND id = $2 AND client_kind = $5 AND client_ref = $6`,
+    [companyId, caseId, to.kind, to.id, from.kind, from.id],
+  );
+  return getCase(ctx, companyId, caseId);
+}
+
 export async function saveCase(ctx: PluginContext, c: SupportCase): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "support_cases")}
