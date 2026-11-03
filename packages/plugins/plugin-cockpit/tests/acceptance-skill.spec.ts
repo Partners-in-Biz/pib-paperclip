@@ -77,8 +77,8 @@ describe("skill sizes", () => {
       const slug = skill.slug!;
       const limit = slug === "pib-operator" ? 19_200 : 19_500;
       expect(skill.markdown!.length, `${slug} SKILL.md`).toBeLessThan(limit);
-      // The journeys reference grows with each journey (built from the files): 8,600 leaves room for this one.
-      for (const file of skill.files ?? []) expect(file.content.length, `${slug} ${file.path}`).toBeLessThan(file.path === ACCEPTANCE_REFERENCE_PATHS.journeys ? 8_600 : 8_000);
+      // The journeys reference grows with each journey (built from the files): 9,500 leaves room for the browser journey.
+      for (const file of skill.files ?? []) expect(file.content.length, `${slug} ${file.path}`).toBeLessThan(file.path === ACCEPTANCE_REFERENCE_PATHS.journeys ? 9_500 : 8_000);
     }
     expect(SKILLS.map((s) => s.slug)).toContain(COMPANY_SKILL_SLUG);
   });

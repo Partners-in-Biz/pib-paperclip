@@ -1,0 +1,131 @@
+{
+  "key": "browser-evidence-drive",
+  "version": 1,
+  "title": "Browser evidence and refused publish",
+  "summary": "The browser daemon screenshots the canary WordPress dashboard, the shot is recorded as evidence, and an unapproved click on Publish must be refused (exit 8). Nothing is published. Release and on demand only. Limit: a ui step's exit code is agent-reported, and no read-only WordPress tool exists to confirm the canary post stayed unpublished.",
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm"
+  ],
+  "ownerRole": "operator",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Find the canary client",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "contact.email",
+          "endsWith": "@canary.invalid"
+        }
+      ],
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary."
+    },
+    {
+      "id": "shot-dashboard",
+      "title": "Screenshot the canary dashboard",
+      "kind": "ui",
+      "input": {
+        "command": "pib-browser shot --identity canary:wp --expect \"Dashboard\" --json"
+      },
+      "note": "Run: pib-browser shot --identity canary:wp --issue <the issue you run this journey under> --step dashboard --expect \"Dashboard\" --json (references/evidence.md). Report its JSON line as output and attach the PNG path as screenshot evidence. Exit 6 (session expired) or 7/8 is a finding: report pib-browser's own error as the error.",
+      "expect": [
+        {
+          "path": "ok",
+          "equals": true
+        },
+        {
+          "path": "bytes",
+          "gte": 2000
+        }
+      ],
+      "evidence": [
+        "screenshot"
+      ],
+      "ownerRole": "operator"
+    },
+    {
+      "id": "record-evidence",
+      "title": "Record the shot as evidence",
+      "kind": "ui",
+      "input": {
+        "command": "pib-evidence <png path from the previous step> --issue <the issue> --step dashboard, then partnersinbiz.cockpit:evidence-record with issueId, step, attachmentId and sha256 from its JSON line"
+      },
+      "note": "pib-evidence prints {attachmentId, sha256}. Then call partnersinbiz.cockpit:evidence-record with those values (summary: \"canary WP dashboard\"). Report the JSON line as output with attachmentId and recorded: true. Attach the same PNG as screenshot evidence.",
+      "expect": [
+        {
+          "path": "attachmentId",
+          "notEmpty": true
+        },
+        {
+          "path": "sha256",
+          "matches": "^[0-9a-fA-F]{64}$"
+        }
+      ],
+      "evidence": [
+        "screenshot"
+      ],
+      "ownerRole": "operator"
+    },
+    {
+      "id": "publish-refused",
+      "title": "Publish without approval is refused",
+      "kind": "ui",
+      "input": {
+        "command": "pib-browser click --identity canary:wp --issue <the issue> --selector \"#publish\" --json (no --approval)"
+      },
+      "note": "Do NOT pass --approval and do not look for one. The daemon must refuse with exit 8 (needs_approval). Report {exit: 8, reason} from pib-browser. Then take a follow-up pib-browser shot of the same page (--step publish-refused) and attach it as screenshot evidence. Any exit other than 8 (0 means it published) is a finding: stop and report it. The exit code is agent-reported; the Cockpit cannot read it back.",
+      "expect": [
+        {
+          "path": "exit",
+          "equals": 8
+        },
+        {
+          "path": "reason",
+          "equals": "needs_approval"
+        }
+      ],
+      "evidence": [
+        "screenshot"
+      ],
+      "ownerRole": "operator"
+    },
+    {
+      "id": "cleanup",
+      "title": "Remove the canary's records",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": {
+        "confirm": true
+      },
+      "expect": [
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
+      ],
+      "always": true,
+      "ownerRole": "account-manager"
+    }
+  ]
+}
