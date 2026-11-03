@@ -25,7 +25,7 @@ const toolSteps = (j: Journey) => j.steps.filter((s) => s.kind === "tool").map((
 
 describe("the shipped journeys", () => {
   it("are the five the audit asked for, the nightly lead capture, and (0.6.0) e-sign the site visit counter and (0.11.0) the support case with NPS feedback, each with its own key", () => {
-    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events", "support-case-nps"]);
+    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events", "support-case-nps", "browser-evidence-drive"]);
     expect(new Set(JOURNEYS.map((j) => j.key)).size).toBe(JOURNEYS.length);
     expect(journeyByKey("lead-capture")!.title).toBe("Lead captured and qualified");
     expect(journeyByKey("ghost")).toBeNull();
@@ -328,11 +328,40 @@ describe("what a trigger runs", () => {
     expect(journeysFor("release", "partnersinbiz.billing").map((j) => j.key)).toEqual(["quote-to-invoice"]);
     expect(journeysFor("release", "partnersinbiz.social").map((j) => j.key)).toEqual(["social-draft-review"]);
     expect(journeysFor("release", "partnersinbiz.seo").map((j) => j.key)).toEqual(["seo-sprint-draft"]);
-    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["client-report", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events", "support-case-nps"]);
+    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["browser-evidence-drive", "client-report", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events", "support-case-nps"]);
     expect(journeysFor("release", "partnersinbiz.payroll")).toEqual([]);
   });
 
   it("on demand runs every journey", () => {
     expect(journeysFor("on-demand")).toHaveLength(JOURNEYS.length);
+  });
+});
+
+describe("the browser evidence journey", () => {
+  const j = journeyByKey("browser-evidence-drive")!;
+
+  it("runs on release and on demand only, not nightly: it drives a real browser", () => {
+    expect(j.schedule).toEqual(["release", "on-demand"]);
+    expect(journeysFor("nightly").map((x) => x.key)).not.toContain("browser-evidence-drive");
+  });
+
+  it("uses only tool and ui steps, every ui step with screenshot evidence, and the owner role is valid", () => {
+    expect(j.steps.every((s) => s.kind === "tool" || s.kind === "ui")).toBe(true);
+    for (const s of j.steps.filter((x) => x.kind === "ui")) expect(s.evidence, s.id).toContain("screenshot");
+    expect(JOURNEY_ROLES).toContain(j.ownerRole);
+  });
+
+  it("shots the canary dashboard, records it, and expects the unapproved Publish click refused with exit 8, never passing --approval", () => {
+    expect(j.steps.map((s) => s.id)).toEqual(["ensure-canary", "shot-dashboard", "record-evidence", "publish-refused", "cleanup"]);
+    const publish = j.steps.find((s) => s.id === "publish-refused")!;
+    expect(publish.expect).toContainEqual({ path: "exit", equals: 8 });
+    expect(JSON.stringify(publish.input)).not.toMatch(/--approval\s+\S/);
+    expect(JSON.stringify(j.steps.find((s) => s.id === "record-evidence")!.expect)).toContain("attachmentId");
+  });
+
+  it("names the evidence-record tool, which the Cockpit ships", async () => {
+    const manifest = (await import("../src/manifest.js")).default as { tools?: Array<{ name: string }> };
+    expect(manifest.tools?.map((t) => t.name)).toContain("evidence-record");
+    expect(JSON.stringify(j.steps)).toContain("partnersinbiz.cockpit:evidence-record");
   });
 });

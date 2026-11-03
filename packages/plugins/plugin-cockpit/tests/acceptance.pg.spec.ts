@@ -764,15 +764,15 @@ d("acceptance runs (Postgres)", () => {
       expect((await getRun(w.ctx, A, runId))!.state.abortReason).toContain("not the canary client");
     });
 
-    it("a release of the CRM asks for all seven CRM journeys in one request, e-sign and the visit counter among them", async () => {
+    it("a release of the CRM asks for all eight CRM journeys in one request, e-sign, the visit counter and the browser drive among them", async () => {
       const w = await make();
       const status = (version: string) => ({ companyId: A, payload: { plugin: "partnersinbiz.crm", module: "crm", title: "CRM", version, items: [], checkedAt: NOW } });
       await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.13.0"));
       await onSetupStatusEvent(w.env, "partnersinbiz.crm", status("0.14.0"));
       const requests = [...w.issues.values()].filter((i) => i.originKind === ORIGIN.acceptance);
       expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject({ title: "Acceptance request: 7 journeys (2026-10-04)", originId: "cockpit:acceptance:release:partnersinbiz.crm:0.14.0", assigneeAgentId: ACC });
-      for (const key of ["esign", "site-events", "lead-capture", "quote-to-invoice", "email-sequence-dry-run", "client-report", "support-case-nps"]) expect(requests[0]!.description).toContain(`\`${key}\``);
+      expect(requests[0]).toMatchObject({ title: "Acceptance request: 8 journeys (2026-10-04)", originId: "cockpit:acceptance:release:partnersinbiz.crm:0.14.0", assigneeAgentId: ACC });
+      for (const key of ["esign", "site-events", "lead-capture", "quote-to-invoice", "email-sequence-dry-run", "client-report", "support-case-nps", "browser-evidence-drive"]) expect(requests[0]!.description).toContain(`\`${key}\``);
       expect(requests[0]!.description).toContain("Document prepared and sent for signature");
       expect(requests[0]!.description).toContain("Site visit counter");
       // The nightly request is still the lead form alone.
