@@ -17,6 +17,12 @@ const html = (v: BrowserView, identity?: string | null) => renderToStaticMarkup(
 describe("Browser tab", () => {
   it("opens from ?tab=browser", () => expect(tabFromSearch("?tab=browser&identity=pib:meta")).toBe("browser"));
 
+  it("says No browser here for a company that is not the owner, with no login names", () => {
+    const out = html({ state: "unavailable", checkedAt: null, stale: false, identities: [] });
+    expect(out).toContain("No browser here");
+    expect(out).not.toContain("pib:meta");
+  });
+
   it("lists a working and an expired login", () => {
     const out = html(view());
     expect(out).toContain("Working");
