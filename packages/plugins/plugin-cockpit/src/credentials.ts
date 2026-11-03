@@ -364,7 +364,7 @@ export async function credentialHealth(env: Env, companyId: string): Promise<Ret
 export const BROWSER_STATUS_PATH = "/home/paperclip/pib-tools/browser-status.json";
 const MAX_STATUS_BYTES = 64_000;
 
-async function readStatus(env: Env, path: string): Promise<string | null> {
+export async function readStatus(env: Env, path: string): Promise<string | null> {
   try {
     if (env.readStatusFile) return await env.readStatusFile(path);
     const text = await readFile(path, "utf8");
