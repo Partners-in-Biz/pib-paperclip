@@ -1071,6 +1071,12 @@ function MailboxPageMain({ context }: PluginPageProps) {
               <RefreshButton narrow={narrow} onClick={() => void refreshInbox().catch((error: unknown) => setMessage(errorText(error)))} />
             </OneRow>
           </Toolbar>
+          {inboxRows.length > 0 && !narrow ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+              <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={() => setChosenMail(chosenMail.length === inboxRows.length ? [] : inboxRows.map((row) => row.id))}>{chosenMail.length === inboxRows.length ? "Clear selection" : "Select all shown"}</Button>
+              {chosenMail.length > 0 ? <Button type="button" style={{ height: 30, fontSize: 12.5 }} disabled={busy} onClick={() => void removeMail(chosenMail)}>Delete {chosenMail.length} selected</Button> : null}
+            </div>
+          ) : null}
           {loadError && !snapshot ? (
             <EmptyState icon={Inbox} title="Mail could not load" description={loadError} />
           ) : inboxRows.length === 0 ? (
