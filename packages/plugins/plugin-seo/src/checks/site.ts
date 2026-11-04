@@ -2,7 +2,8 @@
  * Site checks that fetch the client's site. All network goes through a
  * `SiteFetcher` (in the worker: the kit's SSRF-guarded `safeFetch`, which
  * follows redirects hop by hop). Work is bounded: page counts are capped and a
- * deadline keeps every check inside the host's 30 s tool/action limit.
+ * deadline keeps every check inside the tool gateway's 10 s limit (agent MCP
+ * calls get a 504 tool_timeout after 10 s).
  */
 import type { SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
 import {
@@ -67,8 +68,10 @@ export async function mapLimit<T, R>(
   limit: number,
   deadlineAt: number,
   fn: (item: T) => Promise<R>,
-): Promise<{ results: Array<R | null>; completed: number; timedOut: boolean }> {
+): Promise<{ results: Array<R | null>; completed: number; timedOut: boolean; done: boolean[] }> {
   const results: Array<R | null> = items.map(() => null);
+  // done[i]: item i finished (a failed fetch counts as finished, with a null result).
+  const done: boolean[] = items.map(() => false);
   let next = 0;
   let completed = 0;
   let timedOut = false;
@@ -86,11 +89,12 @@ export async function mapLimit<T, R>(
         return;
       }
       results[index] = outcome;
+      done[index] = true;
       completed += 1;
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker()));
-  return { results, completed, timedOut: timedOut || completed < items.length };
+  return { results, completed, timedOut: timedOut || completed < items.length, done };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,34 +256,74 @@ export async function runCrawlerSim(fetcher: SiteFetcher, url: string): Promise<
   });
 }
 
+/** Agent MCP calls time out after 10 s in the tool gateway; 1 s is left for overhead. */
+export const LINK_AUDIT_MAX_MS = 9_000;
+/** The sitemap (robots.txt, sitemap, child sitemaps) gets at most this; the crawl gets the rest. */
+export const LINK_AUDIT_SITEMAP_MS = 5_000;
+
 export interface LinkAuditResult {
-  sitemapUrl: string;
+  sitemapUrl: string | null;
   pagesInSitemap: number;
+  /** Pages this call tried to crawl: the crawl list (home page, then the de-duplicated sitemap URLs) from startAt, up to maxPages. */
+  pagesRequested: number;
   pagesCrawled: number;
   partial: boolean;
+  sitemapTimedOut: boolean;
+  startAt: number;
+  /** Pass as startAt to continue; null when nothing is left. */
+  nextStartAt: number | null;
   totalInternalLinks: number;
-  orphans: string[];
+  /** Only on a complete crawl (partial: false): on a partial crawl orphans are not knowable. */
+  orphans?: string[];
   topLinked: Array<{ url: string; inbound: number }>;
   linkedNotInSitemap: string[];
   crawledPages: string[];
   findings: CheckFinding[];
+  note?: string;
 }
 
 export async function runInternalLinkAudit(
   fetcher: SiteFetcher,
-  input: { siteUrl: string; sitemapUrl?: string | null; maxPages?: number; deadlineMs?: number },
+  input: { siteUrl: string; sitemapUrl?: string | null; maxPages?: number; deadlineMs?: number; startAt?: number },
 ): Promise<LinkAuditResult> {
-  const deadlineAt = Date.now() + (input.deadlineMs ?? 20_000);
+  const startedAt = Date.now();
+  const budget = Math.min(Math.max(input.deadlineMs ?? LINK_AUDIT_MAX_MS, 0), LINK_AUDIT_MAX_MS);
+  const deadlineAt = startedAt + budget;
+  const sitemapDeadlineAt = startedAt + Math.min(LINK_AUDIT_SITEMAP_MS, budget);
   const maxPages = Math.min(Math.max(input.maxPages ?? 25, 1), 40);
-  const sitemap = await runSitemapCheck(fetcher, { siteUrl: input.siteUrl, sitemapUrl: input.sitemapUrl, sample: 0, deadlineMs: 8_000 });
+  const startAt = Math.max(0, Math.floor(input.startAt ?? 0));
+  // safeFetch has no abort signal: a fetch still running at the deadline is left to finish in the background.
+  const sitemap = await withDeadline(
+    runSitemapCheck(fetcher, { siteUrl: input.siteUrl, sitemapUrl: input.sitemapUrl, sample: 0, deadlineMs: sitemapDeadlineAt - Date.now() }),
+    sitemapDeadlineAt,
+  );
+  if (sitemap === TIMEOUT) {
+    return {
+      sitemapUrl: input.sitemapUrl ? absoluteUrl(input.sitemapUrl, input.siteUrl) : null,
+      pagesInSitemap: 0,
+      pagesRequested: 0,
+      pagesCrawled: 0,
+      partial: true,
+      sitemapTimedOut: true,
+      startAt,
+      nextStartAt: 0,
+      totalInternalLinks: 0,
+      topLinked: [],
+      linkedNotInSitemap: [],
+      crawledPages: [],
+      findings: [],
+      note: `The sitemap did not load within ${LINK_AUDIT_SITEMAP_MS / 1000} s, so no pages were crawled. Call again with startAt 0 (nextStartAt), or pass sitemapUrl.`,
+    };
+  }
   const home = comparableUrl(originOf(input.siteUrl)) ?? originOf(input.siteUrl);
   const sitemapSet = new Set(sitemap.urls.map((u) => comparableUrl(u)).filter((u): u is string => !!u));
-  const pages = [home, ...[...sitemapSet].filter((u) => u !== home)].slice(0, maxPages);
+  const crawlList = [home, ...[...sitemapSet].filter((u) => u !== home)];
+  const pages = crawlList.slice(startAt, startAt + maxPages);
   const host = new URL(home).host;
   const inbound = new Map<string, number>(pages.map((p) => [p, 0]));
   const outsideSitemap = new Set<string>();
   let totalLinks = 0;
-  const crawled = await mapLimit(pages, 5, deadlineAt, async (page) => {
+  const crawled = await mapLimit(pages, 10, deadlineAt, async (page) => {
     const res = await fetcher(page, { headers: { Accept: "text/html,application/xhtml+xml" }, maxChars: 1_500_000 });
     return { page, links: res.status < 400 ? extractLinks(res.text, res.url) : [] };
   });
@@ -301,18 +345,37 @@ export async function runInternalLinkAudit(
     }
   }
   const crawledPages = crawled.results.filter(Boolean).map((r) => r!.page);
-  const orphans = crawledPages.filter((p) => p !== home && (inbound.get(p) ?? 0) === 0);
+  // The cursor stops at the first page not finished; pages finished after it are crawled again on the next call.
+  const firstUndone = crawled.done.indexOf(false);
+  const end = startAt + pages.length;
+  const nextStartAt = firstUndone >= 0 ? startAt + firstUndone : end < crawlList.length ? end : null;
+  const partial = startAt > 0 || nextStartAt !== null || sitemap.partial;
+  // Orphans need every page's links: only a complete crawl from startAt 0 reports them.
+  const orphans = partial ? [] : crawledPages.filter((p) => p !== home && (inbound.get(p) ?? 0) === 0);
   const findings: CheckFinding[] = [
     ...sitemap.findings,
     ...orphans.slice(0, 20).map((url) => ({ category: "links", severity: "medium" as const, url, finding: "No internal links from other crawled pages (orphan)" })),
   ];
+  const note = partial
+    ? [
+      `Partial crawl: ${crawledPages.length} of ${pages.length} requested pages crawled from startAt ${startAt} (${crawlList.length} pages in the crawl list: home page, then sitemap URLs).`,
+      nextStartAt !== null ? `Call again with startAt ${nextStartAt} (nextStartAt) to continue.` : "No pages left after this batch.",
+      sitemap.partial ? "The sitemap was not read in full (more than 3 child sitemaps, or time ran out)." : "",
+      "Orphans are only reported by one complete crawl from startAt 0, so none are listed or stored.",
+    ].filter(Boolean).join(" ")
+    : undefined;
   return {
     sitemapUrl: sitemap.sitemapUrl,
     pagesInSitemap: sitemap.totalUrls,
+    pagesRequested: pages.length,
     pagesCrawled: crawledPages.length,
-    partial: crawled.timedOut || sitemap.partial || sitemapSet.size + 1 > maxPages,
+    partial,
+    sitemapTimedOut: false,
+    startAt,
+    nextStartAt,
     totalInternalLinks: totalLinks,
-    orphans,
+    ...(partial ? {} : { orphans }),
+    note,
     topLinked: [...inbound.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([url, count]) => ({ url, inbound: count })),
     linkedNotInSitemap: [...outsideSitemap].slice(0, 25),
     crawledPages,
