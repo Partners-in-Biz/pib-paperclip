@@ -1,6 +1,6 @@
 /**
- * The hard cap of one campaign, as a row. Only a signed-in person writes one (an agent, the owner's delegate included, cannot). Nothing enforces it yet:
- * these rows are what a later check will read. A create_campaign proposal may carry `capMinor`; the row is written when the owner's own yes has run it.
+ * The hard cap of one campaign, as a row. Only a signed-in person writes one (an agent, the owner's delegate included, cannot). `campaignCap.ts` enforces it:
+ * a change that adds spend to a campaign without a row is refused. A create_campaign proposal may carry `capMinor`; the row is written when the owner's own yes has run it.
  */
 import { resolveAccess } from "@partnersinbiz/pib-plugin-kit";
 import { audit, campaignKnown, getAccount, getCampaignCap, listCampaignCaps, listCampaignsWithoutCap, upsertCampaignCap, type CampaignCapRow } from "./db.js";
@@ -60,5 +60,5 @@ export async function writeProposalCap(rt: AdsRuntime, input: { platform: string
 /** Every cap row, and the known campaigns that have none. */
 export async function campaignCapsRecord(rt: AdsRuntime) {
   const [caps, lacking] = await Promise.all([listCampaignCaps(rt.ctx, rt.companyId), listCampaignsWithoutCap(rt.ctx, rt.companyId)]);
-  return { caps: caps.map((c) => capView(c)), withoutCap: lacking, note: "A cap is only a record for now: nothing refuses a change because of it yet." };
+  return { caps: caps.map((c) => capView(c)), withoutCap: lacking, note: "A change that adds spend to a campaign without a cap, or past its cap, is refused. Pausing is always allowed." };
 }

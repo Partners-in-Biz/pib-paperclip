@@ -25,7 +25,7 @@ describe.skipIf(!available)("campaign caps", () => {
   beforeEach(async () => {
     await pg.reset();
     w = await world(pg);
-    ({ accountId } = await syncedAccount(w));
+    ({ accountId } = await syncedAccount(w, { campaignCaps: false }));
   });
 
   it("a person sets a cap and gets the row read back", async () => {
@@ -45,7 +45,7 @@ describe.skipIf(!available)("campaign caps", () => {
     await expect(setCampaignCap(w.rt(), { userId: ADMIN }, { accountId, campaignExternalId: "c1", capMinor: 1000 })).resolves.toMatchObject({ ok: true, cap: { setBy: `user:${ADMIN}` } });
     await pg.reset();
     w = await world(pg);
-    ({ accountId } = await syncedAccount(w));
+    ({ accountId } = await syncedAccount(w, { campaignCaps: false }));
     for (const userId of [MEMBER, "user-stranger"]) {
       await expect(setCampaignCap(w.rt(), { userId }, { accountId, campaignExternalId: "c1", capMinor: 1000 })).rejects.toThrow(/owner or an admin/);
     }
