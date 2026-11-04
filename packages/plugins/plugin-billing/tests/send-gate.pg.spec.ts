@@ -147,4 +147,72 @@ describe.skipIf(!available)("invoice send gate (postgres)", () => {
     expect(h.issues.get(issueId)!.status).toBe("done");
     expect(await mails()).toBe(0);
   });
+
+  describe("frozen recipients (PAR-6994)", () => {
+    const make = async (customerRef = "ct-lumen") => {
+      const inv = await h.call<{ id: string }>("billing.create-invoice", { currency: "ZAR", customerKind: "contact", customerRef });
+      await h.call("billing.add-line", { invoiceId: inv.id, description: "work", quantity: 1, unitAmountMinor: 100_000 });
+      return inv.id;
+    };
+    const issueCount = () => h.issues.size;
+
+    it("email on and no address: error, no ticket", async () => {
+      await seedClient(h, { id: "ct-none", name: "No Mail" });
+      const id = await make("ct-none");
+      const before = issueCount();
+      await expect(h.call("billing.request-send", { invoiceId: id })).rejects.toThrow(/no email address/);
+      expect(issueCount()).toBe(before);
+      expect((await row(id)).approval_issue_id).toBeNull();
+    });
+
+    it("email off: manual ticket, approval_recipients null", async () => {
+      h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9", email: { enabled: false } });
+      await seedClient(h, { id: "ct-off", name: "Off" });
+      const id = await make("ct-off");
+      const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: id });
+      expect(issueId).toBeTruthy();
+      expect((await row(id)).approval_recipients).toBeNull();
+    });
+
+    it("stores recipients, lists them, and a later CRM change does not move the mail", async () => {
+      okR2();
+      const id = await make();
+      const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: id });
+      expect((await row(id)).approval_recipients).toEqual([{ email: "ap@lumen.test", name: "Lumen Digital" }]);
+      expect(String(h.issues.get(issueId)!.description)).toContain("ap@lumen.test");
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET send_to = '[{"email":"new@lumen.test"}]'::jsonb WHERE id = $1`, [id]);
+      await close(issueId, "user");
+      const out = (await h.client.query(`SELECT recipients FROM ${NAMESPACE}.deliveries`)).rows.at(-1) as any;
+      expect(out.recipients.map((r: any) => r.email)).toEqual(["ap@lumen.test"]);
+    });
+
+    it("null approval_recipients falls back to the current address", async () => {
+      okR2();
+      const id = await make();
+      const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: id });
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET approval_recipients = NULL WHERE id = $1`, [id]);
+      await h.client.query(`UPDATE ${NAMESPACE}.invoices SET send_to = '[{"email":"new@lumen.test"}]'::jsonb WHERE id = $1`, [id]);
+      await close(issueId, "user");
+      const out = (await h.client.query(`SELECT recipients FROM ${NAMESPACE}.deliveries`)).rows.at(-1) as any;
+      expect(out.recipients.map((r: any) => r.email)).toEqual(["new@lumen.test"]);
+    });
+
+    it("a sent result records sent_to and message id and comments once, even delivered twice", async () => {
+      okR2();
+      const id = await make();
+      const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: id });
+      await close(issueId, "user");
+      const key = (await row(id)).delivery_key;
+      const result = { key, status: "sent", messageId: "msg-123", sentAt: "2026-11-04T10:00:00.000Z", context: { plugin: "partnersinbiz.billing" } };
+      const before = reopens(issueId);
+      await h.deliver(RESULT, COMPANY, result);
+      await h.deliver(RESULT, COMPANY, result);
+      const sent = await row(id);
+      expect(sent.sent_message_id).toBe("msg-123");
+      expect(sent.sent_to.map((r: any) => r.email)).toEqual(["ap@lumen.test"]);
+      expect(reopens(issueId)).toBe(before + 1);
+      const body = h.comments.filter((c) => c.issueId === issueId).at(-1)!.body ?? (h.comments.at(-1) as any).text;
+      expect(String(body)).toContain("msg-123");
+    });
+  });
 });
