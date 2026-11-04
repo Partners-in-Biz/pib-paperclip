@@ -1,6 +1,7 @@
 /** Hourly sweeper, per-campaign hard cap (PAR-6683): pauses ACTIVE campaigns at or over cap_minor; a failed read alerts per account. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { getCampaign, listAlerts, upsertCampaignCap } from "../src/db.js";
+import { getAccount, getCampaign, listAlerts, upsertCampaignCap } from "../src/db.js";
+import type { InsightRow } from "../src/providers/types.js";
 import { sweepCaps } from "../src/sweeper.js";
 import { syncAccount } from "../src/sync.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
@@ -22,15 +23,15 @@ describe.skipIf(!available)("sweepCaps: per-campaign cap", () => {
   /** Seeds ACTIVE campaigns through the mock provider, syncs, and writes cap rows dated CAP_DAY. */
   const seed = async (campaigns: { id: string; spend: number; cap?: number }[]) => {
     const { accountId } = await syncedAccount(w);
-    const acct = (await w.ctx.db.query(`SELECT * FROM ${w.ctx.db.namespace}.ad_accounts WHERE id = $1`, [accountId]))[0] as Record<string, unknown>;
-    const extId = String(acct.external_id);
+    const acct = (await getAccount(w.ctx, COMPANY, accountId))!;
+    const extId = acct.external_id;
     await w.ctx.db.execute(`DELETE FROM ${w.ctx.db.namespace}.campaigns WHERE account_id = $1`, [accountId]);
     w.mock.campaigns[extId] = campaigns.map((c) => mkCampaign(c.id, "active", 10_000));
     w.mock.insightRows[extId] = campaigns.map((c) => ({ campaignExternalId: c.id, campaignName: `Campaign ${c.id}`, day: "2026-10-15", spendMinor: c.spend, impressions: 2000, clicks: 80, conversions: 3, valueMinor: 30_000 }));
-    await (syncAccount(w.rt(), acct as any) as Promise<any>);
+    await syncAccount(w.rt(), acct);
     for (const c of campaigns) {
       if (c.cap === undefined) continue;
-      await upsertCampaignCap(w.ctx, COMPANY, { platform: String(acct.platform), externalCampaignId: c.id, capMinor: c.cap, setBy: "user:owner", proposalId: null });
+      await upsertCampaignCap(w.ctx, COMPANY, { platform: acct.platform, externalCampaignId: c.id, capMinor: c.cap, setBy: "user:owner", proposalId: null });
     }
     await w.ctx.db.execute(`UPDATE ${w.ctx.db.namespace}.campaign_caps SET created_at = $1::timestamptz WHERE company_id = $2`, [`${CAP_DAY}T12:00:00Z`, COMPANY]);
     return { accountId, extId, connectionId: String(acct.connection_id) };
@@ -38,9 +39,10 @@ describe.skipIf(!available)("sweepCaps: per-campaign cap", () => {
   const statusWrites = () => w.mock.writes.filter((x) => x.op === "status").length;
   const alertsLike = async (prefix: string) => (await listAlerts(w.ctx, COMPANY, { scopeKey: "own" })).filter((a) => a.dedupe_key.startsWith(prefix));
   /** Makes only the cap read (since CAP_DAY) misbehave; the sweeper's other insights reads still work. */
-  const breakCapRead = (how: () => Promise<any>) => {
+  const breakCapRead = (how: () => Promise<InsightRow[]>) => {
     const orig = w.mock.insights.bind(w.mock);
-    w.mock.insights = (async (env: any, token: any, account: any, range: { since: string; until: string }) => (range.since === CAP_DAY ? how() : orig(env, token, account, range))) as any;
+    const patched: typeof w.mock.insights = async (env, token, account, range) => (range.since === CAP_DAY ? how() : orig(env, token, account, range));
+    w.mock.insights = patched;
   };
 
   it("(q) through the mock provider: over and at cap are paused; under cap and no cap row stay active", async () => {
@@ -57,14 +59,14 @@ describe.skipIf(!available)("sweepCaps: per-campaign cap", () => {
     expect((await getCampaign(w.ctx, COMPANY, accountId, "at"))?.status).toBe("paused");
     expect((await getCampaign(w.ctx, COMPANY, accountId, "under"))?.status).toBe("active");
     expect((await getCampaign(w.ctx, COMPANY, accountId, "nocap"))?.status).toBe("active");
-    expect(w.mock.writes.filter((x) => x.op === "status").map((x: any) => x.campaignExternalId).sort()).toEqual(["at", "over"]);
+    expect(w.mock.writes.filter((x) => x.op === "status").map((x) => x.campaignExternalId).sort()).toEqual(["at", "over"]);
     const pausedAlerts = await alertsLike("sweep-paused:");
     expect(pausedAlerts).toHaveLength(2);
-    for (const a of pausedAlerts as any[]) {
+    for (const a of pausedAlerts) {
       expect(a.kind).toBe("spend_spike");
       expect(a.detail).toMatchObject({ campaignCap: true });
     }
-    expect((pausedAlerts as any[]).find((a) => a.detail.campaignExternalId === "over")?.detail).toMatchObject({ capMinor: 25_000, spentMinor: 30_000 });
+    expect(pausedAlerts.find((a) => a.detail.campaignExternalId === "over")?.detail).toMatchObject({ capMinor: 25_000, spentMinor: 30_000 });
   });
 
   it("(r) unreadable cap read: error counted, one alert per account, no pause, no write", async () => {
@@ -78,8 +80,8 @@ describe.skipIf(!available)("sweepCaps: per-campaign cap", () => {
     expect((await getCampaign(w.ctx, COMPANY, accountId, "c1"))?.status).toBe("active");
     const unread = await alertsLike("sweep-cap-unread:");
     expect(unread).toHaveLength(1);
-    expect((unread[0] as any).kind).toBe("spend_spike");
-    expect((unread[0] as any).detail).toMatchObject({ campaignCap: true, campaigns: 2 });
+    expect(unread[0].kind).toBe("spend_spike");
+    expect(unread[0].detail).toMatchObject({ campaignCap: true, campaigns: 2 });
     await sweepCaps(w.rt());
     expect(await alertsLike("sweep-cap-unread:")).toHaveLength(1);
   });
@@ -105,6 +107,6 @@ describe.skipIf(!available)("sweepCaps: per-campaign cap", () => {
     expect((await getCampaign(w.ctx, COMPANY, accountId, "c1"))?.status).toBe("active");
     const unreachable = await alertsLike(`cannot-reach-account:${accountId}`);
     expect(unreachable).toHaveLength(1);
-    expect((unreachable[0] as any).kind).toBe("spend_spike");
+    expect(unreachable[0].kind).toBe("spend_spike");
   });
 });
