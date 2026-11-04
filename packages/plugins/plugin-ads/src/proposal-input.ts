@@ -6,6 +6,7 @@ import { AdsError, minorField, objectParams, optionalString, requiredString, str
 import { addDays, isDay, todayIn } from "./dates.js";
 import { getAccount, getCampaign, type AccountRow, type ScopeRow } from "./db.js";
 import { validateResponsiveSearchAd } from "./rsa.js";
+import { asksForActive } from "./owner-route.js";
 import { PROPOSAL_KINDS, type ProposalKind } from "./platforms.js";
 import type { SpendAddition } from "./budgets.js";
 import type { AdsRuntime } from "./runtime.js";
@@ -91,6 +92,7 @@ async function targetsFrom(rt: AdsRuntime, scope: ScopeRow, raw: unknown): Promi
 
 export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: Record<string, unknown>): Promise<Normalized> {
   const kind = optionalKind(input.kind);
+  if (asksForActive({ kind, payload: input })) throw new AdsError("Everything is created PAUSED; leave status out (or set it to PAUSED). Once created, change the status in a separate proposal.", "not_paused");
   const reason = optionalString(input, "reason", 1000) ?? null;
   const today = todayIn(rt.config.timezone, rt.now());
 
