@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import type { TelephonySettings } from "../src/settings.js";
@@ -50,7 +51,7 @@ function makeFakeClient() {
   } as any as TwilioClient;
 }
 
-describe("sendWhatsapp", () => {
+describe.skipIf(!pgAvailable)("sendWhatsapp", () => {
   beforeAll(async () => { pgDb = await startPg(); }, 180_000);
   afterAll(async () => { await pgDb?.stop(); });
   beforeEach(async () => {

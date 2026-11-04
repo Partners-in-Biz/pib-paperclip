@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { claimRecordings, releaseLease } from "../src/lease.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 let db: any;
-describe("lease management", () => {
+describe.skipIf(!pgAvailable)("lease management", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

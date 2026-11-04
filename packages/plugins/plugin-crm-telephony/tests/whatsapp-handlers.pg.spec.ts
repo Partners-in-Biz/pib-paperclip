@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { computeTwilioSignature, buildPublicWebhookUrl, parseFormParams } from "../src/twilio-signature.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import { createMockDbClient, createMockContext, seedContact, readAuditRows, readOptOutRows, readPrefRows, readMessageRows } from "./helpers/test-utils.js";
@@ -10,7 +11,7 @@ import { insertOnce } from "../src/idempotency.js";
 let pgDb: PgDb;
 const authToken = "test-auth-token";
 
-describe("WhatsApp webhook handlers", () => {
+describe.skipIf(!pgAvailable)("WhatsApp webhook handlers", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

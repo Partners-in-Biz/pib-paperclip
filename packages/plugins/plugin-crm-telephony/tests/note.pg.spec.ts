@@ -11,6 +11,7 @@ import {
   NOTE_MAX_EMITS,
 } from "../src/note.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 let db: Awaited<ReturnType<typeof startHostDb>>;
@@ -58,7 +59,7 @@ function createMockCtx(mockEvents?: { emit: any; on: any }) {
   } as any;
 }
 
-describe("call note emission and acking", () => {
+describe.skipIf(!pgAvailable)("call note emission and acking", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

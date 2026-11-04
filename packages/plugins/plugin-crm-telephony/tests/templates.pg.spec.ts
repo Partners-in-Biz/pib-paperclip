@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startPg, type PgDb } from "./helpers/pg.js";
 import { syncTemplates, listPickerTemplates, type TwilioClient } from "../src/templates.js";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
@@ -30,7 +31,7 @@ function createMockClient(
   };
 }
 
-describe("Template sync and picker", () => {
+describe.skipIf(!pgAvailable)("Template sync and picker", () => {
   beforeAll(async () => {
     db = await startPg();
   }, 180_000);

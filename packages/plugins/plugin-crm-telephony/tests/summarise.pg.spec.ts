@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { makeSummariseStep, parseSummary } from "../src/summarise.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 let db: Awaited<ReturnType<typeof startHostDb>>;
@@ -34,7 +35,7 @@ function createMockCtx(fetchMock?: any, secretValue?: string | null) {
   } as any;
 }
 
-describe("summarise pipeline step", () => {
+describe.skipIf(!pgAvailable)("summarise pipeline step", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

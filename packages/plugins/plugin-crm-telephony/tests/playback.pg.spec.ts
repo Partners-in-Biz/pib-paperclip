@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { playRecording, PlaybackError, type R2Config } from "../src/playback.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 let db: any;
@@ -18,7 +19,7 @@ const r2Config: R2Config = {
   secretAccessKey: "testsecret",
 };
 
-describe("playRecording", () => {
+describe.skipIf(!pgAvailable)("playRecording", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

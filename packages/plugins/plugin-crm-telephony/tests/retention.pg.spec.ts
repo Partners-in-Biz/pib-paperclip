@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { runRetention, QUIESCE_SECONDS, TRANSCRIPT_RETENTION_MONTHS, RETENTION_MARKER } from "../src/retention.js";
 import { recordingKey } from "../src/r2-store.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 import type { R2Config } from "../src/r2-store.js";
 
@@ -197,7 +198,7 @@ async function seedTranscript(recordingId: string, opts?: { callSid?: string; cr
   );
 }
 
-describe("retention", () => {
+describe.skipIf(!pgAvailable)("retention", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

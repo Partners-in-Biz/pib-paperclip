@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { insertOnce, type SqlExecutor } from "../src/idempotency.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startPg, type PgDb } from "./helpers/pg.js";
 
-describe("insertOnce with Postgres", () => {
+describe.skipIf(!pgAvailable)("insertOnce with Postgres", () => {
   let db: PgDb;
   let executor: SqlExecutor;
 

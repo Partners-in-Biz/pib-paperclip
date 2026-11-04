@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTranscribeStep, type TranscribeDeps } from "../src/transcribe.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,7 +45,7 @@ async function seedContactPrefs(companyId: string, contactId: string, language: 
   );
 }
 
-describe("transcribe step", () => {
+describe.skipIf(!pgAvailable)("transcribe step", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

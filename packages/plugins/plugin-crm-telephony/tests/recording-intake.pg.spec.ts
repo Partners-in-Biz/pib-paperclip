@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import {
@@ -12,7 +13,7 @@ import {
 let pgDb: PgDb;
 const COMPANY_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 
-describe("Recording status webhook handler", () => {
+describe.skipIf(!pgAvailable)("Recording status webhook handler", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

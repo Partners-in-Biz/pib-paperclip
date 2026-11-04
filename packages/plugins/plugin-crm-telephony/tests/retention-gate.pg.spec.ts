@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runRetention, retentionEnabledCompanyIds, RETENTION_MARKER } from "../src/retention.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 import type { R2Config } from "../src/r2-store.js";
 
@@ -62,7 +63,7 @@ async function erasedAt(id: string) {
   return rows[0].erased_at;
 }
 
-describe("retention gate (off by default, per company)", () => {
+describe.skipIf(!pgAvailable)("retention gate (off by default, per company)", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

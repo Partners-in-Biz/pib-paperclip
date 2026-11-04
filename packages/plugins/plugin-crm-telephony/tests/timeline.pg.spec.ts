@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getTimeline, getTranscript, listUnmatched, setContactPrefs } from "../src/timeline.js";
 import { writeAudit } from "../src/audit.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 let db: any;
@@ -13,7 +14,7 @@ const contactId = "contact-123";
 const contactId2 = "contact-456";
 const userId = "user-789";
 
-describe("timeline", () => {
+describe.skipIf(!pgAvailable)("timeline", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

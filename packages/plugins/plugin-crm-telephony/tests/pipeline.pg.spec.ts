@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErasedError, MAX_ATTEMPTS, runMediaPipeline, raiseDeadIssues, type PipelineSteps, type PipelineStepCtx, type StepResult } from "../src/pipeline.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { pgAvailable } from "./helpers/pg-available.js";
 import { startHostDb } from "./helpers/host-db.js";
 
 interface TestDb {
@@ -87,7 +88,7 @@ function createMockCtx() {
   };
 }
 
-describe("media pipeline", () => {
+describe.skipIf(!pgAvailable)("media pipeline", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);
