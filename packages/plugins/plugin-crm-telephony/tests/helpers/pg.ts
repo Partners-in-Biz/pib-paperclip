@@ -15,6 +15,17 @@ type PgClient = {
   end: () => Promise<void>;
 };
 
+/** False where embedded-postgres is not installed (the deploy gate on the VPS, which also runs as root). Specs skip there. */
+export async function embeddedAvailable(): Promise<boolean> {
+  if (process.getuid?.() === 0) return false; // Postgres refuses to start as root
+  try {
+    await import(EMBEDDED);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface PgDb {
   client: PgClient;
   stop: () => Promise<void>;

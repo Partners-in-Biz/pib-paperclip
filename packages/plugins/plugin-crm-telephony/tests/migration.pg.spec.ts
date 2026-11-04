@@ -1,8 +1,11 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { startPg, type PgDb } from "./helpers/pg.js";
+import { embeddedAvailable } from "./helpers/pg.js";
 
-describe("CRM Telephony migrations", () => {
+const available = await embeddedAvailable();
+
+describe.skipIf(!available)("CRM Telephony migrations", () => {
   let db: PgDb;
 
   beforeAll(async () => {

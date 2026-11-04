@@ -3,6 +3,9 @@ import { NAMESPACE } from "../src/namespace.js";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let pgDb: PgDb;
 
@@ -21,7 +24,7 @@ function createMockDbClient(pgDb: PgDb): PluginDatabaseClient {
   };
 }
 
-describe("24h communication window", () => {
+describe.skipIf(!available)("24h communication window", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

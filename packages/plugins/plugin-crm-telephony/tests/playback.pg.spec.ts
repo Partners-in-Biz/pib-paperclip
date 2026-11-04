@@ -3,6 +3,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { playRecording, PlaybackError, type R2Config } from "../src/playback.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: any;
 
@@ -18,7 +21,7 @@ const r2Config: R2Config = {
   secretAccessKey: "testsecret",
 };
 
-describe("playRecording", () => {
+describe.skipIf(!available)("playRecording", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);
