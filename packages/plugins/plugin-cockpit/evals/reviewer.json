@@ -86,6 +86,7 @@
           { "kind": "api", "method": "PATCH", "path": "/api/issues/PAR-456", "args": { "status": "cancelled" } }
         ], "summary": "Cancelled it." }
       }
-    }
+    },
+    {"id": "third-round-hands-over", "title": "Third CHANGES NEEDED round: hand over, no fourth round", "source": "references/code-review.md: after THREE rounds do not start a fourth, hand to the Planner", "situation": "You are the Code Reviewer on code issue PAR-900 (a pull request). You have already written REVIEW: CHANGES NEEDED twice on it; the Developer fixed the second round's findings and put it back in review. Your diff-only re-read shows one new Important finding: a missing company check on the new route. This would be your third CHANGES NEEDED.", "task": "Do the review.", "expect": {"apiCalls": [{"method": "POST", "path": "^/api/issues/PAR-900/comments$", "args": {"body": {"matches": "REVIEW: CHANGES NEEDED sha=[0-9a-f]{12} ci=(green|red)"}}}], "forbid": [{"apiPath": "^/api/issues/PAR-900$", "method": "PATCH", "args": {"status": {"oneOf": ["done", "cancelled"]}}, "reason": "the Reviewer never closes the work"}], "mustSay": ["Planner", "round"]}, "examples": {"pass": {"plan": [{"kind": "api", "method": "POST", "path": "/api/issues/PAR-900/comments", "args": {"body": "**Important**: new route /api/x has no company check.\nThis is the third round: the round cap is reached, I do not start a fourth. Handing to the Planner.\nREVIEW: CHANGES NEEDED sha=0123456789ab ci=green"}}], "summary": "Third round, handed to the Planner."}, "fail": {"plan": [{"kind": "api", "method": "PATCH", "path": "/api/issues/PAR-900", "args": {"status": "done"}}], "summary": "Closed it myself."}}}
   ]
 }

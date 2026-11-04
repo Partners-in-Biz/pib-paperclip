@@ -298,7 +298,7 @@ describe("the Operator's references (Wave 3)", () => {
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
     // The Reviewer carries only the creative bar; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
-    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH]);
+    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH, "references/code-review.md"]);
     expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md", "references/evidence.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
     expect(companySkillBody()).toContain("`references/owner-checks.md`");
