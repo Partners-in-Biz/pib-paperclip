@@ -7,7 +7,7 @@
  * read too, not zero (the same outage `sync.ts` guards against before zeroing days). The window starts on the day of `created_at` in the account's
  * timezone, so same-day spend from before the row counts toward the cap (day grain, on purpose: conservative). Pause and other non-spend kinds pass.
  */
-import { getAccount, getCampaignCap, getConnection, table, type AccountRow } from "./db.js";
+import { getAccount, getCampaignCap, getConnection, table, type AccountRow, type CampaignCapRow } from "./db.js";
 import { AdsError, errorMessage } from "./domain.js";
 import { tokenFor } from "./connections.js";
 import { todayIn } from "./dates.js";
@@ -49,10 +49,7 @@ export async function assertCampaignCap(rt: AdsRuntime, kind: ProposalKind, payl
     if (!account || !check.campaignExternalId) throw new AdsError("The campaign's ad account was not found, so its cap cannot be checked.", "no_campaign_cap");
     const cap = await getCampaignCap(rt.ctx, rt.companyId, account.platform, check.campaignExternalId);
     if (!cap) throw new AdsError(`Campaign ${check.campaignExternalId} has no hard cap, so a change that adds spend will not run. The owner or an admin sets one first; pausing is always allowed.`, "no_campaign_cap");
-    const timezone = account.timezone ?? rt.config.timezone;
-    const until = todayIn(timezone, rt.now());
-    const from = todayIn(timezone, new Date(cap.created_at));
-    const since = from > until ? until : from;
+    const { since, until } = capWindow(rt, account, cap);
     const key = `${account.id}|${since}`;
     if (!reads.has(key)) reads.set(key, readSpend(rt, account, since, until));
     let rows;
@@ -71,8 +68,16 @@ export async function assertCampaignCap(rt: AdsRuntime, kind: ProposalKind, payl
   }
 }
 
+/** The days a campaign's cap counts: from the day of the cap row's `created_at` to today, both in the account's timezone. */
+export function capWindow(rt: AdsRuntime, account: AccountRow, cap: CampaignCapRow): { since: string; until: string } {
+  const timezone = account.timezone ?? rt.config.timezone;
+  const until = todayIn(timezone, rt.now());
+  const from = todayIn(timezone, new Date(cap.created_at));
+  return { since: from > until ? until : from, until };
+}
+
 /** A fresh insights read for the account over the window. Any failure (no connection, no token, platform error) is thrown. */
-async function readSpend(rt: AdsRuntime, account: AccountRow, since: string, until: string) {
+export async function readSpend(rt: AdsRuntime, account: AccountRow, since: string, until: string) {
   const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
   if (!conn || (conn.status !== "connected" && conn.status !== "expiring")) throw new Error("the connection needs signing in again");
   const env = await providerEnv(rt, conn.platform);
@@ -82,7 +87,7 @@ async function readSpend(rt: AdsRuntime, account: AccountRow, since: string, unt
   return { rows };
 }
 
-async function hadSpend(rt: AdsRuntime, accountId: string, campaignExternalId: string): Promise<boolean> {
+export async function hadSpend(rt: AdsRuntime, accountId: string, campaignExternalId: string): Promise<boolean> {
   const rows = await rt.ctx.db.query<Record<string, unknown>>(`SELECT 1 AS one FROM ${table(rt.ctx, "daily")} WHERE company_id = $1 AND account_id = $2 AND campaign_external_id = $3 AND spend_minor > 0 LIMIT 1`, [rt.companyId, accountId, campaignExternalId]);
   return rows.length > 0;
 }
