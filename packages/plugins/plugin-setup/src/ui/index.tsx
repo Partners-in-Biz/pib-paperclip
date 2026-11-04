@@ -35,6 +35,27 @@ function useLinkFor(): LinkPropsFor {
   return (href: string) => navigation.linkProps(href);
 }
 
+/** The company prefix from a host path (`/PAR/dashboard` gives `PAR`). Null for a path with only one segment. */
+export function prefixFromPath(pathname: string | null | undefined): string | null {
+  const [first, second] = (pathname ?? "").split("/").filter(Boolean);
+  return first && second && /^[A-Za-z][A-Za-z0-9]{0,9}$/.test(first) ? first : null;
+}
+
+/** Prefix a relative host path with the company prefix; paths that already carry it or are absolute urls stay. */
+export function withCompanyPrefix(href: string, prefix: string | null): string {
+  if (!prefix || !href.startsWith("/") || href.startsWith("//")) return href;
+  const first = href.split(/[/?#]/)[1] ?? "";
+  return first.toUpperCase() === prefix.toUpperCase() ? href : `/${prefix.toUpperCase()}${href}`;
+}
+
+/** The dashboard hands widgets no `companyPrefix`, so the host cannot prefix their links: `/setup` would open a broken page. */
+function useWidgetLinkFor(context: { companyPrefix?: string | null }): LinkPropsFor {
+  const navigation = useHostNavigation();
+  const location = useHostLocation();
+  const prefix = context.companyPrefix || prefixFromPath(location.pathname);
+  return (href: string) => navigation.linkProps(withCompanyPrefix(href, prefix));
+}
+
 function enabledViews(data: Pick<SetupData, "views">): ModuleView[] {
   return data.views.filter((view) => view.enabled);
 }
@@ -893,7 +914,7 @@ export function CopyPreview({ row, onToggle }: { row: CopyRow; onToggle: (includ
 export function SetupProgressWidget({ context }: PluginWidgetProps) {
   // The stored statuses (no live checks on the dashboard): the same count as the sidebar.
   const data = useSetupData(context.companyId, { live: false });
-  const linkFor = useLinkFor();
+  const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.load) return null;
   return <SetupProgressCard data={data} linkFor={linkFor} />;
 }
