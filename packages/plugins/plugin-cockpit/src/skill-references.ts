@@ -32,6 +32,7 @@ export const OPERATOR_REFERENCE_PATHS = {
 
 export const OWNER_CHECKS_REFERENCE_PATH = "references/owner-checks.md";
 export const EVIDENCE_REFERENCE_PATH = "references/evidence.md";
+export const CODE_REVIEW_REFERENCE_PATH = "references/code-review.md";
 
 // ---------------------------------------------------------------------------
 // Health checks
@@ -438,6 +439,38 @@ Until all three are done the loop does not run: say so in the retro, once.
 - Never apply a coach's proposal to the company's copy of a plugin skill.
 - Never change a "never" rule, an approval step or a spending limit without the owner.
 - Never count a proposal as an improvement until it is in the ledger with a number.
+`;
+
+// ---------------------------------------------------------------------------
+// Code review: rounds, tags and the verdict line
+// ---------------------------------------------------------------------------
+
+export const CODE_REVIEW_REFERENCE = `# Code review: tags, rounds and the verdict line
+
+For a code pull request (the Code Reviewer's work; the Cockpit counts what you write here).
+
+## Tag every finding
+- **Important**: breaks behaviour, security, data or the acceptance criteria. Must be fixed before PASS.
+- **Nit**: style or taste. Never blocks a PASS; say it once.
+- **Pre-existing**: wrong before this change. Name it, do not block on it, and it is not the author's to fix here.
+
+## Rounds
+- The first round is a full review: report **all** findings at once, never drip-feed.
+- Never repost a finding. Link the earlier comment if you must point back.
+- Every later round is **diff-only**: read what changed since your last review, not the whole pull request again.
+- Answer every finding the author replied to: accepted, or why not.
+- After **THREE** rounds do not start a fourth. Do not write a fourth CHANGES NEEDED: comment that the round cap is reached and hand the issue to the Planner.
+
+## The verdict line
+End the review comment with exactly one line:
+
+\`REVIEW: PASS sha=<12hex> ci=<green|red>\`
+
+or
+
+\`REVIEW: CHANGES NEEDED sha=<12hex> ci=<green|red>\`
+
+\`sha\` is the first 12 characters of the commit you reviewed; \`ci\` is the state of its checks. PASS needs \`ci=green\`. One verdict line per comment; the Cockpit counts a round per CHANGES NEEDED comment, not per sha.
 `;
 
 // ---------------------------------------------------------------------------

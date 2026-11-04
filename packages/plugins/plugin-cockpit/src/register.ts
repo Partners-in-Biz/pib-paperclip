@@ -75,6 +75,7 @@ import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/a
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
+import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 import { registerBrowserStatus } from "./browser-status.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
@@ -592,6 +593,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
     // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
     await riskTierCloseCheck(env, event);
+    // Review rounds cap: the third CHANGES NEEDED by the Code Reviewer hands the issue to the Planner (handles errors internally).
+    await reviewRoundsCheck(env, event);
   });
   // One issue.updated handler (each extra subscription would deliver every event again):
   // an open question follows its issue, and an agent's close of an onboarding or
