@@ -7,6 +7,7 @@
  *   3. changes are switched on for the company (settings) AND for the scope (a person's switch, off by default);
  *   4. the connection may change ads, the platform is on, the account is active;
  *   5. a change that adds spend has a monthly cap to be checked against, and stays inside it unless the approver said "over the cap";
+ *   5c. a change that adds spend to a campaign has the campaign's cap row (a new campaign carries `capMinor`) and stays under it on a fresh read;
  *   6. the numbers still match what was approved (a budget changed in the platform since is a new proposal).
  * Then the approval is used up (a second call with it is refused), the proposal moves to `executing`, and only then does the platform get a request.
  * A created campaign is always paused. Nothing here is retried by itself.
@@ -28,6 +29,7 @@ import { syncAccount } from "./sync.js";
 import { writeProposalCap } from "./campaign-caps.js";
 import { isOwnerDelegateApproval, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
+import { assertCampaignCap } from "./campaignCap.js";
 
 export interface ExecuteActor {
   userId?: string | null;
@@ -114,6 +116,14 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   // 5b. the platform caps
   try {
     await assertPlatformCapsFor(rt, p.kind, p.payload);
+  } catch (error) {
+    if (error instanceof AdsError) return refuse(rt, actor, p, error.code, error.message);
+    throw error;
+  }
+
+  // 5c. the campaign's own hard cap, on a fresh read of its spend
+  try {
+    await assertCampaignCap(rt, p.kind, p.payload);
   } catch (error) {
     if (error instanceof AdsError) return refuse(rt, actor, p, error.code, error.message);
     throw error;
