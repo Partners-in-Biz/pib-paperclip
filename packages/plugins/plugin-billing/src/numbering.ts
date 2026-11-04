@@ -76,6 +76,12 @@ export function numberingMode(settings: BillingSettings): "client" | "sequential
   return settings.numbering?.mode === "sequential" ? "sequential" : "client";
 }
 
+/** The numbering settings as read back by the billing-settings tool (read-only). */
+export function numberingSettings(settings: BillingSettings): { mode: "client" | "sequential"; digits: number; fallbackPrefix: string | null } {
+  const fallback = settings.numbering?.fallbackPrefix;
+  return { mode: numberingMode(settings), digits: digitsOf(settings), fallbackPrefix: typeof fallback === "string" && fallback.trim() ? fallback.trim() : null };
+}
+
 function digitsOf(settings: BillingSettings): number {
   const digits = Math.floor(Number(settings.numbering?.digits ?? 3));
   return Number.isFinite(digits) && digits >= 1 && digits <= 8 ? digits : 3;
