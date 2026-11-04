@@ -13,7 +13,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { request as httpsRequest } from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { storeAsset } from "./assets.js";
@@ -82,23 +83,105 @@ function isPrivateAddress(ip: string): boolean {
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
 }
 
-/** A provider's result URL is still a URL from outside: https and a public address only, and a bounded size. */
-export async function downloadOutput(url: string): Promise<Uint8Array<ArrayBuffer>> {
+export interface PinnedAddress {
+  address: string;
+  family: number;
+}
+
+export interface DownloadResponse {
+  status: number;
+  header(name: string): string | null;
+  body: AsyncIterable<Uint8Array>;
+  /** Drops the connection; safe to call after the body was read. */
+  close(): void;
+}
+
+/** How a download reaches the network. Swapped in tests; the default never follows a redirect. */
+export interface DownloadTransport {
+  resolve(host: string): Promise<PinnedAddress[]>;
+  get(url: URL, pinned: PinnedAddress, signal: AbortSignal): Promise<DownloadResponse>;
+}
+
+/** A lookup that always answers with the address that was checked, so the connection can't be rebound by a second DNS answer. */
+export function pinnedLookup(pinned: PinnedAddress): LookupFunction {
+  return (_host, options, callback) => {
+    if (options.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
+    else callback(null, pinned.address, pinned.family);
+  };
+}
+
+export const httpsTransport: DownloadTransport = {
+  async resolve(host) {
+    const family = isIP(host);
+    if (family) return [{ address: host, family }];
+    return lookup(host, { all: true, verbatim: true });
+  },
+  get(url, pinned, signal) {
+    return new Promise((resolve, reject) => {
+      // node:https never follows a redirect, and TLS still checks the certificate against the URL's own host name.
+      const req = httpsRequest(url, { method: "GET", signal, headers: { "User-Agent": "pib-studio/1.0" }, lookup: pinnedLookup(pinned) }, (res) => {
+        resolve({
+          status: res.statusCode ?? 0,
+          header: (name) => {
+            const value = res.headers[name.toLowerCase()];
+            return (Array.isArray(value) ? value[0] : value) ?? null;
+          },
+          body: res,
+          close: () => res.destroy(),
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  },
+};
+
+export interface DownloadOptions {
+  transport?: DownloadTransport;
+  maxBytes?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * A provider's result URL is still a URL from outside: https and a public address only, one request to the address
+ * that was checked (no redirects, no second lookup), and a size limit enforced while the body streams in.
+ */
+export async function downloadOutput(url: string, options: DownloadOptions = {}): Promise<Uint8Array<ArrayBuffer>> {
+  const transport = options.transport ?? httpsTransport;
+  const maxBytes = options.maxBytes ?? MAX_ASSET_BYTES;
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") throw new Error("The result is not on an https URL");
-  const addresses = isIP(parsed.hostname) ? [{ address: parsed.hostname }] : await lookup(parsed.hostname, { all: true });
-  if (addresses.some((a) => isPrivateAddress(a.address))) throw new Error("The result URL points at a private address");
-  const res = await fetch(url, { signal: AbortSignal.timeout(300_000), headers: { "User-Agent": "pib-studio/1.0" } });
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
-  if (Number(res.headers.get("content-length") ?? 0) > MAX_ASSET_BYTES) throw new Error("The result is larger than Studio stores");
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  if (bytes.length > MAX_ASSET_BYTES) throw new Error("The result is larger than Studio stores");
-  return bytes;
+  const host = parsed.hostname.replace(/^\[(.*)\]$/, "$1");
+  const addresses = await transport.resolve(host);
+  if (!addresses[0] || addresses.some((a) => isPrivateAddress(a.address))) throw new Error("The result URL points at a private address");
+  const res = await transport.get(parsed, addresses[0], AbortSignal.timeout(options.timeoutMs ?? 300_000));
+  try {
+    if (res.status >= 300 && res.status < 400) throw new Error(`The result URL redirects (HTTP ${res.status}); Studio doesn't follow redirects`);
+    if (res.status < 200 || res.status >= 300) throw new Error(`Download failed: HTTP ${res.status}`);
+    const tooBig = "The result is larger than Studio stores";
+    if (Number(res.header("content-length") ?? 0) > maxBytes) throw new Error(tooBig);
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of res.body) {
+      total += chunk.byteLength;
+      if (total > maxBytes) throw new Error(tooBig);
+      chunks.push(chunk);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  } finally {
+    res.close();
+  }
 }
 
 export const defaultRuntime: Runtime = {
   provider: async (config) => higgsfieldProvider(await config.higgsfieldKey()),
-  download: downloadOutput,
+  download: (url) => downloadOutput(url),
   now: () => Date.now(),
 };
 

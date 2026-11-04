@@ -105,6 +105,9 @@ const plugin = definePlugin({
       });
     }
 
+    // Safe without a membership check here: the host route (POST /api/plugins/:pluginId/data/:key) runs
+    // assertCompanyAccess on the request's companyId, and the SDK's getData writes that verified companyId over any
+    // companyId in params. With no companyId the host requires an instance admin. So a caller only reaches its own company.
     ctx.data.register("overview", async (params) => {
       const companyId = String(objectParams(params).companyId ?? "");
       if (!companyId) throw new StudioError("Company is required");

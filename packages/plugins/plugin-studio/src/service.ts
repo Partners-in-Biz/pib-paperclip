@@ -28,7 +28,7 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
   };
 }
 
-/** The Studio page's data. A read has no verified caller, so the owner check that matters is on the write action. */
+/** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
   const [caps, history, clients, assets, companyUsed] = await Promise.all([
