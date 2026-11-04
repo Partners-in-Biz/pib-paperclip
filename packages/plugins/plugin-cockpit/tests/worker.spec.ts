@@ -97,7 +97,7 @@ describe("manifest and migration", () => {
       "repairs-list", "governor-state", "watchdog-findings", "hosted-usage-list",
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
       "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
-      "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change",
+      "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change", "review-finding-record", "review-outcome-set",
     ]);
     // Every tool parameter says what it is; fixed values are enums.
     for (const tool of manifest.tools ?? []) {
@@ -443,7 +443,7 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert"]);
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert", "review-finding-record", "review-outcome-set"]);
     for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();
