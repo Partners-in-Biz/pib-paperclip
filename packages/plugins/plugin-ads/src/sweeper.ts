@@ -1,5 +1,6 @@
-/** Hourly sweep: auto-pause ACTIVE campaigns at/over lifetime or scope monthly cap using fresh insights. */
-import { listAccounts, listCampaigns, findAlert, listScopes, table, getConnection, updateCampaignStatus } from "./db.js";
+/** Hourly sweep: auto-pause ACTIVE campaigns at/over their own hard cap, lifetime or scope monthly cap using fresh insights. */
+import { listAccounts, listCampaigns, findAlert, listScopes, table, getConnection, getCampaignCap, updateCampaignStatus } from "./db.js";
+import { capWindow, hadSpend, readSpend } from "./campaignCap.js";
 import { monthOf, monthStart, todayIn, lifetimeWindowStart } from "./dates.js";
 import { errorMessage } from "./domain.js";
 import { raiseSweepAlert } from "./evaluate.js";
@@ -162,6 +163,37 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
       }
     }
 
+    // Per-campaign hard cap (PAR-6683): the same fresh read as assertCampaignCap; spend at or over cap_minor pauses.
+    // A failed or empty read is a failure: it counts as an error and raises one alert per account (kind stays spend_spike, flag campaignCap).
+    for (const [accountId, campaigns] of campaignsByAccount) {
+      const ctx = ctxByAccountId.get(accountId);
+      if (unreachable.has(accountId) || !ctx) continue;
+      const account = activeAccounts.find((a) => a.id === accountId)!;
+      const capped: Array<{ camp: (typeof campaigns)[number]; capMinor: number; since: string; until: string }> = [];
+      for (const camp of campaigns) {
+        if (paused.has(camp.id)) continue;
+        const cap = await getCampaignCap(rt.ctx, rt.companyId, account.platform, camp.external_id);
+        if (cap) capped.push({ camp, capMinor: cap.cap_minor, ...capWindow(rt, account, cap) });
+      }
+      if (capped.length === 0) continue;
+      const since = capped.reduce((m, c) => (c.since < m ? c.since : m), capped[0]!.since);
+      let rows: Array<{ campaignExternalId: string; day: string; spendMinor: number }>;
+      try {
+        ({ rows } = await readSpend(rt, account, since, capped[0]!.until));
+        if (rows.length === 0) {
+          for (const c of capped) if (await hadSpend(rt, accountId, c.camp.external_id)) throw new Error("the platform returned no rows for a campaign that has spent before");
+        }
+      } catch (error) {
+        result.errors++;
+        await alertFor(rt, scope, "warn", `sweep-cap-unread:${accountId}`, `${account.name}: campaign caps not checked`, `Spend for account "${account.name}" could not be read (${errorMessage(error).slice(0, 160)}); its ${capped.length} capped ACTIVE campaigns are NOT being checked against their caps.`, { accountId, campaignCap: true, campaigns: capped.length }, accountId, "");
+        continue;
+      }
+      for (const c of capped) {
+        const spentMinor = rows.filter((r) => r.campaignExternalId === c.camp.external_id && r.day >= c.since).reduce((s, r) => s + (Number(r.spendMinor) || 0), 0);
+        if (spentMinor >= c.capMinor) await pauseWithRetry(rt, account, c.camp, result, scope, accountId, paused, `campaign cap ${c.capMinor} minor units`, today, ctx, { campaignCap: true, capMinor: c.capMinor, spentMinor, since: c.since });
+      }
+    }
+
     if (scope.monthly_cap_minor !== null) {
       let scopeSpend = 0;
       for (const acc of scopeAccounts) {
@@ -218,7 +250,7 @@ export async function sweepCaps(rt: AdsRuntime): Promise<SweepResult> {
   return result;
 }
 
-async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof listAccounts>>[number], campaign: { id: string; external_id: string; name: string }, result: SweepResult, scope: Awaited<ReturnType<typeof listScopes>>[number], accountId: string, paused: Set<string>, reason: string, today: string, ctx: ProviderContext): Promise<void> {
+async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof listAccounts>>[number], campaign: { id: string; external_id: string; name: string }, result: SweepResult, scope: Awaited<ReturnType<typeof listScopes>>[number], accountId: string, paused: Set<string>, reason: string, today: string, ctx: ProviderContext, flag: Record<string, unknown> = {}): Promise<void> {
   if (paused.has(campaign.id)) return;
 
   let succeeded = false;
@@ -239,7 +271,7 @@ async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof
         result.critical++;
         result.errors++;
         paused.add(campaign.id);
-        await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: pause failed (${reason})`, `Campaign "${campaign.name}" pause failed after ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason }, account.id, campaign.external_id);
+        await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: pause failed (${reason})`, `Campaign "${campaign.name}" pause failed after ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason, ...flag }, account.id, campaign.external_id);
         return;
       }
     }
@@ -249,10 +281,10 @@ async function pauseWithRetry(rt: AdsRuntime, account: Awaited<ReturnType<typeof
     await updateCampaignStatus(rt.ctx, rt.companyId, campaign.id, "paused");
     result.paused++;
     paused.add(campaign.id);
-    await alertFor(rt, scope, "info", `sweep-paused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: paused`, `Campaign "${campaign.name}" paused after reaching ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason }, account.id, campaign.external_id);
+    await alertFor(rt, scope, "info", `sweep-paused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: paused`, `Campaign "${campaign.name}" paused after reaching ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason, ...flag }, account.id, campaign.external_id);
   } else {
     result.critical++;
     paused.add(campaign.id);
-    await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: failed to pause (${reason})`, `Campaign "${campaign.name}" remains ACTIVE after 2 pause attempts. Reason: reached ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason }, account.id, campaign.external_id);
+    await alertFor(rt, scope, "bad", `sweep-unpaused:${account.id}:${campaign.external_id}:${today}`, `${campaign.name}: failed to pause (${reason})`, `Campaign "${campaign.name}" remains ACTIVE after 2 pause attempts. Reason: reached ${reason}.`, { accountId: account.id, campaignExternalId: campaign.external_id, reason, ...flag }, account.id, campaign.external_id);
   }
 }
