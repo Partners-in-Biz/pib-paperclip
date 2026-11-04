@@ -156,8 +156,9 @@ export async function internalLinkAuditTool(env: Env, companyId: string, params:
     siteUrl: sprint?.siteUrl ?? url,
     sitemapUrl: sitemapUrl ? urlParam(sitemapUrl, sprint?.siteUrl ?? url) : null,
     maxPages: num(params, "maxPages", { integer: true, min: 1, max: 40 }) ?? 25,
+    startAt: num(params, "startAt", { integer: true, min: 0 }) ?? 0,
   });
-  // Orphans are only meaningful for a complete crawl; partial runs are reported, not stored.
+  // Orphans are only meaningful for a complete crawl; a partial run returns none and stores nothing.
   const stored = result.partial
     ? { recorded: 0, resolved: 0 }
     : await recordCheckFindings(
@@ -167,11 +168,7 @@ export async function internalLinkAuditTool(env: Env, companyId: string, params:
       result.findings.filter((f) => f.category === "links"),
       result.crawledPages.map((page) => ({ category: "links", url: page })),
     );
-  return {
-    ...result,
-    stored,
-    note: result.partial ? "Partial crawl (page cap or time limit): orphans are relative to the crawled pages and were not stored as findings." : undefined,
-  };
+  return { ...result, stored };
 }
 
 export async function checkSoft404Tool(env: Env, companyId: string, params: Params) {
