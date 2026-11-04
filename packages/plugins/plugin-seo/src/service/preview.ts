@@ -41,8 +41,20 @@ export function withoutNul<T>(value: T): T {
   return value;
 }
 
+/** Optional caller-supplied CRM client for the Drive copy (no CRM lookup here): `{ kind: company|contact, ref }`. */
+export function previewClient(params: Params): { kind: "company" | "contact"; ref: string } | undefined {
+  const raw = params.client;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new SeoError("client must be an object { kind, ref }.");
+  const { kind, ref } = raw as Record<string, unknown>;
+  if (kind !== "company" && kind !== "contact") throw new SeoError("client.kind must be company or contact.");
+  if (typeof ref !== "string" || ref.trim().length === 0) throw new SeoError("client.ref must be a non-empty CRM id.");
+  return { kind, ref: ref.trim().slice(0, 200) };
+}
+
 export async function createPreview(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprintId = reqStr(params, "sprintId");
+  const client = previewClient(params);
   const { sprint } = await loadSprintContext(env, companyId, sprintId);
   assertWritable(sprint);
   const rawUrl = reqStr(params, "pageUrl", { max: 2000 });
@@ -123,6 +135,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
     timeoutMs: 5000,
+    ...(client ? { client } : {}),
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });

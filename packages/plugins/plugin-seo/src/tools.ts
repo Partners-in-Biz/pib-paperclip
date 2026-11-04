@@ -284,6 +284,16 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
       why: text("One sentence for the client, under this page in their approval email: why we changed it and how it should help search. Say should or helps; never promise a result."),
       label: text("Short name for the proposal, shown on the Needs you item."),
+      client: {
+        type: "object",
+        description: "Optional CRM client (kind and ref) the Drive copy is filed under; leave it out when unsure.",
+        required: ["kind", "ref"],
+        properties: {
+          kind: choice(["company", "contact"], "company or contact"),
+          ref: { type: "string", minLength: 1, description: "The CRM id of the company or contact" },
+        },
+        additionalProperties: false,
+      },
     }),
   },
   {
