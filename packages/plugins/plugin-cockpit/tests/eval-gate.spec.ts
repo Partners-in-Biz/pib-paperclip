@@ -68,7 +68,7 @@ describe("the gate on the agent templates (evals/agents/results.json)", () => {
       if (!entry?.baseline) continue;
       const verdict = offlineGate([{ slug: key, hash: entry.baseline.hash, scenarios }], AGENT_RESULTS)[0]!;
       expect(verdict.ok, `${key}: ${verdict.reason}`).toBe(true);
-      if (entry.baseline.passRate < AGENT_RESULTS.minPassRate) {
+      if ((entry.baseline.passRate ?? 0) < AGENT_RESULTS.minPassRate) {
         const w = entry.waivers?.find((x) => x.hash === entry.baseline!.hash);
         expect(w, `${key} baseline ${entry.baseline.passRate} is below ${AGENT_RESULTS.minPassRate} and has no waiver`).toBeTruthy();
         expect(w!.reason && w!.by && w!.expires, `${key} waiver needs reason, by, expires`).toBeTruthy();
