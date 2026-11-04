@@ -14,6 +14,18 @@ export {
   type Db,
 } from "./client.js";
 export {
+  acquireServerLock,
+  withServerLockForScript,
+  ServerLockHeldError,
+  SERVER_LOCK_APPLICATION_NAME,
+  SERVER_LOCK_KEY,
+  SERVER_LOCK_OPT_OUT_ENV,
+  type ServerLockHandle,
+  type ServerLockLogger,
+  type ServerLockOptions,
+  type ServerLockState,
+} from "./server-lock.js";
+export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,

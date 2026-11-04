@@ -25,6 +25,8 @@ import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
+  acquireServerLock,
+  type ServerLockHandle,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -420,7 +422,16 @@ async function startServerWithDatabaseTeardown(
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   assertCloudDatabaseContract();
+  let serverLock: ServerLockHandle | null = null;
   if (config.databaseUrl) {
+    // Before anything else touches this database: a second server must not run
+    // its startup against a database another server is using (PAR-7750).
+    serverLock = await acquireServerLock(config.databaseUrl, {
+      log: {
+        info: (message) => logger.info(message),
+        error: (message) => logger.error(message),
+      },
+    });
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
@@ -643,6 +654,7 @@ async function startServerWithDatabaseTeardown(
   const closeDatabaseClients = async () => {
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
     await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+    await serverLock?.release();
   };
   startupDatabase.close = closeDatabaseClients;
   
