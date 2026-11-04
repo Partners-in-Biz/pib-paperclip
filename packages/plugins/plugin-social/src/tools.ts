@@ -430,7 +430,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "reply-inbox",
     displayName: "Reply to inbox item",
     description:
-      "Reply to a comment or mention through the platform. Unless agent replies are enabled in settings, the reply is saved as a suggestion that a person sends. Platforms without a reply API get a draft post.",
+      "Reply to a comment or mention through the platform. Unless agent replies are enabled in settings, the reply is saved as a suggestion that a person sends. On X it is always a suggestion, which a person posts on X. Platforms without a reply API get a draft post.",
     parametersSchema: schema(["itemId", "body"], { itemId: ITEM_ID, body: text("The reply text") }),
   },
   {
