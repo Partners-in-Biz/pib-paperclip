@@ -55,6 +55,8 @@ export interface SendOptions {
   force?: boolean;
   /** Draft sends update the draft row instead of adding one. */
   draftRowId?: string;
+  /** Files already in hand (a draft's uploads), added to the ones the request points at by address. */
+  extraAttachments?: MimeAttachment[];
 }
 
 async function fetchAttachment(fetchImpl: FetchLike, ref: MailAttachmentRef): Promise<Uint8Array> {

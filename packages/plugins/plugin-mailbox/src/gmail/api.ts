@@ -394,6 +394,11 @@ export async function modifyMessage(fetchImpl: FetchLike, token: string, id: str
   return Array.isArray(body.labelIds) ? (body.labelIds as unknown[]).map(String) : [];
 }
 
+/** Moves a message to the Bin (`users.messages.trash`). Google keeps it there for 30 days; `gmail.modify` is enough. */
+export async function trashGmailMessage(fetchImpl: FetchLike, token: string, id: string): Promise<void> {
+  await gmail(fetchImpl, token, "POST", `/messages/${encodeURIComponent(id)}/trash`, { body: {} });
+}
+
 /** JSON `raw` up to this size; larger messages go through the upload endpoint (35 MB limit). */
 export const RAW_JSON_LIMIT = 4_500_000;
 
@@ -500,4 +505,10 @@ export async function findGmailDraft(fetchImpl: FetchLike, token: string, rfcMes
   const body = await gmail(fetchImpl, token, "GET", "/drafts", { query: { q: `rfc822msgid:${rfcMessageId}`, maxResults: 1 } });
   const first = Array.isArray(body.drafts) ? (body.drafts as Array<Record<string, unknown>>)[0] : undefined;
   return first ? toDraft(first) : null;
+}
+
+/** The HTML signature Gmail adds for an address of this account (`settings.sendAs`); empty when none is set. */
+export async function getSendAsSignature(fetchImpl: FetchLike, token: string, address: string): Promise<string> {
+  const body = await gmail(fetchImpl, token, "GET", `/settings/sendAs/${encodeURIComponent(address)}`);
+  return typeof body.signature === "string" ? body.signature : "";
 }

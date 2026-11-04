@@ -1,6 +1,6 @@
 # Mailbox
 
-Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend or Amazon SES, 0.7.0) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold.
+Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend or Amazon SES, 0.7.0) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold. 0.7.1 lets a person work on a draft before it goes out: edit To/Cc/Bcc (searching CRM contacts), subject and text, add files, tick the Gmail signature, ask the drafting agent for a rewrite, or delete the draft with a reason the agent learns from (no migration; agents get an `update-draft` tool).
 
 ## Gmail hub (0.2.0)
 
@@ -63,6 +63,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - MIME: multipart/mixed → multipart/alternative (text + html); attachments downloaded from the given (presigned) URLs; UTF-8 headers encoded. `inReplyToMessageId` (Gmail id, Mailbox id or `<Message-ID>`) sets `threadId`, In-Reply-To and References; `threadId` alone answers the thread's newest message. Requested labels (e.g. `PiB/Invoices`, `PiB/Sequences`, `PiB/Campaigns`) are created and added.
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
+
+## 0.9.0: read, reply, forward and delete on the page; draft editor
+
+Opening a mail shows its whole text. **Reply**, **Reply all** and **Forward** save a draft (`mailbox.start-reply`: quoted text, right thread, a forward carries the original's files up to the draft limits) and open the draft editor, where To, Cc, Bcc, text and files can be changed; nothing goes out until someone clicks Send. **Delete** (one mail, or several ticked in the list; `mailbox.delete-mail`) moves the mail to the Bin in Gmail (`users.messages.trash`, recoverable for 30 days) and removes the row from the hub. Mail trashed in Gmail itself also leaves the inbox list. People only: no agent tool deletes mail. Sent records stay: they are the send log.
 
 ### Gmail drafts for other plugins (0.6.4)
 
