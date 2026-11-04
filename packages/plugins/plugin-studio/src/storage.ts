@@ -1,0 +1,141 @@
+/**
+ * Where Studio files live: `studio/<companyId>/<own|kind-ref>/<assetId>/v<n>.<ext>` in the company's private bucket.
+ *
+ * The R2 token reaches every prefix in that bucket, including other plugins' billing and payroll files, so the
+ * prefix is enforced here. Every signed URL goes through `objectUrl`, which refuses a key outside this company's
+ * Studio folder. Signed URLs are for the worker and for people's browsers: never return one to an agent, because the
+ * host redacts them (agents get a local file path from `localCopy`).
+ */
+import { createHash } from "node:crypto";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { presignUrl, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { StudioError } from "./errors.js";
+
+export const STUDIO_PREFIX = "studio";
+export const MAX_ASSET_BYTES = 200 * 1024 * 1024;
+
+export interface PrivateBucket {
+  accountId: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+function segment(value: string, label: string): string {
+  if (!SAFE_SEGMENT.test(value)) throw new StudioError(`Unsafe ${label} in a storage path`, "unsafe_key");
+  return value;
+}
+
+export function scopeSegment(scope: ClientScope): string {
+  return scope ? `${segment(scope.kind, "client kind")}-${segment(scope.id, "client id")}` : "own";
+}
+
+export function assetKey(companyId: string, scope: ClientScope, assetId: string, version: number, ext: string): string {
+  return `${STUDIO_PREFIX}/${segment(companyId, "company id")}/${scopeSegment(scope)}/${segment(assetId, "asset id")}/v${version}.${segment(ext, "extension")}`;
+}
+
+export function assertOwnKey(companyId: string, key: string): void {
+  const parts = key.split("/");
+  if (parts[0] !== STUDIO_PREFIX || parts[1] !== companyId || parts.length < 5 || parts.some((p) => p === "" || p === "." || p === "..")) {
+    throw new StudioError("That file is outside this company's Studio folder", "forbidden_key");
+  }
+}
+
+export function objectUrl(cfg: PrivateBucket, companyId: string, method: "GET" | "PUT", key: string, expiresSec: number): string {
+  assertOwnKey(companyId, key);
+  return presignUrl({
+    method,
+    host: `${cfg.accountId}.r2.cloudflarestorage.com`,
+    path: `/${cfg.bucket}/${key}`,
+    region: "auto",
+    accessKeyId: cfg.accessKeyId,
+    secretAccessKey: cfg.secretAccessKey,
+    expiresSec,
+  });
+}
+
+/** Server-side upload. Native fetch: `ctx.http.fetch` stringifies binary bodies. */
+export async function putObject(cfg: PrivateBucket, companyId: string, key: string, bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<void> {
+  const res = await fetch(objectUrl(cfg, companyId, "PUT", key, 300), { method: "PUT", body: bytes, headers: { "Content-Type": mime }, signal: AbortSignal.timeout(300_000) });
+  if (!res.ok) throw new Error(`Storage upload failed: HTTP ${res.status}`);
+}
+
+export async function getObject(cfg: PrivateBucket, companyId: string, key: string): Promise<Uint8Array> {
+  const res = await fetch(objectUrl(cfg, companyId, "GET", key, 300), { signal: AbortSignal.timeout(300_000) });
+  if (!res.ok) throw new Error(`Storage read failed: HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+};
+
+export function extFor(mime: string): string {
+  const ext = MIME_EXT[mime];
+  if (!ext) throw new StudioError(`Studio stores images and videos, not ${mime}`, "unsupported_type");
+  return ext;
+}
+
+export function kindFor(mime: string): "image" | "video" {
+  return mime.startsWith("video/") ? "video" : "image";
+}
+
+/** The file's real type, from its first bytes. A provider's or uploader's stated type is not trusted. */
+export function sniffMime(b: Uint8Array): string | null {
+  const ascii = (start: number, end: number) => String.fromCharCode(...b.subarray(start, end));
+  if (b.length < 12) return null;
+  if (b[0] === 0x89 && ascii(1, 4) === "PNG") return "image/png";
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (ascii(0, 4) === "GIF8") return "image/gif";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
+  if (ascii(4, 8) === "ftyp") return ascii(8, 12) === "qt  " ? "video/quicktime" : "video/mp4";
+  return null;
+}
+
+/** Agents read files from here. Same user as the worker, private to it, swept after a day. */
+export function localRoot(): string {
+  return (
+    process.env.PIB_STUDIO_WORKDIR ||
+    join(process.env.PAPERCLIP_HOME || join(homedir(), ".paperclip"), "instances", process.env.PAPERCLIP_INSTANCE_ID || "default", "data", "studio-files")
+  );
+}
+
+export async function localCopy(companyId: string, assetId: string, version: number, ext: string, read: () => Promise<Uint8Array>): Promise<string> {
+  const dir = join(localRoot(), segment(companyId, "company id"));
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${segment(assetId, "asset id")}-v${version}.${segment(ext, "extension")}`);
+  const present = await stat(file).then((s) => s.size > 0).catch(() => false);
+  if (!present) await writeFile(file, await read(), { mode: 0o600 });
+  return file;
+}
+
+export async function sweepLocalCopies(maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now()): Promise<number> {
+  let removed = 0;
+  const root = localRoot();
+  const companies = await readdir(root).catch(() => [] as string[]);
+  for (const company of companies) {
+    const dir = join(root, company);
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      const file = join(dir, name);
+      const info = await stat(file).catch(() => null);
+      if (info && now - info.mtimeMs > maxAgeMs) {
+        await rm(file, { force: true });
+        removed += 1;
+      }
+    }
+  }
+  return removed;
+}

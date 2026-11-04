@@ -1,0 +1,519 @@
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
+import { assetFileForAgent, assetOut, getAssetRow, importFromAttachment, linkAsset, listAssets } from "../src/assets.js";
+import { processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
+import { capHistory, setCap, usage, currentPeriod } from "../src/ledger.js";
+import { ProviderError, type GenerationProvider, type JobState } from "../src/provider.js";
+import { isCompanyOwner, usageView } from "../src/service.js";
+import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
+
+const CO = "11111111-1111-4111-8111-111111111111";
+const OTHER_CO = "22222222-2222-4222-8222-222222222222";
+const ACME = { kind: "company" as const, id: "acme" };
+const GLOBEX = { kind: "company" as const, id: "globex" };
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+const available = await embeddedAvailable();
+let pg: Pg;
+let workdir: string;
+
+beforeAll(async () => {
+  if (available) pg = await startPg();
+  workdir = mkdtempSync(join(tmpdir(), "studio-files-"));
+  process.env.PIB_STUDIO_WORKDIR = workdir;
+}, 120_000);
+
+afterAll(async () => {
+  if (available) await pg.stop();
+  rmSync(workdir, { recursive: true, force: true });
+  delete process.env.PIB_STUDIO_WORKDIR;
+});
+
+interface World {
+  ctx: PluginContext;
+  comments: Array<{ issueId: string; body: string }>;
+  puts: string[];
+}
+
+function makeWorld(): World {
+  const state = new Map<string, unknown>();
+  const stateKey = (k: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => JSON.stringify([k.scopeKind, k.scopeId, k.namespace, k.stateKey]);
+  const comments: World["comments"] = [];
+  const puts: string[] = [];
+  const issues: Record<string, { id: string; projectId: string | null }> = {
+    "issue-acme": { id: "issue-acme", projectId: "project-acme" },
+    "issue-globex": { id: "issue-globex", projectId: "project-globex" },
+    "issue-own": { id: "issue-own", projectId: "project-own" },
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "PUT") {
+      puts.push(new URL(url).pathname);
+      return new Response(null, { status: 200 });
+    }
+    return new Response(PNG, { status: 200 });
+  }));
+  const ctx = {
+    db: pg.db,
+    logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
+    config: {
+      get: async () => ({
+        r2: { accountId: "acct", bucket: "pib-private", accessKeyId: "AK", secretAccessKey: "plain-test-secret" },
+        higgsfield: { apiKey: "id:secret" },
+      }),
+    },
+    secrets: { resolve: async () => "resolved" },
+    state: {
+      get: async (k: never) => state.get(stateKey(k)) ?? null,
+      set: async (k: never, value: unknown) => void state.set(stateKey(k), value),
+      delete: async (k: never) => void state.delete(stateKey(k)),
+    },
+    projects: { get: async (id: string) => ({ id, archivedAt: null }) },
+    issues: {
+      get: async (id: string) => issues[id] ?? null,
+      createComment: async (issueId: string, body: string) => void comments.push({ issueId, body }),
+      listAttachments: async (issueId: string) => (issueId === "issue-acme" ? [{ id: "att-1", byteSize: PNG.length, originalFilename: "made.png", contentType: "image/png" }] : []),
+      getAttachmentContent: async () => ({ contentBase64: Buffer.from(PNG).toString("base64"), originalFilename: "made.png", contentType: "image/png" }),
+    },
+    access: {
+      members: {
+        list: async () => [
+          { principalType: "user", principalId: "owner-1", status: "active", membershipRole: "owner" },
+          { principalType: "user", principalId: "admin-1", status: "active", membershipRole: "admin" },
+          { principalType: "user", principalId: "former-owner", status: "removed", membershipRole: "owner" },
+        ],
+      },
+    },
+  } as unknown as PluginContext;
+  return { ctx, comments, puts };
+}
+
+class FakeProvider implements GenerationProvider {
+  readonly key = "higgsfield";
+  price = 0.5;
+  submits: string[] = [];
+  next: () => string = () => `job-${this.submits.length}`;
+  state: JobState = { state: "done", urls: ["https://cdn.example.com/out.png"], credits: null };
+  async estimate() {
+    return this.price;
+  }
+  async submit(model: string) {
+    this.submits.push(model);
+    return this.next();
+  }
+  async status() {
+    return this.state;
+  }
+}
+
+function runtimeWith(provider: GenerationProvider, overrides: Partial<Runtime> = {}): Runtime {
+  return { provider: async () => provider, download: async () => new Uint8Array(PNG), now: () => Date.now(), ...overrides };
+}
+
+const REQUEST = { model: "higgsfield-ai/soul/v2/standard", prompt: "A business man" };
+const AGENT = { agentId: "agent-1", runId: "run-1" };
+
+async function rows(world: World, sql: string, params: unknown[] = []): Promise<any[]> {
+  void world;
+  return pg.db.query(sql, params);
+}
+
+const T = (name: string) => `${pg.db.namespace}.${name}`;
+
+describe.skipIf(!available)("Studio against real Postgres", () => {
+  let world: World;
+  let provider: FakeProvider;
+  let runtime: Runtime;
+
+  beforeEach(async () => {
+    await pg.reset();
+    resetQueueStateForTests();
+    world = makeWorld();
+    provider = new FakeProvider();
+    runtime = runtimeWith(provider);
+    const now = new Date().toISOString();
+    for (const [id, name] of [["acme", "Acme Ltd"], ["globex", "Globex Inc"]] as const) {
+      await pg.client.query(`INSERT INTO ${T("crm_companies")} (id, company_id, name, updated_at) VALUES ($1, $2, $3, $4)`, [id, CO, name, now]);
+    }
+    await rememberClientProjects(world.ctx, CO, { clientKind: "company", clientRef: "acme", projects: [{ projectId: "project-acme", kind: null }], updatedAt: now });
+    await rememberClientProjects(world.ctx, CO, { clientKind: "company", clientRef: "globex", projects: [{ projectId: "project-globex", kind: null }], updatedAt: now });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  const work = (issueId: string, projectId: string) => ({ ...AGENT, issueId, projectId });
+  const acmeWork = () => work("issue-acme", "project-acme");
+
+  describe("settable caps", () => {
+    it("refuses until a cap is set, then applies a change to the very next generation", async () => {
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_not_set" });
+      await setCap(world.ctx, CO, "company", 1, "owner-1");
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_reached" });
+      await setCap(world.ctx, CO, "company", 2, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).resolves.toBeTruthy();
+    });
+
+    it("treats 0 as off and a cleared cap as falling through to the next level", async () => {
+      await setCap(world.ctx, CO, "default", 10, "owner-1");
+      await setCap(world.ctx, CO, "company", 0, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_reached" });
+      await setCap(world.ctx, CO, "company", null, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).resolves.toBeTruthy();
+    });
+
+    it("measures a client's own cap on that client's use only", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await setCap(world.ctx, CO, "company:acme", 0.5, "owner-1");
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_reached" });
+      await expect(requestGeneration(world.ctx, CO, REQUEST, work("issue-globex", "project-globex"), runtime)).resolves.toBeTruthy();
+      expect(await usageView(world.ctx, CO, ACME)).toMatchObject({ capSource: "client", monthlyCap: 0.5, usedThisMonth: 0.5, remaining: 0 });
+      expect(await usageView(world.ctx, CO, GLOBEX)).toMatchObject({ capSource: "company", usedThisMonth: 1 });
+    });
+
+    it("keeps queued work running when the cap is lowered, and blocks only new work", async () => {
+      await setCap(world.ctx, CO, "company", 10, "owner-1");
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await setCap(world.ctx, CO, "company", 0.1, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_reached" });
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(1);
+    });
+
+    it("logs every change with who, the old value and the new value, and ignores a no-op", async () => {
+      await setCap(world.ctx, CO, "company", 5, "owner-1");
+      await setCap(world.ctx, CO, "company", 5, "owner-1");
+      await setCap(world.ctx, CO, "company", 9, "owner-2");
+      await setCap(world.ctx, CO, "company", null, "owner-2");
+      const history = await capHistory(world.ctx, CO);
+      expect(history.map((h) => [h.oldCredits, h.newCredits, h.changedBy])).toEqual(
+        expect.arrayContaining([[null, 5, "owner-1"], [5, 9, "owner-2"], [9, null, "owner-2"]]),
+      );
+      expect(history).toHaveLength(3);
+    });
+
+    it("refuses a nonsense cap or scope", async () => {
+      await expect(setCap(world.ctx, CO, "company", -1, "o")).rejects.toMatchObject({ code: "bad_cap" });
+      await expect(setCap(world.ctx, CO, "company", Number.NaN, "o")).rejects.toMatchObject({ code: "bad_cap" });
+      await expect(setCap(world.ctx, CO, "everyone", 1, "o")).rejects.toMatchObject({ code: "bad_scope" });
+    });
+
+    it("keeps one company's caps and use apart from another's", async () => {
+      await setCap(world.ctx, CO, "company", 5, "owner-1");
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await expect(requestGeneration(world.ctx, OTHER_CO, REQUEST, AGENT, runtime)).rejects.toMatchObject({ code: "cap_not_set" });
+      expect(await usage(world.ctx, OTHER_CO, currentPeriod())).toBe(0);
+    });
+
+    it("lets only an active owner change caps", async () => {
+      const ok = (actor: object) => isCompanyOwner(world.ctx, CO, actor as never);
+      expect(await ok({ type: "user", userId: "owner-1" })).toBe(true);
+      expect(await ok({ type: "user", userId: "local-board" })).toBe(true);
+      expect(await ok({ type: "user", userId: "admin-1" })).toBe(false);
+      expect(await ok({ type: "user", userId: "former-owner" })).toBe(false);
+      expect(await ok({ type: "user", userId: "stranger" })).toBe(false);
+      expect(await ok({ type: "agent", agentId: "agent-1", userId: "owner-1" })).toBe(false);
+    });
+  });
+
+  describe("charging", () => {
+    beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
+
+    it("charges a batch per unit, not as one", async () => {
+      const out = await requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, acmeWork(), runtime);
+      expect(out.generationIds).toHaveLength(4);
+      expect(out.creditsReserved).toBe(2);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(2);
+    });
+
+    it("refuses a whole batch that doesn't fit, and writes nothing", async () => {
+      await setCap(world.ctx, CO, "company", 1, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 3 }, acmeWork(), runtime)).rejects.toMatchObject({ code: "cap_reached" });
+      expect(await rows(world, `SELECT id FROM ${T("generations")}`)).toHaveLength(0);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0);
+    });
+
+    it("gives the last credits to only one of several runs at once", async () => {
+      await setCap(world.ctx, CO, "company", 1, "owner-1");
+      const results = await Promise.allSettled(Array.from({ length: 5 }, () => requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime)));
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(1);
+    });
+
+    it("refuses a batch size out of range", async () => {
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 9 }, acmeWork(), runtime)).rejects.toMatchObject({ code: "bad_request" });
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 0 }, acmeWork(), runtime)).rejects.toMatchObject({ code: "bad_request" });
+    });
+
+    it("settles to the provider's real price when it differs", async () => {
+      provider.state = { state: "done", urls: ["https://cdn.example.com/out.png"], credits: 0.8 };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.8);
+    });
+
+    it.each([
+      ["refused", "rejected"],
+      ["out of credits", "out_of_credits"],
+    ] as const)("refunds when the provider %s", async (_label, code) => {
+      provider.next = () => {
+        throw new ProviderError("no", code);
+      };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0);
+      expect((await rows(world, `SELECT status, error_code FROM ${T("generations")}`))[0]).toEqual({ status: "failed", error_code: code });
+    });
+
+    it("refunds when the provider reports a failed job", async () => {
+      provider.state = { state: "failed", message: "nope" };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0);
+    });
+
+    it("refunds once, however often it's asked", async () => {
+      provider.state = { state: "failed", message: "nope" };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(await rows(world, `SELECT kind FROM ${T("credit_ledger")} ORDER BY kind`)).toEqual([{ kind: "refund" }, { kind: "reserve" }]);
+    });
+
+    it("pauses the company's queue after out of credits, instead of hammering", async () => {
+      provider.next = () => {
+        throw new ProviderError("empty", "out_of_credits");
+      };
+      await requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 3 }, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(1);
+      const statuses = (await rows(world, `SELECT status FROM ${T("generations")}`)).map((r) => r.status).sort();
+      expect(statuses).toEqual(["failed", "queued", "queued"]);
+    });
+
+    it("retries a provider outage without losing the request", async () => {
+      let calls = 0;
+      provider.next = () => {
+        calls += 1;
+        if (calls === 1) throw new ProviderError("down", "unavailable");
+        return "job-ok";
+      };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      expect((await rows(world, `SELECT status FROM ${T("generations")}`))[0].status).toBe("queued");
+      await processQueue(world.ctx, runtime);
+      expect((await rows(world, `SELECT status FROM ${T("generations")}`))[0].status).toMatch(/submitted|storing|succeeded/);
+    });
+  });
+
+  describe("no double spend", () => {
+    beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
+
+    it("never resends a submission that got no answer, and keeps its credits", async () => {
+      provider.next = () => {
+        throw new ProviderError("timeout", "unknown");
+      };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(1);
+      expect((await rows(world, `SELECT status, error_code FROM ${T("generations")}`))[0]).toEqual({ status: "failed", error_code: "unknown_submission" });
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.5);
+    });
+
+    it("after a restart mid-submission, fails the row, keeps the credits, and doesn't resend", async () => {
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await pg.client.query(`UPDATE ${T("generations")} SET status = 'submitting', updated_at = now() - interval '20 minutes'`);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(0);
+      expect((await rows(world, `SELECT status, error_code FROM ${T("generations")}`))[0]).toEqual({ status: "failed", error_code: "lost_submission" });
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.5);
+    });
+
+    it("leaves a fresh mid-submission row alone in case the send is still in progress", async () => {
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await pg.client.query(`UPDATE ${T("generations")} SET status = 'submitting', updated_at = now()`);
+      await processQueue(world.ctx, runtime);
+      expect((await rows(world, `SELECT status FROM ${T("generations")}`))[0].status).toBe("submitting");
+    });
+
+    it("restores a reservation lost in a restart before it spends", async () => {
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await pg.client.query(`DELETE FROM ${T("credit_ledger")}`);
+      await processQueue(world.ctx, runtime);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.5);
+    });
+
+    it("picks a submitted job back up after a restart without resending", async () => {
+      provider.state = { state: "pending" };
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      resetQueueStateForTests();
+      provider.state = { state: "done", urls: ["https://cdn.example.com/out.png"], credits: null };
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(1);
+      expect((await rows(world, `SELECT status FROM ${T("generations")}`))[0].status).toBe("succeeded");
+    });
+
+    it("repeats storing safely when a restart hits partway through", async () => {
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      const [row] = await rows(world, `SELECT id FROM ${T("generations")}`);
+      await pg.client.query(`UPDATE ${T("generations")} SET status = 'storing', output_url = 'https://cdn.example.com/out.png', asset_id = NULL`);
+      await processQueue(world.ctx, runtime);
+      expect(await rows(world, `SELECT id FROM ${T("assets")}`)).toEqual([{ id: row.id }]);
+      expect(await rows(world, `SELECT version FROM ${T("asset_versions")}`)).toEqual([{ version: 1 }]);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.5);
+    });
+
+    it("keeps the provider's link and retries when saving fails, then gives up with credits spent", async () => {
+      const failing = runtimeWith(provider, {
+        download: async () => {
+          throw new Error("CDN down");
+        },
+      });
+      await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), failing);
+      await processQueue(world.ctx, failing);
+      for (let i = 0; i < 12; i += 1) await processQueue(world.ctx, failing);
+      const [row] = await rows(world, `SELECT status, error_code, output_url FROM ${T("generations")}`);
+      expect(row).toEqual({ status: "failed", error_code: "store_failed", output_url: "https://cdn.example.com/out.png" });
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0.5);
+    });
+
+    it("sends at most 4 at a time per company", async () => {
+      provider.state = { state: "pending" };
+      await requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 8 }, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(4);
+    });
+  });
+
+  describe("done when: an agent generates on a real issue", () => {
+    it("lands in the Studio folder, linked to the issue and project, with cost in the ledger, and reports on the issue", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      const out = await requestGeneration(world.ctx, CO, { ...REQUEST, name: "Hero" }, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+
+      const id = out.generationIds[0]!;
+      expect(world.puts).toEqual([`/pib-private/studio/${CO}/company-acme/${id}/v1.png`]);
+      const links = await rows(world, `SELECT target_type, target_id FROM ${T("asset_links")} WHERE asset_id = $1 ORDER BY target_type`, [id]);
+      expect(links).toEqual([{ target_type: "issue", target_id: "issue-acme" }, { target_type: "project", target_id: "project-acme" }]);
+      expect(await usage(world.ctx, CO, currentPeriod(), ACME)).toBe(0.5);
+
+      const asset = assetOut(await getAssetRow(world.ctx, CO, id));
+      expect(asset).toMatchObject({ name: "Hero", kind: "image", mime: "image/png", source: "generated", status: "draft", client: { kind: "company", id: "acme", name: "Acme Ltd" }, projectId: "project-acme", generationId: id });
+
+      const provenance = (await rows(world, `SELECT agent_id, run_id, issue_id, model, prompt FROM ${T("generations")} WHERE id = $1`, [id]))[0];
+      expect(provenance).toEqual({ agent_id: "agent-1", run_id: "run-1", issue_id: "issue-acme", model: REQUEST.model, prompt: REQUEST.prompt });
+
+      expect(world.comments).toHaveLength(1);
+      expect(world.comments[0]).toMatchObject({ issueId: "issue-acme" });
+      expect(world.comments[0]!.body).toContain(id);
+    });
+
+    it("comments once for a batch, when all of it is settled", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 2 }, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect(world.comments).toHaveLength(1);
+      expect(world.comments[0]!.body).toContain("2 of 2");
+    });
+  });
+
+  describe("isolation", () => {
+    beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
+
+    async function makeAsset(issueId: string, projectId: string) {
+      const out = await requestGeneration(world.ctx, CO, REQUEST, work(issueId, projectId), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      resetQueueStateForTests();
+      return out.generationIds[0]!;
+    }
+
+    it("files work on a client's issue under that client without being told", async () => {
+      const out = await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      expect(out.client).toEqual({ kind: "company", id: "acme" });
+    });
+
+    it("files work with no client project as own work", async () => {
+      const out = await requestGeneration(world.ctx, CO, REQUEST, work("issue-own", "project-own"), runtime);
+      expect(out.client).toBeNull();
+    });
+
+    it("refuses generating for another client, or as own work, from a client's issue", async () => {
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, client: "company:globex" }, acmeWork(), runtime)).rejects.toMatchObject({ code: "wrong_client" });
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, client: "own" }, acmeWork(), runtime)).rejects.toMatchObject({ code: "wrong_client" });
+    });
+
+    it("refuses a client that doesn't exist and a malformed one", async () => {
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, client: "company:nobody" }, work("issue-own", "project-own"), runtime)).rejects.toMatchObject({ code: "unknown_client" });
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, client: "not a client" }, work("issue-own", "project-own"), runtime)).rejects.toMatchObject({ code: "bad_client" });
+    });
+
+    it("doesn't list one client's assets under another or under own work", async () => {
+      const acme = await makeAsset("issue-acme", "project-acme");
+      const globex = await makeAsset("issue-globex", "project-globex");
+      expect((await listAssets(world.ctx, CO, { scope: ACME })).map((a) => a.id)).toEqual([acme]);
+      expect((await listAssets(world.ctx, CO, { scope: GLOBEX })).map((a) => a.id)).toEqual([globex]);
+      expect(await listAssets(world.ctx, CO, { scope: null })).toEqual([]);
+      expect(await listAssets(world.ctx, OTHER_CO, {})).toEqual([]);
+    });
+
+    it("refuses opening or linking another client's asset from a client's work", async () => {
+      const acme = await makeAsset("issue-acme", "project-acme");
+      await expect(assetFileForAgent(world.ctx, CO, acme, "project-globex")).rejects.toMatchObject({ code: "wrong_client" });
+      await expect(linkAsset(world.ctx, CO, { assetId: acme, targetType: "campaign", targetId: "c1" }, "project-globex")).rejects.toMatchObject({ code: "wrong_client" });
+      await expect(linkAsset(world.ctx, CO, { assetId: acme, targetType: "issue", targetId: "issue-globex" }, "project-acme")).rejects.toMatchObject({ code: "wrong_client" });
+    });
+
+    it("can't reach another company's asset at all", async () => {
+      const acme = await makeAsset("issue-acme", "project-acme");
+      await expect(assetFileForAgent(world.ctx, OTHER_CO, acme, null)).rejects.toMatchObject({ code: "unknown_asset" });
+      await expect(linkAsset(world.ctx, OTHER_CO, { assetId: acme, targetType: "campaign", targetId: "c1" }, null)).rejects.toMatchObject({ code: "unknown_asset" });
+      await expect(generationStatus(world.ctx, OTHER_CO, { generationId: acme }, null)).rejects.toMatchObject({ code: "unknown_generation" });
+    });
+
+    it("refuses a generation status from another client's work", async () => {
+      const acme = await makeAsset("issue-acme", "project-acme");
+      await expect(generationStatus(world.ctx, CO, { generationId: acme }, "project-globex")).rejects.toMatchObject({ code: "wrong_client" });
+    });
+
+    it("gives agents a private local file, and no signed link or storage key anywhere", async () => {
+      const id = await makeAsset("issue-acme", "project-acme");
+      const file = await assetFileForAgent(world.ctx, CO, id, "project-acme");
+      expect(file.path.startsWith(workdir)).toBe(true);
+      expect(statSync(file.path).mode & 0o777).toBe(0o600);
+      const seen = JSON.stringify([
+        file,
+        await listAssets(world.ctx, CO, { scope: ACME }),
+        await generationStatus(world.ctx, CO, { generationId: id }, "project-acme"),
+        world.comments,
+      ]);
+      expect(seen).not.toMatch(/X-Amz|r2\.cloudflarestorage|studio\/11111111|cdn\.example\.com/);
+    });
+
+    it("imports an agent's attachment under the issue's client, once", async () => {
+      const first = await importFromAttachment(world.ctx, CO, { issueId: "issue-acme", attachmentId: "att-1" }, { agentId: "agent-1" });
+      const second = await importFromAttachment(world.ctx, CO, { issueId: "issue-acme", attachmentId: "att-1" }, { agentId: "agent-1" });
+      expect(first).toMatchObject({ reused: false, client: { id: "acme" }, name: "made.png", source: "attachment" });
+      expect(second).toMatchObject({ reused: true, id: first.id });
+      await expect(importFromAttachment(world.ctx, CO, { issueId: "issue-acme", attachmentId: "att-1", client: "company:globex" }, {})).rejects.toMatchObject({ code: "wrong_client" });
+      await expect(importFromAttachment(world.ctx, CO, { issueId: "issue-acme", attachmentId: "missing" }, {})).rejects.toMatchObject({ code: "unknown_attachment" });
+    });
+  });
+});
