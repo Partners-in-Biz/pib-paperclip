@@ -72,38 +72,30 @@ export async function assertPlatformCaps(
   }
 }
 
+/** The account a spend change is on; a missing id or a missing account refuses (fail closed, PAR-6684). */
+async function accountOrRefuse(rt: AdsRuntime, accountId: unknown): Promise<AccountRow> {
+  const account = accountId ? await getAccount(rt.ctx, rt.companyId, String(accountId)) : null;
+  if (!account) throw new AdsError("The ad account for this change was not found, so its platform spend cap cannot be checked. Nothing runs.", "no_account");
+  return account;
+}
+
 /**
  * Dispatch per-kind platform caps assertions for spend-kind changes.
- * Gates on SPEND_KINDS: does nothing for non-spend kinds.
- * Skips silently when an account is not found (matching current semantics).
+ * Gates on SPEND_KINDS: does nothing for non-spend kinds. Refuses when an account is missing, and throws for a spend kind with no branch
+ * here (PAR-3765: a kind added to SPEND_KINDS needs a branch and a test).
  */
-export async function assertPlatformCapsFor(rt: AdsRuntime, kind: ProposalKind, payload: Record<string, unknown>): Promise<void> {
-  if (!SPEND_KINDS.includes(kind)) return;
+export async function assertPlatformCapsFor(rt: AdsRuntime, kind: ProposalKind, payload: Record<string, unknown>, spendKinds: readonly ProposalKind[] = SPEND_KINDS): Promise<void> {
+  if (!spendKinds.includes(kind)) return;
 
   if (kind === "create_campaign") {
-    const accountId = payload.accountId;
-    if (!accountId) return;
-    const account = await getAccount(rt.ctx, rt.companyId, String(accountId));
-    if (!account) return;
-    await assertPlatformCaps(rt, account, null);
-  } else if (kind === "change_budget") {
-    const accountId = payload.accountId;
-    if (!accountId) return;
-    const account = await getAccount(rt.ctx, rt.companyId, String(accountId));
-    if (!account) return;
-    await assertPlatformCaps(rt, account, String(payload.campaignExternalId));
-  } else if (kind === "create_ad_set") {
-    const accountId = payload.accountId;
-    if (!accountId) return;
-    const account = await getAccount(rt.ctx, rt.companyId, String(accountId));
-    if (!account) return;
-    await assertPlatformCaps(rt, account, String(payload.campaignExternalId));
+    await assertPlatformCaps(rt, await accountOrRefuse(rt, payload.accountId), null);
+  } else if (kind === "change_budget" || kind === "create_ad_set") {
+    await assertPlatformCaps(rt, await accountOrRefuse(rt, payload.accountId), String(payload.campaignExternalId));
   } else if (kind === "resume_campaign") {
     const targets = (payload.targets as CampaignTarget[]) ?? [];
-    for (const t of targets) {
-      const account = await getAccount(rt.ctx, rt.companyId, t.accountId);
-      if (!account) continue;
-      await assertPlatformCaps(rt, account, t.campaignExternalId);
-    }
+    if (targets.length === 0) throw new AdsError("This resume names no campaign, so its platform spend cap cannot be checked. Nothing runs.", "no_account");
+    for (const t of targets) await assertPlatformCaps(rt, await accountOrRefuse(rt, t.accountId), t.campaignExternalId);
+  } else {
+    throw new AdsError(`No platform cap check exists for "${kind}", so this change that adds spend will not run.`, "platform_caps_unchecked");
   }
 }

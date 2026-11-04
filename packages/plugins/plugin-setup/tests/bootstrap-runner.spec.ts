@@ -608,6 +608,6 @@ describe("summarising a step", () => {
     expect(summarizeItems([item("skipped")]).status).toBe("skipped");
     expect(summarizeItems([]).status).toBe("done");
     expect(summarizeItems([item("done"), item("failed")], "role").detail).toBe("2 roles: 1 done, 1 failed.");
-    expect(TEAM_ROLES.length).toBe(13);
+    expect(TEAM_ROLES.length).toBe(14);
   });
 });

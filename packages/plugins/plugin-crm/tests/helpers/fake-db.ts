@@ -121,6 +121,15 @@ function matches(row: Row, where: string | undefined, params: unknown[]): boolea
       if (!Array.isArray(list) || !list.includes(params[Number(m[1]) - 1])) return false;
       continue;
     }
+    if ((m = /^(?:\w+\.)?(\w+)\s+(NOT\s+)?LIKE\s+(.+)$/i.exec(cond))) {
+      // LIKE with Postgres's default escape (a backslash): % any run, _ one character, \x the literal x.
+      const pattern = String(evalExpr(m[3]!, params));
+      const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const source = pattern.replace(/\\(.)|%|_|[^\\%_]+/gs, (part, escaped: string | undefined) => (escaped !== undefined ? literal(escaped) : part === "%" ? ".*" : part === "_" ? "." : literal(part)));
+      const hit = typeof row[m[1]!] === "string" && new RegExp(`^${source}$`, "s").test(row[m[1]!]);
+      if (m[2] ? hit : !hit) return false;
+      continue;
+    }
     if ((m = /^(?:\w+\.)?(\w+)\s*(=|<>)\s*(.+)$/.exec(cond))) {
       const value = evalExpr(m[3]!, params);
       const equal = row[m[1]!] === value;

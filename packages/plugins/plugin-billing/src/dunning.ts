@@ -21,6 +21,7 @@ import { invoiceView, recipientsFor } from "./invoices.js";
 import { parseAddresses, queueMail, reminderEmail } from "./mail.js";
 import { ensurePaymentLinks } from "./pay/links.js";
 import { documentKey, MAIL_LINK_SECONDS, presignGet, putObject } from "./storage.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export const DUNNABLE = new Set(["sent", "viewed", "overdue", "partially_paid"]);
 
@@ -73,7 +74,7 @@ export function reminderVars(balance: InvoiceBalance, daysOverdue: number, setti
   const customer = asObject(invoice.customer_snapshot ?? invoice.customer);
   const sender = asObject(invoice.sender_snapshot ?? invoice.sender);
   return {
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     amount: formatMoneyMinor(balance.outstandingMinor, invoice.currency),
     total: formatMoneyMinor(Number(invoice.total_minor), invoice.currency),
     clientName: typeof customer.name === "string" && customer.name ? customer.name : "there",
@@ -178,7 +179,7 @@ export async function queueReminderStage(
     const payment = asObject(asObject(input.balance.invoice.sender_snapshot).payment ?? input.settings.payment ?? {});
     // An online payment link goes in the reminder too, when a provider is on (for what is owed now).
     const links = (await ensurePaymentLinks(ctx, input.balance.invoice, input.settings, { createdBy: input.createdBy, ...(input.resolver ? { resolver: input.resolver } : {}) })).links;
-    const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, input.balance.invoice.number, links);
+    const content = reminderEmail(stage, vars, Object.keys(payment).length ? payment : null, invoiceNumberLabel(input.balance.invoice.number), links);
     let attachments: Array<{ url: string; filename: string; mime: string; bytes: number }> = [];
     if (input.r2) {
       const view = await invoiceView(ctx, input.balance.invoice, input.settings);

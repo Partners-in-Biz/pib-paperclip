@@ -76,6 +76,7 @@ import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
 import { runPushDigest } from "./push/digest.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
+import { registerBrowserStatus } from "./browser-status.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
@@ -214,6 +215,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   registerW1cEdge(env);
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
+  // The Browser tab: the pib-browser logins, read from the status file (owner company only).
+  registerBrowserStatus(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {

@@ -12,13 +12,15 @@ import type { HealthCheck } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { redactSecrets } from "./watch-model.js";
 
 export type CredentialStatus = "active" | "retired" | "burned";
-export type VerifyStatus = "ok" | "invalid" | "unreachable" | "unsupported" | "not_configured";
+export type VerifyStatus = "ok" | "invalid" | "expired" | "unreachable" | "unsupported" | "not_configured";
 
 export class CredentialError extends Error {}
 
 /** Which provider checks exist (`verifiers` in credentials.ts); a row names one in `verifyWith`. */
-export const VERIFY_PROVIDERS = ["github", "cloudflare", "resend"] as const;
+export const VERIFY_PROVIDERS = ["github", "cloudflare", "resend", "browser"] as const;
 export type VerifyProvider = (typeof VERIFY_PROVIDERS)[number];
+/** The providers checked with a token and one GET. `browser` is read from the pib-browser status file instead (no secret). */
+export type TokenProvider = Exclude<VerifyProvider, "browser">;
 
 export const EXPIRY_WARN_DAYS = 30;
 export const EXPIRY_BAD_DAYS = 7;
@@ -183,6 +185,17 @@ export function credentialChecks(rows: CredentialRow[], now: Date): HealthCheck[
         since: e.state === "expired" ? row.expiresAt : undefined,
       });
     }
+    if (row.lastVerifyStatus === "expired") {
+      out.push({
+        key: `credential:${row.id}:expired`,
+        title: `${row.name} needs a new login`,
+        status: "bad",
+        detail: `The browser check could not use ${row.name}${row.lastVerifyDetail ? `: ${row.lastVerifyDetail}` : ""}. Whatever the browser does for it fails until someone logs in again.`,
+        href: row.rotateHref ?? "/cockpit",
+        fix: how(row) || "Log in again in the pib-browser profile on the server.",
+        since: row.lastVerifiedAt,
+      });
+    }
     if (row.lastVerifyStatus === "invalid") {
       out.push({
         key: `credential:${row.id}:invalid`,
@@ -228,4 +241,59 @@ export function credentialBrief(row: CredentialRow, now: Date): Record<string, u
     lastVerify: row.lastVerifyStatus ? `${row.lastVerifyStatus}${row.lastVerifyDetail ? `: ${row.lastVerifyDetail}` : ""}` : null,
     notes: row.notes,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The pib-browser status file (credentials provider "browser")
+// ---------------------------------------------------------------------------
+
+/** The status file is written by `pib-evidence status` roughly daily; older than this and nobody vouches for the logins. */
+export const BROWSER_STATUS_MAX_AGE_MS = 36 * 3_600_000;
+export const BROWSER_SEED_PREFIX = "browser:";
+const IDENTITY = /^[a-z0-9][a-z0-9:_.-]{0,79}$/;
+
+export interface BrowserIdentity {
+  identity: string;
+  ok: boolean;
+  /** A short code or words: never a page body. Redacted and cut. */
+  reason: string;
+}
+
+export type BrowserStatus =
+  | { state: "missing" }
+  | { state: "invalid" }
+  | { state: "read"; checkedAt: string; stale: boolean; identities: BrowserIdentity[] };
+
+/** Parses the file's text. Never throws; a file that is not the expected shape is `invalid`, an absent one `missing`. */
+export function parseBrowserStatus(text: string | null, now: Date): BrowserStatus {
+  if (text === null || text.trim() === "") return { state: "missing" };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { state: "invalid" };
+  }
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  const checked = typeof obj?.checkedAt === "string" ? Date.parse(obj.checkedAt) : NaN;
+  const list = obj?.identities;
+  if (!obj || !Number.isFinite(checked) || !list || typeof list !== "object" || Array.isArray(list)) return { state: "invalid" };
+  const identities: BrowserIdentity[] = [];
+  for (const [identity, entry] of Object.entries(list as Record<string, unknown>).slice(0, 50)) {
+    if (!IDENTITY.test(identity) || !entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const reason = text_(e.reason, 80);
+    identities.push({ identity, ok: e.ok === true, reason: looksLikeSecret(reason) ? "" : reason });
+  }
+  return { state: "read", checkedAt: new Date(checked).toISOString(), stale: now.getTime() - checked > BROWSER_STATUS_MAX_AGE_MS, identities };
+}
+
+function text_(value: unknown, max: number): string {
+  return text(value, max)?.replace(/[^\w .:,-]/g, "") ?? "";
+}
+
+/** What the register records for one identity: ok only when the file is fresh and says so; otherwise expired, with the reason. */
+export function browserVerdict(status: Extract<BrowserStatus, { state: "read" }>, id: BrowserIdentity): { status: "ok" | "expired"; detail: string } {
+  if (status.stale) return { status: "expired", detail: "The browser status file is more than 36 hours old, so this login is not vouched for." };
+  if (!id.ok) return { status: "expired", detail: id.reason ? `The browser could not use this login (${id.reason}).` : "The browser could not use this login." };
+  return { status: "ok", detail: "The browser used this login at the last check." };
 }

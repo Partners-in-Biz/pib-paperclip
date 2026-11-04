@@ -324,7 +324,7 @@ export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
         .map(([key, label]) => `<tr><th>${esc(label)}</th><td>${esc(payment[key])}</td></tr>`)
         .join("")
     : "";
-  const reference = kind === "Invoice" ? `<tr><th>Reference</th><td>${esc(input.number)}</td></tr>` : "";
+  const reference = `<tr><th>Reference</th><td>${esc(input.number)}</td></tr>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -382,7 +382,7 @@ export function buildInvoiceHtml(input: InvoiceHtmlInput): string {
     ${taxRate > 0 ? `<tr><td>VAT ${esc(taxRate)}%</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : input.totals && taxMinor > 0 ? `<tr><td>VAT</td><td class="num">${money(taxMinor, input.currency)}</td></tr>` : ""}
     <tr class="grand"><td>Total</td><td class="num">${money(totalMinor, input.currency)}</td></tr>
   </table>
-  ${kind === "Invoice" && paymentRows ? `<div class="pay"><h3>Payment details (EFT)</h3><table>${paymentRows}${reference}</table></div>` : ""}
+  ${paymentRows ? `<div class="pay"><h3>Payment details (EFT)</h3><table>${paymentRows}${reference}</table></div>` : ""}
   ${input.notes ? `<div class="notes">${esc(input.notes)}</div>` : ""}
 </div>
 </body>

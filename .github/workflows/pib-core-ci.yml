@@ -32,9 +32,13 @@ concurrency:
 jobs:
   core:
     name: PiB core CI
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, pib-vps]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 30
     steps:
+      - name: Root disk before
+        run: df -h /
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -79,18 +83,46 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
+          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` runs
+          # `typecheck:rust` (cargo fmt/check) and server's `typecheck` first runs the runner's full `build`
+          # (cargo build --release). On this runner both run only their TypeScript halves: the runner's
+          # `typecheck:typescript`, and for server `build:typescript` of the runner (emits the d.ts server
+          # imports) plus `tsc --noEmit` (PAR-7290). The Rust half stays in release-verify.yml.
+          RUNNER='@paperclipai/paperclip-runner'
+          SERVER='@paperclipai/server'
+          ts_only() {
+            pnpm --filter "$RUNNER" typecheck:typescript
+            if [ "$1" = server ]; then
+              pnpm --filter "$RUNNER" build:typescript
+              pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+              pnpm --filter "$SERVER" exec tsc --noEmit
+            fi
+          }
+          pnpm run preflight:workspace-links
+          # cli (and others) typecheck ../server/src, which imports the runner's emitted d.ts: build it first.
+          pnpm --filter "$RUNNER" build:typescript
+          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
           if [ "$MODE" = "affected" ]; then
-            pnpm run preflight:workspace-links
-            pnpm --filter "...[origin/${BASE_REF}]" --if-present typecheck
+            pnpm --filter "...[origin/${BASE_REF}]" --filter "!${RUNNER}" --filter "!${SERVER}" --if-present typecheck
+            affected="$(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1)"
+            if echo "$affected" | jq -e --arg n "$RUNNER" 'any(.[]; .name == $n)' >/dev/null; then
+              pnpm --filter "$RUNNER" typecheck:typescript
+            fi
+            if echo "$affected" | jq -e --arg n "$SERVER" 'any(.[]; .name == $n)' >/dev/null; then
+              pnpm --filter "$RUNNER" build:typescript
+              pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+              pnpm --filter "$SERVER" exec tsc --noEmit
+            fi
           else
-            pnpm typecheck
+            pnpm -r --filter "!${RUNNER}" --filter "!${SERVER}" typecheck
+            ts_only server
           fi
 
       # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
       # light job does not start). Make it blocking by deleting continue-on-error.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long non-blocking run cannot
-      # erase a green typecheck. The self-hosted runner is offline, so this stays on the existing hosted job.
+      # erase a green typecheck.
       # In affected mode vitest runs only the root projects whose package is in the affected set.
       - name: Tests related to the changed files
         continue-on-error: true
@@ -105,3 +137,14 @@ jobs:
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
           timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || true
+
+      - name: Prune pnpm store
+        if: always()
+        run: pnpm store prune || true
+
+      - name: Root disk after (must stay under 80%)
+        if: always()
+        run: |
+          df -h /
+          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
+          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }

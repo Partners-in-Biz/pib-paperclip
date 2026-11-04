@@ -172,7 +172,7 @@ describe("setup UI render", () => {
   });
 
   it("shows the widget until everything required is done, with the one count", () => {
-    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null, drive: null };
+    const load: LoadResult = { modules: { crm: true, cockpit: false, memory: false, mailbox: false, social: false, seo: false, ads: false, campaigns: false, billing: false, accounting: false, payroll: false, partners: false }, updatedAt: "x", updatedBy: "u", statuses: {}, finishIssueId: null, settingsSaved: true, installed: null, drive: null };
     const views = resolveModuleViews({ modules: load.modules, installed, live: { "partnersinbiz.crm": { ok: true, status: crm } }, stored: {} });
     const html = renderToStaticMarkup(createElement(SetupProgressCard, { data: { load, views }, linkFor }));
     expect(html).toContain("Setup progress");
@@ -219,7 +219,7 @@ describe("one setup count everywhere", () => {
     const worker = finishSetupSummary({ modules, statuses: { "partnersinbiz.crm": crm }, installed: Object.fromEntries(Object.entries(installed).map(([k, v]) => [k, { id: v.id, status: v.status }])) });
     expect(page).toEqual(worker);
     // Switched-off SEO is not counted; not-installed modules count one step each (install, or switch off).
-    expect(page.requiredLeft).toBe(10);
+    expect(page.requiredLeft).toBe(11);
     // Still checking a module: no live count yet, so the stored one shows.
     const checking = resolveModuleViews({ modules, installed: null, live: {}, stored: {} });
     expect(viewsSummary(checking, modules)).toBeNull();

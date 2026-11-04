@@ -17,6 +17,7 @@ import { emitInvoiceItem } from "./openitems.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { clientScope, openBillingApproval } from "./approvals.js";
 import { settle, type SettleResult } from "./settle.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export type MatchBasis = "thread" | "number" | "sender" | "upload" | "agent" | "none";
 
@@ -380,5 +381,5 @@ export async function openInvoiceCandidates(ctx: PluginContext, companyId: strin
   const open = await invoiceBalances(ctx, companyId, { openOnly: true });
   return open
     .filter((b) => isOpenStatus(b.invoice.status))
-    .map((b) => ({ id: b.invoice.id, number: b.invoice.number, customerKind: b.invoice.customer_kind, customerRef: b.invoice.customer_ref, customerName: String(asObject(b.invoice.customer).name ?? "") }));
+    .map((b) => ({ id: b.invoice.id, number: invoiceNumberLabel(b.invoice.number), customerKind: b.invoice.customer_kind, customerRef: b.invoice.customer_ref, customerName: String(asObject(b.invoice.customer).name ?? "") }));
 }

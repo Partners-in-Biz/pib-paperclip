@@ -22,6 +22,7 @@ import { getInvoice, PAYMENT_COLUMNS, table, type InvoiceRow, type PaymentRow } 
 import { assertPaymentAmount, BillingError, isOpenStatus } from "./domain.js";
 import { emitBillItem, emitInvoiceItem } from "./openitems.js";
 import { postBillPayment, postCreditNote, postPayment, postWriteOff, repostPaymentOnBank, type BillForPosting } from "./posting.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 /** `gateway`: a payment provider (Stripe, PayFast) confirmed the money with a signed webhook. */
 export type SettleSource = "manual" | "pop" | "bank" | "approval" | "gateway";
@@ -200,7 +201,7 @@ export async function settle(ctx: PluginContext, input: SettleInput, settings: B
   return {
     paymentId: payment.id,
     invoiceId: invoice.id,
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     repeat,
     reconciled,
     amountMinor: Number(payment.amount_minor),

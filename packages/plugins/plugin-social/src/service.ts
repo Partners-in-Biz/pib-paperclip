@@ -127,6 +127,7 @@ import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
 import { jevKeySet, triageOut } from "./triage.js";
 import { emptyStats, scopeStats } from "./stats.js";
+import { assertClientFiling, overrideTexts } from "./client-filing.js";
 import { parseTweetUrl, targetFromParams } from "./post-target.js";
 
 export interface Viewer {
@@ -399,6 +400,13 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
       `The page "${handoff.title}" belongs to ${handoff.scope ? formatClientParam(handoff.scope) : "own work"}; its drafts stay in that scope. ${handoff.scope ? `Pass client: "${formatClientParam(handoff.scope)}"` : "Leave the client out"} (or leave it out with handoffKey).`,
     );
   }
+  if (viewer.isAgent) {
+    await assertClientFiling(ctx, viewer.companyId, {
+      texts: [body, optionalString(params, "firstComment"), optionalString(params, "note"), ...overrideTexts(params.overrides)],
+      scope: target.scope,
+      onPurpose: params.namesClientOnPurpose,
+    });
+  }
   const media = (await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope)) ?? [];
   // Merge tags into overrides if provided
   const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
@@ -459,6 +467,14 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
   const moving = !sameClient(target.scope, current.scope);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
+  if (viewer.isAgent && (body !== undefined || moving || params.overrides !== undefined || params.firstComment !== undefined)) {
+    await assertClientFiling(ctx, viewer.companyId, {
+      texts: [body ?? post.body, optionalString(params, "firstComment") ?? post.first_comment, ...overrideTexts(params.overrides ?? post.overrides)],
+      scope: target.scope,
+      personal: post.scope === "personal",
+      onPurpose: params.namesClientOnPurpose,
+    });
+  }
   const media = await mediaFromAssetIds(ctx, viewer.companyId, params.mediaAssetIds, target.scope);
   const accountIds = stringList(params, "accountIds");
   const accounts = accountIds ? await loadAccounts(ctx, viewer, accountIds) : [];

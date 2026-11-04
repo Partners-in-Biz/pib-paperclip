@@ -3,7 +3,7 @@
  * printable document, sending through the Mailbox after approval, voiding,
  * and recurring copies that keep every field.
  */
-import { invoiceNumberLabel, NO_NUMBER_YET } from "./invoice-number.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
@@ -266,7 +266,7 @@ export async function createInvoice(ctx: PluginContext, context: PluginPerformAc
   const row: InvoiceRow = {
     id: randomUUID(),
     company_id: companyId,
-    number: NO_NUMBER_YET,
+    number: null,
     status: "draft",
     currency,
     customer_kind: customerKind,
@@ -598,7 +598,7 @@ export async function convertQuoteRow(ctx: PluginContext, quote: QuoteRow, optio
     invoice = {
       id: options.invoiceId ?? randomUUID(),
       company_id: quote.company_id,
-      number: NO_NUMBER_YET,
+      number: null,
       status: "draft",
       currency: quote.currency,
       customer_kind: quote.customer_kind,
@@ -731,6 +731,8 @@ export async function invoiceView(ctx: PluginContext, invoice: InvoiceRow, setti
 export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: BillingSettings): Promise<DocView> {
   const lines = await quoteLinesFor(ctx, quote.id);
   const totals = totalsOf(lines, quote);
+  const sender = asObject(quote.sender);
+  const payment = asObject(sender.payment ?? settings.payment ?? {});
   return {
     kind: "quote",
     number: quote.number,
@@ -738,7 +740,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     currency: quote.currency,
     issuedAt: iso(quote.sent_at) ?? iso(quote.created_at) ?? new Date().toISOString(),
     dueAt: iso(quote.valid_until),
-    sender: asObject(quote.sender),
+    sender,
     customer: await currentCustomer(ctx, quote),
     lines: lineViews(lines, totals),
     groups: totals.groups,
@@ -748,7 +750,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     pricesIncludeVat: Boolean(quote.prices_include_vat),
     legacy: totals.legacy,
     notes: quote.notes ?? null,
-    payment: null,
+    payment: Object.keys(payment).length ? payment : null,
   };
 }
 

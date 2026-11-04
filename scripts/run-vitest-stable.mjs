@@ -314,6 +314,10 @@ function runVitest(args, label, testShard = null) {
   const env = {
     ...process.env,
     NODE_ENV: "test",
+    // PAR-7244: cap worker heap so a runaway suite cannot exhaust the shared VPS.
+    NODE_OPTIONS: process.env.NODE_OPTIONS?.includes("max-old-space-size")
+      ? process.env.NODE_OPTIONS
+      : `${process.env.NODE_OPTIONS ?? ""} --max-old-space-size=2048`.trim(),
     PAPERCLIP_HOME: path.join(testRoot, "h"),
     // Config discovery otherwise prefers the checkout's .paperclip/config.json
     // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.

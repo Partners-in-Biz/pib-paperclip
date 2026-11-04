@@ -154,8 +154,8 @@ import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { clientNumbering, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
-import { NO_NUMBER_YET } from "./invoice-number.js";
+import manifest from "./manifest.js";
+import { clientNumbering, numberingSettings, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -182,6 +182,7 @@ import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import {
   actorLabel,
   errorMessage,
@@ -353,6 +354,10 @@ const ACTIONS: Record<string, Handler> = {
     const scope = readClientScope(params);
     if (!scope) return sequenceNumbering(ctx, companyId, await billingSettings(ctx, companyId));
     return clientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, await billingSettings(ctx, companyId));
+  },
+  "billing.numbering-settings": async (ctx, context) => {
+    const settings = await billingSettings(ctx, requiredCompany(context));
+    return { version: manifest.version, numbering: numberingSettings(settings) };
   },
   "billing.set-numbering": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
@@ -531,6 +536,8 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "list-time-entries": { action: "billing.list-time", message: "Time entries listed" },
   "bill-time": { action: "billing.bill-time", message: "Time added to the invoice" },
   "billing-report": { action: "billing.reports", message: "Billing reports built" },
+  "get-numbering": { action: "billing.get-numbering", message: (d) => (d.next == null ? "This client has no prefix yet; its first invoice assigns one" : `Next invoice number: ${String(d.next)}`) },
+  "billing-settings": { action: "billing.numbering-settings", message: (d) => `Billing ${String(d.version)} settings read` },
 };
 
 ACTIONS["billing.open-invoices"] = async (ctx, context, params) => {
@@ -624,7 +631,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       visible.push({ ...publicInvoice(invoice), paidMinor: 0, creditedMinor: 0, writtenOffMinor: 0, outstandingMinor: 0, pendingPops: 0, shared: true });
     }
   }
-  const numbers = new Map(own.map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map(own.map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   const quotes = await listQuotes(ctx, companyId, scope);
   const expenses = scope ? [] : await listExpenses(ctx, companyId);
   const recurring = await listRecurring(ctx, companyId, scope);
@@ -906,6 +913,8 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
       lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
       taxRate: view.legacy ? Number(quote.tax_rate ?? 0) : 0,
       totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
+      payment: view.payment ?? null,
+      notes: view.notes ?? null,
       dueAt: iso(quote.valid_until),
     }),
   };
@@ -1004,7 +1013,7 @@ async function runRecurring(ctx: PluginContext) {
         const customer = asObject(template.customer);
         const invoice: InvoiceRow = copyInvoiceFields(template, {
           id: randomUUID(),
-          number: NO_NUMBER_YET,
+          number: null,
           recurring_id: schedule.id,
           recurring_key: key,
         });
@@ -1084,7 +1093,7 @@ async function dunningStatus(ctx: PluginContext, context: PluginPerformActionCon
     `SELECT r.invoice_id, r.stage, r.status, r.created_at, r.error FROM ${table(ctx, "reminders")} r WHERE r.company_id = $1 ORDER BY r.created_at DESC LIMIT 100`,
     [companyId],
   );
-  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   void params;
   return {
     enabled: settings.dunning?.enabled === true,

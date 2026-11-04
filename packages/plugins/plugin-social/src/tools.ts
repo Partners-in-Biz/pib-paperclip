@@ -52,6 +52,11 @@ const scope: Record<string, JsonSchema> = {
 };
 
 const OWN = " Omit the client for PiB's own work; pass client for a client. Never mix clients.";
+/** Agent posts that name a CRM client company must be filed under that client (or say they name it on purpose). */
+const onPurpose: JsonSchema = {
+  type: "boolean",
+  description: "true only if the post names a CRM client on purpose but is not that client's post (a case study of your own work).",
+};
 
 /** Growth Lab tag on a post. */
 const experimentTag: Record<string, JsonSchema> = {
@@ -128,12 +133,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-post",
     displayName: "Create post",
     description:
-      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
+      `Draft one post with destinations (accountIds), media (mediaAssetIds), a proposed time (scheduledAt), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note and per-platform overrides. Accounts and media must belong to the post's client (or all be own work).${OWN} A post that names a CRM client is that client's post: pass its client (list-clients), or it is refused. For a "Repurpose for social" issue pass its handoffKey: the draft is linked to that page and stays in its scope. Tag a Growth Lab experiment arm with experimentId + arm (same client). Then validate-post and request-review.`,
     parametersSchema: schema(["body"], {
       body: text("Main post text (used by every platform without a text override)"),
       ...scope,
       handoffKey: text("Repurpose issue's hand-off key (seo:content:<id>): links the draft to that page"),
       visibility: choice(["org", "personal"], "org (default): a company or client page. personal: a person's own profile, only that person's accounts."),
+      namesClientOnPurpose: onPurpose,
       ...post,
       ...experimentTag,
     }),
@@ -142,7 +148,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "create-personal-draft",
     displayName: "Create personal draft",
     description:
-      "Draft only: puts a draft in a board user's private My Social queue; the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note (for example \"HOLD until PAR-1234\"), and per-platform overrides.",
+      "Draft only: puts a draft in a board user's private My Social queue (the person's own voice; a client's post goes in the client's space with create-post and client, and a draft that names a CRM client is refused unless namesClientOnPurpose); the owner must approve; agents cannot publish, approve or read tokens. Pass targetUserId (the queue owner; agents can create for any user, humans only for themselves), body, mediaAssetIds (personal accounts owned by that user), firstComment, replyToUrl or quoteUrl (an X reply or quote post), an internal note (for example \"HOLD until PAR-1234\"), and per-platform overrides.",
     parametersSchema: schema(["targetUserId", "body"], {
       targetUserId: text("User id whose My Social queue gets the draft"),
       body: text("Main post text"),
@@ -152,6 +158,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       quoteUrl: post.quoteUrl!,
       note: post.note!,
       overrides: OVERRIDES,
+      namesClientOnPurpose: onPurpose,
     }),
   },
   {
@@ -163,6 +170,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       postId: POST_ID,
       body: text("New main post text"),
       ...scope,
+      namesClientOnPurpose: onPurpose,
       ...post,
       ...experimentTag,
     }),
