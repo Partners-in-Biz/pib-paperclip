@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
+import { resolveProducerSaveProject } from "../src/drive/tools.js";
+import { DRIVE_ID, KEY_JSON, LAYOUT, fakeGoogle } from "./support/fake-google-drive.js";
 import { CANARY_DOMAIN, CANARY_NAME, CANARY_RULES, canaryAccountId, canaryContactId, canaryEmail, isCanaryAccount, isCanaryContact, isCanaryEmail, isCanaryId } from "../src/canary-flag.js";
 import { CANARY_JOURNEY, cleanupCanary, ensureCanaryClient } from "../src/canary.js";
 import { handleLeadWebhook } from "../src/lead-capture.js";
@@ -269,5 +272,78 @@ describe("cleanup-canary", () => {
     expect(await harness.performAction("crm.cleanup-canary", { confirm: true }, { companyId: CO, actor: BOARD })).toMatchObject({ cleaned: true });
     expect(JSON.stringify([store.companies.filter((row) => row.id === "acme"), store.deals.filter((row) => row.id === "d-acme")])).toBe(before);
     await expect(harness.performAction("crm.cleanup-canary", {}, { companyId: CO, actor: BOARD })).rejects.toThrow(/pass confirm true/);
+  });
+});
+
+describe("the canary's Drive project (canary.driveProjectId)", () => {
+  const PROJECT = "proj-canary";
+  const canaryRows = (store: Store) => store.client_projects!.filter((row) => row.client_ref === ACCOUNT);
+  async function bootWithProject(config: Record<string, unknown> = { canary: { driveProjectId: PROJECT } }, store: Store = seed()) {
+    const booted = await boot({ store, config: { timezone: "Africa/Johannesburg", ...config } });
+    booted.harness.seed({ projects: [{ id: PROJECT, companyId: CO, name: "PiB Canary (test client)" } as never] });
+    return booted;
+  }
+
+  it("links the configured project (kind null), idempotently, and producer saves for the canary resolve to it", async () => {
+    const { harness, store } = await bootWithProject();
+    expect((await tool<Record<string, any>>(harness, "create-canary-client", {})).driveProject).toBe("linked");
+    expect((await tool<Record<string, any>>(harness, "create-canary-client", {})).driveProject).toBe("linked");
+    expect(canaryRows(store)).toEqual([expect.objectContaining({ company_id: CO, client_kind: "company", client_ref: ACCOUNT, project_id: PROJECT, kind: null })]);
+    expect(await resolveProducerSaveProject(harness.ctx, CO, { kind: "social", clientKind: "company", clientRef: ACCOUNT })).toBe(PROJECT);
+  });
+
+  it("is not_linked when the key is unset or names a project that does not exist, and writes nothing", async () => {
+    const unset = await bootWithProject({});
+    expect((await tool<Record<string, any>>(unset.harness, "create-canary-client", {})).driveProject).toBe("not_linked");
+    expect(canaryRows(unset.store)).toEqual([]);
+    const missing = await bootWithProject({ canary: { driveProjectId: "proj-gone" } });
+    expect((await tool<Record<string, any>>(missing.harness, "create-canary-client", {})).driveProject).toBe("not_linked");
+    expect(canaryRows(missing.store)).toEqual([]);
+    expect(await resolveProducerSaveProject(missing.harness.ctx, CO, { kind: "social", clientKind: "company", clientRef: ACCOUNT })).toBeNull();
+  });
+
+  it("cleanup-canary removes the link and the next create-canary-client links it again", async () => {
+    const { harness, store } = await bootWithProject();
+    await tool(harness, "create-canary-client", {});
+    await tool(harness, "cleanup-canary", { confirm: true });
+    expect(canaryRows(store)).toEqual([]);
+    expect((await tool<Record<string, any>>(harness, "create-canary-client", {})).driveProject).toBe("linked");
+    expect(canaryRows(store)).toHaveLength(1);
+  });
+
+  it("never takes a project a real client holds: conflict, the real row unchanged, no canary row (two scopes)", async () => {
+    const store = seed();
+    const real = { id: "cp-real", company_id: CO, client_kind: "company", client_ref: "acme", project_id: PROJECT, kind: "seo", created_by: "user:local-board", created_at: PAST };
+    store.client_projects!.push({ ...real });
+    const { harness } = await bootWithProject(undefined, store);
+    expect((await tool<Record<string, any>>(harness, "create-canary-client", {})).driveProject).toBe("conflict");
+    expect(store.client_projects).toEqual([real]);
+    expect(await resolveProducerSaveProject(harness.ctx, CO, { kind: "seo", clientKind: "company", clientRef: "acme" })).toBe(PROJECT);
+    expect(await resolveProducerSaveProject(harness.ctx, CO, { kind: "seo", clientKind: "company", clientRef: ACCOUNT })).toBeNull();
+    // The person-facing link refuses the same way (the shared guard).
+    expect((await toolRaw(harness, "link-client-project", { client: `company:${ACCOUNT}`, projectId: PROJECT })).error).toMatch(/already belongs to company:acme/);
+    expect(store.client_projects).toEqual([real]);
+  });
+
+  describe("the Drive folder survives cleanup (the registry is on the Drive folder, not in a CRM table)", () => {
+    beforeEach(() => clearServiceAccountTokenCache());
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("after cleanup and re-create, the canary project resolves to the same folder and no second folder is made", async () => {
+      const google = fakeGoogle();
+      const { harness } = await bootWithProject({ canary: { driveProjectId: PROJECT }, driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } });
+      vi.stubGlobal("fetch", google.fetchFn);
+      await tool(harness, "create-canary-client", {});
+      const first = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: PROJECT });
+      expect(first.data).toMatchObject({ status: "created", path: `${LAYOUT.clients}/PiB Canary Co (Canary Contact)` });
+      const files = google.files.length;
+
+      await tool(harness, "cleanup-canary", { confirm: true });
+      expect(google.files.length).toBe(files);
+      await tool(harness, "create-canary-client", {});
+      const again = await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: PROJECT });
+      expect(again.data).toMatchObject({ status: "exists", folder_id: first.data?.folder_id });
+      expect(google.files.length).toBe(files);
+    });
   });
 });

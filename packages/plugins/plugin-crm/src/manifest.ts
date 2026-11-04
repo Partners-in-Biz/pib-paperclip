@@ -40,6 +40,14 @@ const instanceConfigSchema: JsonSchema = {
         "Optional. The address visitors and WordPress sites reach this Paperclip on, e.g. https://paperclip.partnersinbiz.online (the default). It is used to download the PiB Connector when an agent runs wp-connector update (it must be a host the Connector accepts for self-updates) and to build the lead form snippet and endpoint addresses clients put on their sites.",
     },
     jev: jevConfigSchema() as unknown as JsonSchema,
+    canary: {
+      type: "object",
+      title: "Canary client",
+      description: "Optional. Settings for the internal test client (create-canary-client).",
+      properties: {
+        driveProjectId: { type: "string", title: "Canary Drive project", description: "Paperclip project the canary client saves Drive files into; never a real client's project" },
+      },
+    } as unknown as JsonSchema,
     documents: {
       type: "object",
       title: "Documents to sign",
