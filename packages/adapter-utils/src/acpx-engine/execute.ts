@@ -4,6 +4,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { resolveUsableAgentChildSlice, wrapCommandStringInSlice } from "../agent-child-slice.js";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -2494,7 +2495,15 @@ async function buildRuntime(input: {
     ? [process.execPath, processSessionBridge.agentCommand]
       .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
     : agentCommand;
-  const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
+  // PAR-7678: local agent children (and their dev-tool grandchildren) go into
+  // the optional memory-ceiling slice. The remote relay lane stays as it is.
+  const agentChildSlice = !processSessionBridge && overrideCommand
+    ? await resolveUsableAgentChildSlice()
+    : null;
+  const slicedOverrideCommand = agentChildSlice && overrideCommand
+    ? wrapCommandStringInSlice(agentChildSlice, overrideCommand)
+    : overrideCommand;
+  const overrides = slicedOverrideCommand ? { [acpxAgent]: slicedOverrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
