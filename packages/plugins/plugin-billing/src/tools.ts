@@ -531,4 +531,18 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     description: "Revenue by month and client, aged debtors and creditors (0-30/31-60/61-90/90+ days), expenses by category and MRR/churn, in the reporting currency.",
     parametersSchema: schema([], { from: date("First day. Default: the start of the month 11 months ago"), to: date("Last day. Default today") }),
   },
+
+  // ── Numbering and settings (read-only; seeding the sequence stays with a person) ──
+  {
+    name: "get-numbering",
+    displayName: "Get invoice numbering",
+    description: "Read-only. Without client: the INV sequence, { mode, prefix, next, highestExisting }. With client: that client's { prefix, nextNumber, next } (prefix null until its first invoice). Changing numbers is for a person on the Billing page.",
+    parametersSchema: schema([], { client: str("Optional. company:<crm company id> or contact:<crm contact id> for that client's numbering. Leave out for the INV sequence.") }),
+  },
+  {
+    name: "billing-settings",
+    displayName: "Billing settings",
+    description: "Read-only. The Billing plugin version and numbering settings: { version, numbering: { mode, digits, fallbackPrefix } }.",
+    parametersSchema: schema([], {}),
+  },
 ];

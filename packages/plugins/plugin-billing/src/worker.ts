@@ -154,7 +154,8 @@ import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { clientNumbering, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
+import manifest from "./manifest.js";
+import { clientNumbering, numberingSettings, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
 import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
@@ -354,6 +355,10 @@ const ACTIONS: Record<string, Handler> = {
     if (!scope) return sequenceNumbering(ctx, companyId, await billingSettings(ctx, companyId));
     return clientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, await billingSettings(ctx, companyId));
   },
+  "billing.numbering-settings": async (ctx, context) => {
+    const settings = await billingSettings(ctx, requiredCompany(context));
+    return { version: manifest.version, numbering: numberingSettings(settings) };
+  },
   "billing.set-numbering": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const scope = readClientScope(params);
@@ -531,6 +536,8 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "list-time-entries": { action: "billing.list-time", message: "Time entries listed" },
   "bill-time": { action: "billing.bill-time", message: "Time added to the invoice" },
   "billing-report": { action: "billing.reports", message: "Billing reports built" },
+  "get-numbering": { action: "billing.get-numbering", message: (d) => (d.next == null ? "This client has no prefix yet; its first invoice assigns one" : `Next invoice number: ${String(d.next)}`) },
+  "billing-settings": { action: "billing.numbering-settings", message: (d) => `Billing ${String(d.version)} settings read` },
 };
 
 ACTIONS["billing.open-invoices"] = async (ctx, context, params) => {

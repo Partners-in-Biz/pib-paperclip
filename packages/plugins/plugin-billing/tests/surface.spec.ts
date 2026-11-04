@@ -51,6 +51,28 @@ describe("agent tools", () => {
   });
 });
 
+describe("numbering tools (PAR-7668)", () => {
+  it("expose get-numbering and billing-settings read-only, and never set-numbering", () => {
+    const names = BILLING_TOOLS.map((t) => t.name);
+    expect(names).toContain("get-numbering");
+    expect(names).toContain("billing-settings");
+    expect(names).not.toContain("set-numbering");
+    const get = BILLING_TOOLS.find((t) => t.name === "get-numbering")!.parametersSchema as Schema;
+    expect(get.required).toEqual([]);
+    expect(Object.keys(get.properties ?? {})).toEqual(["client"]);
+    const settings = BILLING_TOOLS.find((t) => t.name === "billing-settings")!.parametersSchema as Schema;
+    expect(settings.required).toEqual([]);
+    expect(Object.keys(settings.properties ?? {})).toEqual([]);
+  });
+
+  it("maps both tools to their actions in the worker, and set-numbering to none", () => {
+    const worker = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+    expect(worker).toMatch(/"get-numbering": \{ action: "billing\.get-numbering"/);
+    expect(worker).toMatch(/"billing-settings": \{ action: "billing\.numbering-settings"/);
+    expect(worker).not.toMatch(/"set-numbering": \{ action:/);
+  });
+});
+
 describe("the invoice-draft skill", () => {
   it("only names Billing tools that exist and says what only a person can do", () => {
     const names = new Set(BILLING_TOOLS.map((t) => t.name));
