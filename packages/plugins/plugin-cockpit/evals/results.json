@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "enforce": false,
+  "enforce": true,
   "minPassRate": 0.8,
   "skills": {
     "pib-operator": {
@@ -32,7 +32,16 @@
           "72ea0d65-7834-447f-8bdb-2d6e6640e03e",
           "8481b1c4-6696-400c-801d-3d34bdfddc83"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "aa7588f2f1c2d3fd",
+          "reason": "Skill text changed in releases since the 2026-10-04 baseline (0.12-0.17) without a recorded candidate run. Waived so the gate can enforce; re-baseline from a live run before expiry (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2026-12-04"
+        }
+      ]
     },
     "pib-reviewer": {
       "baseline": {
@@ -64,7 +73,16 @@
           "ec23c68e-8ec9-48c4-a971-9a1db2c216fa",
           "8c812873-db0d-40a1-b8ea-4cec0ac9a5f0"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "337ffd17ef35d5fc",
+          "reason": "Skill text changed in releases since the 2026-10-04 baseline (0.12-0.17) without a recorded candidate run. Waived so the gate can enforce; re-baseline from a live run before expiry (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2026-12-04"
+        }
+      ]
     },
     "pib-company-os": {
       "baseline": {
@@ -91,7 +109,16 @@
           "5d08572c-fbb0-4d79-ad7b-69f2cb87a858",
           "4855f9db-e37a-4668-a5b4-66aec5e18f28"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "359aa8bf9874026f",
+          "reason": "Skill text changed in releases since the 2026-10-04 baseline (0.12-0.17) without a recorded candidate run. Waived so the gate can enforce; re-baseline from a live run before expiry (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2026-12-04"
+        }
+      ]
     },
     "pib-acceptance": {
       "baseline": {
@@ -110,7 +137,16 @@
           "44c85724-df28-41b8-bf85-aadb56309fca",
           "9e544b39-833f-44d0-b997-d417d57e1ce0"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "acc0bd3b4354c8c5",
+          "reason": "Skill text changed in releases since the 2026-10-04 baseline (0.12-0.17) without a recorded candidate run. Waived so the gate can enforce; re-baseline from a live run before expiry (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2026-12-04"
+        }
+      ]
     }
   }
 }

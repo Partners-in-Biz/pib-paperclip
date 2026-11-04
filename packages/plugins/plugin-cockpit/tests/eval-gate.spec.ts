@@ -10,6 +10,13 @@ import { describe, expect, it } from "vitest";
 import { offlineGate, skillContentHash, type ResultsFile } from "../src/eval-model.js";
 import { RESULTS_FILE, scenariosFor, scenarioSkills } from "../src/eval-scenarios.js";
 import { ownSkills } from "../src/evals.js";
+import { parseResultsFile } from "../src/eval-model.js";
+import { AGENT_EVALS } from "../src/eval-scenarios.js";
+import { loadEvalTemplate } from "../src/eval-model.js";
+import agentResultsJson from "../evals/agents/results.json" with { type: "json" };
+
+const AGENT_RESULTS: ResultsFile = parseResultsFile(agentResultsJson);
+const today = new Date().toISOString().slice(0, 10);
 
 const shipped = () => ownSkills().map((s) => ({ slug: s.slug, hash: s.hash, scenarios: scenariosFor(s.slug) }));
 
@@ -44,5 +51,41 @@ describe("the gate on the skills as they are in this tree", () => {
     const operator = ownSkills().find((s) => s.slug === "pib-operator")!;
     expect(operator.files.length).toBeGreaterThanOrEqual(8);
     expect(skillContentHash({ markdown: operator.markdown, files: [] })).not.toBe(operator.hash);
+  });
+
+  it("both results files enforce", () => {
+    expect(RESULTS_FILE.enforce).toBe(true);
+    expect(AGENT_RESULTS.enforce).toBe(true);
+  });
+});
+
+describe("the gate on the agent templates (evals/agents/results.json)", () => {
+  const templates = () => Object.keys(AGENT_EVALS).map((key) => ({ key, scenarios: loadEvalTemplate(key, AGENT_EVALS, ownSkills().map((s) => s.slug), () => true).scenarios }));
+
+  it("passes on the committed data: every baseline is at the minimum or carries an unexpired waiver", () => {
+    for (const { key, scenarios } of templates()) {
+      const entry = AGENT_RESULTS.skills[key];
+      if (!entry?.baseline) continue;
+      const verdict = offlineGate([{ slug: key, hash: entry.baseline.hash, scenarios }], AGENT_RESULTS)[0]!;
+      expect(verdict.ok, `${key}: ${verdict.reason}`).toBe(true);
+      if (entry.baseline.passRate < AGENT_RESULTS.minPassRate) {
+        const w = entry.waivers?.find((x) => x.hash === entry.baseline!.hash);
+        expect(w, `${key} baseline ${entry.baseline.passRate} is below ${AGENT_RESULTS.minPassRate} and has no waiver`).toBeTruthy();
+        expect(w!.reason && w!.by && w!.expires, `${key} waiver needs reason, by, expires`).toBeTruthy();
+        expect(w!.expires! >= today, `${key} waiver expired ${w!.expires}`).toBe(true);
+      }
+    }
+  });
+
+  it("blocks a template whose hash changed without a candidate entry or waiver", () => {
+    const { key, scenarios } = templates().find((t) => AGENT_RESULTS.skills[t.key]?.baseline)!;
+    const verdict = offlineGate([{ slug: key, hash: "0000000000000000", scenarios }], AGENT_RESULTS)[0]!;
+    expect(verdict).toMatchObject({ ok: false, status: "unmeasured" });
+  });
+
+  it("an expired waiver no longer counts", () => {
+    const { key, scenarios } = templates().find((t) => AGENT_RESULTS.skills[t.key]?.baseline)!;
+    const file: ResultsFile = { ...AGENT_RESULTS, skills: { [key]: { baseline: AGENT_RESULTS.skills[key]!.baseline, waivers: [{ hash: "1111111111111111", reason: "r", by: "b", at: "2020-01-01", expires: "2020-02-01" }] } } };
+    expect(offlineGate([{ slug: key, hash: "1111111111111111", scenarios }], file)[0]).toMatchObject({ ok: false, status: "unmeasured" });
   });
 });
