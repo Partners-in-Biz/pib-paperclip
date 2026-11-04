@@ -8,6 +8,29 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 export const EVIDENCE_SUBFOLDER = "05 Evidence";
 
+export const EVIDENCE_CLIENT_KINDS = ["company", "contact"] as const;
+export type EvidenceClient = { kind: (typeof EVIDENCE_CLIENT_KINDS)[number]; ref: string };
+
+/**
+ * Check the optional `client` of evidence-save. Absent (undefined/null) = no
+ * client (save under our own project). Anything else must be
+ * `{kind: "company"|"contact", ref: non-empty string}`, else a clear error.
+ */
+export function parseEvidenceClient(raw: unknown): { client: EvidenceClient | null } | { error: string } {
+  if (raw === undefined || raw === null) return { client: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "client must be an object {kind, ref}" };
+  }
+  const { kind, ref } = raw as { kind?: unknown; ref?: unknown };
+  if (typeof kind !== "string" || !(EVIDENCE_CLIENT_KINDS as readonly string[]).includes(kind)) {
+    return { error: `client.kind must be one of ${EVIDENCE_CLIENT_KINDS.join(", ")}` };
+  }
+  if (typeof ref !== "string" || !ref.trim()) {
+    return { error: "client.ref is required and must be non-empty" };
+  }
+  return { client: { kind: kind as EvidenceClient["kind"], ref: ref.trim() } };
+}
+
 /**
  * Build the evidence filename: "ISSUE-step-timestamp.png"
  * Example: "PAR-123-login-20261021T101500Z.png"
@@ -34,6 +57,7 @@ export async function saveEvidenceToDrive(
     issueId: string;
     step: string;
     pngBase64: string;
+    client?: EvidenceClient | null;
   },
 ): Promise<DriveSaveResult | null> {
   try {
@@ -42,6 +66,13 @@ export async function saveEvidenceToDrive(
     // Validate PNG signature (89 50 4E 47 is the PNG magic bytes)
     if (!pngBase64.startsWith("iVBORw0KGgo")) {
       ctx.logger.warn("cockpit: invalid PNG signature for evidence", { companyId, issueId });
+      return null;
+    }
+
+    // Validate the optional client before anything is emitted
+    const parsed = parseEvidenceClient(args.client);
+    if ("error" in parsed) {
+      ctx.logger.warn("cockpit: invalid client for evidence", { companyId, issueId, error: parsed.error });
       return null;
     }
 
@@ -61,6 +92,7 @@ export async function saveEvidenceToDrive(
       mimeType: "image/png",
       bytes,
       subfolder: EVIDENCE_SUBFOLDER,
+      ...(parsed.client ? { client: parsed.client } : {}),
     });
 
     // Log warnings only on failure; do not log PNG content

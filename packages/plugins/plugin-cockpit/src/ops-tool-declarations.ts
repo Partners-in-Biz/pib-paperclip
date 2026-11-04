@@ -179,6 +179,15 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       issueId: { type: "string", description: "The issue this evidence is for (id or identifier such as PAR-123)." },
       step: { type: "string", maxLength: 60, description: "The step name (e.g. \"login\", max 60 chars, sanitized)." },
       pngBase64: { type: "string", maxLength: 1500000, description: "The PNG image as base64 (starts with iVBORw0KGgo, max 1.5 MB decoded)." },
+      client: {
+        type: "object",
+        description: "Optional: the client whose Drive folder gets the file (e.g. the canary client). Leave out to save under our own project.",
+        properties: {
+          kind: { type: "string", enum: ["company", "contact"], description: "CRM record kind of the client." },
+          ref: { type: "string", minLength: 1, maxLength: 120, description: "The client's CRM record id." },
+        },
+        required: ["kind", "ref"],
+      },
     }),
   },
 ];

@@ -10,7 +10,7 @@ import { openCloseoutNow } from "./closeout.js";
 import { CredentialError } from "./credentials-model.js";
 import { credentialList, recordCredential, verifyCompany } from "./credentials.js";
 import { recordEvidence } from "./evidence.js";
-import { saveEvidenceToDrive } from "./evidence-drive.js";
+import { parseEvidenceClient, saveEvidenceToDrive } from "./evidence-drive.js";
 import { getRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
@@ -121,8 +121,10 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
       if (!issueId) return fail("issueId is required");
       if (!step) return fail("step is required and must be non-empty");
       if (!pngBase64) return fail("pngBase64 is required");
+      const parsedClient = parseEvidenceClient(p.client);
+      if ("error" in parsedClient) return fail(parsedClient.error);
 
-      const result = await saveEvidenceToDrive(env.ctx, { companyId, issueId, step, pngBase64 });
+      const result = await saveEvidenceToDrive(env.ctx, { companyId, issueId, step, pngBase64, client: parsedClient.client });
       if (result === null || result.status === "failed" || result.status === "no_ack") {
         const reason = result?.status === "failed" ? result.reason : result?.status === "no_ack" ? "no ack from Drive" : "invalid input";
         return ok(`Evidence could not be saved to Drive (${reason}). The step is not blocked.`, { saved: false, reason });
