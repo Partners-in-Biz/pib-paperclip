@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, ChartLegend, EmptyState, Field, FileText, Input, Pill, Sheet, Toolbar, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
-import { PLATFORM_LABELS, isSocialPlatform } from "../platforms.js";
+import { editableViaDraft, PLATFORM_LABELS, isSocialPlatform, xReplyIntentUrl } from "../platforms.js";
 import { ApprovalPolicyCard, PostApproval } from "./approvals.js";
 import { Thumb } from "./composer.js";
+import { MediaViewer } from "./media-viewer.js";
 import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
 import { PostTarget } from "./target.js";
@@ -77,6 +78,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
   const [when, setWhen] = useState(toLocalInput(new Date(Date.now() + 60 * 60_000)));
   const [approval, setApproval] = useState<ApprovalOutcome | null>(null);
   const [waiting, setWaiting] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<number | null>(null);
   const tz = snapshot.config.timezone;
   const isUser = Boolean(snapshot.viewer.userId);
   const proposed = (post.status === "draft" || post.status === "review") && post.scheduledAt ? post.scheduledAt : null;
@@ -107,8 +109,11 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
 
   const act = (key: string, success: string, extra: Record<string, unknown> = {}) => run(key, { postId: post.id, ...extra }, success).catch(ignore);
   const failed = post.destinations.filter((d) => d.status === "failed").length;
+  // A reply to an X post cannot go through the API, so it can be posted from X's own reply box instead.
+  const xReply = post.status === "published" ? null : xReplyIntentUrl(post.replyTo?.id, post.overrides.x?.text?.trim() || post.body);
 
   return (
+    <>
     <Sheet open title="Post" onClose={onClose}>
       <Row style={{ justifyContent: "space-between" }}>
         <PostStatus status={post.status} />
@@ -118,7 +123,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       <PostTarget post={post} />
       <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
       {post.media.length ? (
-        <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind }} />)}</Row>
+        <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind, name: m.altText ?? undefined }} onClick={() => setViewing(i)} />)}</Row>
       ) : null}
       {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
       {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
@@ -168,8 +173,10 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         <Banner tone="warn" title="Fix before scheduling">{problems.map((p) => <div key={p}>• {p}</div>)}</Banner>
       ) : null}
 
+      {xReply ? <Muted>X does not let us post this reply for you. Open it on X, post it there, then delete this post.</Muted> : null}
       <Row>
-        {post.status === "draft" || post.status === "review" ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
+        {xReply ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => window.open(xReply, "_blank", "noopener")}>Open reply on X</Button> : null}
+        {post.status === "draft" || post.status === "review" || (editableViaDraft(post.status) && snapshot.canPost !== false) ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
         {post.status === "draft" && snapshot.space !== "me" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
         {post.status === "draft" && snapshot.space === "me" ? <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={post.destinations.length === 0} onClick={() => void approve()}>Approve</Button> : null}
         {post.status === "review" && isUser && teamApproves ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => void approve()}>{proposed ? "Approve & schedule" : "Approve"}</Button> : null}
@@ -178,7 +185,7 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         {(post.status === "failed" || post.status === "partially_published") && failed ? (
           <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => act("social.retry-post", "Retry queued; it runs within 5 minutes")}>Retry {failed} failed</Button>
         ) : null}
-        {["draft", "review", "approved"].includes(post.status) ? (
+        {["draft", "review", "approved", "failed"].includes(post.status) ? (
           <SmallButton onClick={() => {
             if (window.confirm("Delete this post?")) run("social.delete-post", { postId: post.id }, "Post deleted").then(onClose).catch(ignore);
           }}>Delete</SmallButton>
@@ -198,6 +205,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         </Card>
       ) : null}
     </Sheet>
+    {viewing !== null ? <MediaViewer items={post.media} start={viewing} onClose={() => setViewing(null)} /> : null}
+    </>
   );
 }
 

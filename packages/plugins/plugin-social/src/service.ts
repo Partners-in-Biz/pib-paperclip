@@ -85,6 +85,9 @@ import {
   type DestinationRow,
   type MetricsRow,
   type PostRow,
+  resetFailedDestinations,
+  saveInboxReply,
+  setPostOutcome,
 } from "./db.js";
 import {
   aggregateMetrics,
@@ -125,7 +128,7 @@ import { requireCanActOnPost } from "./ownership.js";
 import { routineReport } from "./routine-state.js";
 import { validatePostRow } from "./validate.js";
 import { PLAN_ROUTINE_TITLE } from "./skills.js";
-import { jevKeySet, triageOut } from "./triage.js";
+import { askAgentForDraft, jevKeySet, triageOut } from "./triage.js";
 import { emptyStats, scopeStats } from "./stats.js";
 import { assertClientFiling, overrideTexts } from "./client-filing.js";
 import { parseTweetUrl, targetFromParams } from "./post-target.js";
@@ -623,9 +626,15 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
     return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
   }
   // Unscheduling clears the time. Every other move keeps it: a draft's time is its proposed time.
-  const clearSchedule = post.status === "scheduled" && to === "approved" ? null : undefined;
+  // A failed post's time has passed, so it is cleared too: approval must not publish it at once on a stale time.
+  const clearSchedule = (post.status === "scheduled" && to === "approved") || post.status === "failed" ? null : undefined;
   if (!(await setPostStatus(ctx, viewer.companyId, post.id, [post.status], to, clearSchedule))) {
     throw new SocialError("The post changed while you were editing it. Reload and try again.");
+  }
+  // A failed post starts over: its old error goes, and its failed destinations can publish again after approval.
+  if (post.status === "failed" && to === "draft") {
+    await resetFailedDestinations(ctx, viewer.companyId, post.id);
+    await setPostOutcome(ctx, post.id, { status: "draft", error: null, publishedAt: false });
   }
   // Company Cockpit: the Reviewer checks posts first when one is set (best effort, never blocks the move).
   if (to === "review") {
@@ -690,7 +699,7 @@ export async function retryPostRecord(ctx: PluginContext, viewer: Viewer, postId
 export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   requireUser(viewer, "delete a post");
   const post = await requirePost(ctx, viewer, postId);
-  if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review or approved posts can be deleted");
+  if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review, approved or failed posts can be deleted");
   return { deleted: post.id };
 }
 
@@ -1018,6 +1027,7 @@ function inboxOut(row: Awaited<ReturnType<typeof listInboxItems>>[number]) {
     body: row.body,
     status: row.status,
     permalink: row.permalink,
+    externalId: row.external_id,
     postId: row.post_id,
     replyDraft: row.reply_draft,
     replyBody: row.reply_body,
@@ -1073,6 +1083,29 @@ export async function markInboxReadRecord(ctx: PluginContext, viewer: Viewer, it
   if (existing && !inboxVisible(viewer, existing)) throw new SocialError("Inbox item was not found");
   if (!(await setInboxItemStatus(ctx, viewer.companyId, itemId, "read"))) throw new SocialError("Inbox item was not found");
   return { itemId, status: "read" };
+}
+
+/** A person posted the reply on the platform themselves (X): record what they posted. */
+export async function markInboxRepliedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "mark a reply as posted");
+  const item = await getInboxItem(ctx, viewer.companyId, requiredString(params, "itemId"));
+  if (!item || !inboxVisible(viewer, item)) throw new SocialError("Inbox item was not found");
+  const body = optionalString(params, "body")?.trim() || null;
+  await saveInboxReply(ctx, viewer.companyId, item.id, { status: "replied", replyDraft: null, replyBody: body ?? item.reply_draft ?? null, replied: true });
+  return { itemId: item.id, status: "replied" };
+}
+
+/** A person asks the Social agent to draft a reply to this item. */
+export async function requestInboxDraftRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "ask for a draft reply");
+  const item = await getInboxItem(ctx, viewer.companyId, requiredString(params, "itemId"));
+  if (!item || !inboxVisible(viewer, item)) throw new SocialError("Inbox item was not found");
+  const account = item.account_id ? await getAccount(ctx, viewer.companyId, item.account_id) : null;
+  if (!account) throw new SocialError("This item's account is no longer connected, so no agent can pick it up");
+  const config = await loadSocialConfig(ctx, viewer.companyId);
+  const issueId = await askAgentForDraft(ctx, config, account, item);
+  if (!issueId) throw new SocialError("The agent could not be asked just now. Try again in a minute.");
+  return { itemId: item.id, issueId };
 }
 
 export async function replyInboxRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

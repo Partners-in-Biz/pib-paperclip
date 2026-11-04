@@ -96,6 +96,8 @@ import {
   listTemplatesRecord,
   loadSnapshot,
   markInboxReadRecord,
+  markInboxRepliedRecord,
+  requestInboxDraftRecord,
   objectParams,
   optionalString,
   postAnalyticsRecord,
@@ -425,6 +427,8 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.set-rss-active": (ctx, v, p) => setRssActiveRecord(ctx, v, requiredString(p, "feedId"), p.active === true),
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
   "social.reply-inbox": (ctx, v, p) => replyInboxRecord(ctx, v, p),
+  "social.mark-inbox-replied": (ctx, v, p) => markInboxRepliedRecord(ctx, v, p),
+  "social.request-inbox-draft": (ctx, v, p) => requestInboxDraftRecord(ctx, v, p),
   "social.post-analytics": (ctx, v, p) => postAnalyticsRecord(ctx, v, p),
   "social.correct-triage": (ctx, v, p) =>
     correctTriage(ctx, v.companyId, requireUser(v, "correct a triage"), { itemId: requiredString(p, "itemId"), key: requiredString(p, "key"), value: requiredString(p, "value") }),

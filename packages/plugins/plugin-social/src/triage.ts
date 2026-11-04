@@ -306,6 +306,7 @@ export function replyQueueSteps(): string[] {
     "2. Questions: answer them. Complaints: acknowledge, offer a private channel (DM or email), never argue.",
     "3. Leads are already in the CRM. For own accounts the Account Manager follows up there; for a client's accounts the lead stays the client's and your reply is the only answer. Answer, and point them to the booking or contact link in the playbook's Constraints. No link there: ask once with `" + ASK_OWNER_TOOL + "` and add it as a constraint (`propose-playbook-change`).",
     "4. `mark-inbox-read` anything that needs no reply. Close this issue with one line on what you did.",
+    "On X, `reply-inbox` only saves your text as a draft; a person checks it and posts it on X. Do not turn an X reply into a post.",
     "Items with legal, safety or PR risk are not in this list; a person handles those.",
   ];
 }
@@ -367,6 +368,14 @@ async function queueForAgent(ctx: PluginContext, config: SocialConfig, account: 
     ctx.logger.info("Social inbox digest issue not created", { accountId: account.id, error: error instanceof Error ? error.message : String(error) });
     return null;
   }
+}
+
+/** A person asked for a draft on this item: it joins the account's reply queue for today, whatever triage said. */
+export async function askAgentForDraft(ctx: PluginContext, config: SocialConfig, account: AccountRow, item: InboxItemRow, now = new Date()): Promise<string | null> {
+  const triage = (item.triage as Triage | null) ?? ruleTriage(item);
+  const issueId = await queueForAgent(ctx, config, account, [{ item, triage }], now);
+  if (issueId) await saveInboxTriage(ctx, config.companyId, item.id, { triage: { ...triage, issueId }, issueId });
+  return issueId;
 }
 
 /** Why an item was escalated, for the person's issue. Pure. */

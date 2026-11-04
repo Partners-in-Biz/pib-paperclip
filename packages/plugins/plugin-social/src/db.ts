@@ -824,7 +824,7 @@ export async function setPostFailureIssue(ctx: PluginContext, id: string, issueI
 
 export async function deletePost(ctx: PluginContext, companyId: string, id: string): Promise<number> {
   const result = await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "posts")} WHERE id = $1 AND company_id = $2 AND status IN ('draft', 'review', 'approved')`,
+    `DELETE FROM ${table(ctx, "posts")} WHERE id = $1 AND company_id = $2 AND status IN ('draft', 'review', 'approved', 'failed')`,
     [id, companyId],
   );
   return result.rowCount;

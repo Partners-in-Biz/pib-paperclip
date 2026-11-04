@@ -83,6 +83,8 @@ const ACTION_KEYS = [
   "social.set-rss-active",
   "social.mark-inbox-read",
   "social.reply-inbox",
+  "social.mark-inbox-replied",
+  "social.request-inbox-draft",
   "social.activate-agent",
   "social.correct-triage",
   "social.growth-load",
