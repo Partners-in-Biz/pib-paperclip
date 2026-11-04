@@ -15,6 +15,7 @@ import {
   audit,
   clientName,
   ensureScope,
+  getCampaign,
   getProposal,
   getScope,
   insertApproval,
@@ -37,7 +38,7 @@ import { assertCampaignCap } from "./campaignCap.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
 import type { AdsRuntime } from "./runtime.js";
 import { APPROVAL_TTL_MS, PROPOSAL_TTL_MS, reviewStands, signoffState, type Role } from "./signoffs.js";
-import { ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
+import { isSpendRaising, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
 
 export interface ProposalActor {
   userId?: string | null;
@@ -347,17 +348,21 @@ export async function recordSignoff(rt: AdsRuntime, input: SignoffInput): Promis
   if (byAgent) {
     const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
     if (!scope) throw new AdsError("That scope is gone.");
-    const route = ownerRouteOf(scope, p);
+    // Same predicate as executeProposal: a spend-raising kind is the owner's alone; a budget change is judged on a fresh campaigns read (PAR-6684).
+    const current = p.kind === "change_budget" ? ((await getCampaign(rt.ctx, rt.companyId, String(p.payload.accountId), String(p.payload.campaignExternalId)))?.daily_budget_minor ?? null) : undefined;
+    const route = ownerRouteOf(scope, p, current);
     if (route.route === "owner_required") {
+      const spendRaising = isSpendRaising(p, current);
       await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
       await audit(rt.ctx, rt.companyId, {
         actor: `agent:${input.agentId}`,
         action: "proposal.owner_required",
         scopeKey: p.scope_key,
         subject: p.id,
-        detail: { lifetimeMinor: route.lifetimeMinor, thresholdMinor: route.thresholdMinor },
+        detail: { lifetimeMinor: route.lifetimeMinor, thresholdMinor: route.thresholdMinor, spendRaising },
       });
-      throw new AdsError("This proposal's lifetime budget is above the owner threshold, so it needs the owner's sign-off. It is marked owner_required and shown in the cockpit.", "owner_required");
+      const why = spendRaising ? "This change can raise spend, so only the owner (a person) can approve it" : "This proposal's lifetime budget is above the owner threshold, so it needs the owner's sign-off";
+      throw new AdsError(`${why}. It is marked owner_required and shown in the cockpit.`, "owner_required");
     }
   }
 

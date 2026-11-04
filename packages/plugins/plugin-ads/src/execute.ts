@@ -27,7 +27,7 @@ import { reviewStands, signoffState } from "./signoffs.js";
 import { saveCreativeToDrive } from "./drive.js";
 import { syncAccount } from "./sync.js";
 import { writeProposalCap } from "./campaign-caps.js";
-import { isOwnerDelegateApproval, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
+import { asksForActive, isOwnerDelegateApproval, isSpendRaising, ownerDelegateAgentId, ownerRouteOf } from "./owner-route.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
 import { assertCampaignCap } from "./campaignCap.js";
 
@@ -65,6 +65,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   const p = await getProposal(rt.ctx, rt.companyId, input.proposalId);
   if (!p) throw new AdsError("That proposal was not found.");
   if (p.kind === "creative_check") return refuse(rt, actor, p, "nothing_to_run", "Ad copy is only checked; there is nothing to run.");
+  if (asksForActive(p)) return refuse(rt, actor, p, "not_paused", "Everything is created PAUSED; this proposal asks for another status, so it will not run. Propose it again without a status.");
   if (p.status !== "approved") return refuse(rt, actor, p, "not_approved", `This proposal is ${p.status}, not approved. Nothing runs without every sign-off recorded.`);
   if (!input.approvalId) return refuse(rt, actor, p, "no_approval", "An approval id is required on every change.");
 
@@ -79,14 +80,17 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
   if (!approval.expires_at || Date.parse(approval.expires_at) <= rt.now().getTime()) return refuse(rt, actor, p, "approval_expired", "That approval is older than 72 hours. Ask the owner to approve again.");
   if (approval.content_hash !== p.content_hash) return refuse(rt, actor, p, "approval_stale", "The proposal changed after it was approved. The approval no longer covers these numbers.");
 
-  // The delegate's approval is still valid only while the threshold still covers it
+  // The delegate's approval is still valid only while the threshold still covers it, and never for a spend-raising change (PAR-6684).
+  // A budget change is judged on a fresh read of the campaign's budget: a missing campaign or budget counts as spend-raising.
   if (isOwnerDelegateApproval(approval, delegateAgentId)) {
     const scope = await getScope(rt.ctx, rt.companyId, p.scope_key);
     if (!scope) return refuse(rt, actor, p, "no_scope", "That scope is gone.");
-    const route = ownerRouteOf(scope, p);
+    const current = p.kind === "change_budget" ? ((await getCampaign(rt.ctx, rt.companyId, String(p.payload.accountId), String(p.payload.campaignExternalId)))?.daily_budget_minor ?? null) : undefined;
+    const route = ownerRouteOf(scope, p, current);
     if (route.route === "owner_required") {
       await updateProposal(rt.ctx, rt.companyId, p.id, { impact: { ...p.impact, ownerRoute: route } });
-      return refuse(rt, actor, p, "owner_required", "This proposal is above the owner threshold, so the Account Manager's approval no longer covers it. The owner needs to approve it on the Ads page.");
+      const why = isSpendRaising(p, current) ? "This change can raise spend, so only the owner (a person) can approve it" : "This proposal is above the owner threshold";
+      return refuse(rt, actor, p, "owner_required", `${why}, so the Account Manager's approval does not cover it. The owner needs to approve it on the Ads page.`);
     }
   }
 
@@ -172,6 +176,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           objective: String(p.payload.objective),
           dailyBudgetMinor: Number(p.payload.dailyBudgetMinor),
           specialAdCategories: (p.payload.specialAdCategories as string[]) ?? [],
+          status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
         capNote = await recordProposalCap(rt, p, t.account.platform, created.externalId, approval.decided_by);
@@ -190,6 +195,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           billingEvent: String(payload.billingEvent),
           targeting: payload.targeting as any,
           publisherPlatforms: (payload.publisherPlatforms as string[] | null) ?? undefined,
+          status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else if (p.kind === "create_ad_creative") {
@@ -220,6 +226,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           name: String(payload.name),
           adSetExternalId: String(payload.adSetExternalId),
           creativeExternalId: String(payload.creativeExternalId),
+          status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else if (p.kind === "create_ad_group") {
@@ -227,6 +234,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
         const created = await t.provider.createAdGroup(t.env, t.token, t.ref, String(p.payload.campaignExternalId), {
           name: String(p.payload.name),
           cpcBidMinor: Number(p.payload.cpcBidMinor),
+          status: "PAUSED",
         });
         results.push({ what: `Created ad group "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else if (p.kind === "create_responsive_search_ad") {
@@ -238,12 +246,14 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           finalUrl: String(x.finalUrl),
           ...(x.path1 ? { path1: String(x.path1) } : {}),
           ...(x.path2 ? { path2: String(x.path2) } : {}),
+          status: "PAUSED",
         });
         results.push({ what: `Created responsive search ad "${created.name}" (paused)`, ok: true, externalId: created.externalId });
       } else if (p.kind === "add_keywords") {
         if (t.account.platform !== "google") return refuse(rt, actor, p, "platform_unsupported", "Keywords can only be added on Google.");
         const added = await t.provider.addKeywords(t.env, t.token, t.ref, String(p.payload.adGroupExternalId), {
           keywords: (p.payload.keywords as Array<{ text: string; matchType: "exact" | "phrase" | "broad"; negative?: boolean }>) ?? [],
+          status: "PAUSED",
         });
         results.push({ what: `Added ${added.added} keyword${added.added === 1 ? "" : "s"} (paused)`, ok: true, externalId: String(p.payload.adGroupExternalId) });
       } else {

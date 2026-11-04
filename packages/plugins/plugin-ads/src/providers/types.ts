@@ -107,6 +107,8 @@ export interface CreateCampaignRequest {
   dailyBudgetMinor: number;
   /** Meta only. */
   specialAdCategories?: string[];
+  /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
+  status?: "PAUSED";
 }
 
 export interface CreateAdSetRequest {
@@ -124,6 +126,8 @@ export interface CreateAdSetRequest {
     interests?: Array<{ id: string; name: string }>;
   };
   publisherPlatforms?: string[];
+  /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
+  status?: "PAUSED";
 }
 
 export interface CreateAdCreativeRequest {
@@ -141,12 +145,15 @@ export interface CreateAdRequest {
   name: string;
   adSetExternalId: string;
   creativeExternalId: string;
+  /** Always "PAUSED" from execute.ts (PAR-6684); a payload asking for ACTIVE is refused before any request is built. */
   status?: "PAUSED" | "ACTIVE";
 }
 
 export interface CreateAdGroupRequest {
   name: string;
   cpcBidMinor: number;
+  /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
+  status?: "PAUSED";
 }
 
 export interface CreateResponsiveSearchAdRequest {
@@ -155,6 +162,8 @@ export interface CreateResponsiveSearchAdRequest {
   finalUrl: string;
   path1?: string;
   path2?: string;
+  /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
+  status?: "PAUSED";
 }
 
 export type KeywordMatchType = "exact" | "phrase" | "broad";
@@ -167,6 +176,8 @@ export interface KeywordInput {
 
 export interface AddKeywordsRequest {
   keywords: KeywordInput[];
+  /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
+  status?: "PAUSED";
 }
 
 export interface AdSetCap {
