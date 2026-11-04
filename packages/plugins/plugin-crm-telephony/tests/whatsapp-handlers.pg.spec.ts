@@ -6,11 +6,14 @@ import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import { createMockDbClient, createMockContext, seedContact, readAuditRows, readOptOutRows, readPrefRows, readMessageRows } from "./helpers/test-utils.js";
 import { insertOnce } from "../src/idempotency.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let pgDb: PgDb;
 const authToken = "test-auth-token";
 
-describe("WhatsApp webhook handlers", () => {
+describe.skipIf(!available)("WhatsApp webhook handlers", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

@@ -5,6 +5,9 @@ import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import type { TelephonySettings } from "../src/settings.js";
 import type { TwilioClient } from "../src/twilio-client.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let pgDb: PgDb;
 
@@ -50,7 +53,7 @@ function makeFakeClient() {
   } as any as TwilioClient;
 }
 
-describe("sendWhatsapp", () => {
+describe.skipIf(!available)("sendWhatsapp", () => {
   beforeAll(async () => { pgDb = await startPg(); }, 180_000);
   afterAll(async () => { await pgDb?.stop(); });
   beforeEach(async () => {

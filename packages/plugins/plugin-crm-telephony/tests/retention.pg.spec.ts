@@ -5,6 +5,9 @@ import { recordingKey } from "../src/r2-store.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
 import type { R2Config } from "../src/r2-store.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 interface TestDb {
   db: {
@@ -197,7 +200,7 @@ async function seedTranscript(recordingId: string, opts?: { callSid?: string; cr
   );
 }
 
-describe("retention", () => {
+describe.skipIf(!available)("retention", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

@@ -6,6 +6,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { NAMESPACE } from "../src/namespace.js";
 import { makeSummariseStep, parseSummary } from "../src/summarise.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: Awaited<ReturnType<typeof startHostDb>>;
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -34,7 +37,7 @@ function createMockCtx(fetchMock?: any, secretValue?: string | null) {
   } as any;
 }
 
-describe("summarise pipeline step", () => {
+describe.skipIf(!available)("summarise pipeline step", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

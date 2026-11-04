@@ -12,6 +12,9 @@ import {
 } from "../src/note.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: Awaited<ReturnType<typeof startHostDb>>;
 
@@ -58,7 +61,7 @@ function createMockCtx(mockEvents?: { emit: any; on: any }) {
   } as any;
 }
 
-describe("call note emission and acking", () => {
+describe.skipIf(!available)("call note emission and acking", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);
