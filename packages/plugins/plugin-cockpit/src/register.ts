@@ -30,6 +30,7 @@ import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
+import { REVIEW_FINDING_TOOL_SET, runReviewFindingTool } from "./review-findings.js";
 import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
 import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
 import { ensureSetupIssue } from "./bootstrap.js";
@@ -667,7 +668,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
                   ? await runAcceptanceTool(env, tool.name, params, run)
                   : EVAL_TOOL_SET.has(tool.name)
                     ? await runEvalTool(env, tool.name, params, run)
-                    : await runTool(env, tool.name, params, run);
+                    : REVIEW_FINDING_TOOL_SET.has(tool.name)
+                      ? await runReviewFindingTool(env, tool.name, params, run)
+                      : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }
