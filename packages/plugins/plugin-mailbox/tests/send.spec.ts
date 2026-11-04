@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { MAIL_EVENTS, pluginEvent, PIB_PLUGINS, type MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
-import { handleSendRequested, normaliseRequest, retrySend, senderOf } from "../src/gmail/send.js";
+import { handleSendRequested, normaliseRequest, performSend, retrySend, senderOf } from "../src/gmail/send.js";
 import { CO } from "./helpers/memory.js";
 import { setup } from "./helpers/setup.js";
 
@@ -54,6 +54,18 @@ describe("mail.send.requested", () => {
 
     expect(results(host.emitted)).toEqual([expect.objectContaining({ key: "billing:invoice:inv-1:send", status: "sent", messageId: "sent-1", context: request().context })]);
     expect(host.inbox.get("billing:invoice:inv-1:send")).toMatchObject({ status: "sent" });
+  });
+
+  it("sends the files a person added to a draft next to the ones the request points at", async () => {
+    const { gmail, env } = setup();
+    const result = await performSend(env, CO, request({ attachments: [] }), {
+      sourcePlugin: PIB_PLUGINS.mailbox,
+      extraAttachments: [{ filename: "quote.pdf", mime: "application/pdf", content: PDF }],
+    });
+    expect(result.status).toBe("sent");
+    const mime = gmail.sent[0]!.mime;
+    expect(mime).toContain('Content-Disposition: attachment; filename="quote.pdf"');
+    expect(mime).toContain(Buffer.from(PDF).toString("base64"));
   });
 
   it("replies in the thread with In-Reply-To and References", async () => {

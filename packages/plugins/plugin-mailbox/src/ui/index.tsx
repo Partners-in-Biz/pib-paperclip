@@ -8,6 +8,7 @@ import { useHostLocation,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
+import { DraftEditor } from "./draft-editor.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import {
   BarChart,
@@ -174,6 +175,9 @@ interface Draft {
   drafted_by?: { kind: "agent" | "user"; id: string } | null;
   is_reply?: boolean;
   has_html?: boolean;
+  use_signature?: boolean;
+  files?: Array<{ id: string; name: string; mime: string; bytes: number }>;
+  rewrite_requested?: { note: string; requested_at: string } | null;
 }
 interface Snapshot {
   settings: Settings;
@@ -469,6 +473,9 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const correctTriage = usePluginAction("mailbox.correct-triage");
   const loadStats = usePluginAction("mailbox.triage-stats");
   const sendDraft = usePluginAction("mailbox.send-draft");
+  const getMessage = usePluginAction("mailbox.get-message");
+  const startReply = usePluginAction("mailbox.start-reply");
+  const deleteMail = usePluginAction("mailbox.delete-mail");
   const createAccount = usePluginAction("mailbox.create-account");
   const createDelegation = usePluginAction("mailbox.create-delegation");
   const createDraft = usePluginAction("mailbox.create-draft");
@@ -506,6 +513,8 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const [sentStatus, setSentStatus] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
   const [preview, setPreview] = useState<Preview>(null);
+  const [mailBody, setMailBody] = useState<{ id: string; text: string | null; truncated?: boolean; note?: string | null } | null>(null);
+  const [chosenMail, setChosenMail] = useState<string[]>([]);
   const [address, setAddress] = useState("");
   const [provider, setProvider] = useState("gmail");
   const [accountId, setAccountId] = useState("");
@@ -574,6 +583,42 @@ function MailboxPageMain({ context }: PluginPageProps) {
       setMessage(success);
       setCreate(null);
       setPreview(null);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Moves mail to the Bin in Gmail and takes it off this page. */
+  async function removeMail(ids: string[]) {
+    const many = ids.length > 1;
+    if (!window.confirm(`Delete ${many ? `${ids.length} emails` : "this email"}? ${many ? "They move" : "It moves"} to the Bin in Gmail, where Google keeps ${many ? "them" : "it"} for 30 days.`)) return;
+    setMessage("");
+    setBusy(true);
+    try {
+      const out = (await deleteMail({ messageIds: ids })) as { deleted: number; failed: Array<{ subject: string; error: string }> };
+      await refreshInbox();
+      await refresh();
+      setChosenMail([]);
+      if (!out.failed.length) setPreview(null);
+      setMessage(out.failed.length ? `${out.deleted} deleted. Not deleted: ${out.failed.map((row) => `${row.subject || "(no subject)"} (${row.error})`).join("; ")}` : `${out.deleted === 1 ? "Email" : `${out.deleted} emails`} moved to the Bin in Gmail`);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Saves a draft for the reply, reply all or forward and opens it in the editor, where recipients and files can be changed. */
+  async function replyTo(id: string, mode: "reply" | "reply_all" | "forward") {
+    setMessage("");
+    setBusy(true);
+    try {
+      const out = (await startReply({ messageId: id, mode })) as { id: string; skippedFiles: string[] };
+      await refresh();
+      setPreview({ kind: "draft", id: out.id });
+      if (out.skippedFiles.length) setMessage(`These files are too large to forward from here: ${out.skippedFiles.join(", ")}`);
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -913,6 +958,25 @@ function MailboxPageMain({ context }: PluginPageProps) {
 
   const previewDraft = preview?.kind === "draft" ? allDrafts.find((row) => row.id === preview.id) ?? null : null;
   const previewMail = preview?.kind === "mail" ? (inbox?.messages ?? []).find((row) => row.id === preview.id) ?? null : null;
+  const openMailId = previewMail?.id ?? null;
+  useEffect(() => {
+    if (!openMailId) {
+      setMailBody(null);
+      return;
+    }
+    let live = true;
+    setMailBody(null);
+    (getMessage({ messageId: openMailId, maxChars: 40000 }) as Promise<{ text?: string; truncated?: boolean; note?: string }>)
+      .then((out) => {
+        if (live) setMailBody({ id: openMailId, text: out.text ?? "", truncated: out.truncated, note: out.note ?? null });
+      })
+      .catch((error: unknown) => {
+        if (live) setMailBody({ id: openMailId, text: null, note: `The whole message could not be read: ${errorText(error)}` });
+      });
+    return () => {
+      live = false;
+    };
+  }, [openMailId]); // eslint-disable-line react-hooks/exhaustive-deps
   const previewSend = preview?.kind === "send" ? (sent ?? []).find((row) => row.key === preview.key) ?? null : null;
   const draftBlock = previewDraft ? sendBlock(previewDraft, accounts) : null;
   const newDraftButton = <Button type="button" onClick={() => setCreate("draft")}>+ New draft</Button>;
@@ -1029,6 +1093,15 @@ function MailboxPageMain({ context }: PluginPageProps) {
           ) : (
             <DataTable
               columns={[
+                {
+                  key: "choose",
+                  header: "",
+                  width: "34px",
+                  render: (_value, row) => {
+                    const id = (row as unknown as InboxMessage).id;
+                    return <input type="checkbox" aria-label="Choose this email" checked={chosenMail.includes(id)} onChange={(event) => setChosenMail((current) => (event.target.checked ? [...current, id] : current.filter((other) => other !== id)))} />;
+                  },
+                },
                 { key: "received", header: "Received", width: "96px" },
                 { key: "sender", header: "From", width: "20%" },
                 {
@@ -1048,8 +1121,13 @@ function MailboxPageMain({ context }: PluginPageProps) {
                 {
                   key: "fix",
                   header: "",
-                  width: "104px",
-                  render: (_value, row) => <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={() => openCorrection(row as unknown as InboxMessage)}>Fix sorting</Button>,
+                  width: "176px",
+                  render: (_value, row) => (
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={() => openCorrection(row as unknown as InboxMessage)}>Fix sorting</Button>
+                      <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} disabled={busy} onClick={() => void removeMail([(row as unknown as InboxMessage).id])}>Delete</Button>
+                    </div>
+                  ),
                 },
               ]}
               rows={inboxRows.map((row) => ({
@@ -1490,44 +1568,22 @@ function MailboxPageMain({ context }: PluginPageProps) {
         </div>
       ) : null}
 
-      <Modal
-        open={Boolean(previewDraft)}
-        title={previewDraft ? previewDraft.subject || "(no subject)" : "Draft"}
-        description="A draft. Nothing is sent until someone clicks Send."
-        onClose={() => setPreview(null)}
-        footer={previewDraft ? (
-          <>
-            <Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close</Button>
-            {previewDraft.status === "draft" ? <Button type="button" disabled={busy || Boolean(draftBlock)} title={draftBlock ?? undefined} onClick={() => void run(() => sendDraft({ messageId: previewDraft.id }), "Draft sent")}>Send</Button> : null}
-          </>
-        ) : undefined}
-      >
-        {previewDraft ? (
-          <>
-            {draftBlock ? (
-              <p role="status" style={{ margin: 0, fontSize: 13, lineHeight: 1.45, padding: "8px 12px", borderRadius: 10, border: `1px solid ${tone("warn").border}`, background: tone("warn").soft }}>
-                Can't send yet: {draftBlock}{draftRecipients(previewDraft).length === 0 ? " Ask its agent to draft it again with a recipient." : ""}
-              </p>
-            ) : null}
-            <Facts
-              rows={[
-                ["From", addressOf(previewDraft.account_id)],
-                ["To", draftRecipients({ ...previewDraft, cc_addrs: [], bcc_addrs: [] }).join(", ") || <Chip tone="warn">No recipient</Chip>],
-                (previewDraft.cc_addrs ?? []).length ? ["Cc", (previewDraft.cc_addrs ?? []).map((row) => row.email).join(", ")] : null,
-                (previewDraft.bcc_addrs ?? []).length ? ["Bcc", (previewDraft.bcc_addrs ?? []).map((row) => row.email).join(", ")] : null,
-                ["Drafted by", drafterName(previewDraft.drafted_by)],
-                ["Saved", previewDraft.created_at ? formatDateTime(previewDraft.created_at) : "–"],
-                ["Status", <Pill key="s" size="sm" tone={draftTone(previewDraft.status)} dot>{DRAFT_STATUS[previewDraft.status] ?? previewDraft.status}</Pill>],
-                previewDraft.send_error ? ["Last try", previewDraft.send_error] : null,
-              ]}
-            />
-            <div style={{ borderTop: `1px solid ${tokens.border}`, paddingTop: 12, fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 320, overflowY: "auto" }}>
-              {previewDraft.body?.trim() ? previewDraft.body : <span style={{ color: tokens.muted }}>No text in this draft.</span>}
-            </div>
-            {previewDraft.has_html ? <Muted>It also has a designed (HTML) version; the text above is the plain version.</Muted> : null}
-          </>
-        ) : null}
-      </Modal>
+      {previewDraft ? (
+        <DraftEditor
+          key={previewDraft.id}
+          draft={previewDraft}
+          from={addressOf(previewDraft.account_id)}
+          drafter={drafterName(previewDraft.drafted_by)}
+          agentDrafted={previewDraft.drafted_by?.kind === "agent"}
+          canSend={canSendFrom(accounts.find((row) => row.id === previewDraft.account_id) ?? null)}
+          onClose={() => setPreview(null)}
+          onChanged={async (text, close) => {
+            await refresh();
+            setMessage(text);
+            if (close) setPreview(null);
+          }}
+        />
+      ) : null}
 
       <Modal
         open={Boolean(previewMail)}
@@ -1535,8 +1591,12 @@ function MailboxPageMain({ context }: PluginPageProps) {
         onClose={() => setPreview(null)}
         footer={previewMail ? (
           <>
-            <Button type="button" variant="secondary" onClick={() => setPreview(null)}>Close</Button>
-            <Button type="button" variant="secondary" onClick={() => openCorrection(previewMail)}>Fix sorting</Button>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => setPreview(null)}>Close</Button>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => openCorrection(previewMail)}>Fix sorting</Button>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => void removeMail([previewMail.id])}>Delete</Button>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => void replyTo(previewMail.id, "forward")}>Forward</Button>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => void replyTo(previewMail.id, "reply_all")}>Reply all</Button>
+            <Button type="button" disabled={busy} onClick={() => void replyTo(previewMail.id, "reply")}>Reply</Button>
           </>
         ) : undefined}
       >
@@ -1557,8 +1617,14 @@ function MailboxPageMain({ context }: PluginPageProps) {
               </div>
             ) : null}
             {previewMail.visitor ? <Muted>Reply-To (the visitor, for a relayed form): {previewMail.visitor.name ? `${previewMail.visitor.name} · ` : ""}{previewMail.visitor.email}</Muted> : null}
-            {previewMail.snippet ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{previewMail.snippet}…</p> : null}
-            <Muted>Open Gmail to read and answer the whole message.</Muted>
+            {mailBody?.id === previewMail.id && mailBody.text ? (
+              <div style={{ fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "45vh", overflowY: "auto", padding: "10px 12px", border: `1px solid ${tokens.border}`, borderRadius: 10 }}>{mailBody.text}</div>
+            ) : previewMail.snippet ? (
+              <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{previewMail.snippet}…</p>
+            ) : null}
+            {mailBody?.id !== previewMail.id ? <Muted>Loading the whole message…</Muted> : null}
+            {mailBody?.id === previewMail.id && mailBody.note ? <Muted>{mailBody.note}</Muted> : null}
+            {mailBody?.id === previewMail.id && mailBody.truncated ? <Muted>This is long, so only the start is shown. Open Gmail for the rest.</Muted> : null}
           </>
         ) : null}
       </Modal>
@@ -1687,12 +1753,23 @@ function MailboxPageMain({ context }: PluginPageProps) {
       <Modal open={create === "draft"} title="New draft" description="Saved as a draft. Nothing is sent until someone clicks Send." onClose={() => setCreate(null)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setCreate(null)}>Cancel</Button>
-          <Button type="button" disabled={busy || !accountId || !subject.trim()} onClick={() => void run(async () => {
-            await createDraft({ accountId, subject, to: draftTo, body: draftBody });
-            setSubject("");
-            setDraftTo("");
-            setDraftBody("");
-          }, "Draft saved")}>Save draft</Button>
+          <Button type="button" disabled={busy || !accountId || !subject.trim()} onClick={() => void (async () => {
+            setMessage("");
+            setBusy(true);
+            try {
+              const out = (await createDraft({ accountId, subject, to: draftTo, body: draftBody })) as { id: string };
+              setSubject("");
+              setDraftTo("");
+              setDraftBody("");
+              await refresh();
+              setCreate(null);
+              setPreview({ kind: "draft", id: out.id });
+            } catch (error) {
+              setMessage(errorText(error));
+            } finally {
+              setBusy(false);
+            }
+          })()}>Next: recipients and files</Button>
         </>
       )}>
         <Field label="From">
