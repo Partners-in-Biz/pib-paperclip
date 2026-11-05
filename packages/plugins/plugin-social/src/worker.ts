@@ -63,6 +63,7 @@ import {
   updateProgramRecord,
 } from "./growth/service.js";
 import { spaceOf } from "./space.js";
+import { registerStudioImport } from "./studio-import.js";
 import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
@@ -674,6 +675,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace);
     // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
     registerClientProjectWatch(ctx);
+    // Studio's hand-off: an approved Studio asset is imported into the client's media library.
+    registerStudioImport(ctx);
     // An answered "connect this account" ask verifies the connection (Q9-10); the connect flow itself resolves the asking issue.
     registerAskEffect(CONNECT_EFFECT_KEY, connectEffect);
     installAskEffects(ctx);
