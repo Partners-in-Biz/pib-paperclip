@@ -294,7 +294,11 @@ async function fail(ctx: PluginContext, runtime: Runtime, row: GenerationRow, co
 
 const OPEN = ["queued", "submitting", "submitted", "storing"];
 
-/** One comment on the issue when a whole batch is settled, which wakes the agent. Agents don't need to poll. */
+/**
+ * One comment on the issue when a whole batch is settled, then a wake for the assigned agent: a plugin's comment wakes
+ * nobody by itself. Agents don't need to poll. The result is already saved, so a refused wake (no agent assigned, issue
+ * closed, blocked or over budget) only gets logged.
+ */
 async function reportIfGroupDone(ctx: PluginContext, row: GenerationRow): Promise<void> {
   if (!row.issue_id) return;
   try {
@@ -305,6 +309,12 @@ async function reportIfGroupDone(ctx: PluginContext, row: GenerationRow): Promis
     await ctx.issues.createComment(row.issue_id, `Studio finished ${done} of ${rows.length} from ${row.model}.\n${lines.join("\n")}\n\nOpen a file with \`studio-get-asset\`.`, row.company_id);
   } catch (error) {
     ctx.logger.info("Studio result comment skipped", { error: errorText(error) });
+    return;
+  }
+  try {
+    await ctx.issues.requestWakeup(row.issue_id, row.company_id, { reason: "studio_generation_finished", idempotencyKey: `studio-finished:${row.group_id}` });
+  } catch (error) {
+    ctx.logger.info("Studio wake skipped", { issueId: row.issue_id, error: errorText(error) });
   }
 }
 

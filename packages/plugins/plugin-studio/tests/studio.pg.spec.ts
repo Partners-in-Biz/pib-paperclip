@@ -36,6 +36,8 @@ afterAll(async () => {
 interface World {
   ctx: PluginContext;
   comments: Array<{ issueId: string; body: string }>;
+  wakes: Array<{ issueId: string; idempotencyKey?: string | null }>;
+  refuseWake: { on: boolean };
   puts: string[];
 }
 
@@ -43,6 +45,8 @@ function makeWorld(): World {
   const state = new Map<string, unknown>();
   const stateKey = (k: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => JSON.stringify([k.scopeKind, k.scopeId, k.namespace, k.stateKey]);
   const comments: World["comments"] = [];
+  const wakes: World["wakes"] = [];
+  const refuseWake = { on: false };
   const puts: string[] = [];
   const issues: Record<string, { id: string; projectId: string | null }> = {
     "issue-acme": { id: "issue-acme", projectId: "project-acme" },
@@ -76,6 +80,11 @@ function makeWorld(): World {
     issues: {
       get: async (id: string) => issues[id] ?? null,
       createComment: async (issueId: string, body: string) => void comments.push({ issueId, body }),
+      requestWakeup: async (issueId: string, _companyId: string, options?: { idempotencyKey?: string | null }) => {
+        if (refuseWake.on) throw new Error("Issue is not wakeable in status: done");
+        wakes.push({ issueId, idempotencyKey: options?.idempotencyKey });
+        return { queued: true };
+      },
       listAttachments: async (issueId: string) => (issueId === "issue-acme" ? [{ id: "att-1", byteSize: PNG.length, originalFilename: "made.png", contentType: "image/png" }] : []),
       getAttachmentContent: async () => ({ contentBase64: Buffer.from(PNG).toString("base64"), originalFilename: "made.png", contentType: "image/png" }),
     },
@@ -89,7 +98,7 @@ function makeWorld(): World {
       },
     },
   } as unknown as PluginContext;
-  return { ctx, comments, puts };
+  return { ctx, comments, wakes, refuseWake, puts };
 }
 
 class FakeProvider implements GenerationProvider {
@@ -422,6 +431,19 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       expect(world.comments).toHaveLength(1);
       expect(world.comments[0]).toMatchObject({ issueId: "issue-acme" });
       expect(world.comments[0]!.body).toContain(id);
+      expect(world.wakes).toEqual([{ issueId: "issue-acme", idempotencyKey: expect.stringMatching(/^studio-finished:/) }]);
+    });
+
+    it("keeps the result and the comment when the wake is refused", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      world.refuseWake.on = true;
+      const { generationIds } = await requestGeneration(world.ctx, CO, REQUEST, acmeWork(), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      const saved = await rows(world, `SELECT status FROM ${T("generations")} WHERE id = $1`, [generationIds[0]]);
+      expect(saved).toEqual([{ status: "succeeded" }]);
+      expect(world.comments).toHaveLength(1);
+      expect(world.wakes).toHaveLength(0);
     });
 
     it("comments once for a batch, when all of it is settled", async () => {
@@ -431,6 +453,7 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       await processQueue(world.ctx, runtime);
       expect(world.comments).toHaveLength(1);
       expect(world.comments[0]!.body).toContain("2 of 2");
+      expect(world.wakes).toHaveLength(1);
     });
   });
 
