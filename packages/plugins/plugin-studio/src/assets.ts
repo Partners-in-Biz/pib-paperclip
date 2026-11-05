@@ -113,6 +113,7 @@ export interface ListFilter {
   targetType?: string | null;
   targetId?: string | null;
   kind?: string | null;
+  status?: string | null;
   limit?: number;
 }
 
@@ -132,6 +133,10 @@ export async function listAssets(ctx: PluginContext, companyId: string, filter: 
   if (filter.kind) {
     params.push(filter.kind);
     where += ` AND a.kind = $${params.length}`;
+  }
+  if (filter.status) {
+    params.push(filter.status);
+    where += ` AND a.status = $${params.length}`;
   }
   if (filter.targetType && filter.targetId) {
     params.push(filter.targetType, filter.targetId);
