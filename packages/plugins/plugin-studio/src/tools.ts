@@ -21,6 +21,16 @@ const GENERATE_FIELDS = {
 
 export const STUDIO_TOOLS: PluginToolDeclaration[] = [
   {
+    name: "studio-review-asset",
+    displayName: "Approve or reject a Studio asset",
+    description:
+      "Approve or reject an asset. Approving sends it to Social's media library for the asset's client (or own work), where list-media-assets shows it for a post. Approving twice does nothing the second time. An approved asset can't be rejected.",
+    parametersSchema: schema(["assetId", "decision"], {
+      assetId: text("The Studio asset"),
+      decision: { type: "string", enum: ["approved", "rejected"], description: "approved sends it to Social; rejected keeps it out" },
+    }),
+  },
+  {
     name: "studio-usage",
     displayName: "Studio usage",
     description: "This month's credits used, the monthly cap that applies, and what's left. Read-only: only a company owner can change a cap, on the Studio page.",

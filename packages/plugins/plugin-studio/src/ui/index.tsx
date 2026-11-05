@@ -203,7 +203,8 @@ function Library({ companyId, data, version, presetClient }: { companyId: string
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
-  const params = useMemo(() => ({ companyId, client, projectId, kind, status, limit: 60, v: version }), [companyId, client, projectId, kind, status, version]);
+  const [reviewed, setReviewed] = useState(0);
+  const params = useMemo(() => ({ companyId, client, projectId, kind, status, limit: 60, v: `${version}.${reviewed}` }), [companyId, client, projectId, kind, status, version, reviewed]);
   const assets = usePluginData<{ assets: Asset[] }>("assets", params);
   const list = assets.data?.assets ?? [];
   const previews = usePreviewUrls(companyId, list.map((a) => a.id));
@@ -274,15 +275,50 @@ function Library({ companyId, data, version, presetClient }: { companyId: string
           ))}
         </div>
       </Section>
-      {openId ? <AssetDetail companyId={companyId} assetId={openId} kind={open?.kind ?? "image"} previewUrl={previews.urls[openId]} close={() => setOpenId(null)} /> : null}
+      {openId ? <AssetDetail companyId={companyId} assetId={openId} kind={open?.kind ?? "image"} previewUrl={previews.urls[openId]} close={() => setOpenId(null)} onReviewed={() => setReviewed((n) => n + 1)} /> : null}
     </>
   );
 }
 
-function AssetDetail({ companyId, assetId, kind, previewUrl, close }: { companyId: string; assetId: string; kind: string; previewUrl: string | undefined; close: () => void }) {
-  const detail = usePluginData<Detail>("asset", { companyId, assetId });
+function AssetDetail({
+  companyId,
+  assetId,
+  kind,
+  previewUrl,
+  close,
+  onReviewed,
+}: {
+  companyId: string;
+  assetId: string;
+  kind: string;
+  previewUrl: string | undefined;
+  close: () => void;
+  onReviewed: () => void;
+}) {
+  const [v, setV] = useState(0);
+  const detailParams = useMemo(() => ({ companyId, assetId, v }), [companyId, assetId, v]);
+  const detail = usePluginData<Detail>("asset", detailParams);
   const assetUrl = usePluginAction("asset-url");
+  const reviewAction = usePluginAction("review");
   const [message, setMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function review(decision: "approved" | "rejected") {
+    setBusy(true);
+    setMessage(null);
+    setNotice(null);
+    try {
+      const out = (await reviewAction({ companyId, assetId, decision })) as { changed: boolean; exported: boolean };
+      setNotice(out.exported ? "Approved. It's on its way to Social's media library for this client." : out.changed ? "Rejected." : `Already ${decision}.`);
+      setV((n) => n + 1);
+      onReviewed();
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     ref.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -306,6 +342,16 @@ function AssetDetail({ companyId, assetId, kind, previewUrl, close }: { companyI
         title={d?.asset.name ?? "Asset"}
         actions={
           <div style={row}>
+            {d && (d.asset.status === "draft" || d.asset.status === "rejected") ? (
+              <Button disabled={busy} onClick={() => void review("approved")}>
+                Approve
+              </Button>
+            ) : null}
+            {d && d.asset.status === "draft" ? (
+              <Button variant="secondary" disabled={busy} onClick={() => void review("rejected")}>
+                Reject
+              </Button>
+            ) : null}
             <Button onClick={() => void download()}>Download</Button>
             <Button variant="secondary" onClick={close}>
               Close
@@ -314,6 +360,7 @@ function AssetDetail({ companyId, assetId, kind, previewUrl, close }: { companyI
         }
       >
         {message ? <PageMessage tone="danger" message={message} /> : null}
+        {notice ? <PageMessage tone="success" message={notice} /> : null}
         {detail.error ? <PageMessage tone="danger" message={errorText(detail.error)} /> : null}
         {!d && !detail.error ? <div style={muted}>Loading…</div> : null}
         {d ? (

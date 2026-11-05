@@ -1,6 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
-import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, toolFail } from "@partnersinbiz/pib-plugin-kit";
-import { assetFileForAgent, assetUrlForPerson, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
+import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { reviewAsset } from "./review.js";
 import { errorText, StudioError } from "./errors.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { setCap } from "./ledger.js";
@@ -8,7 +9,7 @@ import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js
 import { canGenerate, isCompanyOwner, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { clientSummaries } from "./summary.js";
-import { loadIssue, scopeForWork, scopeInput } from "./scope.js";
+import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
 
 function objectParams(params: unknown): Record<string, unknown> {
@@ -85,6 +86,12 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, {});
       return linkAsset(ctx, companyId, params, work.projectId);
     }
+    case "studio-review-asset": {
+      const work = await workOf(ctx, run, {});
+      const row = await getAssetRow(ctx, companyId, String(params.assetId ?? "").trim());
+      await assertReachable(ctx, companyId, scopeOfRow(row), work.projectId);
+      return reviewAsset(ctx, companyId, params, { agentId: run.agentId });
+    }
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }
@@ -157,6 +164,13 @@ const plugin = definePlugin({
     ctx.actions.register("asset-url", async (params, context) => {
       const me = await person(context);
       return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
+    });
+
+    // Approve or reject on the page. Viewers can't; approving sends the file to Social.
+    ctx.actions.register("review", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't approve or reject.", "forbidden");
+      return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
