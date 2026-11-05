@@ -3,6 +3,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   useHostLocation,
   useHostNavigation,
+  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
@@ -117,6 +118,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [windowHours, setWindowHours] = useState(24);
   const data = useCockpitData(companyId, { windowHours });
+  const dismissCard = usePluginAction("outward-send.dismiss");
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
@@ -220,7 +222,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
       ) : view && tab === "flows" ? (
         <FlowsPanel view={view.flows} linkFor={linkFor} focus={location.hash} />
       ) : view ? (
-        <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} />
+        <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onDismiss={(key) => void dismissCard({ id: key }).then(() => data.reload(), () => undefined)} />
       ) : emptyViewText(data) ? <Muted>{emptyViewText(data)}</Muted> : null}
     </Shell>
   );
@@ -228,7 +230,9 @@ function CockpitPageMain({ context }: PluginPageProps) {
 
 const NUMBER_GROUPS = ["money", "pipeline", "marketing", "delivery"] as const;
 
-export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now = new Date() }: {
+export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onDismiss, now = new Date() }: {
+  /** Dismiss an info card (a Tier A client send) by its waiting key. */
+  onDismiss?: (key: string) => void;
   view: CockpitView;
   load: LoadResult;
   /** Host heartbeat runs, for the runs-per-day chart and the Today card's run line. */
@@ -288,7 +292,7 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now
         subtitle={view.waiting.some((w) => w.ask) ? "Questions from agents first, then decisions only you can make." : "Decisions only you can make, most urgent first."}
         actions={<WaitingKinds items={view.waiting} />}
       >
-        <WaitingList items={view.waiting} linkFor={linkFor} now={now} />
+        <WaitingList items={view.waiting} linkFor={linkFor} now={now} onDismiss={onDismiss} />
       </Card>
 
       <FlowsSummary view={view.flows} linkFor={linkFor} />

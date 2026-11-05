@@ -12,6 +12,7 @@ import { assignableUser, ORIGIN, PLUGIN_KEY } from "./constants.js";
 import { getBriefIssue, getRoles, listSnapshots, saveBriefIssue } from "./db.js";
 import { briefBudget, type BriefBudget } from "./budget.js";
 import { message, type Env } from "./env.js";
+import { outwardSendsToday } from "./outward-sends.js";
 import { listRepairs, type RepairRow } from "./repairs.js";
 import { buildFlows, type FlowStageView } from "./flows.js";
 import { goalViews, goalViewsBrief } from "./goals.js";
@@ -422,7 +423,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
   const now = env.now();
 
   // The slow reads run side by side, each against its own time limit. Unreadable gives none (or null), not zeros or a guess.
-  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected, company] = await Promise.all([
+  const [blockedUncovered, problems, measures, roles, improvements, goals, repairs, expected, company, outwardSends] = await Promise.all([
     guard("blockedUncovered", () => countBlockedUncovered(env, companyId), null),
     guard("problems", () => collectProblems(env, companyId, { snapshots: data.snapshots, agents: data.agents, listeningSince: data.listeningSince }), { entries: [], keys: [] }),
     // What each agent's work cost and how it went over the window (notional USD, tokens, run time, retries, cost per finished issue).
@@ -434,6 +435,7 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     guard("repairs", () => listRepairs(env.ctx, companyId, { limit: 100 }).then((rows) => repairLines(rows)), [] as string[]),
     guard("expectedPlugins", () => expectedPlugins(env, companyId, Object.keys(data.receivedAt)), [] as Awaited<ReturnType<typeof expectedPlugins>>),
     guard("company", () => env.ctx.companies.get(companyId), null),
+    guard("outwardSends", () => outwardSendsToday(env, companyId), null),
   ]);
   const prefix = company?.issuePrefix ?? null;
   const link = (href: string | null | undefined) => (href ? linkFor(href, prefix) : null);
@@ -548,6 +550,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     improvements,
     /** Goals the owner confirmed or an agent proposed, each with its number now, progress and the change since last week. Null when they could not be read. */
     goals,
+    /** Tier A client sends in the last 24 hours (comments starting `OUTWARD SEND (Tier A):`): the count and one line each. Null when they could not be read. */
+    outwardSends,
     /** System repairs from the last 7 days, formatted as lines. */
     repairs,
     /** Sections that gave no answer in time or failed (so their lists above are empty or null, not "nothing there"). Empty when everything answered. Say so in the brief instead of dropping it. */

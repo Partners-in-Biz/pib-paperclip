@@ -350,3 +350,20 @@ Stop first: the manifest gains capabilities (`goals.read`, `goals.create`, `goal
 
 - **`credentialSeed` (owner company only).** The 22-row starting register describes Partners in Biz's own servers and tokens. It is loaded only for a company whose Cockpit settings tick **Load Partners in Biz's own credentials list**, which defaults to off: tick it on the PiB company (PAR) and nowhere else, then the next daily `credentials-check` (or tomorrow's run) seeds it. A client company (PARA, any new one) that saves its settings gets an empty register and no "exposed credentials" warning. Saving a company's settings is safe at any time after this version is deployed.
 - **The managed routines do not pick up new description text.** The host's `routines.managed.reconcile` does not update the description of a routine that already exists; only a reset does (an owner-approved action). So the live "Daily operations review" and "Weekly retro" keep their old step lists until reset, and the new steps (measure report, improvements, close-out and business reviews, credentials) reach the Operator through the updated skill and its references, which is how the Operator already works. Reset the two routines (`routines.managed.reset`, an owner-approved action) only if you want the new steps in the routine's own text.
+
+
+## Client sends (Tier A)
+
+Peet approved a three-tier client-send policy on 2026-11-05 (wiki `client-send-policy`). Tier A sends (routine, reversible, pre-agreed: a sign-off request for a gate-approved deliverable, a status update, a factual reply, scheduling a call the client asked for) go out without an approval card. Peet audits after the fact.
+
+PiB marks every Tier A send with a comment on the client issue whose body starts with:
+
+    OUTWARD SEND (Tier A): to <who> | <channel> | <what> | <issue>
+
+The Cockpit reads those comments from the host's issue comments (`public.issue_comments`, read-only; never agent text) and does three things:
+
+- **Outward sends today**: the company brief (`brief.outwardSends`, the source of the 16:00 digest and the Daily brief) lists one line per send in the last 24 h (issue, client, channel, what) and the count. The Daily operations review tells the Operator to put it in the brief.
+- **Info cards**: for the first 14 days each send also shows in the owner's Waiting on you as an info card (no action needed). Buttons: Dismiss, and Pull back (opens the issue). Dismissals are kept in plugin state. Setting `clientSends.infoCardsUntil` (ISO date) ends the cards; default is 14 days after the Cockpit first saw the feature. Cards cover sends of the last 3 days.
+- **`client_send:ungated` health check** (status bad): a send in the last 7 days with no `VISUAL GATE: APPROVE` before it (when the send carries a visual: the channel or what mentions image, banner, design, video, etc.) or no Reviewer approval before it (text: a comment starting `REVIEW: PASS`, `REVIEWER: PASS` or `PASS`).
+
+Code: `src/outward-sends.ts`. Tests: `tests/outward-sends.spec.ts`.

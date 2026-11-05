@@ -75,6 +75,7 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { dismissInfoCard } from "./outward-sends.js";
 import { runPushDigest } from "./push/digest.js";
 import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
@@ -440,6 +441,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const row = await confirmAttestation(env, companyId, text(params.key, 60) ?? "", userId, text(params.note, 300) ?? null);
     forgetChecks(env, companyId);
     return { confirmed: row };
+  });
+  ctx.actions.register("outward-send.dismiss", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new CockpitError("Only a board user can dismiss an info card");
+    const done = await dismissInfoCard(env, companyId, typeof params.id === "string" ? params.id : "");
+    forgetChecks(env, companyId);
+    return done;
   });
   ctx.actions.register("goals.confirm", async (params, context) => {
     const companyId = requiredCompany(context);
