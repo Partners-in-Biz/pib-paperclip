@@ -138,7 +138,7 @@ export function StudioPage({ context }: PluginPageProps) {
         ))}
       </div>
       {tab === "library" ? <ClientCards companyId={companyId} version={libraryVersion} onOpenLibrary={(value) => setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }))} /> : null}
-      {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} /> : null}
+      {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
       {tab === "generate" ? (
         <Generate
           companyId={companyId}
@@ -194,7 +194,7 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
-function Library({ companyId, data, version, presetClient }: { companyId: string; data: Overview; version: number; presetClient: { value: string; n: number } | null }) {
+function Library({ companyId, data, version, presetClient, canReview }: { companyId: string; data: Overview; version: number; presetClient: { value: string; n: number } | null; canReview: boolean }) {
   const [client, setClient] = useState(presetClient?.value ?? "");
   useEffect(() => {
     if (presetClient) setClient(presetClient.value);
@@ -275,7 +275,7 @@ function Library({ companyId, data, version, presetClient }: { companyId: string
           ))}
         </div>
       </Section>
-      {openId ? <AssetDetail companyId={companyId} assetId={openId} kind={open?.kind ?? "image"} previewUrl={previews.urls[openId]} close={() => setOpenId(null)} onReviewed={() => setReviewed((n) => n + 1)} /> : null}
+      {openId ? <AssetDetail companyId={companyId} assetId={openId} kind={open?.kind ?? "image"} previewUrl={previews.urls[openId]} canReview={canReview} close={() => setOpenId(null)} onReviewed={() => setReviewed((n) => n + 1)} /> : null}
     </>
   );
 }
@@ -285,6 +285,7 @@ function AssetDetail({
   assetId,
   kind,
   previewUrl,
+  canReview,
   close,
   onReviewed,
 }: {
@@ -292,6 +293,8 @@ function AssetDetail({
   assetId: string;
   kind: string;
   previewUrl: string | undefined;
+  /** Viewers can't review (the worker refuses them too), so they don't get the buttons. */
+  canReview: boolean;
   close: () => void;
   onReviewed: () => void;
 }) {
@@ -342,12 +345,12 @@ function AssetDetail({
         title={d?.asset.name ?? "Asset"}
         actions={
           <div style={row}>
-            {d && (d.asset.status === "draft" || d.asset.status === "rejected") ? (
+            {canReview && d && (d.asset.status === "draft" || d.asset.status === "rejected") ? (
               <Button disabled={busy} onClick={() => void review("approved")}>
                 Approve
               </Button>
             ) : null}
-            {d && d.asset.status === "draft" ? (
+            {canReview && d && d.asset.status === "draft" ? (
               <Button variant="secondary" disabled={busy} onClick={() => void review("rejected")}>
                 Reject
               </Button>
