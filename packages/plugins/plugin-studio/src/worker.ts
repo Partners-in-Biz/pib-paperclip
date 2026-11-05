@@ -4,7 +4,8 @@ import { assetFileForAgent, assetUrlForPerson, importFromAttachment, linkAsset, 
 import { errorText, StudioError } from "./errors.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { setCap } from "./ledger.js";
-import { isCompanyOwner, overview, usageView } from "./service.js";
+import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
+import { canGenerate, isCompanyOwner, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { loadIssue, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
@@ -124,14 +125,74 @@ const plugin = definePlugin({
       return overview(ctx, companyId);
     });
 
-    ctx.actions.register("asset-url", async (params, context) => {
+    // Page data. Same host company check as "overview"; none of these returns a link or a storage key.
+    const pageData = (key: string, load: (companyId: string, p: Record<string, unknown>) => Promise<unknown>) =>
+      ctx.data.register(key, async (params) => {
+        const p = objectParams(params);
+        const companyId = String(p.companyId ?? "");
+        if (!companyId) throw new StudioError("Company is required");
+        return load(companyId, p);
+      });
+    pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p).then((assets) => ({ assets })));
+    pageData("asset", (companyId, p) => assetDetail(ctx, companyId, String(p.assetId ?? "").trim()));
+    pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));
+
+    /** Person-only actions: an active member of the company, never an agent. Returns the role for finer checks. */
+    async function person(context: { companyId?: string | null; actor: { type?: string | null; userId?: string | null; companyId?: string | null } }) {
       const companyId = context.companyId ?? context.actor.companyId;
       if (!companyId) throw new StudioError("Company is required");
-      if (context.actor.type !== "user") throw new StudioError("Agents open files with studio-get-asset.", "forbidden");
-      const members = await ctx.access.members.list({ companyId });
-      const member = members.some((m) => m.principalType === "user" && m.principalId === context.actor.userId && m.status === "active");
-      if (!member && context.actor.userId !== "local-board") throw new StudioError("You are not an active member of this company.", "forbidden");
-      return { url: await assetUrlForPerson(ctx, companyId, String(objectParams(params).assetId ?? "")) };
+      if (context.actor.type !== "user") throw new StudioError("Agents use the studio tools, not the Studio page.", "forbidden");
+      const role = await memberRole(ctx, companyId, context.actor);
+      if (!role) throw new StudioError("You are not an active member of this company.", "forbidden");
+      return { companyId, role, userId: String(context.actor.userId) };
+    }
+
+    ctx.actions.register("me", async (_params, context) => {
+      const me = await person(context);
+      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner" };
+    });
+
+    ctx.actions.register("asset-url", async (params, context) => {
+      const me = await person(context);
+      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
+    });
+
+    // Previews for a page of the library in one call. Links last five minutes.
+    ctx.actions.register("asset-urls", async (params, context) => {
+      const me = await person(context);
+      const raw = objectParams(params).assetIds;
+      const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
+      const urls: Record<string, string> = {};
+      for (const id of ids) {
+        try {
+          urls[id] = await assetUrlForPerson(ctx, me.companyId, id);
+        } catch {
+          // A missing asset just has no preview.
+        }
+      }
+      return { urls };
+    });
+
+    async function generator(context: Parameters<typeof person>[0], params: unknown) {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't generate. Ask a company owner for member access.", "forbidden");
+      const p = objectParams(params);
+      const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
+      const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
+      return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null } };
+    }
+
+    // The page's generate form: the same estimate, queue, caps and ledger as the agent tools.
+    ctx.actions.register("estimate", async (params, context) => {
+      const { me, request, actor } = await generator(context, params);
+      return estimateGeneration(ctx, me.companyId, request, actor);
+    });
+
+    ctx.actions.register("generate", async (params, context) => {
+      const { me, request, actor } = await generator(context, params);
+      const out = await requestGeneration(ctx, me.companyId, request, actor);
+      void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
+      return out;
     });
 
     ctx.jobs.register("process-queue", async () => {

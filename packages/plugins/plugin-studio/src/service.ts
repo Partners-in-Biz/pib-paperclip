@@ -3,15 +3,29 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, listCaps, usage } from "./ledger.js";
+import { PAGE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
 
-/** Caps spend real money, so this is stricter than Studio's other actions: an owner, not an admin or an agent. */
-export async function isCompanyOwner(ctx: PluginContext, companyId: string, actor: { type?: string | null; userId?: string | null }): Promise<boolean> {
-  if (actor.type !== "user" || !actor.userId) return false;
-  if (actor.userId === LOCAL_BOARD) return true;
+type Actor = { type?: string | null; userId?: string | null };
+
+/** A person's role in the company, or null for agents, outsiders and inactive members. The local board is an owner. */
+export async function memberRole(ctx: PluginContext, companyId: string, actor: Actor): Promise<string | null> {
+  if (actor.type !== "user" || !actor.userId) return null;
+  if (actor.userId === LOCAL_BOARD) return "owner";
   const members = await ctx.access.members.list({ companyId });
-  return members.some((m) => m.principalType === "user" && m.principalId === actor.userId && m.status === "active" && m.membershipRole === "owner");
+  const member = members.find((m) => m.principalType === "user" && m.principalId === actor.userId && m.status === "active");
+  return member ? (member.membershipRole ?? "member") : null;
+}
+
+/** Caps spend real money, so this is stricter than Studio's other actions: an owner, not an admin or an agent. */
+export async function isCompanyOwner(ctx: PluginContext, companyId: string, actor: Actor): Promise<boolean> {
+  return (await memberRole(ctx, companyId, actor)) === "owner";
+}
+
+/** Generating spends credits: any active member but a viewer. */
+export function canGenerate(role: string | null): boolean {
+  return role !== null && role !== "viewer";
 }
 
 export async function usageView(ctx: PluginContext, companyId: string, scope: ClientScope) {
@@ -31,12 +45,13 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
 /** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
-  const [caps, history, clients, assets, companyUsed] = await Promise.all([
+  const [caps, history, clients, assets, companyUsed, projects] = await Promise.all([
     listCaps(ctx, companyId),
     capHistory(ctx, companyId),
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
     listAssets(ctx, companyId, { limit: 24 }),
     usage(ctx, companyId, period),
+    ctx.projects.list({ companyId, limit: 200 }).catch(() => []),
   ]);
   const clientUsage = await Promise.all(
     caps
@@ -54,5 +69,7 @@ export async function overview(ctx: PluginContext, companyId: string) {
     history,
     assets,
     clients: clients.map((c) => ({ scopeKey: formatClientParam({ kind: c.kind, id: c.id }), name: c.name })),
+    projects: projects.map((p) => ({ id: String(p.id), name: String((p as { name?: string | null }).name ?? p.id) })),
+    models: PAGE_MODELS,
   };
 }
