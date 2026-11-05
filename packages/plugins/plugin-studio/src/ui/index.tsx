@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText, Field, Input, Page, PageMessage, Section, Select, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
 interface Cap {
   scopeKey: string;
