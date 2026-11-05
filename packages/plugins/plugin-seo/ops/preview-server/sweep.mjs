@@ -102,12 +102,16 @@ const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 // --dump-dom run with a persistent --user-data-dir (it waits for ever), so --incognito goes with it. Checked on the VPS.
 const base = (dir) => ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--incognito", `--user-data-dir=${dir}`];
 
+// Without --timeout, --virtual-time-budget alone never finishes on pages that keep the network busy (agriauctionssa.co.za
+// /auctions/list-your-lot/: killed after 60 s, so no live dump and no live shot). --timeout makes Chromium stop waiting and write the page (PAR-7917).
+const LOAD_TIMEOUT = "--timeout=9000";
+
 /** Chromium arguments to dump the DOM a visitor's browser ends up with (scripts run). */
 export function domArgs(dir, url) {
-  return [...base(dir), "--virtual-time-budget=9000", "--dump-dom", url];
+  return [...base(dir), "--virtual-time-budget=9000", LOAD_TIMEOUT, "--dump-dom", url];
 }
 
 /** Chromium arguments to save a full-page screenshot, desktop or phone width, to `file`. */
 export function shotArgs(dir, url, file, mobile = false) {
-  return [...base(dir), "--hide-scrollbars", mobile ? "--window-size=390,3000" : "--window-size=1280,3200", ...(mobile ? [`--user-agent=${MOBILE_UA}`] : []), "--virtual-time-budget=9000", `--screenshot=${file}`, url];
+  return [...base(dir), "--hide-scrollbars", mobile ? "--window-size=390,3000" : "--window-size=1280,3200", ...(mobile ? [`--user-agent=${MOBILE_UA}`] : []), "--virtual-time-budget=9000", LOAD_TIMEOUT, `--screenshot=${file}`, url];
 }

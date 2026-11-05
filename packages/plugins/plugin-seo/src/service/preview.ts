@@ -409,8 +409,9 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     const stat = await env.ctx.db.query(`SELECT stats FROM ${t("previews")} WHERE id = $1 LIMIT 1`, [previewId]);
     const raw = stat[0]?.stats;
     const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, any>) : ((raw ?? {}) as Record<string, any>);
-    const rendered = parsed.rendered as { keptPct?: number } | undefined;
+    const rendered = parsed.rendered as { keptPct?: number; liveWords?: number } | undefined;
     if (!rendered || typeof rendered.keptPct !== "number") throw new SeoError("Open the review page first (the link in your review issue): it measures the proposal against the live page as a visitor sees it, and a preview cannot be passed before that check has run.");
+    if (!(typeof rendered.liveWords === "number" && rendered.liveWords > 0)) throw new SeoError("The rendered check saw 0 words on the live page, so its figures mean nothing. Reload the review page until the check shows the live words, or say verdict changes.");
     if (rendered.keptPct < MIN_KEPT_PCT) throw new SeoError(`The rendered check shows the proposal keeps only ${rendered.keptPct}% of what the live page shows. Send it back with verdict changes and say what is missing; only the owner can pass a preview like this.`);
   }
   await env.ctx.db.execute(
