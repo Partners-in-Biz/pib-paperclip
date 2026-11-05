@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { ClientCards } from "./ClientCards.js";
 import { Button, errorText, Field, Input, Page, PageMessage, Section, Select, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 
 interface Cap {
@@ -97,6 +98,7 @@ export function StudioPage({ context }: PluginPageProps) {
   const [meError, setMeError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("library");
   const [libraryVersion, setLibraryVersion] = useState(0);
+  const [libraryClient, setLibraryClient] = useState<{ value: string; n: number } | null>(null);
 
   useEffect(() => {
     if (!companyId) return;
@@ -135,7 +137,8 @@ export function StudioPage({ context }: PluginPageProps) {
           </Button>
         ))}
       </div>
-      {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} /> : null}
+      {tab === "library" ? <ClientCards companyId={companyId} version={libraryVersion} onOpenLibrary={(value) => setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }))} /> : null}
+      {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} /> : null}
       {tab === "generate" ? (
         <Generate
           companyId={companyId}
@@ -191,8 +194,11 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
-function Library({ companyId, data, version }: { companyId: string; data: Overview; version: number }) {
-  const [client, setClient] = useState("");
+function Library({ companyId, data, version, presetClient }: { companyId: string; data: Overview; version: number; presetClient: { value: string; n: number } | null }) {
+  const [client, setClient] = useState(presetClient?.value ?? "");
+  useEffect(() => {
+    if (presetClient) setClient(presetClient.value);
+  }, [presetClient]);
   const [projectId, setProjectId] = useState("");
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");

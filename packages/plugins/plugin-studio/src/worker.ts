@@ -7,6 +7,7 @@ import { setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
 import { canGenerate, isCompanyOwner, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
+import { clientSummaries } from "./summary.js";
 import { loadIssue, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
 
@@ -135,6 +136,7 @@ const plugin = definePlugin({
       });
     pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p).then((assets) => ({ assets })));
     pageData("asset", (companyId, p) => assetDetail(ctx, companyId, String(p.assetId ?? "").trim()));
+    pageData("client-summaries", (companyId) => clientSummaries(ctx, companyId));
     pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));
 
     /** Person-only actions: an active member of the company, never an agent. Returns the role for finer checks. */
