@@ -1430,14 +1430,42 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     ancestryVerdict === "ancestor" &&
     !sameHead &&
     registeredBranchMatchesHead;
+  // Reviewers and testers check out a PR branch (or detach at a commit) inside
+  // the issue worktree. When the tree is clean and that HEAD stays reachable
+  // from a ref, checking the recorded branch back out loses nothing.
+  const otherHeadPreservedByRef =
+    cleanliness === "clean" && !sameHead && actualHeadSha
+      ? input.actualBranchName !== null
+        ? actualBranchExists === true
+        : await isCommitReachableFromAnyRef(input.repoRoot, actualHeadSha)
+      : false;
+  // Git refuses to check out a branch that another worktree holds; report
+  // that plainly instead of attempting the checkout.
+  const expectedBranchHeldElsewhere =
+    cleanliness === "clean" && expectedBranchExists && !sameHead
+      ? await isBranchCheckedOutInOtherWorktree(input.repoRoot, input.expectedBranchName, input.worktreePath)
+      : false;
+  const canCheckoutRecordedBranchFromOtherHead =
+    cleanliness === "clean" &&
+    !inProgressOperation &&
+    expectedBranchExists &&
+    !sameHead &&
+    registeredBranchMatchesHead &&
+    otherHeadPreservedByRef &&
+    !expectedBranchHeldElsewhere;
   const eligible =
-    canCheckoutRecordedBranch || canAdoptForwardActualBranch || canAttachRecordedBranchToDetachedHead;
+    canCheckoutRecordedBranch ||
+    canAdoptForwardActualBranch ||
+    canAttachRecordedBranchToDetachedHead ||
+    canCheckoutRecordedBranchFromOtherHead;
   const safeRepairReason = eligible
     ? canCheckoutRecordedBranch
       ? "clean worktree and expected branch points at the current HEAD"
       : canAdoptForwardActualBranch
         ? "clean worktree and checked-out branch is forward of the recorded branch"
-        : "clean detached worktree HEAD is forward of the recorded branch"
+        : canAttachRecordedBranchToDetachedHead
+          ? "clean detached worktree HEAD is forward of the recorded branch"
+          : "clean worktree left on another HEAD that stays reachable from a ref; the recorded branch can be checked out"
     : cleanliness !== "clean"
       ? inProgressOperation
         ? `worktree is not clean and a git ${GIT_IN_PROGRESS_OPERATION_LABELS[inProgressOperation]} is in progress`
@@ -1449,7 +1477,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
       : !expectedBranchExists
         ? "expected branch does not exist"
         : !sameHead
-          ? "expected branch and current HEAD differ"
+          ? expectedBranchHeldElsewhere
+            ? "expected branch is checked out in another worktree"
+            : "expected branch and current HEAD differ"
           : "safe repair could not be proven";
   const fingerprint = fingerprintWorkspaceBranchIncoherence({
     sourceIssueId: input.sourceIssue?.id ?? null,
@@ -1507,9 +1537,35 @@ async function inspectGitWorktreeBranchIncoherence(input: {
   };
 }
 
+function formatUncommittedFilesHint(evidence: GitWorktreeBranchIncoherenceEvidence) {
+  if (evidence.cleanliness !== "dirty" || evidence.dirtyPathSample.length === 0) return "";
+  const extra = (evidence.statusEntryCount ?? evidence.dirtyPathSample.length) - evidence.dirtyPathSample.length;
+  const more = extra > 0 ? ` (+${extra} more)` : "";
+  return ` Uncommitted files: ${evidence.dirtyPathSample.join(", ")}${more}. Commit or stash them, then retry.`;
+}
+
+async function isBranchCheckedOutInOtherWorktree(repoRoot: string, branchName: string, worktreePath: string) {
+  const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return false;
+  const ownPath = await resolvePathForWorktreeComparison(worktreePath);
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (entry.branch !== `refs/heads/${branchName}`) continue;
+    if (await resolvePathForWorktreeComparison(entry.worktree) !== ownPath) return true;
+  }
+  return false;
+}
+
+async function isCommitReachableFromAnyRef(repoRoot: string, sha: string): Promise<boolean> {
+  const refs = await runGit(
+    ["for-each-ref", "--count=1", "--contains", sha, "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"],
+    repoRoot,
+  ).catch(() => "");
+  return refs.trim().length > 0;
+}
+
 function branchIncoherenceValidationFailure(evidence: GitWorktreeBranchIncoherenceEvidence) {
   return new WorkspaceRuntimeValidationFailure(
-    `Execution workspace git worktree expected branch "${evidence.expectedBranch}" but found "${formatBranchForMessage(evidence.actualBranch)}" at "${evidence.worktreePath}". Safe repair ${evidence.safeRepair.succeeded ? "succeeded" : "was not completed"}: ${evidence.safeRepair.reason}.`,
+    `Execution workspace git worktree expected branch "${evidence.expectedBranch}" but found "${formatBranchForMessage(evidence.actualBranch)}" at "${evidence.worktreePath}". Safe repair ${evidence.safeRepair.succeeded ? "succeeded" : "was not completed"}: ${evidence.safeRepair.reason}.${formatUncommittedFilesHint(evidence)}`,
     {
       workspaceValidation: evidence,
     },
@@ -2372,11 +2428,14 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 
   evidence.safeRepair.succeeded = true;
   evidence.safeRepair.reason = "clean worktree checked out the recorded branch";
+  const leftHead = evidence.provenance.sameHead || !evidence.provenance.actualHeadSha
+    ? ""
+    : ` The previous HEAD "${formatBranchForMessage(currentBranch)}" (${formatShortSha(evidence.provenance.actualHeadSha)}) was left untouched.`;
   return {
     branchName: expectedBranchName,
     reconciledForward: false,
     warnings: [
-      `Execution workspace branch metadata was self-healed by checking out recorded branch "${expectedBranchName}" at ${input.worktreePath}.`,
+      `Execution workspace branch metadata was self-healed by checking out recorded branch "${expectedBranchName}" at ${input.worktreePath}.${leftHead}`,
     ],
   };
 }
@@ -3713,6 +3772,83 @@ export async function realizeExecutionWorkspace(input: {
   };
 }
 
+// A persisted worktree directory that `git worktree list` no longer knows
+// (its admin entry was pruned, or the link broke) used to fail every run with
+// "not reusable". Repair it when no work can be lost: first try
+// `git worktree repair`; if git still does not list it, move the directory
+// aside (kept on disk for recovery) so the restore path below re-creates the
+// worktree from the recorded branch. A full clone (own `.git` directory) may
+// hold unpushed work and stays fail-closed, as does a missing local branch.
+async function repairStalePersistedGitWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string | null;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<string[]> {
+  const branchName = input.branchName?.trim();
+  if (!branchName || !await directoryExists(input.worktreePath)) return [];
+  const inspection = await inspectManagedGitWorktreeBranch({
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+    expectedBranchName: null,
+  });
+  if (inspection.reasonCode !== "not_registered") return [];
+  const gitEntry = await fs.lstat(path.join(input.worktreePath, ".git")).catch(() => null);
+  if (gitEntry?.isDirectory()) return [];
+  if (!await localBranchExists(input.repoRoot, branchName)) return [];
+
+  await runGit(["worktree", "prune"], input.repoRoot).catch(() => {});
+  if (gitEntry?.isFile()) {
+    const repaired = await recordGitOperation(input.recorder ?? null, {
+      phase: "worktree_prepare",
+      args: ["worktree", "repair", input.worktreePath],
+      cwd: input.repoRoot,
+      metadata: {
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        branchName,
+        staleRegistrationRepair: true,
+      },
+      successMessage: `Repaired stale git worktree registration at ${input.worktreePath}\n`,
+      failureLabel: `git worktree repair ${input.worktreePath}`,
+    }).then(() => true, () => false);
+    if (repaired) {
+      const after = await inspectManagedGitWorktreeBranch({
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        expectedBranchName: null,
+      });
+      if (after.reasonCode !== "not_registered") {
+        return [
+          `Persisted git worktree at ${input.worktreePath} was not registered in \`git worktree list\`; git worktree repair re-registered it.`,
+        ];
+      }
+    }
+  }
+
+  const stalePath = `${input.worktreePath}.stale-${formatUtcBranchTimestamp()}`;
+  await fs.rename(input.worktreePath, stalePath);
+  await input.recorder?.recordOperation({
+    phase: "worktree_prepare",
+    cwd: input.repoRoot,
+    metadata: {
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      stalePath,
+      branchName,
+      staleRegistrationRepair: true,
+    },
+    run: async () => ({
+      status: "succeeded",
+      exitCode: 0,
+      system: `Moved unregistered git worktree directory ${input.worktreePath} to ${stalePath}; it will be re-created from ${branchName}\n`,
+    }),
+  }).catch(() => undefined);
+  return [
+    `Persisted git worktree at ${input.worktreePath} was not registered in \`git worktree list\`; the old directory was moved to ${stalePath} and the worktree was re-created from branch "${branchName}".`,
+  ];
+}
+
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   db?: Db | null;
   base: ExecutionWorkspaceInput;
@@ -3793,10 +3929,16 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
+  const staleRegistrationWarnings = await repairStalePersistedGitWorktree({
+    repoRoot,
+    worktreePath: realized.worktreePath ?? cwd,
+    branchName: realized.branchName,
+    recorder: input.recorder ?? null,
+  });
   if (await directoryExists(cwd)) {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
-    const repairWarnings: string[] = [];
+    const repairWarnings: string[] = [...staleRegistrationWarnings];
     if (await isGitCheckout(reuseWorktreePath) && realized.branchCreatedByRuntime) {
       // Branch-coherence repair may check out another branch, adopt a forward
       // branch, or move the recorded ref from a detached HEAD. Those repairs
@@ -3980,7 +4122,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     ...realized,
     cwd: worktreePath,
     worktreePath,
-    warnings: [...restoreRefreshWarnings, ...baseDrift.warnings],
+    warnings: [...staleRegistrationWarnings, ...restoreRefreshWarnings, ...baseDrift.warnings],
     created,
     branchCreatedByRuntime: realized.branchCreatedByRuntime || created,
     baseRefSha:
