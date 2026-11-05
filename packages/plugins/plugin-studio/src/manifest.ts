@@ -6,7 +6,7 @@ import { STUDIO_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.1",
   displayName: "Studio",
   description: "Creative assets and image and video generation for people and agents. Every file is saved to private storage and tied to a company, client, project and task. Credits are tracked per client, under monthly caps a company owner sets.",
   author: "Partners in Biz",
@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.read",
     "issue.attachments.read",
     "issue.comments.create",
+    "issues.wakeup",
     "secrets.read-ref",
     "plugin.state.read",
     "plugin.state.write",
