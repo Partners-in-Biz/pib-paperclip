@@ -961,6 +961,14 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   return { remote, branch };
 }
 
+// Mask URL userinfo (any scheme) and whole URL query strings before a git message rides
+// warnings or errors that reach run logs.
+function maskGitUrlSecrets(message: string) {
+  return message
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
+}
+
 export async function refreshRemoteTrackingBaseRef(
   repoRoot: string,
   baseRef: string,
@@ -985,12 +993,7 @@ export async function refreshRemoteTrackingBaseRef(
     ], repoRoot, auth ? { env: { ...process.env, ...auth.env } } : undefined);
     return [];
   } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : String(error);
-    // Mask URL userinfo (any scheme) and whole URL query strings before the message rides
-    // warnings that reach run logs.
-    const message = rawMessage
-      .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
-      .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
+    const message = maskGitUrlSecrets(error instanceof Error ? error.message : String(error));
     const authNote = auth
       ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
       : "";
@@ -1071,6 +1074,7 @@ async function remoteExists(repoRoot: string, remote: string): Promise<boolean> 
 }
 
 const GIT_WORKTREE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
+const NEW_REPOSITORY_WORK_BRANCH = "development";
 
 type GitWorktreeCleanliness = SharedGitWorktreeBranchIncoherenceEvidence["cleanliness"];
 
@@ -2688,6 +2692,83 @@ async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
+// A repository linked straight after it was created has no commits, so a worktree has nothing
+// to branch from ("fatal: invalid reference: HEAD"). Give it the first commit every project
+// needs: an empty root commit on the work branch and on the release branch. The work branch is
+// pushed first because GitHub makes the first branch pushed to an empty repository its default.
+// Only acts when the remote reports no branches at all, and never force-pushes.
+async function prepareRepositoryWithoutCommits(
+  repoRoot: string,
+  resolveGitAuth?: GitRemoteAuthProvider | null,
+): Promise<string[]> {
+  if (await resolveBaseRefSha(repoRoot, "HEAD")) return [];
+  const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot).catch(() => null);
+  if (!remoteUrl) return [];
+
+  const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl).catch(() => null) : null;
+  const authedGit = (args: string[]) =>
+    runGit([...(auth?.configArgs ?? []), ...args], repoRoot, auth ? { env: { ...process.env, ...auth.env } } : undefined);
+  const remoteHasNoBranches = async () => (await authedGit(["ls-remote", "--heads", "origin"])) === "";
+
+  let seedNeeded: boolean;
+  try {
+    seedNeeded = await remoteHasNoBranches();
+  } catch (error) {
+    // Unknown remote state: change nothing, and let the caller report what it finds.
+    const message = maskGitUrlSecrets(error instanceof Error ? error.message : String(error));
+    return [`Could not read the remote of a checkout that has no commits: ${message}`];
+  }
+
+  if (!seedNeeded) {
+    // Commits landed after this checkout was cloned empty. Learn the remote's default branch,
+    // which may not be one of the common names detectDefaultBranch falls back to.
+    await authedGit(["fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
+    await authedGit(["remote", "set-head", "origin", "--auto"]).catch(() => undefined);
+    return [];
+  }
+
+  const releaseBranch = (await runGit(["symbolic-ref", "--short", "HEAD"], repoRoot).catch(() => "")) || "main";
+  const emptyTree = await runGit(["write-tree"], repoRoot, {
+    // A missing index file reads as an empty index.
+    env: { ...process.env, GIT_INDEX_FILE: path.join(os.tmpdir(), `paperclip-empty-index-${randomUUID()}`) },
+  });
+  const rootCommit = await runGit(["commit-tree", emptyTree, "-m", "Initial commit"], repoRoot, {
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Paperclip",
+      GIT_AUTHOR_EMAIL: "noreply@paperclip.ing",
+      GIT_COMMITTER_NAME: "Paperclip",
+      GIT_COMMITTER_EMAIL: "noreply@paperclip.ing",
+    },
+  });
+
+  try {
+    await authedGit(["push", "origin", `${rootCommit}:refs/heads/${NEW_REPOSITORY_WORK_BRANCH}`]);
+    if (releaseBranch !== NEW_REPOSITORY_WORK_BRANCH) {
+      await authedGit(["push", "origin", `${rootCommit}:refs/heads/${releaseBranch}`]);
+    }
+  } catch (error) {
+    // A run on another issue may have seeded it first, which is just as good.
+    if (await remoteHasNoBranches().catch(() => true)) {
+      const message = maskGitUrlSecrets(error instanceof Error ? error.message : String(error));
+      throw new Error(
+        `The repository has no commits and Paperclip could not create the first one, so this task has nothing to branch from. ` +
+          `Check that the GitHub connection can push to it, or push a first commit by hand. Git said: ${message}`,
+      );
+    }
+  }
+
+  await authedGit(["fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
+  await runGit(["remote", "set-head", "origin", NEW_REPOSITORY_WORK_BRANCH], repoRoot);
+  // The primary checkout's tree is as empty as the root commit, so this leaves it clean.
+  if (await resolveBaseRefSha(repoRoot, `origin/${releaseBranch}`)) {
+    await runGit(["update-ref", `refs/heads/${releaseBranch}`, `refs/remotes/origin/${releaseBranch}`], repoRoot);
+  }
+  return [
+    `The repository had no commits: prepared ${NEW_REPOSITORY_WORK_BRANCH} and ${releaseBranch} with an empty first commit, and this workspace is based on ${NEW_REPOSITORY_WORK_BRANCH}.`,
+  ];
+}
+
 async function detectDefaultBranch(
   repoRoot: string,
   resolveGitAuth?: GitRemoteAuthProvider | null,
@@ -3295,6 +3376,7 @@ export async function realizeExecutionWorkspace(input: {
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
+  const newRepositoryWarnings = await prepareRepositoryWithoutCommits(repoRoot, input.resolveGitAuth);
   const baseRefResolution = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, input.resolveGitAuth);
   // Keep a usable base ref for the reuse and drift paths even when the ref is
   // unresolved: those paths tolerate a null base-ref SHA and never run
@@ -3305,6 +3387,7 @@ export async function realizeExecutionWorkspace(input: {
   const baseRefResolutionWarnings = baseRefResolution.warnings;
   const baseRefAlreadyRefreshed = baseRefResolution.resolved ? baseRefResolution.refreshed : true;
   const baseRefreshWarnings = [
+    ...newRepositoryWarnings,
     ...baseRefResolutionWarnings,
     ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, input.resolveGitAuth)),
   ];

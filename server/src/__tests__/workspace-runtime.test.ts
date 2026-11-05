@@ -817,6 +817,97 @@ describe("realizeExecutionWorkspace", () => {
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(expectedRemoteHead);
   });
 
+  describe("a repository with no commits", () => {
+    async function createEmptyRemoteAndClone() {
+      const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-remote-"));
+      const remotePath = path.join(remoteDir, "new-project.git");
+      await execFileAsync("git", ["init", "--bare", "--initial-branch=main", remotePath]);
+      const cloneRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-clone-"));
+      const repoRoot = path.join(cloneRoot, "new-project");
+      await execFileAsync("git", ["clone", remotePath, repoRoot]);
+      return { remotePath, repoRoot };
+    }
+
+    function realizeFor(repoRoot: string, identifier: string) {
+      return realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" } },
+        issue: { id: `issue-${identifier}`, identifier, title: "First task" },
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      });
+    }
+
+    it("creates the first commit and bases the first task on development", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+
+      const workspace = await realizeFor(repoRoot, "PAP-1");
+
+      const development = await readGit(remotePath, ["rev-parse", "refs/heads/development"]);
+      expect(await readGit(remotePath, ["rev-parse", "refs/heads/main"])).toBe(development);
+      expect(await readGit(remotePath, ["rev-list", "--count", development])).toBe("1");
+      expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(development);
+      expect(await readGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("PAP-1");
+      expect(workspace.baseRefSha).toBe(development);
+      expect(await readGit(repoRoot, ["status", "--porcelain", "--", ":!.paperclip"])).toBe("");
+    });
+
+    it("bases later tasks on development too", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      await realizeFor(repoRoot, "PAP-1");
+      const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-push-"));
+      await execFileAsync("git", ["clone", "--branch", "development", remotePath, scratch]);
+      await runGit(scratch, ["config", "user.email", "paperclip@example.com"]);
+      await runGit(scratch, ["config", "user.name", "Paperclip Test"]);
+      await fs.writeFile(path.join(scratch, "site.txt"), "merged work\n", "utf8");
+      await runGit(scratch, ["add", "site.txt"]);
+      await runGit(scratch, ["commit", "-m", "Merged work"]);
+      await runGit(scratch, ["push", "origin", "development"]);
+
+      const second = await realizeFor(repoRoot, "PAP-2");
+
+      expect(await readGit(second.cwd, ["rev-parse", "HEAD"])).toBe(await readGit(scratch, ["rev-parse", "HEAD"]));
+    });
+
+    it("seeds once when two tasks start together", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+
+      const [first, second] = await Promise.all([realizeFor(repoRoot, "PAP-1"), realizeFor(repoRoot, "PAP-2")]);
+
+      const development = await readGit(remotePath, ["rev-parse", "refs/heads/development"]);
+      expect(await readGit(first.cwd, ["rev-parse", "HEAD"])).toBe(development);
+      expect(await readGit(second.cwd, ["rev-parse", "HEAD"])).toBe(development);
+    });
+
+    it("uses commits pushed after an empty clone instead of seeding", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      const sourceRepo = await createTempRepo("trunk");
+      await runGit(sourceRepo, ["push", remotePath, "trunk"]);
+      await execFileAsync("git", ["-C", remotePath, "symbolic-ref", "HEAD", "refs/heads/trunk"]);
+      const trunk = await readGit(sourceRepo, ["rev-parse", "HEAD"]);
+
+      const workspace = await realizeFor(repoRoot, "PAP-1");
+
+      expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(trunk);
+      await expect(readGit(remotePath, ["rev-parse", "--verify", "refs/heads/development"])).rejects.toThrow();
+    });
+
+    it("explains the failure when the first commit cannot be pushed", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      const hook = path.join(remotePath, "hooks", "pre-receive");
+      await fs.writeFile(hook, "#!/bin/sh\necho denied >&2\nexit 1\n", { mode: 0o755 });
+
+      await expect(realizeFor(repoRoot, "PAP-1")).rejects.toThrow(/has no commits.*could not create the first one/);
+      expect(await readGit(remotePath, ["for-each-ref"])).toBe("");
+    });
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
     const realizationInput = {
