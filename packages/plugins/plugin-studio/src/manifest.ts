@@ -30,6 +30,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "jobs.schedule",
     "events.subscribe",
+    "events.emit",
     "ui.page.register",
     "ui.sidebar.register",
   ],
