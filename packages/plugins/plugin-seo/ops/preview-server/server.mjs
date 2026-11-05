@@ -164,6 +164,7 @@ async function renderedStats(row, token) {
   const [live, proposed] = [await renderedDom(row.page_url), await renderedDom(`http://127.0.0.1:${PORT}/p/${token}?key=${encodeURIComponent(row.review_key)}`)];
   const a = wordsOf(live);
   const b = wordsOf(proposed);
+  if (a.length === 0) throw new Error("live page rendered empty");
   const pool = new Map();
   for (const w of b) pool.set(w, (pool.get(w) ?? 0) + 1);
   let kept = 0;
@@ -174,7 +175,7 @@ async function renderedStats(row, token) {
       pool.set(w, n - 1);
     }
   }
-  return { liveWords: a.length, previewWords: b.length, keptPct: a.length ? Math.round((kept / a.length) * 100) : 100, addedWords: Math.max(0, b.length - kept), removedWords: Math.max(0, a.length - kept), at: new Date().toISOString() };
+  return { liveWords: a.length, previewWords: b.length, keptPct: Math.round((kept / a.length) * 100), addedWords: Math.max(0, b.length - kept), removedWords: Math.max(0, a.length - kept), at: new Date().toISOString() };
 }
 
 /** One screenshot at a time: Chromium is heavy and the pages are reviewed one by one. */
@@ -279,7 +280,7 @@ const server = http.createServer(async (req, res) => {
       const row = await staff();
       if (!row) return send(res, 404, page("This link is not valid."));
       const stats = typeof row.stats === "string" ? JSON.parse(row.stats) : row.stats ?? {};
-      if (!stats.rendered) {
+      if (!stats.rendered || !(stats.rendered.liveWords > 0)) {
         try {
           const rendered = await renderedStats(row, token);
           await pool.query(`UPDATE ${SCHEMA}.previews SET stats = stats || jsonb_build_object('rendered', $2::jsonb) WHERE id = $1`, [token, JSON.stringify(rendered)]);

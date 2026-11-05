@@ -125,8 +125,10 @@ describe("preview links", () => {
 });
 
 describe("review-preview", () => {
-  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
-  const lossy = { ...row, stats: { rendered: { keptPct: 22 } } };
+  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96, liveWords: 500 } } };
+  const lossy = { ...row, stats: { rendered: { keptPct: 22, liveWords: 500 } } };
+  const zeroLive = { ...row, stats: { rendered: { keptPct: 100, liveWords: 0 } } };
+  const noWords = { ...row, stats: { rendered: { keptPct: 100 } } };
   const unchecked = { ...row, stats: {} };
   const owner = { kind: "user", userId: "user-1" } as unknown as Actor;
   it("cannot be done by the agent that made the preview", async () => {
@@ -138,6 +140,10 @@ describe("review-preview", () => {
     await expect(reviewPreview(host(lossy).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(/only 22%/);
     expect(await reviewPreview(host(lossy).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Listings missing" })).toMatchObject({ reviewStatus: "changes_needed" });
     expect(await reviewPreview(host(lossy).env, "co-1", owner, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).toMatchObject({ reviewStatus: "passed" });
+  });
+
+  it("an agent cannot pass when the live page rendered 0 words or the count is missing", async () => {
+    for (const r of [zeroLive, noWords]) await expect(reviewPreview(host(r).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(/0 words/);
   });
 
   it("pass releases the link and wakes the SEO agent; changes needs notes and holds it", async () => {
@@ -153,7 +159,7 @@ describe("review-preview", () => {
 });
 
 describe("a page that keeps failing", () => {
-  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
+  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96, liveWords: 500 } } };
   it("goes to the owner after two rounds once the Senior Developer has had a go, instead of back to the agent", async () => {
     const h = host(row, 2, { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] });
     const out = await reviewPreview(h.env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Claims the client's terms contradict" });
