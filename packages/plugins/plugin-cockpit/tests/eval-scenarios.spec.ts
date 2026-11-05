@@ -148,9 +148,9 @@ describe("the scenarios are fair: the skill they test tells an agent what the an
 });
 
 describe("the committed gate file", () => {
-  it("starts unenforced with the 80% minimum: there is no baseline to hold anyone to until one is recorded", () => {
+  it("is enforced with the 80% minimum; sub-0.8 baselines are waived", () => {
     expect(RESULTS_FILE.version).toBe(1);
-    expect(RESULTS_FILE.enforce).toBe(false);
+    expect(RESULTS_FILE.enforce).toBe(true);
     expect(RESULTS_FILE.minPassRate).toBe(0.8);
   });
 
