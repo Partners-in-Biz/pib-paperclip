@@ -7853,6 +7853,94 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it("keeps the adapter's usage when its result arrives after an owned reassignment Stop settled (PAR-7864)", async () => {
+    const actualProcess = await vi.importActual<
+      typeof import("../adapters/process/execute.js")
+    >("../adapters/process/execute.js");
+    let reportReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      reportReady = resolve;
+    });
+    let releaseResult!: () => void;
+    const resultRelease = new Promise<void>((resolve) => {
+      releaseResult = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
+      const context = input as Parameters<typeof actualProcess.execute>[0];
+      const result = await actualProcess.execute({
+        ...context,
+        onLog: async (stream, text) => {
+          await context.onLog(stream, text);
+          if (text.includes("stop ready")) reportReady();
+        },
+      });
+      // Like hermes_local reading its session row: usage is parsed only after
+      // the killed process exited, i.e. after Stop already finalized the run.
+      await resultRelease;
+      return {
+        ...result,
+        provider: "test",
+        model: "test-model",
+        usage: { inputTokens: 1200, cachedInputTokens: 800, outputTokens: 340 },
+        usageBasis: "per_run",
+      };
+    }) as typeof mockAdapterExecute);
+    const { runId, agentId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          command: process.execPath,
+          args: ["-e", "console.log('stop ready'); setInterval(() => {}, 1000)"],
+          graceSec: 1,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => runningProcesses.get(runId));
+    await ready;
+    let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>>;
+    try {
+      cancelled = await heartbeat.cancelRun(
+        runId,
+        "Cancelled before issue reassignment",
+        {
+          errorCode: "issue_reassigned",
+          resultJson: { reassignmentStopConfirmed: true },
+        },
+      );
+    } finally {
+      releaseResult();
+    }
+    // Stop timing is unchanged: the run is cancelled before usage exists.
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelled?.usageJson ?? null).toBeNull();
+
+    const finalized = await waitForValue(async () => {
+      const run = await heartbeat.getRun(runId);
+      return run?.usageJson ? run : null;
+    });
+    expect(finalized?.status).toBe("cancelled");
+    expect(finalized?.errorCode).toBe("issue_reassigned");
+    expect(finalized?.usageJson).toMatchObject({
+      inputTokens: 1200,
+      outputTokens: 340,
+      provider: "test",
+      model: "test-model",
+    });
+    expect(finalized?.usageJson).toHaveProperty("costStatus");
+    expect(finalized?.resultJson).toMatchObject({
+      reassignmentStopConfirmed: true,
+      executionCancellation: { state: "acknowledged" },
+    });
+  });
+
   it.each([
     {
       mode: "clean exit",
