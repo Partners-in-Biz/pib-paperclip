@@ -233,6 +233,19 @@ describe("pages without landmarks", () => {
     expect(() => buildPreviewHtml(live, "https://x.co.za/list/", { bodyHtml: "<p>NEW</p>", bodyMode: "replace" }, opts)).toThrow(/contentSelector/);
   });
 
+  it("contentSelector picks the block, refuses unsupported and unmatched selectors", () => {
+    const sel = (contentSelector: string, extra = {}) => buildPreviewHtml(live, "https://x.co.za/list/", { bodyHtml: "<p>NEW</p>", contentSelector, ...extra }, opts);
+    expect(sel(".comment-form").html).toContain(`<div class="comment-form"><p>NEW</p><div class="FormBody">`);
+    expect(sel("div.comment-form", { bodyMode: "after" }).html).toContain(`</form></div><p>NEW</p></div><footer>`);
+    expect(sel("#listingForm").html).toContain(`<form id="listingForm"><p>NEW</p>`);
+    expect(sel("form#listingForm").html).toContain(`<form id="listingForm"><p>NEW</p>`);
+    expect(sel("header").html).toContain(`<header><p>NEW</p><nav>`);
+    expect(() => sel("div > p")).toThrow(/not supported/);
+    expect(() => sel("[data-x]")).toThrow(/not supported/);
+    expect(() => sel(".nope")).toThrow(/"\.nope" matches no element/);
+    expect(() => sel("span.comment-form")).toThrow(/matches no element/);
+  });
+
   it("(b) Agri Studies shape: role=main page with the partner article after the footer", () => {
     const shop = `<html><head></head><body><div class="wrap"><div class="content"><div class="main col-md-12" role="main"><div class="page-header"><h1 class="page-title">Core Courses</h1></div><ul class="products"><li class="product"><h2>Course A</h2></li><li class="product"><h2>Course B</h2></li></ul></div></div></div><footer id="containerfooter"><div>f</div></footer><style>.cardNew{}</style>${cards.replace(/<div class="wrapNew">|<\/div>$/g, "")}</body></html>`;
     const out = buildPreviewHtml(shop, "https://agristudies.co.za/product-category/corecourses/", { bodyHtml: "<p>NEW</p>", bodyMode: "after" }, opts);

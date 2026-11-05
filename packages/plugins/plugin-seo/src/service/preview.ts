@@ -12,7 +12,7 @@ import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, MIN_KEPT_PCT, parseContentSelector, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
@@ -72,7 +72,10 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
     bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
+    contentSelector: str(params, "contentSelector", { max: 100 }),
   };
+  if (changes.contentSelector) parseContentSelector(changes.contentSelector);
+  else delete changes.contentSelector;
   const why = checkWhy(str(params, "why", { max: 1000 }));
   if (why.error) throw new SeoError(why.error);
   if (why.why) changes.why = why.why;

@@ -19,6 +19,8 @@ export interface PreviewChanges {
   bodyMode?: BodyMode;
   /** Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). */
   css?: string;
+  /** Optional CSS-like selector (#id, .class, tag, tag.class, tag#id) naming the element that is the content area; overrides the automatic search. */
+  contentSelector?: string;
   /** One client-facing sentence on why the change helps (shown in the approval email; not part of the page). */
   why?: string;
 }
@@ -194,7 +196,38 @@ function contentBoundary(html: string): number {
  * run of items, so copy added "before" lands above the whole listing and "after" below it, never inside the first item.
  * Only what starts before the boundary counts; the area never runs past it.
  */
-function findContentArea(html: string, boundary: number): { innerStart: number; innerEnd: number; listing?: boolean } | null {
+const SELECTOR_RE = /^([a-z][a-z0-9]*)?(?:([#.])(-?[_a-z][\w-]*))?$/i;
+
+/** Parses a supported contentSelector (#id, .class, tag, tag.class, tag#id); anything else is refused. */
+export function parseContentSelector(raw: string): { tag?: string; kind?: "id" | "class"; name?: string } {
+  const sel = raw.trim();
+  const m = SELECTOR_RE.exec(sel);
+  if (!sel || sel.length > 100 || !m || (!m[1] && !m[3])) {
+    throw new SeoError(`contentSelector "${raw.slice(0, 100)}" is not supported. Use #id, .class, tag, tag.class or tag#id (no spaces, combinators or attributes).`);
+  }
+  return { tag: m[1]?.toLowerCase(), kind: m[2] === "#" ? "id" : m[2] === "." ? "class" : undefined, name: m[3] };
+}
+
+function findBySelector(html: string, raw: string): { innerStart: number; innerEnd: number } {
+  const sel = parseContentSelector(raw);
+  const re = new RegExp(`<${sel.tag ?? "([a-z][a-z0-9]*)"}\\b[^>]*>`, "gi");
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    const open = m[0];
+    if (sel.kind) {
+      const attr = new RegExp(`\\b${sel.kind}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(open);
+      const val = attr?.[1] ?? attr?.[2];
+      if (val === undefined) continue;
+      if (sel.kind === "id" ? val.trim() !== sel.name : !val.split(/\s+/).includes(sel.name!)) continue;
+    }
+    const tag = (sel.tag ?? m[1]!).toLowerCase();
+    const range = elementEnd(html, m.index, tag);
+    if (range) return range;
+  }
+  throw new SeoError(`contentSelector "${raw.trim()}" matches no element on the live page. Check it against the page's HTML, or leave contentSelector out.`);
+}
+
+function findContentArea(html: string, boundary: number, selector?: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {
+  if (selector) return findBySelector(html, selector);
   const candidates: Array<{ re: RegExp; tag: string }> = [
     { re: /<(div|section)\b[^>]*class\s*=\s*"[^"]*\b(entry-content|post-content|wp-block-post-content)\b[^"]*"[^>]*>/gi, tag: "" },
     { re: /<(main)\b[^>]*>/gi, tag: "main" },
@@ -279,7 +312,7 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
   // goes at the top of the content instead and the theme's stays as it is.
   let headingHtml = "";
   if (changes.h1) {
-    const area = findContentArea(html, contentBoundary(html));
+    const area = findContentArea(html, contentBoundary(html), changes.contentSelector);
     let replaced = false;
     if (area && !area.listing) {
       const inner = html.slice(area.innerStart, area.innerEnd);
@@ -309,7 +342,7 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     const body = `${headingHtml}${changes.bodyHtml ? sanitizeBody(changes.bodyHtml) : ""}`;
     const mode: BodyMode = changes.bodyHtml ? changes.bodyMode ?? "before" : "before";
     const boundary = contentBoundary(html);
-    const area = findContentArea(html, boundary);
+    const area = findContentArea(html, boundary, changes.contentSelector);
     const anchor = area ? null : findHeadingAnchor(html, boundary);
     if (!area && !anchor) throw new SeoError(NO_AREA);
     if (!area && mode === "replace" && changes.bodyHtml) {
