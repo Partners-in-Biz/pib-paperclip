@@ -433,7 +433,7 @@ describe.skipIf(!available)("billing graph (postgres)", () => {
       const { issueId } = await openDeal({ key: "crm:deal:deal-12:won", dealId: "deal-12" });
       expect(h.issues.get(issueId)!.title).toContain("send invoice");
       expect((await closes(issueId)).status).toBe("todo");
-      await tool("request-invoice-send", { invoiceId: invoice.id });
+      await tool("request-invoice-send", { invoiceId: invoice.id, sendTo: "ap@acme.test" });
       expect((await closes(issueId)).status).toBe("done");
     });
   });
