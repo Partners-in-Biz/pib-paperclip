@@ -55,6 +55,7 @@ const ACTION_KEYS = [
   "social.get-post",
   "social.validate-post",
   "social.delete-post",
+  "social.mark-posted",
   "social.attach",
   "social.detach",
   "social.review",

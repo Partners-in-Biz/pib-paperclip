@@ -173,9 +173,16 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         <Banner tone="warn" title="Fix before scheduling">{problems.map((p) => <div key={p}>• {p}</div>)}</Banner>
       ) : null}
 
-      {xReply ? <Muted>X does not let us post this reply for you. Open it on X, post it there, then delete this post.</Muted> : null}
+      {xReply ? <Muted>X does not let us post this reply for you. Open it on X, post it there, then mark it as posted here.</Muted> : null}
       <Row>
         {xReply ? <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => window.open(xReply, "_blank", "noopener")}>Open reply on X</Button> : null}
+        {xReply && post.status !== "draft" && post.status !== "review" ? (
+          <SmallButton onClick={() => {
+            const url = window.prompt("Link to your reply on X (optional, leave empty to skip):", "");
+            if (url === null) return;
+            act("social.mark-posted", "Marked as posted", { url: url.trim() });
+          }}>Mark as posted</SmallButton>
+        ) : null}
         {post.status === "draft" || post.status === "review" || (editableViaDraft(post.status) && snapshot.canPost !== false) ? <SmallButton onClick={() => onEdit(post)}>Edit</SmallButton> : null}
         {post.status === "draft" && snapshot.space !== "me" ? <SmallButton onClick={() => act("social.review", "Sent for review")}>Send for review</SmallButton> : null}
         {post.status === "draft" && snapshot.space === "me" ? <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={post.destinations.length === 0} onClick={() => void approve()}>Approve</Button> : null}

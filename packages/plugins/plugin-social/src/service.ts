@@ -55,6 +55,7 @@ import {
   insertPost,
   insertRssFeed,
   insertTemplate,
+  saveDestinationOutcome,
   iso,
   listAccounts,
   listInboxItems,
@@ -694,6 +695,35 @@ export async function retryPostRecord(ctx: PluginContext, viewer: Viewer, postId
   }
   const result = await retryPost(ctx, viewer.companyId, post);
   return { ...result, message: `${result.reset} destination(s) will be retried within 5 minutes.`, post: await getPostDetail(ctx, viewer, post.id) };
+}
+
+/**
+ * A person posted this themselves (an X reply the API cannot send): record it as published so it leaves the queue.
+ * `url` is the link to what they posted, if they have it.
+ */
+export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "mark a post as posted");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  if (post.status === "published" || post.status === "publishing" || post.status === "draft" || post.status === "review") {
+    throw new SocialError(`A ${post.status} post cannot be marked as posted. Approve it first.`);
+  }
+  const url = optionalString(params, "url")?.trim() || null;
+  if (url && !/^https?:\/\//i.test(url)) throw new SocialError("The link must start with https://");
+  const destinations = await destinationsForPost(ctx, post.id);
+  if (destinations.length === 0) throw new SocialError("This post has no destinations to mark as posted");
+  for (const d of destinations) {
+    if (d.status === "published") continue;
+    await saveDestinationOutcome(ctx, d.id, {
+      status: "published",
+      nextAttemptAt: null,
+      externalId: null,
+      externalUrl: url,
+      lastError: null,
+      result: { ok: true, manual: true, at: new Date().toISOString(), by: viewer.userId ?? null },
+    });
+  }
+  await setPostOutcome(ctx, post.id, { status: "published", error: null, publishedAt: true });
+  return getPostDetail(ctx, viewer, post.id);
 }
 
 export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
