@@ -35,7 +35,7 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
   {
     name: "studio-generate",
     displayName: "Generate images or video",
-    description: "Queue an image or video. Credits are reserved against the monthly cap, and it's refused if they don't fit. The result is saved as a Studio asset linked to the issue, and a comment on the issue reports it, so don't wait or poll: end your run and you'll be woken.",
+    description: "Queue an image or video. Credits are reserved against the monthly cap, and it's refused if they don't fit. The result is saved as a Studio asset linked to the issue, and a comment on the issue reports it and wakes you. Don't poll or sit waiting. Before ending your run, set an issue monitor as a fallback (kind external_service, about 15 minutes), as for any wait on a machine: an in-progress issue with nothing watching it gets sent for repair. Check the cost with studio-estimate first, because it counts against the company's monthly cap.",
     parametersSchema: schema(["model", "prompt"], { ...GENERATE_FIELDS, name: text("File name for the result (default: the start of the prompt)") }),
   },
   {
