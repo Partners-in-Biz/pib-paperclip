@@ -561,7 +561,7 @@ describe.skipIf(!available)("signed documents become draft invoices (postgres)",
       const { invoice, issueId } = await drafted();
       expect((await closes(issueId)).status).toBe("todo");
       expect(commentsOn(issueId).at(-1)).toContain(`Invoice ${invoice.number ?? "Draft"} (R 1,150.00, invoiceId \`${invoice.id}\`), drafted from the document the client signed, has no send request yet`);
-      await tool("request-invoice-send", { invoiceId: invoice.id });
+      await tool("request-invoice-send", { invoiceId: invoice.id, sendTo: "ap@acme.test" });
       expect((await closes(issueId)).status).toBe("done");
     });
 
