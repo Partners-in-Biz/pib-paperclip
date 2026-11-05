@@ -21,6 +21,7 @@ import {
 import * as db from "../db.js";
 import { cwvFindings, runPagespeed, type PageHealthRecord, type Strategy } from "../integrations/pagespeed.js";
 import { companyInfo, errorMessage, num, oneOf, SeoError, str, urlParam, type Env, type Params } from "./common.js";
+import { sameSiteHost, stripCacheBusters } from "./url-guards.js";
 import { requireSprint } from "./context.js";
 
 async function targetFor(env: Env, companyId: string, params: Params): Promise<{ sprint: db.Sprint | null; url: string }> {
@@ -229,7 +230,12 @@ export async function savePageHealth(env: Env, sprint: db.Sprint, record: PageHe
 }
 
 export async function runPagespeedTool(env: Env, companyId: string, params: Params) {
-  const { sprint, url } = await targetFor(env, companyId, params);
+  const target = await targetFor(env, companyId, params);
+  const url = stripCacheBusters(target.url);
+  // A run on another host (a Vercel preview, a staging copy) is measured but never recorded: it would open
+  // findings on a URL no later check covers, so they could never clear on their own.
+  const offSite = Boolean(target.sprint && !sameSiteHost(url, target.sprint.siteUrl));
+  const sprint = offSite ? null : target.sprint;
   const strategy: Strategy = oneOf(params, "strategy", ["mobile", "desktop"] as const) ?? "mobile";
   const info = await companyInfo(env, companyId);
   let apiKey: string | undefined;
@@ -244,5 +250,10 @@ export async function runPagespeedTool(env: Env, companyId: string, params: Para
     const integration = await db.getIntegration(env.ctx.db, companyId, sprint.id, "pagespeed");
     if (integration) await db.updateIntegration(env.ctx.db, companyId, integration.id, { last_pull_at: new Date().toISOString(), last_error: null });
   }
-  return { ...record, saved: Boolean(sprint), stored };
+  return {
+    ...record,
+    saved: Boolean(sprint),
+    stored,
+    ...(offSite ? { note: `Not saved: ${url} is not on the sprint's site (${target.sprint!.siteUrl}). Test the live site to record findings.` } : {}),
+  };
 }
