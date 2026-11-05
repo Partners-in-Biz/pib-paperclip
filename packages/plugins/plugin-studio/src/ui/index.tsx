@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
 import { Button, errorText, Field, Input, Page, PageMessage, Section, Select, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
 interface Cap {
   scopeKey: string;
@@ -403,6 +404,8 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const [modelId, setModelId] = useState(models[0]?.id ?? "");
   const model = models.find((m) => m.id === modelId) ?? models[0];
   const [prompt, setPrompt] = useState("");
+  const [presetId, setPresetId] = useState("");
+  const preset = getPhotoPreset(presetId);
   const [ratio, setRatio] = useState(model?.ratios[0] ?? "");
   const [resolution, setResolution] = useState(model?.resolutions[0] ?? "");
   const [batchSize, setBatchSize] = useState("1");
@@ -420,9 +423,19 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     if (!model.resolutions.includes(resolution)) setResolution(model.resolutions[0] ?? "");
   }, [model?.id]);
   // Any change to the request makes the shown price stale.
-  useEffect(() => setEstimate(null), [modelId, prompt, ratio, resolution, batchSize, client]);
+  useEffect(() => setEstimate(null), [modelId, prompt, presetId, ratio, resolution, batchSize, client]);
 
-  const request = () => ({ companyId, model: model?.id, prompt, ratio, resolution, batchSize: Number(batchSize), client });
+  function pickPreset(id: string) {
+    setPresetId(id);
+    const next = getPhotoPreset(id);
+    if (!next) return;
+    const soul = models.find((m) => m.id === DEFAULT_PRESET_MODEL);
+    if (soul) setModelId(soul.id);
+    if ((soul ?? model)?.ratios.includes(DEFAULT_PRESET_RATIO)) setRatio(DEFAULT_PRESET_RATIO);
+    setPrompt((p) => p.slice(0, PHOTO_NOTE_MAX));
+  }
+
+  const request = () => ({ companyId, model: model?.id, prompt, preset: presetId || undefined, ratio, resolution, batchSize: Number(batchSize), client });
 
   async function runEstimate() {
     setBusy(true);
@@ -452,7 +465,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   }
 
   const viewer = me !== null && !me.canGenerate;
-  const ready = !!model && prompt.trim().length > 0 && !busy && !viewer;
+  const ready = !!model && (preset !== null || prompt.trim().length > 0) && !busy && !viewer;
 
   return (
     <>
@@ -460,6 +473,16 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
         {viewer ? <PageMessage tone="warning" message="Viewers can look at Studio but can't generate. Ask a company owner for member access." /> : null}
         {models.length === 0 ? <PageMessage tone="warning" message="No fixed-price models are offered yet." /> : null}
         <div style={grid(160)}>
+          <Field label="Style">
+            <Select aria-label="Style" value={presetId} onChange={(e) => pickPreset(e.target.value)}>
+              <option value="">No style (free prompt)</option>
+              {PHOTO_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label} · {p.tagline}
+                </option>
+              ))}
+            </Select>
+          </Field>
           <Field label="Model">
             <Select aria-label="Model" value={model?.id ?? ""} onChange={(e) => setModelId(e.target.value)}>
               {models.map((m) => (
@@ -508,18 +531,19 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
           </Field>
         </div>
         <div style={{ marginTop: 10 }}>
-          <Field label="Prompt">
+          <Field label={preset ? "Extra direction (optional)" : "Prompt"}>
             <textarea
               aria-label="Prompt"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
-              maxLength={4000}
-              placeholder="Describe the image"
+              maxLength={preset ? PHOTO_NOTE_MAX : 4000}
+              placeholder={preset ? `Optional note, up to ${PHOTO_NOTE_MAX} characters` : "Describe the image"}
               style={{ width: "100%", boxSizing: "border-box", font: "inherit", padding: 8, borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", resize: "vertical" }}
             />
           </Field>
         </div>
+        {preset ? <p style={{ ...muted, margin: "8px 0 0" }}>{preset.label} builds the prompt for you. Best with {preset.subject === "any" ? "anything" : `a ${preset.subject}`}.</p> : null}
         {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
         {estimate ? (
           <div style={{ ...row, margin: "10px 0" }} aria-live="polite">

@@ -8,6 +8,7 @@ import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugi
 import { assetOut, getAssetRow, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
+import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
 import type { GenerationRow } from "./generation.js";
 
 export interface PageModel {
@@ -36,13 +37,16 @@ export const PAGE_MODELS: readonly PageModel[] = [
 export function pageRequest(input: Record<string, unknown>): Record<string, unknown> {
   const model = PAGE_MODELS.find((m) => m.id === String(input.model ?? ""));
   if (!model) throw new StudioError("Pick one of the models the Studio page offers.", "bad_model");
-  const ratio = String(input.ratio ?? model.ratios[0]);
+  const preset = input.preset === undefined || input.preset === null || input.preset === "" ? null : getPhotoPreset(input.preset);
+  if (input.preset && !preset) throw new StudioError("Pick one of the styles the Studio page offers.", "unknown_preset");
+  const ratio = String(input.ratio ?? (preset ? DEFAULT_PRESET_RATIO : model.ratios[0]));
   const resolution = String(input.resolution ?? model.resolutions[0]);
   if (!model.ratios.includes(ratio)) throw new StudioError(`${model.label} doesn't offer the ratio ${ratio}.`, "bad_request");
   if (!model.resolutions.includes(resolution)) throw new StudioError(`${model.label} doesn't offer ${resolution}.`, "bad_request");
   const out: Record<string, unknown> = {
     model: model.id,
     prompt: input.prompt,
+    ...(preset ? { preset: preset.id } : {}),
     params: { aspect_ratio: ratio, resolution },
     batchSize: input.batchSize === undefined || input.batchSize === "" ? 1 : Number(input.batchSize),
   };
