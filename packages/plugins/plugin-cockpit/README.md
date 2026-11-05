@@ -366,4 +366,8 @@ The Cockpit reads those comments from the host's issue comments (`public.issue_c
 - **Info cards**: for the first 14 days each send also shows in the owner's Waiting on you as an info card (no action needed). Buttons: Dismiss, and Pull back (opens the issue). Dismissals are kept in plugin state. Setting `clientSends.infoCardsUntil` (ISO date) ends the cards; default is 14 days after the Cockpit first saw the feature. Cards cover sends of the last 3 days.
 - **`client_send:ungated` health check** (status bad): a send in the last 7 days with no `VISUAL GATE: APPROVE` before it (when the send carries a visual: the channel or what mentions image, banner, design, video, etc.) or no Reviewer approval before it (text: a comment starting `REVIEW: PASS`, `REVIEWER: PASS` or `PASS`).
 
+The visual check is keyword-based on the send line (so "design review call" counts as a visual); a send with no match is treated as text.
+
+Info cards are not counted in "Waiting on you" or the brief's waiting list.
+
 Code: `src/outward-sends.ts`. Tests: `tests/outward-sends.spec.ts`.

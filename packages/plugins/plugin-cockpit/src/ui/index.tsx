@@ -28,6 +28,9 @@ import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
 
+/** Tier A info cards (key outward-send:*) need no action, so they do not count as waiting. */
+const needsAction = (w: { key: string }) => !w.key.startsWith("outward-send:");
+
 export { ClientsNav, FinanceNav, HostedClientsNav, MarketingNav } from "./nav.js";
 
 export { buildView } from "../view.js";
@@ -185,7 +188,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
       {moved ? <Muted>The team moved to <a {...linkFor(moved)} style={{ color: tokens.primary, fontWeight: 600 }}>Setup → Team</a>.</Muted> : null}
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
+          { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.filter(needsAction).length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
           { id: "flows", label: "Flows", icon: Workflow, count: view?.flows.stuck.length || null, countTone: "warn" },
           { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
@@ -286,9 +289,9 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onD
 
       <Card
         id="waiting"
-        title={`Waiting on you${view.waiting.length ? ` (${view.waiting.length})` : ""}`}
+        title={`Waiting on you${view.waiting.filter(needsAction).length ? ` (${view.waiting.filter(needsAction).length})` : ""}`}
         icon={Inbox}
-        tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.length ? "warn" : "ok"}
+        tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.some(needsAction) ? "warn" : "ok"}
         subtitle={view.waiting.some((w) => w.ask) ? "Questions from agents first, then decisions only you can make." : "Decisions only you can make, most urgent first."}
         actions={<WaitingKinds items={view.waiting} />}
       >
@@ -371,7 +374,7 @@ export function CompanyTodayWidget({ context }: PluginWidgetProps) {
   const data = useCockpitData(context.companyId, { light: true });
   const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.view) return null;
-  return <TodayCard waiting={data.view.waiting.length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
+  return <TodayCard waiting={data.view.waiting.filter(needsAction).length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
 }
 
 export function CockpitSidebar({ context }: PluginSidebarProps) {
@@ -379,7 +382,7 @@ export function CockpitSidebar({ context }: PluginSidebarProps) {
   const location = useHostLocation();
   // Shared with the Clients / Marketing / Finance groups: one light load for the whole sidebar.
   const view = useSidebarView(context.companyId, location.pathname);
-  const waiting = view?.waiting.length ?? 0;
+  const waiting = view?.waiting.filter(needsAction).length ?? 0;
   const urgent = view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ?? false;
   const health = view?.health ?? "ok";
   const href = hostNavigation.resolveHref("/cockpit");

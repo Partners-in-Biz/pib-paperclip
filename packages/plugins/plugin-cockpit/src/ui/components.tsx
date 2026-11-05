@@ -210,8 +210,9 @@ export function TodayHero({ health, today, waiting, problems, warnings = 0, agen
   children?: ReactNode;
 }) {
   const narrow = useIsNarrow();
-  const urgent = waiting.filter((item) => item.kind === "money" || item.kind === "legal").length;
-  const questions = waiting.filter((item) => item.ask).length;
+  const actionable = waiting.filter((item) => !item.key.startsWith("outward-send:"));
+  const urgent = actionable.filter((item) => item.kind === "money" || item.kind === "legal").length;
+  const questions = actionable.filter((item) => item.ask).length;
   const runTone = runAlert ? tone(runAlert.tone) : null;
   return (
     <Card title="Today" icon={Sun} tone={runAlert ? worstTone(health, runAlert.tone) : health} strip actions={<Light status={runAlert ? worstTone(health, runAlert.tone) : health} />}>
@@ -234,9 +235,9 @@ export function TodayHero({ health, today, waiting, problems, warnings = 0, agen
         <KpiCard
           size="sm"
           label="Waiting on you"
-          value={waiting.length}
-          tone={urgent ? "bad" : waiting.length ? "warn" : "ok"}
-          hint={urgent ? `${urgent} money or legal` : questions ? `${questions} ${questions === 1 ? "question" : "questions"} from agents` : waiting.length ? "Your decisions" : "Nothing to decide"}
+          value={actionable.length}
+          tone={urgent ? "bad" : actionable.length ? "warn" : "ok"}
+          hint={urgent ? `${urgent} money or legal` : questions ? `${questions} ${questions === 1 ? "question" : "questions"} from agents` : actionable.length ? "Your decisions" : "Nothing to decide"}
           icon={Inbox}
           link={sectionLink("waiting")}
         />

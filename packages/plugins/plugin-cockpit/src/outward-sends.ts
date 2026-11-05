@@ -94,7 +94,7 @@ export async function readOutwardSends(env: Env, companyId: string, sinceIso: st
       WHERE g.company_id = $1::uuid AND g.deleted_at IS NULL
         AND (g.body ILIKE '%VISUAL GATE:%' OR g.body ILIKE '%PASS%' OR g.body ILIKE '%APPROVE%')
         AND g.issue_id IN (SELECT s.issue_id FROM public.issue_comments s WHERE s.company_id = $1::uuid AND s.created_at >= $2::timestamptz AND s.body LIKE 'OUTWARD SEND (Tier A):%')
-      LIMIT 2000`,
+      ORDER BY g.created_at DESC LIMIT 2000`,
     [companyId, sinceIso],
   );
   return { sends, gates: gateRows.map((r) => ({ issueId: String(r.issue_id), body: String(r.body ?? ""), at: iso(r.created_at) })) };

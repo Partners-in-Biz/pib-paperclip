@@ -444,7 +444,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     ? []
     : staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
-  const waiting = waitingFrom(data);
+  // Tier A info cards need no action: keep them out of the owner's waiting count and brief.
+  const waiting = waitingFrom(data).filter((w) => !w.key.startsWith("outward-send:"));
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
