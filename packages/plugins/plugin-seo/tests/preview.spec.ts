@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SeoError } from "../src/service/common.js";
 import { buildPreviewHtml, previewStats, sanitizeBody } from "../src/engine/preview.js";
 
 const LIVE = `<!doctype html><html><head><title>Old title</title><meta name="description" content="old"><meta name="robots" content="index"><link rel="canonical" href="https://x.co.za/a"><script>track()</script></head>
@@ -26,14 +27,19 @@ describe("buildPreviewHtml", () => {
     expect(out.html).toContain("Proposed changes, not live.");
   });
 
-  it("falls back to after the H1 and reports what it could not place", () => {
+  it("with no content area, places the copy at the first heading and reports it", () => {
     const bare = buildPreviewHtml("<html><head></head><body><h1>A</h1><p>x</p></body></html>", "https://x.co.za/", { bodyHtml: "<p>n</p>" }, { token: "t" });
     expect(bare.applied).toEqual(["bodyHtml"]);
-    expect(bare.notes[0]).toMatch(/after the heading/);
-    const none = buildPreviewHtml("<html><head></head><body><p>x</p></body></html>", "https://x.co.za/", { h1: "H", bodyHtml: "<p>n</p>" }, { token: "t" });
-    expect(none.applied).toEqual([]);
-    expect(none.notes).toHaveLength(2);
+    expect(bare.html).toContain("<body><p>n</p><h1>A</h1><p>x</p><div id=\"pib-preview-bar\"");
+    expect(bare.notes[0]).toMatch(/first heading/);
   });
+
+  it("refuses with a message naming contentSelector when there is no heading either", () => {
+    const run = () => buildPreviewHtml("<html><head></head><body><p>x</p></body></html>", "https://x.co.za/", { h1: "H", bodyHtml: "<p>n</p>" }, { token: "t" });
+    expect(run).toThrow(SeoError);
+    expect(run).toThrow(/contentSelector/);
+  });
+
 });
 
 describe("base href does not hijack the decision form", () => {
@@ -205,5 +211,71 @@ describe("listing pages", () => {
     const one = `<html><head></head><body><article><p>post words here</p></article></body></html>`;
     const out = buildPreviewHtml(one, "https://x.co.za/p/", { bodyHtml: "<p>intro</p>" }, opts);
     expect(out.html).toContain("<article><p>intro</p><p>post words here</p></article>");
+  });
+});
+
+describe("pages without landmarks", () => {
+  const opts = { token: "t" };
+  const cards = `<div class="wrapNew"><div class="cardsNew">${[1, 2, 3].map((i) => `<article class="cardNew"><h3>Partner ${i}</h3><p>partner text ${i}</p></article>`).join("")}</div></div>`;
+  const form = `<div class="comment-form"><div class="FormBody"><h2>List Your Lot</h2><form id="listingForm"><input name="lot"></form></div></div>`;
+  const header = `<header><nav><h2>Menu</h2></nav><form class="search"><input name="s"></form></header>`;
+  const footer = `<footer><h1>Partner websites to check out</h1></footer>`;
+  const pasted = `<html><body>${cards}</body></html>`;
+  const live = `<html><head></head><body>${header}${form}${footer}${pasted}</body></html>`;
+
+  it("(a) lands before the h2 and before the footer, never in the partner cards", () => {
+    const before = buildPreviewHtml(live, "https://x.co.za/list/", { bodyHtml: "<p>NEW</p>" }, opts);
+    expect(before.html).toContain(`<p>NEW</p><h2>List Your Lot</h2>`);
+    expect(before.html.match(/NEW/g)).toHaveLength(1);
+    const after = buildPreviewHtml(live, "https://x.co.za/list/", { bodyHtml: "<p>NEW</p>", bodyMode: "after" }, opts);
+    expect(after.html).toContain(`</form></div></div><p>NEW</p><footer>`);
+    for (const out of [before, after]) expect(out.html).toContain(`<div class="cardsNew"><article class="cardNew"><h3>Partner 1</h3>`);
+    expect(() => buildPreviewHtml(live, "https://x.co.za/list/", { bodyHtml: "<p>NEW</p>", bodyMode: "replace" }, opts)).toThrow(/contentSelector/);
+  });
+
+  it("(b) Agri Studies shape: role=main page with the partner article after the footer", () => {
+    const shop = `<html><head></head><body><div class="wrap"><div class="content"><div class="main col-md-12" role="main"><div class="page-header"><h1 class="page-title">Core Courses</h1></div><ul class="products"><li class="product"><h2>Course A</h2></li><li class="product"><h2>Course B</h2></li></ul></div></div></div><footer id="containerfooter"><div>f</div></footer><style>.cardNew{}</style>${cards.replace(/<div class="wrapNew">|<\/div>$/g, "")}</body></html>`;
+    const out = buildPreviewHtml(shop, "https://agristudies.co.za/product-category/corecourses/", { bodyHtml: "<p>NEW</p>", bodyMode: "after" }, opts);
+    expect(out.html).toContain(`</ul><p>NEW</p></div></div></div><footer`);
+    expect(out.html.indexOf("NEW")).toBeLessThan(out.html.indexOf("<footer"));
+  });
+
+  it("(c) uses role=main on any tag when there is no <main>", () => {
+    const html = `<html><head></head><body><header><h1>Site</h1></header><section role="main"><p>page words</p></section><footer>f</footer></body></html>`;
+    const out = buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts);
+    expect(out.html).toContain(`<section role="main"><p>NEW</p><p>page words</p>`);
+  });
+
+  it("(d) ignores articles after the footer or after a second html/body", () => {
+    const one = `<html><head></head><body><div id="c"><article><p>post</p></article></div><footer>f</footer><article class="w1"><p>a</p></article><article class="w2"><p>b</p></article></body></html>`;
+    const o1 = buildPreviewHtml(one, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts);
+    expect(o1.html).toContain(`<article><p>NEW</p><p>post</p></article>`);
+    const two = `<html><head></head><body><div id="c"><h1>T</h1><p>t</p></div><body><article>x</article><article>y</article></body></html>`;
+    const o2 = buildPreviewHtml(two, "https://x.co.za/", { bodyHtml: "<p>NEW</p>", bodyMode: "after" }, opts);
+    expect(o2.html).toContain(`<p>t</p></div><p>NEW</p><body><article>x`);
+  });
+
+  it("a footer inside an article is not the boundary", () => {
+    const html = `<html><head></head><body><article><p>post</p><footer>by me</footer><p>tail</p></article><footer>f</footer></body></html>`;
+    const out = buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>", bodyMode: "after" }, opts);
+    expect(out.html).toContain(`<p>tail</p><p>NEW</p></article><footer>f`);
+  });
+
+  it("(e) a heading in header, nav or aside is never the anchor", () => {
+    const html = `<html><head></head><body><header><h1>Site</h1></header><aside><h1>Side</h1></aside><div><h2>Real</h2><p>x</p></div><footer>f</footer></body></html>`;
+    const out = buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts);
+    expect(out.html).toContain(`<p>NEW</p><h2>Real</h2>`);
+    expect(out.html).toContain(`<header><h1>Site</h1></header>`);
+  });
+
+  it("prefers an h1 over an earlier h2", () => {
+    const html = `<html><head></head><body><div><h2>Early</h2></div><div><h1>Title</h1></div><footer>f</footer></body></html>`;
+    const out = buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts);
+    expect(out.html).toContain(`<p>NEW</p><h1>Title</h1>`);
+  });
+
+  it("(f) no heading before the footer is refused naming contentSelector", () => {
+    const html = `<html><head></head><body><header><h1>Site</h1></header><div><p>x</p></div><footer><h1>F</h1></footer></body></html>`;
+    expect(() => buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts)).toThrow(/contentSelector/);
   });
 });
