@@ -22,6 +22,7 @@ import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { adjust, assertFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
+import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
 import { assertModel, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
 import { assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
 import { MAX_ASSET_BYTES, sniffMime } from "./storage.js";
@@ -198,13 +199,18 @@ export interface Actor {
 }
 
 function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown> } {
-  const model = String(params.model ?? "").trim();
+  const presetId = params.preset === undefined || params.preset === null || params.preset === "" ? null : params.preset;
+  const preset = presetId === null ? null : getPhotoPreset(presetId);
+  if (presetId !== null && !preset) throw new StudioError(`Unknown preset ${String(presetId)}. Known presets: ${PHOTO_PRESETS.map((p) => p.id).join(", ")}.`, "unknown_preset");
+  const model = String(params.model ?? (preset ? DEFAULT_PRESET_MODEL : "")).trim();
   assertModel(model);
-  const prompt = String(params.prompt ?? "").trim();
+  // With a preset, "prompt" is only the optional note; the preset builds the wording.
+  const prompt = (preset ? buildPhotoPresetPrompt(preset, String(params.prompt ?? "")) : String(params.prompt ?? "")).trim();
   if (!prompt) throw new StudioError("prompt is required.", "bad_request");
   const extra = params.params ?? {};
   if (typeof extra !== "object" || Array.isArray(extra) || extra === null) throw new StudioError("params must be an object of the model's own fields.", "bad_request");
-  const body = { ...(extra as Record<string, unknown>), prompt };
+  const defaults = preset ? { aspect_ratio: DEFAULT_PRESET_RATIO } : {};
+  const body = { ...defaults, ...(extra as Record<string, unknown>), prompt };
   if (JSON.stringify(body).length > MAX_PARAMS_BYTES) throw new StudioError("The request is too long.", "bad_request");
   return { model, prompt, body };
 }
@@ -232,7 +238,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const provider = await runtime.provider(new StudioConfig(ctx, companyId));
   const each = await provider.estimate(model, body);
   const total = credits(each * batch);
-  const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : prompt.slice(0, 80);
+  const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : (getPhotoPreset(params.preset)?.label ?? prompt.slice(0, 80));
   const groupId = randomUUID();
   const ids = Array.from({ length: batch }, () => randomUUID());
   const period = currentPeriod(new Date(runtime.now()));

@@ -1,6 +1,7 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { LINK_TARGETS } from "./assets.js";
 import { MAX_BATCH } from "./generation.js";
+import { PHOTO_PRESETS } from "./presets.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const CLIENT = text('"company:<id>" or "contact:<id>". Omit it to use the client of the issue\'s project, or own work if it has none.');
@@ -12,7 +13,8 @@ function schema(required: string[], properties: Record<string, JsonSchema>): Jso
 
 const GENERATE_FIELDS = {
   model: text("Provider model path, e.g. higgsfield-ai/soul/v2/standard"),
-  prompt: text("What to make"),
+  prompt: text("What to make. With a preset, this is only an optional extra note (up to 400 characters) added to the style's own prompt."),
+  preset: { type: "string", enum: PHOTO_PRESETS.map((preset) => preset.id), description: "Optional Photo Studio style. It builds the prompt and sets the default model and ratio (1:1)." } as JsonSchema,
   params: { type: "object", description: 'The model\'s own fields, flat, e.g. {"aspect_ratio":"9:16"}' } as JsonSchema,
   batchSize: { type: "integer", minimum: 1, maximum: MAX_BATCH, description: `How many to make (1 to ${MAX_BATCH}). Each is charged separately.` } as JsonSchema,
   client: CLIENT,
@@ -30,13 +32,13 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     name: "studio-estimate",
     displayName: "Estimate a generation",
     description: "Price an image or video before making it. Free. Also shows what's left under the monthly cap.",
-    parametersSchema: schema(["model", "prompt"], GENERATE_FIELDS),
+    parametersSchema: schema([], GENERATE_FIELDS),
   },
   {
     name: "studio-generate",
     displayName: "Generate images or video",
     description: "Queue an image or video. Credits are reserved against the monthly cap, and it's refused if they don't fit. The result is saved as a Studio asset linked to the issue, and a comment on the issue reports it and wakes you. Don't poll or sit waiting. Before ending your run, set an issue monitor as a fallback (kind external_service, about 15 minutes), as for any wait on a machine: an in-progress issue with nothing watching it gets sent for repair. Check the cost with studio-estimate first, because it counts against the company's monthly cap.",
-    parametersSchema: schema(["model", "prompt"], { ...GENERATE_FIELDS, name: text("File name for the result (default: the start of the prompt)") }),
+    parametersSchema: schema([], { ...GENERATE_FIELDS, name: text("File name for the result (default: the start of the prompt)") }),
   },
   {
     name: "studio-generation-status",
