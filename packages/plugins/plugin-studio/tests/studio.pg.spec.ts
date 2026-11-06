@@ -457,6 +457,77 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
     });
   });
 
+  describe("reference images (PAR-7986)", () => {
+    const GROK = "xai/grok-imagine-image-2.0";
+    beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
+
+    /** Records what reached the provider, so the test can check the field; real code never keeps bodies. */
+    function recordingRuntime() {
+      const bodies: Array<{ kind: "estimate" | "submit"; model: string; body: Record<string, unknown> }> = [];
+      const inner = new FakeProvider();
+      const spy: GenerationProvider = {
+        key: inner.key,
+        estimate: async (model, body) => (bodies.push({ kind: "estimate", model, body }), 0.5),
+        submit: async (model, body) => (bodies.push({ kind: "submit", model, body }), inner.submit(REQUEST.model)),
+        status: () => inner.status(),
+      };
+      return { bodies, runtime: runtimeWith(spy) };
+    }
+
+    async function libraryImage(issueId: string, projectId: string) {
+      const out = await requestGeneration(world.ctx, CO, REQUEST, work(issueId, projectId), runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      resetQueueStateForTests();
+      return out.generationIds[0]!;
+    }
+
+    it("stores only asset ids and sends short-lived signed links in the model's field", async () => {
+      const ref = await libraryImage("issue-acme", "project-acme");
+      const { bodies, runtime: rec } = recordingRuntime();
+      const out = await requestGeneration(world.ctx, CO, { model: GROK, prompt: "same chair, blue", referenceAssetIds: [ref] }, acmeWork(), rec);
+      await processQueue(world.ctx, rec);
+
+      const sent = bodies.find((b) => b.kind === "submit")!;
+      const urls = sent.body.image_urls as string[];
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toMatch(/X-Amz-Expires=1800/);
+      expect(urls[0]).toContain(`studio/${CO}/company-acme/${ref}/`);
+
+      const stored = (await rows(world, `SELECT params, reference_asset_ids FROM ${T("generations")} WHERE id = $1`, [out.generationIds[0]]))[0]!;
+      expect(stored.reference_asset_ids).toEqual([ref]);
+      const seen = JSON.stringify([stored, out, await generationStatus(world.ctx, CO, { generationId: out.generationIds[0]! }, "project-acme"), world.comments]);
+      expect(seen).not.toMatch(/X-Amz|r2\.cloudflarestorage|cdn\.example\.com/);
+    });
+
+    it("refuses a reference from another client or another company, before any cost", async () => {
+      const acme = await libraryImage("issue-acme", "project-acme");
+      const { bodies, runtime: rec } = recordingRuntime();
+      await expect(requestGeneration(world.ctx, CO, { model: GROK, prompt: "x", referenceAssetIds: [acme] }, work("issue-globex", "project-globex"), rec)).rejects.toMatchObject({ code: "wrong_client" });
+      await expect(requestGeneration(world.ctx, OTHER_CO, { model: GROK, prompt: "x", referenceAssetIds: [acme] }, AGENT, rec)).rejects.toMatchObject({ code: "unknown_asset" });
+      expect(bodies).toHaveLength(0);
+    });
+
+    it("refuses references for a model that takes none, and a missing one for a model that needs one", async () => {
+      const ref = await libraryImage("issue-acme", "project-acme");
+      const { runtime: rec } = recordingRuntime();
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, referenceAssetIds: [ref] }, acmeWork(), rec)).rejects.toMatchObject({ code: "bad_request" });
+      await expect(requestGeneration(world.ctx, CO, { model: "kling-video/v3.0-turbo/image-to-video", prompt: "x" }, acmeWork(), rec)).rejects.toMatchObject({ code: "bad_request" });
+      await expect(requestGeneration(world.ctx, CO, { model: GROK, prompt: "x", referenceAssetIds: ["../etc"] }, acmeWork(), rec)).rejects.toMatchObject({ code: "bad_request" });
+    });
+
+    it("fails with a refund, without sending, when a reference is gone by send time", async () => {
+      const ref = await libraryImage("issue-acme", "project-acme");
+      const { bodies, runtime: rec } = recordingRuntime();
+      const out = await requestGeneration(world.ctx, CO, { model: GROK, prompt: "x", referenceAssetIds: [ref] }, acmeWork(), rec);
+      await pg.client.query(`UPDATE ${T("assets")} SET client_ref = 'globex' WHERE id = $1`, [ref]);
+      await processQueue(world.ctx, rec);
+      expect(bodies.filter((b) => b.kind === "submit")).toHaveLength(0);
+      const row = (await rows(world, `SELECT status, error_code FROM ${T("generations")} WHERE id = $1`, [out.generationIds[0]]))[0];
+      expect(row).toEqual({ status: "failed", error_code: "reference_unavailable" });
+    });
+  });
+
   describe("isolation", () => {
     beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
 

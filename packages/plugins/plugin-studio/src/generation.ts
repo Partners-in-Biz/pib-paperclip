@@ -17,17 +17,20 @@ import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { storeAsset } from "./assets.js";
+import { getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { adjust, assertFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
-import { assertModel, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
+import { assertReferenceCount, findModel, referenceIds } from "./models.js";
+import { assertModel, FAKE_OUTPUT_PNG_BASE64, fakeProvider, fakeProviderOn, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
 import { assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
-import { MAX_ASSET_BYTES, sniffMime } from "./storage.js";
+import { MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
 
 export const MAX_BATCH = 8;
+/** How long the provider may fetch a reference image. Built just before the send, never stored or logged. */
+const REFERENCE_LINK_SEC = 30 * 60;
 const MAX_PARAMS_BYTES = 16 * 1024;
 const MAX_IN_FLIGHT = 4;
 const LOST_AFTER_MS = 15 * 60 * 1000;
@@ -72,6 +75,7 @@ export interface GenerationRow {
   updated_at: unknown;
   submitted_at: unknown;
   finished_at: unknown;
+  reference_asset_ids?: unknown;
 }
 
 function isPrivateAddress(ip: string): boolean {
@@ -181,10 +185,45 @@ export async function downloadOutput(url: string, options: DownloadOptions = {})
 }
 
 export const defaultRuntime: Runtime = {
-  provider: async (config) => higgsfieldProvider(await config.higgsfieldKey()),
-  download: (url) => downloadOutput(url),
+  provider: async (config) => (fakeProviderOn() ? fakeProvider() : higgsfieldProvider(await config.higgsfieldKey())),
+  download: (url) => (fakeProviderOn() ? Promise.resolve(new Uint8Array(Buffer.from(FAKE_OUTPUT_PNG_BASE64, "base64"))) : downloadOutput(url)),
   now: () => Date.now(),
 };
+
+type ReferenceRow = Awaited<ReturnType<typeof getAssetRow>>;
+
+/** Each reference must be an image in this company, filed under the request's own client (or own work). */
+async function referenceRows(ctx: PluginContext, companyId: string, scope: ClientScope, ids: string[]): Promise<ReferenceRow[]> {
+  const rows: ReferenceRow[] = [];
+  for (const id of ids) {
+    const row = await getAssetRow(ctx, companyId, id);
+    if ((row.client_kind ?? null) !== (scope?.kind ?? null) || (row.client_ref ?? null) !== (scope?.id ?? null)) {
+      throw new StudioError(`Asset ${id} is filed under another client, so it can't be a reference here.`, "wrong_client");
+    }
+    if (row.kind !== "image") throw new StudioError(`Asset ${id} is not an image, so it can't be a reference.`, "bad_request");
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** The provider body with short-lived signed links to the references, in the model's own field. Never stored. */
+async function withReferences(config: StudioConfig, companyId: string, model: string, body: Record<string, unknown>, rows: ReferenceRow[]): Promise<Record<string, unknown>> {
+  if (rows.length === 0) return body;
+  const field = findModel(model)?.refField;
+  if (!field) throw new StudioError(`${model} takes no reference images in Studio.`, "bad_request");
+  const bucket = await config.bucket();
+  const urls = rows.map((row) => objectUrl(bucket, companyId, "GET", row.r2_key, REFERENCE_LINK_SEC));
+  return { ...body, [field]: field === "image_url" ? urls[0] : urls };
+}
+
+function storedReferenceIds(value: unknown): string[] {
+  const list = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
+}
+
+function rowScope(row: GenerationRow): ClientScope {
+  return row.client_ref ? ({ kind: row.client_kind, id: row.client_ref } as ClientScope) : null;
+}
 
 function target(row: GenerationRow): LedgerTarget {
   return { generationId: row.id, companyId: row.company_id, clientKind: row.client_kind, clientRef: row.client_ref, period: row.period };
@@ -198,7 +237,7 @@ export interface Actor {
   projectId?: string | null;
 }
 
-export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown> } {
+export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown>; references: string[] } {
   const presetId = params.preset === undefined || params.preset === null || params.preset === "" ? null : params.preset;
   const preset = presetId === null ? null : getPhotoPreset(presetId);
   if (presetId !== null && !preset) throw new StudioError(`Unknown preset ${String(presetId)}. Known presets: ${PHOTO_PRESETS.map((p) => p.id).join(", ")}.`, "unknown_preset");
@@ -212,14 +251,21 @@ export function requestBody(params: Record<string, unknown>): { model: string; p
   const defaults = preset ? { aspect_ratio: DEFAULT_PRESET_RATIO } : {};
   const body = { ...defaults, ...(extra as Record<string, unknown>), prompt };
   if (JSON.stringify(body).length > MAX_PARAMS_BYTES) throw new StudioError("The request is too long.", "bad_request");
-  return { model, prompt, body };
+  const references = referenceIds(params.referenceAssetIds);
+  const field = findModel(model)?.refField;
+  if (references.length > 0 && field && field in body) throw new StudioError(`Pass reference images as referenceAssetIds, not as ${field}.`, "bad_request");
+  // A caller may still give its own public link in the model's field; then the minimum is met without library assets.
+  if (!(field && field in body)) assertReferenceCount(model, references.length);
+  return { model, prompt, body, references };
 }
 
 export async function estimateGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
-  const { model, body } = requestBody(params);
+  const { model, body, references } = requestBody(params);
   const batch = batchSize(params);
   const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
-  const each = await (await runtime.provider(new StudioConfig(ctx, companyId))).estimate(model, body);
+  const config = new StudioConfig(ctx, companyId);
+  const refs = await referenceRows(ctx, companyId, where.scope, references);
+  const each = await (await runtime.provider(config)).estimate(model, await withReferences(config, companyId, model, body, refs));
   const check = await capCheck(ctx, companyId, where.scope);
   return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining };
 }
@@ -239,12 +285,14 @@ function presetName(params: Record<string, unknown>, prompt: string): string {
 }
 
 export async function requestGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
-  const { model, prompt, body } = requestBody(params);
+  const { model, prompt, body, references } = requestBody(params);
   const batch = batchSize(params);
   const projectId = actor.projectId ?? null;
   const where: ResolvedScope = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
-  const provider = await runtime.provider(new StudioConfig(ctx, companyId));
-  const each = await provider.estimate(model, body);
+  const config = new StudioConfig(ctx, companyId);
+  const refs = await referenceRows(ctx, companyId, where.scope, references);
+  const provider = await runtime.provider(config);
+  const each = await provider.estimate(model, await withReferences(config, companyId, model, body, refs));
   const total = credits(each * batch);
   const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : (presetName(params, prompt));
   const groupId = randomUUID();
@@ -256,9 +304,9 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
     assertFits(check, total);
     for (const id of ids) {
       await ctx.db.execute(
-        `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, 'queued', $17, $18)`,
-        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each],
+        `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, 'queued', $17, $18, $19::jsonb)`,
+        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each, JSON.stringify(references)],
       );
       await reserve(ctx, { generationId: id, companyId, clientKind: where.scope?.kind ?? null, clientRef: where.scope?.id ?? null, period }, each);
     }
@@ -392,7 +440,7 @@ export async function processQueue(ctx: PluginContext, runtime: Runtime = defaul
       if (until && until > runtime.now()) continue;
       if ((inFlight.get(row.company_id) ?? 0) >= MAX_IN_FLIGHT) continue;
       try {
-        const outcome = await submit(ctx, runtime, row, await handle(row.company_id).provider);
+        const outcome = await submit(ctx, runtime, row, await handle(row.company_id).provider, handle(row.company_id).config);
         if (outcome === "submitted") {
           count(row.company_id, 1);
           totals.submitted += 1;
@@ -408,14 +456,31 @@ export async function processQueue(ctx: PluginContext, runtime: Runtime = defaul
   return totals;
 }
 
-async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, provider: GenerationProvider): Promise<"submitted" | "failed" | "waiting" | "skipped"> {
+/** Reference problems found at send time: nothing was sent, so the row fails with a refund. */
+const REFERENCE_ERRORS = ["unknown_asset", "wrong_client", "bad_request"];
+
+async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, provider: GenerationProvider, config: StudioConfig): Promise<"submitted" | "failed" | "waiting" | "skipped"> {
   // Survives a restart between the insert and its ledger row.
   await reserve(ctx, target(row), num(row.estimated_credits));
+  let body = typeof row.params === "string" ? (JSON.parse(row.params) as Record<string, unknown>) : (row.params as Record<string, unknown>);
+  const references = storedReferenceIds(row.reference_asset_ids);
+  if (references.length > 0) {
+    // Checked again and signed only now, before the claim: a missing setting leaves the row queued, as below.
+    try {
+      body = await withReferences(config, row.company_id, row.model, body, await referenceRows(ctx, row.company_id, rowScope(row), references));
+    } catch (error) {
+      if (!(error instanceof StudioError) || !REFERENCE_ERRORS.includes(error.code)) throw error;
+      // Claim first, so two workers can't both fail (and refund) the same row.
+      const claimed = await ctx.db.execute(`UPDATE ${table(ctx, "generations")} SET status = 'submitting', updated_at = now() WHERE id = $1 AND status = 'queued'`, [row.id]);
+      if (!claimed.rowCount) return "skipped";
+      await fail(ctx, runtime, row, "reference_unavailable", error.message, { refund: true });
+      return "failed";
+    }
+  }
   const claim = await ctx.db.execute(`UPDATE ${table(ctx, "generations")} SET status = 'submitting', updated_at = now() WHERE id = $1 AND status = 'queued'`, [row.id]);
   if (!claim.rowCount) return "skipped";
   row.status = "submitting";
   try {
-    const body = typeof row.params === "string" ? (JSON.parse(row.params) as Record<string, unknown>) : (row.params as Record<string, unknown>);
     const jobId = await provider.submit(row.model, body);
     await update(ctx, row, { status: "submitted", provider_job_id: jobId, submitted_at: new Date(runtime.now()).toISOString() });
     return "submitted";

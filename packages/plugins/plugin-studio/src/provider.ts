@@ -5,6 +5,7 @@
  * The API, as verified live by hf.py (2026-10-22, 2026-10-26): v2 routes use `Authorization: Key <id>:<secret>`;
  * bodies are flat JSON; there is no balance endpoint, `estimate` is free, and HTTP 402 means really out of credits.
  */
+import { randomUUID } from "node:crypto";
 import { StudioError } from "./errors.js";
 
 export const HIGGSFIELD_BASE = "https://platform.higgsfield.ai";
@@ -62,7 +63,49 @@ export function outputUrls(node: unknown): string[] {
     }
   };
   walk(node);
-  return [...new Set([...groups.raw, ...groups.url, ...groups.image_url, ...groups.video_url])];
+  // A provider may echo the request: a signed link to one of our own reference files is never an output.
+  return [...new Set([...groups.raw, ...groups.url, ...groups.image_url, ...groups.video_url])].filter((url) => !isStorageLink(url));
+}
+
+function isStorageLink(url: string): boolean {
+  return /r2\.cloudflarestorage\.com|X-Amz-Signature=/i.test(url);
+}
+
+/** Provider answers can echo the request: no link (a signed reference link included) reaches an error, agent or log. */
+export function scrubLinks(text: string): string {
+  return text.replace(/https?:\/\/[^\s"'<>]+/gi, "<link>");
+}
+
+/** Set PIB_STUDIO_FAKE_PROVIDER=1 for local runs: generations then spend nothing and never reach Higgsfield. */
+export function fakeProviderOn(): boolean {
+  return process.env.PIB_STUDIO_FAKE_PROVIDER === "1";
+}
+
+/** A 1x1 PNG: what the fake provider's jobs "make". */
+export const FAKE_OUTPUT_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+/**
+ * A provider that spends nothing, for tests and local runs. Every job is done at once. It keeps how many jobs it
+ * took, never the request bodies, because those carry signed reference links.
+ */
+export function fakeProvider(creditsEach = 1): GenerationProvider & { readonly submitted: () => number } {
+  let count = 0;
+  return {
+    key: "fake",
+    submitted: () => count,
+    async estimate(model) {
+      assertModel(model);
+      return creditsEach;
+    },
+    async submit(model) {
+      assertModel(model);
+      count += 1;
+      return `fake-${randomUUID()}`;
+    },
+    async status() {
+      return { state: "done", urls: ["https://fake-provider.invalid/output.png"], credits: null };
+    },
+  };
 }
 
 export function higgsfieldProvider(apiKey: string, base = HIGGSFIELD_BASE): GenerationProvider {
@@ -84,7 +127,7 @@ export function higgsfieldProvider(apiKey: string, base = HIGGSFIELD_BASE): Gene
     if (res.status === 402) throw new ProviderError("The Higgsfield API balance is out of credits.", "out_of_credits");
     if (res.status === 401 || res.status === 403) throw new ProviderError(`Higgsfield refused the key (HTTP ${res.status}).`, "rejected");
     if (res.status >= 500 || res.status === 429) throw new ProviderError(`Higgsfield is unavailable (HTTP ${res.status}).`, "unavailable");
-    if (!res.ok) throw new ProviderError(`Higgsfield refused the request (HTTP ${res.status}): ${text.slice(0, 300)}`, "rejected");
+    if (!res.ok) throw new ProviderError(`Higgsfield refused the request (HTTP ${res.status}): ${scrubLinks(text).slice(0, 300)}`, "rejected");
     try {
       return text ? JSON.parse(text) : {};
     } catch {

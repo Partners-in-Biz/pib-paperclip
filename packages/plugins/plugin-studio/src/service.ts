@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, listCaps, usage } from "./ledger.js";
-import { PAGE_MODELS } from "./page.js";
+import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
 
@@ -71,5 +71,6 @@ export async function overview(ctx: PluginContext, companyId: string) {
     clients: clients.map((c) => ({ scopeKey: formatClientParam({ kind: c.kind, id: c.id }), name: c.name })),
     projects: projects.map((p) => ({ id: String(p.id), name: String((p as { name?: string | null }).name ?? p.id) })),
     models: PAGE_MODELS,
+    unavailableModels: UNAVAILABLE_MODELS,
   };
 }
