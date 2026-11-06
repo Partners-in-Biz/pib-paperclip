@@ -122,21 +122,51 @@ export function needsYouTitle(week: string): string {
   return `SEO week of ${week}`;
 }
 
-/** The weekly issue: one section per sprint (client), each rendered as the sprint's own digest. Sections without items are left out. */
+/** How many of a client's open items the weekly issue names before it points at the SEO page for the rest. */
+export const WEEKLY_TITLES_SHOWN = 5;
+const WEEKLY_TITLE_MAX = 120;
+
+/**
+ * The weekly issue: a short summary, one section per sprint (client) that has something open. The full steps and
+ * copy-ready text live on each client's SEO page: with every item in full this issue reached 300 KB.
+ */
 export function weeklyNeedsYouDescription(groups: Array<{ sprint: SprintCopy; items: NeedsYouItem[]; cockpitPath: string | null; proposals?: number }>, week: string): string {
-  const shown = groups.filter((g) => g.items.length > 0 || (g.proposals ?? 0) > 0).sort((a, b) => sprintLabel(a.sprint).localeCompare(sprintLabel(b.sprint)));
-  const lines = [`Everything the SEO Specialist needs from a person this week (week of ${week}), grouped by client. Close this issue when every item is done: it reopens if any item is not.`, ""];
+  const shown = groups
+    .filter((g) => openItems(g.items).length > 0 || (g.proposals ?? 0) > 0)
+    .sort((a, b) => sprintLabel(a.sprint).localeCompare(sprintLabel(b.sprint)));
+  const lines = [
+    `What the SEO Specialist needs from a person (week of ${week}). The full steps and copy-ready text are on each client's SEO page.`,
+    "",
+    "Mark items done on those pages. Closing this issue does not mark anything done: the plugin re-checks what it can see and reopens the issue while anything is still open.",
+    "",
+  ];
   if (shown.length === 0) lines.push("Nothing needs you right now.");
   for (const g of shown) {
+    const open = openItems(g.items);
+    const required = open.filter((i) => !i.optional);
+    const optional = open.length - required.length;
     lines.push(`## ${sprintLabel(g.sprint)}`, "");
-    if (g.items.length > 0) lines.push(needsYouDescription(g.sprint, g.items, { week, cockpitPath: g.cockpitPath }), "");
+    if (open.length > 0) {
+      const target = g.cockpitPath ? `[SEO page → Integrations](${g.cockpitPath}&tab=integrations)` : "the SEO page → Integrations";
+      lines.push(`**${required.length} open**${optional > 0 ? ` and ${optional} optional` : ""}: ${target}`, "");
+      const named = (required.length > 0 ? required : open).slice(0, WEEKLY_TITLES_SHOWN);
+      lines.push(...named.map((i) => `- ${clipTitle(i.title)}`));
+      const more = (required.length > 0 ? required.length : open.length) - named.length;
+      if (more > 0) lines.push(`- and ${more} more`);
+      lines.push("");
+    }
     const n = g.proposals ?? 0;
     if (n > 0) {
       const target = g.cockpitPath ? `[SEO page → Optimizations](${g.cockpitPath}&tab=optimizations)` : "the SEO page → Optimizations tab";
       lines.push(`${n} optimization proposal${n === 1 ? "" : "s"} waiting: approve or reject on ${target}. Closing this issue does not approve anything.`, "");
     }
   }
-  return lines.join("\n");
+  return lines.join("\n").trimEnd();
+}
+
+function clipTitle(title: string): string {
+  const flat = title.replace(/\s+/g, " ").trim();
+  return flat.length <= WEEKLY_TITLE_MAX ? flat : `${flat.slice(0, WEEKLY_TITLE_MAX - 1).trimEnd()}…`;
 }
 
 export function needsYouDescription(sprint: SprintCopy, items: NeedsYouItem[], input: { week: string; cockpitPath: string | null }): string {

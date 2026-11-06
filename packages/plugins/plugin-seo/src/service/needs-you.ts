@@ -85,16 +85,19 @@ async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mod
 
 /**
  * Create, update or close the week's one Needs you issue to match the items of every sprint that shares it. The issue
- * is shared per company per week: each sprint's digest row points at it, and its description groups the items by client.
+ * is shared per company per week and belongs to no client's project: each sprint's digest row points at it, and its
+ * description summarises the items by client. Only digests linked to the issue (or joining it now) count, so an issue
+ * that belongs to one sprint alone never shows or closes on another client's items.
  */
 async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, digest: db.NeedsYouDigest): Promise<string | null> {
   // The week's digests of every sprint, with this one as just written by the caller.
-  const siblings = (await db.getNeedsYouForWeek(env.ctx.db, sprint.companyId, digest.weekStart)).filter((d) => d.id !== digest.id && d.sprintId !== digest.sprintId);
+  const week = (await db.getNeedsYouForWeek(env.ctx.db, sprint.companyId, digest.weekStart)).filter((d) => d.id !== digest.id && d.sprintId !== digest.sprintId);
+  const issueId = digest.issueId ?? week.find((d) => d.issueId)?.issueId ?? null;
+  const siblings = week.filter((d) => !d.issueId || d.issueId === issueId);
   const all = [digest, ...siblings];
   const open = all.flatMap((d) => openItems(d.items));
   // Quiet items (optional advice such as the Google Analytics grants) never open or reopen the issue on their own.
   const loud = open.filter((i) => !i.quiet);
-  const issueId = digest.issueId ?? siblings.find((d) => d.issueId)?.issueId ?? null;
   const identifier = digest.issueIdentifier ?? siblings.find((d) => d.issueId === issueId)?.issueIdentifier ?? null;
   const description = await weeklyDescription(env, info, sprint, all);
   const link = async (id: string, ident: string | null) => {
@@ -111,7 +114,7 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
         description,
         originKind: ORIGIN.needsYou,
         originId: `weekly:${digest.weekStart}`,
-        projectId: sprint.projectId,
+        // No projectId: the issue covers several clients, so filing it under one would misfile the others.
         assigneeUserId: assignableUser(sprint.ownerUserId),
         priority: "high",
         wake: false,
@@ -128,7 +131,7 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
   const issue = await getIssue(env, sprint.companyId, issueId);
   const isOpen = issue ? OPEN_ISSUE_STATUSES.has(String(issue.status)) : false;
   if (open.length === 0) {
-    await patchIssue(env, sprint.companyId, issueId, { description, ...(isOpen ? { status: "done" } : {}) });
+    if (isOpen || issue?.description !== description) await patchIssue(env, sprint.companyId, issueId, { description, ...(isOpen ? { status: "done" } : {}) });
     if (isOpen) await commentOn(env, sprint.companyId, issueId, "Every item is done. The SEO Specialist carries on.");
     for (const d of all) await db.upsertNeedsYou(env.ctx.db, { ...d, status: "done" });
   } else if (issue && !isOpen && loud.length === 0) {
@@ -136,7 +139,8 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     // person closing it again). The items stay on the digest, the page and the Needs you tool.
     if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   } else {
-    await patchIssue(env, sprint.companyId, issueId, { description, ...(issue && !isOpen ? { status: "todo" } : {}) });
+    // Skip a patch that changes nothing: the daily re-check calls this for every sprint, and each patch is logged in full.
+    if (!isOpen || issue?.description !== description) await patchIssue(env, sprint.companyId, issueId, { description, ...(issue && !isOpen ? { status: "todo" } : {}) });
     if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   }
   return issueId;
@@ -194,7 +198,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   await db.upsertNeedsYou(env.ctx.db, next);
   const issueId = await syncDigestIssue(env, info, sprint, next);
   if (merged.added && issueId && digest.issueId && !item.quiet) {
-    await commentOn(env, sprint.companyId, issueId, `New item: **${item.title}**. ${item.why}`, { pointer: "the whole item is in this issue's description" });
+    await commentOn(env, sprint.companyId, issueId, `New item for ${sprintLabel(sprint)}: **${item.title}**. ${item.why}`, { pointer: "the whole item is on the client's SEO page" });
   }
   return { issueId, added: merged.added, key: item.key };
 }
@@ -436,8 +440,9 @@ export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
 export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<number> {
   const digest = await currentDigest(env, info, sprint, "rollover");
   if (!digest) return 0;
-  // A new week: open this week's issue for the carried items (last week's closed on rollover).
-  if (!digest.issueId && openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
+  // A new week: open this week's issue for the carried items (last week's closed on rollover). An existing issue is
+  // re-rendered too, so its summary never falls behind while this sprint's own items stay quiet.
+  if (digest.issueId || openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
   let resolved = 0;
   for (const item of openItems(digest.items)) {
     if (item.check === "manual" && !isTaskHandoff(item) && !(await supersededByWpVerify(env, sprint, item))) continue;
@@ -457,7 +462,10 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   return resolved;
 }
 
-/** A person closed the digest issue: their manual items are done; checkable ones are re-checked. */
+/**
+ * A person closed the weekly issue. Closing marks nothing done: the issue is only a summary, so a close says nothing about
+ * items its reader may never have seen. What the plugin can see done closes now; the issue reopens while anything else is open.
+ */
 export async function onNeedsYouIssueUpdated(env: Env, companyId: string, issueId: string): Promise<boolean> {
   const digests = await db.getNeedsYouByIssue(env.ctx.db, companyId, issueId);
   if (digests.length === 0) return false;
@@ -466,17 +474,22 @@ export async function onNeedsYouIssueUpdated(env: Env, companyId: string, issueI
   const issue = await getIssue(env, companyId, issueId);
   if (!issue || OPEN_ISSUE_STATUSES.has(String(issue.status))) return true;
   const info = await companyInfo(env, companyId);
-  const stillOpen: string[] = [];
-  // Closing the weekly issue resolves every client group's items; what the plugin cannot see done is named by client.
   for (const digest of waiting) {
     const sprint = await db.getSprint(env.ctx.db, companyId, digest.sprintId);
-    if (!sprint) continue;
-    for (const item of openItems(digest.items)) {
-      const r = await resolveNeedsYou(env, info, sprint, item.key, "the sprint owner (closed the Needs you issue)", null, { person: true });
-      if (!r.resolved) stillOpen.push(`${sprintLabel(sprint)}: ${item.title}`);
-    }
+    if (sprint) await recheckNeedsYou(env, info, sprint);
   }
-  if (stillOpen.length > 0) await commentOn(env, companyId, issueId, `Reopened: the plugin does not see these done yet — ${stillOpen.join("; ")}.`);
+  const stillOpen: string[] = [];
+  for (const digest of await db.getNeedsYouByIssue(env.ctx.db, companyId, issueId)) {
+    // Quiet items never reopen the issue on their own.
+    const loud = openItems(digest.items).filter((i) => !i.quiet).length;
+    if (digest.status !== "open" || loud === 0) continue;
+    const sprint = await db.getSprint(env.ctx.db, companyId, digest.sprintId);
+    stillOpen.push(`${sprint ? sprintLabel(sprint) : digest.sprintId}: ${loud}`);
+  }
+  if (stillOpen.length > 0) {
+    await patchIssue(env, companyId, issueId, { status: "todo" });
+    await commentOn(env, companyId, issueId, `Reopened: closing this issue does not mark items done. Still open — ${stillOpen.join("; ")}. Mark them done on each client's SEO page → Integrations.`);
+  }
   return true;
 }
 

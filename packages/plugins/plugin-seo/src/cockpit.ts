@@ -322,7 +322,7 @@ export function staleNeedsYou(digests: Array<Scoped & { items: unknown }>, now: 
       status: "warn",
       detail: `${plural(stale.length, "item")}: ${stale.slice(0, 3).map((i) => i.title).join("; ")}${stale.length > 3 ? "…" : ""}`,
       href: sprintHref(d, "integrations"),
-      fix: "Do the steps on the sprint's Needs you issue, or mark an item done when it is.",
+      fix: "Do the steps on the sprint's SEO page → Integrations, and mark each item done when it is.",
       since: oldest,
     });
   }
