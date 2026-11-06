@@ -34,11 +34,14 @@ import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js"
 import { pickerCss } from "./ModelPicker.js";
 import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
+import { useNarrow } from "./narrow.js";
+import { PhoneReview } from "./PhoneReview.js";
+import { reviewQueue } from "./phone-review.js";
 import { CARD_LABELS, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
-interface LibraryAsset { id: string; name: string; kind: string; status?: string }
+interface LibraryAsset { id: string; name: string; kind: string; status?: string; prompt?: string | null; model?: string | null; credits?: number | null }
 interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
 interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
 interface GenRow { id: string; groupId: string; status: string; assetId: string | null; error: string | null }
@@ -286,6 +289,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const [, setTick] = useState(0);
   const canEdit = useCanEdit(companyId);
   const archive = useArchive(companyId, setNotice);
+  // At 640 px or less the board is a review screen (PAR-8094); this editor stays mounted so autosave still finishes.
+  const narrow = useNarrow();
 
   const history = useRef(new History());
   const now = useRef<Snapshot>({ nodes: [], edges: [] });
@@ -559,6 +564,21 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 
   if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>{null}</Page>;
   if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
+  if (narrow) {
+    const labels = new Map((overview.data?.models ?? []).map((m) => [m.id, m.label]));
+    return (
+      <PhoneReview
+        companyId={companyId}
+        title={board.data.title}
+        items={reviewQueue(nodes, library, (id) => inputs.get(id)?.prompt ?? "")}
+        urls={urls}
+        modelLabel={(id) => labels.get(id) ?? id}
+        canReview={canGen === true}
+        backLink={nav.linkProps("/studio-canvas")}
+        onReviewed={assets.refresh}
+      />
+    );
+  }
 
   return (
     <PageFrame style={{ maxWidth: "none", padding: 12, gap: 8 }}>

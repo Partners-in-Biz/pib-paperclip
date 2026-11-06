@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
+import { useNarrow } from "./narrow.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
 import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
@@ -239,21 +240,7 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
-const NARROW_QUERY = "(max-width: 640px)";
-
-/** True on a phone-width viewport; follows rotation and window resizes. */
-export function useNarrow(): boolean {
-  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(NARROW_QUERY).matches);
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia(NARROW_QUERY);
-    const on = () => setNarrow(mq.matches);
-    on();
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return narrow;
-}
+export { useNarrow };
 
 const cardBox = { borderRadius: "var(--radius-lg, 10px)", border: "1px solid var(--border)", overflow: "hidden", minWidth: 0 } as const;
 /** Text on media: a dark scrim keeps pills readable (AA) on any picture. */
