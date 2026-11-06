@@ -3,7 +3,8 @@ import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, us
 import { ClientCards } from "./ClientCards.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
-import { Button, errorText, Field, Input, Page, PageMessage, Section, Select, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
 interface Cap {
@@ -31,6 +32,11 @@ interface Asset {
   client: { kind: string | null; id: string; name: string | null } | null;
   version?: number;
   createdAt: string | null;
+  altText?: string | null;
+  /** From the generation that made it; null for imports. */
+  prompt?: string | null;
+  model?: string | null;
+  credits?: number | null;
 }
 
 interface Overview {
@@ -81,7 +87,6 @@ const AGENT_RUN_SCOPE = "agent_run";
 const DEFAULT_RUN_LIMIT = 2;
 const COMPANY_SCOPE = "company";
 const FINISHED = new Set(["succeeded", "failed"]);
-const STATUSES = ["draft", "approved", "rejected", "archived"];
 /** The server's signed links last 5 minutes; fetch fresh ones before that. */
 const URL_REFRESH_MS = 4 * 60 * 1000;
 const POLL_MS = 4000;
@@ -108,6 +113,7 @@ export function StudioPage({ context }: PluginPageProps) {
   const canvasNav = useHostNavigation();
   const [libraryVersion, setLibraryVersion] = useState(0);
   const [libraryClient, setLibraryClient] = useState<{ value: string; n: number } | null>(null);
+  const narrow = useNarrow();
 
   useEffect(() => {
     if (!companyId) return;
@@ -139,13 +145,32 @@ export function StudioPage({ context }: PluginPageProps) {
   return (
     <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`} actions={<a {...canvasNav.linkProps("/studio-canvas")}>Open canvas</a>}>
       {meError ? <PageMessage tone="danger" message={meError} /> : null}
-      <div role="tablist" aria-label="Studio" style={{ ...row, marginBottom: 12 }}>
-        {tabs.map(([key, label]) => (
-          <Button key={key} role="tab" aria-selected={tab === key} variant={tab === key ? "primary" : "secondary"} onClick={() => setTab(key)}>
-            {label}
-          </Button>
-        ))}
-      </div>
+      {narrow ? (
+        // Phone: a bottom tab bar (spec PAR-8040 item 7); Boards opens the canvas.
+        <nav aria-label="Studio" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", background: "var(--background)", borderTop: "1px solid var(--border)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          {(["library", "boards", "generate", "usage"] as const).map((key) => {
+            const label = key === "library" ? "Library" : key === "boards" ? "Boards" : key === "generate" ? "Generate" : "Usage";
+            const style = { minHeight: 48, display: "grid", placeItems: "center", fontSize: 13, color: tab === key ? "var(--foreground)" : "var(--muted-foreground)", fontWeight: tab === key ? 600 : 400, textDecoration: "none", background: "transparent", border: 0, font: "inherit" } as const;
+            return key === "boards" ? (
+              <a key={key} {...canvasNav.linkProps("/studio-canvas")} style={style}>
+                {label}
+              </a>
+            ) : (
+              <button key={key} type="button" aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)} style={style}>
+                {label}
+              </button>
+            );
+          })}
+        </nav>
+      ) : (
+        <div role="tablist" aria-label="Studio" style={{ ...row, marginBottom: 12 }}>
+          {tabs.map(([key, label]) => (
+            <Button key={key} role="tab" aria-selected={tab === key} variant={tab === key ? "primary" : "secondary"} onClick={() => setTab(key)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+      )}
       {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
       {tab === "library" ? (
         <ClientCards
@@ -170,6 +195,7 @@ export function StudioPage({ context }: PluginPageProps) {
         />
       ) : null}
       {tab === "usage" ? <Usage companyId={companyId} data={data} me={me} refresh={overview.refresh} /> : null}
+      {narrow ? <div aria-hidden="true" style={{ height: 64 }} /> : null}
     </Page>
   );
 }
@@ -213,6 +239,83 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
+const NARROW_QUERY = "(max-width: 640px)";
+
+/** True on a phone-width viewport; follows rotation and window resizes. */
+export function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(NARROW_QUERY).matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(NARROW_QUERY);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return narrow;
+}
+
+const cardBox = { borderRadius: "var(--radius-lg, 10px)", border: "1px solid var(--border)", overflow: "hidden", minWidth: 0 } as const;
+/** Text on media: a dark scrim keeps pills readable (AA) on any picture. */
+const scrim = "color-mix(in srgb, var(--background, black) 72%, transparent)";
+
+/** A segmented row of filter chips; a count shows after the label when given. */
+function ChipGroup({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: Array<[string, string, number?]> }) {
+  return (
+    // One row that scrolls sideways on a phone rather than wrapping inside the pill.
+    <div role="group" aria-label={label} style={{ display: "inline-flex", flexWrap: "nowrap", overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "none", gap: 2, padding: 2, border: "1px solid var(--border)", borderRadius: 999, maxWidth: "100%" }}>
+      {options.map(([v, text, n]) => (
+        <button
+          key={v || "all"}
+          type="button"
+          aria-pressed={value === v}
+          onClick={() => onChange(v)}
+          style={{ border: 0, borderRadius: 999, padding: "4px 12px", minHeight: 32, font: "inherit", fontSize: 13, cursor: "pointer", color: value === v ? "var(--foreground)" : "var(--muted-foreground)", background: value === v ? "var(--accent, var(--muted))" : "transparent", fontWeight: value === v ? 600 : 400 }}
+        >
+          {text}
+          {typeof n === "number" ? <span style={{ marginLeft: 6, opacity: 0.7 }}>{n}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Library card: 4:3 media first, status pill on it, a human title and one meta line. Videos show their first frame. */
+function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string | undefined; meta: string; onOpen: () => void }) {
+  const [duration, setDuration] = useState<number | null>(null);
+  const t = tone(statusTone(asset.status));
+  const media = { width: "100%", height: "100%", objectFit: "cover" as const, display: "block" };
+  const isVideo = asset.kind === "video";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Open ${humanTitle(asset.prompt, asset.name)}`}
+      title={asset.prompt ?? asset.name}
+      style={{ ...cardBox, textAlign: "left", background: "var(--card)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
+    >
+      <div style={{ position: "relative", aspectRatio: "4 / 3", background: "var(--muted)", width: "100%" }}>
+        {!url ? null : isVideo ? (
+          <video src={posterFrameUrl(url)} style={media} muted playsInline preload="metadata" aria-label={asset.name} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)} />
+        ) : (
+          <img src={url} alt={asset.altText ?? asset.name} style={media} loading="lazy" />
+        )}
+        <span style={{ position: "absolute", top: 8, left: 8, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: `color-mix(in srgb, ${t.solid} 30%, ${scrim})`, border: `1px solid ${t.border}`, color: "var(--foreground)" }}>{statusLabel(asset.status)}</span>
+        {isVideo ? (
+          <span aria-hidden="true" style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 36, height: 36, borderRadius: 999, display: "grid", placeItems: "center", background: scrim, color: "var(--foreground)", fontSize: 14 }}>
+            ▶
+          </span>
+        ) : null}
+        {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{formatDuration(duration)}</span> : null}
+      </div>
+      <div style={{ padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
+        <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{humanTitle(asset.prompt, asset.name)}</div>
+        <div style={{ ...muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
+      </div>
+    </button>
+  );
+}
+
 function Library({ companyId, data, version, presetClient, canReview }: { companyId: string; data: Overview; version: number; presetClient: { value: string; n: number } | null; canReview: boolean }) {
   const [client, setClient] = useState(presetClient?.value ?? "");
   useEffect(() => {
@@ -221,19 +324,40 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
   const [projectId, setProjectId] = useState("");
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");
+  const [sort, setSort] = useState<"newest" | "oldest">("newest");
   // The canvas links here with ?asset=<id> to open one file.
   const [openId, setOpenId] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("asset")));
   const [reviewed, setReviewed] = useState(0);
-  const params = useMemo(() => ({ companyId, client, projectId, kind, status, limit: 60, v: `${version}.${reviewed}` }), [companyId, client, projectId, kind, status, version, reviewed]);
-  const assets = usePluginData<{ assets: Asset[] }>("assets", params);
+  const params = useMemo(() => ({ companyId, client, projectId, kind, status, sort, limit: 60, v: `${version}.${reviewed}` }), [companyId, client, projectId, kind, status, sort, version, reviewed]);
+  const assets = usePluginData<{ assets: Asset[]; counts?: Record<string, number> }>("assets", params);
   const list = assets.data?.assets ?? [];
+  const counts = assets.data?.counts ?? {};
   const previews = usePreviewUrls(companyId, list.map((a) => a.id));
   const open = list.find((a) => a.id === openId);
+  const narrow = useNarrow();
+  const labels = useMemo(() => new Map([...(data.models ?? []), ...(data.unavailableModels ?? [])].map((m) => [m.id, m.label])), [data]);
+  const modelLabel = (id: string) => labels.get(id) ?? id;
 
   return (
     <>
       <Section title="Library">
-        <div style={{ ...grid(160), marginBottom: 12 }}>
+        <div style={{ ...row, marginBottom: 10 }}>
+          <ChipGroup
+            label="Status"
+            value={status}
+            onChange={setStatus}
+            options={[["", "All", counts.all], ["draft", "Draft", counts.draft], ["approved", "Approved", counts.approved], ["rejected", "Rejected", counts.rejected]]}
+          />
+          <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"]]} />
+          <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value === "oldest" ? "oldest" : "newest")} style={{ width: "auto" }}>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </Select>
+        </div>
+        {/* Phone: client and project fold away so the grid starts near the top (spec PAR-8040 item 7). */}
+        <details open={!narrow || client !== "" || projectId !== ""} style={{ marginBottom: 12 }}>
+          <summary style={{ ...muted, cursor: "pointer", marginBottom: 8, display: narrow ? undefined : "none" }}>More filters</summary>
+        <div style={grid(160)}>
           <Field label="Client">
             <Select aria-label="Client" value={client} onChange={(e) => setClient(e.target.value)}>
               <option value="">All</option>
@@ -255,43 +379,15 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
               ))}
             </Select>
           </Field>
-          <Field label="Kind">
-            <Select aria-label="Kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-              <option value="">All</option>
-              <option value="image">Images</option>
-              <option value="video">Videos</option>
-            </Select>
-          </Field>
-          <Field label="Status">
-            <Select aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">All</option>
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
-          </Field>
         </div>
+        </details>
         {assets.error ? <PageMessage tone="danger" message={errorText(assets.error)} /> : null}
         {previews.error ? <PageMessage tone="warning" message={`Previews: ${previews.error}`} /> : null}
-        {!assets.data && !assets.error ? <div style={muted}>Loading…</div> : null}
-        {assets.data && list.length === 0 ? <div style={muted}>No assets match these filters.</div> : null}
-        <div style={grid(180)}>
+        {assets.data && list.length === 0 ? <EmptyState compact title="No assets match these filters" description="Clear a filter, or generate something new." /> : null}
+        <div style={narrow ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 } : grid(220)}>
+          {!assets.data && !assets.error ? Array.from({ length: 8 }, (_, i) => <div key={i} aria-hidden="true" style={{ ...cardBox, aspectRatio: "4 / 3", background: "var(--muted)" }} />) : null}
           {list.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              onClick={() => setOpenId(a.id)}
-              aria-label={`Open ${a.name}`}
-              style={{ textAlign: "left", background: "transparent", border: "1px solid var(--border)", borderRadius: 10, padding: 8, cursor: "pointer", color: "inherit", minWidth: 0, font: "inherit" }}
-            >
-              <Preview kind={a.kind} name={a.name} url={previews.urls[a.id]} />
-              <div style={{ fontWeight: 600, marginTop: 6, overflowWrap: "anywhere" }}>{a.name}</div>
-              <div style={{ ...muted, overflowWrap: "anywhere" }}>
-                {a.kind} · {a.status} · {a.client?.name ?? "Own work"}
-              </div>
-            </button>
+            <LibraryCard key={a.id} asset={a} url={previews.urls[a.id]} meta={metaLine(a, modelLabel, narrow)} onOpen={() => setOpenId(a.id)} />
           ))}
         </div>
       </Section>

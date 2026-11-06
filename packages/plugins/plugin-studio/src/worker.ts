@@ -143,7 +143,7 @@ const plugin = definePlugin({
         if (!companyId) throw new StudioError("Company is required");
         return load(companyId, p);
       });
-    pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p).then((assets) => ({ assets })));
+    pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p));
     pageData("asset", (companyId, p) => assetDetail(ctx, companyId, String(p.assetId ?? "").trim()));
     pageData("client-summaries", (companyId) => clientSummaries(ctx, companyId));
     pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));

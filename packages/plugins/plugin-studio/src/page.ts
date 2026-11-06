@@ -5,7 +5,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { assetOut, getAssetRow, listAssets } from "./assets.js";
+import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
@@ -85,13 +85,16 @@ export async function pageAssets(ctx: PluginContext, companyId: string, params: 
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const kind = str(params.kind);
   if (kind && kind !== "image" && kind !== "video") throw new StudioError("kind is image or video.", "bad_request");
-  return listAssets(ctx, companyId, {
+  const filter = {
     scope: clientFilter(params.client),
     projectId: str(params.projectId),
     kind,
     status: str(params.status),
     limit: typeof params.limit === "number" ? params.limit : 60,
-  });
+    sort: params.sort === "oldest" ? ("oldest" as const) : ("newest" as const),
+  };
+  const [assets, counts] = await Promise.all([listAssets(ctx, companyId, filter), countAssetsByStatus(ctx, companyId, filter)]);
+  return { assets, counts };
 }
 
 /** One asset with where it came from: prompt, model, cost, who made it, and what it's linked to. */
