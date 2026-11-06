@@ -143,8 +143,18 @@ export function StudioPage({ context }: PluginPageProps) {
           </Button>
         ))}
       </div>
-      {tab === "library" ? <ClientCards companyId={companyId} version={libraryVersion} onOpenLibrary={(value) => setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }))} /> : null}
       {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
+      {tab === "library" ? (
+        <ClientCards
+          companyId={companyId}
+          version={libraryVersion}
+          onOpenLibrary={(value) => {
+            setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }));
+            // The cards sit below the library grid; bring the filtered grid into view.
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      ) : null}
       {tab === "generate" ? (
         <Generate
           companyId={companyId}
@@ -328,10 +338,20 @@ function AssetDetail({
       setBusy(false);
     }
   }
+  // A side panel fixed in the viewport: below the grid it opened out of sight, so a click looked like it did nothing.
   const ref = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
-    ref.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    ref.current?.focus?.();
   }, [assetId]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function download() {
     setMessage(null);
@@ -346,7 +366,27 @@ function AssetDetail({
   const d = detail.data;
   const term = { margin: 0, overflowWrap: "anywhere" as const };
   return (
-    <div ref={ref}>
+    <div
+      ref={ref}
+      role="dialog"
+      aria-modal="false"
+      aria-label={d?.asset.name ?? "Asset"}
+      tabIndex={-1}
+      style={{
+        position: "fixed",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: "min(560px, 100vw)",
+        overflowY: "auto",
+        zIndex: 50,
+        background: "var(--background, #fff)",
+        borderLeft: "1px solid var(--border)",
+        boxShadow: "0 0 24px rgba(0, 0, 0, 0.25)",
+        padding: 12,
+        boxSizing: "border-box",
+      }}
+    >
       <Section
         title={d?.asset.name ?? "Asset"}
         actions={

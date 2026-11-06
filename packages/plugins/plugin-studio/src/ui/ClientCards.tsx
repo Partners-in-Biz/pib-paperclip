@@ -1,16 +1,7 @@
 import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
 import { useEffect, useState } from "react";
 import { Button, errorText, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
-
-interface ClientSummary {
-  scopeKey: string;
-  name: string;
-  counts: { draft: number; approved: number; rejected: number };
-  used: number;
-  monthlyCap: number | null;
-  capSource: "client" | "company" | "default" | "none";
-  recentApproved: Array<{ id: string; name: string; kind: string }>;
-}
+import { clientsWithAssets, type ClientSummary } from "./clients.js";
 
 const muted = { fontSize: 13, opacity: 0.7 } as const;
 
@@ -19,7 +10,8 @@ export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: 
   const summaries = usePluginData<{ period: string; clients: ClientSummary[] }>("client-summaries", { companyId, v: version });
   const assetUrls = usePluginAction("asset-urls");
   const [urls, setUrls] = useState<Record<string, string>>({});
-  const ids = (summaries.data?.clients ?? []).flatMap((c) => c.recentApproved.map((a) => a.id));
+  const clients = clientsWithAssets(summaries.data?.clients ?? []);
+  const ids = clients.flatMap((c) => c.recentApproved.map((a) => a.id));
   const key = ids.join(",");
 
   useEffect(() => {
@@ -38,7 +30,6 @@ export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: 
   }, [companyId, key]);
 
   if (summaries.error) return <PageMessage tone="danger" message={errorText(summaries.error)} />;
-  const clients = summaries.data?.clients ?? [];
   if (!summaries.data || clients.length === 0) return null;
 
   return (

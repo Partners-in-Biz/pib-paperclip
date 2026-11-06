@@ -137,8 +137,9 @@ export async function pageGenerations(ctx: PluginContext, companyId: string, gro
   const ids = Array.isArray(groupIds) ? groupIds.filter((g): g is string => typeof g === "string" && g.length > 0).slice(0, 20) : [];
   if (ids.length === 0) return { generations: [] };
   const rows = await ctx.db.query<GenerationRow>(
-    `SELECT * FROM ${table(ctx, "generations")} WHERE company_id = $1 AND group_id = ANY($2::text[]) ORDER BY created_at DESC`,
-    [companyId, ids],
+    `SELECT * FROM ${table(ctx, "generations")} WHERE company_id = $1 AND group_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))) ORDER BY created_at DESC`,
+    // Same form as the kit's textArrayParam: the host binds a JS array as a list ($2, $3), which Postgres refuses.
+    [companyId, JSON.stringify(ids)],
   );
   return {
     generations: rows.map((r) => ({
