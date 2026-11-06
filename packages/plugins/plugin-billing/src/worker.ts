@@ -157,7 +157,7 @@ import { followUpsFor, logFollowUp } from "./notes.js";
 import manifest from "./manifest.js";
 import { clientNumbering, numberingSettings, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
-import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
+import { closePopIssues, confirmPop, getPop, linkPopToPayment, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
 import { buildReports } from "./reporting.js";
 import {
@@ -301,6 +301,14 @@ const ACTIONS: Record<string, Handler> = {
       createdBy,
     }, await billingSettings(ctx, companyId));
     await closePopIssues(ctx, companyId, [requiredString(params, "popId")]);
+    return result;
+  },
+  "billing.link-pop": async (ctx, context, params) => {
+    const reviewedBy = requirePerson(context, "linking a proof of payment");
+    const companyId = requiredCompany(context);
+    const popId = requiredString(params, "popId");
+    const result = await linkPopToPayment(ctx, { companyId, popId, invoiceId: requiredString(params, "invoiceId"), reviewedBy });
+    await closePopIssues(ctx, companyId, [popId]);
     return result;
   },
   "billing.reject-pop": async (ctx, context, params) => {
