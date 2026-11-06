@@ -76,6 +76,9 @@ interface GenerationRow {
 }
 
 const DEFAULT_SCOPE = "default";
+// Mirrors AGENT_RUN_SCOPE and DEFAULT_RUN_LIMIT in ../ledger.ts.
+const AGENT_RUN_SCOPE = "agent_run";
+const DEFAULT_RUN_LIMIT = 2;
 const COMPANY_SCOPE = "company";
 const FINISHED = new Set(["succeeded", "failed"]);
 const STATUSES = ["draft", "approved", "rejected", "archived"];
@@ -703,7 +706,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
   const owner = me?.isOwner === true;
 
   const capOf = (key: string) => data.caps.find((c) => c.scopeKey === key);
-  const nameOf = (key: string) => (key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
+  const nameOf = (key: string) => (key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : key === AGENT_RUN_SCOPE ? "Per agent run" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
   const clientCaps = data.caps.filter((c) => c.scopeKey.includes(":"));
   const addable = data.clients.filter((c) => !capOf(c.scopeKey));
   const anyCap = data.caps.some((c) => c.scopeKey === COMPANY_SCOPE || c.scopeKey === DEFAULT_SCOPE);
@@ -758,6 +761,15 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           </div>
         ) : null}
         <p style={{ ...muted, marginTop: 12 }}>{owner ? "Leave a cap blank to clear it. 0 turns generation off." : "Only a company owner can change a cap."}</p>
+        <CapRow
+          label="Per agent run"
+          hint={`The most one agent run may spend. Above it the agent stops and asks a person. Blank uses the default of ${DEFAULT_RUN_LIMIT} credits; 0 stops agents generating. People on this page are not limited by it.`}
+          scopeKey={AGENT_RUN_SCOPE}
+          cap={capOf(AGENT_RUN_SCOPE)}
+          save={save}
+          busy={busy}
+          editable={owner}
+        />
       </Section>
       <Section title="Cap changes">
         {data.history.length === 0 ? <div style={muted}>No changes yet.</div> : null}

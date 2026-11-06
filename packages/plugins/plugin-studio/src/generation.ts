@@ -21,7 +21,7 @@ import { getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
-import { adjust, assertFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
+import { adjust, assertFits, assertRunFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
 import { assertReferenceCount, findModel, referenceIds } from "./models.js";
 import { assertModel, FAKE_OUTPUT_PNG_BASE64, fakeProvider, fakeProviderOn, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
@@ -302,6 +302,8 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const after = await withCompanyLock(companyId, async () => {
     const check = await capCheck(ctx, companyId, where.scope, period);
     assertFits(check, total);
+    // Agent tool calls carry a run id; people on the page don't, and they already confirm an estimate first.
+    if (actor.runId) await assertRunFits(ctx, companyId, actor.runId, total);
     for (const id of ids) {
       await ctx.db.execute(
         `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids)

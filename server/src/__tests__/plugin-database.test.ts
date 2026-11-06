@@ -188,6 +188,36 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it("forwards only operator-listed env vars, and never PAPERCLIP_* ones", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["ui.slots.register"] },
+      instanceInfo,
+      processEnv: {
+        PAPERCLIP_PLUGIN_WORKER_ENV_PASSTHROUGH: " PIB_STUDIO_FAKE_PROVIDER, PAPERCLIP_SECRET,bad-name,EMPTY_ONE",
+        PIB_STUDIO_FAKE_PROVIDER: "1",
+        PAPERCLIP_SECRET: "host-secret",
+        EMPTY_ONE: " ",
+        OPENAI_API_KEY: "openai-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      PIB_STUDIO_FAKE_PROVIDER: "1",
+    });
+  });
+
+  it("forwards nothing extra when the passthrough list is unset", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["ui.slots.register"] },
+      instanceInfo,
+      processEnv: { PIB_STUDIO_FAKE_PROVIDER: "1" },
+    });
+
+    expect(env).toEqual({ PAPERCLIP_DEPLOYMENT_MODE: "authenticated", PAPERCLIP_DEPLOYMENT_EXPOSURE: "public" });
+  });
+
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: ["ui.slots.register"] },
