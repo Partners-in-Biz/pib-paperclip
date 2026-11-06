@@ -221,7 +221,8 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
   const [projectId, setProjectId] = useState("");
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The canvas links here with ?asset=<id> to open one file.
+  const [openId, setOpenId] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("asset")));
   const [reviewed, setReviewed] = useState(0);
   const params = useMemo(() => ({ companyId, client, projectId, kind, status, limit: 60, v: `${version}.${reviewed}` }), [companyId, client, projectId, kind, status, version, reviewed]);
   const assets = usePluginData<{ assets: Asset[] }>("assets", params);

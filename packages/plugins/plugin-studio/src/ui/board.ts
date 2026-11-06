@@ -87,6 +87,51 @@ export function cascadePosition(nodes: ReadonlyArray<{ position: { x: number; y:
   return { x, y };
 }
 
+/** Gap between a source card and the result cards made next to it. */
+export const RESULT_GAP_X = 380;
+export const RESULT_GAP_Y = 280;
+export const EDGE_LABEL_OUTPUT = "generated output";
+
+/** Edges into an output card carry the label "generated output" on screen. It is not saved: it follows from the card type. */
+export function labelEdges(nodes: ReadonlyArray<{ id: string; type?: string }>, edges: Edge[]): Edge[] {
+  const outputs = new Set(nodes.filter((n) => n.type === "output").map((n) => n.id));
+  return edges.map((e) => (outputs.has(e.target) ? { ...e, label: EDGE_LABEL_OUTPUT } : e));
+}
+
+export interface ResultCards {
+  /** Existing wired output cards (not made by an earlier run) that now show a result. */
+  fills: Array<{ id: string; assetId: string }>;
+  created: FlowNode[];
+  edges: Edge[];
+}
+
+/**
+ * Where the results of a finished generation go. Wired output cards that an earlier run did not make are filled first,
+ * one result each; every other result becomes a new output card (marked `generated`) to the right of the source,
+ * joined to it by an edge, so earlier results stay on the board. `room` caps how many cards may still be added.
+ */
+export function resultCards(nodes: ReadonlyArray<FlowNode>, edges: ReadonlyArray<{ source: string; target: string }>, sourceId: string, assetIds: readonly string[], room: number, makeId: (prefix: string) => string = newId): ResultCards {
+  const out: ResultCards = { fills: [], created: [], edges: [] };
+  const src = nodes.find((n) => n.id === sourceId);
+  const ids = [...new Set(assetIds)];
+  if (!src || ids.length === 0) return out;
+  const wired = [...new Set(edges.filter((e) => e.source === sourceId).map((e) => e.target))]
+    .map((id) => nodes.find((n) => n.id === id))
+    .filter((n): n is FlowNode => n?.type === "output" && !n.data.generated);
+  wired.forEach((n, i) => out.fills.push({ id: n.id, assetId: ids[Math.min(i, ids.length - 1)] }));
+  const taken: Array<{ x: number; y: number }> = nodes.map((n) => n.position);
+  for (const assetId of ids.slice(wired.length, wired.length + Math.max(0, room))) {
+    const x = src.position.x + RESULT_GAP_X;
+    let y = src.position.y;
+    while (taken.some((p) => Math.abs(p.x - x) < RESULT_GAP_X - 20 && Math.abs(p.y - y) < RESULT_GAP_Y - 20)) y += RESULT_GAP_Y;
+    taken.push({ x, y });
+    const id = makeId("n");
+    out.created.push({ id, type: "output", position: { x, y }, data: { assetId, generated: "1" } });
+    out.edges.push({ id: makeId("e"), source: sourceId, target: id });
+  }
+  return out;
+}
+
 /** Undo and redo over whole snapshots. Push before a change; undo hands back the state to show. */
 export class History {
   private past: Snapshot[] = [];

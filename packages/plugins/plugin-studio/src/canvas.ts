@@ -26,7 +26,8 @@ const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
   image: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
   video: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
   source: { label: "label", assetId: "id" },
-  output: { label: "label", assetId: "id" },
+  // generated: set on output cards the canvas made for a finished generation (a wired output card is refilled, these are kept).
+  output: { label: "label", assetId: "id", generated: "label" },
 };
 
 function bad(message: string): never {
