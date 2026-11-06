@@ -88,7 +88,7 @@ export function cascadePosition(nodes: ReadonlyArray<{ position: { x: number; y:
 }
 
 /** Gap between a source card and the result cards made next to it. */
-export const RESULT_GAP_X = 300;
+export const RESULT_GAP_X = 380;
 export const RESULT_GAP_Y = 280;
 export const EDGE_LABEL_OUTPUT = "generated output";
 

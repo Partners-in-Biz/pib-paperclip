@@ -59,12 +59,12 @@ describe("resultCards (a finished generation becomes cards)", () => {
   const mk = (p: string) => `${p}${++k}`;
 
   it("makes one connected output card per result, next to the source, and never on top of another card", () => {
-    const nodes = [n("a", "image", 0, 0), n("blocker", "output", 300, 0)];
+    const nodes = [n("a", "image", 0, 0), n("blocker", "output", 380, 0)];
     const out = resultCards(nodes, [], "a", ["x1", "x2"], 10, mk);
     expect(out.fills).toEqual([]);
     expect(out.created.map((c) => [c.type, c.data, c.position])).toEqual([
-      ["output", { assetId: "x1", generated: "1" }, { x: 300, y: 280 }],
-      ["output", { assetId: "x2", generated: "1" }, { x: 300, y: 560 }],
+      ["output", { assetId: "x1", generated: "1" }, { x: 380, y: 280 }],
+      ["output", { assetId: "x2", generated: "1" }, { x: 380, y: 560 }],
     ]);
     expect(out.edges.map((e) => [e.source, e.target])).toEqual(out.created.map((c) => ["a", c.id]));
   });
