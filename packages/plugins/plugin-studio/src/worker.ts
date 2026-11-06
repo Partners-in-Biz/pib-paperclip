@@ -4,6 +4,7 @@ import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { reviewAsset } from "./review.js";
 import { errorText, StudioError } from "./errors.js";
+import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
@@ -53,7 +54,7 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
       const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId });
-      void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     }
     case "studio-generation-status": {
@@ -208,7 +209,7 @@ const plugin = definePlugin({
     ctx.actions.register("generate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       const out = await requestGeneration(ctx, me.companyId, request, actor);
-      void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     });
 
