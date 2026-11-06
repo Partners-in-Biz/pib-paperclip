@@ -3,17 +3,19 @@
  * source and output; connections follow canvas-rules.ts (the worker checks them again on save). Changes autosave
  * with the revision the page loaded, so a save never overwrites someone else's newer one.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
   Background,
+  BackgroundVariant,
   Handle,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useViewport,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -24,10 +26,11 @@ import {
 } from "@xyflow/react";
 import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, errorText, Field, Input, Page, PageFrame, PageHeader, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
+import { Button, errorText, Field, Input, Page, PageFrame, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
-import { cardInputs, type CardInputs } from "../canvas-inputs.js";
-import { headerCredits } from "../canvas-settings.js";
+import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
+import { effectiveValue, headerCredits } from "../canvas-settings.js";
+import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js";
 import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
 import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
@@ -50,13 +53,45 @@ const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(
 // Our card types are custom components; "output" shares a class name with React Flow's built-in output node, so its
 // default box is reset here. Edges get the host's text colour so they read on light and dark themes. The pib-ui base
 // rule `:where(svg){max-width:100%}` squeezes React Flow's edge svg (inside a 0px-wide layer) to nothing; undo it here.
+// PAR-8046 look: the board fills the page under a slim top bar, a floating dock and zoom rail, 14 px handles with a
+// 32 px hit area, media-first cards with a coloured kind chip. Kind colours reuse the host's status tokens.
 const boardCss = `
+.studio-canvas-flow { --studio-accent: var(--dashboard-run-accent, var(--ring)); --studio-scrim: color-mix(in oklab, var(--foreground) 82%, transparent); }
 .studio-canvas-flow svg { max-width: none; }
 .studio-canvas-flow .react-flow__node-output { padding: 0; width: auto; border: none; border-radius: 0; background: none; box-shadow: none; text-align: left; }
-.studio-canvas-flow .react-flow__edge-path, .studio-canvas-flow .react-flow__connection-path { stroke: var(--muted-foreground); stroke-width: 2; }
-.studio-canvas-flow .react-flow__handle { width: 10px; height: 10px; }
-.studio-canvas-layout { display: flex; gap: 8px; height: calc(100dvh - 15rem); min-height: 28rem; }
-.studio-canvas-board { position: relative; flex: 1 1 auto; min-width: 0; }
+.studio-canvas-flow .react-flow__edge-path, .studio-canvas-flow .react-flow__connection-path { stroke: var(--muted-foreground); stroke-width: 2.5; }
+.studio-canvas-flow .studio-edge-running .react-flow__edge-path { stroke: var(--studio-accent); }
+.studio-canvas-flow .react-flow__handle { width: 0.875rem; height: 0.875rem; border: 2px solid var(--studio-accent); background: var(--card); transition: transform 120ms ease, background 120ms ease; }
+.studio-canvas-flow .react-flow__handle::before { content: ""; position: absolute; inset: -0.5625rem; border-radius: 999px; }
+.studio-canvas-flow .react-flow__handle:hover, .studio-canvas-flow .react-flow__handle.connectingfrom, .studio-canvas-flow .react-flow__handle.connectingto.valid { transform: translate(-50%, -50%) scale(1.35); background: var(--studio-accent); }
+.studio-canvas-flow .react-flow__node:focus-visible, .studio-dock button:focus-visible, .studio-zoom button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.studio-card { width: 16rem; box-sizing: border-box; padding: 0.5rem; display: grid; gap: 0.5rem; border-radius: 0.75rem; background: var(--card); color: var(--card-foreground, var(--foreground)); border: 1px solid var(--border); transition: box-shadow 120ms ease, opacity 120ms ease; }
+.studio-card[data-selected="true"] { border-color: var(--studio-accent); box-shadow: var(--shadow-profile-popover); }
+.studio-card[data-dim="true"] { opacity: 0.35; }
+.studio-card-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; font-size: var(--text-compact, 13px); font-weight: 600; }
+.studio-card-head > span:nth-child(2) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-kind { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 0.375rem; font-size: var(--text-micro, 11px); font-weight: 700; color: var(--background); background: var(--kind); flex: none; }
+.studio-kind-prompt { --kind: var(--status-task-in_review); } .studio-kind-source { --kind: var(--status-task-in_progress); } .studio-kind-image { --kind: var(--status-task-todo); }
+.studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
+.studio-media { position: relative; width: 100%; overflow: hidden; border-radius: 0.5rem; background: var(--muted); }
+.studio-media > img, .studio-media > video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.studio-media-empty { display: grid; place-items: center; padding: 0.5rem; box-sizing: border-box; border: 1px dashed var(--border); background: none; color: var(--muted-foreground); font-size: var(--text-micro, 11px); text-align: center; }
+.studio-media-blur { filter: blur(0.5rem) brightness(0.7); transform: scale(1.1); }
+.studio-pill { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: var(--text-micro, 11px); font-weight: 600; white-space: nowrap; background: var(--studio-scrim); color: var(--background); }
+.studio-pill::before { content: ""; width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--tone, transparent); }
+.studio-tone-running { --tone: var(--status-task-todo); } .studio-tone-draft { --tone: var(--status-task-todo); } .studio-tone-done, .studio-tone-approved { --tone: var(--status-task-done); } .studio-tone-rejected { --tone: var(--status-task-blocked); }
+.studio-overlay { position: absolute; display: flex; gap: 0.25rem; }
+.studio-progress { position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.5rem; display: grid; gap: 0.25rem; color: var(--background); font-size: var(--text-micro, 11px); font-weight: 600; }
+.studio-progress > i { display: block; height: 0.25rem; border-radius: 999px; background: color-mix(in oklab, var(--background) 35%, transparent); overflow: hidden; }
+.studio-progress > i::after { content: ""; display: block; width: 40%; height: 100%; border-radius: inherit; background: var(--studio-accent); animation: studio-run 1.6s ease-in-out infinite; }
+@keyframes studio-run { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.studio-card-foot { display: flex; align-items: center; gap: 0.5rem; min-width: 0; color: var(--muted-foreground); font-size: var(--text-micro, 11px); }
+.studio-card-foot > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-height: 3rem; padding: 0 0.25rem; }
+.studio-topbar h1 { margin: 0; font-size: var(--text-base, 1rem); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.studio-chip { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.625rem; border: 1px solid var(--border); border-radius: 999px; font-size: var(--text-micro, 11px); color: var(--muted-foreground); white-space: nowrap; }
+.studio-canvas-layout { display: flex; gap: 0.5rem; height: calc(100dvh - 13rem); min-height: 28rem; }
+.studio-canvas-board { position: relative; flex: 1 1 auto; min-width: 0; border-radius: 0.75rem; overflow: hidden; background: var(--background); }
 .studio-canvas-panel { flex: 0 0 22rem; width: 22rem; box-sizing: border-box; display: grid; gap: 10px; align-content: start; overflow-y: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--card-foreground, var(--foreground)); }
 .studio-canvas-versions { position: relative; }
 .studio-canvas-versions-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: min(22rem, calc(100vw - 2rem)); max-height: 60dvh; overflow-y: auto; box-sizing: border-box; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--card-foreground, var(--foreground)); box-shadow: 0 4px 16px rgb(0 0 0 / 0.15); }
@@ -64,11 +99,24 @@ const boardCss = `
 @media (max-width: 640px) { .studio-canvas-versions-list { position: fixed; top: auto; left: 1rem; right: 1rem; width: auto; } }
 .studio-canvas-big { position: sticky; bottom: -12px; padding: 8px 0 12px; background: var(--card); }
 .studio-canvas-big button { width: 100%; padding-block: 12px; }
-.studio-canvas-zoom { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; gap: 4px; align-items: center; }
+.studio-float { position: absolute; z-index: 5; display: flex; align-items: center; gap: 0.125rem; padding: 0.25rem; border: 1px solid var(--border); border-radius: 0.875rem; background: color-mix(in oklab, var(--card) 85%, transparent); backdrop-filter: blur(0.75rem); box-shadow: var(--shadow-profile-popover); }
+.studio-float button { font: inherit; font-size: var(--text-compact, 13px); padding: 0.375rem 0.625rem; border: 0; border-radius: 0.625rem; background: none; color: var(--foreground); cursor: pointer; white-space: nowrap; }
+.studio-float button:hover:not(:disabled), .studio-float button[aria-pressed="true"] { background: var(--accent); }
+.studio-float button:disabled { opacity: 0.4; cursor: not-allowed; }
+.studio-float hr { align-self: stretch; width: 1px; margin: 0.25rem; border: 0; background: var(--border); }
+.studio-dock { left: 50%; bottom: 1rem; transform: translateX(-50%); max-width: calc(100% - 7rem); overflow-x: auto; }
+.studio-zoom { right: 1rem; bottom: 1rem; flex-direction: column; }
+.studio-zoom span { font-size: var(--text-micro, 11px); padding: 0.25rem 0; min-width: 2.75rem; text-align: center; }
+@media (prefers-reduced-motion: reduce) {
+  .studio-canvas-flow .react-flow__edge.animated path, .studio-progress > i::after { animation: none; }
+  .studio-canvas-flow .react-flow__handle, .studio-card { transition: none; }
+}
 @media (max-width: 640px) {
   .studio-canvas-layout { flex-direction: column; height: auto; }
-  .studio-canvas-board { flex: none; height: 55dvh; min-height: 18rem; }
+  .studio-canvas-board { flex: none; height: 60dvh; min-height: 22rem; }
   .studio-canvas-panel { flex: none; width: auto; max-height: 70dvh; }
+  .studio-dock { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; transform: none; max-width: none; }
+  .studio-zoom { right: 0.5rem; bottom: 4rem; }
 }
 `;
 const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 4, border: "1px solid var(--border)", borderRadius: 4, background: "var(--background)", color: "var(--foreground)" };
@@ -88,8 +136,11 @@ interface BoardContext {
   videos: Set<string>;
   /** Adds an image card fed by this card, so a result can be built on. */
   buildOn: (cardId: string) => void;
+  /** Cards the connection being dragged can't join. */
+  dim: Set<string>;
 }
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set(), buildOn: () => undefined });
+const NO_DIM = new Set<string>();
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set(), buildOn: () => undefined, dim: NO_DIM });
 
 /** Fresh signed preview links for the files on the board. People only: the action checks membership. */
 function usePreviews(companyId: string, ids: string[]): Record<string, string> {
@@ -398,8 +449,18 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     changed();
   }, [beforeEdit, changed]);
 
+  // While dragging a connection, cards it can't join dim.
+  const [dim, setDim] = useState<Set<string>>(NO_DIM);
+  const onConnectStart = useCallback((_: MouseEvent | TouchEvent, p: { nodeId: string | null; handleType: "source" | "target" | null }) => {
+    const from = p.nodeId;
+    if (!from) return;
+    const { nodes: ns, edges: es } = now.current;
+    setDim(new Set(ns.filter((n) => n.id !== from && (p.handleType === "target" ? connectionProblem(ns, es, n.id, from) : connectionProblem(ns, es, from, n.id)) !== null).map((n) => n.id)));
+  }, []);
+
   // React Flow drops a refused connection silently; say why.
   const onConnectEnd = useCallback((_: MouseEvent | TouchEvent, c: FinalConnectionState) => {
+    setDim(NO_DIM);
     if (c.isValid !== false || !c.fromNode || !c.toNode) return;
     const [source, target] = c.fromHandle?.type === "target" ? [c.toNode.id, c.fromNode.id] : [c.fromNode.id, c.toNode.id];
     setNotice(connectionProblem(now.current.nodes, now.current.edges, source, target));
@@ -464,7 +525,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     if (!("prompt" in patch || "label" in patch)) beforeEdit();
     flow.updateNodeData(id, patch);
   }, [beforeEdit, flow]);
-  const shownEdges = useMemo(() => labelEdges(nodes, edges), [nodes, edges]);
+  const shownEdges = useMemo(() => markRunning(nodes, labelEdges(nodes, edges)), [nodes, edges]);
+  const [selectMode, setSelectMode] = useState(false);
   const nodeTypes = useMemo(() => Object.fromEntries(NODE_TYPES.map((t) => [t, Card])), []);
   const status = conflict ? "Not saved" : { saved: "All changes saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
   const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
@@ -475,20 +537,12 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 
   return (
     <PageFrame style={{ maxWidth: "none", padding: 12, gap: 8 }}>
-      <PageHeader title={board.data.title} description={`${board.data.client?.name ?? "Own work"} · ${status}`} actions={<div style={row}>{credits ? <span aria-label="Credits this month" style={{ fontSize: 13, whiteSpace: "nowrap" }}><strong>{credits.used}</strong>{credits.cap === null ? " credits used this month · no cap set" : ` of ${credits.cap} credits used this month`}</span> : null}<a {...nav.linkProps("/studio-canvas")}>All canvases</a></div>} />
-      {conflict ? (
-        <div role="alert" style={{ ...row, padding: 10, border: "1px solid var(--destructive, #c00)", borderRadius: 6, marginBottom: 8 }}>
-          <span style={{ flex: "1 1 16rem", minWidth: 0 }}>Someone else saved this canvas after you opened it, so your latest changes were not saved. Reload to see their version, then make your changes again.</span>
-          <Button onClick={reload}>Reload canvas</Button>
-        </div>
-      ) : null}
-      <PageMessage tone="danger" message={notice ?? undefined} />
-      <div role="toolbar" aria-label="Canvas" title="Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. Select an image or video card to set it up and generate. Changes save on their own." style={row}>
-        {NODE_TYPES.map((t) => (
-          <Button key={t} variant="secondary" disabled={conflict} onClick={() => addCard(t)}>+ {CARD_LABELS[t]}</Button>
-        ))}
-        <Button variant="secondary" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo">Undo</Button>
-        <Button variant="secondary" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo">Redo</Button>
+      <header className="studio-topbar">
+        <h1>{board.data.title}</h1>
+        <span className="studio-chip">{board.data.client?.name ?? "Own work"}</span>
+        <span className="studio-chip" role="status">{status}</span>
+        <span style={{ flex: "1 1 0" }} />
+        {credits ? <span className="studio-chip" aria-label="Credits this month" style={{ color: "var(--foreground)" }}>{credits.cap === null ? `${credits.used} credits used · no cap set` : `${creditsLeft(credits.used, credits.cap)} of ${credits.cap} credits left`}</span> : null}
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
         <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} />
         {canEdit ? (
@@ -500,11 +554,18 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             {archive.busyId ? "Archiving…" : "Archive"}
           </Button>
         ) : null}
-      </div>
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos, buildOn }}>
+        <a {...nav.linkProps("/studio-canvas")} style={{ fontSize: "var(--text-compact, 13px)" }}>All canvases</a>
+      </header>
+      {conflict ? (
+        <div role="alert" style={{ ...row, padding: 10, border: "1px solid var(--destructive, #c00)", borderRadius: 6, marginBottom: 8 }}>
+          <span style={{ flex: "1 1 16rem", minWidth: 0 }}>Someone else saved this canvas after you opened it, so your latest changes were not saved. Reload to see their version, then make your changes again.</span>
+          <Button onClick={reload}>Reload canvas</Button>
+        </div>
+      ) : null}
+      <PageMessage tone="danger" message={notice ?? undefined} />
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos, buildOn, dim }}>
         <div className="studio-canvas-layout">
-        <div className="studio-canvas-board">
-        <div className="studio-canvas-flow" style={{ width: "100%", height: "100%", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+        <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
             nodes={nodes}
             edges={shownEdges}
@@ -512,6 +573,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onConnectStart={onConnectStart}
             onConnectEnd={onConnectEnd}
             isValidConnection={isValidConnection}
             onNodeDragStart={beforeEdit}
@@ -519,19 +581,26 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             defaultViewport={board.data.doc.viewport}
             nodesDraggable={!conflict}
             nodesConnectable={!conflict}
+            selectionOnDrag={selectMode}
+            panOnDrag={!selectMode}
             colorMode={dark ? "dark" : "light"}
             minZoom={0.1}
             maxZoom={4}
             proOptions={{ hideAttribution: true }}
           >
-            <Background />
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="var(--muted-foreground)" bgColor="var(--background)" />
           </ReactFlow>
-        </div>
-        <div className="studio-canvas-zoom" role="group" aria-label="Zoom">
-          <Button variant="secondary" onClick={() => void flow.zoomOut()} aria-label="Zoom out">−</Button>
-          <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
-          <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
-        </div>
+          <div className="studio-float studio-dock" role="toolbar" aria-label="Canvas" title="Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. Select an image or video card to set it up and generate. Changes save on their own.">
+            <button type="button" aria-pressed={selectMode} onClick={() => setSelectMode(!selectMode)} title="Drag on the board to select several cards">Select</button>
+            <hr />
+            {NODE_TYPES.map((t) => (
+              <button key={t} type="button" disabled={conflict} onClick={() => addCard(t)}>+ {CARD_LABELS[t]}</button>
+            ))}
+            <hr />
+            <button type="button" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo" title="Undo">↶</button>
+            <button type="button" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo" title="Redo">↷</button>
+          </div>
+          <ZoomRail />
         </div>
         {selectedCard ? (
           <SidePanel
@@ -559,46 +628,54 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   );
 }
 
+const KIND_LETTER: Record<NodeType, string> = { prompt: "T", source: "S", image: "I", video: "V", output: "O" };
+
 function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
-  const { beforeEdit, library } = useContext(BoardCtx);
+  const { beforeEdit, library, dim } = useContext(BoardCtx);
   const flow = useReactFlow<FlowNode, Edge>();
   const kind = type as NodeType;
   const set = (patch: Record<string, string>) => flow.updateNodeData(id, patch);
-  const text = (key: string, label: string, rows = 3) => (
-    <label style={{ display: "grid", gap: 2 }}>
-      <span style={muted}>{label}</span>
-      <textarea className="nodrag nowheel" rows={rows} maxLength={MAX_TEXT} value={data[key] ?? ""} onFocus={beforeEdit} onChange={(e) => set({ [key]: e.target.value })} style={{ ...fieldStyle, resize: "vertical" }} />
-    </label>
-  );
   const picked = library.find((a) => a.id === data.assetId);
+  const status = cardStatus(kind, data, picked?.status);
   return (
-    <div style={{ width: 220, boxSizing: "border-box", padding: 8, display: "grid", gap: 6, borderRadius: 8, background: "var(--card)", color: "var(--card-foreground, var(--foreground))", border: `1px solid ${selected ? "var(--primary)" : "var(--border)"}` }}>
+    <div className="studio-card" data-selected={selected ? "true" : undefined} data-dim={dim.has(id) ? "true" : undefined}>
       {acceptsInput(kind) ? <Handle type="target" position={Position.Left} /> : null}
-      <strong style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>{CARD_LABELS[kind]}</strong>
-      <input className="nodrag" aria-label="Card name" maxLength={120} placeholder="Name" value={data.label ?? ""} onFocus={beforeEdit} onChange={(e) => set({ label: e.target.value })} style={fieldStyle} />
-      {kind === "prompt" ? text("text", "Prompt", 4) : null}
+      <div className="studio-card-head">
+        <span className={`studio-kind studio-kind-${kind}`} aria-hidden="true">{KIND_LETTER[kind]}</span>
+        <span title={data.label || CARD_LABELS[kind]}>{data.label || CARD_LABELS[kind]}</span>
+        {status && kind !== "output" ? <span className={`studio-pill studio-tone-${status.tone}`}>{status.label}</span> : null}
+      </div>
+      {kind === "prompt" ? (
+        <>
+          <textarea className="nodrag nowheel" aria-label="Prompt" rows={4} maxLength={MAX_TEXT} placeholder="Describe the image or video" value={data.text ?? ""} onFocus={beforeEdit} onChange={(e) => set({ text: e.target.value })} style={{ ...fieldStyle, resize: "vertical", border: 0, background: "none", padding: 0 }} />
+          <span style={muted}>{(data.text ?? "").length} / {MAX_TEXT}</span>
+        </>
+      ) : null}
       {kind === "image" || kind === "video" ? <GenerateSummary id={id} kind={kind} data={data} /> : null}
       {kind === "source" ? (
-        <label style={{ display: "grid", gap: 2 }}>
-          <span style={muted}>Library file</span>
-          <select className="nodrag" value={data.assetId ?? ""} onFocus={beforeEdit} onChange={(e) => { const a = library.find((x) => x.id === e.target.value); set({ assetId: e.target.value, label: data.label || a?.name || "" }); }} style={fieldStyle}>
+        <>
+          <Media assetId={data.assetId} name={data.label || "Source"} ratio="4:3" empty="Pick a library file below" />
+          <select className="nodrag" aria-label="Library file" value={data.assetId ?? ""} onFocus={beforeEdit} onChange={(e) => { const a = library.find((x) => x.id === e.target.value); set({ assetId: e.target.value, label: data.label || a?.name || "" }); }} style={fieldStyle}>
             <option value="">Pick a file…</option>
             {data.assetId && !picked ? <option value={data.assetId}>File {data.assetId.slice(0, 8)}</option> : null}
             {library.map((a) => <option key={a.id} value={a.id}>{a.kind === "video" ? "Video" : "Image"}: {a.name}</option>)}
           </select>
           {library.length === 0 ? <span style={muted}>No images or videos in this library yet.</span> : null}
-        </label>
+        </>
       ) : null}
-      {kind === "output" || kind === "source" ? <CardPreview assetId={data.assetId} name={data.label || "Result"} /> : null}
-      {kind === "output" && data.assetId ? <ResultBar id={id} assetId={data.assetId} status={library.find((a) => a.id === data.assetId)?.status} /> : null}
-      {kind === "output" && !data.assetId ? <span style={muted}>Filled in when a generation runs.</span> : null}
+      {kind === "output" ? (
+        <Media assetId={data.assetId} name={data.label || "Result"} ratio="4:3" empty="Filled in when a generation runs.">
+          {status ? <div className="studio-overlay" style={{ left: "0.5rem", top: "0.5rem" }}><span className={`studio-pill studio-tone-${status.tone}`} aria-label="Review status">{status.label}</span></div> : null}
+        </Media>
+      ) : null}
+      {kind === "output" && data.assetId ? <ResultBar id={id} assetId={data.assetId} /> : null}
       {sendsOutput(kind) ? <Handle type="source" position={Position.Right} /> : null}
     </div>
   );
 }
 
-/** A result card's review badge and actions: open it in the library, build on it, download it. */
-function ResultBar({ id, assetId, status }: { id: string; assetId: string; status: string | undefined }) {
+/** A result card's actions: open it in the library, build on it, download it. */
+function ResultBar({ id, assetId }: { id: string; assetId: string }) {
   const { companyId, buildOn } = useContext(BoardCtx);
   const nav = useHostNavigation();
   const assetUrl = usePluginAction("asset-url");
@@ -609,10 +686,8 @@ function ResultBar({ id, assetId, status }: { id: string; assetId: string; statu
       .then((out) => window.open((out as { url: string }).url, "_blank", "noopener"))
       .catch((err) => setError(errorText(err)));
   };
-  const badge = status === "approved" ? "Approved" : status === "rejected" ? "Rejected" : status ? "Review needed" : null;
   return (
     <div className="nodrag" style={{ display: "grid", gap: 4 }}>
-      {badge ? <span aria-label="Review status" style={{ ...muted, justifySelf: "start", padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 999 }}>{badge}</span> : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
         <a {...nav.linkProps(`/studio?asset=${encodeURIComponent(assetId)}`)} style={{ fontSize: 12 }}>Open in library</a>
         <Button variant="secondary" onClick={() => buildOn(id)}>Use as input</Button>
@@ -623,29 +698,70 @@ function ResultBar({ id, assetId, status }: { id: string; assetId: string; statu
   );
 }
 
-function CardPreview({ assetId, name, video }: { assetId: string | undefined; name: string; video?: boolean }) {
+/** The card's media, full width at the card's ratio, with overlays on top; a dashed frame at that ratio when empty. */
+function Media({ assetId, name, video, ratio, empty, children }: { assetId: string | undefined; name: string; video?: boolean; ratio: string | undefined; empty: string; children?: ReactNode }) {
   const { urls, videos } = useContext(BoardCtx);
-  if (!assetId) return null;
+  const style: CSSProperties = { aspectRatio: aspectCss(ratio) };
+  if (!assetId) return <div className="studio-media studio-media-empty" style={style}>{empty}</div>;
   const url = urls[assetId];
-  const box: CSSProperties = { width: "100%", height: 120, objectFit: "cover", borderRadius: 6, background: "var(--muted, rgba(127,127,127,0.12))", display: "block" };
-  if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>Loading preview…</div>;
-  if (video || videos.has(assetId)) return <video className="nodrag" src={url} style={box} muted playsInline controls preload="metadata" />;
-  return <img src={url} alt={name} style={box} />;
+  return (
+    <div className="studio-media" style={style}>
+      {!url ? <div className="studio-media-empty" style={{ height: "100%", border: 0 }}>Loading preview…</div>
+        : video || videos.has(assetId) ? <video className="nodrag" src={url} muted playsInline controls preload="metadata" />
+        : <img src={url} alt={name} />}
+      {children}
+    </div>
+  );
 }
 
-/** What an image or video card shows on the board: a one-line summary, the result, and where to configure it. */
+/** An image or video card on the board: the result first (or the run's progress over its blurred reference), then the model and prompt. */
 function GenerateSummary({ id, kind, data }: { id: string; kind: "image" | "video"; data: CardData }) {
-  const { inputs: all, models } = useContext(BoardCtx);
+  const { inputs: all, models, unavailable, urls } = useContext(BoardCtx);
   const inputs = all.get(id) ?? NO_INPUTS;
-  const model = models.find((m) => m.id === data.model);
+  // The same pick as the side panel: the saved model if this card can use it, else the first one that fits.
+  const options = modelOptions(kind, inputs.referenceAssetIds.length, models, unavailable);
+  const pick = options.find((o) => o.id === data.model && !o.disabled) ?? options.find((o) => !o.disabled);
+  const model = models.find((m) => m.id === pick?.id);
+  const ratio = effectiveValue(data.ratio, model?.ratios ?? []);
+  const resolution = effectiveValue(data.resolution, model?.resolutions ?? []);
+  const prompt = inputs.prompt || data.prompt || "";
+  const ref = inputs.referenceAssetIds[0];
+  const refUrl = ref ? urls[ref] : undefined;
+  const refs = inputs.referenceAssetIds.length;
   return (
-    <div style={{ display: "grid", gap: 4 }}>
-      <span style={{ ...muted, overflowWrap: "anywhere" }}>
-        {inputs.prompt || data.prompt ? `Prompt from ${(inputs.prompt || data.prompt).length} characters` : "No prompt yet"} · {inputs.referenceAssetIds.length} reference{inputs.referenceAssetIds.length === 1 ? "" : "s"}
-        {model ? ` · ${model.label}` : ""}
-      </span>
-      {data.groupId ? <span style={muted}>Generating…</span> : <span style={muted}>Select the card to set it up and generate.</span>}
-      <CardPreview assetId={data.assetId} name={data.label || CARD_LABELS[kind]} video={kind === "video"} />
+    <>
+      {data.groupId ? (
+        <div className="studio-media" style={{ aspectRatio: aspectCss(ratio) }}>
+          {refUrl ? <img className="studio-media-blur" src={refUrl} alt="" /> : null}
+          <div className="studio-progress" role="status"><span><span className="studio-pill studio-tone-running">Generating {kind}…</span></span><i /></div>
+        </div>
+      ) : (
+        <Media assetId={data.assetId} name={data.label || CARD_LABELS[kind]} video={kind === "video"} ratio={ratio} empty={prompt ? "Select the card to generate" : "Wire in a prompt, then select the card to generate"}>
+          <div className="studio-overlay" style={{ left: "0.5rem", bottom: "0.5rem" }}>
+            {ratio ? <span className="studio-pill">{ratio}</span> : null}
+            {resolution ? <span className="studio-pill">{resolution}</span> : null}
+          </div>
+        </Media>
+      )}
+      <div className="studio-card-foot">
+        <span title={model?.label} style={{ flex: "0 1 auto", color: "var(--foreground)" }}>{model?.label ?? "No model"}</span>
+        <span title={prompt || undefined} style={{ flex: "1 1 0" }}>{prompt || "No prompt yet"}</span>
+        {refs ? <span style={{ flex: "none" }}>{refs} ref{refs === 1 ? "" : "s"}</span> : null}
+      </div>
+    </>
+  );
+}
+
+/** Bottom-right zoom rail: in, the current zoom, out, fit. */
+function ZoomRail() {
+  const flow = useReactFlow();
+  const { zoom } = useViewport();
+  return (
+    <div className="studio-float studio-zoom" role="group" aria-label="Zoom">
+      <button type="button" aria-label="Zoom in" onClick={() => void flow.zoomIn()}>+</button>
+      <span aria-label="Zoom level">{Math.round(zoom * 100)}%</span>
+      <button type="button" aria-label="Zoom out" onClick={() => void flow.zoomOut()}>−</button>
+      <button type="button" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</button>
     </div>
   );
 }
