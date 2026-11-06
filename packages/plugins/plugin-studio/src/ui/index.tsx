@@ -76,6 +76,9 @@ interface GenerationRow {
 }
 
 const DEFAULT_SCOPE = "default";
+// Mirrors AGENT_RUN_SCOPE and DEFAULT_RUN_LIMIT in ../ledger.ts.
+const AGENT_RUN_SCOPE = "agent_run";
+const DEFAULT_RUN_LIMIT = 2;
 const COMPANY_SCOPE = "company";
 const FINISHED = new Set(["succeeded", "failed"]);
 const STATUSES = ["draft", "approved", "rejected", "archived"];
@@ -143,8 +146,18 @@ export function StudioPage({ context }: PluginPageProps) {
           </Button>
         ))}
       </div>
-      {tab === "library" ? <ClientCards companyId={companyId} version={libraryVersion} onOpenLibrary={(value) => setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }))} /> : null}
       {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
+      {tab === "library" ? (
+        <ClientCards
+          companyId={companyId}
+          version={libraryVersion}
+          onOpenLibrary={(value) => {
+            setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }));
+            // The cards sit below the library grid; bring the filtered grid into view.
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      ) : null}
       {tab === "generate" ? (
         <Generate
           companyId={companyId}
@@ -328,10 +341,20 @@ function AssetDetail({
       setBusy(false);
     }
   }
+  // A side panel fixed in the viewport: below the grid it opened out of sight, so a click looked like it did nothing.
   const ref = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
-    ref.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    ref.current?.focus?.();
   }, [assetId]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function download() {
     setMessage(null);
@@ -346,7 +369,27 @@ function AssetDetail({
   const d = detail.data;
   const term = { margin: 0, overflowWrap: "anywhere" as const };
   return (
-    <div ref={ref}>
+    <div
+      ref={ref}
+      role="dialog"
+      aria-modal="false"
+      aria-label={d?.asset.name ?? "Asset"}
+      tabIndex={-1}
+      style={{
+        position: "fixed",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: "min(560px, 100vw)",
+        overflowY: "auto",
+        zIndex: 50,
+        background: "var(--background, #fff)",
+        borderLeft: "1px solid var(--border)",
+        boxShadow: "0 0 24px rgba(0, 0, 0, 0.25)",
+        padding: 12,
+        boxSizing: "border-box",
+      }}
+    >
       <Section
         title={d?.asset.name ?? "Asset"}
         actions={
@@ -663,7 +706,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
   const owner = me?.isOwner === true;
 
   const capOf = (key: string) => data.caps.find((c) => c.scopeKey === key);
-  const nameOf = (key: string) => (key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
+  const nameOf = (key: string) => (key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : key === AGENT_RUN_SCOPE ? "Per agent run" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
   const clientCaps = data.caps.filter((c) => c.scopeKey.includes(":"));
   const addable = data.clients.filter((c) => !capOf(c.scopeKey));
   const anyCap = data.caps.some((c) => c.scopeKey === COMPANY_SCOPE || c.scopeKey === DEFAULT_SCOPE);
@@ -718,6 +761,15 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           </div>
         ) : null}
         <p style={{ ...muted, marginTop: 12 }}>{owner ? "Leave a cap blank to clear it. 0 turns generation off." : "Only a company owner can change a cap."}</p>
+        <CapRow
+          label="Per agent run"
+          hint={`The most one agent run may spend. Above it the agent stops and asks a person. Blank uses the default of ${DEFAULT_RUN_LIMIT} credits; 0 stops agents generating. People on this page are not limited by it.`}
+          scopeKey={AGENT_RUN_SCOPE}
+          cap={capOf(AGENT_RUN_SCOPE)}
+          save={save}
+          busy={busy}
+          editable={owner}
+        />
       </Section>
       <Section title="Cap changes">
         {data.history.length === 0 ? <div style={muted}>No changes yet.</div> : null}

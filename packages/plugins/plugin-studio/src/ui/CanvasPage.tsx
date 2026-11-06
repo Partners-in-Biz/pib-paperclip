@@ -26,13 +26,23 @@ import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText, Field, Input, Page, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
-import { CARD_LABELS, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type FlowNode, type Snapshot } from "./board.js";
+import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
+import { CARD_LABELS, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
 interface LibraryAsset { id: string; name: string; kind: string }
+interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
+interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
+interface Estimate { creditsEach: number; creditsTotal: number; monthlyCap: number | null; remaining: number }
+interface GenRow { id: string; groupId: string; status: string; assetId: string | null; error: string | null }
 
 const SAVE_DELAY_MS = 1200;
+const POLL_MS = 4000;
+/** Signed links last five minutes; fetch fresh ones before that. */
+const URL_REFRESH_MS = 4 * 60 * 1000;
+const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
+const NO_INPUTS: CardInputs = { prompt: "", referenceAssetIds: [], missing: [], outputIds: [] };
 const row: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
 const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(--text-xs, 12px)" };
 // Our card types are custom components; "output" shares a class name with React Flow's built-in output node, so its
@@ -46,8 +56,37 @@ const boardCss = `
 `;
 const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 4, border: "1px solid var(--border)", borderRadius: 4, background: "var(--background)", color: "var(--foreground)" };
 
-/** What card components need from the board: undo before an edit, and the library for source pickers. */
-const BoardCtx = createContext<{ beforeEdit: () => void; library: LibraryAsset[] }>({ beforeEdit: () => undefined, library: [] });
+/** What card components need from the board: undo before an edit, the library for source pickers, and what Generate needs. */
+interface BoardContext {
+  beforeEdit: () => void;
+  library: LibraryAsset[];
+  companyId: string;
+  /** The board's client as the generate form names it ("kind:id"), or "own". */
+  client: string;
+  canGenerate: boolean | null;
+  models: PageModel[];
+  unavailable: Unavailable[];
+  inputs: Map<string, CardInputs>;
+  urls: Record<string, string>;
+  videos: Set<string>;
+}
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set() });
+
+/** Fresh signed preview links for the files on the board. People only: the action checks membership. */
+function usePreviews(companyId: string, ids: string[]): Record<string, string> {
+  const assetUrls = usePluginAction("asset-urls");
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const key = ids.join(",");
+  useEffect(() => {
+    if (!key) return setUrls({});
+    let live = true;
+    const load = () => assetUrls({ companyId, assetIds: key.split(",") }).then((out) => { if (live) setUrls((out as { urls?: Record<string, string> }).urls ?? {}); }).catch(() => undefined);
+    void load();
+    const timer = setInterval(() => void load(), URL_REFRESH_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [companyId, key]);
+  return urls;
+}
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -64,13 +103,51 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   );
 }
 
+/** True for people who may change canvases (the worker's canvasEditor check); false for viewers; null while loading. */
+function useCanEdit(companyId: string): boolean | null {
+  const meAction = usePluginAction("me");
+  const [canEdit, setCanEdit] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    meAction({ companyId })
+      .then((out) => live && setCanEdit((out as { canGenerate?: boolean }).canGenerate === true))
+      .catch(() => live && setCanEdit(false));
+    return () => {
+      live = false;
+    };
+  }, [companyId]);
+  return canEdit;
+}
+
+/** Archive a board after a confirm. Resolves true when it was archived. */
+function useArchive(companyId: string, onError: (text: string) => void) {
+  const archive = usePluginAction("canvas-archive");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const run = async (b: { id: string; title: string }) => {
+    if (!window.confirm(`Archive "${b.title}"? It leaves the canvas list.`)) return false;
+    setBusyId(b.id);
+    try {
+      await archive({ companyId, canvasId: b.id });
+      return true;
+    } catch (err) {
+      onError(errorText(err));
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  };
+  return { run, busyId };
+}
+
 function CanvasList({ companyId }: { companyId: string }) {
   const nav = useHostNavigation();
   const list = usePluginData<{ canvases: Summary[] }>("canvases", { companyId, limit: 100 });
   const create = usePluginAction("canvas-create");
+  const canEdit = useCanEdit(companyId);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const archive = useArchive(companyId, setError);
   const start = () => {
     setBusy(true);
     setError(null);
@@ -99,6 +176,16 @@ function CanvasList({ companyId }: { companyId: string }) {
             <li key={b.id} style={{ ...row, justifyContent: "space-between", minWidth: 0 }}>
               <a {...nav.linkProps(`/studio-canvas?canvas=${encodeURIComponent(b.id)}`)} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 12rem" }}>{b.title}</a>
               <span style={muted}>{b.client?.name ?? "Own work"} · {b.cards} cards · {new Date(b.updatedAt).toLocaleString()}</span>
+              {canEdit ? (
+                <Button
+                  variant="secondary"
+                  disabled={archive.busyId !== null}
+                  aria-label={`Archive ${b.title}`}
+                  onClick={() => void archive.run(b).then((done) => { if (done) { setError(null); list.refresh(); } })}
+                >
+                  {archive.busyId === b.id ? "Archiving…" : "Archive"}
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -126,6 +213,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [, setTick] = useState(0);
+  const canEdit = useCanEdit(companyId);
+  const archive = useArchive(companyId, setNotice);
 
   const history = useRef(new History());
   const now = useRef<Snapshot>({ nodes: [], edges: [] });
@@ -138,6 +227,55 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const savedGen = useRef(0);
   const reloading = useRef(false);
 
+  // Generate on a card: the same models, estimate and generate actions as the Generate tab.
+  const overview = usePluginData<{ models?: PageModel[]; unavailableModels?: Unavailable[] }>("overview", { companyId });
+  const meAction = usePluginAction("me");
+  const [canGen, setCanGen] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    meAction({ companyId })
+      .then((out) => { if (live) setCanGen((out as { canGenerate?: boolean }).canGenerate === true); })
+      .catch(() => { if (live) setCanGen(false); });
+    return () => { live = false; };
+  }, [companyId]);
+  const videos = useMemo(() => new Set(library.filter((a) => a.kind === "video").map((a) => a.id)), [library]);
+  const inputs = useMemo(
+    () => new Map(nodes.filter((n) => n.type === "image" || n.type === "video").map((n) => [n.id, cardInputs(nodes, edges, n.id, (a) => videos.has(a))] as const)),
+    [nodes, edges, videos],
+  );
+  const shown = useMemo(() => [...new Set(nodes.map((n) => n.data.assetId).filter((a): a is string => Boolean(a)))].sort().slice(0, 100), [nodes]);
+  const urls = usePreviews(companyId, shown);
+
+  // Follow the cards' running generations; a finished one fills the card and every output card it feeds.
+  const pending = useMemo(() => [...new Set(nodes.map((n) => n.data.groupId).filter((g): g is string => Boolean(g)))].sort().slice(0, 20), [nodes]);
+  const pendingKey = pending.join(",");
+  const gens = usePluginData<{ generations: GenRow[] }>("generations", { companyId, groupIds: pending });
+  const refreshGens = gens.refresh;
+  useEffect(() => {
+    if (!pendingKey) return;
+    const timer = setInterval(() => refreshGens(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [pendingKey, refreshGens]);
+  useEffect(() => {
+    const rows = gens.data?.generations ?? [];
+    if (!rows.length || conflict) return;
+    let stored = false;
+    for (const n of now.current.nodes) {
+      const mine = rows.filter((r) => r.groupId === n.data.groupId);
+      if (!n.data.groupId || !mine.length || mine.some((r) => !FINISHED.has(r.status))) continue;
+      const done = mine.find((r) => r.assetId);
+      if (done?.assetId) {
+        flow.updateNodeData(n.id, { assetId: done.assetId, groupId: "" });
+        for (const out of cardInputs(now.current.nodes, now.current.edges, n.id).outputIds) flow.updateNodeData(out, { assetId: done.assetId });
+        stored = true;
+      } else {
+        flow.updateNodeData(n.id, { groupId: "" });
+        setNotice(`${n.data.label || CARD_LABELS[n.type as NodeType]} card: the generation failed${mine[0]?.error ? `: ${mine[0].error}` : "."}`);
+      }
+    }
+    if (stored) assets.refresh();
+  }, [gens.data]);
+
   // Load the board once, and again after "Reload" on a conflict.
   useEffect(() => {
     const data = board.data;
@@ -148,6 +286,9 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     revision.current = data.revision;
     viewport.current = data.doc.viewport;
     void flow.setViewport(data.doc.viewport);
+    // Open with every card in view (a phone shows a small part of a saved desktop viewport). React Flow queues this
+    // until the new cards are measured. maxZoom 1 keeps a board with one card from zooming in on it.
+    if (snap.nodes.length > 0) void flow.fitView({ padding: 0.2, maxZoom: 1 });
     history.current.clear();
     savedGen.current = gen;
     reloading.current = false;
@@ -236,9 +377,10 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     const el = document.querySelector(".studio-canvas-flow");
     const box = el?.getBoundingClientRect();
     const centre = box ? flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }) : { x: 0, y: 0 };
-    const jitter = (nodes.length % 6) * 24;
+    // Cascade from the viewport centre: each card already at that spot pushes the new one CASCADE_STEP down-right.
+    const position = cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
     beforeEdit();
-    setNodes((ns) => [...ns, { id: newId("n"), type, position: { x: Math.round(centre.x - 110 + jitter), y: Math.round(centre.y - 60 + jitter) }, data: {} }]);
+    setNodes((ns) => [...ns, { id: newId("n"), type, position, data: {} }]);
     changed();
   };
 
@@ -295,8 +437,17 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
         <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
+        {canEdit ? (
+          <Button
+            variant="secondary"
+            disabled={archive.busyId !== null}
+            onClick={() => void archive.run({ id: canvasId, title: board.data?.title ?? "this canvas" }).then((done) => { if (done) { setState("saved"); nav.navigate("/studio-canvas"); } })}
+          >
+            {archive.busyId ? "Archiving…" : "Archive"}
+          </Button>
+        ) : null}
       </div>
-      <BoardCtx.Provider value={{ beforeEdit, library }}>
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos }}>
         <div className="studio-canvas-flow" style={{ width: "100%", height: "min(72vh, 760px)", minHeight: 420, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           <ReactFlow<FlowNode, Edge>
             nodes={nodes}
@@ -321,7 +472,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
           </ReactFlow>
         </div>
       </BoardCtx.Provider>
-      <p style={muted}>Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. Changes save on their own.</p>
+      <p style={muted}>Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. An image or video card generates from what is wired into it, after you see the cost. Changes save on their own.</p>
     </Page>
   );
 }
@@ -345,6 +496,7 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
       <input className="nodrag" aria-label="Card name" maxLength={120} placeholder="Name" value={data.label ?? ""} onFocus={beforeEdit} onChange={(e) => set({ label: e.target.value })} style={fieldStyle} />
       {kind === "prompt" ? text("text", "Prompt", 4) : null}
       {kind === "image" || kind === "video" ? text("prompt", "Extra direction") : null}
+      {kind === "image" || kind === "video" ? <GeneratePanel id={id} kind={kind} data={data} /> : null}
       {kind === "source" ? (
         <label style={{ display: "grid", gap: 2 }}>
           <span style={muted}>Library file</span>
@@ -356,8 +508,101 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
           {library.length === 0 ? <span style={muted}>No images or videos in this library yet.</span> : null}
         </label>
       ) : null}
+      {kind === "output" || kind === "source" ? <CardPreview assetId={data.assetId} name={data.label || "Result"} /> : null}
       {kind === "output" ? <span style={{ ...muted, overflowWrap: "anywhere" }}>{data.assetId ? `File ${data.assetId}` : "Filled in when a generation runs."}</span> : null}
       {sendsOutput(kind) ? <Handle type="source" position={Position.Right} /> : null}
+    </div>
+  );
+}
+
+function CardPreview({ assetId, name, video }: { assetId: string | undefined; name: string; video?: boolean }) {
+  const { urls, videos } = useContext(BoardCtx);
+  if (!assetId) return null;
+  const url = urls[assetId];
+  const box: CSSProperties = { width: "100%", height: 120, objectFit: "cover", borderRadius: 6, background: "var(--muted, rgba(127,127,127,0.12))", display: "block" };
+  if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>Loading preview…</div>;
+  if (video || videos.has(assetId)) return <video className="nodrag" src={url} style={box} muted playsInline controls preload="metadata" />;
+  return <img src={url} alt={name} style={box} />;
+}
+
+/**
+ * Generate on an image or video card: the prompt and references come from the wired cards, the person sees the
+ * credit estimate first and then confirms. The worker's estimate and generate actions apply the same person and
+ * canGenerate checks, queue, caps and ledger as the Generate tab.
+ */
+function GeneratePanel({ id, kind, data }: { id: string; kind: "image" | "video"; data: CardData }) {
+  const { companyId, client, canGenerate, models, unavailable, inputs: all, beforeEdit } = useContext(BoardCtx);
+  const flow = useReactFlow<FlowNode, Edge>();
+  const estimateAction = usePluginAction("estimate");
+  const generateAction = usePluginAction("generate");
+  const [estimate, setEstimate] = useState<Estimate | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const inputs = all.get(id) ?? NO_INPUTS;
+  const refs = inputs.referenceAssetIds;
+  const options = modelOptions(kind, refs.length, models, unavailable);
+  const model = models.find((m) => m.id === (options.find((o) => o.id === data.model && !o.disabled) ?? options.find((o) => !o.disabled))?.id);
+  const ratio = model?.ratios.includes(data.ratio ?? "") ? data.ratio : model?.ratios[0];
+  const resolution = model?.resolutions.includes(data.resolution ?? "") ? data.resolution : model?.resolutions[0];
+  const request = { companyId, model: model?.id, prompt: inputs.prompt, ratio, resolution, batchSize: 1, client, ...(refs.length ? { referenceAssetIds: refs } : {}) };
+  const key = JSON.stringify(request);
+  // Any change to what would be sent makes the shown price stale.
+  useEffect(() => setEstimate(null), [key]);
+  const set = (patch: Record<string, string>) => { beforeEdit(); flow.updateNodeData(id, patch); };
+
+  const running = Boolean(data.groupId);
+  const blocker =
+    canGenerate === false ? "Viewers can look at canvases but can't generate." :
+    !model ? `No ${kind} model takes ${refs.length} reference image${refs.length === 1 ? "" : "s"}.` :
+    !inputs.prompt ? "Wire in a prompt card or write extra direction." :
+    inputs.missing.length ? `Fix first: ${inputs.missing.join("; ")}.` : null;
+  const ready = !blocker && !busy && !running && canGenerate === true;
+
+  const run = (action: typeof estimateAction, then: (out: unknown) => void) => {
+    setBusy(true);
+    setError(null);
+    action(request).then(then).catch((err) => setError(errorText(err))).finally(() => setBusy(false));
+  };
+  const select = (label: string, value: string | undefined, values: string[], field: string) =>
+    values.length ? (
+      <select className="nodrag" aria-label={label} value={value ?? ""} onChange={(e) => set({ [field]: e.target.value })} style={fieldStyle}>
+        {values.map((v) => <option key={v} value={v}>{v}</option>)}
+      </select>
+    ) : null;
+
+  return (
+    <div style={{ display: "grid", gap: 4 }}>
+      <span style={{ ...muted, overflowWrap: "anywhere" }}>
+        {inputs.prompt ? `Prompt from ${inputs.prompt.length} characters` : "No prompt yet"} · {refs.length} reference{refs.length === 1 ? "" : "s"}
+      </span>
+      <select className="nodrag" aria-label="Model" value={model?.id ?? ""} onChange={(e) => set({ model: e.target.value })} style={fieldStyle}>
+        {!model ? <option value="">No model fits</option> : null}
+        {options.map((o) => <option key={o.id} value={o.id} disabled={o.disabled !== null}>{o.disabled ? `${o.label} · ${o.disabled}` : o.label}</option>)}
+      </select>
+      <div style={{ display: "flex", gap: 4 }}>
+        {select("Ratio", ratio, model?.ratios ?? [], "ratio")}
+        {select("Resolution", resolution, model?.resolutions ?? [], "resolution")}
+      </div>
+      {blocker && canGenerate !== null ? <span role="note" style={{ ...muted, overflowWrap: "anywhere" }}>{blocker}</span> : null}
+      {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
+      {estimate ? (
+        <span aria-live="polite" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
+          <strong>{estimate.creditsTotal} {estimate.creditsTotal === 1 ? "credit" : "credits"}.</strong> {estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}
+        </span>
+      ) : null}
+      <div className="nodrag" style={row}>
+        {running ? <span style={muted}>Generating…</span> : estimate ? (
+          <>
+            <Button disabled={!ready} onClick={() => run(generateAction, (out) => { const g = (out as { groupId?: string }).groupId; setEstimate(null); if (g) flow.updateNodeData(id, { groupId: g }); })}>
+              {busy ? "Working…" : `Generate for ${estimate.creditsTotal}`}
+            </Button>
+            <Button variant="secondary" disabled={busy} onClick={() => setEstimate(null)}>Cancel</Button>
+          </>
+        ) : (
+          <Button variant="secondary" disabled={!ready} onClick={() => run(estimateAction, (out) => setEstimate(out as Estimate))}>{busy ? "Working…" : "Estimate"}</Button>
+        )}
+      </div>
+      <CardPreview assetId={data.assetId} name={data.label || CARD_LABELS[kind]} video={kind === "video"} />
     </div>
   );
 }

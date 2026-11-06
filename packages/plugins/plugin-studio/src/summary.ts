@@ -5,7 +5,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients } from "@partnersinbiz/pib-plugin-kit";
 import { table } from "./db.js";
-import { currentPeriod, effectiveCap, listCaps, usage } from "./ledger.js";
+import { currentPeriod, effectiveCap, listCaps, usageByClient } from "./ledger.js";
 
 export interface ClientSummary {
   scopeKey: string;
@@ -19,9 +19,11 @@ export interface ClientSummary {
 
 export async function clientSummaries(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
-  const [clients, caps, countRows, recentRows] = await Promise.all([
+  // A fixed number of queries, however many CRM clients there are (it was one usage query per client: slow first load).
+  const [clients, caps, used, countRows, recentRows] = await Promise.all([
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
     listCaps(ctx, companyId),
+    usageByClient(ctx, companyId, period),
     ctx.db.query<{ client_kind: string; client_ref: string; status: string; n: unknown }>(
       `SELECT client_kind, client_ref, status, COUNT(*) AS n FROM ${table(ctx, "assets")} WHERE company_id = $1 AND client_ref IS NOT NULL GROUP BY client_kind, client_ref, status`,
       [companyId],
@@ -34,8 +36,7 @@ export async function clientSummaries(ctx: PluginContext, companyId: string) {
       [companyId],
     ),
   ]);
-  const summaries: ClientSummary[] = await Promise.all(
-    clients.map(async (c) => {
+  const summaries: ClientSummary[] = clients.map((c) => {
       const scope = { kind: c.kind, id: c.id };
       const cap = effectiveCap(caps, scope);
       const counts = { draft: 0, approved: 0, rejected: 0 };
@@ -46,12 +47,11 @@ export async function clientSummaries(ctx: PluginContext, companyId: string) {
         scopeKey: formatClientParam(scope),
         name: c.name,
         counts,
-        used: await usage(ctx, companyId, period, scope),
+        used: used.get(`${c.kind}:${c.id}`) ?? 0,
         monthlyCap: cap.monthlyCredits,
         capSource: cap.source,
         recentApproved: recentRows.filter((r) => r.client_kind === c.kind && r.client_ref === c.id).map((r) => ({ id: r.id, name: r.name, kind: r.kind })),
       };
-    }),
-  );
+    });
   return { period, clients: summaries };
 }

@@ -69,6 +69,24 @@ export function newId(prefix: string): string {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** How far each new card steps from one already sitting at the same spot. */
+export const CASCADE_STEP = 24;
+
+/**
+ * Where a new card goes: at `start` (top-left), stepped down and right by CASCADE_STEP until no card sits within
+ * half a step of that spot, so a new card never lands exactly on top of another one.
+ */
+export function cascadePosition(nodes: ReadonlyArray<{ position: { x: number; y: number } }>, start: { x: number; y: number }, step = CASCADE_STEP): { x: number; y: number } {
+  let x = Math.round(start.x);
+  let y = Math.round(start.y);
+  const near = (p: { x: number; y: number }) => Math.abs(p.x - x) < step / 2 && Math.abs(p.y - y) < step / 2;
+  for (let i = 0; i <= nodes.length && nodes.some((n) => near(n.position)); i++) {
+    x += step;
+    y += step;
+  }
+  return { x, y };
+}
+
 /** Undo and redo over whole snapshots. Push before a change; undo hands back the state to show. */
 export class History {
   private past: Snapshot[] = [];

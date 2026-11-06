@@ -22,8 +22,9 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Per card type, the data fields kept and their kind. Anything else is dropped. */
 const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
   prompt: { label: "label", text: "text" },
-  image: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label" },
-  video: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label" },
+  // assetId: the card's last result; groupId: the generation still running for it (cleared when it finishes).
+  image: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
+  video: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
   source: { label: "label", assetId: "id" },
   output: { label: "label", assetId: "id" },
 };
