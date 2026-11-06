@@ -11,25 +11,13 @@ import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { clientFilter } from "./page.js";
 import { scopeForWork, scopeInput } from "./scope.js";
+import { canConnect, emptyDoc, hasCycle, MAX_EDGES, MAX_LABEL, MAX_NODES, MAX_TEXT, MAX_TITLE, NODE_TYPES, type CanvasDoc, type CanvasEdge, type CanvasNode, type NodeType } from "./canvas-rules.js";
 
-export const NODE_TYPES = ["prompt", "image", "video", "source", "output"] as const;
-export type NodeType = (typeof NODE_TYPES)[number];
+// The rules live in canvas-rules.ts so the page bundle shares them; existing imports from this file keep working.
+export { canConnect, emptyDoc, hasCycle, MAX_EDGES, MAX_NODES, MAX_TEXT, NODE_TYPES };
+export type { CanvasDoc, CanvasEdge, CanvasNode, NodeType };
 
-export const MAX_NODES = 300;
-export const MAX_EDGES = 600;
-export const MAX_TEXT = 4000;
-const MAX_LABEL = 120;
-const MAX_TITLE = 120;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
-
-/** Which card may feed which. Outputs only come out of a generating card; prompts and sources only feed. */
-const FEEDS: Record<NodeType, readonly NodeType[]> = {
-  prompt: ["image", "video"],
-  source: ["image", "video"],
-  image: ["image", "video", "output"],
-  video: ["output"],
-  output: ["image", "video"],
-};
 
 /** Per card type, the data fields kept and their kind. Anything else is dropped. */
 const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
@@ -39,33 +27,6 @@ const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
   source: { label: "label", assetId: "id" },
   output: { label: "label", assetId: "id" },
 };
-
-export interface CanvasNode {
-  id: string;
-  type: NodeType;
-  position: { x: number; y: number };
-  data: Record<string, string>;
-}
-
-export interface CanvasEdge {
-  id: string;
-  source: string;
-  target: string;
-}
-
-export interface CanvasDoc {
-  nodes: CanvasNode[];
-  edges: CanvasEdge[];
-  viewport: { x: number; y: number; zoom: number };
-}
-
-export function emptyDoc(): CanvasDoc {
-  return { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
-}
-
-export function canConnect(from: NodeType, to: NodeType): boolean {
-  return FEEDS[from].includes(to);
-}
 
 function bad(message: string): never {
   throw new StudioError(message, "bad_canvas");
@@ -137,21 +98,6 @@ export function normalizeDoc(input: unknown): CanvasDoc {
   const vp = obj(raw.viewport);
   const zoom = coord(vp.zoom, 1);
   return { nodes, edges, viewport: { x: coord(vp.x), y: coord(vp.y), zoom: zoom > 0 ? Math.min(zoom, 8) : 1 } };
-}
-
-export function hasCycle(nodes: CanvasNode[], edges: CanvasEdge[]): boolean {
-  const out = new Map<string, string[]>();
-  for (const e of edges) out.set(e.source, [...(out.get(e.source) ?? []), e.target]);
-  const state = new Map<string, 1 | 2>();
-  const visit = (id: string): boolean => {
-    if (state.get(id) === 1) return true;
-    if (state.get(id) === 2) return false;
-    state.set(id, 1);
-    for (const next of out.get(id) ?? []) if (visit(next)) return true;
-    state.set(id, 2);
-    return false;
-  };
-  return nodes.some((n) => visit(n.id));
 }
 
 function title(value: unknown): string {

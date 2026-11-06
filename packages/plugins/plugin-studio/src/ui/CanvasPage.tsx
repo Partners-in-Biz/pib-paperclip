@@ -1,0 +1,344 @@
+/**
+ * The `studio-canvas` page: a list of boards, and one board as a React Flow canvas. Cards are prompt, image, video,
+ * source and output; connections follow canvas-rules.ts (the worker checks them again on save). Changes autosave
+ * with the revision the page loaded, so a save never overwrites someone else's newer one.
+ */
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  Background,
+  Handle,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type NodeChange,
+  type NodeProps,
+  type Viewport,
+} from "@xyflow/react";
+import flowCss from "@xyflow/react/dist/style.css";
+import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import { Button, errorText, Field, Input, Page, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
+import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
+import { CARD_LABELS, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type FlowNode, type Snapshot } from "./board.js";
+
+interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
+interface Board extends Summary { doc: CanvasDoc }
+interface LibraryAsset { id: string; name: string; kind: string }
+
+const SAVE_DELAY_MS = 1200;
+const row: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
+const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(--text-xs, 12px)" };
+const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 4, border: "1px solid var(--border)", borderRadius: 4, background: "var(--background)", color: "var(--foreground)" };
+
+/** What card components need from the board: undo before an edit, and the library for source pickers. */
+const BoardCtx = createContext<{ beforeEdit: () => void; library: LibraryAsset[] }>({ beforeEdit: () => undefined, library: [] });
+
+export function StudioCanvasPage({ context }: PluginPageProps) {
+  const host = useHostContext();
+  const companyId = context.companyId ?? host.companyId ?? null;
+  const { search } = useHostLocation();
+  const canvasId = new URLSearchParams(search).get("canvas");
+  if (!companyId) return <Page title="Studio canvas" description="Pick a company first.">{null}</Page>;
+  if (!canvasId) return <CanvasList companyId={companyId} />;
+  return (
+    <ReactFlowProvider>
+      <style>{flowCss}</style>
+      <BoardEditor key={canvasId} companyId={companyId} canvasId={canvasId} />
+    </ReactFlowProvider>
+  );
+}
+
+function CanvasList({ companyId }: { companyId: string }) {
+  const nav = useHostNavigation();
+  const list = usePluginData<{ canvases: Summary[] }>("canvases", { companyId, limit: 100 });
+  const create = usePluginAction("canvas-create");
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const start = () => {
+    setBusy(true);
+    setError(null);
+    create({ companyId, title: title.trim() || "Untitled canvas" })
+      .then((out) => nav.navigate(`/studio-canvas?canvas=${encodeURIComponent((out as { id: string }).id)}`))
+      .catch((err) => setError(errorText(err)))
+      .finally(() => setBusy(false));
+  };
+  const boards = list.data?.canvases ?? [];
+  return (
+    <Page title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<a {...nav.linkProps("/studio")}>Back to Studio</a>}>
+      <PageMessage tone="danger" message={error ?? (list.error ? errorText(list.error) : undefined)} />
+      <Section title="New canvas">
+        <div style={row}>
+          <Field label="Name">
+            <Input value={title} maxLength={120} placeholder="Untitled canvas" onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <Button disabled={busy} onClick={start}>{busy ? "Creating…" : "Create canvas"}</Button>
+        </div>
+      </Section>
+      <Section title="Canvases">
+        {!list.data && !list.error ? <span style={muted}>Loading…</span> : null}
+        {list.data && boards.length === 0 ? <span style={muted}>No canvases yet. Create one above.</span> : null}
+        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
+          {boards.map((b) => (
+            <li key={b.id} style={{ ...row, justifyContent: "space-between", minWidth: 0 }}>
+              <a {...nav.linkProps(`/studio-canvas?canvas=${encodeURIComponent(b.id)}`)} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 12rem" }}>{b.title}</a>
+              <span style={muted}>{b.client?.name ?? "Own work"} · {b.cards} cards · {new Date(b.updatedAt).toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+      </Section>
+    </Page>
+  );
+}
+
+type SaveState = "saved" | "dirty" | "saving" | "error";
+
+function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: string }) {
+  const nav = useHostNavigation();
+  const flow = useReactFlow();
+  const board = usePluginData<Board>("canvas", { companyId, canvasId });
+  const saveAction = usePluginAction("canvas-save");
+  const client = board.data?.client ? `${board.data.client.kind}:${board.data.client.id}` : undefined;
+  const assets = usePluginData<{ assets: LibraryAsset[] }>("assets", { companyId, client, limit: 60 });
+  const library = useMemo(() => (assets.data?.assets ?? []).filter((a) => a.kind === "image" || a.kind === "video"), [assets.data]);
+
+  const [nodes, setNodes] = useState<FlowNode[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [gen, setGen] = useState(0);
+  const [state, setState] = useState<SaveState>("saved");
+  const [conflict, setConflict] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [, setTick] = useState(0);
+
+  const history = useRef(new History());
+  const now = useRef<Snapshot>({ nodes: [], edges: [] });
+  now.current = { nodes, edges };
+  const genRef = useRef(gen);
+  genRef.current = gen;
+  const revision = useRef(0);
+  const viewport = useRef<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const saving = useRef(false);
+  const savedGen = useRef(0);
+  const reloading = useRef(false);
+
+  // Load the board once, and again after "Reload" on a conflict.
+  useEffect(() => {
+    const data = board.data;
+    if (!data || (loaded && !(reloading.current && data.revision !== revision.current))) return;
+    const snap = toFlow(data.doc);
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    revision.current = data.revision;
+    viewport.current = data.doc.viewport;
+    void flow.setViewport(data.doc.viewport);
+    history.current.clear();
+    savedGen.current = gen;
+    reloading.current = false;
+    setConflict(false);
+    setState("saved");
+    setLoaded(true);
+  }, [board.data]);
+
+  const changed = useCallback(() => {
+    setGen((g) => g + 1);
+    setState((s) => (s === "saving" ? s : "dirty"));
+  }, []);
+  const beforeEdit = useCallback(() => {
+    history.current.push(now.current);
+    setTick((t) => t + 1);
+  }, []);
+
+  const save = useCallback(async () => {
+    if (saving.current || conflict) return;
+    saving.current = true;
+    const at = gen;
+    setState("saving");
+    try {
+      const out = (await saveAction({ companyId, canvasId, baseRevision: revision.current, doc: fromFlow(now.current.nodes, now.current.edges, viewport.current) })) as { revision: number };
+      revision.current = out.revision;
+      savedGen.current = at;
+      setNotice(null);
+      setState(genRef.current === at ? "saved" : "dirty");
+    } catch (err) {
+      if (isConflict(err)) setConflict(true);
+      else setNotice(errorText(err));
+      setState("error");
+    } finally {
+      saving.current = false;
+    }
+  }, [companyId, canvasId, conflict, gen, saveAction]);
+
+  // Autosave a moment after the last change; one save at a time.
+  useEffect(() => {
+    // After a failed save, wait for the next change or "Save now" instead of retrying in a loop.
+    if (!loaded || conflict || gen === savedGen.current || state === "saving" || state === "error") return;
+    const t = setTimeout(() => void save(), SAVE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [gen, loaded, conflict, state, save]);
+
+  // Warn before leaving with unsaved changes.
+  useEffect(() => {
+    if (state === "saved") return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [state]);
+
+  const onNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    if (changes.some((c) => c.type === "remove")) beforeEdit();
+    setNodes((ns) => applyNodeChanges(changes, ns));
+    if (changes.some((c) => c.type === "remove" || c.type === "add" || c.type === "replace" || (c.type === "position" && c.dragging === false))) changed();
+  }, [beforeEdit, changed]);
+
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (changes.some((c) => c.type === "remove")) beforeEdit();
+    setEdges((es) => applyEdgeChanges(changes, es));
+    if (changes.some((c) => c.type === "remove" || c.type === "add")) changed();
+  }, [beforeEdit, changed]);
+
+  const onConnect = useCallback((c: Connection) => {
+    const problem = connectionProblem(now.current.nodes, now.current.edges, c.source, c.target);
+    if (problem) return setNotice(problem);
+    beforeEdit();
+    setEdges((es) => addEdge({ id: newId("e"), source: c.source, target: c.target }, es));
+    changed();
+  }, [beforeEdit, changed]);
+
+  const isValidConnection = useCallback((c: Connection | Edge) => connectionProblem(now.current.nodes, now.current.edges, c.source, c.target) === null, []);
+
+  const addCard = (type: NodeType) => {
+    if (nodes.length >= MAX_NODES) return setNotice(`A canvas holds at most ${MAX_NODES} cards.`);
+    const el = document.querySelector(".studio-canvas-flow");
+    const box = el?.getBoundingClientRect();
+    const centre = box ? flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }) : { x: 0, y: 0 };
+    const jitter = (nodes.length % 6) * 24;
+    beforeEdit();
+    setNodes((ns) => [...ns, { id: newId("n"), type, position: { x: Math.round(centre.x - 110 + jitter), y: Math.round(centre.y - 60 + jitter) }, data: {} }]);
+    changed();
+  };
+
+  const restore = (snap: Snapshot | null) => {
+    if (!snap) return;
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    changed();
+  };
+  const undo = () => restore(history.current.undo(now.current));
+  const redo = () => restore(history.current.redo(now.current));
+
+  // Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z, but not while typing in a card.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || t?.closest("input, textarea, select, [contenteditable]")) return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const reload = () => {
+    reloading.current = true;
+    board.refresh();
+  };
+
+  const nodeTypes = useMemo(() => Object.fromEntries(NODE_TYPES.map((t) => [t, Card])), []);
+  const status = conflict ? "Not saved" : { saved: "All changes saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
+  const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
+
+  if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>{null}</Page>;
+  if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
+
+  return (
+    <Page title={board.data.title} description={`${board.data.client?.name ?? "Own work"} · ${status}`} actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>
+      {conflict ? (
+        <div role="alert" style={{ ...row, padding: 10, border: "1px solid var(--destructive, #c00)", borderRadius: 6, marginBottom: 8 }}>
+          <span style={{ flex: "1 1 16rem", minWidth: 0 }}>Someone else saved this canvas after you opened it, so your latest changes were not saved. Reload to see their version, then make your changes again.</span>
+          <Button onClick={reload}>Reload canvas</Button>
+        </div>
+      ) : null}
+      <PageMessage tone="danger" message={notice ?? undefined} />
+      <div role="toolbar" aria-label="Canvas" style={{ ...row, marginBottom: 8 }}>
+        {NODE_TYPES.map((t) => (
+          <Button key={t} variant="secondary" disabled={conflict} onClick={() => addCard(t)}>+ {CARD_LABELS[t]}</Button>
+        ))}
+        <Button variant="secondary" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo">Undo</Button>
+        <Button variant="secondary" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo">Redo</Button>
+        <Button variant="secondary" onClick={() => void flow.zoomOut()} aria-label="Zoom out">−</Button>
+        <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
+        <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
+        {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
+      </div>
+      <BoardCtx.Provider value={{ beforeEdit, library }}>
+        <div className="studio-canvas-flow" style={{ width: "100%", height: "min(72vh, 760px)", minHeight: 420, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+          <ReactFlow<FlowNode, Edge>
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            isValidConnection={isValidConnection}
+            onNodeDragStart={beforeEdit}
+            onMoveEnd={(_, vp) => { viewport.current = vp; }}
+            defaultViewport={board.data.doc.viewport}
+            nodesDraggable={!conflict}
+            nodesConnectable={!conflict}
+            colorMode={dark ? "dark" : "light"}
+            minZoom={0.1}
+            maxZoom={4}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background />
+          </ReactFlow>
+        </div>
+      </BoardCtx.Provider>
+      <p style={muted}>Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. Changes save on their own.</p>
+    </Page>
+  );
+}
+
+function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
+  const { beforeEdit, library } = useContext(BoardCtx);
+  const flow = useReactFlow<FlowNode, Edge>();
+  const kind = type as NodeType;
+  const set = (patch: Record<string, string>) => flow.updateNodeData(id, patch);
+  const text = (key: string, label: string, rows = 3) => (
+    <label style={{ display: "grid", gap: 2 }}>
+      <span style={muted}>{label}</span>
+      <textarea className="nodrag nowheel" rows={rows} maxLength={MAX_TEXT} value={data[key] ?? ""} onFocus={beforeEdit} onChange={(e) => set({ [key]: e.target.value })} style={{ ...fieldStyle, resize: "vertical" }} />
+    </label>
+  );
+  const picked = library.find((a) => a.id === data.assetId);
+  return (
+    <div style={{ width: 220, boxSizing: "border-box", padding: 8, display: "grid", gap: 6, borderRadius: 8, background: "var(--card)", color: "var(--card-foreground, var(--foreground))", border: `1px solid ${selected ? "var(--primary)" : "var(--border)"}` }}>
+      {acceptsInput(kind) ? <Handle type="target" position={Position.Left} /> : null}
+      <strong style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>{CARD_LABELS[kind]}</strong>
+      <input className="nodrag" aria-label="Card name" maxLength={120} placeholder="Name" value={data.label ?? ""} onFocus={beforeEdit} onChange={(e) => set({ label: e.target.value })} style={fieldStyle} />
+      {kind === "prompt" ? text("text", "Prompt", 4) : null}
+      {kind === "image" || kind === "video" ? text("prompt", "Extra direction") : null}
+      {kind === "source" ? (
+        <label style={{ display: "grid", gap: 2 }}>
+          <span style={muted}>Library file</span>
+          <select className="nodrag" value={data.assetId ?? ""} onFocus={beforeEdit} onChange={(e) => { const a = library.find((x) => x.id === e.target.value); set({ assetId: e.target.value, label: data.label || a?.name || "" }); }} style={fieldStyle}>
+            <option value="">Pick a file…</option>
+            {data.assetId && !picked ? <option value={data.assetId}>File {data.assetId.slice(0, 8)}</option> : null}
+            {library.map((a) => <option key={a.id} value={a.id}>{a.kind === "video" ? "Video" : "Image"}: {a.name}</option>)}
+          </select>
+          {library.length === 0 ? <span style={muted}>No images or videos in this library yet.</span> : null}
+        </label>
+      ) : null}
+      {kind === "output" ? <span style={{ ...muted, overflowWrap: "anywhere" }}>{data.assetId ? `File ${data.assetId}` : "Filled in when a generation runs."}</span> : null}
+      {sendsOutput(kind) ? <Handle type="source" position={Position.Right} /> : null}
+    </div>
+  );
+}

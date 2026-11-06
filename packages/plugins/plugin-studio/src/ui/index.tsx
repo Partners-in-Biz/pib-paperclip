@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
+
+export { StudioCanvasPage } from "./CanvasPage.js";
 import { Button, errorText, Field, Input, Page, PageMessage, Section, Select, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
@@ -98,6 +100,7 @@ export function StudioPage({ context }: PluginPageProps) {
   const [me, setMe] = useState<Me | null>(null);
   const [meError, setMeError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("library");
+  const canvasNav = useHostNavigation();
   const [libraryVersion, setLibraryVersion] = useState(0);
   const [libraryClient, setLibraryClient] = useState<{ value: string; n: number } | null>(null);
 
@@ -129,7 +132,7 @@ export function StudioPage({ context }: PluginPageProps) {
   ];
 
   return (
-    <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`}>
+    <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`} actions={<a {...canvasNav.linkProps("/studio-canvas")}>Open canvas</a>}>
       {meError ? <PageMessage tone="danger" message={meError} /> : null}
       <div role="tablist" aria-label="Studio" style={{ ...row, marginBottom: 12 }}>
         {tabs.map(([key, label]) => (
