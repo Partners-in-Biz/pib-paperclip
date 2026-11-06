@@ -21,7 +21,7 @@ describe("pib-creative-studio", () => {
 
   it("walks brief, storyboard, render, R2, Drive and attach, in that order", () => {
     const md = studio.markdown;
-    const at = ["**Brief.**", "**Storyboard.**", "**Render.**", "**Store on R2.**", "**Drive.**", "**Attach to the post.**"].map((h) => md.indexOf(h));
+    const at = ["**Brief.**", "**Storyboard.**", "**Render.**", "**Store in Studio.**", "**Drive.**", "**Attach to the post.**"].map((h) => md.indexOf(h));
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
   });
@@ -29,9 +29,19 @@ describe("pib-creative-studio", () => {
   it("every tool it names is a registered Social tool (or a named tool of another plugin)", () => {
     const registered = new Set(SOCIAL_TOOLS.map((t) => t.name));
     const named = [...studio.markdown.matchAll(/`([a-z]+(?:-[a-z]+)+)`/g)].map((m) => m[1]!);
-    const other = new Set(["get-client-profile", "media-rule"]);
+    // PAR-7946: Studio tools (partnersinbiz.studio) and the higgsfield skill that explains them.
+    const studioTools = ["studio-estimate", "studio-generate", "studio-get-asset", "studio-list-assets", "studio-import-from-attachment", "studio-review-asset", "studio-link-asset"];
+    const other = new Set(["get-client-profile", "media-rule", ...studioTools]);
     expect(named.filter((n) => !registered.has(n) && !other.has(n))).toEqual([]);
-    for (const tool of ["request-creative", "import-media-from-attachment", "update-post", "validate-post", "request-review"]) expect(named).toContain(tool);
+    for (const tool of ["request-creative", "update-post", "validate-post", "request-review", ...studioTools]) expect(named).toContain(tool);
+  });
+
+  it("makes media through Studio only, never a provider key, script or the old Social import (PAR-7946)", () => {
+    const md = studio.markdown;
+    for (const old of ["HF_KEY", "HIGGSFIELD_API_KEY", "hf.py", "platform.higgsfield.ai", "`import-media-from-attachment`", "`import-media-from-url`"]) expect(md, old).not.toContain(old);
+    expect(md).toContain("partnersinbiz.studio");
+    expect(md.indexOf("`studio-estimate`")).toBeLessThan(md.indexOf("`studio-generate`"));
+    expect(md).toContain("it does not approve the post");
   });
 
   it("never lets the agent approve, schedule or publish, and keeps the scope", () => {

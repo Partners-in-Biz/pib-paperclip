@@ -11,6 +11,10 @@ Creative assets and image and video generation for people and agents. Replaces t
 
 Not here yet: review, export to Social, the generate form and Photo Studio (Phase 2), the canvas (Phase 3), hosted-client entitlement and the hosted cap ceiling (Phase 4).
 
+## The higgsfield skill
+
+`skills/higgsfield/SKILL.md` is the source of the company library skill `higgsfield` (a `local_path` company skill, not shipped in `dist`). It sends agents to the Studio tools only. Cut-over after merge (a deploy step, not done by the PR): copy it over the company skill's `SKILL.md` and remove the old `hf.py` next to it. `tests/higgsfield-skill.spec.ts` keeps it in step with `src/tools.ts`.
+
 ## Settings
 
 Per company, in the plugin's settings:
