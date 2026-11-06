@@ -6,6 +6,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { makeTranscribeStep, type TranscribeDeps } from "../src/transcribe.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const deepgramFixture = JSON.parse(readFileSync(join(here, "fixtures/deepgram-listen-dual.json"), "utf8"));
@@ -44,7 +47,7 @@ async function seedContactPrefs(companyId: string, contactId: string, language: 
   );
 }
 
-describe("transcribe step", () => {
+describe.skipIf(!available)("transcribe step", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

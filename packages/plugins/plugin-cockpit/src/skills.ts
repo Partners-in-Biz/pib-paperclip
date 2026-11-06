@@ -10,7 +10,7 @@ import { agentFacingSummary, COMPANY_SKILL_DESCRIPTION, COMPANY_SKILL_KEY, COMPA
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
 import { ACCEPTANCE_DESCRIPTION, ACCEPTANCE_FILES, ACCEPTANCE_SKILL_BODY } from "./acceptance-skill.js";
-import { CREATIVE_BAR_PATH, CREATIVE_BAR_REFERENCE, EVIDENCE_REFERENCE, EVIDENCE_REFERENCE_PATH, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
+import { CODE_REVIEW_REFERENCE, CODE_REVIEW_REFERENCE_PATH, CREATIVE_BAR_PATH, CREATIVE_BAR_REFERENCE, EVIDENCE_REFERENCE, EVIDENCE_REFERENCE_PATH, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
 import { SCREENSHOT_REFERENCE, SCREENSHOT_REFERENCE_PATH } from "./screenshots.js";
 import { TOOL_NAMES } from "./tools.js";
 
@@ -160,6 +160,8 @@ You are the company's **Reviewer**. When "Review outward-facing work before I ap
    - \`**CHANGES NEEDED**\` and one line per problem: where it is, what is wrong, the fix (give the corrected text when it is copy).
 5. Hand the issue to the approver the Reviewer section names (\`PATCH /api/issues/{id}\`: \`assigneeUserId\` to the user id it gives and \`assigneeAgentId: null\`; when it says a board member, just set \`assigneeAgentId: null\`). Leave its status as it is. This is the module's approval step: a person decides it.
 
+For a code pull request read \`references/code-review.md\` first: finding tags, the three-round cap and the verdict line.
+
 When the work must not go out as it is (wrong client, wrong language, broken), start the comment with **CHANGES NEEDED: do not approve** and hand it over the same way; the person refuses it and the agent that made it redoes it.
 
 ## Which approvals reach you
@@ -267,7 +269,7 @@ export const SKILLS: PluginManagedSkillDeclaration[] = [
     slug: SKILL_SLUGS.reviewer,
     description: REVIEWER_DESCRIPTION,
     markdown: withFrontmatter({ name: SKILL_SLUGS.reviewer, description: REVIEWER_DESCRIPTION }, REVIEWER_SKILL_BODY),
-    files: [{ path: CREATIVE_BAR_PATH, content: CREATIVE_BAR_REFERENCE }],
+    files: [{ path: CREATIVE_BAR_PATH, content: CREATIVE_BAR_REFERENCE }, { path: CODE_REVIEW_REFERENCE_PATH, content: CODE_REVIEW_REFERENCE }],
   },
   {
     skillKey: COMPANY_SKILL_KEY,

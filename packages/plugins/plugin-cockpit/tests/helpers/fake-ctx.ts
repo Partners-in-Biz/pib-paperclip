@@ -109,7 +109,7 @@ export function fakeCtx(options: {
   const runStatusMap = options.runStatus ?? {};
   const db = createFakeDb(store, {
     namespace: NAMESPACE,
-    coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"],
+    coreReadTables: ["issues", "issue_comments", "heartbeat_runs", "issue_relations", "projects"],
     routes: [
       // The operations watch (watch.ts): rows a test seeds in `store.watch_<rule>` (an Error there makes that read fail); none by default.
       // They come before the generic routes below.

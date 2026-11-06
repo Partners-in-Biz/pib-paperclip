@@ -3,6 +3,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { ErasedError, MAX_ATTEMPTS, runMediaPipeline, raiseDeadIssues, type PipelineSteps, type PipelineStepCtx, type StepResult } from "../src/pipeline.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 interface TestDb {
   db: {
@@ -87,7 +90,7 @@ function createMockCtx() {
   };
 }
 
-describe("media pipeline", () => {
+describe.skipIf(!available)("media pipeline", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

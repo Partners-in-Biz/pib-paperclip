@@ -211,6 +211,7 @@ export interface GmailStore {
   // thread issues
   claimThreadIssue(companyId: string, accountId: string, threadId: string): Promise<boolean>;
   setThreadIssue(accountId: string, threadId: string, issueId: string): Promise<void>;
+  threadIssueId(accountId: string, threadId: string): Promise<string | null>;
   // OAuth sessions
   insertOAuthSession(row: { state: string; companyId: string; createdByUserId: string | null; returnTo: string | null; ttlSeconds: number }): Promise<void>;
   getOAuthSession(state: string): Promise<OAuthSessionRow | null>;
@@ -1012,6 +1013,11 @@ export class SqlStore implements GmailStore {
     await this.db.execute(`UPDATE ${this.t("thread_issues")} SET issue_id = $3 WHERE account_id = $1 AND gmail_thread_id = $2`, [accountId, threadId, issueId]);
   }
 
+  async threadIssueId(accountId: string, threadId: string): Promise<string | null> {
+    const rows = await this.db.query<{ issue_id: string | null }>(`SELECT issue_id FROM ${this.t("thread_issues")} WHERE account_id = $1 AND gmail_thread_id = $2`, [accountId, threadId]);
+    return rows[0]?.issue_id ?? null;
+  }
+
   // ── OAuth sessions ──────────────────────────────────────────────────────
 
   async insertOAuthSession(row: { state: string; companyId: string; createdByUserId: string | null; returnTo: string | null; ttlSeconds: number }): Promise<void> {
@@ -1693,6 +1699,17 @@ export class SqlStore implements GmailStore {
   async deleteDraft(companyId: string, id: string): Promise<boolean> {
     const done = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND id = $2 AND direction = 'outbound' AND status = 'draft'`, [companyId, id]);
     return done.rowCount > 0;
+  }
+
+  /** Outbound mail on one mailbox answering one message (drafts, queued and sent), newest first: the duplicate-reply checks (PAR-8030). */
+  async replyDrafts(companyId: string, accountId: string, replyToMessageId: string): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND account_id = $2 AND direction = 'outbound' AND draft ->> 'replyToMessageId' = $3
+        ORDER BY created_at DESC LIMIT 50`,
+      [companyId, accountId, replyToMessageId],
+    );
+    return rows.map(normaliseMessage);
   }
 
   /** CRM contacts whose name or address contains the text, one hit per address. */

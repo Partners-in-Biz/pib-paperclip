@@ -546,7 +546,7 @@ describe("Needs you digest", () => {
     expect(host.issuesCreated).toHaveLength(1);
     expect(host.digests).toHaveLength(1);
     expect((host.digests[0]!.items as Row[]).map((i) => i.key)).toEqual(["a", "b"]);
-    expect(host.issueUpdates.some((u) => u.id === "new-1" && String(u.patch.description).includes("### 2. b"))).toBe(true);
+    expect(host.issueUpdates.some((u) => u.id === "new-1" && String(u.patch.description).includes("**2 open**") && String(u.patch.description).includes("- b"))).toBe(true);
     // Next week: a new issue with the open items; last week's issue closes.
     const nextWeek = { ...info, today: "2026-09-29" };
     await addNeedsYou(host.env, nextWeek, sprint, item("c"));

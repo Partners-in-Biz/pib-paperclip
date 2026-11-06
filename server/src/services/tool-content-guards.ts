@@ -1,5 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
+import {
+  MAX_EVENT_PAYLOAD_TEXT_CHARS,
+  redactEventPayload,
+  redactSensitiveText,
+  REDACTED_EVENT_VALUE,
+  withheldTextPlaceholder,
+} from "../redaction.js";
 
 export class ToolContentValidationError extends Error {
   constructor(
@@ -215,8 +221,44 @@ export function summarizeToolValue(value: unknown) {
     summary: redactedText.length > 4000 ? `${redactedText.slice(0, 3997)}...` : redactedText,
     sizeBytes: Buffer.byteLength(serialized, "utf8"),
     sha256: createHash("sha256").update(serialized).digest("hex"),
-    redactedFields: redactedText.includes(REDACTED_EVENT_VALUE) ? ["sensitive_value"] : [],
+    // Check the serialized value too: when it is over the scan limit the
+    // summary is a withheld placeholder, but leaf-level redaction still ran.
+    redactedFields:
+      redactedText.includes(REDACTED_EVENT_VALUE) || serialized.includes(REDACTED_EVENT_VALUE)
+        ? ["sensitive_value"]
+        : [],
   };
+}
+
+const MAX_WITHHOLD_DEPTH = 64;
+
+function withholdOversizedText(value: unknown, withheld: { count: number }, depth: number): unknown {
+  if (typeof value === "string") {
+    if (value.length <= MAX_EVENT_PAYLOAD_TEXT_CHARS) return value;
+    withheld.count += 1;
+    return withheldTextPlaceholder(value.length, MAX_EVENT_PAYLOAD_TEXT_CHARS);
+  }
+  if (depth >= MAX_WITHHOLD_DEPTH) return value;
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((item) => {
+      const bounded = withholdOversizedText(item, withheld, depth + 1);
+      if (bounded !== item) changed = true;
+      return bounded;
+    });
+    return changed ? next : value;
+  }
+  if (isPlainObject(value)) {
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const bounded = withholdOversizedText(item, withheld, depth + 1);
+      if (bounded !== item) changed = true;
+      next[key] = bounded;
+    }
+    return changed ? next : value;
+  }
+  return value;
 }
 
 export function validateToolContent(input: {
@@ -227,9 +269,15 @@ export function validateToolContent(input: {
 }) {
   const sensitiveMode = input.sensitiveMode ?? "redact";
   const promptInjectionMode = input.promptInjectionMode ?? (input.direction === "result" ? "block" : "ignore");
-  const redactedValue = isPlainObject(input.value) ? redactEventPayload(input.value) : input.value;
+  // Withhold oversized string leaves before any regex scan, so one tool result
+  // (an inline attachment body, say) cannot hold the server's main thread
+  // (PAR-8028). Withheld text never reaches the caller unredacted.
+  const withheld = { count: 0 };
+  const boundedValue = withholdOversizedText(input.value, withheld, 0);
+  const redactedValue = isPlainObject(boundedValue) ? redactEventPayload(boundedValue) : boundedValue;
   const redactedSummary = summarizeToolValue(redactedValue);
   const findings: string[] = [];
+  if (withheld.count > 0) findings.push("oversized_text_withheld");
 
   if (redactedSummary.redactedFields?.length) {
     findings.push("sensitive_value");
@@ -238,7 +286,7 @@ export function validateToolContent(input: {
     }
   }
 
-  const promptFindings = promptInjectionMode === "ignore" ? [] : scanPromptInjection(input.value);
+  const promptFindings = promptInjectionMode === "ignore" ? [] : scanPromptInjection(boundedValue);
   if (promptFindings.length > 0) {
     findings.push(...promptFindings);
     if (promptInjectionMode === "block") {

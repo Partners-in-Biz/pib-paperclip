@@ -1300,6 +1300,13 @@ const failedProcessRunCancellations = new Map<
   string,
   { settled: Promise<void>; failed: boolean; error?: unknown }
 >();
+// Keep a successful owned Stop receipt until the exact executor exits too. The
+// adapter parses the killed process's output (and usage) after Stop settled, so
+// without this receipt the executor skips the late write and loses usage_json.
+const completedProcessRunCancellations = new Map<
+  string,
+  { settled: Promise<void>; failed: boolean; error?: unknown }
+>();
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
@@ -25242,6 +25249,7 @@ export function heartbeatService(
         }
         const processCancellation =
           processRunCancellationSettlements.get(run.id) ??
+          completedProcessRunCancellations.get(run.id) ??
           failedProcessRunCancellations.get(run.id);
         await processCancellation?.settled;
         let outcome: RunSessionOutcome;
@@ -26635,6 +26643,7 @@ export function heartbeatService(
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.
         failedProcessRunCancellations.delete(run.id);
+        completedProcessRunCancellations.delete(run.id);
         executionControl.finish();
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
@@ -29701,6 +29710,20 @@ export function heartbeatService(
               processCancellationSettlement
             ) {
               processRunCancellationSettlements.delete(run.id);
+              // The executor reads this receipt only after the adapter has
+              // parsed the killed process's output, which is usually after
+              // Stop finished. Keep a successful receipt until the executor's
+              // own cleanup, or the late write that keeps usage is skipped
+              // (PAR-7864: every reassignment cancel lost its usage_json).
+              if (
+                !processCancellationSettlement.failed &&
+                activeRunExecutions.has(run.id)
+              ) {
+                completedProcessRunCancellations.set(
+                  run.id,
+                  processCancellationSettlement,
+                );
+              }
             }
             // Always settle waiters, including termination and DB errors. A
             // failed Stop remains an error to its caller, never a cancellation

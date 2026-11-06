@@ -39,8 +39,9 @@ import {
   type LinkProps,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
-import { SOCIAL_MEDIA_MIME } from "../platforms.js";
+import { SOCIAL_MEDIA_MIME, xReplyIntentUrl } from "../platforms.js";
 import { AgentBox } from "./agent.js";
+import { MediaViewer } from "./media-viewer.js";
 import { Thumb, uploadToR2 } from "./composer.js";
 import { Banner, Card, chipStyle, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import { ACCOUNT_TONE, countDelta, destinationSegments, liftTrend, platformIndex, postSegments, publishedSeries, recentActivity, toneOf, upcoming } from "./series.js";
@@ -292,9 +293,17 @@ function TriageRow({ item, run }: { item: InboxItem; run: RunAction }) {
 export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
   const [status, setStatus] = useState("new");
   const [replies, setReplies] = useState<Record<string, string>>({});
-  const items = snapshot.inbox.filter((i) => !status || i.status === status);
-  const counts: Record<string, number> = { "": snapshot.inbox.length };
+  const [asked, setAsked] = useState<Set<string>>(new Set());
+  const drafted = (i: InboxItem) => Boolean(i.replyDraft) && i.status !== "replied";
+  const items = snapshot.inbox.filter((i) => (status === "drafted" ? drafted(i) : !status || i.status === status));
+  const counts: Record<string, number> = { "": snapshot.inbox.length, drafted: snapshot.inbox.filter(drafted).length };
   for (const i of snapshot.inbox) counts[i.status] = (counts[i.status] ?? 0) + 1;
+  const textOf = (item: InboxItem) => replies[item.id] ?? item.replyDraft ?? "";
+  const askAgent = (item: InboxItem) => {
+    run("social.request-inbox-draft", { itemId: item.id }, "Asked the agent. Its draft shows here under Drafted.")
+      .then(() => setAsked((prev) => new Set(prev).add(item.id)))
+      .catch(ignore);
+  };
   const accounts = new Map(snapshot.accounts.map((a) => [a.id, a]));
   const reply = (item: InboxItem) => {
     const body = (replies[item.id] ?? item.replyDraft ?? "").trim();
@@ -304,7 +313,7 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <Toolbar>
-        {[["new", "New"], ["read", "Read"], ["replied", "Replied"], ["", "All"]].map(([id, label]) => (
+        {[["new", "New"], ["drafted", "Drafted"], ["read", "Read"], ["replied", "Replied"], ["", "All"]].map(([id, label]) => (
           <SmallButton key={id} aria-pressed={status === id} onClick={() => setStatus(id!)} style={chipStyle(status === id)}>{label}{counts[id!] ? ` (${counts[id!]})` : ""}</SmallButton>
         ))}
       </Toolbar>
@@ -315,6 +324,8 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
       {items.length === 0 ? <EmptyState icon={MessageSquare} title="Nothing here" description="New comments and mentions show up here every 15 minutes." /> : null}
       {items.map((item) => {
         const account = item.accountId ? accounts.get(item.accountId) : undefined;
+        const isX = item.platform === "x";
+        const intent = isX ? xReplyIntentUrl(item.externalId, textOf(item)) : null;
         return (
           <Card key={item.id} style={{ gap: 8, ...(item.triage?.escalate ? { borderLeft: `3px solid ${tone("bad").solid}` } : {}) }}>
             <Row style={{ justifyContent: "space-between" }}>
@@ -331,10 +342,19 @@ export function InboxTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
             {item.replyBody ? <Muted>Replied: {item.replyBody}</Muted> : null}
             {item.status !== "replied" ? (
               <>
-                {item.replyDraft ? <Muted>Suggested reply from the agent is prefilled below.</Muted> : null}
-                <TextArea rows={2} value={replies[item.id] ?? item.replyDraft ?? ""} onChange={(e) => setReplies((r) => ({ ...r, [item.id]: e.target.value }))} placeholder={item.canReply ? "Write a reply…" : "This platform has no reply API here; a draft post will be created"} />
+                {item.replyDraft ? <Muted>Suggested reply from the agent is prefilled below. Change it if you like.</Muted> : null}
+                {isX ? <Muted>X does not let us post this reply for you. <strong>Open reply on X</strong> opens X's reply box with this text in it. Check you are signed in to X as {account?.displayName ?? "the right account"}, post it there, then come back and mark it as replied.</Muted> : null}
+                <TextArea rows={2} value={textOf(item)} onChange={(e) => setReplies((r) => ({ ...r, [item.id]: e.target.value }))} placeholder={isX ? "Write a reply, or ask the agent to draft one…" : item.canReply ? "Write a reply…" : "This platform has no reply API here; a draft post will be created for review."} />
                 <Row>
-                  <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => reply(item)}>{item.canReply ? "Send reply" : "Create draft post"}</Button>
+                  {isX ? (
+                    <>
+                      <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={!intent} onClick={() => { if (intent) window.open(intent, "_blank", "noopener"); }}>Open reply on X</Button>
+                      <SmallButton onClick={() => run("social.mark-inbox-replied", { itemId: item.id, body: textOf(item).trim() }, "Marked as replied").catch(ignore)}>Mark as replied</SmallButton>
+                    </>
+                  ) : (
+                    <Button type="button" style={{ height: 28, fontSize: 12 }} onClick={() => reply(item)}>{item.canReply ? "Send reply" : "Create draft post"}</Button>
+                  )}
+                  {item.replyDraft ? null : <SmallButton disabled={asked.has(item.id)} onClick={() => askAgent(item)}>{asked.has(item.id) ? "Agent asked" : "Ask agent to draft"}</SmallButton>}
                   {item.status === "new" ? <SmallButton onClick={() => run("social.mark-inbox-read", { itemId: item.id }).catch(ignore)}>Mark read</SmallButton> : null}
                 </Row>
               </>
@@ -352,10 +372,12 @@ export function MediaTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const [viewing, setViewing] = useState<number | null>(null);
   // This scope's media only; uploads and imports belong to it.
   const assets = snapshot.media;
   return (
     <div style={{ display: "grid", gap: 12 }}>
+      {viewing !== null ? <MediaViewer items={assets} start={viewing} onClose={() => setViewing(null)} /> : null}
       {!snapshot.config.r2 ? <Banner tone="warn" title="Cloudflare R2 is not configured">Fill in the R2 section of the Social settings to upload media. Instagram, Threads, TikTok and Pinterest fetch media from its public domain.</Banner> : null}
       {error ? <Banner tone="error" title="Upload failed">{error}</Banner> : null}
       <Card>
@@ -387,7 +409,7 @@ export function MediaTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {assets.map((asset) => (
             <div key={asset.id} style={{ display: "grid", gap: 4, width: 84 }}>
-              <Thumb asset={asset} />
+              <Thumb asset={asset} onClick={() => setViewing(assets.indexOf(asset))} />
               <Muted style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{asset.name}</Muted>
             </div>
           ))}

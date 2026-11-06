@@ -152,7 +152,7 @@ describe("create-sprint", () => {
 /** The issues a real local client's new sprint gets: its root issue, the weekly Needs you issue, then the tasks for the agent. Snapshot of 0.23.1. */
 const REAL_CLIENT_ISSUES: Array<Record<string, unknown>> = [
   { title: "SEO sprint: Agri Studies", originKind: "plugin:partnersinbiz.seo:sprint", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: null, projectId: "proj-seo", status: "todo", priority: null },
-  { title: "SEO week of 2026-09-28", originKind: "plugin:partnersinbiz.seo:needs-you", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: null, projectId: "proj-seo", status: "todo", priority: "high" },
+  { title: "SEO week of 2026-09-28", originKind: "plugin:partnersinbiz.seo:needs-you", assigneeAgentId: null, assigneeUserId: "user-peet", parentId: null, projectId: null, status: "todo", priority: "high" },
   { title: "SEO W0 \u00b7 Submit the sitemap to Google Search Console \u2014 Agri Studies", originKind: "plugin:partnersinbiz.seo:task", assigneeAgentId: "agent-1", assigneeUserId: null, parentId: "issue-101", projectId: "proj-seo", status: "todo", priority: null },
   { title: "SEO W0 \u00b7 Claim and verify the Google Business Profile \u2014 Agri Studies", originKind: "plugin:partnersinbiz.seo:task", assigneeAgentId: "agent-1", assigneeUserId: null, parentId: "issue-101", projectId: "proj-seo", status: "todo", priority: null },
 ];

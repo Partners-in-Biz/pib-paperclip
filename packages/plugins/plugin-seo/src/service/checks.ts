@@ -21,6 +21,7 @@ import {
 import * as db from "../db.js";
 import { cwvFindings, runPagespeed, type PageHealthRecord, type Strategy } from "../integrations/pagespeed.js";
 import { companyInfo, errorMessage, num, oneOf, SeoError, str, urlParam, type Env, type Params } from "./common.js";
+import { sameSiteHost, stripCacheBusters } from "./url-guards.js";
 import { requireSprint } from "./context.js";
 
 async function targetFor(env: Env, companyId: string, params: Params): Promise<{ sprint: db.Sprint | null; url: string }> {
@@ -156,8 +157,9 @@ export async function internalLinkAuditTool(env: Env, companyId: string, params:
     siteUrl: sprint?.siteUrl ?? url,
     sitemapUrl: sitemapUrl ? urlParam(sitemapUrl, sprint?.siteUrl ?? url) : null,
     maxPages: num(params, "maxPages", { integer: true, min: 1, max: 40 }) ?? 25,
+    startAt: num(params, "startAt", { integer: true, min: 0 }) ?? 0,
   });
-  // Orphans are only meaningful for a complete crawl; partial runs are reported, not stored.
+  // Orphans are only meaningful for a complete crawl; a partial run returns none and stores nothing.
   const stored = result.partial
     ? { recorded: 0, resolved: 0 }
     : await recordCheckFindings(
@@ -167,11 +169,7 @@ export async function internalLinkAuditTool(env: Env, companyId: string, params:
       result.findings.filter((f) => f.category === "links"),
       result.crawledPages.map((page) => ({ category: "links", url: page })),
     );
-  return {
-    ...result,
-    stored,
-    note: result.partial ? "Partial crawl (page cap or time limit): orphans are relative to the crawled pages and were not stored as findings." : undefined,
-  };
+  return { ...result, stored };
 }
 
 export async function checkSoft404Tool(env: Env, companyId: string, params: Params) {
@@ -232,7 +230,12 @@ export async function savePageHealth(env: Env, sprint: db.Sprint, record: PageHe
 }
 
 export async function runPagespeedTool(env: Env, companyId: string, params: Params) {
-  const { sprint, url } = await targetFor(env, companyId, params);
+  const target = await targetFor(env, companyId, params);
+  const url = stripCacheBusters(target.url);
+  // A run on another host (a Vercel preview, a staging copy) is measured but never recorded: it would open
+  // findings on a URL no later check covers, so they could never clear on their own.
+  const offSite = Boolean(target.sprint && !sameSiteHost(url, target.sprint.siteUrl));
+  const sprint = offSite ? null : target.sprint;
   const strategy: Strategy = oneOf(params, "strategy", ["mobile", "desktop"] as const) ?? "mobile";
   const info = await companyInfo(env, companyId);
   let apiKey: string | undefined;
@@ -247,5 +250,10 @@ export async function runPagespeedTool(env: Env, companyId: string, params: Para
     const integration = await db.getIntegration(env.ctx.db, companyId, sprint.id, "pagespeed");
     if (integration) await db.updateIntegration(env.ctx.db, companyId, integration.id, { last_pull_at: new Date().toISOString(), last_error: null });
   }
-  return { ...record, saved: Boolean(sprint), stored };
+  return {
+    ...record,
+    saved: Boolean(sprint),
+    stored,
+    ...(offSite ? { note: `Not saved: ${url} is not on the sprint's site (${target.sprint!.siteUrl}). Test the live site to record findings.` } : {}),
+  };
 }

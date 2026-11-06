@@ -497,13 +497,12 @@ describe("the firewall item", () => {
     const asAgent = host([refusedAudit]);
     asAgent.routes.unshift(...needsYouRoutes([open]));
     expect(await needsYouResolveTool(asAgent.env, "co-1", agent, { sprintId: "sp-1", key: "geo_firewall" })).toMatchObject({ resolved: false, stillOpen: expect.stringContaining("does not see") });
-    // Closing the digest issue is a person's act too.
-    // The owner closes the digest issue: that is a person's word too (the plugin's probe still sees the refusal).
+    // Closing the weekly issue is no one's word on this item: it is only a summary, so the item stays open.
     const closedByOwner = host([refusedAudit, [/FROM plugin_seo_8099f8879a\.needs_you WHERE company_id = \$1 AND issue_id = \$2/, () => [{ id: "ny-1", company_id: "co-1", sprint_id: "sp-1", week_start: "2026-09-28", issue_id: "ny-issue", issue_identifier: "PIB-9", items: [open], status: "open" }]]]);
     closedByOwner.routes.unshift(...needsYouRoutes([open]));
     closedByOwner.ctx.issues.get = (async (id: string) => ({ id, status: "done", identifier: "PIB-9" })) as never;
     expect(await onNeedsYouIssueUpdated(closedByOwner.env, "co-1", "ny-issue")).toBe(true);
-    expect(savedNeedsYouItems(closedByOwner).find((i) => i.key === "geo_firewall")).toMatchObject({ status: "done", doneBy: "the sprint owner (closed the Needs you issue)" });
+    expect(savedNeedsYouItems(closedByOwner).find((i) => i.key === "geo_firewall" && i.status === "done")).toBeUndefined();
     const direct = host([refusedAudit]);
     direct.routes.unshift(...needsYouRoutes([open]));
     const info = await companyInfo(direct.env, "co-1");

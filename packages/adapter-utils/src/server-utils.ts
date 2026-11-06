@@ -1,5 +1,6 @@
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { spawn, type ChildProcess } from "node:child_process";
+import { resolveUsableAgentChildSlice, wrapSpawnInSlice } from "./agent-child-slice.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -4669,6 +4670,13 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
+      .then(async (target): Promise<SpawnTarget> => {
+        // PAR-7678: optional systemd slice (memory ceiling) for local children.
+        if (opts.remoteExecution) return target;
+        const slice = await resolveUsableAgentChildSlice();
+        if (!slice) return target;
+        return { ...target, ...wrapSpawnInSlice(slice, target.command, target.args) };
+      })
       .then((target) => {
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {

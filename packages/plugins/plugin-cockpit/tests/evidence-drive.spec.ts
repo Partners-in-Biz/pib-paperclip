@@ -1,8 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { evidenceFileName, saveEvidenceToDrive, EVIDENCE_SUBFOLDER } from "../src/evidence-drive.js";
+import { evidenceFileName, parseEvidenceClient, saveEvidenceToDrive, EVIDENCE_SUBFOLDER } from "../src/evidence-drive.js";
 
-const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn() }));
-vi.mock("@partnersinbiz/pib-plugin-kit", async (orig) => ({ ...await orig(), driveSave: fakeDriveSave }));
+const { fakeDriveSave, realDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn(), realDriveSave: { fn: null as null | ((...a: unknown[]) => unknown) } }));
+vi.mock("@partnersinbiz/pib-plugin-kit", async (orig) => {
+  const actual = await orig<typeof import("@partnersinbiz/pib-plugin-kit")>();
+  realDriveSave.fn = actual.driveSave as (...a: unknown[]) => unknown;
+  return { ...actual, driveSave: fakeDriveSave };
+});
 
 describe("evidence-drive functions", () => {
   const mockCtx = {
@@ -155,6 +159,57 @@ describe("evidence-drive functions", () => {
 
       expect(result).toEqual(success);
       expect(mockCtx.logger.warn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("optional client (PAR-7734)", () => {
+    const validPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const emit = vi.fn();
+    const eventCtx = {
+      logger: { warn: vi.fn(), info: vi.fn() },
+      events: { emit, on: vi.fn() },
+    } as unknown as Parameters<typeof saveEvidenceToDrive>[0];
+
+    beforeEach(() => {
+      // Run the kit's real driveSave so the emitted drive.save-requested payload is checked; short timeout -> no_ack.
+      fakeDriveSave.mockImplementation((ctx: unknown, opts: Record<string, unknown>) => realDriveSave.fn!(ctx, { ...opts, timeoutMs: 5 }));
+    });
+
+    const saveRequests = () => emit.mock.calls.filter((c) => c[0] === "drive.save-requested").map((c) => c[2] as Record<string, unknown>);
+
+    it("with client: drive.save-requested carries clientKind/clientRef", async () => {
+      await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64, client: { kind: "company", ref: "canary-abc12345" } });
+      const payloads = saveRequests();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({ clientKind: "company", clientRef: "canary-abc12345", kind: "ops", subfolder: EVIDENCE_SUBFOLDER });
+    });
+
+    it("without client: payload has no client fields and driveSave gets no client", async () => {
+      await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64 });
+      expect(fakeDriveSave.mock.calls[0]![1]).not.toHaveProperty("client");
+      const payloads = saveRequests();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).not.toHaveProperty("clientKind");
+      expect(payloads[0]).not.toHaveProperty("clientRef");
+    });
+
+    it.each([
+      [{ kind: "project", ref: "x" }, "client.kind"],
+      [{ kind: "company", ref: "  " }, "client.ref"],
+      [{ kind: "contact" }, "client.ref"],
+      ["company", "client must be an object"],
+    ])("invalid client %j: clear error, nothing emitted", async (client, msg) => {
+      const parsed = parseEvidenceClient(client);
+      expect(parsed).toEqual({ error: expect.stringContaining(msg) });
+      const result = await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64, client: client as never });
+      expect(result).toBeNull();
+      expect(fakeDriveSave).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("parseEvidenceClient: absent -> null, valid -> trimmed ref", () => {
+      expect(parseEvidenceClient(undefined)).toEqual({ client: null });
+      expect(parseEvidenceClient({ kind: "contact", ref: " c-1 " })).toEqual({ client: { kind: "contact", ref: "c-1" } });
     });
   });
 });

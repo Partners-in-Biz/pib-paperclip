@@ -18,6 +18,8 @@ export interface ExportDriveFileOptions {
   subfolder: "03 Deliverables" | "04 Reports";
   requestId?: string;
   timeoutMs?: number;
+  /** Optional CRM client the file belongs to; the Drive save files it under that client's folder. */
+  client?: { kind: "company" | "contact"; ref: string };
 }
 
 /** Safe Drive export: never throws, only logs warnings on failure. */
@@ -51,6 +53,7 @@ export async function exportToDrive(ctx: Pick<PluginContext, "logger" | "events"
       ...(opts.bytes !== undefined ? { bytes: opts.bytes } : { publicUrl: opts.publicUrl ?? "" }),
       requestId: opts.requestId,
       timeoutMs: opts.timeoutMs ?? 10_000,
+      ...(opts.client ? { client: { kind: opts.client.kind, ref: opts.client.ref } } : {}),
     });
 
     // Log results

@@ -21,8 +21,11 @@ import {
   MAIL_EVENTS,
   PIB_PLUGINS,
   redeliver,
+  resolveClientProjectId,
   RISK_THRESHOLDS,
   routeWork,
+  wakeIssueWhenIdle,
+  type ClientScope,
   type MailReceived,
 } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig, type LoadedConfig } from "../config.js";
@@ -48,7 +51,8 @@ import { withGmail } from "./tokens.js";
 import { REPLY_ISSUE_CATEGORIES, triageMessage, type TriageRunContext } from "./triage.js";
 import type { AccountRow, AttachmentMeta, BounceInfo, ClientMapRow, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
 import { suppressFromInbound } from "../suppression.js";
-import { replyOrigin } from "../done-checks.js";
+import { replyOrigin, unansweredMessage } from "../done-checks.js";
+import { isFreeMailDomain } from "../free-mail.js";
 import { ensureDefaultDelegations } from "../delegations.js";
 import { erasureHash } from "../hash.js";
 import { isLeadCandidate, leadCapturedFrom } from "./leads.js";
@@ -489,38 +493,132 @@ export async function replyAssignee(env: Env, loaded: LoadedConfig): Promise<{ a
   return {};
 }
 
+/** A follow-up older than this (a backlog after a reconnect) does not reopen anything. */
+const FOLLOW_UP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function wantsReply(row: MessageRow): boolean {
+  const triage = row.triage;
+  if (!triage?.category || !REPLY_ISSUE_CATEGORIES.has(triage.category)) return false;
+  return (triage.needsReply ?? 0) >= RISK_THRESHOLDS.update && (triage.phishing ?? 0) < 0.9 && !row.bulk;
+}
+
+const receivedMs = (row: MessageRow) => Date.parse(row.received_at ?? row.created_at) || 0;
+
+/**
+ * The client a reply issue may be filed under. A wrong project means the wrong
+ * repository, so only a reliable match counts: a person's correction, a client
+ * mail mapping, or the CRM's match on an outside sender. Jev's guess does not
+ * count, and neither does the CRM's match on our own staff: they write about
+ * many clients, but their address sits on one CRM record.
+ */
+export function replyIssueClient(row: MessageRow, ownAddresses: string[]): ClientScope {
+  if (!row.client_ref || (row.client_kind !== "company" && row.client_kind !== "contact")) return null;
+  const scope = { kind: row.client_kind, id: row.client_ref } as const;
+  const source = row.triage?.clientSource;
+  if (source === "correction" || source === "mapping") return scope;
+  if (source !== "email" && source !== "domain" && source !== "reply") return null;
+  const sender = row.from_addr?.email?.toLowerCase();
+  if (!sender) return null;
+  const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
+  const own = ownAddresses.map((address) => address.toLowerCase());
+  if (own.includes(sender)) return null;
+  // A shared free-mail domain says nothing: gmail.com senders are not our staff because one mailbox is on gmail.com.
+  const ownDomains = own.map(domainOf).filter((domain) => !isFreeMailDomain(domain));
+  return ownDomains.includes(domainOf(sender)) ? null : scope;
+}
+
+async function createReplyIssue(env: Env, loaded: LoadedConfig, account: AccountRow, row: MessageRow, threadId: string, assignee: { assigneeAgentId?: string; assigneeUserId?: string }): Promise<void> {
+  const accounts = await env.store.listAccounts(account.company_id);
+  const scope = replyIssueClient(row, accounts.map((item) => item.address));
+  // The kit trusts the CRM's link here: the Mailbox does not hold projects.read.
+  const { projectId } = await resolveClientProjectId(env.ctx, loaded.companyId, scope, { kind: "website", verify: false });
+  const input = {
+    companyId: loaded.companyId,
+    title: `Reply needed: ${row.subject}`.slice(0, 200),
+    ...assignee,
+    originKind: `plugin:${PLUGIN_ID}` as const,
+    originId: replyOrigin(account.id, threadId),
+    priority: (row.triage?.urgency ?? 0) >= 2.5 ? ("high" as const) : ("medium" as const),
+    wakeReason: "Mail needs a reply",
+  };
+  const withoutProject = () => createWorkIssue(env.ctx, { ...input, description: replyIssueDescription(row, account.address, false) });
+  let created: { id: string };
+  if (projectId) {
+    try {
+      created = await createWorkIssue(env.ctx, { ...input, description: replyIssueDescription(row, account.address, true), projectId });
+    } catch (error) {
+      // A stale link (an archived project) must not cost the reply.
+      env.ctx.logger.info("Reply issue not created in the client's project; opening it without one", { messageId: row.id, projectId, error: errorMessage(error) });
+      created = await withoutProject();
+    }
+  } else {
+    created = await withoutProject();
+  }
+  await env.store.setThreadIssue(account.id, threadId, created.id);
+}
+
+/**
+ * New mail on a thread that already has its issue. Closed: reopened, so the
+ * mail is not lost. Blocked or waiting: the mail may be what unblocks it, so
+ * the assignee is woken. Being worked on: a comment is enough. Returns "create"
+ * when the thread has no issue to act on (its create failed, or it is gone).
+ */
+async function handleFollowUp(env: Env, loaded: LoadedConfig, account: AccountRow, row: MessageRow, threadId: string, assignee: () => Promise<{ assigneeAgentId?: string; assigneeUserId?: string }>): Promise<"create" | "done"> {
+  if (Date.now() - receivedMs(row) > FOLLOW_UP_MAX_AGE_MS) return "done";
+  // Answered already, say straight from Gmail: closing would pass the done-check, so there is nothing to do.
+  if (!unansweredMessage(await env.store.replyThread(account.company_id, threadId), account.id)) return "done";
+  const issueId = await env.store.threadIssueId(account.id, threadId);
+  const issue = issueId ? await env.ctx.issues.get(issueId, loaded.companyId) : null;
+  if (!issue) return "create";
+  const closed = issue.status === "done" || issue.status === "cancelled";
+  if (closed) {
+    const unassigned = !issue.assigneeAgentId && !issue.assigneeUserId;
+    await env.ctx.issues.update(issue.id, { status: "todo", ...(unassigned ? await assignee() : {}) }, loaded.companyId);
+  }
+  await env.ctx.issues.createComment(issue.id, followUpComment(row, closed), loaded.companyId);
+  if (closed || (issue.status !== "in_progress" && issue.status !== "todo")) await wakeIssueWhenIdle(env.ctx, issue.id, loaded.companyId, "New mail on this thread needs a reply");
+  return "done";
+}
+
+export function followUpComment(row: MessageRow, reopened: boolean): string {
+  const from = row.from_addr ? `${row.from_addr.name ? `${row.from_addr.name} ` : ""}<${row.from_addr.email}>` : "unknown sender";
+  return [
+    `**New mail on this thread needs a reply**${reopened ? " (reopened)" : ""}.`,
+    "",
+    `- From: ${from}`,
+    `- Subject: ${row.subject}`,
+    `- Received: ${row.received_at ?? row.created_at}`,
+    "",
+    `> ${(row.snippet ?? "").slice(0, 400)}`,
+    "",
+    `Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${row.id}\`), then answer with \`create-draft\` (accountId \`${row.account_id}\`, replyToMessageId \`${row.id}\`), or \`correct-triage\` it if no reply is needed.`,
+  ].join("\n");
+}
+
 async function openReplyIssues(env: Env, loaded: LoadedConfig, account: AccountRow, rows: MessageRow[]): Promise<number> {
   if (!loaded.config.replyIssues) return 0;
   let assignee: { assigneeAgentId?: string; assigneeUserId?: string } | null = null;
+  const getAssignee = async () => (assignee ??= await replyAssignee(env, loaded));
   let opened = 0;
-  for (const row of rows) {
-    const triage = row.triage;
-    if (!triage?.category || !REPLY_ISSUE_CATEGORIES.has(triage.category)) continue;
-    if ((triage.needsReply ?? 0) < RISK_THRESHOLDS.update || (triage.phishing ?? 0) >= 0.9 || row.bulk) continue;
+  // Newest first: several mails on one thread in a run act once, on the newest.
+  const seen = new Set<string>();
+  for (const row of rows.filter(wantsReply).sort((a, b) => receivedMs(b) - receivedMs(a))) {
     const threadId = row.gmail_thread_id ?? row.gmail_message_id!;
-    if (!(await env.store.claimThreadIssue(account.company_id, account.id, threadId))) continue;
-    assignee ??= await replyAssignee(env, loaded);
+    if (seen.has(threadId)) continue;
+    seen.add(threadId);
     try {
-      const created = await createWorkIssue(env.ctx, {
-        companyId: loaded.companyId,
-        title: `Reply needed: ${row.subject}`.slice(0, 200),
-        description: replyIssueDescription(row, account.address),
-        ...assignee,
-        originKind: `plugin:${PLUGIN_ID}`,
-        originId: replyOrigin(account.id, threadId),
-        priority: (triage.urgency ?? 0) >= 2.5 ? "high" : "medium",
-        wakeReason: "Mail needs a reply",
-      });
-      await env.store.setThreadIssue(account.id, threadId, created.id);
+      const claimed = await env.store.claimThreadIssue(account.company_id, account.id, threadId);
+      if (!claimed && (await handleFollowUp(env, loaded, account, row, threadId, getAssignee)) === "done") continue;
+      await createReplyIssue(env, loaded, account, row, threadId, await getAssignee());
       opened += 1;
     } catch (error) {
-      env.ctx.logger.info("Reply issue not created", { messageId: row.id, error: errorMessage(error) });
+      env.ctx.logger.info("Reply issue not created or updated", { messageId: row.id, error: errorMessage(error) });
     }
   }
   return opened;
 }
 
-export function replyIssueDescription(row: MessageRow, accountAddress: string): string {
+export function replyIssueDescription(row: MessageRow, accountAddress: string, inClientProject = false): string {
   const t = row.triage;
   const from = row.from_addr ? `${row.from_addr.name ? `${row.from_addr.name} ` : ""}<${row.from_addr.email}>` : "unknown sender";
   return [
@@ -535,7 +633,10 @@ export function replyIssueDescription(row: MessageRow, accountAddress: string): 
     "",
     `1. Read it with \`partnersinbiz.mailbox:get-message\` (messageId \`${row.id}\`)${(row.attachments ?? []).length ? `; open an attachment with \`get-attachment\`` : ""}.`,
     `2. Draft the answer with \`create-draft\` (accountId \`${row.account_id}\`, replyToMessageId \`${row.id}\`) and send it with \`send-draft\` when your delegation allows sending. Log it on the client in the CRM${row.client_ref ? ` (\`${row.client_kind ?? "company"}:${row.client_ref}\`)` : ""}.`,
-    "3. Mark this issue done with what you drafted or sent. Never answer phishing or legal threats: ask the owner instead (`partnersinbiz.cockpit:ask-owner`).",
+    inClientProject
+      ? "3. If it asks for work beyond a reply (a fix, a build, a publish), open a child issue with that work. This issue is in the client's own project; use another of the client's projects only if the work belongs there (`partnersinbiz.crm:list-client-projects`)."
+      : "3. If it asks for work beyond a reply (a fix, a build, a publish), open a child issue with that work in the project it belongs to: `partnersinbiz.crm:list-client-projects` lists a client's projects. The client shown above is a hint, so check it against what the mail is about. Platform work goes in PiB Platform. Unsure which project: say so on the child issue and do not guess, because the project decides the repository.",
+    "4. Mark this issue done with what you drafted or sent. Never answer phishing or legal threats: ask the owner instead (`partnersinbiz.cockpit:ask-owner`).",
     "",
     "**Done when** the thread has your reply draft or a sent reply, or `correct-triage` says no reply is needed (needsReply false). Closing checks it.",
     "",

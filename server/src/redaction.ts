@@ -1,9 +1,42 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 import { isPublicExecutorToolSelector } from "@paperclipai/adapter-utils/command-redaction";
 
-const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+const SECRET_FIELD_NAME_CORE = String.raw`(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)`;
 
-const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+// A secret field name is any identifier run that contains one of the core
+// words. Do not express this as `[A-Za-z0-9_-]*core[A-Za-z0-9_-]*` in an
+// unanchored scan: on a long identifier run (base64url attachment bodies, hex
+// dumps) the leading star backtracks at every start position and the scan is
+// quadratic. That froze the server's main thread for minutes (PAR-8028).
+// Match the whole run once, then test it for a core word.
+const SECRET_FIELD_NAME_CORE_RE = new RegExp(SECRET_FIELD_NAME_CORE, "i");
+const IDENTIFIER_RUN = String.raw`(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])`;
+
+// Unanchored `.test()` of `X*core X*` is true exactly when `core` occurs, so
+// the core regex alone keeps the old key semantics without the backtracking.
+const SECRET_PAYLOAD_KEY_RE = SECRET_FIELD_NAME_CORE_RE;
+
+/**
+ * Longest string the secret scanner reads. Longer text is withheld whole and
+ * replaced by a placeholder: it is never passed through unscanned (PAR-8028).
+ */
+export const MAX_REDACTION_SCAN_CHARS = 1_048_576;
+/**
+ * Longest string leaf allowed in an event payload or tool result. Lower than
+ * the general cap so one tool result cannot hold the main thread for more
+ * than a few tens of milliseconds.
+ */
+export const MAX_EVENT_PAYLOAD_TEXT_CHARS = 262_144;
+
+export function withheldTextPlaceholder(length: number, limit: number): string {
+  return (
+    `[Paperclip withheld this text: it is ${length} characters, over the ` +
+    `${limit}-character limit that secret redaction can scan safely, so none ` +
+    `of it was passed on. To get this data, ask the tool for a smaller range ` +
+    `or page, or have it save the content to a file or signed link and ` +
+    `return the path or link instead.]`
+  );
+}
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
 // "authorization". JWT-shaped values are still caught by the value guard below.
@@ -346,20 +379,50 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "task.run.measured",
   "task.settle",
 ]);
-const CLI_SECRET_FLAG_RE = new RegExp(
-  String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`,
-  "i",
-);
+const CLI_FLAG_SHAPE_RE = /^-{1,2}[A-Za-z0-9_-]+$/;
+function isCliSecretFlag(value: string): boolean {
+  return CLI_FLAG_SHAPE_RE.test(value) && SECRET_FIELD_NAME_CORE_RE.test(value);
+}
+// Groups: 1 = text through the opening value quote, 2 = field name,
+// 3 = closing value quote. The name is matched as a whole identifier run and
+// checked in redactSecretFieldText (see SECRET_FIELD_NAME_CORE_RE).
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${IDENTIFIER_RUN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
     "`" +
     String.raw`\r\n]+((?:"|'))`,
-  "gi",
+  "g",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
-  "gi",
+  String.raw`((?:\\")?${IDENTIFIER_RUN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  "g",
 );
+
+function redactSecretFieldText(input: string, fieldRe: RegExp): string {
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let match: RegExpExecArray | null;
+  fieldRe.lastIndex = 0;
+  while ((match = fieldRe.exec(input)) !== null) {
+    const name = match[2];
+    if (!SECRET_FIELD_NAME_CORE_RE.test(name)) {
+      // Not a secret field. Resume right after the name, not after the value,
+      // so a secret field that starts inside this value is still found, as
+      // the old backtracking regex did.
+      fieldRe.lastIndex = match.index + match[0].indexOf(name) + name.length;
+      continue;
+    }
+    parts.push(
+      input.slice(copiedThrough, match.index),
+      match[1],
+      REDACTED_EVENT_VALUE,
+      match[3],
+    );
+    copiedThrough = match.index + match[0].length;
+  }
+  if (copiedThrough === 0) return input;
+  parts.push(input.slice(copiedThrough));
+  return parts.join("");
+}
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -421,14 +484,17 @@ function startsIndependentCredentialLine(input: string, index: number) {
   if (input[index] !== "\r" && input[index] !== "\n") return false;
   let lineStart = index + 1;
   if (input[index] === "\r" && input[lineStart] === "\n") lineStart += 1;
-  const lineEndCandidates = [
-    input.indexOf("\r", lineStart),
-    input.indexOf("\n", lineStart),
-  ].filter((candidate) => candidate >= 0);
-  const lineEnd =
-    lineEndCandidates.length > 0
-      ? Math.min(...lineEndCandidates)
-      : input.length;
+  // Walk to the end of this line only. indexOf("\r") on text without any
+  // carriage return scans to the end of the input on every call, which made
+  // quote-plus-newline text quadratic (PAR-8028).
+  let lineEnd = lineStart;
+  while (
+    lineEnd < input.length &&
+    input[lineEnd] !== "\r" &&
+    input[lineEnd] !== "\n"
+  ) {
+    lineEnd += 1;
+  }
   const words = input
     .slice(lineStart, lineEnd)
     .trimStart()
@@ -546,6 +612,12 @@ function credentialEndAfterQuotedDelimiter(input: string, quotedEnd: number) {
   return input.length;
 }
 
+const AUTH_SCHEME_AT_RE = /\s*(?:Bearer|Basic)\b/iy;
+function startsWithAuthScheme(input: string, index: number): boolean {
+  AUTH_SCHEME_AT_RE.lastIndex = index;
+  return AUTH_SCHEME_AT_RE.test(input);
+}
+
 interface AuthorizationCredentialRange {
   start: number;
   end: number;
@@ -580,6 +652,11 @@ function authorizationCredentialRange(
 
   const rawValueQuote = input[valueStart];
   if (rawValueQuote === '"' || rawValueQuote === "'") {
+    // Check the scheme before scanning for the closing quote. That scan can
+    // run to the end of the input, so doing it for every non-credential
+    // `Authorization "..."` made such text quadratic (PAR-8028). A value whose
+    // trimmed content starts with the scheme also starts with it here.
+    if (!startsWithAuthScheme(input, valueStart + 1)) return null;
     const quotedEnd = rawQuotedValueEnd(input, valueStart, rawValueQuote);
     const content = input.slice(valueStart + 1, quotedEnd - 1).trimStart();
     if (!/^(?:Bearer|Basic)\b/i.test(content)) return null;
@@ -592,6 +669,7 @@ function authorizationCredentialRange(
 
   const escapedValueQuote = escapedQuoteAt(input, valueStart);
   if (escapedValueQuote) {
+    if (!startsWithAuthScheme(input, valueStart + 2)) return null;
     const quotedEnd = escapedQuotedValueEnd(
       input,
       valueStart,
@@ -648,20 +726,24 @@ function authorizationCredentialRange(
 function redactAuthorizationCredentials(input: string): string {
   // Include compound diagnostic labels such as proxyAuthorization while the
   // value parser still requires a Basic/Bearer scheme before redacting.
-  const authorizationWord = /\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
+  // Match whole identifier runs and test them, instead of
+  // `\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b`, which backtracks
+  // quadratically on long identifier runs (PAR-8028). The old trailing `\b`
+  // dropped trailing dashes from the word; keep that.
+  const identifierRun = new RegExp(IDENTIFIER_RUN, "g");
   const parts: string[] = [];
   let copiedThrough = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = authorizationWord.exec(input)) !== null) {
-    const range = authorizationCredentialRange(
-      input,
-      match.index + match[0].length,
-    );
+  while ((match = identifierRun.exec(input)) !== null) {
+    let wordEnd = match.index + match[0].length;
+    while (wordEnd > match.index && input[wordEnd - 1] === "-") wordEnd -= 1;
+    if (!/authorization/i.test(input.slice(match.index, wordEnd))) continue;
+    const range = authorizationCredentialRange(input, wordEnd);
     if (!range || range.start < copiedThrough) continue;
     parts.push(input.slice(copiedThrough, range.start), range.replacement);
     copiedThrough = range.end;
-    authorizationWord.lastIndex = range.end;
+    identifierRun.lastIndex = range.end;
   }
 
   if (copiedThrough === 0) return input;
@@ -840,7 +922,7 @@ function sanitizeCommandArgs(args: unknown[]): unknown[] {
       return REDACTED_EVENT_VALUE;
     }
     if (typeof arg !== "string") return sanitizeValue(arg);
-    if (CLI_SECRET_FLAG_RE.test(arg.trim())) {
+    if (isCliSecretFlag(arg.trim())) {
       redactNext = true;
       return arg;
     }
@@ -991,13 +1073,19 @@ export function redactAgentAdapterConfig(
 
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
+  // Fail closed on text too long to scan inside the request budget: withhold
+  // all of it rather than pass any of it through unscanned (PAR-8028).
+  if (input.length > MAX_REDACTION_SCAN_CHARS) {
+    return withheldTextPlaceholder(input.length, MAX_REDACTION_SCAN_CHARS);
+  }
   return redactCommandText(
-    redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
-      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(
-        ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
-        `$1${REDACTED_EVENT_VALUE}$2`,
+    redactSecretFieldText(
+      redactSecretFieldText(
+        redactStandaloneBearerCredentials(redactAuthorizationCredentials(input)),
+        JSON_SECRET_FIELD_TEXT_RE,
       ),
+      ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
+    ),
     REDACTED_EVENT_VALUE,
   );
 }

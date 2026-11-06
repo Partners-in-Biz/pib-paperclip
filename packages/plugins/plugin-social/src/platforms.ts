@@ -195,3 +195,21 @@ export function bridgeRedirectUri(publicBaseUrl: string, uiBase: string): string
   if (!UI_BASE_RE.test(uiBase)) throw new Error("The Social callback address is not known yet. Open the Social page once, then try again.");
   return `${publicBaseUrl.replace(/\/$/, "")}${uiBase}oauth-callback.html`;
 }
+
+/**
+ * A person can open these for editing: saving moves the post back to draft first, so changed content is approved again.
+ * Published and partly published posts stay as they are: what went out cannot be changed from here.
+ */
+export function editableViaDraft(status: string): boolean {
+  return status === "approved" || status === "scheduled" || status === "failed";
+}
+
+/**
+ * X's own reply box, open on the post with `text` already in it. X refuses most replies through its API, so a person
+ * posts them there, signed in to X in their own browser. No id: null.
+ */
+export function xReplyIntentUrl(postId: string | null | undefined, text: string): string | null {
+  if (!postId || !/^\d+$/.test(postId)) return null;
+  const trimmed = text.trim();
+  return `https://x.com/intent/post?in_reply_to=${postId}${trimmed ? `&text=${encodeURIComponent(trimmed)}` : ""}`;
+}

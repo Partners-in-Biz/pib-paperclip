@@ -625,6 +625,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
   sourceExecutionWorkspaceId?: string | null;
   expectedBranch: string;
   actualBranch: string;
+  expectedSafeRepairReason?: string;
 }) {
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
@@ -644,7 +645,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
       eligible: false,
       attempted: false,
       succeeded: false,
-      reason: "expected branch and current HEAD differ",
+      reason: input.expectedSafeRepairReason ?? "expected branch and current HEAD differ",
     }),
   });
   if (input.sourceExecutionWorkspaceId !== undefined) {
@@ -1137,6 +1138,12 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
           : expectedWorkspaceId === "runtime-workspace"
             ? undefined
             : null,
+      // The fixture keeps the recorded branch checked out in the base repo,
+      // so the clean checkout repair (PAR-7865) cannot run there.
+      expectedSafeRepairReason:
+        callSite === "finalize"
+          ? "expected branch and current HEAD differ"
+          : "expected branch is checked out in another worktree",
       expectedBranch: seeded.expectedBranch,
       actualBranch: seeded.actualBranch,
     });

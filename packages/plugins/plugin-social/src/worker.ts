@@ -63,6 +63,7 @@ import {
   updateProgramRecord,
 } from "./growth/service.js";
 import { spaceOf } from "./space.js";
+import { registerStudioImport } from "./studio-import.js";
 import { storeRenderedAsset } from "./asset-path.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
@@ -96,6 +97,9 @@ import {
   listTemplatesRecord,
   loadSnapshot,
   markInboxReadRecord,
+  markInboxRepliedRecord,
+  markPostPostedRecord,
+  requestInboxDraftRecord,
   objectParams,
   optionalString,
   postAnalyticsRecord,
@@ -357,6 +361,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.update-post": (ctx, v, p) => updatePostRecord(ctx, v, p),
   "social.get-post": (ctx, v, p) => getPostDetail(ctx, v, requiredString(p, "postId")),
   "social.validate-post": (ctx, v, p) => validatePostRecord(ctx, v, requiredString(p, "postId")),
+  "social.mark-posted": (ctx, v, p) => markPostPostedRecord(ctx, v, p),
   "social.delete-post": (ctx, v, p) => deletePostRecord(ctx, v, requiredString(p, "postId")),
   "social.attach": (ctx, v, p) => attachDestination(ctx, v, p),
   "social.detach": (ctx, v, p) => detachDestination(ctx, v, p),
@@ -425,6 +430,8 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.set-rss-active": (ctx, v, p) => setRssActiveRecord(ctx, v, requiredString(p, "feedId"), p.active === true),
   "social.mark-inbox-read": (ctx, v, p) => markInboxReadRecord(ctx, v, requiredString(p, "itemId")),
   "social.reply-inbox": (ctx, v, p) => replyInboxRecord(ctx, v, p),
+  "social.mark-inbox-replied": (ctx, v, p) => markInboxRepliedRecord(ctx, v, p),
+  "social.request-inbox-draft": (ctx, v, p) => requestInboxDraftRecord(ctx, v, p),
   "social.post-analytics": (ctx, v, p) => postAnalyticsRecord(ctx, v, p),
   "social.correct-triage": (ctx, v, p) =>
     correctTriage(ctx, v.companyId, requireUser(v, "correct a triage"), { itemId: requiredString(p, "itemId"), key: requiredString(p, "key"), value: requiredString(p, "value") }),
@@ -670,6 +677,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace);
     // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
     registerClientProjectWatch(ctx);
+    // Studio's hand-off: an approved Studio asset is imported into the client's media library.
+    registerStudioImport(ctx);
     // An answered "connect this account" ask verifies the connection (Q9-10); the connect flow itself resolves the asking issue.
     registerAskEffect(CONNECT_EFFECT_KEY, connectEffect);
     installAskEffects(ctx);

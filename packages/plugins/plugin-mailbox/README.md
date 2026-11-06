@@ -64,6 +64,12 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.2: follow-ups on closed threads; reply issues in the client's project
+
+A thread keeps one "Reply needed" issue. New mail that needs a reply and has no answer yet now reopens a done or cancelled issue and wakes the assignee, wakes a blocked one, or comments on one already being worked on. Mail older than 7 days (a backlog after a reconnect) reopens nothing. A thread whose issue was never created or is gone gets a new one.
+
+A new reply issue opens in the client's `website` project (kit `resolveClientProjectId`, then `platform`, then a link with no kind) when the client match is reliable: a person's correction, a mail mapping, or the CRM's match on an outside sender. Our own staff (same domain as a connected mailbox, free-mail domains excepted) and Jev's guesses open with no project, and the issue tells the agent how to route further work. Existing issues do not move.
+
 ## 0.9.0: read, reply, forward and delete on the page; draft editor
 
 Opening a mail shows its whole text. **Reply**, **Reply all** and **Forward** save a draft (`mailbox.start-reply`: quoted text, right thread, a forward carries the original's files up to the draft limits) and open the draft editor, where To, Cc, Bcc, text and files can be changed; nothing goes out until someone clicks Send. **Delete** (one mail, or several ticked in the list; `mailbox.delete-mail`) moves the mail to the Bin in Gmail (`users.messages.trash`, recoverable for 30 days) and removes the row from the hub. Mail trashed in Gmail itself also leaves the inbox list. People only: no agent tool deletes mail. Sent records stay: they are the send log.

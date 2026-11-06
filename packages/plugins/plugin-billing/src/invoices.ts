@@ -871,7 +871,9 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
     );
     invoice.sender_snapshot = frozen.sender;
     invoice.customer_snapshot = frozen.customer;
-    to = emailEnabled(settings) ? await recipientsFor(ctx, invoice.company_id, invoice) : [];
+    // The addresses shown on the approval ticket win; no frozen list (retry, older tickets) resolves them now.
+    const frozenTo = parseAddresses(asArray(invoice.approval_recipients));
+    to = emailEnabled(settings) ? (frozenTo.length ? frozenTo : await recipientsFor(ctx, invoice.company_id, invoice)) : [];
     if (!emailEnabled(settings) || to.length === 0) {
       await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
       return { mode: "manual", attached: false, note: emailEnabled(settings) ? "No email address for this customer; marked sent without email." : "Email is off in Billing settings; marked sent." };

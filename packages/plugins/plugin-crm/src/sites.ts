@@ -1023,6 +1023,28 @@ async function projectLinks(ctx: PluginContext, companyId: string): Promise<Proj
   );
 }
 
+/**
+ * The guard every project link shares (link-client-project and the canary): a project belongs to one client.
+ * `existing` is the project's row, `takenBy` the same row when another client holds it (the caller refuses then).
+ */
+export async function projectLinkOf(ctx: PluginContext, companyId: string, projectId: string, client: { kind: ClientKind; id: string }) {
+  const links = await projectLinks(ctx, companyId);
+  const existing = links.find((link) => link.project_id === projectId) ?? null;
+  const takenBy = existing && (existing.client_kind !== client.kind || existing.client_ref !== client.id) ? existing : null;
+  return { links, existing, takenBy };
+}
+
+/** Writes the link (one row per project: a racing second link does nothing) and tells the other modules. Check `projectLinkOf` first. */
+export async function insertProjectLink(ctx: PluginContext, companyId: string, client: { kind: ClientKind; id: string }, projectId: string, kind: string | null, createdBy: string | null): Promise<void> {
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "client_projects")} (id, company_id, client_kind, client_ref, project_id, kind, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, project_id) DO NOTHING`,
+    [randomUUID(), companyId, client.kind, client.id, projectId, kind, createdBy],
+  );
+  await emitClientProjects(ctx, companyId, { clientKind: client.kind, clientRef: client.id });
+}
+
 interface ProjectSummary {
   id: string;
   name: string;
@@ -1117,10 +1139,9 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
     kind = params.kind as string | null;
   }
 
-  const links = await projectLinks(ctx, viewer.companyId);
-  const existing = links.find((link) => link.project_id === project.id);
-  if (existing && (existing.client_kind !== client.kind || existing.client_ref !== client.id)) {
-    throw new CrmError(`${project.name} already belongs to ${refOf(existing.client_kind as ClientKind, existing.client_ref)}. A person unlinks it there first.`);
+  const { links, existing, takenBy } = await projectLinkOf(ctx, viewer.companyId, project.id, client);
+  if (takenBy) {
+    throw new CrmError(`${project.name} already belongs to ${refOf(takenBy.client_kind as ClientKind, takenBy.client_ref)}. A person unlinks it there first.`);
   }
   if (existing && (kind === undefined || kind === existing.kind)) {
     return { projectId: project.id, name: project.name, client: ref, alreadyLinked: true, kind: existing.kind };
@@ -1138,13 +1159,7 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
       await emitClientProjects(ctx, viewer.companyId, { clientKind: client.kind, clientRef: client.id });
       return { projectId: project.id, name: project.name, client: ref, linked: true, kind: kind ?? null, kindChanged: true, previousKind: existing.kind };
     }
-    await ctx.db.execute(
-      `INSERT INTO ${table(ctx, "client_projects")} (id, company_id, client_kind, client_ref, project_id, kind, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (company_id, project_id) DO NOTHING`,
-      [randomUUID(), viewer.companyId, client.kind, client.id, project.id, kind ?? null, actorOf(viewer)],
-    );
-    await emitClientProjects(ctx, viewer.companyId, { clientKind: client.kind, clientRef: client.id });
+    await insertProjectLink(ctx, viewer.companyId, client, project.id, kind ?? null, actorOf(viewer));
   } catch (err) {
     // Two requests racing for the same kind: the partial unique index lets one win.
     const code = (err as { code?: unknown } | null)?.code;

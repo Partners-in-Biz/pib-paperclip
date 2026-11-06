@@ -23,6 +23,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { saveReportCopy } from "./report-copy.js";
+import { isCanaryId } from "./canary-flag.js";
 import { clientContacts, clientInfo, clientProjectOf, customerClients, hasActiveService, isInternalClient, logOnClient, pickRecipient, type ClientInfo } from "./care-clients.js";
 import {
   approvalsOfSubject,
@@ -582,10 +583,13 @@ export const reportHooks: MailApprovalHooks = {
     await setReportStatus(ctx, approval.companyId, record.id, { status: info.dryRun ? "dry_run" : "sent", sentNow: true });
     await logOnClient(ctx, approval.companyId, record.client, "email_sent", `Monthly report for ${periodLabel(record.period)} sent to the client.${info.dryRun ? " (canary dry run: not really sent)" : ""}`, `care:report:${record.id}:sent`, record.issueId);
     await tellReportAgent(ctx, record, `The ${periodLabel(record.period)} report was approved and sent${info.dryRun ? " (canary dry run)" : ""}. Mark this issue done.`);
-    if (!info.dryRun) {
+    // A real send files the report and saves its Drive copy. A dry run on the canary client saves a "DRY RUN" Drive copy
+    // only (so the canary proves the Drive path); a dry run on a real client saves and files nothing.
+    const dryRun = info.dryRun === true;
+    if (!dryRun || isCanaryId(record.client.id)) {
       const sentRecord = (await getReportById(ctx, approval.companyId, record.id)) ?? record;
       const name = (await clientInfo(ctx, approval.companyId, record.client))?.name ?? "the client";
-      await openReportFilingIssue(ctx, sentRecord, name).catch((error) => ctx.logger.warn("report filing issue failed", { reportId: record.id, error: String(error) }));
+      if (!dryRun) await openReportFilingIssue(ctx, sentRecord, name).catch((error) => ctx.logger.warn("report filing issue failed", { reportId: record.id, error: String(error) }));
       // Save report HTML to Drive (fire-and-forget: failures never affect the send)
       void saveReportCopy(ctx, {
         companyId: approval.companyId,
@@ -594,6 +598,7 @@ export const reportHooks: MailApprovalHooks = {
         seq: 1,
         html: sentRecord.html,
         client: sentRecord.client,
+        dryRun,
       });
     }
   },

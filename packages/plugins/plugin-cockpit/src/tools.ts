@@ -12,6 +12,7 @@ import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
 import { GROWTH_TOOLS } from "./growth-tool-declarations.js";
 import { OPS_TOOLS } from "./ops-tool-declarations.js";
+import { REVIEW_FINDING_TOOLS } from "./review-finding-declarations.js";
 import { BANNED_WORDS_MAX, PROFILE_FIELDS } from "./profile-model.js";
 import { POLICY_CLASSES } from "./owner-defaults-model.js";
 
@@ -187,4 +188,5 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
   ...GROWTH_TOOLS,
   ...ACCEPTANCE_TOOLS,
   ...EVAL_TOOLS,
+  ...REVIEW_FINDING_TOOLS,
 ];

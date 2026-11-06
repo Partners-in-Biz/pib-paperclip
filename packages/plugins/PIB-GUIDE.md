@@ -26,6 +26,12 @@ Every rule below was checked on 2026-10-06. If the code disagrees, trust the cod
 - Before you call work done, in each package you changed: `cd packages/plugins/<pkg> && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build`. A change to `pib-plugin-kit` or `pib-plugin-ui` needs the same in every plugin that uses it. The kit's `test` also runs the contract tests that check skill text against the registered tools of every plugin.
 - CI (`PiB plugins CI`) runs the same three steps for every package on each PR. A red check blocks the merge.
 
+### Local Paperclip servers never touch the live database (PAR-7750, 2026-11-04)
+Agent runs export `PAPERCLIP_CONFIG` and `PAPERCLIP_INSTANCE_ID` pointing at the live instance, and those override a worktree's `.paperclip/.env`. A server started with them connects to live, and its startup rewrites skills, grants and plugin rows with your branch's code. Stopping it doesn't undo that. On 4 Nov it took 4 minutes to break three skill rows.
+- **Start it with a clean environment:** `env -i PATH="$PATH" HOME="$HOME" PAPERCLIP_HOME=<worktree home> PAPERCLIP_INSTANCE_ID=<worktree instance> PAPERCLIP_CONFIG=<worktree config> <start command>`. Never start one with your run's environment, and never leave `DATABASE_URL` set.
+- **Read the startup banner before doing anything else.** It must say embedded PostgreSQL on a port other than 5432. If it says otherwise, stop that server at once (your own PIDs only).
+- **If it did reach live:** comment on your issue for Peet at once, and don't delete your worktree, its home folder or any scratch files until he says so. Rows may point at them.
+
 ### Test and acceptance runs clean up after themselves
 
 Any run (unit/integration/acceptance/canary/manual QA) that creates data in a shared or real environment (canary clients, invoices, quotes, contacts, deals, issues, files) must delete it again before it ends, on pass and on fail. Acceptance journeys end with `cleanup-canary`, and Billing removes the canary client's invoices/quotes when the CRM emits `company.deleted`. Test data must never show up in Drafts to send, finance or client views. If you leave data behind (e.g. run aborted), delete it with the cleanup tools (`cleanup-canary`, `delete-draft-invoice`, `delete-draft-quote`) in the same run and say so in the ticket comment.

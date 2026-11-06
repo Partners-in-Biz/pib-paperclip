@@ -12,7 +12,7 @@ import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, MIN_KEPT_PCT, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, MIN_KEPT_PCT, parseContentSelector, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
@@ -41,8 +41,20 @@ export function withoutNul<T>(value: T): T {
   return value;
 }
 
+/** Optional caller-supplied CRM client for the Drive copy (no CRM lookup here): `{ kind: company|contact, ref }`. */
+export function previewClient(params: Params): { kind: "company" | "contact"; ref: string } | undefined {
+  const raw = params.client;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new SeoError("client must be an object { kind, ref }.");
+  const { kind, ref } = raw as Record<string, unknown>;
+  if (kind !== "company" && kind !== "contact") throw new SeoError("client.kind must be company or contact.");
+  if (typeof ref !== "string" || ref.trim().length === 0) throw new SeoError("client.ref must be a non-empty CRM id.");
+  return { kind, ref: ref.trim().slice(0, 200) };
+}
+
 export async function createPreview(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprintId = reqStr(params, "sprintId");
+  const client = previewClient(params);
   const { sprint } = await loadSprintContext(env, companyId, sprintId);
   assertWritable(sprint);
   const rawUrl = reqStr(params, "pageUrl", { max: 2000 });
@@ -60,7 +72,10 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
     bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
+    contentSelector: str(params, "contentSelector", { max: 100 }),
   };
+  if (changes.contentSelector) parseContentSelector(changes.contentSelector);
+  else delete changes.contentSelector;
   const why = checkWhy(str(params, "why", { max: 1000 }));
   if (why.error) throw new SeoError(why.error);
   if (why.why) changes.why = why.why;
@@ -123,6 +138,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
     timeoutMs: 5000,
+    ...(client ? { client } : {}),
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });
@@ -396,8 +412,9 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     const stat = await env.ctx.db.query(`SELECT stats FROM ${t("previews")} WHERE id = $1 LIMIT 1`, [previewId]);
     const raw = stat[0]?.stats;
     const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, any>) : ((raw ?? {}) as Record<string, any>);
-    const rendered = parsed.rendered as { keptPct?: number } | undefined;
+    const rendered = parsed.rendered as { keptPct?: number; liveWords?: number } | undefined;
     if (!rendered || typeof rendered.keptPct !== "number") throw new SeoError("Open the review page first (the link in your review issue): it measures the proposal against the live page as a visitor sees it, and a preview cannot be passed before that check has run.");
+    if (!(typeof rendered.liveWords === "number" && rendered.liveWords > 0)) throw new SeoError("The rendered check saw 0 words on the live page, so its figures mean nothing. Reload the review page until the check shows the live words, or say verdict changes.");
     if (rendered.keptPct < MIN_KEPT_PCT) throw new SeoError(`The rendered check shows the proposal keeps only ${rendered.keptPct}% of what the live page shows. Send it back with verdict changes and say what is missing; only the owner can pass a preview like this.`);
   }
   await env.ctx.db.execute(

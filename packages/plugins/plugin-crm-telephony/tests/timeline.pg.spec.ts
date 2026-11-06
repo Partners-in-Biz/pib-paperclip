@@ -4,6 +4,9 @@ import { getTimeline, getTranscript, listUnmatched, setContactPrefs } from "../s
 import { writeAudit } from "../src/audit.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: any;
 
@@ -13,7 +16,7 @@ const contactId = "contact-123";
 const contactId2 = "contact-456";
 const userId = "user-789";
 
-describe("timeline", () => {
+describe.skipIf(!available)("timeline", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

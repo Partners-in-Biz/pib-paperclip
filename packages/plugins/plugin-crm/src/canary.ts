@@ -22,6 +22,8 @@ import { deleteLeadSourcesOf, listLeadSources } from "./lead-store.js";
 import { companyPrefix, crmLink, refOf } from "./refs.js";
 import { deleteServiceSteps } from "./service-onboarding.js";
 import { emitContactDeleted } from "./sync.js";
+import { insertProjectLink, projectLinkOf } from "./sites.js";
+import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 
 export const CANARY_JOURNEY: readonly string[] = [
   "Lead: send one test enquiry to the canary form (leadForm.curl, with an address ending @canary.invalid). It shows under Leads from their channels on the canary client's page and opens a lead issue.",
@@ -66,10 +68,12 @@ export async function ensureCanaryClient(ctx: PluginContext, viewer: Viewer, par
     created = true;
   }
 
+  const driveProject = await linkCanaryDriveProject(ctx, companyId, accountId);
   const form = await createLeadEndpoint(ctx, viewer, { client: refOf("company", accountId), label: "Canary form" }, "agent", { canary: true });
   const prefix = await companyPrefix(ctx, companyId);
   return {
     created,
+    driveProject,
     ...(runRef ? { runRef } : {}),
     client: refOf("company", accountId),
     name: account.name,
@@ -80,6 +84,27 @@ export async function ensureCanaryClient(ctx: PluginContext, viewer: Viewer, par
     journey: CANARY_JOURNEY,
     next: "Run the journey with the refs above. Every outward step stays a draft or a dry run; when you are done, cleanup-canary (confirm true).",
   };
+}
+
+/**
+ * Links the project in `canary.driveProjectId` to the canary (kind null), so producer Drive saves for the canary
+ * resolve to it. Never takes a project another client holds: that is a `conflict` and nothing is written.
+ */
+async function linkCanaryDriveProject(ctx: PluginContext, companyId: string, accountId: string): Promise<"linked" | "not_linked" | "conflict"> {
+  const config = await readConfig(ctx, companyId).catch(() => ({} as Record<string, unknown>));
+  const raw = (config.canary as { driveProjectId?: unknown } | undefined)?.driveProjectId;
+  const projectId = typeof raw === "string" ? raw.trim() : "";
+  if (!projectId) return "not_linked";
+  const project = await ctx.projects.get(projectId, companyId).catch(() => null);
+  if (!project) return "not_linked";
+  const client = { kind: "company" as const, id: accountId };
+  const before = await projectLinkOf(ctx, companyId, String(project.id), client);
+  if (before.takenBy) return "conflict";
+  if (before.existing) return "linked";
+  await insertProjectLink(ctx, companyId, client, String(project.id), null, "system:canary");
+  // Race: a person linking the same project to a real client at the same moment wins the unique index; read back who holds it.
+  const after = await projectLinkOf(ctx, companyId, String(project.id), client);
+  return after.existing && !after.takenBy ? "linked" : "conflict";
 }
 
 const ids = (list: string[]) => JSON.stringify(list);

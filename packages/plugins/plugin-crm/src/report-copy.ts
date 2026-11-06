@@ -13,13 +13,15 @@ export const REPORTS_SUBFOLDER = "04 Reports";
 /**
  * Build the report filename: "YYYY-MM-DD Client Name v01.html"
  * Matches pattern: /^\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+$/
+ * A canary dry run gets "YYYY-MM-DD DRY RUN Client Name v01.html": the marker goes after the date, because
+ * saveDriveFile's NAME_PATTERN is anchored on the date and refuses a "DRY RUN - " prefix as invalid_name.
  */
-export function reportFileName(clientName: string, period: string, seq: number): string {
+export function reportFileName(clientName: string, period: string, seq: number, options: { dryRun?: boolean } = {}): string {
   // period is YYYY-MM, take the first 10 chars to get YYYY-MM-DD (use first of month)
   const date = `${period}-01`;
   const sanitized = clientName.replace(/[^A-Za-z0-9\s-]/g, "").trim();
   const seqPadded = String(seq).padStart(2, "0");
-  return `${date} ${sanitized} v${seqPadded}.html`;
+  return `${date} ${options.dryRun ? "DRY RUN " : ""}${sanitized} v${seqPadded}.html`;
 }
 
 /**
@@ -35,11 +37,13 @@ export async function saveReportCopy(
     seq: number;
     html: string;
     client: ClientKey;
+    /** A canary dry run: the file name carries the DRY RUN marker. */
+    dryRun?: boolean;
   },
 ): Promise<DriveSaveResult | null> {
   try {
     const { companyId, clientName, period, seq, html, client } = args;
-    const name = reportFileName(clientName, period, seq);
+    const name = reportFileName(clientName, period, seq, { dryRun: args.dryRun === true });
     const bytes = new TextEncoder().encode(html);
 
     const result = await driveSave(ctx, {
