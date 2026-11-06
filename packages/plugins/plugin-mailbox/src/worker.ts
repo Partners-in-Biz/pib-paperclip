@@ -87,6 +87,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
+import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
@@ -1076,6 +1077,9 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
     threadId = original?.gmail_thread_id ?? null;
+    // A repeat create-draft for the same message (a retry seconds later) gets the first draft back, not a second copy (PAR-8030).
+    const open = reusableReplyDraft(await requireStore().replyDrafts(companyId, accountId, replyToMessageId));
+    if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
   }
   const id = randomUUID();
   await requireStore().insertDraft({
@@ -1098,6 +1102,12 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  const replyToMessageId = row.draft?.replyToMessageId ?? null;
+  if (replyToMessageId) {
+    // A reply to this message went out after this draft was saved: this is a leftover copy, sending it would answer twice (PAR-8030).
+    const sent = newerSentReply(await s.replyDrafts(companyId, row.account_id, replyToMessageId), row);
+    if (sent) throw new MailboxError(`Not sent: this message was already answered by sent reply ${sent.id}. Delete this draft, or write a new reply if a second answer is really needed.`);
+  }
   const account = await s.getAccount(companyId, row.account_id);
   const gmailReady = Boolean(account?.token_sealed) && (account?.status === "connected" || account?.status === "needs_reconnect");
   // A send-only account of the email provider sends through the provider, under the same delegation and the same rules.
@@ -1152,7 +1162,17 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     await s.setDraftStatus(companyId, row.id, "draft", result.error ?? "Send failed");
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
-  return { id: row.id, status: "sent" as const, gmailMessageId: result.messageId, threadId: result.threadId, sentAt: result.sentAt };
+  // The other open drafts answering the same message are now leftovers: remove them so no one sends them (PAR-8030).
+  let removedDrafts: string[] = [];
+  if (replyToMessageId) {
+    try {
+      removedDrafts = await removeSupersededDrafts(s, companyId, row.account_id, replyToMessageId, row.id);
+    } catch (error) {
+      // The mail is out; a failed clean-up must not report the send as failed. send-draft still refuses those copies.
+      requireEnv().ctx.logger.warn("mailbox: superseded reply drafts not removed", { draftId: row.id, error: errorMessage(error) });
+    }
+  }
+  return { id: row.id, status: "sent" as const, gmailMessageId: result.messageId, threadId: result.threadId, sentAt: result.sentAt, ...(removedDrafts.length ? { removedDrafts } : {}) };
 }
 
 /** CRM contacts for the recipient picker: two letters or more, a handful of hits. */
