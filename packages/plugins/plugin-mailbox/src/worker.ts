@@ -27,6 +27,7 @@ import {
   registerDoneChecks,
   registerEraseReceiver,
   registerModuleWatch,
+  registerClientProjectWatch,
   registerRoleWatch,
   settleOutbox,
   syncAllCompanies,
@@ -110,6 +111,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // The CRM's client-to-project links: a reply issue opens in the client's own project.
+    registerClientProjectWatch(ctx);
     // An agent's close of a "Reply needed" issue is checked: reopened while the thread still has no reply.
     registerDoneChecks(ctx, mailboxDoneChecks(store));
     // New companies get their skills here (the kit's one company.created wiring, plus a catch-up on a rare core event).

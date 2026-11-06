@@ -492,6 +492,9 @@ export class MemoryStore implements GmailStore {
   async setThreadIssue(accountId: string, threadId: string, issueId: string) {
     this.threadIssues.set(`${accountId}:${threadId}`, issueId);
   }
+  async threadIssueId(accountId: string, threadId: string) {
+    return this.threadIssues.get(`${accountId}:${threadId}`) ?? null;
+  }
 
   async insertOAuthSession(row: { state: string; companyId: string; createdByUserId: string | null; returnTo: string | null; ttlSeconds: number }) {
     this.sessions.set(row.state, { state: row.state, companyId: row.companyId, createdByUserId: row.createdByUserId, returnTo: row.returnTo, expired: false, expiresAt: Date.now() + row.ttlSeconds * 1000 });
@@ -861,6 +864,7 @@ export interface FakeHost {
   emitted: Array<{ name: string; companyId: string; payload: Record<string, unknown> }>;
   issues: Map<string, Record<string, unknown>>;
   wakeups: string[];
+  comments: Array<{ issueId: string; body: string }>;
   inbox: Map<string, Record<string, unknown>>;
   decisions: Array<Record<string, unknown>>;
   config: Record<string, unknown>;
@@ -870,6 +874,7 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
   const emitted: FakeHost["emitted"] = [];
   const issues = new Map<string, Record<string, unknown>>();
   const wakeups: string[] = [];
+  const comments: Array<{ issueId: string; body: string }> = [];
   const inbox = new Map<string, Record<string, unknown>>();
   const decisions: Array<Record<string, unknown>> = [];
   const fullConfig: Record<string, unknown> = {
@@ -941,6 +946,7 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
         return issue;
       },
       requestWakeup: async (id: string) => void wakeups.push(id),
+      createComment: async (id: string, body: string) => void comments.push({ issueId: id, body }),
     },
     // Real company state for the Mailbox's own keys (the unsubscribe proxy proof); every other key still answers with the UI base.
     state: {
@@ -953,7 +959,7 @@ export function fakeHost(config: Record<string, unknown> = {}): FakeHost {
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   } as unknown as PluginContext;
-  return { ctx, tables, emitted, issues, wakeups, inbox, decisions, config: fullConfig };
+  return { ctx, tables, emitted, issues, wakeups, comments, inbox, decisions, config: fullConfig };
 }
 
 export function testEnv(host: FakeHost, store: MemoryStore, fetchImpl: FetchLike, jevFetch?: typeof fetch): Env {
