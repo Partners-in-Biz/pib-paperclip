@@ -134,6 +134,19 @@ export function freeSpot(nodes: ReadonlyArray<Placed>, area: Rect, prefer?: { x:
   return best;
 }
 
+/**
+ * Where a new card goes: a free spot in view, else the nearest free spot in a 3x wider box around the view (the
+ * caller pans to it, `inView` false). Never on top of another card unless the whole wide box is full (null).
+ */
+export function placeCard(nodes: ReadonlyArray<Placed>, area: Rect, prefer?: { x: number; y: number }): { spot: { x: number; y: number }; inView: boolean } | null {
+  const near = freeSpot(nodes, area, prefer);
+  if (near) return { spot: near, inView: true };
+  const centre = prefer ?? { x: area.x + area.width / 2 - CARD_SIZE.width / 2, y: area.y + area.height / 2 - CARD_SIZE.height / 2 };
+  const wide = { x: area.x - area.width, y: area.y - area.height, width: area.width * 3, height: area.height * 3 };
+  const far = freeSpot(nodes, wide, centre);
+  return far ? { spot: far, inView: false } : null;
+}
+
 /** Gap between a source card and the result cards made next to it. */
 export const RESULT_GAP_X = 380;
 export const RESULT_GAP_Y = 280;

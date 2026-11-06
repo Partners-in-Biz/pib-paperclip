@@ -34,7 +34,7 @@ import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js"
 import { pickerCss } from "./ModelPicker.js";
 import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
-import { CARD_LABELS, cascadePosition, freeSpot, visibleArea, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
+import { CARD_LABELS, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
@@ -346,9 +346,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         for (const f of made.fills) flow.updateNodeData(f.id, { assetId: f.assetId });
         if (made.created.length) {
           // Move each new result into free, visible board (not under the side panel), as near its spot as it fits.
-          const area = seenArea();
           for (const c of made.created) {
-            const spot = area ? freeSpot(nextNodes, area, c.position) : null;
+            const spot = spotFor(nextNodes, c.position);
             nextNodes = [...nextNodes, spot ? { ...c, position: spot } : c];
           }
           nextEdges = [...nextEdges, ...made.edges];
@@ -485,15 +484,22 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     return { x: a.x, y: a.y, width: z.x - a.x, height: z.y - a.y };
   }
 
+  // A free spot for a new card (see placeCard); pans to it when the view itself is full.
+  function spotFor(all: ReadonlyArray<FlowNode>, prefer?: { x: number; y: number }): { x: number; y: number } | null {
+    const area = seenArea();
+    const placed = area ? placeCard(all, area, prefer) : null;
+    if (placed && !placed.inView) void flow.setCenter(placed.spot.x + CARD_SIZE.width / 2, placed.spot.y + CARD_SIZE.height / 2, { zoom: flow.getZoom(), duration: 200 });
+    return placed?.spot ?? null;
+  }
+
   const addCard = (type: NodeType) => {
     if (nodes.length >= MAX_NODES) return setNotice(`A canvas holds at most ${MAX_NODES} cards.`);
     const el = document.querySelector(".studio-canvas-flow");
     const box = el?.getBoundingClientRect();
     const centre = box ? flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }) : { x: 0, y: 0 };
-    // A free spot in the part of the board you can see; when it is full, cascade from the viewport centre (each card
-    // already at that spot pushes the new one CASCADE_STEP down-right).
-    const area = seenArea();
-    const position = (area && freeSpot(nodes, area)) || cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
+    // A free spot in the part of the board you can see (or just beside it); only on a packed board, cascade from the
+    // viewport centre (each card already at that spot pushes the new one CASCADE_STEP down-right).
+    const position = spotFor(nodes) || cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
     beforeEdit();
     setNodes((ns) => [...ns, { id: newId("n"), type, position, data: {} }]);
     changed();

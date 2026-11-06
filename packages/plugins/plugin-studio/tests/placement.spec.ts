@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { CARD_SIZE, freeSpot, visibleArea } from "../src/ui/board.js";
+import { CARD_SIZE, freeSpot, placeCard, visibleArea } from "../src/ui/board.js";
+
+describe("placeCard (full view)", () => {
+  it("finds a free spot just outside a full view and says it is out of view", () => {
+    const area = { x: 0, y: 0, width: 600, height: 400 };
+    const nodes = [{ position: { x: 0, y: 0 }, measured: { width: 600, height: 400 } }];
+    const placed = placeCard(nodes, area)!;
+    expect(placed.inView).toBe(false);
+    const s = placed.spot;
+    const clear = s.x + CARD_SIZE.width <= 0 || s.x >= 600 || s.y + CARD_SIZE.height <= 0 || s.y >= 400;
+    expect(clear).toBe(true);
+  });
+  it("stays in view when there is room", () => {
+    expect(placeCard([], { x: 0, y: 0, width: 1000, height: 800 })?.inView).toBe(true);
+  });
+});
 
 const board = { x: 0, y: 0, width: 1440, height: 900 };
 
