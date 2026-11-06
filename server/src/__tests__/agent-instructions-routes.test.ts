@@ -7,6 +7,8 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   resolveByReference: vi.fn(),
+  listConfigRevisions: vi.fn(async () => []),
+  recordInstructionsRevision: vi.fn(async () => undefined),
 }));
 
 const mockBuiltInAgentService = vi.hoisted(() => ({
