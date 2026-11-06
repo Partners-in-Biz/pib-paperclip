@@ -524,7 +524,7 @@ function GeneratePanel({ id, kind, data }: { id: string; kind: "image" | "video"
       {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
       {estimate ? (
         <span aria-live="polite" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
-          <strong>{estimate.creditsTotal} credits.</strong> {estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}
+          <strong>{estimate.creditsTotal} {estimate.creditsTotal === 1 ? "credit" : "credits"}.</strong> {estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}
         </span>
       ) : null}
       <div className="nodrag" style={row}>
