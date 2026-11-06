@@ -11,6 +11,11 @@ Creative assets and image and video generation for people and agents. Replaces t
 
 Not here yet: review, export to Social, the generate form and Photo Studio (Phase 2), the canvas (Phase 3), hosted-client entitlement and the hosted cap ceiling (Phase 4).
 
+## Canvas share links and briefs (0.1.16)
+
+- **Share link:** an editor makes a view-only link from the canvas toolbar (Share). It is a static page `dist/ui/s/<24 random characters>.html` served by the host to anyone with the link: the board drawn as HTML, no script, no controls. Preview links on it last 10 minutes; the one-minute job rewrites the page every 4 minutes and the page reloads. Links expire after 7 days (1 to 30) and Revoke deletes the page at once. Agents never get a share or a signed link.
+- **Agent tool `canvas-create-from-brief`:** a title, prompts (image or video) and optional library asset ids become a new board: prompt cards wired to image/video cards, references as source cards feeding them. It never generates or spends; a person opens the board and presses Generate. Installing grants nobody: grant it to the agents that plan creative work.
+
 ## The higgsfield skill
 
 `skills/higgsfield/SKILL.md` is the source of the company library skill `higgsfield` (a `local_path` company skill, not shipped in `dist`). It sends agents to the Studio tools only. Cut-over after merge (a deploy step, not done by the PR): copy it over the company skill's `SKILL.md` and remove the old `hf.py` next to it. `tests/higgsfield-skill.spec.ts` keeps it in step with `src/tools.ts`.

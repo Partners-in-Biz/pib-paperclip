@@ -1,5 +1,6 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { LINK_TARGETS } from "./assets.js";
+import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_BATCH } from "./generation.js";
 import { PHOTO_PRESETS } from "./presets.js";
 
@@ -101,6 +102,37 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
       assetId: text("Asset id"),
       targetType: { type: "string", enum: [...LINK_TARGETS], description: "What it's linked to" },
       targetId: text("That thing's id"),
+    }),
+  },
+  {
+    name: "canvas-create-from-brief",
+    displayName: "Create a Studio canvas from a brief",
+    description:
+      "Lay out a new Studio canvas board: each prompt becomes a prompt card wired to an image or video card, and library assets become source cards feeding them. Free: it never generates or spends credits. A person opens the board in Studio and presses Generate.",
+    parametersSchema: schema(["title", "prompts"], {
+      title: text("Board title, up to 120 characters"),
+      prompts: {
+        type: "array",
+        minItems: 1,
+        maxItems: MAX_BRIEF_PROMPTS,
+        description: "One card pair per prompt",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text"],
+          properties: {
+            text: text("What to make"),
+            kind: { type: "string", enum: ["image", "video"], description: "Default image" },
+            label: text("Short card name"),
+            model: text("Optional provider model path, e.g. higgsfield-ai/soul/v2/standard"),
+            ratio: text('Optional aspect ratio, e.g. "9:16"'),
+          },
+        },
+      } as JsonSchema,
+      assetIds: { type: "array", items: { type: "string" }, maxItems: MAX_BRIEF_ASSETS, description: "Optional Studio library asset ids (same client) to use as references" } as JsonSchema,
+      projectId: text("Optional project. Defaults to the project of the issue."),
+      client: CLIENT,
+      issueId: ISSUE,
     }),
   },
 ];

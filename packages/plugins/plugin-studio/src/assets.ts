@@ -193,10 +193,10 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
   return { ...assetOut(row), path };
 }
 
-/** For a person's browser, after an access check in the action. Short-lived. */
-export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string): Promise<string> {
+/** For a person's browser, after an access check in the action (or a share page). Short-lived. */
+export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
-  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, 300);
+  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, expiresSec);
 }
 
 export async function linkAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, runProjectId: string | null) {
