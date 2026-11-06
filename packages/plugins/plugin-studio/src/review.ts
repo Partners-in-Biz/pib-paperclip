@@ -3,6 +3,7 @@
  * (Social subscribes as `plugin.<studio id>.asset.approved` and imports the file by URL into the client's library).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { textArrayParam } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "./config.js";
 import { table } from "./db.js";
 import { StudioError } from "./errors.js";
@@ -69,8 +70,9 @@ export async function reviewAsset(
 
   const from = FROM[decision];
   const result = await ctx.db.execute(
-    `UPDATE ${table(ctx, "assets")} SET status = $3, updated_at = now() WHERE company_id = $1 AND id = $2 AND status = ANY($4::text[])`,
-    [companyId, assetId, decision, from],
+    `UPDATE ${table(ctx, "assets")} SET status = $3, updated_at = now() WHERE company_id = $1 AND id = $2 AND status = ANY(${textArrayParam(4)})`,
+    // The host binds a JS array as a list ($4, $5), which Postgres refuses: pass it as JSON text.
+    [companyId, assetId, decision, JSON.stringify(from)],
   );
   if (affected(result) !== 1) {
     const now = await getAssetRow(ctx, companyId, assetId);

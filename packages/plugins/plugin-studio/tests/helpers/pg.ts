@@ -13,6 +13,32 @@ import { bindLikeHost, validateExecute, validateMigration, validateQuery } from 
 const here = fileURLToPath(new URL(".", import.meta.url));
 export const PLUGIN_ROOT = join(here, "../..");
 const EMBEDDED = join(PLUGIN_ROOT, "../../db/node_modules/embedded-postgres/dist/index.js");
+/** The host's own drizzle, so params bind exactly as server/src/services/plugin-database.ts `bindSql` does (a JS array becomes `($n, $n+1)`). */
+const DRIZZLE = join(PLUGIN_ROOT, "../../../server/node_modules/drizzle-orm/index.js");
+const DRIZZLE_PG = join(PLUGIN_ROOT, "../../../server/node_modules/drizzle-orm/pg-core/index.js");
+
+type DrizzleSql = { raw: (s: string) => unknown; join: (chunks: unknown[], sep: unknown) => unknown } & ((strings: TemplateStringsArray, ...values: unknown[]) => unknown);
+
+/** A copy of the host's `bindSql`, run through the host's drizzle and pg dialect: the real binding path of `ctx.db`. */
+export async function hostBinder(): Promise<(statement: string, params?: readonly unknown[]) => { sql: string; values: unknown[] }> {
+  const { sql } = (await import(DRIZZLE)) as { sql: DrizzleSql };
+  const { PgDialect } = (await import(DRIZZLE_PG)) as { PgDialect: new () => { sqlToQuery: (q: unknown) => { sql: string; params: unknown[] } } };
+  const dialect = new PgDialect();
+  return (statement, params = []) => {
+    bindLikeHost(statement, params.map((p) => (p !== null && typeof p === "object" ? "x" : p))); // placeholder rules only
+    if (params.length === 0) return { sql: statement, values: [] };
+    const chunks: unknown[] = [];
+    let cursor = 0;
+    for (const match of statement.matchAll(/\$(\d+)/g)) {
+      chunks.push(sql.raw(statement.slice(cursor, match.index)));
+      chunks.push(sql`${params[Number(match[1]) - 1]}`);
+      cursor = match.index! + match[0].length;
+    }
+    chunks.push(sql.raw(statement.slice(cursor)));
+    const out = dialect.sqlToQuery(sql.join(chunks, sql.raw("")));
+    return { sql: out.sql, values: out.params };
+  };
+}
 
 type PgClient = { query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number | null }>; connect: () => Promise<void>; end: () => Promise<void> };
 
@@ -54,8 +80,9 @@ export async function startPg(opts?: { upTo?: string }): Promise<Pg> {
     await client.query(sql);
   }
   const statements: string[] = [];
+  const bind = await hostBinder();
   const run = async (sql: string, params: unknown[] = []) => {
-    const bound = bindLikeHost(sql, params);
+    const bound = bind(sql, params);
     statements.push(sql);
     return client.query(bound.sql, bound.values);
   };

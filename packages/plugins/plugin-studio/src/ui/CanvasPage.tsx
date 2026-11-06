@@ -103,13 +103,51 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   );
 }
 
+/** True for people who may change canvases (the worker's canvasEditor check); false for viewers; null while loading. */
+function useCanEdit(companyId: string): boolean | null {
+  const meAction = usePluginAction("me");
+  const [canEdit, setCanEdit] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    meAction({ companyId })
+      .then((out) => live && setCanEdit((out as { canGenerate?: boolean }).canGenerate === true))
+      .catch(() => live && setCanEdit(false));
+    return () => {
+      live = false;
+    };
+  }, [companyId]);
+  return canEdit;
+}
+
+/** Archive a board after a confirm. Resolves true when it was archived. */
+function useArchive(companyId: string, onError: (text: string) => void) {
+  const archive = usePluginAction("canvas-archive");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const run = async (b: { id: string; title: string }) => {
+    if (!window.confirm(`Archive "${b.title}"? It leaves the canvas list.`)) return false;
+    setBusyId(b.id);
+    try {
+      await archive({ companyId, canvasId: b.id });
+      return true;
+    } catch (err) {
+      onError(errorText(err));
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  };
+  return { run, busyId };
+}
+
 function CanvasList({ companyId }: { companyId: string }) {
   const nav = useHostNavigation();
   const list = usePluginData<{ canvases: Summary[] }>("canvases", { companyId, limit: 100 });
   const create = usePluginAction("canvas-create");
+  const canEdit = useCanEdit(companyId);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const archive = useArchive(companyId, setError);
   const start = () => {
     setBusy(true);
     setError(null);
@@ -138,6 +176,16 @@ function CanvasList({ companyId }: { companyId: string }) {
             <li key={b.id} style={{ ...row, justifyContent: "space-between", minWidth: 0 }}>
               <a {...nav.linkProps(`/studio-canvas?canvas=${encodeURIComponent(b.id)}`)} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 12rem" }}>{b.title}</a>
               <span style={muted}>{b.client?.name ?? "Own work"} · {b.cards} cards · {new Date(b.updatedAt).toLocaleString()}</span>
+              {canEdit ? (
+                <Button
+                  variant="secondary"
+                  disabled={archive.busyId !== null}
+                  aria-label={`Archive ${b.title}`}
+                  onClick={() => void archive.run(b).then((done) => { if (done) { setError(null); list.refresh(); } })}
+                >
+                  {archive.busyId === b.id ? "Archiving…" : "Archive"}
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -165,6 +213,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [, setTick] = useState(0);
+  const canEdit = useCanEdit(companyId);
+  const archive = useArchive(companyId, setNotice);
 
   const history = useRef(new History());
   const now = useRef<Snapshot>({ nodes: [], edges: [] });
@@ -236,6 +286,9 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     revision.current = data.revision;
     viewport.current = data.doc.viewport;
     void flow.setViewport(data.doc.viewport);
+    // Open with every card in view (a phone shows a small part of a saved desktop viewport). React Flow queues this
+    // until the new cards are measured. maxZoom 1 keeps a board with one card from zooming in on it.
+    if (snap.nodes.length > 0) void flow.fitView({ padding: 0.2, maxZoom: 1 });
     history.current.clear();
     savedGen.current = gen;
     reloading.current = false;
@@ -324,9 +377,10 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     const el = document.querySelector(".studio-canvas-flow");
     const box = el?.getBoundingClientRect();
     const centre = box ? flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }) : { x: 0, y: 0 };
-    const jitter = (nodes.length % 6) * 24;
+    // Cascade from the viewport centre: each card already at that spot pushes the new one CASCADE_STEP down-right.
+    const position = cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
     beforeEdit();
-    setNodes((ns) => [...ns, { id: newId("n"), type, position: { x: Math.round(centre.x - 110 + jitter), y: Math.round(centre.y - 60 + jitter) }, data: {} }]);
+    setNodes((ns) => [...ns, { id: newId("n"), type, position, data: {} }]);
     changed();
   };
 
@@ -383,6 +437,15 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
         <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
+        {canEdit ? (
+          <Button
+            variant="secondary"
+            disabled={archive.busyId !== null}
+            onClick={() => void archive.run({ id: canvasId, title: board.data?.title ?? "this canvas" }).then((done) => { if (done) { setState("saved"); nav.navigate("/studio-canvas"); } })}
+          >
+            {archive.busyId ? "Archiving…" : "Archive"}
+          </Button>
+        ) : null}
       </div>
       <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos }}>
         <div className="studio-canvas-flow" style={{ width: "100%", height: "min(72vh, 760px)", minHeight: 420, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
