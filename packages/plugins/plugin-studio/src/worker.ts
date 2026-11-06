@@ -3,6 +3,8 @@ import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection,
 import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
+import { briefDoc } from "./canvas-brief.js";
+import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { reviewAsset } from "./review.js";
 import { errorText, StudioError } from "./errors.js";
 import { runDetached } from "./detach.js";
@@ -37,6 +39,24 @@ async function workOf(ctx: PluginContext, run: ToolRunContext, params: Record<st
   if (!ref) return { issueId: null, projectId: run.projectId || null };
   const issue = await loadIssue(ctx, run.companyId, ref);
   return { issueId: issue.id, projectId: issue.projectId ?? (run.projectId || null) };
+}
+
+/** Lays out a board for a person to generate from. Never generates, never charges, never returns a link to a file. */
+async function createFromBrief(ctx: PluginContext, params: Record<string, unknown>, run: ToolRunContext) {
+  const work = await workOf(ctx, run, params);
+  const projectId = (typeof params.projectId === "string" && params.projectId.trim()) || work.projectId;
+  const doc = briefDoc(params);
+  const { client, title } = params;
+  const board = await createCanvas(ctx, run.companyId, { title, client, projectId, doc }, { agentId: run.agentId });
+  return {
+    canvasId: board.id,
+    title: board.title,
+    client: board.client,
+    projectId: board.projectId,
+    cards: board.cards,
+    open: `Studio > Canvas, board "${board.title}" (page path studio-canvas?canvas=${board.id})`,
+    next: "Nothing was generated or charged. A person opens the board and presses Generate on each image or video card.",
+  };
 }
 
 async function runTool(ctx: PluginContext, name: string, params: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
@@ -95,6 +115,8 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       await assertReachable(ctx, companyId, scopeOfRow(row), work.projectId);
       return reviewAsset(ctx, companyId, params, { agentId: run.agentId });
     }
+    case "canvas-create-from-brief":
+      return createFromBrief(ctx, params, run);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }
@@ -250,9 +272,30 @@ const plugin = definePlugin({
       const me = await canvasEditor(context);
       return addComment(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
+    // Read-only share links (canvas-share.ts): only editors list, make and revoke them. The list is an action, not
+    // page data, because page data has no caller and each entry carries the secret link path.
+    ctx.actions.register("canvas-share-list", async (params, context) => {
+      const me = await canvasEditor(context);
+      return { shares: await listShares(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
+    });
+    ctx.actions.register("canvas-share-create", async (params, context) => {
+      const me = await canvasEditor(context);
+      return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    ctx.actions.register("canvas-share-revoke", async (params, context) => {
+      const me = await canvasEditor(context);
+      return revokeShare(ctx, me.companyId, objectParams(params));
+    });
+    const publishShares = () => refreshShares(ctx).catch((error) => ctx.logger.warn("Studio share pages not refreshed", { error: errorText(error) }));
+    runDetached(() => void publishShares());
 
+    // The one-minute job also keeps share pages fresh (new preview links) and deletes revoked or expired ones.
     ctx.jobs.register("process-queue", async () => {
-      await processQueue(ctx);
+      try {
+        await processQueue(ctx);
+      } finally {
+        await publishShares();
+      }
     });
     ctx.jobs.register("sweep-local-files", async () => {
       await sweepLocalCopies();

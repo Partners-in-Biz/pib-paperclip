@@ -20,6 +20,7 @@ description: Generate images and short videos (Higgsfield models) through the St
 - `studio-list-assets`, `studio-get-asset`: find assets and open one. `studio-get-asset` gives a local file path to look at; it is not a link and expires after a day (ask again).
 - `studio-import-from-attachment`: save a file you made yourself (HTML slide render, ffmpeg cut) as a Studio asset: attach it to the issue, then pass its attachment id and `altText`.
 - `studio-link-asset`: record where an asset is used (post, campaign, page, ...).
+- `canvas-create-from-brief`: free. Lay out a Studio canvas board from a brief (title, prompts, optional library asset ids) for a person to open and press Generate. It never generates or spends.
 - `studio-review-asset`: `approved` sends the asset to Social's media library for its client (or own work), where `list-media-assets` shows it for a post. `rejected` keeps it out. This files the asset; it does not approve or publish a post.
 
 Scope: pass the same `client` (`company:<id>` or `contact:<id>`) on every call, or leave it out to use the client of the issue's project (own work when it has none). Never use another scope's brand or media.
