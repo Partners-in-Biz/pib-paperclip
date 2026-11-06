@@ -2,6 +2,7 @@ import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
+import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { reviewAsset } from "./review.js";
 import { errorText, StudioError } from "./errors.js";
 import { runDetached } from "./detach.js";
@@ -160,7 +161,7 @@ const plugin = definePlugin({
 
     ctx.actions.register("me", async (_params, context) => {
       const me = await person(context);
-      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner" };
+      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", userId: me.userId };
     });
 
     ctx.actions.register("asset-url", async (params, context) => {
@@ -233,6 +234,21 @@ const plugin = definePlugin({
     ctx.actions.register("canvas-archive", async (params, context) => {
       const me = await canvasEditor(context);
       return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
+    });
+    // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
+    pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
+    pageData("canvas-comments", (companyId, p) => listComments(ctx, companyId, String(p.canvasId ?? ""), p.cardId).then((comments) => ({ comments })));
+    ctx.actions.register("canvas-version-save", async (params, context) => {
+      const me = await canvasEditor(context);
+      return saveVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    ctx.actions.register("canvas-version-restore", async (params, context) => {
+      const me = await canvasEditor(context);
+      return restoreVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    ctx.actions.register("canvas-comment-add", async (params, context) => {
+      const me = await canvasEditor(context);
+      return addComment(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
     ctx.jobs.register("process-queue", async () => {
