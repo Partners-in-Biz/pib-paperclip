@@ -6,7 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetOut, getAssetRow, importFromAttachment, linkAsset, listAssets } from "../src/assets.js";
 import { processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
-import { capHistory, setCap, usage, currentPeriod } from "../src/ledger.js";
+import { capHistory, setCap, usage, currentPeriod, DEFAULT_RUN_LIMIT, runLimitOf, runUsage } from "../src/ledger.js";
 import { ProviderError, type GenerationProvider, type JobState } from "../src/provider.js";
 import { isCompanyOwner, usageView } from "../src/service.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
@@ -156,6 +156,41 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
 
   const work = (issueId: string, projectId: string) => ({ ...AGENT, issueId, projectId });
   const acmeWork = () => work("issue-acme", "project-acme");
+
+  describe("per agent run limit", () => {
+    beforeEach(() => setCap(world.ctx, CO, "company", 100, "owner-1"));
+
+    it("defaults to 2 credits per run and refuses past it with run_limit", async () => {
+      expect(runLimitOf([])).toBe(DEFAULT_RUN_LIMIT);
+      expect(DEFAULT_RUN_LIMIT).toBe(2);
+      const run = { agentId: "agent-1", runId: "run-default" };
+      let used = 0;
+      let refused = false;
+      for (let i = 0; i < 100 && !refused; i++) {
+        try {
+          const out = await requestGeneration(world.ctx, CO, REQUEST, run, runtime);
+          expect(out).toBeTruthy();
+          used = await runUsage(world.ctx, CO, "run-default");
+          expect(used).toBeLessThanOrEqual(DEFAULT_RUN_LIMIT);
+        } catch (err) {
+          expect(err).toMatchObject({ code: "run_limit" });
+          refused = true;
+        }
+      }
+      expect(refused).toBe(true);
+      expect(used).toBeGreaterThan(0);
+      // A fresh run starts at zero; people (no run id) are not limited by it.
+      await expect(requestGeneration(world.ctx, CO, REQUEST, { agentId: "agent-1", runId: "run-other" }, runtime)).resolves.toBeTruthy();
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, { userId: "user-1" } as never, runtime)).resolves.toBeTruthy();
+    });
+
+    it("is a setting: 0 stops agent runs, a higher value lets them through", async () => {
+      await setCap(world.ctx, CO, "agent_run", 0, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, { agentId: "agent-1", runId: "run-zero" }, runtime)).rejects.toMatchObject({ code: "run_limit" });
+      await setCap(world.ctx, CO, "agent_run", 50, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, { agentId: "agent-1", runId: "run-zero" }, runtime)).resolves.toBeTruthy();
+    });
+  });
 
   describe("settable caps", () => {
     it("refuses until a cap is set, then applies a change to the very next generation", async () => {
@@ -402,6 +437,7 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
 
     it("sends at most 4 at a time per company", async () => {
       provider.state = { state: "pending" };
+      await setCap(world.ctx, CO, "agent_run", 100, "owner-1");
       await requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 8 }, acmeWork(), runtime);
       await processQueue(world.ctx, runtime);
       await processQueue(world.ctx, runtime);
