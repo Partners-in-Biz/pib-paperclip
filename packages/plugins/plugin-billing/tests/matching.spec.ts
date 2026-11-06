@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { decideBankMatch, parseOpenItemKey } from "../src/bank.js";
 import { choosePopInvoice, findReferences, looksLikePop, matchByNumber, referenceKey, threadInvoiceId } from "../src/pop.js";
+import { namesOnlyInvoice, popSearchText } from "../src/pop-references.js";
 import { planReminders, stageToSend } from "../src/dunning.js";
 import { DEFAULT_DUNNING_STAGES } from "../src/config.js";
 import type { InvoiceBalance } from "../src/balances.js";
@@ -105,5 +106,22 @@ describe("dunning schedule", () => {
       { invoiceId: "a", stage: 1, daysOverdue: 8 },
       { invoiceId: "b", stage: 2, daysOverdue: 15 },
     ]);
+  });
+});
+
+describe("a proof naming one invoice", () => {
+  it("is only true when this invoice is the only number named", () => {
+    const kumari = "Morning Stean Attached is the PoP for INV ELE-006. Regards Kumari From: Stean van Wyk <stean@partnersinbiz.online> Sent: Monday, 02 November 2026 13:54 To: Kumari Pillay";
+    expect(namesOnlyInvoice(kumari, "ELE-006")).toBe(true);
+    expect(namesOnlyInvoice(kumari, "ELE-005")).toBe(false);
+    expect(namesOnlyInvoice("PoP for ELE-006 and ELE-007", "ELE-006")).toBe(false);
+    expect(namesOnlyInvoice("No number here", "ELE-006")).toBe(false);
+    expect(namesOnlyInvoice("PoP for 2026-001", "2026-001")).toBe(false);
+  });
+
+  it("reads the subject, snippet and file names of a stored proof", () => {
+    const text = popSearchText({ subject: "Paid", snippet: null, file_name: "pop.pdf", attachments: [{ filename: "ELE-006.pdf" }, null] });
+    expect(namesOnlyInvoice(text, "ELE-006")).toBe(true);
+    expect(popSearchText({ attachments: "not a list" })).not.toContain("not a list");
   });
 });

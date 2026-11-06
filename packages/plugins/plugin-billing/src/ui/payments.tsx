@@ -115,6 +115,14 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
   const [amount, setAmount] = useState("");
   const [paidAt, setPaidAt] = useState(today());
   const openInvoices = snapshot.invoices.filter((i) => ["sent", "viewed", "overdue", "partially_paid", "payment_pending_verification"].includes(i.status));
+  // Already paid: the proof can be tied to the payment on record, with no new money.
+  const paidInvoices = snapshot.invoices.filter((i) => i.status === "paid" && !i.shared);
+  const linking = snapshot.invoices.find((i) => i.id === invoiceId)?.status === "paid";
+  const chooseInvoice = (id: string) => {
+    setInvoiceId(id);
+    const inv = snapshot.invoices.find((i) => i.id === id);
+    if (inv && inv.status !== "paid") setAmount(minorToInput(confirming?.amountMinor ?? inv.outstandingMinor ?? 0));
+  };
   const currencyOf = (id: string | null) => snapshot.invoices.find((i) => i.id === id)?.currency ?? snapshot.defaults?.currency ?? "ZAR";
 
   const view = (pop: Pop) => void call<{ url: string }>("billing.pop-file", { popId: pop.id }).then((r) => openUrl(r.url)).catch((e: unknown) => say(errorText(e)));
@@ -188,21 +196,34 @@ export function PaymentsTab({ onOpenInvoice }: { onOpenInvoice: (id: string) => 
 
       {scope ? <ClientMoney /> : null}
 
-      <Modal open={Boolean(confirming)} title="Confirm the payment" description="Records the money against the invoice. More than is owed stays with the customer as credit." onClose={() => setConfirming(null)} footer={<>
+      <Modal open={Boolean(confirming)} title="Confirm the payment" description={linking ? "Ties this proof to the payment already on the invoice. No new money is recorded." : "Records the money against the invoice. More than is owed stays with the customer as credit."} onClose={() => setConfirming(null)} footer={<>
         <Button type="button" variant="secondary" onClick={() => setConfirming(null)}>Cancel</Button>
         <Button type="button" onClick={() => void run(async () => {
-          await call("billing.confirm-pop", { popId: confirming!.id, invoiceId: invoiceId || null, amountMinor: toMinor(amount), paidAt });
+          if (linking) await call("billing.link-pop", { popId: confirming!.id, invoiceId });
+          else await call("billing.confirm-pop", { popId: confirming!.id, invoiceId: invoiceId || null, amountMinor: toMinor(amount), paidAt });
           setConfirming(null);
-        }, "Payment confirmed")}>Confirm</Button>
+        }, linking ? "Proof linked to its payment" : "Payment confirmed")}>{linking ? "Link to this payment" : "Confirm"}</Button>
       </>}>
         <Field label="Invoice">
-          <Select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)}>
+          <Select value={invoiceId} onChange={(e) => chooseInvoice(e.target.value)}>
             <option value="">Choose the invoice…</option>
-            {openInvoices.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.customerName ?? i.customerRef} · {money(i.outstandingMinor ?? 0, i.currency)} owed</option>)}
+            {openInvoices.length > 0 ? (
+              <optgroup label="Waiting for money">
+                {openInvoices.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.customerName ?? i.customerRef} · {money(i.outstandingMinor ?? 0, i.currency)} owed</option>)}
+              </optgroup>
+            ) : null}
+            {paidInvoices.length > 0 ? (
+              <optgroup label="Already paid (records no new money)">
+                {paidInvoices.map((i) => <option key={i.id} value={i.id}>{i.number} · {i.customerName ?? i.customerRef} · paid</option>)}
+              </optgroup>
+            ) : null}
           </Select>
         </Field>
-        <Field label={`Amount in the bank (${currencyOf(invoiceId || null)})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-        <Field label="Date it cleared"><Input type="date" value={paidAt} max={today()} onChange={(e) => setPaidAt(e.target.value)} /></Field>
+        {openInvoices.length === 0 && !linking ? (
+          <Muted>{paidInvoices.length > 0 ? "No invoice is waiting for money. If this payment is already recorded, pick its paid invoice to link the proof. If not, send the invoice first." : "No invoice is waiting for money. Send the invoice first, then confirm this proof."}</Muted>
+        ) : null}
+        {linking ? null : <Field label={`Amount in the bank (${currencyOf(invoiceId || null)})`}><Input value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>}
+        {linking ? null : <Field label="Date it cleared"><Input type="date" value={paidAt} max={today()} onChange={(e) => setPaidAt(e.target.value)} /></Field>}
       </Modal>
     </div>
   );
