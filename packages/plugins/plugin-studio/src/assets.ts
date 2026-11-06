@@ -30,8 +30,8 @@ export interface AssetRow {
   bytes: unknown;
 }
 
-const ASSET_SELECT = (ctx: PluginContext) =>
-  `SELECT a.id, a.company_id, a.client_kind, a.client_ref, a.client_name, a.project_id, a.name, a.kind, a.alt_text, a.status, a.source, a.generation_id, a.current_version, a.created_at, v.r2_key, v.mime, v.bytes
+const ASSET_SELECT = (ctx: PluginContext, extraColumns = "") =>
+  `SELECT a.id, a.company_id, a.client_kind, a.client_ref, a.client_name, a.project_id, a.name, a.kind, a.alt_text, a.status, a.source, a.generation_id, a.current_version, a.created_at, v.r2_key, v.mime, v.bytes${extraColumns}
    FROM ${table(ctx, "assets")} a JOIN ${table(ctx, "asset_versions")} v ON v.asset_id = a.id AND v.version = a.current_version`;
 
 /** What people and agents see. No storage key and no URL. */
@@ -115,9 +115,17 @@ export interface ListFilter {
   kind?: string | null;
   status?: string | null;
   limit?: number;
+  /** Newest first unless "oldest". */
+  sort?: "newest" | "oldest" | null;
 }
 
-export async function listAssets(ctx: PluginContext, companyId: string, filter: ListFilter) {
+interface ListRow extends AssetRow {
+  gen_prompt: string | null;
+  gen_model: string | null;
+  gen_credits: unknown;
+}
+
+function listWhere(ctx: PluginContext, companyId: string, filter: ListFilter): { where: string; params: unknown[] } {
   const params: unknown[] = [companyId];
   let where = "WHERE a.company_id = $1";
   if (filter.scope !== undefined) {
@@ -142,9 +150,37 @@ export async function listAssets(ctx: PluginContext, companyId: string, filter: 
     params.push(filter.targetType, filter.targetId);
     where += ` AND EXISTS (SELECT 1 FROM ${table(ctx, "asset_links")} l WHERE l.asset_id = a.id AND l.target_type = $${params.length - 1} AND l.target_id = $${params.length})`;
   }
+  return { where, params };
+}
+
+/** Each asset plus the prompt, model and cost of the generation that made it (null for imports), for library cards. */
+export async function listAssets(ctx: PluginContext, companyId: string, filter: ListFilter) {
+  const { where, params } = listWhere(ctx, companyId, filter);
   params.push(Math.min(Math.max(filter.limit ?? 50, 1), 200));
-  const rows = await ctx.db.query<AssetRow>(`${ASSET_SELECT(ctx)} ${where} ORDER BY a.created_at DESC LIMIT $${params.length}`, params);
-  return rows.map(assetOut);
+  const order = filter.sort === "oldest" ? "ASC" : "DESC";
+  const select = ASSET_SELECT(ctx, ", g.prompt AS gen_prompt, g.model AS gen_model, COALESCE(g.actual_credits, g.estimated_credits) AS gen_credits");
+  const rows = await ctx.db.query<ListRow>(
+    `${select} LEFT JOIN ${table(ctx, "generations")} g ON g.id = a.generation_id AND g.company_id = a.company_id ${where} ORDER BY a.created_at ${order} LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((row) => ({
+    ...assetOut(row),
+    prompt: row.gen_prompt ?? null,
+    model: row.gen_model ?? null,
+    credits: row.gen_credits === null || row.gen_credits === undefined ? null : num(row.gen_credits),
+  }));
+}
+
+/** How many assets each status holds under the same filters (the status filter itself is ignored), for filter chips. */
+export async function countAssetsByStatus(ctx: PluginContext, companyId: string, filter: ListFilter): Promise<Record<string, number>> {
+  const { where, params } = listWhere(ctx, companyId, { ...filter, status: null });
+  const rows = await ctx.db.query<{ status: string; n: unknown }>(`SELECT a.status, COUNT(*) AS n FROM ${table(ctx, "assets")} a ${where} GROUP BY a.status`, params);
+  const out: Record<string, number> = { all: 0 };
+  for (const r of rows) {
+    out[r.status] = num(r.n);
+    out.all += num(r.n);
+  }
+  return out;
 }
 
 /** Agents get a path on this machine, because the host redacts signed URLs in what they read. */
