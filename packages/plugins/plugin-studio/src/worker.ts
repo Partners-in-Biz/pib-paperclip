@@ -1,6 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { reviewAsset } from "./review.js";
 import { errorText, StudioError } from "./errors.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
@@ -209,6 +210,28 @@ const plugin = definePlugin({
       const out = await requestGeneration(ctx, me.companyId, request, actor);
       void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
       return out;
+    });
+
+    // Canvas boards. Reading goes through the host's company check like the other page data; writing is for members
+    // who may generate (viewers look only).
+    pageData("canvases", (companyId, p) => listCanvases(ctx, companyId, p).then((canvases) => ({ canvases })));
+    pageData("canvas", (companyId, p) => getCanvas(ctx, companyId, String(p.canvasId ?? "")));
+    async function canvasEditor(context: Parameters<typeof person>[0]) {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at canvases but can't change them.", "forbidden");
+      return me;
+    }
+    ctx.actions.register("canvas-create", async (params, context) => {
+      const me = await canvasEditor(context);
+      return createCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    ctx.actions.register("canvas-save", async (params, context) => {
+      const me = await canvasEditor(context);
+      return saveCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    ctx.actions.register("canvas-archive", async (params, context) => {
+      const me = await canvasEditor(context);
+      return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
     });
 
     ctx.jobs.register("process-queue", async () => {
