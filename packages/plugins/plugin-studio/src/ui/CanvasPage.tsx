@@ -27,7 +27,7 @@ import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, us
 import { Button, errorText, Field, Input, Page, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
-import { CARD_LABELS, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type CardData, type FlowNode, type Snapshot } from "./board.js";
+import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
