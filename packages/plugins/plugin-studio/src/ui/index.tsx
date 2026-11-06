@@ -143,8 +143,18 @@ export function StudioPage({ context }: PluginPageProps) {
           </Button>
         ))}
       </div>
-      {tab === "library" ? <ClientCards companyId={companyId} version={libraryVersion} onOpenLibrary={(value) => setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }))} /> : null}
       {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
+      {tab === "library" ? (
+        <ClientCards
+          companyId={companyId}
+          version={libraryVersion}
+          onOpenLibrary={(value) => {
+            setLibraryClient((prev) => ({ value, n: (prev?.n ?? 0) + 1 }));
+            // The cards sit below the library grid; bring the filtered grid into view.
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+        />
+      ) : null}
       {tab === "generate" ? (
         <Generate
           companyId={companyId}
