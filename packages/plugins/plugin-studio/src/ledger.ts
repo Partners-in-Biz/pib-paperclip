@@ -82,6 +82,15 @@ export async function usage(ctx: PluginContext, companyId: string, period: strin
   return credits(num(rows[0]?.used));
 }
 
+/** Credits used in a period by every client, in one query, keyed `kind:id`. */
+export async function usageByClient(ctx: PluginContext, companyId: string, period: string): Promise<Map<string, number>> {
+  const rows = await ctx.db.query<{ client_kind: string; client_ref: string; used: unknown }>(
+    `SELECT client_kind, client_ref, COALESCE(SUM(credits), 0) AS used FROM ${table(ctx, "credit_ledger")} WHERE company_id = $1 AND period = $2 AND client_ref IS NOT NULL GROUP BY client_kind, client_ref`,
+    [companyId, period],
+  );
+  return new Map(rows.map((r) => [`${r.client_kind}:${r.client_ref}`, credits(num(r.used))]));
+}
+
 export interface CapCheck {
   cap: EffectiveCap;
   used: number;
