@@ -1701,6 +1701,17 @@ export class SqlStore implements GmailStore {
     return done.rowCount > 0;
   }
 
+  /** Outbound mail on one mailbox answering one message (drafts, queued and sent), newest first: the duplicate-reply checks (PAR-8030). */
+  async replyDrafts(companyId: string, accountId: string, replyToMessageId: string): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND account_id = $2 AND direction = 'outbound' AND draft ->> 'replyToMessageId' = $3
+        ORDER BY created_at DESC LIMIT 50`,
+      [companyId, accountId, replyToMessageId],
+    );
+    return rows.map(normaliseMessage);
+  }
+
   /** CRM contacts whose name or address contains the text, one hit per address. */
   async searchContacts(companyId: string, text: string, limit: number): Promise<ContactHit[]> {
     const like = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
