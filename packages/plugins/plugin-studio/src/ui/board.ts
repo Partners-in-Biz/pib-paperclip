@@ -87,6 +87,66 @@ export function cascadePosition(nodes: ReadonlyArray<{ position: { x: number; y:
   return { x, y };
 }
 
+export interface Rect { x: number; y: number; width: number; height: number }
+/** A card's size before React Flow has measured it (16rem wide, a square image plus head and foot). */
+export const CARD_SIZE = { width: 256, height: 340 };
+/** "Fit" never zooms out below this, so card text and buttons stay readable (PAR-7753 live finding). */
+export const FIT_MIN_ZOOM = 0.6;
+
+/**
+ * The part of the board people can see, in screen pixels: the board box minus the side panel. A panel on the right
+ * trims the width; a phone's bottom sheet trims the height. Whichever leaves more room wins.
+ */
+export function visibleArea(board: Rect, panel: Rect | null): Rect {
+  if (!panel || panel.width === 0 || panel.height === 0) return board;
+  const right = board.x + board.width;
+  const bottom = board.y + board.height;
+  const left = { ...board, width: Math.max(0, Math.min(right, panel.x) - board.x) };
+  const top = { ...board, height: Math.max(0, Math.min(bottom, panel.y) - board.y) };
+  return left.width * left.height >= top.width * top.height ? left : top;
+}
+
+type Placed = { position: { x: number; y: number }; measured?: { width?: number; height?: number } };
+
+/**
+ * A spot for a new card inside `area` (flow coordinates) that overlaps no card, nearest to `prefer` (the area's
+ * centre if not given). Null when the area has no free spot: the caller keeps its own position then.
+ */
+export function freeSpot(nodes: ReadonlyArray<Placed>, area: Rect, prefer?: { x: number; y: number }, size = CARD_SIZE, gap = 24): { x: number; y: number } | null {
+  const want = prefer ?? { x: area.x + area.width / 2 - size.width / 2, y: area.y + area.height / 2 - size.height / 2 };
+  const boxes = nodes.map((n) => ({ x: n.position.x, y: n.position.y, w: n.measured?.width ?? size.width, h: n.measured?.height ?? size.height }));
+  const free = (x: number, y: number) => boxes.every((b) => x + size.width + gap <= b.x || b.x + b.w + gap <= x || y + size.height + gap <= b.y || b.y + b.h + gap <= y);
+  const maxX = area.x + area.width - size.width;
+  const maxY = area.y + area.height - size.height;
+  if (maxX < area.x || maxY < area.y) return null;
+  // At most ~40 x 40 candidates however far out the board is zoomed.
+  const stepX = Math.max(gap, (maxX - area.x) / 40);
+  const stepY = Math.max(gap, (maxY - area.y) / 40);
+  let best: { x: number; y: number } | null = null;
+  let bestD = Infinity;
+  for (let y = area.y; y <= maxY; y += stepY) {
+    for (let x = area.x; x <= maxX; x += stepX) {
+      if (!free(x, y)) continue;
+      const d = (x - want.x) ** 2 + (y - want.y) ** 2;
+      if (d < bestD) { bestD = d; best = { x: Math.round(x), y: Math.round(y) }; }
+    }
+  }
+  return best;
+}
+
+/**
+ * Where a new card goes: a free spot in view, else the nearest free spot in a 3x wider box around the view (the
+ * caller pans to it, `inView` false). Never on top of another card unless the whole wide box is full (null).
+ */
+export function placeCard(nodes: ReadonlyArray<Placed>, area: Rect, prefer?: { x: number; y: number }): { spot: { x: number; y: number }; inView: boolean } | null {
+  const near = freeSpot(nodes, area, prefer);
+  if (near) return { spot: near, inView: true };
+  const centre = prefer ?? { x: area.x + area.width / 2 - CARD_SIZE.width / 2, y: area.y + area.height / 2 - CARD_SIZE.height / 2 };
+  const wide = { x: area.x - area.width, y: area.y - area.height, width: area.width * 3, height: area.height * 3 };
+  const far = freeSpot(nodes, wide, centre);
+  return far ? { spot: far, inView: false } : null;
+}
+
 /** Gap between a source card and the result cards made next to it. */
 export const RESULT_GAP_X = 380;
 export const RESULT_GAP_Y = 280;

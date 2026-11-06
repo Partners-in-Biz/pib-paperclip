@@ -1,6 +1,6 @@
 /**
  * Pure helpers behind the canvas look (PAR-8046): the status pill on a card, the media frame's ratio, the running
- * edge, and the credits line. Kept free of React so the tests can run in node.
+ * edge, the credits line, and the grouped model picker rows. Kept free of React so the tests can run in node.
  */
 import type { Edge } from "@xyflow/react";
 import type { CardData } from "./board.js";
@@ -33,4 +33,32 @@ export function markRunning(nodes: ReadonlyArray<{ id: string; data?: CardData }
 /** Credits left this month, never below zero, to two decimals (0.62 of 50). */
 export function creditsLeft(used: number, cap: number): number {
   return Math.max(0, Math.round((cap - used) * 100) / 100);
+}
+
+export interface PickerRow { id: string; label: string; detail: string; maxRes: string }
+export interface PickerUnavailable { id: string; label: string; reason: string }
+
+/**
+ * The model picker: models the card can use in the main list with a one-line summary and their top resolution;
+ * every model it can't use (not offered, not priced, wrong reference count) goes to the collapsed footer with its reason.
+ */
+export function pickerRows(
+  options: ReadonlyArray<{ id: string; label: string; disabled: string | null }>,
+  models: ReadonlyArray<{ id: string; ratios: string[]; resolutions: string[]; maxRefs?: number }>,
+): { rows: PickerRow[]; unavailable: PickerUnavailable[] } {
+  const rows: PickerRow[] = [];
+  const unavailable: PickerUnavailable[] = [];
+  for (const o of options) {
+    if (o.disabled !== null) {
+      unavailable.push({ id: o.id, label: o.label, reason: o.disabled });
+      continue;
+    }
+    const m = models.find((x) => x.id === o.id);
+    const ratios = m?.ratios ?? [];
+    const shape = ratios.length > 3 ? `${ratios.length} aspect ratios` : ratios.join(", ");
+    const refs = m?.maxRefs ? `up to ${m.maxRefs} reference${m.maxRefs === 1 ? "" : "s"}` : "prompt only";
+    const res = m?.resolutions ?? [];
+    rows.push({ id: o.id, label: o.label, detail: [shape, refs].filter(Boolean).join(" · "), maxRes: res[res.length - 1] ?? "" });
+  }
+  return { rows, unavailable };
 }

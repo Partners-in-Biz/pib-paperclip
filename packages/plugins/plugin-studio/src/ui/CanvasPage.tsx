@@ -31,9 +31,10 @@ import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type Canvas
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
 import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js";
+import { pickerCss } from "./ModelPicker.js";
 import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
-import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
+import { CARD_LABELS, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
@@ -62,7 +63,7 @@ const boardCss = `
 .studio-canvas-flow .react-flow__edge-path, .studio-canvas-flow .react-flow__connection-path { stroke: var(--muted-foreground); stroke-width: 2.5; }
 .studio-canvas-flow .studio-edge-running .react-flow__edge-path { stroke: var(--studio-accent); }
 .studio-canvas-flow .react-flow__handle { width: 0.875rem; height: 0.875rem; border: 2px solid var(--studio-accent); background: var(--card); transition: transform 120ms ease, background 120ms ease; }
-.studio-canvas-flow .react-flow__handle::before { content: ""; position: absolute; inset: -0.5625rem; border-radius: 999px; }
+.studio-canvas-flow .react-flow__handle::before { content: ""; position: absolute; inset: -0.8125rem; border-radius: 999px; }
 .studio-canvas-flow .react-flow__handle:hover, .studio-canvas-flow .react-flow__handle.connectingfrom, .studio-canvas-flow .react-flow__handle.connectingto.valid { transform: translate(-50%, -50%) scale(1.35); background: var(--studio-accent); }
 .studio-canvas-flow .react-flow__node:focus-visible, .studio-dock button:focus-visible, .studio-zoom button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .studio-card { width: 16rem; box-sizing: border-box; padding: 0.5rem; display: grid; gap: 0.5rem; border-radius: 0.75rem; background: var(--card); color: var(--card-foreground, var(--foreground)); border: 1px solid var(--border); transition: box-shadow 120ms ease, opacity 120ms ease; }
@@ -74,7 +75,7 @@ const boardCss = `
 .studio-kind-prompt { --kind: var(--status-task-in_review); } .studio-kind-source { --kind: var(--status-task-in_progress); } .studio-kind-image { --kind: var(--status-task-todo); }
 .studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
 .studio-media { position: relative; width: 100%; overflow: hidden; border-radius: 0.5rem; background: var(--muted); }
-.studio-media > img, .studio-media > video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.studio-media > img, .studio-media > video { display: block; width: 100%; height: 100%; object-fit: contain; }
 .studio-media-empty { display: grid; place-items: center; padding: 0.5rem; box-sizing: border-box; border: 1px dashed var(--border); background: none; color: var(--muted-foreground); font-size: var(--text-micro, 11px); text-align: center; }
 .studio-media-blur { filter: blur(0.5rem) brightness(0.7); transform: scale(1.1); }
 .studio-pill { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: var(--text-micro, 11px); font-weight: 600; white-space: nowrap; background: var(--studio-scrim); color: var(--background); }
@@ -167,7 +168,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   if (!canvasId) return <CanvasList companyId={companyId} />;
   return (
     <ReactFlowProvider>
-      <style>{flowCss + boardCss}</style>
+      <style>{flowCss + boardCss + pickerCss}</style>
       <BoardEditor key={canvasId} companyId={companyId} canvasId={canvasId} />
     </ReactFlowProvider>
   );
@@ -344,7 +345,11 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         const made = resultCards(nextNodes, nextEdges, n.id, done, MAX_NODES - nextNodes.length);
         for (const f of made.fills) flow.updateNodeData(f.id, { assetId: f.assetId });
         if (made.created.length) {
-          nextNodes = [...nextNodes, ...made.created];
+          // Move each new result into free, visible board (not under the side panel), as near its spot as it fits.
+          for (const c of made.created) {
+            const spot = spotFor(nextNodes, c.position);
+            nextNodes = [...nextNodes, spot ? { ...c, position: spot } : c];
+          }
           nextEdges = [...nextEdges, ...made.edges];
           added = true;
         }
@@ -374,7 +379,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     void flow.setViewport(data.doc.viewport);
     // Open with every card in view (a phone shows a small part of a saved desktop viewport). React Flow queues this
     // until the new cards are measured. maxZoom 1 keeps a board with one card from zooming in on it.
-    if (snap.nodes.length > 0) void flow.fitView({ padding: 0.2, maxZoom: 1 });
+    if (snap.nodes.length > 0) void flow.fitView({ padding: 0.2, maxZoom: 1, minZoom: FIT_MIN_ZOOM });
     history.current.clear();
     savedGen.current = gen;
     reloading.current = false;
@@ -468,13 +473,33 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 
   const isValidConnection = useCallback((c: Connection | Edge) => connectionProblem(now.current.nodes, now.current.edges, c.source, c.target) === null, []);
 
+  // The board you can see in flow coordinates: the board box minus the open side panel (right column or phone sheet).
+  function seenArea(): Rect | null {
+    const b = document.querySelector(".studio-canvas-flow")?.getBoundingClientRect();
+    if (!b || b.width === 0) return null;
+    const p = document.querySelector(".studio-canvas-panel")?.getBoundingClientRect();
+    const s = visibleArea({ x: b.left, y: b.top, width: b.width, height: b.height }, p ? { x: p.left, y: p.top, width: p.width, height: p.height } : null);
+    const a = flow.screenToFlowPosition({ x: s.x, y: s.y });
+    const z = flow.screenToFlowPosition({ x: s.x + s.width, y: s.y + s.height });
+    return { x: a.x, y: a.y, width: z.x - a.x, height: z.y - a.y };
+  }
+
+  // A free spot for a new card (see placeCard); pans to it when the view itself is full.
+  function spotFor(all: ReadonlyArray<FlowNode>, prefer?: { x: number; y: number }): { x: number; y: number } | null {
+    const area = seenArea();
+    const placed = area ? placeCard(all, area, prefer) : null;
+    if (placed && !placed.inView) void flow.setCenter(placed.spot.x + CARD_SIZE.width / 2, placed.spot.y + CARD_SIZE.height / 2, { zoom: flow.getZoom(), duration: 200 });
+    return placed?.spot ?? null;
+  }
+
   const addCard = (type: NodeType) => {
     if (nodes.length >= MAX_NODES) return setNotice(`A canvas holds at most ${MAX_NODES} cards.`);
     const el = document.querySelector(".studio-canvas-flow");
     const box = el?.getBoundingClientRect();
     const centre = box ? flow.screenToFlowPosition({ x: box.left + box.width / 2, y: box.top + box.height / 2 }) : { x: 0, y: 0 };
-    // Cascade from the viewport centre: each card already at that spot pushes the new one CASCADE_STEP down-right.
-    const position = cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
+    // A free spot in the part of the board you can see (or just beside it); only on a packed board, cascade from the
+    // viewport centre (each card already at that spot pushes the new one CASCADE_STEP down-right).
+    const position = spotFor(nodes) || cascadePosition(nodes, { x: centre.x - 110, y: centre.y - 60 });
     beforeEdit();
     setNodes((ns) => [...ns, { id: newId("n"), type, position, data: {} }]);
     changed();
@@ -584,6 +609,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             selectionOnDrag={selectMode}
             panOnDrag={!selectMode}
             colorMode={dark ? "dark" : "light"}
+            connectionRadius={40}
             minZoom={0.1}
             maxZoom={4}
             proOptions={{ hideAttribution: true }}
@@ -761,7 +787,7 @@ function ZoomRail() {
       <button type="button" aria-label="Zoom in" onClick={() => void flow.zoomIn()}>+</button>
       <span aria-label="Zoom level">{Math.round(zoom * 100)}%</span>
       <button type="button" aria-label="Zoom out" onClick={() => void flow.zoomOut()}>−</button>
-      <button type="button" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</button>
+      <button type="button" title="Fit the cards, never smaller than readable" onClick={() => void flow.fitView({ padding: 0.2, minZoom: FIT_MIN_ZOOM })}>Fit</button>
     </div>
   );
 }

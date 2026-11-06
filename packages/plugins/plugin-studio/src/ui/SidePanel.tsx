@@ -10,6 +10,7 @@ import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { MAX_TEXT } from "../canvas-rules.js";
 import { modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { CommentsThread } from "./Versions.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
 export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
@@ -160,13 +161,10 @@ function GenerateConfigure({ card, companyId, client, canGenerate, models, unava
       <span style={muted}>
         {inputs.prompt ? `${inputs.prompt.length} characters in all` : "No prompt yet"} · {refs.length} reference{refs.length === 1 ? "" : "s"} from connected cards
       </span>
-      <label style={group}>
+      <div style={group}>
         <span style={muted}>Model</span>
-        <select aria-label="Model" value={model?.id ?? ""} onChange={(e) => edit({ model: e.target.value })} style={field}>
-          {!model ? <option value="">No model fits</option> : null}
-          {options.map((o) => <option key={o.id} value={o.id} disabled={o.disabled !== null}>{o.disabled ? `${o.label} · ${o.disabled}` : o.label}</option>)}
-        </select>
-      </label>
+        <ModelPicker kind={kind} options={options} models={models} value={model?.id} onPick={(id) => edit({ model: id })} />
+      </div>
       <ChipGroup label="Aspect ratio" chips={ratios} value={ratio} note={disabledNote(ratios, model)} onPick={(v) => edit({ ratio: v })} />
       <ChipGroup label="Resolution" chips={resolutions} value={resolution} note={disabledNote(resolutions, model)} onPick={(v) => edit({ resolution: v })} />
       <ChipGroup label="Quality" chips={qualities} value={undefined} note={disabledNote(qualities, model)} onPick={(v) => edit({ quality: v })} />
