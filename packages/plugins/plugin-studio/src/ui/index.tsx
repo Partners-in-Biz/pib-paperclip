@@ -18,6 +18,7 @@ interface Model {
   kind: "image" | "video";
   ratios: string[];
   resolutions: string[];
+  minRefs?: number;
 }
 
 interface Asset {
@@ -41,6 +42,7 @@ interface Overview {
   clients: Array<{ scopeKey: string; name: string }>;
   projects?: Array<{ id: string; name: string }>;
   models?: Model[];
+  unavailableModels?: Array<{ id: string; label: string; note: string }>;
 }
 
 interface Me {
@@ -403,7 +405,8 @@ function AssetDetail({
 }
 
 function Generate({ companyId, data, me, onStored }: { companyId: string; data: Overview; me: Me | null; onStored: () => void }) {
-  const models = data.models ?? [];
+  // Models that need a reference image wait for the canvas (slice 2b): the page has no picker for one yet.
+  const models = (data.models ?? []).filter((m) => !m.minRefs);
   const [modelId, setModelId] = useState(models[0]?.id ?? "");
   const model = models.find((m) => m.id === modelId) ?? models[0];
   const [prompt, setPrompt] = useState("");
@@ -491,6 +494,11 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
+                </option>
+              ))}
+              {(data.unavailableModels ?? []).map((m) => (
+                <option key={`na-${m.id}`} value={`na-${m.id}`} disabled>
+                  {m.label} · {m.note}
                 </option>
               ))}
             </Select>

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { clientFilter, PAGE_MODELS, pageRequest } from "../src/page.js";
+import { MODEL_CATALOG } from "../src/models.js";
+import { clientFilter, PAGE_MODELS, pageRequest, UNAVAILABLE_MODELS } from "../src/page.js";
+import { fakeProvider, scrubLinks } from "../src/provider.js";
 import { canGenerate } from "../src/service.js";
 
 describe("Studio page form", () => {
@@ -8,6 +10,42 @@ describe("Studio page form", () => {
   it("offers only fixed-price models: no Veo, no Seedance", () => {
     expect(PAGE_MODELS.length).toBeGreaterThan(0);
     for (const m of PAGE_MODELS) expect(m.id).not.toMatch(/veo|seedance/i);
+  });
+
+  it("offers more than Soul v2 and lists Veo and Seedance as not offered / not priced instead of hiding them", () => {
+    expect(PAGE_MODELS.length).toBeGreaterThan(5);
+    expect(soul.id).toBe("higgsfield-ai/soul/v2/standard");
+    const notes = Object.fromEntries(UNAVAILABLE_MODELS.map((m) => [m.label, m.note]));
+    expect(notes["Veo 3.1 (video)"]).toMatch(/Not on the Higgsfield REST API/);
+    expect(notes["Seedance 2.0 (video)"]).toMatch(/Not priced/);
+    expect(MODEL_CATALOG.find((m) => m.registryId === "seedance_2_0")).toMatchObject({ offered: true, priced: false });
+    // Every registry model is accounted for, once as offered or listed.
+    const ids = new Set(MODEL_CATALOG.map((m) => m.registryId));
+    expect(ids.size).toBe(23);
+  });
+
+  it("passes reference asset ids through and checks the count against the model", () => {
+    const grok = PAGE_MODELS.find((m) => m.id === "xai/grok-imagine-image-2.0")!;
+    expect(pageRequest({ model: grok.id, prompt: "x", referenceAssetIds: ["a1", "a2", "a1"] })).toMatchObject({ referenceAssetIds: ["a1", "a2"] });
+    expect(() => pageRequest({ model: soul.id, prompt: "x", referenceAssetIds: ["a1"] })).toThrow(/takes no reference images/);
+    expect(() => pageRequest({ model: "kling-video/v3.0-turbo/image-to-video", prompt: "x" })).toThrow(/needs exactly 1 reference image/);
+    expect(() => pageRequest({ model: grok.id, prompt: "x", referenceAssetIds: "a1" })).toThrow(/list of Studio asset ids/);
+  });
+
+  it("sends no ratio or resolution field to a model that takes none", () => {
+    expect(pageRequest({ model: "minimax/hailuo-2.3/standard/text-to-video", prompt: "x" }).params).toEqual({});
+  });
+
+  it("the fake provider spends nothing and finishes at once", async () => {
+    const fake = fakeProvider(2);
+    expect(await fake.estimate(soul.id, {})).toBe(2);
+    expect(await fake.submit(soul.id, {})).toMatch(/^fake-/);
+    expect(await fake.status("fake-1")).toMatchObject({ state: "done" });
+    expect(fake.submitted()).toBe(1);
+  });
+
+  it("keeps signed storage links out of outputs and provider errors", () => {
+    expect(scrubLinks("bad image_urls: https://acc.r2.cloudflarestorage.com/k?X-Amz-Signature=abc")).toBe("bad image_urls: <link>");
   });
 
   it("turns the form into the engine's request", () => {

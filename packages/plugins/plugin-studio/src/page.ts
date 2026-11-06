@@ -9,6 +9,7 @@ import { assetOut, getAssetRow, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
+import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
 import type { GenerationRow } from "./generation.js";
 
 export interface PageModel {
@@ -17,21 +18,29 @@ export interface PageModel {
   kind: "image" | "video";
   ratios: string[];
   resolutions: string[];
+  minRefs: number;
+  maxRefs: number;
 }
 
 /**
- * Only models with a fixed price per output: the estimate is then the real cost. Per-second or per-token models
- * (Veo, Seedance and the like) stay out of the page; agents keep the full tool surface.
+ * Models people can pick: on the Higgsfield REST API and priced by `estimate` (see models.ts). The estimate is then
+ * the real cost of the request as sent. Seedance (billed by tokens) and Veo (not on REST) are listed in
+ * UNAVAILABLE_MODELS with the reason instead; agents keep the full tool surface.
  */
-export const PAGE_MODELS: readonly PageModel[] = [
-  {
-    id: "higgsfield-ai/soul/v2/standard",
-    label: "Soul v2 (image)",
-    kind: "image",
-    ratios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"],
-    resolutions: ["720p", "1080p"],
-  },
-];
+export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectable).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs }) => ({
+  id,
+  label,
+  kind,
+  ratios,
+  resolutions,
+  minRefs,
+  maxRefs,
+}));
+
+/** Shown on the page as not offered or not priced, never hidden. */
+export const UNAVAILABLE_MODELS: ReadonlyArray<{ id: string; label: string; kind: "image" | "video"; note: string }> = MODEL_CATALOG.filter((m) => !isSelectable(m)).map(
+  (m) => ({ id: m.id, label: m.label, kind: m.kind, note: m.note ?? "Not offered" }),
+);
 
 /** Turns the page's form into the engine's request. Anything outside the offered models and values is refused. */
 export function pageRequest(input: Record<string, unknown>): Record<string, unknown> {
@@ -39,16 +48,20 @@ export function pageRequest(input: Record<string, unknown>): Record<string, unkn
   if (!model) throw new StudioError("Pick one of the models the Studio page offers.", "bad_model");
   const preset = input.preset === undefined || input.preset === null || input.preset === "" ? null : getPhotoPreset(input.preset);
   if (input.preset && !preset) throw new StudioError("Pick one of the styles the Studio page offers.", "unknown_preset");
-  const ratio = String(input.ratio ?? (preset ? DEFAULT_PRESET_RATIO : model.ratios[0]));
-  const resolution = String(input.resolution ?? model.resolutions[0]);
-  if (!model.ratios.includes(ratio)) throw new StudioError(`${model.label} doesn't offer the ratio ${ratio}.`, "bad_request");
-  if (!model.resolutions.includes(resolution)) throw new StudioError(`${model.label} doesn't offer ${resolution}.`, "bad_request");
+  // A model without ratios or resolutions takes no such field, so none is sent.
+  const ratio = model.ratios.length ? String(input.ratio ?? (preset ? DEFAULT_PRESET_RATIO : model.ratios[0])) : null;
+  const resolution = model.resolutions.length ? String(input.resolution ?? model.resolutions[0]) : null;
+  if (ratio !== null && !model.ratios.includes(ratio)) throw new StudioError(`${model.label} doesn't offer the ratio ${ratio}.`, "bad_request");
+  if (resolution !== null && !model.resolutions.includes(resolution)) throw new StudioError(`${model.label} doesn't offer ${resolution}.`, "bad_request");
+  const references = referenceIds(input.referenceAssetIds);
+  assertReferenceCount(model.id, references.length);
   const out: Record<string, unknown> = {
     model: model.id,
     prompt: input.prompt,
     ...(preset ? { preset: preset.id } : {}),
-    params: { aspect_ratio: ratio, resolution },
+    params: { ...(ratio === null ? {} : { aspect_ratio: ratio }), ...(resolution === null ? {} : { resolution }) },
     batchSize: input.batchSize === undefined || input.batchSize === "" ? 1 : Number(input.batchSize),
+    ...(references.length ? { referenceAssetIds: references } : {}),
   };
   if (typeof input.name === "string" && input.name.trim()) out.name = input.name;
   const client = typeof input.client === "string" ? input.client.trim() : "";

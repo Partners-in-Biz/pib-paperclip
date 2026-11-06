@@ -17,6 +17,12 @@ const GENERATE_FIELDS = {
   preset: { type: "string", enum: PHOTO_PRESETS.map((preset) => preset.id), description: "Optional Photo Studio style. It builds the prompt and sets the default model and ratio (1:1)." } as JsonSchema,
   params: { type: "object", description: 'The model\'s own fields, flat, e.g. {"aspect_ratio":"9:16"}' } as JsonSchema,
   batchSize: { type: "integer", minimum: 1, maximum: MAX_BATCH, description: `How many to make (1 to ${MAX_BATCH}). Each is charged separately.` } as JsonSchema,
+  referenceAssetIds: {
+    type: "array",
+    items: { type: "string" },
+    maxItems: 10,
+    description: "Optional Studio library image asset ids to use as reference images, from the same client as the generation. Studio passes them to the model; only some models take them, and how many.",
+  } as JsonSchema,
   client: CLIENT,
   issueId: ISSUE,
 };
