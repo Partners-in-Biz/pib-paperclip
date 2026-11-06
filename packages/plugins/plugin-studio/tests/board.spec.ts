@@ -15,7 +15,7 @@ describe("canvas page board logic", () => {
     expect(connectionProblem(nodes, [], "p", "i")).toBeNull();
     expect(connectionProblem(nodes, [], "s", "v")).toBeNull();
     expect(connectionProblem(nodes, [], "i", "o")).toBeNull();
-    expect(connectionProblem(nodes, [], "p", "o")).toBe("A prompt card can't feed a output card.");
+    expect(connectionProblem(nodes, [], "p", "o")).toBe("A prompt card can't feed an output card.");
     expect(connectionProblem(nodes, [], "v", "i")).toMatch(/can't feed/);
     expect(connectionProblem(nodes, [], "i", "i")).toBe("A card can't connect to itself.");
     expect(connectionProblem(nodes, [{ source: "p", target: "i" }], "p", "i")).toBe("Those cards are already connected.");

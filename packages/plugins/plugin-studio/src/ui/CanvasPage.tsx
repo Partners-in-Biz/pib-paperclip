@@ -17,6 +17,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type FinalConnectionState,
   type NodeChange,
   type NodeProps,
   type Viewport,
@@ -34,6 +35,15 @@ interface LibraryAsset { id: string; name: string; kind: string }
 const SAVE_DELAY_MS = 1200;
 const row: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
 const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(--text-xs, 12px)" };
+// Our card types are custom components; "output" shares a class name with React Flow's built-in output node, so its
+// default box is reset here. Edges get the host's text colour so they read on light and dark themes. The pib-ui base
+// rule `:where(svg){max-width:100%}` squeezes React Flow's edge svg (inside a 0px-wide layer) to nothing; undo it here.
+const boardCss = `
+.studio-canvas-flow svg { max-width: none; }
+.studio-canvas-flow .react-flow__node-output { padding: 0; width: auto; border: none; border-radius: 0; background: none; box-shadow: none; text-align: left; }
+.studio-canvas-flow .react-flow__edge-path, .studio-canvas-flow .react-flow__connection-path { stroke: var(--muted-foreground); stroke-width: 2; }
+.studio-canvas-flow .react-flow__handle { width: 10px; height: 10px; }
+`;
 const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 4, border: "1px solid var(--border)", borderRadius: 4, background: "var(--background)", color: "var(--foreground)" };
 
 /** What card components need from the board: undo before an edit, and the library for source pickers. */
@@ -48,7 +58,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   if (!canvasId) return <CanvasList companyId={companyId} />;
   return (
     <ReactFlowProvider>
-      <style>{flowCss}</style>
+      <style>{flowCss + boardCss}</style>
       <BoardEditor key={canvasId} companyId={companyId} canvasId={canvasId} />
     </ReactFlowProvider>
   );
@@ -207,9 +217,17 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     const problem = connectionProblem(now.current.nodes, now.current.edges, c.source, c.target);
     if (problem) return setNotice(problem);
     beforeEdit();
+    setNotice(null);
     setEdges((es) => addEdge({ id: newId("e"), source: c.source, target: c.target }, es));
     changed();
   }, [beforeEdit, changed]);
+
+  // React Flow drops a refused connection silently; say why.
+  const onConnectEnd = useCallback((_: MouseEvent | TouchEvent, c: FinalConnectionState) => {
+    if (c.isValid !== false || !c.fromNode || !c.toNode) return;
+    const [source, target] = c.fromHandle?.type === "target" ? [c.toNode.id, c.fromNode.id] : [c.fromNode.id, c.toNode.id];
+    setNotice(connectionProblem(now.current.nodes, now.current.edges, source, target));
+  }, []);
 
   const isValidConnection = useCallback((c: Connection | Edge) => connectionProblem(now.current.nodes, now.current.edges, c.source, c.target) === null, []);
 
@@ -287,6 +305,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
             isValidConnection={isValidConnection}
             onNodeDragStart={beforeEdit}
             onMoveEnd={(_, vp) => { viewport.current = vp; }}

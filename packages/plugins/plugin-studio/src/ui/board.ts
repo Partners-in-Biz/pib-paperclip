@@ -53,10 +53,15 @@ export function connectionProblem(nodes: ReadonlyArray<{ id: string; type?: stri
   const from = nodes.find((n) => n.id === source);
   const to = nodes.find((n) => n.id === target);
   if (!from || !to || !isNodeType(from.type) || !isNodeType(to.type)) return "That card is not on the canvas.";
-  if (!canConnect(from.type, to.type)) return `A ${from.type} card can't feed a ${to.type} card.`;
+  if (!canConnect(from.type, to.type)) return `${article(from.type, true)} ${from.type} card can't feed ${article(to.type)} ${to.type} card.`;
   if (edges.some((e) => e.source === source && e.target === target)) return "Those cards are already connected.";
   if (hasCycle(nodes, [...edges, { source, target }])) return "Connections can't go round in a loop.";
   return null;
+}
+
+function article(word: string, capital = false): string {
+  const a = /^[aeiou]/.test(word) ? "an" : "a";
+  return capital ? a[0].toUpperCase() + a.slice(1) : a;
 }
 
 /** Ids the worker accepts (letters, digits, - and _), unique enough for one board. */
