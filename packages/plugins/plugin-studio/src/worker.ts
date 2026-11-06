@@ -272,8 +272,12 @@ const plugin = definePlugin({
       const me = await canvasEditor(context);
       return addComment(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    // Read-only share links (canvas-share.ts): editors make and revoke them; the company sees which are live.
-    pageData("canvas-shares", (companyId, p) => listShares(ctx, companyId, String(p.canvasId ?? "")).then((shares) => ({ shares })));
+    // Read-only share links (canvas-share.ts): only editors list, make and revoke them. The list is an action, not
+    // page data, because page data has no caller and each entry carries the secret link path.
+    ctx.actions.register("canvas-share-list", async (params, context) => {
+      const me = await canvasEditor(context);
+      return { shares: await listShares(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
+    });
     ctx.actions.register("canvas-share-create", async (params, context) => {
       const me = await canvasEditor(context);
       return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId });

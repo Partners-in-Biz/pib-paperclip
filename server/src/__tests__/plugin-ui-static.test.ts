@@ -109,6 +109,26 @@ describe("plugin UI static route", () => {
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
   });
 
+  it("serves a page a plugin wrote at runtime to a logged-out browser, uncached, and 404s once it is deleted", async () => {
+    // Studio share links (PAR-8093) are pages the worker writes into dist/ui/s/ and deletes on revoke.
+    const packageRoot = createPluginPackage();
+    readyPlugin(packageRoot);
+    const app = await createApp({ type: "none", source: "none" });
+    const page = path.join(packageRoot, "dist", "ui", "s", "abcdefghijklmnopqrstuvwx.html");
+    mkdirSync(path.dirname(page), { recursive: true });
+    writeFileSync(page, "<!doctype html><title>Shared board</title>");
+
+    const res = await request(app).get(`/_plugins/${pluginId}/ui/s/abcdefghijklmnopqrstuvwx.html`);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.headers["cache-control"]).toBe("public, max-age=0, must-revalidate");
+    expect(res.text).toContain("Shared board");
+
+    rmSync(page);
+    const gone = await request(app).get(`/_plugins/${pluginId}/ui/s/abcdefghijklmnopqrstuvwx.html`);
+    expect(gone.status).toBe(404);
+  });
+
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
     readyPlugin(createPluginPackage());
     const app = await createApp({ type: "none", source: "none" });

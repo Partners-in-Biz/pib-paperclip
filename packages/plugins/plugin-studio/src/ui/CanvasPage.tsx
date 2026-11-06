@@ -591,7 +591,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         {credits ? <span className="studio-chip" aria-label="Credits this month" style={{ color: "var(--foreground)" }}>{credits.cap === null ? `${credits.used} credits used · no cap set` : `${creditsLeft(credits.used, credits.cap)} of ${credits.cap} credits left`}</span> : null}
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
         <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} />
-        <ShareMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} />
+        {canEdit ? <ShareMenu companyId={companyId} canvasId={canvasId} /> : null}
         {canEdit ? (
           <Button
             variant="secondary"

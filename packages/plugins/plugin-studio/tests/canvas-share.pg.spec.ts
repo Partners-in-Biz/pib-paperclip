@@ -131,6 +131,20 @@ describe.skipIf(!available)("Studio canvas brief and share links against real Po
     expect(existsSync(file)).toBe(false);
   });
 
+  it("a revoke that lands while the job is writing the page still takes the page down", async () => {
+    const board = await briefBoard();
+    const share = await createShare(ctx, CO, { canvasId: board.id }, USER, fakeSigner);
+    const file = join(dir, `${share.id}.html`);
+    rmSync(file);
+    // The job reads the share as live, then the revoke runs (and deletes nothing) while it signs previews.
+    const revokingSigner = async (companyId: string, assetId: string) => {
+      await revokeShare(ctx, CO, { shareId: share.id });
+      return fakeSigner(companyId, assetId);
+    };
+    expect(await refreshShares(ctx, revokingSigner)).toEqual({ written: 0, removed: 0 });
+    expect(existsSync(file)).toBe(false);
+  });
+
   it("the job rewrites missing pages and deletes expired, archived and stray ones", async () => {
     const board = await briefBoard();
     const keep = await createShare(ctx, CO, { canvasId: board.id }, USER, fakeSigner);

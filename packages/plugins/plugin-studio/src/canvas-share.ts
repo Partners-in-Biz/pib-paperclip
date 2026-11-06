@@ -82,7 +82,7 @@ function removePage(id: string): void {
 
 const defaultSigner = (ctx: PluginContext): Signer => (companyId, assetId) => assetUrlForPerson(ctx, companyId, assetId, SHARE_LINK_SECONDS);
 
-async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise<void> {
+async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise<boolean> {
   const dir = shareDir();
   if (!dir) throw new StudioError("This worker is not running from an installed plugin folder, so there is nowhere to publish the page.", "share_unpublished");
   const board = await getCanvas(ctx, row.company_id, row.canvas_id);
@@ -104,7 +104,15 @@ async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise
   const temp = join(dir, `.${row.id}.${randomBytes(4).toString("hex")}.tmp`);
   writeFileSync(temp, html, { encoding: "utf8", mode: 0o644 });
   renameSync(temp, join(dir, `${row.id}.html`));
-  await ctx.db.execute(`UPDATE ${table(ctx, "canvas_shares")} SET published_at = now() WHERE id = $1`, [row.id]);
+  // A revoke (or expiry) can land while this page was being signed and written: its delete then ran before the
+  // rename above. Check again after the rename and take the page down, so a revoked link never comes back.
+  const still = await ctx.db.execute(
+    `UPDATE ${table(ctx, "canvas_shares")} SET published_at = now() WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()`,
+    [row.id],
+  );
+  if (num(still.rowCount)) return true;
+  removePage(row.id);
+  return false;
 }
 
 export async function createShare(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string }, sign: Signer = defaultSigner(ctx)) {
@@ -167,8 +175,7 @@ export async function refreshShares(ctx: PluginContext, sign: Signer = defaultSi
     const age = row.published_at ? Date.now() - new Date(String(iso(row.published_at))).getTime() : Infinity;
     if (age < REPUBLISH_MS && existsSync(join(dir, `${row.id}.html`))) continue;
     try {
-      await publish(ctx, row, sign);
-      written += 1;
+      if (await publish(ctx, row, sign)) written += 1;
     } catch (error) {
       ctx.logger.warn("Studio share page not written", { share: row.id.slice(0, 4), error: error instanceof Error ? error.message : String(error) });
     }
