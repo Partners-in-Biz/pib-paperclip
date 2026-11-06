@@ -211,6 +211,7 @@ export interface GmailStore {
   // thread issues
   claimThreadIssue(companyId: string, accountId: string, threadId: string): Promise<boolean>;
   setThreadIssue(accountId: string, threadId: string, issueId: string): Promise<void>;
+  threadIssueId(accountId: string, threadId: string): Promise<string | null>;
   // OAuth sessions
   insertOAuthSession(row: { state: string; companyId: string; createdByUserId: string | null; returnTo: string | null; ttlSeconds: number }): Promise<void>;
   getOAuthSession(state: string): Promise<OAuthSessionRow | null>;
@@ -1010,6 +1011,11 @@ export class SqlStore implements GmailStore {
 
   async setThreadIssue(accountId: string, threadId: string, issueId: string): Promise<void> {
     await this.db.execute(`UPDATE ${this.t("thread_issues")} SET issue_id = $3 WHERE account_id = $1 AND gmail_thread_id = $2`, [accountId, threadId, issueId]);
+  }
+
+  async threadIssueId(accountId: string, threadId: string): Promise<string | null> {
+    const rows = await this.db.query<{ issue_id: string | null }>(`SELECT issue_id FROM ${this.t("thread_issues")} WHERE account_id = $1 AND gmail_thread_id = $2`, [accountId, threadId]);
+    return rows[0]?.issue_id ?? null;
   }
 
   // ── OAuth sessions ──────────────────────────────────────────────────────
