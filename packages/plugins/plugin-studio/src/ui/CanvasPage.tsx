@@ -31,6 +31,7 @@ import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type Canvas
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
 import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js";
+import { pickerCss } from "./ModelPicker.js";
 import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
 import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
@@ -167,7 +168,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   if (!canvasId) return <CanvasList companyId={companyId} />;
   return (
     <ReactFlowProvider>
-      <style>{flowCss + boardCss}</style>
+      <style>{flowCss + boardCss + pickerCss}</style>
       <BoardEditor key={canvasId} companyId={companyId} canvasId={canvasId} />
     </ReactFlowProvider>
   );

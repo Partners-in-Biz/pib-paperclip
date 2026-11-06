@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aspectCss, cardStatus, creditsLeft, markRunning } from "../src/ui/card-look.js";
+import { aspectCss, cardStatus, creditsLeft, markRunning, pickerRows } from "../src/ui/card-look.js";
 
 describe("cardStatus (pill on a card)", () => {
   it("shows Generating while a run is on, even over an old file", () => {
@@ -40,5 +40,24 @@ describe("creditsLeft", () => {
   it("rounds to cents and never goes below zero", () => {
     expect(creditsLeft(49.38, 50)).toBe(0.62);
     expect(creditsLeft(60, 50)).toBe(0);
+  });
+});
+
+describe("pickerRows (grouped model picker)", () => {
+  const models = [
+    { id: "soul", ratios: ["1:1", "16:9", "9:16", "4:3", "3:4"], resolutions: ["1k", "2k"], maxRefs: 0 },
+    { id: "kling", ratios: ["16:9"], resolutions: ["720p", "1080p"], maxRefs: 1 },
+  ];
+  it("keeps disabled models out of the main list and collects them with their reason", () => {
+    const unavailable = Array.from({ length: 14 }, (_, i) => ({ id: `na-${i}`, label: `M${i}`, disabled: "Not on the Higgsfield REST API" }));
+    const out = pickerRows([{ id: "soul", label: "Soul", disabled: null }, { id: "kling", label: "Kling", disabled: "takes at most 1 reference image" }, ...unavailable], models);
+    expect(out.rows.map((r) => r.id)).toEqual(["soul"]);
+    expect(out.unavailable).toHaveLength(15);
+    expect(out.unavailable[0]).toEqual({ id: "kling", label: "Kling", reason: "takes at most 1 reference image" });
+  });
+  it("summarises shape, references and the top resolution", () => {
+    const out = pickerRows([{ id: "soul", label: "Soul", disabled: null }, { id: "kling", label: "Kling", disabled: null }], models);
+    expect(out.rows[0]).toEqual({ id: "soul", label: "Soul", detail: "5 aspect ratios · prompt only", maxRes: "2k" });
+    expect(out.rows[1]).toEqual({ id: "kling", label: "Kling", detail: "16:9 · up to 1 reference", maxRes: "1080p" });
   });
 });
