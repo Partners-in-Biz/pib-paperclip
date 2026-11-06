@@ -210,8 +210,9 @@ export function TodayHero({ health, today, waiting, problems, warnings = 0, agen
   children?: ReactNode;
 }) {
   const narrow = useIsNarrow();
-  const urgent = waiting.filter((item) => item.kind === "money" || item.kind === "legal").length;
-  const questions = waiting.filter((item) => item.ask).length;
+  const actionable = waiting.filter((item) => !item.key.startsWith("outward-send:"));
+  const urgent = actionable.filter((item) => item.kind === "money" || item.kind === "legal").length;
+  const questions = actionable.filter((item) => item.ask).length;
   const runTone = runAlert ? tone(runAlert.tone) : null;
   return (
     <Card title="Today" icon={Sun} tone={runAlert ? worstTone(health, runAlert.tone) : health} strip actions={<Light status={runAlert ? worstTone(health, runAlert.tone) : health} />}>
@@ -234,9 +235,9 @@ export function TodayHero({ health, today, waiting, problems, warnings = 0, agen
         <KpiCard
           size="sm"
           label="Waiting on you"
-          value={waiting.length}
-          tone={urgent ? "bad" : waiting.length ? "warn" : "ok"}
-          hint={urgent ? `${urgent} money or legal` : questions ? `${questions} ${questions === 1 ? "question" : "questions"} from agents` : waiting.length ? "Your decisions" : "Nothing to decide"}
+          value={actionable.length}
+          tone={urgent ? "bad" : actionable.length ? "warn" : "ok"}
+          hint={urgent ? `${urgent} money or legal` : questions ? `${questions} ${questions === 1 ? "question" : "questions"} from agents` : actionable.length ? "Your decisions" : "Nothing to decide"}
           icon={Inbox}
           link={sectionLink("waiting")}
         />
@@ -406,12 +407,37 @@ export function WaitingRow({ item, linkFor, now, first }: { item: WaitingEntry; 
     : <div style={row}>{body}</div>;
 }
 
-export function WaitingList({ items, linkFor, now, limit }: { items: WaitingEntry[]; linkFor: LinkPropsFor; now: Date; limit?: number }) {
+/** Info cards (Tier A client sends) carry this key prefix (see outward-sends.ts). */
+const INFO_CARD_KEY = "outward-send:";
+
+/** A Tier A client send for the owner to know about: nothing to do, dismiss it, or pull back (opens the issue). */
+export function InfoCard({ item, linkFor, now, onDismiss }: { item: WaitingEntry; linkFor: LinkPropsFor; now: Date; onDismiss?: (key: string) => void }) {
+  const link = linkOf(item.href, linkFor);
+  const t = tone("info");
+  return (
+    <div data-info-card="outward-send" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between", padding: "10px 12px", borderRadius: 12, border: `1px solid ${t.border}`, background: t.soft, minWidth: 0 }}>
+      <div style={{ display: "grid", gap: 3, flex: "1 1 240px", minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Pill tone="info" size="sm">Info</Pill>
+          <span style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</span>
+        </div>
+        <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, overflowWrap: "anywhere" }}>{[item.why, since(item.since, now)].filter(Boolean).join(" · ")}</span>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {link ? <a {...link} style={primaryLinkStyle}>Pull back →</a> : null}
+        {onDismiss ? <button type="button" onClick={() => onDismiss(item.key)} style={{ minHeight: 40, padding: "0 12px", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.bg, color: tokens.fg, fontSize: 13, cursor: "pointer" }}>Dismiss</button> : null}
+      </div>
+    </div>
+  );
+}
+
+export function WaitingList({ items, linkFor, now, limit, onDismiss }: { items: WaitingEntry[]; linkFor: LinkPropsFor; now: Date; limit?: number; onDismiss?: (key: string) => void }) {
   if (items.length === 0) return <Muted>Nothing waits on you. The agents have what they need.</Muted>;
   const shown = limit ? items.slice(0, limit) : items;
   // Questions agents asked come first by design (an answer unblocks the agent); the rest keep the holds-up order mergeWaiting gave them.
   const asks = shown.filter((item) => item.ask);
-  const rest = shown.filter((item) => !item.ask);
+  const infos = shown.filter((item) => !item.ask && item.key.startsWith(INFO_CARD_KEY));
+  const rest = shown.filter((item) => !item.ask && !item.key.startsWith(INFO_CARD_KEY));
   return (
     <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
       {asks.length ? (
@@ -423,6 +449,12 @@ export function WaitingList({ items, linkFor, now, limit }: { items: WaitingEntr
       {rest.length ? (
         <div style={{ display: "grid", minWidth: 0 }}>
           {rest.map((item, index) => <WaitingRow key={item.key} item={item} linkFor={linkFor} now={now} first={index === 0} />)}
+        </div>
+      ) : null}
+      {infos.length ? (
+        <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, letterSpacing: 0.2 }}>Sent to clients without asking you (Tier A): no action needed</span>
+          {infos.map((item) => <InfoCard key={item.key} item={item} linkFor={linkFor} now={now} onDismiss={onDismiss} />)}
         </div>
       ) : null}
       {limit && items.length > limit ? <Muted>Showing {limit} of {items.length}. {items.length - limit} more not shown.</Muted> : null}

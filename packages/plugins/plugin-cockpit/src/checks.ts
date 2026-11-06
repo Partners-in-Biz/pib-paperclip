@@ -11,6 +11,7 @@
  * Q2-3 (improvements), Q10-3 (goals), and the critic's registers, custody and
  * backlog items.
  */
+import { clientSendChecks } from "./outward-sends.js";
 import {
   agentsWithoutPluginTools,
   backlogWaitingItems,
@@ -188,6 +189,8 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
       const asks: UnhandledAsk[] = rows.map((r) => ({ issueId: String(r.issue_id), identifier: r.issue_identifier == null ? null : String(r.issue_identifier), askedAt: new Date(String(r.asked_at)).toISOString() }));
       return { health: nonOk(unhandledAsksCheck(asks)) };
     }],
+    // Tier A client sends: sends with no gate approval, and the 14-day info cards (client-send policy, PAR-7868).
+    ["client-sends", async () => clientSendChecks(env, companyId)],
     ["skill-sync", async () => ({ health: nonOk(await skillSyncCheck(ctx, companyId, "Cockpit", now.getTime())) })],
     // The measurement layer (Q8-3, Q8-8, Q9-12).
     ["measure", async () => {

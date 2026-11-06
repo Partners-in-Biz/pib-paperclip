@@ -61,7 +61,7 @@ describe("manifest and migration", () => {
     expect(NAMESPACE).toBe("plugin_cockpit_b8a99e8b16");
     expect(manifest.version).toBe(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
-    expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] });
+    expect(manifest.database).toMatchObject({ namespaceSlug: "cockpit", coreReadTables: ["issues", "issue_comments", "heartbeat_runs", "issue_relations", "projects"] });
     for (const capability of [
       "ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule",
       "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "agents.read", "agents.pause", "agents.resume", "agents.invoke", "approvals.read", "routines.managed", "skills.managed",
