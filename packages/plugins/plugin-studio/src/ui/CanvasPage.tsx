@@ -27,11 +27,11 @@ import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, us
 import { Button, errorText, Field, Input, Page, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
-import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, newId, toFlow, type CardData, type FlowNode, type Snapshot } from "./board.js";
+import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
-interface LibraryAsset { id: string; name: string; kind: string }
+interface LibraryAsset { id: string; name: string; kind: string; status?: string }
 interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
 interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
 interface Estimate { creditsEach: number; creditsTotal: number; monthlyCap: number | null; remaining: number }
@@ -69,8 +69,10 @@ interface BoardContext {
   inputs: Map<string, CardInputs>;
   urls: Record<string, string>;
   videos: Set<string>;
+  /** Adds an image card fed by this card, so a result can be built on. */
+  buildOn: (cardId: string) => void;
 }
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set() });
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set(), buildOn: () => undefined });
 
 /** Fresh signed preview links for the files on the board. People only: the action checks membership. */
 function usePreviews(companyId: string, ids: string[]): Record<string, string> {
@@ -260,18 +262,33 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     const rows = gens.data?.generations ?? [];
     if (!rows.length || conflict) return;
     let stored = false;
+    let nextNodes = now.current.nodes;
+    let nextEdges = now.current.edges;
+    let added = false;
     for (const n of now.current.nodes) {
       const mine = rows.filter((r) => r.groupId === n.data.groupId);
       if (!n.data.groupId || !mine.length || mine.some((r) => !FINISHED.has(r.status))) continue;
-      const done = mine.find((r) => r.assetId);
-      if (done?.assetId) {
-        flow.updateNodeData(n.id, { assetId: done.assetId, groupId: "" });
-        for (const out of cardInputs(now.current.nodes, now.current.edges, n.id).outputIds) flow.updateNodeData(out, { assetId: done.assetId });
+      const done = mine.filter((r) => r.assetId).map((r) => r.assetId as string);
+      if (done.length) {
+        flow.updateNodeData(n.id, { assetId: done[0], groupId: "" });
+        // Each result is its own card next to this one; a wired output card is filled instead of a new one.
+        const made = resultCards(nextNodes, nextEdges, n.id, done, MAX_NODES - nextNodes.length);
+        for (const f of made.fills) flow.updateNodeData(f.id, { assetId: f.assetId });
+        if (made.created.length) {
+          nextNodes = [...nextNodes, ...made.created];
+          nextEdges = [...nextEdges, ...made.edges];
+          added = true;
+        }
         stored = true;
       } else {
         flow.updateNodeData(n.id, { groupId: "" });
         setNotice(`${n.data.label || CARD_LABELS[n.type as NodeType]} card: the generation failed${mine[0]?.error ? `: ${mine[0].error}` : "."}`);
       }
+    }
+    if (added) {
+      setNodes((ns) => [...ns, ...nextNodes.filter((c) => !ns.some((x) => x.id === c.id))]);
+      setEdges((es) => [...es, ...nextEdges.filter((c) => !es.some((x) => x.id === c.id))]);
+      changed();
     }
     if (stored) assets.refresh();
   }, [gens.data]);
@@ -384,6 +401,17 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     changed();
   };
 
+  const buildOn = useCallback((cardId: string) => {
+    const from = now.current.nodes.find((n) => n.id === cardId);
+    if (!from) return;
+    if (now.current.nodes.length >= MAX_NODES) return setNotice(`A canvas holds at most ${MAX_NODES} cards.`);
+    const id = newId("n");
+    beforeEdit();
+    setNodes((ns) => [...ns, { id, type: "image", position: { x: from.position.x + RESULT_GAP_X, y: from.position.y }, data: {} }]);
+    setEdges((es) => [...es, { id: newId("e"), source: cardId, target: id }]);
+    changed();
+  }, [beforeEdit, changed]);
+
   const restore = (snap: Snapshot | null) => {
     if (!snap) return;
     setNodes(snap.nodes);
@@ -411,6 +439,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     board.refresh();
   };
 
+  const shownEdges = useMemo(() => labelEdges(nodes, edges), [nodes, edges]);
   const nodeTypes = useMemo(() => Object.fromEntries(NODE_TYPES.map((t) => [t, Card])), []);
   const status = conflict ? "Not saved" : { saved: "All changes saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
@@ -447,11 +476,11 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
           </Button>
         ) : null}
       </div>
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos }}>
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos, buildOn }}>
         <div className="studio-canvas-flow" style={{ width: "100%", height: "min(72vh, 760px)", minHeight: 420, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           <ReactFlow<FlowNode, Edge>
             nodes={nodes}
-            edges={edges}
+            edges={shownEdges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
@@ -509,8 +538,35 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
         </label>
       ) : null}
       {kind === "output" || kind === "source" ? <CardPreview assetId={data.assetId} name={data.label || "Result"} /> : null}
-      {kind === "output" ? <span style={{ ...muted, overflowWrap: "anywhere" }}>{data.assetId ? `File ${data.assetId}` : "Filled in when a generation runs."}</span> : null}
+      {kind === "output" && data.assetId ? <ResultBar id={id} assetId={data.assetId} status={library.find((a) => a.id === data.assetId)?.status} /> : null}
+      {kind === "output" && !data.assetId ? <span style={muted}>Filled in when a generation runs.</span> : null}
       {sendsOutput(kind) ? <Handle type="source" position={Position.Right} /> : null}
+    </div>
+  );
+}
+
+/** A result card's review badge and actions: open it in the library, build on it, download it. */
+function ResultBar({ id, assetId, status }: { id: string; assetId: string; status: string | undefined }) {
+  const { companyId, buildOn } = useContext(BoardCtx);
+  const nav = useHostNavigation();
+  const assetUrl = usePluginAction("asset-url");
+  const [error, setError] = useState<string | null>(null);
+  const download = () => {
+    setError(null);
+    assetUrl({ companyId, assetId })
+      .then((out) => window.open((out as { url: string }).url, "_blank", "noopener"))
+      .catch((err) => setError(errorText(err)));
+  };
+  const badge = status === "approved" ? "Approved" : status === "rejected" ? "Rejected" : status ? "Review needed" : null;
+  return (
+    <div className="nodrag" style={{ display: "grid", gap: 4 }}>
+      {badge ? <span aria-label="Review status" style={{ ...muted, justifySelf: "start", padding: "1px 6px", border: "1px solid var(--border)", borderRadius: 999 }}>{badge}</span> : null}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <a {...nav.linkProps(`/studio?asset=${encodeURIComponent(assetId)}`)} style={{ fontSize: 12 }}>Open in library</a>
+        <Button variant="secondary" onClick={() => buildOn(id)}>Use as input</Button>
+        <Button variant="secondary" onClick={download}>Download</Button>
+      </div>
+      {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
     </div>
   );
 }

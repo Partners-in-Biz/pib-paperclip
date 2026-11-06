@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CASCADE_STEP, cascadePosition } from "../src/ui/board.js";
+import { CASCADE_STEP, cascadePosition, labelEdges, resultCards } from "../src/ui/board.js";
 import { clientsWithAssets, type ClientSummary } from "../src/ui/clients.js";
 
 const at = (x: number, y: number) => ({ position: { x, y } });
@@ -50,5 +50,45 @@ describe("clientsWithAssets (Studio library client cards)", () => {
   it("returns nothing when no client has assets", () => {
     expect(clientsWithAssets([client("crm:a", 0, 0, 0)])).toEqual([]);
     expect(clientsWithAssets([])).toEqual([]);
+  });
+});
+
+describe("resultCards (a finished generation becomes cards)", () => {
+  const n = (id: string, type: string, x: number, y: number, data: Record<string, string> = {}) => ({ id, type, position: { x, y }, data }) as never;
+  let k = 0;
+  const mk = (p: string) => `${p}${++k}`;
+
+  it("makes one connected output card per result, next to the source, and never on top of another card", () => {
+    const nodes = [n("a", "image", 0, 0), n("blocker", "output", 300, 0)];
+    const out = resultCards(nodes, [], "a", ["x1", "x2"], 10, mk);
+    expect(out.fills).toEqual([]);
+    expect(out.created.map((c) => [c.type, c.data, c.position])).toEqual([
+      ["output", { assetId: "x1", generated: "1" }, { x: 300, y: 280 }],
+      ["output", { assetId: "x2", generated: "1" }, { x: 300, y: 560 }],
+    ]);
+    expect(out.edges.map((e) => [e.source, e.target])).toEqual(out.created.map((c) => ["a", c.id]));
+  });
+
+  it("fills a wired output card first and only makes cards for the rest; earlier made cards are kept", () => {
+    const nodes = [n("a", "image", 0, 0), n("o", "output", 300, 0), n("old", "output", 300, 280, { assetId: "prev", generated: "1" })];
+    const edges = [{ source: "a", target: "o" }, { source: "a", target: "old" }];
+    const out = resultCards(nodes, edges, "a", ["x1", "x2"], 10, mk);
+    expect(out.fills).toEqual([{ id: "o", assetId: "x1" }]);
+    expect(out.created).toHaveLength(1);
+    expect(out.created[0].data.assetId).toBe("x2");
+    expect(resultCards(nodes, edges, "a", ["x1"], 10, mk).created).toEqual([]);
+  });
+
+  it("respects the board limit and ignores duplicates and missing cards", () => {
+    const nodes = [n("a", "video", 0, 0)];
+    expect(resultCards(nodes, [], "a", ["x", "x", "y"], 1, mk).created).toHaveLength(1);
+    expect(resultCards(nodes, [], "a", ["x"], 0, mk).created).toEqual([]);
+    expect(resultCards(nodes, [], "gone", ["x"], 5, mk).created).toEqual([]);
+  });
+
+  it("labels edges into output cards 'generated output' on screen only", () => {
+    const nodes = [n("a", "image", 0, 0), n("o", "output", 1, 1), n("v", "video", 2, 2)];
+    const edges = [{ id: "e1", source: "a", target: "o" }, { id: "e2", source: "a", target: "v" }];
+    expect(labelEdges(nodes, edges).map((e) => e.label)).toEqual(["generated output", undefined]);
   });
 });
