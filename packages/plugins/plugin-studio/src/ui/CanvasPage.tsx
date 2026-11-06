@@ -29,6 +29,7 @@ import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type Canvas
 import { cardInputs, type CardInputs } from "../canvas-inputs.js";
 import { headerCredits } from "../canvas-settings.js";
 import { SidePanel } from "./SidePanel.js";
+import { VersionsMenu } from "./Versions.js";
 import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
@@ -57,6 +58,10 @@ const boardCss = `
 .studio-canvas-layout { display: flex; gap: 8px; height: calc(100dvh - 15rem); min-height: 28rem; }
 .studio-canvas-board { position: relative; flex: 1 1 auto; min-width: 0; }
 .studio-canvas-panel { flex: 0 0 22rem; width: 22rem; box-sizing: border-box; display: grid; gap: 10px; align-content: start; overflow-y: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--card-foreground, var(--foreground)); }
+.studio-canvas-versions { position: relative; }
+.studio-canvas-versions-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: min(22rem, calc(100vw - 2rem)); max-height: 60dvh; overflow-y: auto; box-sizing: border-box; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--card-foreground, var(--foreground)); box-shadow: 0 4px 16px rgb(0 0 0 / 0.15); }
+.studio-canvas-versions-list button { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 640px) { .studio-canvas-versions-list { position: fixed; top: auto; left: 1rem; right: 1rem; width: auto; } }
 .studio-canvas-big { position: sticky; bottom: -12px; padding: 8px 0 12px; background: var(--card); }
 .studio-canvas-big button { width: 100%; padding-block: 12px; }
 .studio-canvas-zoom { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; gap: 4px; align-items: center; }
@@ -245,10 +250,11 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const overview = usePluginData<{ models?: PageModel[]; unavailableModels?: Unavailable[]; companyUsed: number; caps: Array<{ scopeKey: string; monthlyCredits: number }>; clientUsage: Array<{ scopeKey: string; used: number }> }>("overview", { companyId });
   const meAction = usePluginAction("me");
   const [canGen, setCanGen] = useState<boolean | null>(null);
+  const [meUserId, setMeUserId] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     meAction({ companyId })
-      .then((out) => { if (live) setCanGen((out as { canGenerate?: boolean }).canGenerate === true); })
+      .then((out) => { if (live) { setCanGen((out as { canGenerate?: boolean }).canGenerate === true); setMeUserId((out as { userId?: string }).userId ?? null); } })
       .catch(() => { if (live) setCanGen(false); });
     return () => { live = false; };
   }, [companyId]);
@@ -484,6 +490,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <Button variant="secondary" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo">Undo</Button>
         <Button variant="secondary" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo">Redo</Button>
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
+        <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} />
         {canEdit ? (
           <Button
             variant="secondary"
@@ -531,6 +538,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             key={selectedCard.id}
             card={{ id: selectedCard.id, type: selectedCard.type as string, data: selectedCard.data }}
             companyId={companyId}
+            canvasId={canvasId}
+            meUserId={meUserId}
             client={client ?? "own"}
             canGenerate={canGen}
             models={overview.data?.models ?? []}

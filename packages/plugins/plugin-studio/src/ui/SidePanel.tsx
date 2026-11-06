@@ -9,6 +9,7 @@ import { useHostNavigation, usePluginAction, usePluginData } from "@paperclipai/
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { MAX_TEXT } from "../canvas-rules.js";
 import { modelOptions, type CardInputs } from "../canvas-inputs.js";
+import { CommentsThread } from "./Versions.js";
 import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
 export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
@@ -16,7 +17,7 @@ export interface PanelUnavailable { id: string; label: string; kind: "image" | "
 export interface Estimate { creditsEach: number; creditsTotal: number; monthlyCap: number | null; remaining: number }
 export interface PanelCard { id: string; type: string; data: Record<string, string> }
 
-const TABS = ["Configure", "Review", "Provenance", "Export"] as const;
+const TABS = ["Configure", "Review", "Provenance", "Export", "Comments"] as const;
 type Tab = (typeof TABS)[number];
 const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(--text-xs, 12px)", overflowWrap: "anywhere" };
 const field: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 13, padding: 6, border: "1px solid var(--border)", borderRadius: 6, background: "var(--background)", color: "var(--foreground)" };
@@ -26,6 +27,9 @@ const wrap: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 6, alignIt
 export interface PanelProps {
   card: PanelCard;
   companyId: string;
+  canvasId: string;
+  /** The signed-in person, to mark their own comments. */
+  meUserId: string | null;
   client: string;
   canGenerate: boolean | null;
   models: PanelModel[];
@@ -49,7 +53,7 @@ export function SidePanel(props: PanelProps) {
         <strong style={{ textTransform: "uppercase", fontSize: 12, letterSpacing: 0.4 }}>{props.card.data.label || props.card.type}</strong>
         <Button variant="secondary" aria-label="Close panel" onClick={props.onClose}>Close</Button>
       </div>
-      <div role="tablist" aria-label="Card sections" style={{ ...wrap, gap: 4, flexWrap: "nowrap" }}>
+      <div role="tablist" aria-label="Card sections" style={{ ...wrap, gap: 4 }}>
         {TABS.map((t) => (
           <button key={t} role="tab" type="button" aria-selected={tab === t} onClick={() => setTab(t)} style={chipStyle(tab === t, false)}>{t}</button>
         ))}
@@ -59,6 +63,7 @@ export function SidePanel(props: PanelProps) {
         {tab === "Review" ? <Review {...props} /> : null}
         {tab === "Provenance" ? <Provenance {...props} /> : null}
         {tab === "Export" ? <Export {...props} /> : null}
+        {tab === "Comments" ? <CommentsThread companyId={props.companyId} canvasId={props.canvasId} cardId={props.card.id} canEdit={props.canGenerate === true} meUserId={props.meUserId} /> : null}
       </div>
     </aside>
   );
