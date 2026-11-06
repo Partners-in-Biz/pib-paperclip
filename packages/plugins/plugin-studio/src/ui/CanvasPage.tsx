@@ -24,9 +24,11 @@ import {
 } from "@xyflow/react";
 import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, errorText, Field, Input, Page, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
+import { Button, errorText, Field, Input, Page, PageFrame, PageHeader, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
-import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
+import { cardInputs, type CardInputs } from "../canvas-inputs.js";
+import { headerCredits } from "../canvas-settings.js";
+import { SidePanel } from "./SidePanel.js";
 import { CARD_LABELS, cascadePosition, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
@@ -34,7 +36,6 @@ interface Board extends Summary { doc: CanvasDoc }
 interface LibraryAsset { id: string; name: string; kind: string; status?: string }
 interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
 interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
-interface Estimate { creditsEach: number; creditsTotal: number; monthlyCap: number | null; remaining: number }
 interface GenRow { id: string; groupId: string; status: string; assetId: string | null; error: string | null }
 
 const SAVE_DELAY_MS = 1200;
@@ -53,6 +54,17 @@ const boardCss = `
 .studio-canvas-flow .react-flow__node-output { padding: 0; width: auto; border: none; border-radius: 0; background: none; box-shadow: none; text-align: left; }
 .studio-canvas-flow .react-flow__edge-path, .studio-canvas-flow .react-flow__connection-path { stroke: var(--muted-foreground); stroke-width: 2; }
 .studio-canvas-flow .react-flow__handle { width: 10px; height: 10px; }
+.studio-canvas-layout { display: flex; gap: 8px; height: calc(100dvh - 15rem); min-height: 28rem; }
+.studio-canvas-board { position: relative; flex: 1 1 auto; min-width: 0; }
+.studio-canvas-panel { flex: 0 0 22rem; width: 22rem; box-sizing: border-box; display: grid; gap: 10px; align-content: start; overflow-y: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--card-foreground, var(--foreground)); }
+.studio-canvas-big { position: sticky; bottom: -12px; padding: 8px 0 12px; background: var(--card); }
+.studio-canvas-big button { width: 100%; padding-block: 12px; }
+.studio-canvas-zoom { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; gap: 4px; align-items: center; }
+@media (max-width: 640px) {
+  .studio-canvas-layout { flex-direction: column; height: auto; }
+  .studio-canvas-board { flex: none; height: 55dvh; min-height: 18rem; }
+  .studio-canvas-panel { flex: none; width: auto; max-height: 70dvh; }
+}
 `;
 const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 12, padding: 4, border: "1px solid var(--border)", borderRadius: 4, background: "var(--background)", color: "var(--foreground)" };
 
@@ -230,7 +242,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const reloading = useRef(false);
 
   // Generate on a card: the same models, estimate and generate actions as the Generate tab.
-  const overview = usePluginData<{ models?: PageModel[]; unavailableModels?: Unavailable[] }>("overview", { companyId });
+  const overview = usePluginData<{ models?: PageModel[]; unavailableModels?: Unavailable[]; companyUsed: number; caps: Array<{ scopeKey: string; monthlyCredits: number }>; clientUsage: Array<{ scopeKey: string; used: number }> }>("overview", { companyId });
   const meAction = usePluginAction("me");
   const [canGen, setCanGen] = useState<boolean | null>(null);
   useEffect(() => {
@@ -439,16 +451,25 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     board.refresh();
   };
 
+  const selectedNodes = nodes.filter((n) => n.selected);
+  const selectedCard = selectedNodes.length === 1 ? selectedNodes[0] : null;
+  const panelEdit = useCallback((id: string, patch: Record<string, string>) => {
+    // Typing is one undo step (taken when the field gets focus); chips and steppers are one step each.
+    if (!("prompt" in patch || "label" in patch)) beforeEdit();
+    flow.updateNodeData(id, patch);
+  }, [beforeEdit, flow]);
   const shownEdges = useMemo(() => labelEdges(nodes, edges), [nodes, edges]);
   const nodeTypes = useMemo(() => Object.fromEntries(NODE_TYPES.map((t) => [t, Card])), []);
   const status = conflict ? "Not saved" : { saved: "All changes saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
+  const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 
   if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>{null}</Page>;
   if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
 
   return (
-    <Page title={board.data.title} description={`${board.data.client?.name ?? "Own work"} · ${status}`} actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>
+    <PageFrame style={{ maxWidth: "none", padding: 12, gap: 8 }}>
+      <PageHeader title={board.data.title} description={`${board.data.client?.name ?? "Own work"} · ${status}`} actions={<div style={row}>{credits ? <span aria-label="Credits this month" style={{ fontSize: 13, whiteSpace: "nowrap" }}><strong>{credits.used}</strong>{credits.cap === null ? " credits used this month · no cap set" : ` of ${credits.cap} credits used this month`}</span> : null}<a {...nav.linkProps("/studio-canvas")}>All canvases</a></div>} />
       {conflict ? (
         <div role="alert" style={{ ...row, padding: 10, border: "1px solid var(--destructive, #c00)", borderRadius: 6, marginBottom: 8 }}>
           <span style={{ flex: "1 1 16rem", minWidth: 0 }}>Someone else saved this canvas after you opened it, so your latest changes were not saved. Reload to see their version, then make your changes again.</span>
@@ -456,15 +477,12 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         </div>
       ) : null}
       <PageMessage tone="danger" message={notice ?? undefined} />
-      <div role="toolbar" aria-label="Canvas" style={{ ...row, marginBottom: 8 }}>
+      <div role="toolbar" aria-label="Canvas" title="Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. Select an image or video card to set it up and generate. Changes save on their own." style={row}>
         {NODE_TYPES.map((t) => (
           <Button key={t} variant="secondary" disabled={conflict} onClick={() => addCard(t)}>+ {CARD_LABELS[t]}</Button>
         ))}
         <Button variant="secondary" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo">Undo</Button>
         <Button variant="secondary" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo">Redo</Button>
-        <Button variant="secondary" onClick={() => void flow.zoomOut()} aria-label="Zoom out">−</Button>
-        <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
-        <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
         {canEdit ? (
           <Button
@@ -477,7 +495,9 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         ) : null}
       </div>
       <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos, buildOn }}>
-        <div className="studio-canvas-flow" style={{ width: "100%", height: "min(72vh, 760px)", minHeight: 420, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+        <div className="studio-canvas-layout">
+        <div className="studio-canvas-board">
+        <div className="studio-canvas-flow" style={{ width: "100%", height: "100%", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           <ReactFlow<FlowNode, Edge>
             nodes={nodes}
             edges={shownEdges}
@@ -500,9 +520,33 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             <Background />
           </ReactFlow>
         </div>
+        <div className="studio-canvas-zoom" role="group" aria-label="Zoom">
+          <Button variant="secondary" onClick={() => void flow.zoomOut()} aria-label="Zoom out">−</Button>
+          <Button variant="secondary" onClick={() => void flow.zoomIn()} aria-label="Zoom in">+</Button>
+          <Button variant="secondary" onClick={() => void flow.fitView({ padding: 0.2 })}>Fit</Button>
+        </div>
+        </div>
+        {selectedCard ? (
+          <SidePanel
+            key={selectedCard.id}
+            card={{ id: selectedCard.id, type: selectedCard.type as string, data: selectedCard.data }}
+            companyId={companyId}
+            client={client ?? "own"}
+            canGenerate={canGen}
+            models={overview.data?.models ?? []}
+            unavailable={overview.data?.unavailableModels ?? []}
+            inputs={inputs.get(selectedCard.id) ?? NO_INPUTS}
+            assetStatus={library.find((a) => a.id === selectedCard.data.assetId)?.status}
+            edit={(patch) => panelEdit(selectedCard.id, patch)}
+            beforeEdit={beforeEdit}
+            onGenerated={(groupId) => { flow.updateNodeData(selectedCard.id, { groupId }); overview.refresh(); }}
+            onBuildOn={() => buildOn(selectedCard.id)}
+            onClose={() => setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))}
+          />
+        ) : null}
+        </div>
       </BoardCtx.Provider>
-      <p style={muted}>Prompts and sources feed image and video cards; images feed images, videos and outputs; videos feed outputs. An image or video card generates from what is wired into it, after you see the cost. Changes save on their own.</p>
-    </Page>
+    </PageFrame>
   );
 }
 
@@ -524,8 +568,7 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
       <strong style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4 }}>{CARD_LABELS[kind]}</strong>
       <input className="nodrag" aria-label="Card name" maxLength={120} placeholder="Name" value={data.label ?? ""} onFocus={beforeEdit} onChange={(e) => set({ label: e.target.value })} style={fieldStyle} />
       {kind === "prompt" ? text("text", "Prompt", 4) : null}
-      {kind === "image" || kind === "video" ? text("prompt", "Extra direction") : null}
-      {kind === "image" || kind === "video" ? <GeneratePanel id={id} kind={kind} data={data} /> : null}
+      {kind === "image" || kind === "video" ? <GenerateSummary id={id} kind={kind} data={data} /> : null}
       {kind === "source" ? (
         <label style={{ display: "grid", gap: 2 }}>
           <span style={muted}>Library file</span>
@@ -581,83 +624,18 @@ function CardPreview({ assetId, name, video }: { assetId: string | undefined; na
   return <img src={url} alt={name} style={box} />;
 }
 
-/**
- * Generate on an image or video card: the prompt and references come from the wired cards, the person sees the
- * credit estimate first and then confirms. The worker's estimate and generate actions apply the same person and
- * canGenerate checks, queue, caps and ledger as the Generate tab.
- */
-function GeneratePanel({ id, kind, data }: { id: string; kind: "image" | "video"; data: CardData }) {
-  const { companyId, client, canGenerate, models, unavailable, inputs: all, beforeEdit } = useContext(BoardCtx);
-  const flow = useReactFlow<FlowNode, Edge>();
-  const estimateAction = usePluginAction("estimate");
-  const generateAction = usePluginAction("generate");
-  const [estimate, setEstimate] = useState<Estimate | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+/** What an image or video card shows on the board: a one-line summary, the result, and where to configure it. */
+function GenerateSummary({ id, kind, data }: { id: string; kind: "image" | "video"; data: CardData }) {
+  const { inputs: all, models } = useContext(BoardCtx);
   const inputs = all.get(id) ?? NO_INPUTS;
-  const refs = inputs.referenceAssetIds;
-  const options = modelOptions(kind, refs.length, models, unavailable);
-  const model = models.find((m) => m.id === (options.find((o) => o.id === data.model && !o.disabled) ?? options.find((o) => !o.disabled))?.id);
-  const ratio = model?.ratios.includes(data.ratio ?? "") ? data.ratio : model?.ratios[0];
-  const resolution = model?.resolutions.includes(data.resolution ?? "") ? data.resolution : model?.resolutions[0];
-  const request = { companyId, model: model?.id, prompt: inputs.prompt, ratio, resolution, batchSize: 1, client, ...(refs.length ? { referenceAssetIds: refs } : {}) };
-  const key = JSON.stringify(request);
-  // Any change to what would be sent makes the shown price stale.
-  useEffect(() => setEstimate(null), [key]);
-  const set = (patch: Record<string, string>) => { beforeEdit(); flow.updateNodeData(id, patch); };
-
-  const running = Boolean(data.groupId);
-  const blocker =
-    canGenerate === false ? "Viewers can look at canvases but can't generate." :
-    !model ? `No ${kind} model takes ${refs.length} reference image${refs.length === 1 ? "" : "s"}.` :
-    !inputs.prompt ? "Wire in a prompt card or write extra direction." :
-    inputs.missing.length ? `Fix first: ${inputs.missing.join("; ")}.` : null;
-  const ready = !blocker && !busy && !running && canGenerate === true;
-
-  const run = (action: typeof estimateAction, then: (out: unknown) => void) => {
-    setBusy(true);
-    setError(null);
-    action(request).then(then).catch((err) => setError(errorText(err))).finally(() => setBusy(false));
-  };
-  const select = (label: string, value: string | undefined, values: string[], field: string) =>
-    values.length ? (
-      <select className="nodrag" aria-label={label} value={value ?? ""} onChange={(e) => set({ [field]: e.target.value })} style={fieldStyle}>
-        {values.map((v) => <option key={v} value={v}>{v}</option>)}
-      </select>
-    ) : null;
-
+  const model = models.find((m) => m.id === data.model);
   return (
     <div style={{ display: "grid", gap: 4 }}>
       <span style={{ ...muted, overflowWrap: "anywhere" }}>
-        {inputs.prompt ? `Prompt from ${inputs.prompt.length} characters` : "No prompt yet"} · {refs.length} reference{refs.length === 1 ? "" : "s"}
+        {inputs.prompt || data.prompt ? `Prompt from ${(inputs.prompt || data.prompt).length} characters` : "No prompt yet"} · {inputs.referenceAssetIds.length} reference{inputs.referenceAssetIds.length === 1 ? "" : "s"}
+        {model ? ` · ${model.label}` : ""}
       </span>
-      <select className="nodrag" aria-label="Model" value={model?.id ?? ""} onChange={(e) => set({ model: e.target.value })} style={fieldStyle}>
-        {!model ? <option value="">No model fits</option> : null}
-        {options.map((o) => <option key={o.id} value={o.id} disabled={o.disabled !== null}>{o.disabled ? `${o.label} · ${o.disabled}` : o.label}</option>)}
-      </select>
-      <div style={{ display: "flex", gap: 4 }}>
-        {select("Ratio", ratio, model?.ratios ?? [], "ratio")}
-        {select("Resolution", resolution, model?.resolutions ?? [], "resolution")}
-      </div>
-      {blocker && canGenerate !== null ? <span role="note" style={{ ...muted, overflowWrap: "anywhere" }}>{blocker}</span> : null}
-      {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
-      {estimate ? (
-        <span aria-live="polite" style={{ fontSize: 12, overflowWrap: "anywhere" }}>
-          <strong>{estimate.creditsTotal} {estimate.creditsTotal === 1 ? "credit" : "credits"}.</strong> {estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}
-        </span>
-      ) : null}
-      <div className="nodrag" style={row}>
-        {running ? <span style={muted}>Generating…</span> : estimate ? (
-          <>
-            <Button disabled={!ready} onClick={() => run(generateAction, (out) => { const g = (out as { groupId?: string }).groupId; setEstimate(null); if (g) flow.updateNodeData(id, { groupId: g }); })}>
-              {busy ? "Working…" : `Generate for ${estimate.creditsTotal}`}
-            </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setEstimate(null)}>Cancel</Button>
-          </>
-        ) : (
-          <Button variant="secondary" disabled={!ready} onClick={() => run(estimateAction, (out) => setEstimate(out as Estimate))}>{busy ? "Working…" : "Estimate"}</Button>
-        )}
-      </div>
+      {data.groupId ? <span style={muted}>Generating…</span> : <span style={muted}>Select the card to set it up and generate.</span>}
       <CardPreview assetId={data.assetId} name={data.label || CARD_LABELS[kind]} video={kind === "video"} />
     </div>
   );
