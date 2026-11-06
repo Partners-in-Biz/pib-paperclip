@@ -431,7 +431,7 @@ describe("the optional Google Analytics items do not nag", () => {
     const h = seoHost({ routes: [...needsYouRoutes([{ ...loud, status: "open", addedAt: "2026-09-29T00:00:00Z" }]), ...sprintRoutes] });
     await addNeedsYou(h.env, await companyInfo(h.env, "co-1"), await sprintOf(h), ga4ApiItem(), { reopen: true });
     const patch = h.updates.find((u) => u.id === "ny-issue")!.patch;
-    expect(String(patch.description)).toContain("Enable the Google Analytics APIs");
+    expect(String(patch.description)).toContain("**1 open** and 1 optional");
     expect(patch).not.toHaveProperty("status");
   });
 });
