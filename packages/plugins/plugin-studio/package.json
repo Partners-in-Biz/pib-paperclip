@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-studio",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "description": "Creative assets, image and video generation, and monthly credit caps for people and agents.",
@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@partnersinbiz/pib-plugin-kit": "workspace:*",
-    "@partnersinbiz/pib-plugin-ui": "workspace:*"
+    "@partnersinbiz/pib-plugin-ui": "workspace:*",
+    "@xyflow/react": "^12.12.1"
   }
 }
