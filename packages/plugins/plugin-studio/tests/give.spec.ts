@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   owners: {} as Record<string, { kind: string; id: string; name: string } | null>,
   links: [] as Array<{ assetId: string; type: string; targetId: string }>,
   gets: 0,
+  clientProjects: [] as string[],
 }));
 
 vi.mock("../src/assets.js", () => ({
@@ -20,7 +21,7 @@ vi.mock("../src/assets.js", () => ({
   addLink: async (_ctx: unknown, _co: string, assetId: string, type: string, targetId: string) => void state.links.push({ assetId, type, targetId }),
 }));
 vi.mock("../src/db.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../src/db.js")>()), table: (_ctx: unknown, name: string) => name }));
-vi.mock("../src/scope.js", () => ({ clientOfProject: async (_ctx: unknown, _co: string, projectId: string | null) => (projectId ? (state.owners[projectId] ?? null) : null) }));
+vi.mock("../src/scope.js", () => ({ projectsOfClient: async () => state.clientProjects, clientOfProject: async (_ctx: unknown, _co: string, projectId: string | null) => (projectId ? (state.owners[projectId] ?? null) : null) }));
 vi.mock("../src/config.js", () => ({ StudioConfig: class { async bucket() { return { accountId: "a", bucket: "b", accessKeyId: "k", secretAccessKey: "s" }; } } }));
 vi.mock("../src/storage.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/storage.js")>()),
@@ -136,6 +137,24 @@ describe("prepareGive (the popup prefill)", () => {
     await expect(prepareGive(w.ctx, CO, { assetId: ASSET }, { userId: "v", role: "viewer" })).rejects.toThrow(/Viewers/);
     state.row = asset({ project_id: "project-globex" });
     await expect(prepareGive(w.ctx, CO, { assetId: ASSET }, EDITOR)).rejects.toMatchObject({ code: "wrong_client" });
+    expect(state.gets).toBe(0);
+    expect(givenFiles()).toEqual([]);
+  });
+
+  it("opens for a client's file with no project of its own, prefilling the client's project", async () => {
+    const w = world();
+    state.clientProjects = ["project-acme", "project-acme-2"];
+    state.row = asset({ project_id: null });
+    const out = await prepareGive(w.ctx, CO, { assetId: ASSET }, EDITOR);
+    expect(out.projectId).toBe("project-acme");
+    expect(state.gets).toBe(1);
+  });
+
+  it("says so when a client's file has no project and the client has none linked, before any copy", async () => {
+    const w = world();
+    state.clientProjects = [];
+    state.row = asset({ project_id: null });
+    await expect(prepareGive(w.ctx, CO, { assetId: ASSET }, EDITOR)).rejects.toMatchObject({ code: "no_client_project" });
     expect(state.gets).toBe(0);
     expect(givenFiles()).toEqual([]);
   });
