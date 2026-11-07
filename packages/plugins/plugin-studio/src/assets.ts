@@ -68,7 +68,7 @@ export interface StoreInput {
   issueId: string | null;
   name: string;
   altText?: string | null;
-  source: "generated" | "attachment" | "drive";
+  source: "generated" | "attachment" | "drive" | "layout";
   sourceRef: string | null;
   generationId?: string | null;
   agentId?: string | null;
@@ -210,6 +210,18 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
 export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300, config: StudioConfig = new StudioConfig(ctx, companyId)): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
   return objectUrl(await config.bucket(), companyId, "GET", row.r2_key, expiresSec);
+}
+
+/** The largest picture a Layout card reads, and the bytes for it: a canvas can't read a storage link back. */
+const MAX_LAYOUT_SOURCE_BYTES = 25 * 1024 * 1024;
+
+export async function assetBytesForPerson(ctx: PluginContext, companyId: string, assetId: string): Promise<{ mime: string; base64: string }> {
+  const row = await getAssetRow(ctx, companyId, assetId);
+  if (!row.mime.startsWith("image/")) throw new StudioError("Only pictures can go on a Layout card, and this file isn't one.", "bad_asset");
+  assertOwnKey(companyId, row.r2_key);
+  const bytes = await getObject(await new StudioConfig(ctx, companyId).bucket(), companyId, row.r2_key);
+  if (bytes.length > MAX_LAYOUT_SOURCE_BYTES) throw new StudioError("That picture is too large to lay out here.", "bad_asset");
+  return { mime: row.mime, base64: Buffer.from(bytes).toString("base64") };
 }
 
 export interface PreviewBatch {

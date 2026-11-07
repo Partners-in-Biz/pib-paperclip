@@ -19,6 +19,8 @@ export const CARD_LABELS: Record<NodeType, string> = {
   video: "Video",
   source: "Source",
   output: "Output",
+  text: "Text",
+  layout: "Layout",
 };
 
 export function isNodeType(value: unknown): value is NodeType {

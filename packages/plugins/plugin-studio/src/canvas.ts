@@ -28,6 +28,10 @@ const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
   source: { label: "label", assetId: "id" },
   // generated: set on output cards the canvas made for a finished generation (a wired output card is refilled, these are kept).
   output: { label: "label", assetId: "id", generated: "label" },
+  // text: the words; brief: what to write; requested: the task an agent is writing them on.
+  text: { label: "label", text: "text", brief: "text", requested: "label" },
+  // assetId: the finished page once saved to the library. The rest are the page's settings (layout.ts).
+  layout: { label: "label", size: "label", part: "label", position: "label", align: "label", scale: "label", style: "label", font: "label", colour: "label", assetId: "id" },
 };
 
 function bad(message: string): never {

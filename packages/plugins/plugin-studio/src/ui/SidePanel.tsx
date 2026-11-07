@@ -15,6 +15,7 @@ import { CommentsThread } from "./Versions.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { BrandKitBox } from "./BrandKit.js";
+import { LayoutConfigure, TextConfigure } from "./LayoutCard.js";
 import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
 export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
@@ -47,6 +48,12 @@ export interface PanelProps {
   beforeEdit: () => void;
   onGenerated: (groupId: string) => void;
   onBuildOn: () => void;
+  /** For Layout and Text cards: how many parts the connected words have, and how many pages the words feed. */
+  layoutParts?: number;
+  textPages?: number;
+  boardTitle?: string;
+  boardClient?: string | null;
+  boardProjectId?: string | null;
   /** Deletes the card from the board (asks first when it shows a file); missing while the board is locked. */
   onDelete?: () => void;
   onClose: () => void;
@@ -112,6 +119,8 @@ function ChipGroup({ label, chips, value, note, onPick }: { label: string; chips
 function Configure(props: PanelProps) {
   const { card, edit, beforeEdit } = props;
   if (card.type === "image" || card.type === "video") return <GenerateConfigure {...props} />;
+  if (card.type === "layout") return <LayoutConfigure data={card.data} edit={edit} beforeEdit={beforeEdit} parts={props.layoutParts ?? 0} />;
+  if (card.type === "text") return <TextConfigure id={card.id} data={card.data} edit={edit} beforeEdit={beforeEdit} board={props.boardTitle ?? "this board"} client={props.boardClient ?? null} projectId={props.boardProjectId ?? null} canvasId={props.canvasId} pages={props.textPages ?? 0} canEdit={props.canGenerate === true} />;
   return (
     <>
       <label style={group}>

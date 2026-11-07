@@ -2,7 +2,7 @@
  * The canvas rules that both the worker and the page need: card types, limits, which card may feed which, and the
  * loop check. No Node or database imports here, so the page bundle can use the same rules the worker enforces.
  */
-export const NODE_TYPES = ["prompt", "image", "video", "source", "output"] as const;
+export const NODE_TYPES = ["prompt", "text", "source", "image", "video", "output", "layout"] as const;
 export type NodeType = (typeof NODE_TYPES)[number];
 
 export const MAX_NODES = 300;
@@ -14,10 +14,13 @@ export const MAX_TITLE = 120;
 /** Which card may feed which. Outputs only come out of a generating card; prompts and sources only feed. */
 const FEEDS: Record<NodeType, readonly NodeType[]> = {
   prompt: ["image", "video"],
-  source: ["image", "video"],
-  image: ["image", "video", "output"],
+  // Words only go to a Layout card, which sets them as real text. Image models garble lettering.
+  text: ["layout"],
+  source: ["image", "video", "layout"],
+  image: ["image", "video", "output", "layout"],
   video: ["output"],
-  output: ["image", "video"],
+  output: ["image", "video", "layout"],
+  layout: [],
 };
 
 export interface CanvasNode {

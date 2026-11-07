@@ -22,6 +22,8 @@ description: Generate images and short videos (Higgsfield models) through the St
 - `studio-import-from-attachment`: save a file you made yourself (HTML slide render, ffmpeg cut) as a Studio asset: attach it to the issue, then pass its attachment id and `altText`.
 - `studio-link-asset`: record where an asset is used (post, campaign, page, ...).
 - `canvas-create-from-brief`: free. Lay out a Studio canvas board from a brief (title, prompts, optional library asset ids) for a person to open and press Generate. It never generates or spends.
+
+When a task asks you to write the words for a Text card on a canvas, deliver them with `canvas-write-text` (canvasId, cardId and text, all from the task). They land on the card for a person to check, and nothing is published. Keep them plain and short, because they get set over pictures. For a card feeding several pages, put a line holding only `---` between each page's words.
 - `studio-review-asset`: `approved` sends the asset to Social's media library for its client (or own work), where `list-media-assets` shows it for a post. `rejected` keeps it out. This files the asset; it does not approve or publish a post.
 
 Scope: pass the same `client` (`company:<id>` or `contact:<id>`) on every call, or leave it out to use the client of the issue's project (own work when it has none). Never use another scope's brand or media.

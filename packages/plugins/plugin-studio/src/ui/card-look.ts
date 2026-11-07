@@ -13,7 +13,7 @@ export function cardStatus(kind: string, data: CardData, assetStatus: string | u
   if (!data.assetId) return null;
   if (assetStatus === "approved") return { label: "Approved", tone: "approved" };
   if (assetStatus === "rejected") return { label: "Rejected", tone: "rejected" };
-  if (kind === "output") return { label: "Draft", tone: "draft" };
+  if (kind === "output" || kind === "layout") return { label: "Draft", tone: "draft" };
   return kind === "image" || kind === "video" ? { label: "Done", tone: "done" } : null;
 }
 

@@ -3,8 +3,9 @@
  * presses Generate on each card. Pure and client-safe: the page and the worker both import it.
  *
  * The prompts are ours. They follow what the 2026 guides agree on: app store screenshots tell a story from the clearest
- * outcome onward, books design the character first and feed that sheet into every page, and images leave words to a
- * layout step, because image models garble lettering. Nothing here generates or costs anything by itself.
+ * outcome onward, and books design the character first and feed that sheet into every page. Pictures never carry words:
+ * image models garble lettering, so a Text card holds the words and a Layout card sets them as real text at the exact
+ * size a store or printer asks for. Nothing here generates or costs anything by itself.
  */
 import { MAX_LABEL, MAX_TEXT, type CanvasDoc, type CanvasEdge, type CanvasNode, type NodeType } from "./canvas-rules.js";
 
@@ -47,6 +48,8 @@ interface Step {
   prompt?: string;
   ratio?: string;
   from?: string[];
+  /** The rest of a card's settings: a Text card's brief, a Layout card's size and style. */
+  data?: Record<string, string>;
 }
 
 /** Lays steps out left to right: each card one column right of what feeds it, top to bottom in the order given. */
@@ -62,6 +65,7 @@ export function layoutBoard(steps: readonly Step[]): CanvasDoc {
     if (s.text) data.text = s.text;
     if (s.prompt) data.prompt = s.prompt;
     if (s.ratio) data.ratio = s.ratio;
+    Object.assign(data, s.data);
     return { id: s.id, type: s.type, position: { x: col * COL, y: row * ROW }, data };
   });
   const edges: CanvasEdge[] = steps.flatMap((s) => (s.from ?? []).map((from) => ({ id: `e-${from}-${s.id}`, source: from, target: s.id })));
@@ -72,7 +76,7 @@ const FIELD = /\{\{\s*([a-z][a-z0-9 _-]*?)\s*\}\}/gi;
 
 /** Every field on a board, once each, in the order the cards use them. */
 export function boardFields(doc: CanvasDoc): string[] {
-  const text = doc.nodes.flatMap((n) => [n.data.label ?? "", n.data.text ?? "", n.data.prompt ?? ""]).join("\n");
+  const text = doc.nodes.flatMap((n) => [n.data.label ?? "", n.data.text ?? "", n.data.prompt ?? "", n.data.brief ?? ""]).join("\n");
   return [...new Set([...text.matchAll(FIELD)].map((m) => m[1]!.toLowerCase()))];
 }
 
@@ -86,6 +90,7 @@ export function fillBoard(doc: CanvasDoc, values: Record<string, string>): Canva
       if (data.label) data.label = fill(data.label, MAX_LABEL);
       if (data.text) data.text = fill(data.text, MAX_TEXT);
       if (data.prompt) data.prompt = fill(data.prompt, MAX_TEXT);
+      if (data.brief) data.brief = fill(data.brief, MAX_TEXT);
       return { ...n, data };
     }),
   };
@@ -99,7 +104,7 @@ export function boardToTemplateDoc(doc: CanvasDoc): CanvasDoc {
     viewport: doc.viewport,
     edges: doc.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
     nodes: nodes.map((n) => {
-      const { assetId: _asset, groupId: _group, generated: _generated, ...data } = n.data;
+      const { assetId: _asset, groupId: _group, generated: _generated, requested: _requested, ...data } = n.data;
       return { ...n, data };
     }),
   };
@@ -110,7 +115,8 @@ export function boardSummary(doc: CanvasDoc): string {
   const count = (type: NodeType) => doc.nodes.filter((n) => n.type === type).length;
   const pictures = count("image");
   const videos = count("video");
-  const parts = [pictures ? `${pictures} ${pictures === 1 ? "picture" : "pictures"}` : "", videos ? `${videos} ${videos === 1 ? "video" : "videos"}` : ""].filter(Boolean);
+  const pages = count("layout");
+  const parts = [pictures ? `${pictures} ${pictures === 1 ? "picture" : "pictures"}` : "", videos ? `${videos} ${videos === 1 ? "video" : "videos"}` : "", pages ? `${pages} finished ${pages === 1 ? "page" : "pages"}` : ""].filter(Boolean);
   return parts.join(", ") || `${doc.nodes.length} cards`;
 }
 
@@ -126,21 +132,26 @@ const template = (id: string, category: CanvasTemplateCategory, title: string, t
 const pages = (scenes: Array<[string, string]>, ratio: string, from: string[]): Step[] =>
   scenes.map(([label, prompt], i) => ({ id: `page${i + 1}`, type: "image" as const, label, prompt, ratio, from }));
 
+/** One Layout card per picture, each taking its own part of the Text card. */
+const finished = (pictures: string[], words: string, labels: string[], settings: Record<string, string>): Step[] =>
+  pictures.map((picture, i) => ({ id: `done${i + 1}`, type: "layout" as const, label: labels[i] ?? `Page ${i + 1}`, from: [picture, words], data: { ...settings, part: String(i + 1) } }));
+
 export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
-  template("app-store-set", "apps", "App store screenshots", "Five frames that tell the story, from your real screen", { app: "a budgeting app", audience: "young families", outcome: "knowing exactly where the month's money went" }, [
-    { id: "look", type: "prompt", label: "Look of the set", text: `App store screenshot artwork for {{app}}, for {{audience}}. A modern phone shown at a slight angle with the attached screen displayed on it, exactly as it is. Bold single-colour background, soft studio light, the top third left completely empty for a caption added later. ${NO_TEXT}` },
+  template("app-store-set", "apps", "App store screenshots", "Five finished screenshots at Apple's exact size, from your real screen", { app: "a budgeting app", audience: "young families", outcome: "Know where every rand went" }, [
+    { id: "look", type: "prompt", label: "Look of the set", text: `App store screenshot artwork for {{app}}, for {{audience}}. A modern phone shown at a slight angle with the attached screen displayed on it, exactly as it is. Bold single-colour background, soft studio light, the top third left completely empty. ${NO_TEXT}` },
     { id: "screen", type: "source", label: "Your app screen (pick a file)" },
-    { id: "captions", type: "prompt", label: "Captions to add later (not sent to the model)", text: "1. {{outcome}}\n2. The problem it solves\n3. The feature people love\n4. The next feature\n5. Why people trust it\n\nKeep each to a few words: it has to read at preview size." },
-    ...[["1. The outcome", "This frame shows the result: {{outcome}}. Confident and clear, the strongest colour of the set."], ["2. The problem", "A calmer, cooler frame that hints at the everyday problem this solves for {{audience}}."], ["3. Main feature", "The phone large and close, the screen filling most of the frame."], ["4. Second feature", "The phone tilted the other way, with soft floating shapes behind it."], ["5. Trust", "A warm, friendly frame with a hand holding the phone."]].map(([label, prompt], i): Step => ({ id: `shot${i + 1}`, type: "image", label: label!, prompt: prompt!, ratio: "9:16", from: ["look", "screen"] })),
+    { id: "captions", type: "text", label: "Captions", text: "{{outcome}}\n---\nThe problem it solves\n---\nThe feature people love\n---\nThe next feature\n---\nWhy people trust it", data: { brief: "Five short captions for app store screenshots of {{app}}, for {{audience}}. Lead with the clearest outcome, then tell a story. Each must read at preview size: a few words, specific, no broad claims like best app." } },
+    ...[["1. The outcome", "This frame shows the result. Confident and clear, the strongest colour of the set."], ["2. The problem", "A calmer, cooler frame that hints at the everyday problem this solves for {{audience}}."], ["3. Main feature", "The phone large and close, the screen filling most of the frame."], ["4. Second feature", "The phone tilted the other way, with soft floating shapes behind it."], ["5. Trust", "A warm, friendly frame with a hand holding the phone."]].map(([label, prompt], i): Step => ({ id: `shot${i + 1}`, type: "image", label: label!, prompt: prompt!, ratio: "9:16", from: ["look", "screen"] })),
+    ...finished(["shot1", "shot2", "shot3", "shot4", "shot5"], "captions", ["Screenshot 1", "Screenshot 2", "Screenshot 3", "Screenshot 4", "Screenshot 5"], { size: "app-store-iphone", position: "top", style: "headline", colour: "light" }),
   ]),
   template("app-launch-promo", "apps", "App launch video", "One screen becomes a store preview and a social clip", { app: "a budgeting app", moment: "someone relaxing after sorting their month" }, [
     { id: "screen", type: "source", label: "Your app screen (pick a file)" },
     { id: "hero", type: "image", label: "Hero frame", prompt: `A person's hand holding a phone showing the attached screen from {{app}}, in a bright modern home, {{moment}}. Natural light, shallow depth of field. ${NO_TEXT}`, ratio: "9:16", from: ["screen"] },
     { id: "clip", type: "video", label: "Short clip", prompt: "Slow camera push-in toward the phone. The hand stays steady, soft daylight moves gently across the room. Calm and confident.", ratio: "9:16", from: ["hero"] },
   ]),
-  template("picture-book", "books", "Illustrated book", "Design the character once, keep them the same on every page", { character: "Thandi, a curious eight-year-old with two puffs and a yellow raincoat", world: "a coastal town in KwaZulu-Natal", lesson: "being brave enough to ask for help", style: "warm watercolour with soft ink lines" }, [
-    { id: "style", type: "prompt", label: "Art style (used on every page)", text: `A children's book illustration in {{style}}, set in {{world}}. Gentle colour, clear shapes, room at the bottom of the page for words added later. ${NO_TEXT}` },
-    { id: "story", type: "prompt", label: "Story notes (not sent to the model)", text: "Main character: {{character}}\nLesson: {{lesson}}\n\nWrite the words for each page here, or give this board to an agent. Add them to the pages after the pictures are done: image models garble lettering." },
+  template("picture-book", "books", "Illustrated book", "Same character on every page, words set properly, exported as a PDF", { character: "Thandi, a curious eight-year-old with two puffs and a yellow raincoat", world: "a coastal town in KwaZulu-Natal", lesson: "being brave enough to ask for help", style: "warm watercolour with soft ink lines" }, [
+    { id: "style", type: "prompt", label: "Art style (used on every page)", text: `A children's book illustration in {{style}}, set in {{world}}. Gentle colour and clear shapes. ${NO_TEXT}` },
+    { id: "story", type: "text", label: "The story", text: "Words for page 1\n---\nWords for page 2\n---\nWords for page 3\n---\nWords for page 4\n---\nWords for page 5", data: { brief: "A five-page children's story about {{character}}, set in {{world}}, about {{lesson}}. Page 1: an ordinary, happy morning. Page 2: a problem appears. Page 3: trying alone and it not working. Page 4: finally asking, and a friend helping. Page 5: a warm ending. Two short sentences a page, for ages 5 to 8." } },
     { id: "sheet", type: "image", label: "Character sheet: approve this first", prompt: `A character reference sheet of {{character}}: front, three-quarter and side views on a plain background, same outfit in every view, with colour swatches. ${NO_TEXT}`, ratio: "1:1", from: ["style"] },
     ...pages([
       ["Page 1: opening", "The same character at home in {{world}} on an ordinary, happy morning."],
@@ -149,15 +160,23 @@ export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
       ["Page 4: the turn", "The same character finally {{lesson}}, and a kind friend helping."],
       ["Page 5: the ending", "The same character and the friend celebrating at sunset, the problem solved."],
     ], "4:3", ["style", "sheet"]),
+    ...finished(["page1", "page2", "page3", "page4", "page5"], "story", ["Finished page 1", "Finished page 2", "Finished page 3", "Finished page 4", "Finished page 5"], { size: "book-landscape", position: "below", style: "body", font: "serif", colour: "dark" }),
   ]),
-  template("ebook", "books", "Ebook or lead magnet", "A cover and matching chapter openers for a guide", { topic: "a first-time buyer's guide to property", audience: "young South African professionals", colour: "deep teal and warm sand" }, [
-    { id: "words", type: "prompt", label: "Outline (not sent to the model)", text: "Topic: {{topic}}\nFor: {{audience}}\n\nChapter 1:\nChapter 2:\nChapter 3:\n\nWrite the chapters here or give the board to an agent. Add the title to the cover afterwards." },
-    { id: "cover", type: "image", label: "Cover art: approve this first", prompt: `Premium editorial cover artwork about {{topic}} for {{audience}}. One strong central visual metaphor, palette of {{colour}}, the top half calm and empty for a title added later. ${NO_TEXT}`, ratio: "3:4" },
+  template("ebook", "books", "Ebook or lead magnet", "A titled cover and matching chapter openers, exported as a PDF", { title: "Your first home", topic: "a first-time buyer's guide to property", audience: "young South African professionals", colour: "deep teal and warm sand" }, [
+    { id: "words", type: "text", label: "Titles", text: "{{title}}\n---\nChapter 1\n---\nChapter 2\n---\nChapter 3", data: { brief: "The cover title and three chapter titles for {{topic}}, for {{audience}}. Short and specific." } },
+    { id: "cover", type: "image", label: "Cover art: approve this first", prompt: `Premium editorial cover artwork about {{topic}} for {{audience}}. One strong central visual metaphor, palette of {{colour}}, the top half calm and empty. ${NO_TEXT}`, ratio: "3:4" },
     ...pages([
       ["Chapter 1 opener", "In exactly the same style and palette as the attached cover: a simple visual for getting started with {{topic}}."],
       ["Chapter 2 opener", "In exactly the same style and palette as the attached cover: a simple visual for the biggest mistake people make with {{topic}}."],
       ["Chapter 3 opener", "In exactly the same style and palette as the attached cover: a simple visual for succeeding at {{topic}}."],
-    ], "4:3", ["cover"]),
+    ], "3:4", ["cover"]),
+    ...finished(["cover", "page1", "page2", "page3"], "words", ["Finished cover", "Finished chapter 1", "Finished chapter 2", "Finished chapter 3"], { size: "book-a4", position: "top", style: "headline", font: "serif", colour: "light" }),
+  ]),
+  template("carousel", "social", "Social carousel", "Five slides with real words, ready to post", { brand: "a neighbourhood coffee roaster", topic: "how to brew better coffee at home", look: "warm morning light and earthy tones" }, [
+    { id: "words", type: "text", label: "Slides", text: "A hook that stops the scroll\n---\nPoint one\n---\nPoint two\n---\nPoint three\n---\nWhat to do next", data: { brief: "Five carousel slides for {{brand}} about {{topic}}: a hook, three useful points and a call to action. Under ten words each." } },
+    { id: "anchor", type: "image", label: "Slide 1 picture: approve this first", prompt: `A striking image about {{topic}} for {{brand}}: {{look}}. Editorial and uncluttered, the top third calm. ${NO_TEXT}`, ratio: "3:4" },
+    ...pages([["Slide 2 picture", "Same look as the attached image: a close-up illustrating the first point."], ["Slide 3 picture", "Same look as the attached image: a different angle illustrating the second point."], ["Slide 4 picture", "Same look as the attached image: illustrating the third point."], ["Slide 5 picture", "Same look as the attached image: a calm, inviting final frame."]], "3:4", ["anchor"]),
+    ...finished(["anchor", "page1", "page2", "page3", "page4"], "words", ["Slide 1", "Slide 2", "Slide 3", "Slide 4", "Slide 5"], { size: "social-portrait", position: "top", style: "headline", colour: "light" }),
   ]),
   template("social-week", "social", "A week of social posts", "Five posts that look like one brand", { brand: "a neighbourhood coffee roaster", look: "warm morning light, earthy tones and a lot of texture" }, [
     { id: "anchor", type: "image", label: "Style anchor: approve this first", prompt: `A brand image for {{brand}}: {{look}}. Editorial, confident and uncluttered. ${NO_TEXT}`, ratio: "3:4" },
@@ -169,14 +188,16 @@ export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
       ["Friday: an offer", "Same look as the attached image: an inviting scene with a clean area at the top for an offer added later."],
     ], "3:4", ["anchor"]),
   ]),
-  template("ad-test", "ads", "Ad test: four hooks", "One product, four angles, see which one wins", { audience: "busy commuters" }, [
+  template("ad-test", "ads", "Ad test: four hooks", "One product, four angles with real headlines, see which wins", { audience: "busy commuters" }, [
     { id: "product", type: "source", label: "Your product photo (pick a file)" },
+    { id: "words", type: "text", label: "Headlines", text: "The problem headline\n---\nThe outcome headline\n---\nThe proof headline\n---\nThe offer headline", data: { brief: "Four ad headlines for {{audience}}: one naming the problem, one the outcome, one with social proof and one with an offer. Under eight words each." } },
     ...pages([
-      ["Hook 1: the problem", "The attached product shown beside the everyday frustration it fixes for {{audience}}. Clear space on one side for a headline added later."],
-      ["Hook 2: the outcome", "The attached product in the happy moment after the problem is gone, for {{audience}}. Bright and optimistic."],
+      ["Hook 1: the problem", "The attached product shown beside the everyday frustration it fixes for {{audience}}. Calm space in the top third."],
+      ["Hook 2: the outcome", "The attached product in the happy moment after the problem is gone, for {{audience}}. Bright and optimistic, calm space in the top third."],
       ["Hook 3: social proof", "A real-looking person from {{audience}} using the attached product, shot like a good phone photo."],
-      ["Hook 4: the offer", "The attached product as a bold hero on a saturated background with a clear area for an offer added later."],
+      ["Hook 4: the offer", "The attached product as a bold hero on a saturated background, calm space in the top third."],
     ].map(([l, p]) => [l!, `${p} ${NO_TEXT}`] as [string, string]), "1:1", ["product"]),
+    ...finished(["page1", "page2", "page3", "page4"], "words", ["Ad 1", "Ad 2", "Ad 3", "Ad 4"], { size: "social-square", position: "top", style: "headline", colour: "light" }),
   ]),
   template("product-launch", "products", "Product launch kit", "Hero shot, lifestyle, ad and a video, all from one photo", { setting: "a sunlit kitchen on a weekday morning" }, [
     { id: "product", type: "source", label: "Your product photo (pick a file)" },
@@ -200,11 +221,13 @@ export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
     { id: "room", type: "image", label: "The room", prompt: "The dining room in the early evening, warm lamps, a few guests talking, nobody looking at the camera.", ratio: "16:9", from: ["style"] },
     { id: "clip", type: "video", label: "Sizzle clip", prompt: "Slow-motion close-up. The camera stays still while steam rises and catches the warm light.", ratio: "9:16", from: ["hero"] },
   ]),
-  template("youtube-thumbnails", "video", "YouTube thumbnails", "Three versions to test, with room for the title", { topic: "how I paid off my bond in five years", person: "a man in his forties in a navy shirt", emotion: "genuine surprise" }, [
-    { id: "base", type: "prompt", label: "Thumbnail style", text: `YouTube thumbnail about {{topic}}. High contrast, saturated colour, one clear subject that still reads at a very small size, the left half clean for a title added later. ${NO_TEXT}` },
+  template("youtube-thumbnails", "video", "YouTube thumbnails", "Three versions to test, with a title that stays readable", { title: "Bond gone in 5 years", topic: "how I paid off my bond in five years", person: "a man in his forties in a navy shirt", emotion: "genuine surprise" }, [
+    { id: "base", type: "prompt", label: "Thumbnail style", text: `YouTube thumbnail about {{topic}}. High contrast, saturated colour, one clear subject that still reads at a very small size, the left half clean. ${NO_TEXT}` },
+    { id: "words", type: "text", label: "Title on the thumbnail", text: "{{title}}", data: { brief: "A thumbnail title about {{topic}}: three to five punchy words, not the video's full title." } },
     { id: "face", type: "image", label: "Version A: face", prompt: "{{person}} on the right, showing {{emotion}}, looking straight at the camera, sharp and well lit.", ratio: "16:9", from: ["base"] },
     { id: "object", type: "image", label: "Version B: object", prompt: "One bold object that sums up the topic, huge in the frame on the right, with a dramatic glow.", ratio: "16:9", from: ["base"] },
     { id: "contrast", type: "image", label: "Version C: before and after", prompt: "A split frame on the right half: dull and cool on one side, bright and warm on the other, showing the change.", ratio: "16:9", from: ["base"] },
+    ...["face", "object", "contrast"].map((picture, i): Step => ({ id: `done${i + 1}`, type: "layout", label: `Thumbnail ${"ABC"[i]}`, from: [picture, "words"], data: { size: "youtube", position: "middle", style: "headline", align: "left", scale: "l", colour: "light" } })),
   ]),
   template("ugc-ad", "video", "Customer-style video ad", "Hook, demo and payoff, filmed like a real phone clip", { person: "a young woman", product: "a matte black insulated coffee flask", place: "her car" }, [
     { id: "style", type: "prompt", label: "Filmed on a phone", text: "Handheld vertical video filmed on a phone, real daylight, slight natural camera shake, casual and authentic." },
