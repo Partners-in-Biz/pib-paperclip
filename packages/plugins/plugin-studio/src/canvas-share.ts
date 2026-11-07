@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { assetUrlForPerson } from "./assets.js";
 import { getCanvas } from "./canvas.js";
+import { StudioConfig } from "./config.js";
 import type { CanvasDoc, CanvasNode } from "./canvas-rules.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
@@ -80,7 +81,21 @@ function removePage(id: string): void {
   if (dir && isShareId(id)) rmSync(join(dir, `${id}.html`), { force: true });
 }
 
-const defaultSigner = (ctx: PluginContext): Signer => (companyId, assetId) => assetUrlForPerson(ctx, companyId, assetId, SHARE_LINK_SECONDS);
+/**
+ * One signer per request or job run, with one StudioConfig per company in it: a page of 30 cards, or ten pages, cost
+ * one secret lookup, not one per card (the host allows 30 a minute per company, shared with the Studio page; PAR-8102).
+ */
+export function defaultSigner(ctx: PluginContext): Signer {
+  const configs = new Map<string, StudioConfig>();
+  return (companyId, assetId) => {
+    let config = configs.get(companyId);
+    if (!config) {
+      config = new StudioConfig(ctx, companyId);
+      configs.set(companyId, config);
+    }
+    return assetUrlForPerson(ctx, companyId, assetId, SHARE_LINK_SECONDS, config);
+  };
+}
 
 async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise<boolean> {
   const dir = shareDir();
@@ -88,6 +103,7 @@ async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise
   const board = await getCanvas(ctx, row.company_id, row.canvas_id);
   const ids = [...new Set(board.doc.nodes.map((n) => n.data.assetId).filter((id): id is string => Boolean(id)))].slice(0, 100);
   const previews: Record<string, Preview> = {};
+  let complete = true;
   if (ids.length) {
     const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
     const kinds = await ctx.db.query<{ id: string; kind: string }>(`SELECT id, kind FROM ${table(ctx, "assets")} WHERE company_id = $1 AND id IN (${marks})`, [row.company_id, ...ids]);
@@ -95,7 +111,8 @@ async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise
       try {
         previews[asset.id] = { url: await sign(row.company_id, asset.id), kind: asset.kind };
       } catch {
-        // No preview for that card; the page still shows it.
+        // No preview for that card this time; the page still shows it, and the next job run tries again.
+        complete = false;
       }
     }
   }
@@ -106,9 +123,10 @@ async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise
   renameSync(temp, join(dir, `${row.id}.html`));
   // A revoke (or expiry) can land while this page was being signed and written: its delete then ran before the
   // rename above. Check again after the rename and take the page down, so a revoked link never comes back.
+  // A page with a missing preview keeps its old published_at, so the one-minute job writes it again soon.
   const still = await ctx.db.execute(
-    `UPDATE ${table(ctx, "canvas_shares")} SET published_at = now() WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()`,
-    [row.id],
+    `UPDATE ${table(ctx, "canvas_shares")} SET published_at = CASE WHEN $2::boolean THEN now() ELSE published_at END WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()`,
+    [row.id, complete],
   );
   if (num(still.rowCount)) return true;
   removePage(row.id);

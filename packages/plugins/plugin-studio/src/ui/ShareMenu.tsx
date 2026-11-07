@@ -17,8 +17,11 @@ export function shareUrl(path: string, base: string = import.meta.url): string {
   return new URL(path, base).href;
 }
 
-export function ShareMenu({ companyId, canvasId }: { companyId: string; canvasId: string }) {
-  const [open, setOpen] = useState(false);
+/** Open state can come from the page, so opening this menu closes the Versions one (PAR-8102). */
+export function ShareMenu({ companyId, canvasId, open: shown, onOpenChange }: { companyId: string; canvasId: string; open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const setOpen = onOpenChange ?? setOwn;
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [list, setList] = useState<Share[] | null>(null);

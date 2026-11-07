@@ -37,6 +37,7 @@ import { SidePanel } from "./SidePanel.js";
 import { VersionsMenu } from "./Versions.js";
 import { useNarrow } from "./narrow.js";
 import { PhoneReview } from "./PhoneReview.js";
+import { previewPlaceholder, usePreviewUrls } from "./previews.js";
 import { reviewQueue } from "./phone-review.js";
 import { CARD_LABELS, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
@@ -49,8 +50,6 @@ interface GenRow { id: string; groupId: string; status: string; assetId: string 
 
 const SAVE_DELAY_MS = 1200;
 const POLL_MS = 4000;
-/** Signed links last five minutes; fetch fresh ones before that. */
-const URL_REFRESH_MS = 4 * 60 * 1000;
 const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
 const NO_INPUTS: CardInputs = { prompt: "", referenceAssetIds: [], missing: [], outputIds: [] };
 const row: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" };
@@ -138,6 +137,8 @@ interface BoardContext {
   unavailable: Unavailable[];
   inputs: Map<string, CardInputs>;
   urls: Record<string, string>;
+  /** Set when the last preview request failed; cards without a link say so instead of "Loading". */
+  previewError: string | null;
   videos: Set<string>;
   /** Adds an image card fed by this card, so a result can be built on. */
   buildOn: (cardId: string) => void;
@@ -145,23 +146,7 @@ interface BoardContext {
   dim: Set<string>;
 }
 const NO_DIM = new Set<string>();
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, videos: new Set(), buildOn: () => undefined, dim: NO_DIM });
-
-/** Fresh signed preview links for the files on the board. People only: the action checks membership. */
-function usePreviews(companyId: string, ids: string[]): Record<string, string> {
-  const assetUrls = usePluginAction("asset-urls");
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  const key = ids.join(",");
-  useEffect(() => {
-    if (!key) return setUrls({});
-    let live = true;
-    const load = () => assetUrls({ companyId, assetIds: key.split(",") }).then((out) => { if (live) setUrls((out as { urls?: Record<string, string> }).urls ?? {}); }).catch(() => undefined);
-    void load();
-    const timer = setInterval(() => void load(), URL_REFRESH_MS);
-    return () => { live = false; clearInterval(timer); };
-  }, [companyId, key]);
-  return urls;
-}
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM });
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -322,7 +307,9 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     [nodes, edges, videos],
   );
   const shown = useMemo(() => [...new Set(nodes.map((n) => n.data.assetId).filter((a): a is string => Boolean(a)))].sort().slice(0, 100), [nodes]);
-  const urls = usePreviews(companyId, shown);
+  const { urls, error: previewError } = usePreviewUrls(companyId, shown);
+  // One toolbar menu at a time: Share open over Versions hid the version name box (PAR-8102).
+  const [menu, setMenu] = useState<"versions" | "share" | null>(null);
 
   // Follow the cards' running generations; a finished one fills the card and every output card it feeds.
   const pending = useMemo(() => [...new Set(nodes.map((n) => n.data.groupId).filter((g): g is string => Boolean(g)))].sort().slice(0, 20), [nodes]);
@@ -569,6 +556,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     const labels = new Map((overview.data?.models ?? []).map((m) => [m.id, m.label]));
     return (
       <PhoneReview
+        previewError={previewError}
         companyId={companyId}
         title={board.data.title}
         items={reviewQueue(nodes, library, (id) => inputs.get(id)?.prompt ?? "")}
@@ -590,8 +578,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <span style={{ flex: "1 1 0" }} />
         {credits ? <span className="studio-chip" aria-label="Credits this month" style={{ color: "var(--foreground)" }}>{credits.cap === null ? `${credits.used} credits used · no cap set` : `${creditsLeft(credits.used, credits.cap)} of ${credits.cap} credits left`}</span> : null}
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
-        <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} />
-        {canEdit ? <ShareMenu companyId={companyId} canvasId={canvasId} /> : null}
+        <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} open={menu === "versions"} onOpenChange={(o) => setMenu(o ? "versions" : null)} />
+        {canEdit ? <ShareMenu companyId={companyId} canvasId={canvasId} open={menu === "share"} onOpenChange={(o) => setMenu(o ? "share" : null)} /> : null}
         {canEdit ? (
           <Button
             variant="secondary"
@@ -610,7 +598,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         </div>
       ) : null}
       <PageMessage tone="danger" message={notice ?? undefined} />
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, videos, buildOn, dim }}>
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim }}>
         <div className="studio-canvas-layout">
         <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
@@ -748,13 +736,13 @@ function ResultBar({ id, assetId }: { id: string; assetId: string }) {
 
 /** The card's media, full width at the card's ratio, with overlays on top; a dashed frame at that ratio when empty. */
 function Media({ assetId, name, video, ratio, empty, children }: { assetId: string | undefined; name: string; video?: boolean; ratio: string | undefined; empty: string; children?: ReactNode }) {
-  const { urls, videos } = useContext(BoardCtx);
+  const { urls, previewError, videos } = useContext(BoardCtx);
   const style: CSSProperties = { aspectRatio: aspectCss(ratio) };
   if (!assetId) return <div className="studio-media studio-media-empty" style={style}>{empty}</div>;
   const url = urls[assetId];
   return (
     <div className="studio-media" style={style}>
-      {!url ? <div className="studio-media-empty" style={{ height: "100%", border: 0 }}>Loading preview…</div>
+      {!url ? <div className="studio-media-empty" role={previewError ? "status" : undefined} title={previewError ?? undefined} style={{ height: "100%", border: 0 }}>{previewPlaceholder(previewError)}</div>
         : video || videos.has(assetId) ? <video className="nodrag" src={url} muted playsInline controls preload="metadata" />
         : <img src={url} alt={name} />}
       {children}

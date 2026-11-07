@@ -4,8 +4,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
-import { StudioError } from "./errors.js";
-import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime } from "./storage.js";
+import { errorText, StudioError } from "./errors.js";
+import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime, type PrivateBucket } from "./storage.js";
 import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
 
 export const LINK_TARGETS = ["issue", "goal", "project", "campaign", "social_post", "ad", "seo_page", "video", "book"] as const;
@@ -193,10 +193,49 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
   return { ...assetOut(row), path };
 }
 
-/** For a person's browser, after an access check in the action (or a share page). Short-lived. */
-export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300): Promise<string> {
+/**
+ * For a person's browser, after an access check in the action (or a share page). Short-lived. Pass one `config` for a
+ * whole request or job run: each new StudioConfig costs a secret lookup, and the host allows 30 a minute per company.
+ */
+export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300, config: StudioConfig = new StudioConfig(ctx, companyId)): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
-  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, expiresSec);
+  return objectUrl(await config.bucket(), companyId, "GET", row.r2_key, expiresSec);
+}
+
+export interface PreviewBatch {
+  urls: Record<string, string>;
+  /** Assets that exist but got no link this time; the page retries them soon. */
+  failed: string[];
+  /** Safe to show a person; null when every known asset got a link. */
+  error: string | null;
+}
+
+/**
+ * Preview links for many assets with one settings read and one secret lookup (PAR-8102). Unknown assets are left out
+ * quietly; a storage or secret failure is reported in `error` so the page can say so and retry, never hidden.
+ */
+export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], expiresSec = 300, config?: StudioConfig): Promise<PreviewBatch> {
+  const urls: Record<string, string> = {};
+  if (!assetIds.length) return { urls, failed: [], error: null };
+  let bucket: PrivateBucket;
+  try {
+    bucket = await (config ?? new StudioConfig(ctx, companyId)).bucket();
+  } catch (error) {
+    ctx.logger.warn("Studio previews not signed", { assets: assetIds.length, error: errorText(error) });
+    const why = error instanceof StudioError ? error.message : "Studio couldn't read its storage settings just now.";
+    return { urls, failed: [...assetIds], error: `Previews couldn't load. ${why}` };
+  }
+  const failed: string[] = [];
+  for (const id of assetIds) {
+    try {
+      const row = await getAssetRow(ctx, companyId, id);
+      urls[id] = objectUrl(bucket, companyId, "GET", row.r2_key, expiresSec);
+    } catch (error) {
+      if (error instanceof StudioError && error.code === "unknown_asset") continue;
+      failed.push(id);
+    }
+  }
+  return { urls, failed, error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null };
 }
 
 export async function linkAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, runProjectId: string | null) {
