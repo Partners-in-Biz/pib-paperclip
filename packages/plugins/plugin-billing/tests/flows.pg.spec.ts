@@ -740,6 +740,8 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     const expense = await run("billing.create-expense", { description: "Taxi", amountMinor: 5_000, category: "travel", vatClaimable: false });
     await run("billing.void-expense", { expenseId: expense.id });
     await expect(run("billing.receipt-file", { expenseId: expense.id })).rejects.toThrow(/No file/);
+    const { r2: _r2, ...noR2 } = SETTINGS;
+    h.config.set(COMPANY, noR2);
     await expect(run("billing.upload-url", { purpose: "receipt", mime: "image/png", bytes: 10 })).rejects.toThrow(/private R2/);
     await expect(run("billing.correct-decision", { decisionId: "none", correctedTo: "travel" })).resolves.toEqual({ ok: false });
     const reports = await run("billing.reports", { from: "2026-01-01", to: "2026-12-31" });
