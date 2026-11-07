@@ -148,12 +148,12 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "check-sender-domain",
     displayName: "Check a sender domain",
     description:
-      "Reads the DNS of a domain mail is sent from (public DNS, nothing is changed): MX, SPF with its lookup count, DKIM at the usual selectors, DMARC. Returns healthy, warn or bad with each problem and its fix, sendReady, and the exact records to add for a new client domain (onboarding). A domain at the email provider is judged on the provider's records and its status at the provider is read again first. DNS is edited by the person who controls the domain: hand them the steps with one partnersinbiz.cockpit:ask-owner, then check again. By default the domain is also watched every day.",
+      "Reads the DNS of a domain mail is sent from (public DNS, nothing is changed): MX, SPF with its lookup count, DKIM at the usual selectors, DMARC. Returns healthy, warn or bad with each problem and its fix, sendReady, and the exact records to add for a new client domain (onboarding). A domain at the email provider is judged on the provider's records and its status at the provider is read again first. DNS is edited by the person who controls the domain: hand them the steps with one partnersinbiz.cockpit:ask-owner, then check again. This is a lookup: the domain is NOT added to the company's sender domains or watched unless you pass watch true (or give the client it sends for). Never watch a lead's, vendor's or other third party's domain.",
     parametersSchema: schema([], {
       domain: str("The domain to check, e.g. client.co.za (or use address)."),
       address: str("A sender address; its domain is checked."),
       selectors: str("Extra DKIM selectors to try, comma separated (e.g. mailer1, brevo). The usual ones are always tried."),
-      watch: { type: "boolean", description: "Keep checking this domain every day and report problems on the Cockpit (default true)." },
+      watch: { type: "boolean", description: "Keep checking this domain every day, list it under the company's sender domains and report problems on the Cockpit. Default false (a lookup only), except with clientRef. Only for a domain the company or a client sends mail from." },
       clientKind: { type: "string", enum: ["company", "contact"], description: "With clientRef: the client this domain belongs to (kept with the check)." },
       clientRef: str("The CRM id of that client."),
     }),

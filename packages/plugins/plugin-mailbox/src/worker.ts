@@ -440,7 +440,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       return { content: "Triage corrected", data };
     }
     if (name === "check-sender-domain") {
-      const data = await checkSenderDomain(run.companyId, body);
+      // An agent looking a domain up (a vendor's, a lead's) must not add it to the company's sender domains: only an explicit watch, or a domain given for a client, is kept.
+      const data = await checkSenderDomain(run.companyId, { ...body, watch: body.watch === true || (body.watch !== false && Boolean(body.clientRef)) });
       return { content: `${data.domain}: ${data.status}${data.sendReady ? ", ready to send" : ""}`, data };
     }
     if (name === "sender-domain-health") {
