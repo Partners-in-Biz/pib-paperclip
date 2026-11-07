@@ -1211,12 +1211,28 @@ export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, 
   return <Button type="button" variant={variant} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
 }
 
+/** The look of `Button`, kept in one place. */
+export function buttonStyle(variant: "primary" | "secondary" = "primary", disabled = false): CSSProperties {
+  const colors: CSSProperties = variant === "primary"
+    ? { background: tokens.primary, color: tokens.primaryFg, border: "1px solid transparent" }
+    : { background: tokens.secondary, color: tokens.secondaryFg, border: `1px solid ${tokens.border}` };
+  return {
+    height: 36,
+    borderRadius: 9,
+    padding: "0 14px",
+    fontSize: 13,
+    fontWeight: 600,
+    fontFamily: "inherit",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.55 : 1,
+    transition: "filter 120ms ease, box-shadow 120ms ease",
+    ...colors,
+  };
+}
+
 export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary";
 }) {
-  const styles: CSSProperties = variant === "primary"
-    ? { background: tokens.primary, color: tokens.primaryFg, border: "1px solid transparent" }
-    : { background: tokens.secondary, color: tokens.secondaryFg, border: `1px solid ${tokens.border}` };
   return (
     <button
       {...props}
@@ -1237,16 +1253,7 @@ export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<H
         props.onMouseLeave?.(event);
       }}
       style={{
-        height: 36,
-        borderRadius: 9,
-        padding: "0 14px",
-        fontSize: 13,
-        fontWeight: 600,
-        fontFamily: "inherit",
-        cursor: props.disabled ? "not-allowed" : "pointer",
-        opacity: props.disabled ? 0.55 : 1,
-        transition: "filter 120ms ease, box-shadow 120ms ease",
-        ...styles,
+        ...buttonStyle(variant, Boolean(props.disabled)),
         ...((props.style as CSSProperties) ?? {}),
       }}
     />
@@ -1283,6 +1290,9 @@ export function ButtonLink({ variant = "secondary", ...props }: AnchorHTMLAttrib
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
+        // Border inside the 36px, as a <button> has it, so the link is exactly as tall as the buttons beside it.
+        boxSizing: "border-box",
+        lineHeight: 1,
         height: 36,
         borderRadius: 9,
         padding: "0 14px",
@@ -1300,33 +1310,7 @@ export function ButtonLink({ variant = "secondary", ...props }: AnchorHTMLAttrib
   );
 }
 
-/**
- * A readable message for anything an action or fetch threw. The host sends a
- * failed plugin action back as a plain `{ code, message }` object, not an
- * Error, so read `message` (or `error`) from plain objects and strings too.
- */
-export function errorText(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === "string" && error.trim()) return error.trim();
-  if (error && typeof error === "object") {
-    const record = error as Record<string, unknown>;
-    for (const key of ["message", "error"]) {
-      const value = record[key];
-      if (typeof value === "string" && value.trim()) return value.trim();
-      if (value && typeof value === "object" && typeof (value as Record<string, unknown>).message === "string") return String((value as Record<string, unknown>).message);
-    }
-  }
-  return "Request failed";
-}
-
-// A non-breaking space keeps "R" and the amount together when a tile wraps.
-const MONEY_SYMBOLS: Record<string, string> = { ZAR: "R\u00A0", USD: "$", EUR: "€", GBP: "£" };
-
-/**
- * Money as every PiB page, invoice and payslip shows it: `R 12,345.67`
- * (symbol, comma thousands, dot decimals), whatever the browser's language.
- */
-export function formatMoney(minor: number, currency = "ZAR", decimals = 2): string {
+ncy = "ZAR", decimals = 2): string {
   if (!Number.isFinite(minor)) return "–";
   const value = Math.abs(minor) / 100;
   const text = value.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
