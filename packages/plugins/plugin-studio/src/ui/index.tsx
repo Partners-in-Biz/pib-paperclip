@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
+import { GiveButton, GivenList } from "./GiveToAgent.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
@@ -65,6 +66,7 @@ interface Detail {
   madeBy: { agentId: string | null; userId: string | null };
   generation: { id: string; model: string; prompt: string; estimatedCredits: number; actualCredits: number | null } | null;
   issue: { id: string; identifier: string | null; title: string | null } | null;
+  givenTo?: Array<{ id: string; identifier: string | null; title: string | null; status: string | null; agentName: string | null }>;
 }
 
 interface Estimate {
@@ -461,6 +463,8 @@ function AssetDetail({
             {canReview && d ? (
               <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
             ) : null}
+            {/* Viewers can't give (the worker refuses them too). */}
+            {canReview && d ? <GiveButton companyId={companyId} assetId={assetId} assetName={d.asset.name} onGiven={() => setV((n) => n + 1)} /> : null}
             <Button variant="secondary" onClick={close}>
               Close
             </Button>
@@ -487,6 +491,8 @@ function AssetDetail({
               <dd style={term}>{d.issue ? `${d.issue.identifier ?? d.issue.id}${d.issue.title ? `: ${d.issue.title}` : ""}` : "—"}</dd>
               <dt style={muted}>Client</dt>
               <dd style={term}>{d.asset.client?.name ?? "Own work"}</dd>
+              <dt style={muted}>Given to</dt>
+              <dd style={term}><GivenList items={d.givenTo ?? []} /></dd>
               <dt style={muted}>Status</dt>
               <dd style={term}>{d.asset.status}</dd>
               <dt style={muted}>File</dt>

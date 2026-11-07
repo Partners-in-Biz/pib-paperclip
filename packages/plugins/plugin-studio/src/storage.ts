@@ -122,20 +122,42 @@ export async function localCopy(companyId: string, assetId: string, version: num
   return file;
 }
 
-export async function sweepLocalCopies(maxAgeMs = 24 * 60 * 60 * 1000, now = Date.now()): Promise<number> {
+/** Copies given to an agent on an issue (give.ts) live longer than the one-day tool copies: the agent may run later. */
+export const GIVEN_DIR = "given";
+export const GIVEN_KEEP_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A fresh copy per give, under `<root>/<companyId>/given/`, so a later give or a sweep of tool copies never touches it. */
+export async function givenCopy(companyId: string, giveId: string, assetId: string, version: number, ext: string, bytes: Uint8Array): Promise<string> {
+  const dir = join(localRoot(), segment(companyId, "company id"), GIVEN_DIR);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${segment(assetId, "asset id")}-v${version}-${segment(giveId, "give id")}.${segment(ext, "extension")}`);
+  await writeFile(file, bytes, { mode: 0o600 });
+  return file;
+}
+
+async function sweepFiles(dir: string, maxAgeMs: number, now: number): Promise<number> {
+  let removed = 0;
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    const file = join(dir, name);
+    const info = await stat(file).catch(() => null);
+    // Only plain files: the given/ folder is swept on its own clock, and rm without recursive throws on a folder.
+    if (info?.isFile() && now - info.mtimeMs > maxAgeMs) {
+      await rm(file, { force: true });
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+export async function sweepLocalCopies(maxAgeMs = DAY_MS, now = Date.now(), givenMaxAgeMs = GIVEN_KEEP_DAYS * DAY_MS): Promise<number> {
   let removed = 0;
   const root = localRoot();
   const companies = await readdir(root).catch(() => [] as string[]);
   for (const company of companies) {
     const dir = join(root, company);
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
-      const file = join(dir, name);
-      const info = await stat(file).catch(() => null);
-      if (info && now - info.mtimeMs > maxAgeMs) {
-        await rm(file, { force: true });
-        removed += 1;
-      }
-    }
+    removed += await sweepFiles(dir, maxAgeMs, now);
+    removed += await sweepFiles(join(dir, GIVEN_DIR), givenMaxAgeMs, now);
   }
   return removed;
 }
