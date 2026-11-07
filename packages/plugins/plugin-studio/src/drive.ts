@@ -17,7 +17,8 @@ import { DRIVE_MAX_BYTES } from "./drive-limits.js";
 // The broker's limit is checked here first, before reading from R2, for a clear message.
 export { DRIVE_MAX_BYTES };
 export const DRIVE_LINK_TYPE = "drive_file";
-const TIMEOUT_MS = 30_000;
+// Well under the host's 30 s action limit, so people get the plain message instead of a bare 502 (PAR-8114).
+export const DRIVE_TIMEOUT_MS = 20_000;
 
 export type DriveSaveFn = (ctx: Pick<PluginContext, "events">, opts: DriveSaveOptions) => Promise<DriveSaveResult>;
 
@@ -51,7 +52,7 @@ function mb(bytes: number): string {
 
 /** Plain words for a refusal from the kit, the CRM or Google. */
 export function refusalText(result: Exclude<DriveSaveResult, { status: "saved" }>): string {
-  if (result.status === "no_ack") return "CRM didn't answer within 30 seconds, so the file may not be in Drive. Check that the CRM plugin is running, then try again.";
+  if (result.status === "no_ack") return `CRM didn't answer within ${DRIVE_TIMEOUT_MS / 1000} seconds, so the file may not be in Drive. Check that the CRM plugin is running, then try again. A retry does not make a second copy.`;
   const hint = result.hint ? ` (${result.hint})` : "";
   switch (result.reason) {
     case "too_large":
@@ -100,7 +101,7 @@ export async function saveAssetToDrive(ctx: PluginContext, companyId: string, as
     mimeType: row.mime,
     bytes,
     subfolder: "02 Assets",
-    timeoutMs: TIMEOUT_MS,
+    timeoutMs: DRIVE_TIMEOUT_MS,
     ...(scope ? { client: { kind: scope.kind, ref: scope.id } } : {}),
   });
   if (result.status !== "saved") throw new StudioError(refusalText(result), "drive_refused");

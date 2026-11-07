@@ -11,8 +11,8 @@ import { saveDriveFile } from "../src/drive/save.js";
 import { reportFileName } from "../src/report-copy.js";
 import { DRIVE_ID, KEY_JSON, LAYOUT, SEEDED_CLIENT, fakeGoogle, folderAt, isFolder, seedPibDrive, uploadsOf } from "./support/fake-google-drive.js";
 
-/** The bare event the kit's driveSave emits; the SDK's event type does not list it. */
-const DRIVE_SAVE_REQUESTED = "drive.save-requested" as never;
+/** How the host delivers a producer's (here Social's) kit driveSave emit: `plugin.<producer>.drive.save-requested` (PAR-8114). */
+const DRIVE_SAVE_REQUESTED = "plugin.partnersinbiz.social.drive.save-requested" as const;
 const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
 const ACME = `${LAYOUT.clients}/Acme Ltd (Primary Contact)`;
 const b64 = (text: string) => Buffer.from(text).toString("base64");
