@@ -10,7 +10,7 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
-import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
@@ -862,9 +862,12 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
 }
 
 export function StudioSidebar(_props: PluginSidebarProps) {
+  // The Cockpit's Marketing group shows this page instead (pib-plugin-ui NAV_GROUPS); keep our own row only until that group exists.
+  const grouped = useGroupedNav("partnersinbiz.studio");
   const navigation = useHostNavigation();
   const location = useHostLocation();
-  const active = location.pathname === navigation.resolveHref("/studio");
+  const active = location.pathname === navigation.resolveHref("/studio") || location.pathname === navigation.resolveHref("/studio-canvas");
+  if (grouped !== false) return null;
   return (
     <a
       {...navigation.linkProps("/studio")}

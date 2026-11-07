@@ -100,7 +100,7 @@ function NavGroupSidebar({ groupKey, companyId }: { groupKey: NavGroupKey; compa
   const group = NAV_GROUPS[groupKey];
   const loading = contributions === undefined || modules === undefined;
   const members = loading ? [] : visibleMembers(group, contributions ?? null, modules ?? null);
-  const active = members.map((m) => isActivePath(navigation.resolveHref(m.route), location.pathname));
+  const active = members.map((m) => [m.route, ...(m.alsoRoutes ?? [])].some((r) => isActivePath(navigation.resolveHref(r), location.pathname)));
   const anyActive = active.some(Boolean);
   const view = useSidebarView(companyId, location.pathname);
   const attention = groupAttention(view, members.map((m) => m.pluginKey));

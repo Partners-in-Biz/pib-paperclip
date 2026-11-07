@@ -136,6 +136,7 @@ export type ModuleKey =
   | "seo"
   | "campaigns"
   | "ads"
+  | "studio"
   | "billing"
   | "accounting"
   | "payroll"
@@ -150,6 +151,7 @@ export const MODULE_ACCENT_HUES: Record<ModuleKey, { label: string; light: strin
   seo: { label: "SEO", light: "#16a34a", dark: "#4ade80" },
   campaigns: { label: "Campaigns", light: "#7c3aed", dark: "#a78bfa" },
   ads: { label: "Paid ads", light: "#c026d3", dark: "#e879f9" },
+  studio: { label: "Studio", light: "#db2777", dark: "#f472b6" },
   billing: { label: "Billing", light: "#059669", dark: "#34d399" },
   accounting: { label: "Accounting", light: "#0d9488", dark: "#2dd4bf" },
   payroll: { label: "Payroll", light: "#d97706", dark: "#fbbf24" },
