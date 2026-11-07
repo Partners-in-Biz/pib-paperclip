@@ -36,6 +36,7 @@ import { GiveDialog } from "./GiveToAgent.js";
 import { ShareMenu } from "./ShareMenu.js";
 import { SidePanel } from "./SidePanel.js";
 import { SaveToDrive } from "./SaveToDrive.js";
+import { FromDrive } from "./FromDrive.js";
 import { VersionsMenu } from "./Versions.js";
 import { useNarrow } from "./narrow.js";
 import { PhoneReview } from "./PhoneReview.js";
@@ -148,9 +149,11 @@ interface BoardContext {
   dim: Set<string>;
   /** Opens Give to agent for a result. The dialog lives outside the flow: a fixed panel inside a moved card would move too. */
   give: (assetId: string) => void;
+  /** Reloads the library after a file is added from Drive. */
+  refreshLibrary: () => void;
 }
 const NO_DIM = new Set<string>();
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, give: () => undefined });
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, give: () => undefined, refreshLibrary: () => undefined });
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -610,7 +613,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         assetName={library.find((a) => a.id === giving)?.name ?? "this file"}
         onClose={() => setGiving(null)}
       />
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, give: setGiving }}>
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, give: setGiving, refreshLibrary: assets.refresh }}>
         <div className="studio-canvas-layout">
         <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
@@ -679,7 +682,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 const KIND_LETTER: Record<NodeType, string> = { prompt: "T", source: "S", image: "I", video: "V", output: "O" };
 
 function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
-  const { beforeEdit, library, dim } = useContext(BoardCtx);
+  const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary } = useContext(BoardCtx);
   const flow = useReactFlow<FlowNode, Edge>();
   const kind = type as NodeType;
   const set = (patch: Record<string, string>) => flow.updateNodeData(id, patch);
@@ -709,6 +712,18 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
             {library.map((a) => <option key={a.id} value={a.id}>{a.kind === "video" ? "Video" : "Image"}: {a.name}</option>)}
           </select>
           {library.length === 0 ? <span style={muted}>No images or videos in this library yet.</span> : null}
+          {canGenerate === true ? (
+            <FromDrive
+              small
+              companyId={companyId}
+              client={client}
+              onImported={(a) => {
+                beforeEdit();
+                set({ assetId: a.id, label: data.label || a.name });
+                refreshLibrary();
+              }}
+            />
+          ) : null}
         </>
       ) : null}
       {kind === "output" ? (

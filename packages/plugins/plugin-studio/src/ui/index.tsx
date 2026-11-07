@@ -3,6 +3,7 @@ import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, us
 import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { GiveButton, GivenList } from "./GiveToAgent.js";
+import { FromDrive } from "./FromDrive.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
@@ -339,6 +340,18 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
           </Field>
         </div>
         </details>
+        {canReview ? (
+          <div style={{ marginBottom: 12 }}>
+            <FromDrive
+              companyId={companyId}
+              client={client}
+              onImported={(a) => {
+                setReviewed((n) => n + 1);
+                setOpenId(a.id);
+              }}
+            />
+          </div>
+        ) : null}
         {assets.error ? <PageMessage tone="danger" message={errorText(assets.error)} /> : null}
         {previews.error ? <PageMessage tone="warning" message={`${previews.error} Trying again shortly.`} /> : null}
         {assets.data && list.length === 0 ? <EmptyState compact title="No assets match these filters" description="Clear a filter, or generate something new." /> : null}

@@ -72,4 +72,18 @@ export interface Broker {
   ensure(body: EnsureBody): Promise<EnsureResult>;
   identity(sharedDriveId?: string): Promise<IdentityResult>;
   uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
+  /** Reads for producer plugins (PAR-8107). Optional: brokers without them refuse the read routes. */
+  listFiles?(parentFolderId: string): Promise<DriveFileInfo[]>;
+  /** null when the file is missing, trashed, or not on this company's Shared Drive. */
+  fileMeta?(fileId: string): Promise<DriveFileInfo | null>;
+  downloadFile?(fileId: string, maxBytes: number): Promise<Uint8Array>;
+}
+
+/** A Drive file as the read routes see it: no link, no owner. */
+export interface DriveFileInfo {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  parents: string[];
 }

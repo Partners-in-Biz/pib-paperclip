@@ -8,6 +8,8 @@ import { createShare, listShares, refreshShares, revokeShare } from "./canvas-sh
 import { giveAsset, giveChoices } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
+import { importFromDrive, listDriveFiles } from "./drive-import.js";
+import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { errorText, StudioError } from "./errors.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
@@ -216,6 +218,19 @@ const plugin = definePlugin({
     ctx.actions.register("give", async (params, context) => {
       const me = await person(context);
       return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+    });
+
+    // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.
+    registerDriveReadReplies(ctx);
+    ctx.actions.register("drive-list", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return listDriveFiles(ctx, me.companyId, objectParams(params));
+    });
+    ctx.actions.register("drive-import", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
     // Previews for a page of the library in one call. Links last five minutes.

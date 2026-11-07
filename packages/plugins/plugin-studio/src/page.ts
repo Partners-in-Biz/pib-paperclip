@@ -9,6 +9,7 @@ import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugi
 import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
 import { DRIVE_LINK_TYPE, driveCopies } from "./drive.js";
+import { driveProvenance } from "./drive-import.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
 import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
@@ -137,6 +138,7 @@ export async function assetDetail(ctx: PluginContext, companyId: string, assetId
     // People's page only; agents never see Drive links.
     drive: await driveCopies(ctx, companyId, assetId),
     givenTo: await givenIssues(ctx, companyId, assetId, links.filter((l) => l.target_type === "issue").map((l) => l.target_id)),
+    provenance: await driveProvenance(ctx, companyId, assetId),
   };
 }
 
