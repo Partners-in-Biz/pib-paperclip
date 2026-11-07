@@ -7,10 +7,11 @@
  * `drive.file.failed`, which the host delivers as `plugin.partnersinbiz.crm.drive.file.*` (what the kit listens on).
  * The company comes from the event, which the host checks against the producer, and decides which Drive is written.
  */
-import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { DRIVE_EVENTS, DRIVE_PRODUCER_PLUGINS, knownProducerOf, producerEventName } from "@partnersinbiz/pib-plugin-kit";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { DRIVE_EVENTS, DRIVE_PRODUCER_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
 import { resolveProducerSaveProject } from "./tools.js";
 import { saveDriveFile } from "./save.js";
+import { registerProducerRoute, type ProducerRequest } from "./producer-route.js";
 
 type RouteCtx = Pick<PluginContext, "events" | "logger">;
 
@@ -27,16 +28,13 @@ const DEFAULT_DEPS: DriveSaveRouteDeps = {
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps = DEFAULT_DEPS, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): void {
-  const reply = (name: string, companyId: string, payload: Record<string, unknown>) => ctx.events.emit(name, companyId, payload);
-
-  const handle = async (event: PluginEvent) => {
-    const producer = knownProducerOf(event, DRIVE_EVENTS.saveRequested, producers);
-    if (!producer) return;
-    const { companyId } = event;
-    if (!companyId) return;
-    const payload = (event.payload as Record<string, unknown> | undefined) || {};
-    const { requestId, kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
-    if (typeof requestId !== "string" || !requestId) return;
+  // Producer allowlist, host-set company and bare reply names all live in registerProducerRoute.
+  const handle = async ({ producer, companyId, requestId, payload, reply: send }: ProducerRequest) => {
+    const reply = (name: string, _companyId: string, body: Record<string, unknown>) => {
+      const { requestId: _ignored, ...rest } = body;
+      return send(name, rest);
+    };
+    const { kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
 
     try {
       const projectId = await deps.resolveProject(ctx, companyId, { kind: str(kind), clientKind: str(clientKind), clientRef: str(clientRef) });
@@ -73,5 +71,5 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
     }
   };
 
-  for (const producer of producers) ctx.events.on(producerEventName(producer, DRIVE_EVENTS.saveRequested), handle);
+  registerProducerRoute(ctx, DRIVE_EVENTS.saveRequested, handle, producers);
 }

@@ -4,8 +4,9 @@
  * file id from another client's folder, or from anywhere else on the Drive, is refused with `not_in_client_folder`.
  * The company comes from the event, never from the payload.
  */
-import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { DRIVE_READ_EVENTS } from "@partnersinbiz/pib-plugin-kit";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { DRIVE_PRODUCER_PLUGINS, DRIVE_READ_EVENTS } from "@partnersinbiz/pib-plugin-kit";
+import { registerProducerRoute } from "./producer-route.js";
 import { DriveNotBoundError, type Broker, type DriveFileInfo } from "./broker.js";
 import { createBrokerForCompany, driveFolderEnsure, resolveProducerSaveProject } from "./tools.js";
 
@@ -103,39 +104,46 @@ function errorReason(e: unknown): { reason: string; hint: string } {
   return { reason: code === "too_large" ? "too_large" : "broker_error", hint: e instanceof Error ? e.message : String(e) };
 }
 
-/** The two event routes. Replies go out as `plugin.partnersinbiz.crm.<event>`, like the save route's. */
-export function registerDriveReadRoutes(ctx: PluginContext, brokerFor: BrokerFor = createBrokerForCompany): void {
-  const reply = (event: string, companyId: string, payload: Record<string, unknown>) => ctx.events.emit(`plugin.partnersinbiz.crm.${event}` as never, companyId, payload);
+/**
+ * The two event routes, through `registerProducerRoute` like the save route (PAR-8114): only known producers are
+ * heard, the company is the host-set one from the event, and replies use bare names. The client comes from the
+ * payload but is resolved inside that company only, and a read is limited to that client's assets folders.
+ */
+export function registerDriveReadRoutes(ctx: PluginContext, brokerFor: BrokerFor = createBrokerForCompany, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): void {
   const clientOf = (p: Record<string, unknown>): Client => ({
     clientKind: typeof p.clientKind === "string" ? p.clientKind : undefined,
     clientRef: typeof p.clientRef === "string" ? p.clientRef : undefined,
   });
 
-  ctx.events.on(DRIVE_READ_EVENTS.listRequested as never, async (event: PluginEvent) => {
-    const p = (event.payload as Record<string, unknown> | undefined) ?? {};
-    const requestId = p.requestId;
-    if (typeof requestId !== "string" || !requestId) return;
-    try {
-      const res = await listAssetFiles(ctx, event.companyId, clientOf(p), brokerFor);
-      if (res.status === "ok" && "files" in res) await reply(DRIVE_READ_EVENTS.listed, event.companyId, { requestId, files: res.files });
-      else await reply(DRIVE_READ_EVENTS.listFailed, event.companyId, { requestId, reason: res.status, hint: (res as { hint?: string }).hint });
-    } catch (e) {
-      ctx.logger.info("Drive list event handler failed", { requestId, error: e instanceof Error ? e.message : String(e) });
-      await reply(DRIVE_READ_EVENTS.listFailed, event.companyId, { requestId, ...errorReason(e) }).catch(() => undefined);
-    }
-  });
+  registerProducerRoute(
+    ctx,
+    DRIVE_READ_EVENTS.listRequested,
+    async ({ producer, companyId, requestId, payload, reply }) => {
+      try {
+        const res = await listAssetFiles(ctx, companyId, clientOf(payload), brokerFor);
+        if (res.status === "ok" && "files" in res) await reply(DRIVE_READ_EVENTS.listed, { files: res.files });
+        else await reply(DRIVE_READ_EVENTS.listFailed, { reason: res.status, hint: (res as { hint?: string }).hint });
+      } catch (e) {
+        ctx.logger.info("Drive list event handler failed", { requestId, producer, error: e instanceof Error ? e.message : String(e) });
+        await reply(DRIVE_READ_EVENTS.listFailed, errorReason(e)).catch(() => undefined);
+      }
+    },
+    producers,
+  );
 
-  ctx.events.on(DRIVE_READ_EVENTS.readRequested as never, async (event: PluginEvent) => {
-    const p = (event.payload as Record<string, unknown> | undefined) ?? {};
-    const requestId = p.requestId;
-    if (typeof requestId !== "string" || !requestId) return;
-    try {
-      const res = await readAssetFile(ctx, event.companyId, clientOf(p), String(p.fileId ?? ""), brokerFor);
-      if (res.status === "ok" && "file" in res) await reply(DRIVE_READ_EVENTS.read, event.companyId, { requestId, file: res.file, contentBase64: res.contentBase64 });
-      else await reply(DRIVE_READ_EVENTS.readFailed, event.companyId, { requestId, reason: res.status, hint: (res as { hint?: string }).hint });
-    } catch (e) {
-      ctx.logger.info("Drive read event handler failed", { requestId, error: e instanceof Error ? e.message : String(e) });
-      await reply(DRIVE_READ_EVENTS.readFailed, event.companyId, { requestId, ...errorReason(e) }).catch(() => undefined);
-    }
-  });
+  registerProducerRoute(
+    ctx,
+    DRIVE_READ_EVENTS.readRequested,
+    async ({ producer, companyId, requestId, payload, reply }) => {
+      try {
+        const res = await readAssetFile(ctx, companyId, clientOf(payload), String(payload.fileId ?? ""), brokerFor);
+        if (res.status === "ok" && "file" in res) await reply(DRIVE_READ_EVENTS.read, { file: res.file, contentBase64: res.contentBase64 });
+        else await reply(DRIVE_READ_EVENTS.readFailed, { reason: res.status, hint: (res as { hint?: string }).hint });
+      } catch (e) {
+        ctx.logger.info("Drive read event handler failed", { requestId, producer, error: e instanceof Error ? e.message : String(e) });
+        await reply(DRIVE_READ_EVENTS.readFailed, errorReason(e)).catch(() => undefined);
+      }
+    },
+    producers,
+  );
 }

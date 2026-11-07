@@ -69,14 +69,18 @@ describe("Drive read routes", () => {
     expect(downloads).toEqual([]);
   });
 
-  it("answers the events on the CRM reply names, for the event's company", async () => {
+  // PAR-8114: subscribed per known producer on plugin.<producer>.<name>, replies with bare names (the host adds
+  // plugin.partnersinbiz.crm.). End to end on the host's real bus: drive-read-route.bus.spec.ts.
+  it("answers producers' events with bare reply names, for the event's company", async () => {
     const handlers = new Map<string, (e: unknown) => Promise<void>>();
     const emit = vi.fn(async (..._args: unknown[]) => undefined);
     const evCtx = { logger: { info: vi.fn() }, events: { on: (n: string, h: (e: unknown) => Promise<void>) => handlers.set(n, h), emit } } as never;
     registerDriveReadRoutes(evCtx, brokerFor);
-    await handlers.get("drive.read-requested")!({ companyId: "co-1", payload: { requestId: "r1", fileId: "betaImage000001", ...ACME } });
-    await handlers.get("drive.list-requested")!({ companyId: "co-1", payload: { requestId: "r2", ...ACME } });
-    expect(emit.mock.calls[0]).toEqual(["plugin.partnersinbiz.crm.drive.read.failed", "co-1", { requestId: "r1", reason: "not_in_client_folder", hint: expect.any(String) }]);
-    expect(emit.mock.calls[1]![0]).toBe("plugin.partnersinbiz.crm.drive.files.listed");
+    expect(handlers.has("drive.read-requested")).toBe(false);
+    const ev = (name: string, payload: Record<string, unknown>) => ({ eventType: `plugin.partnersinbiz.studio.${name}`, sourcePluginId: "partnersinbiz.studio", companyId: "co-1", payload });
+    await handlers.get("plugin.partnersinbiz.studio.drive.read-requested")!(ev("drive.read-requested", { requestId: "r1", fileId: "betaImage000001", ...ACME }));
+    await handlers.get("plugin.partnersinbiz.studio.drive.list-requested")!(ev("drive.list-requested", { requestId: "r2", ...ACME }));
+    expect(emit.mock.calls[0]).toEqual(["drive.read.failed", "co-1", { requestId: "r1", reason: "not_in_client_folder", hint: expect.any(String) }]);
+    expect(emit.mock.calls[1]![0]).toBe("drive.files.listed");
   });
 });

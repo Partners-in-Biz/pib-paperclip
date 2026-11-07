@@ -14,7 +14,8 @@ import { StudioError } from "./errors.js";
 import { MAX_ASSET_BYTES, sniffMime } from "./storage.js";
 import { resolveScope, scopeInput } from "./scope.js";
 
-const TIMEOUT_MS = 30_000;
+/** Under the host's 30 s action limit, so a silent CRM gives the plain message below rather than a bare 502 (PAR-8114). */
+export const TIMEOUT_MS = 20_000;
 const STUDIO_TYPES = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|quicktime))$/;
 
 export interface DriveReaders {
@@ -29,7 +30,7 @@ function mb(bytes: number): string {
 
 /** Plain words for a refusal from the kit, the CRM or Google. */
 export function readRefusal(result: DriveFailure): string {
-  if (result.status === "no_ack") return "CRM didn't answer within 30 seconds. Check that the CRM plugin is running, then try again.";
+  if (result.status === "no_ack") return `CRM didn't answer within ${TIMEOUT_MS / 1000} seconds. Check that the CRM plugin is running, then try again.`;
   switch (result.reason) {
     case "not_in_client_folder":
       return "That file isn't in this client's Drive assets folders, so Studio can't take it.";
