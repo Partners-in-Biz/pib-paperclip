@@ -743,9 +743,12 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
           {canGenerate === true ? (
             <FromDrive
               small
+              variant="panel"
               companyId={companyId}
               client={client}
-              onImported={(a) => {
+              onImported={(added) => {
+                // The card takes the first file; the rest go to the library for other cards.
+                const a = added[0]!;
                 beforeEdit();
                 set({ assetId: a.id, label: data.label || a.name });
                 refreshLibrary();
