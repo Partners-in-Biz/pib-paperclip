@@ -784,6 +784,18 @@ async function storePdf(ctx: PluginContext, companyId: string, kind: DocKind, do
   return { url: presignGet(r2, key, MAIL_LINK_SECONDS, filename), filename, bytes: bytes.byteLength, data: bytes };
 }
 
+/**
+ * Every path that marks a document sent stores its PDF first (pdf_key is the record of what the client got).
+ * Throws when the PDF cannot be rendered or stored, including when private R2 is not set up (PAR-8201).
+ */
+async function requirePdf(ctx: PluginContext, companyId: string, kind: DocKind, docId: string, view: DocView, settings: BillingSettings, resolver: Awaited<ReturnType<typeof loadBilling>>["resolver"]) {
+  const pdf = await storePdf(ctx, companyId, kind, docId, view, settings, resolver).catch((e: unknown) => {
+    throw new InvoiceSendError(`PDF not rendered or stored: ${errorMessage(e)}`);
+  });
+  if (!pdf) throw new InvoiceSendError("PDF not rendered or stored: private document storage (R2) is not set up in Billing settings");
+  return pdf;
+}
+
 /** The invoice is out: status sent, journal posted, open item shared. Safe to call twice. */
 export async function markInvoiceSent(ctx: PluginContext, invoiceId: string, sentAt: string | null, delivery: "sent" | "manual", settings: BillingSettings): Promise<InvoiceRow | null> {
   const invoice = await getInvoice(ctx, invoiceId);
@@ -842,8 +854,8 @@ export async function reopenSendApproval(ctx: PluginContext, companyId: string, 
 
 /**
  * The send approval is done: freeze the invoice, attach the PDF (private R2)
- * and queue the email; without email (turned off, or no address) it is
- * marked sent as before. With `approvalIssueId`, a failure before the mail is
+ * and queue the email; without email (turned off, or no address) the PDF is
+ * still stored and the invoice is marked sent. No stored PDF, no send. With `approvalIssueId`, a failure before the mail is
  * queued leaves the invoice unsent (number kept), puts `pending_action = 'send'`
  * back and reopens the ticket with the error; the error is thrown either way.
  * A delivery row for the next key means the mail is already in flight: the
@@ -875,17 +887,17 @@ export async function startInvoiceSend(ctx: PluginContext, invoiceId: string, cr
     const frozenTo = parseAddresses(asArray(invoice.approval_recipients));
     to = emailEnabled(settings) ? (frozenTo.length ? frozenTo : await recipientsFor(ctx, invoice.company_id, invoice)) : [];
     if (!emailEnabled(settings) || to.length === 0) {
-      await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
+      // Marked sent without email still keeps the PDF as the record of what was issued.
+      const sentAt = new Date().toISOString();
+      await requirePdf(ctx, invoice.company_id, "invoice", invoice.id, await invoiceView(ctx, { ...invoice, status: "sent", sent_at: sentAt }, settings), settings, resolver);
+      await markInvoiceSent(ctx, invoice.id, sentAt, "manual", settings);
       return { mode: "manual", attached: false, note: emailEnabled(settings) ? "No email address for this customer; marked sent without email." : "Email is off in Billing settings; marked sent." };
     }
     // Online payment: a link per enabled provider for what the invoice will owe (none while every provider is off, and EFT stays the default).
     await ensurePaymentLinks(ctx, invoice, settings, { createdBy, resolver });
     const view = await invoiceView(ctx, { ...invoice, status: "sent", sent_at: new Date().toISOString() }, settings);
     // No email goes out without its PDF.
-    const pdf = await storePdf(ctx, invoice.company_id, "invoice", invoice.id, view, settings, resolver).catch((e: unknown) => {
-      throw new InvoiceSendError(`PDF not rendered or stored: ${errorMessage(e)}`);
-    });
-    if (!pdf) throw new InvoiceSendError("PDF not rendered or stored");
+    const pdf = await requirePdf(ctx, invoice.company_id, "invoice", invoice.id, view, settings, resolver);
     const content = invoiceEmail(view, { hasAttachment: true, signature: settings.email?.signature });
     const key = await queueDoc(ctx, invoice.company_id, "invoice", invoice.id, seq, to, content, pdf, settings, invoice, createdBy);
     await markQueued(key);
@@ -963,22 +975,25 @@ export async function startQuoteSend(ctx: PluginContext, quoteId: string, create
   }
   const to = emailEnabled(settings) ? await recipientsFor(ctx, quote.company_id, quote) : [];
   if (!emailEnabled(settings) || to.length === 0) {
+    const sentAt = quote.sent_at ?? new Date().toISOString();
+    await requirePdf(ctx, quote.company_id, "quote", quote.id, await quoteView(ctx, { ...quote, status: "sent", sent_at: sentAt }, settings), settings, resolver);
     quote.status = quote.status === "draft" ? "sent" : quote.status;
-    quote.sent_at = quote.sent_at ?? new Date().toISOString();
+    quote.sent_at = sentAt;
     quote.pending_action = null;
     await saveQuoteStatus(ctx, quote);
     return { mode: "manual", attached: false, note: "Marked sent without email." };
   }
   const view = await quoteView(ctx, { ...quote, status: "sent" }, settings);
-  const pdf = await storePdf(ctx, quote.company_id, "quote", quote.id, view, settings, resolver);
+  // No email goes out without its PDF.
+  const pdf = await requirePdf(ctx, quote.company_id, "quote", quote.id, view, settings, resolver);
   const seq = Number(quote.mail_seq ?? 0) + 1;
-  const key = await queueDoc(ctx, quote.company_id, "quote", quote.id, seq, to, quoteEmail(view, { hasAttachment: Boolean(pdf), signature: settings.email?.signature }), pdf, settings, quote, createdBy);
+  const key = await queueDoc(ctx, quote.company_id, "quote", quote.id, seq, to, quoteEmail(view, { hasAttachment: true, signature: settings.email?.signature }), pdf, settings, quote, createdBy);
   await ctx.db.execute(
     `UPDATE ${table(ctx, "quotes")} SET delivery_key = $2, delivery_status = 'queued', delivery_error = NULL, mail_seq = $3, pending_action = NULL, updated_at = now() WHERE id = $1`,
     [quote.id, key, seq],
   );
   // Fire-and-forget: save to Drive after the send is queued, never fail the send on Drive errors
-  if (pdf?.data) {
+  if (pdf.data) {
     void saveSentCopy(ctx, {
       companyId: quote.company_id,
       kind: "quote",
@@ -989,7 +1004,7 @@ export async function startQuoteSend(ctx: PluginContext, quoteId: string, create
       customerRef: quote.customer_ref,
     });
   }
-  return { mode: "queued", key, to, attached: Boolean(pdf) };
+  return { mode: "queued", key, to, attached: true };
 }
 
 /** A person marks a draft invoice sent without email (sent by hand or on WhatsApp). */
@@ -998,11 +1013,16 @@ export async function markSentAction(ctx: PluginContext, context: PluginPerformA
   const companyId = requiredCompany(context);
   const invoice = await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
   if (invoice.status !== "draft") throw new BillingError("Only a draft invoice can be marked sent");
-  const { settings } = await loadBilling(ctx, companyId);
+  const { settings, resolver } = await loadBilling(ctx, companyId);
   await ensureInvoiceNumber(ctx, invoice, settings);
   const frozen = await freeze(ctx, invoice, settings);
   await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET sender_snapshot = $2::jsonb, customer_snapshot = $3::jsonb WHERE id = $1`, [invoice.id, JSON.stringify(frozen.sender), JSON.stringify(frozen.customer)]);
-  const fresh = await markInvoiceSent(ctx, invoice.id, null, "manual", settings);
+  invoice.sender_snapshot = frozen.sender;
+  invoice.customer_snapshot = frozen.customer;
+  // The PDF is stored before the invoice is marked sent; no stored PDF, no mark (it stays a draft with its number).
+  const sentAt = new Date().toISOString();
+  await requirePdf(ctx, companyId, "invoice", invoice.id, await invoiceView(ctx, { ...invoice, status: "sent", sent_at: sentAt }, settings), settings, resolver);
+  const fresh = await markInvoiceSent(ctx, invoice.id, sentAt, "manual", settings);
   return publicInvoice(fresh!);
 }
 
@@ -1021,12 +1041,13 @@ export async function retrySend(ctx: PluginContext, context: PluginPerformAction
     if (to.length === 0) throw new BillingError("Add an email address for this customer first");
     await ensurePaymentLinks(ctx, invoice, settings, { createdBy, resolver });
     const view = await invoiceView(ctx, invoice, settings);
-    const pdf = await storePdf(ctx, companyId, "invoice", invoice.id, view, settings, resolver);
+    // No email goes out without its PDF.
+    const pdf = await requirePdf(ctx, companyId, "invoice", invoice.id, view, settings, resolver);
     const seq = Number(invoice.mail_seq ?? 0) + 1;
-    const key = await queueDoc(ctx, companyId, "invoice", invoice.id, seq, to, invoiceEmail(view, { hasAttachment: Boolean(pdf), signature: settings.email?.signature }), pdf, settings, invoice, createdBy);
+    const key = await queueDoc(ctx, companyId, "invoice", invoice.id, seq, to, invoiceEmail(view, { hasAttachment: true, signature: settings.email?.signature }), pdf, settings, invoice, createdBy);
     await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET delivery_key = $2, delivery_status = 'queued', delivery_error = NULL, mail_seq = $3 WHERE id = $1`, [invoice.id, key, seq]);
     // Fire-and-forget: save to Drive after the send is queued, never fail the send on Drive errors
-    if (pdf?.data) {
+    if (pdf.data) {
       void saveSentCopy(ctx, {
         companyId: invoice.company_id,
         kind: "invoice",
@@ -1037,7 +1058,7 @@ export async function retrySend(ctx: PluginContext, context: PluginPerformAction
         customerRef: invoice.customer_ref,
       });
     }
-    return { mode: "queued", key, to, attached: Boolean(pdf) };
+    return { mode: "queued", key, to, attached: true };
   }
   if (kind === "quote") {
     const quote = await requireQuote(ctx, companyId, requiredString(params, "id"));
