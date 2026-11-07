@@ -34,6 +34,7 @@ import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js"
 import { pickerCss } from "./ModelPicker.js";
 import { ShareMenu } from "./ShareMenu.js";
 import { SidePanel } from "./SidePanel.js";
+import { SaveToDrive } from "./SaveToDrive.js";
 import { VersionsMenu } from "./Versions.js";
 import { useNarrow } from "./narrow.js";
 import { PhoneReview } from "./PhoneReview.js";
@@ -728,6 +729,7 @@ function ResultBar({ id, assetId }: { id: string; assetId: string }) {
         <a {...nav.linkProps(`/studio?asset=${encodeURIComponent(assetId)}`)} style={{ fontSize: 12 }}>Open in library</a>
         <Button variant="secondary" onClick={() => buildOn(id)}>Use as input</Button>
         <Button variant="secondary" onClick={download}>Download</Button>
+        <SaveToDrive companyId={companyId} assetId={assetId} small />
       </div>
       {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
     </div>

@@ -99,7 +99,7 @@ export async function storeAsset(ctx: PluginContext, config: StudioConfig, input
   return id;
 }
 
-async function addLink(ctx: PluginContext, companyId: string, assetId: string, type: string, targetId: string): Promise<void> {
+export async function addLink(ctx: PluginContext, companyId: string, assetId: string, type: string, targetId: string): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "asset_links")} (company_id, asset_id, target_type, target_id) VALUES ($1, $2, $3, $4) ON CONFLICT (asset_id, target_type, target_id) DO NOTHING`,
     [companyId, assetId, type, targetId],

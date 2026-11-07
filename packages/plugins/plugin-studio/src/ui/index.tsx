@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
+import { SaveToDrive } from "./SaveToDrive.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
@@ -457,6 +458,9 @@ function AssetDetail({
               </Button>
             ) : null}
             <Button onClick={() => void download()}>Download</Button>
+            {canReview && d ? (
+              <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
+            ) : null}
             <Button variant="secondary" onClick={close}>
               Close
             </Button>

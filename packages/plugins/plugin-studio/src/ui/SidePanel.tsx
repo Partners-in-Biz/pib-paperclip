@@ -10,6 +10,7 @@ import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { MAX_TEXT } from "../canvas-rules.js";
 import { modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { CommentsThread } from "./Versions.js";
+import { SaveToDrive } from "./SaveToDrive.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
@@ -287,6 +288,7 @@ function Export({ card, companyId, onBuildOn }: PanelProps) {
       <div style={wrap}>
         <Button onClick={download}>Download</Button>
         <Button variant="secondary" onClick={onBuildOn}>Use as input</Button>
+        <SaveToDrive companyId={companyId} assetId={assetId} />
       </div>
       <a {...nav.linkProps(`/studio?asset=${encodeURIComponent(assetId)}`)} style={{ fontSize: 13 }}>Open in library</a>
       {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}

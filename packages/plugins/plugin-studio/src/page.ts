@@ -7,6 +7,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
+import { DRIVE_LINK_TYPE, driveCopies } from "./drive.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
 import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
@@ -131,7 +132,9 @@ export async function assetDetail(ctx: PluginContext, companyId: string, assetId
         }
       : null,
     issue: issue ? { id: String(issue.id), identifier: (issue as { identifier?: string | null }).identifier ?? null, title: (issue as { title?: string | null }).title ?? null } : null,
-    links: links.map((l) => ({ targetType: l.target_type, targetId: l.target_id })),
+    links: links.filter((l) => l.target_type !== DRIVE_LINK_TYPE).map((l) => ({ targetType: l.target_type, targetId: l.target_id })),
+    // People's page only; agents never see Drive links.
+    drive: await driveCopies(ctx, companyId, assetId),
   };
 }
 
