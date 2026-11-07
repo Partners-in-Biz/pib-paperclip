@@ -15,6 +15,8 @@ export interface CreativeDriveCopy {
   platform: string;
   fields: Record<string, unknown>;
   savedAt?: Date;
+  /** The scope's client: the copy goes to that client's folder. Omit for the company's own scope. */
+  client?: { kind: string; ref: string } | null;
   driveSave?: DriveSaveFn;
 }
 
@@ -39,6 +41,7 @@ export async function saveCreativeToDrive(ctx: PluginContext, c: CreativeDriveCo
       bytes: Buffer.from(JSON.stringify({ name: c.name, platform: c.platform, ...c.fields }, null, 2), "utf-8"),
       subfolder: "02 Assets",
       timeoutMs: 10_000,
+      ...(c.client?.kind && c.client.ref ? { client: { kind: c.client.kind, ref: c.client.ref } } : {}),
     });
     if (result.status !== "saved") {
       ctx.logger.warn("Could not copy the ad creative to Drive", { status: result.status, reason: "reason" in result ? result.reason : undefined });
