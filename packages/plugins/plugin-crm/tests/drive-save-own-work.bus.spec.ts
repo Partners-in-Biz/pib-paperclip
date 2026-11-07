@@ -57,6 +57,7 @@ describe("own Drive folder only on request (PAR-8128), host event bus", () => {
     ["partnersinbiz.ads"],
     ["partnersinbiz.seo"],
     ["partnersinbiz.cockpit"],
+    ["partnersinbiz.campaigns"],
   ])("%s: no client and no ownWork is refused and never resolved", async (producer) => {
     const bus = await hostBus();
     const deps = crmDeps();
@@ -67,7 +68,7 @@ describe("own Drive folder only on request (PAR-8128), host event bus", () => {
     expect(deps.save).not.toHaveBeenCalled();
   });
 
-  it.each([["partnersinbiz.studio"], ["partnersinbiz.social"], ["partnersinbiz.ads"], ["partnersinbiz.seo"]])("%s: ownWork reaches the resolver as own work", async (producer) => {
+  it.each([["partnersinbiz.studio"], ["partnersinbiz.social"], ["partnersinbiz.ads"], ["partnersinbiz.seo"], ["partnersinbiz.campaigns"]])("%s: ownWork reaches the resolver as own work", async (producer) => {
     const bus = await hostBus();
     const deps = crmDeps();
     registerDriveSaveRoute(pluginCtx(bus, "partnersinbiz.crm"), deps);
