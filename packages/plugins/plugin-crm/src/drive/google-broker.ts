@@ -22,7 +22,9 @@ import {
   type IdentityResult,
   type RegistryFolder,
   type UploadResult,
+  type UploadStreamInput,
 } from "./broker.js";
+import { DRIVE_TRANSFER_MAX_BYTES } from "@partnersinbiz/pib-plugin-kit";
 import { GoogleAuthError, serviceAccountToken, type GoogleFetch, type ServiceAccountKey } from "./google-sa.js";
 import type { DriveFileInfo, DriveThumbnail } from "./broker.js";
 
@@ -30,6 +32,8 @@ const DRIVE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+/** Streamed uploads (PAR-8125): kit DRIVE_TRANSFER_MAX_BYTES, Studio's largest file. */
+const MAX_STREAM_UPLOAD_BYTES = DRIVE_TRANSFER_MAX_BYTES;
 const FOLDER_FIELDS = "id,name,description,webViewLink,parents,appProperties";
 
 /**
@@ -444,5 +448,107 @@ export function createGoogleDriveBroker(
     return bytes;
   }
 
-  return { resolve, ensure, identity, uploadFile, listFiles, fileMeta, downloadFile, thumbnail };
+  /**
+   * A large file through a Google resumable upload (PAR-8125): one session, then one PUT per chunk, so the worker holds
+   * one chunk at a time. The bytes are hashed on the way; when they don't match the producer's sha256 the session is
+   * cancelled before the last chunk, so no file is made. Errors never carry the session link.
+   */
+  async function uploadFileStream(input: UploadStreamInput): Promise<UploadResult> {
+    const { size } = input;
+    if (!Number.isInteger(size) || size <= 0 || size > MAX_STREAM_UPLOAD_BYTES) {
+      throw new BrokerError(`File too large (${size} bytes; Drive transfers take up to ${MAX_STREAM_UPLOAD_BYTES} bytes)`, 413, false, undefined, undefined, "too_large");
+    }
+    const parentId = input.parentFolderId || sharedDriveId;
+    const sha256 = input.sha256.toLowerCase();
+    const result = (file: DriveFile, deduplicated: boolean): UploadResult => ({
+      fileId: file.id,
+      name: file.name,
+      mimeType: file.mimeType ?? input.mimeType,
+      size: Number(file.size ?? size),
+      sha256,
+      webViewLink: file.webViewLink ?? `https://drive.google.com/file/d/${file.id}/view`,
+      parentFolderId: parentId,
+      deduplicated,
+    });
+
+    const same = await list(`${q(parentId)} in parents and name = ${q(input.name)} and trashed = false`, "id,name,mimeType,size,webViewLink,parents,appProperties");
+    const dup = same.find((f) => f.appProperties?.pibSha256 === sha256);
+    if (dup) return result(dup, true);
+
+    const metadata = JSON.stringify({ name: input.name, parents: [parentId], appProperties: { pibSha256: sha256 } });
+    let start: Response;
+    try {
+      start = await fetchFn(`${DRIVE_UPLOAD}/files?uploadType=resumable&${shared}&fields=${encodeURIComponent("id,name,mimeType,size,webViewLink,parents")}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + (await bearer()),
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": input.mimeType,
+          "X-Upload-Content-Length": String(size),
+        },
+        body: metadata,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      if (err instanceof BrokerError) throw err;
+      throw new BrokerError("Network error starting the Drive upload", 500, true);
+    }
+    if (start.status < 200 || start.status >= 300) throw toBrokerError(start.status, await start.text().catch(() => ""));
+    const session = start.headers?.get?.("location") ?? "";
+    // The session link carries the token's upload id: only ever sent back to Google's upload host.
+    if (!session.startsWith(`${DRIVE_UPLOAD}/`)) throw new BrokerError("Google did not start the upload session", 502, true);
+
+    const cancel = async () => {
+      await fetchFn(session, { method: "DELETE", signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
+    };
+    const hash = createHash("sha256");
+    let offset = 0;
+    try {
+      for await (const chunk of input.chunks) {
+        if (chunk.byteLength === 0) continue;
+        const end = offset + chunk.byteLength;
+        if (end > size) throw new BrokerError(`The file is bigger than the ${size} bytes declared`, 422, false, undefined, undefined, "size_mismatch");
+        hash.update(chunk);
+        if (end === size) {
+          const got = hash.digest("hex");
+          if (got !== sha256) throw new BrokerError(`The file's sha256 is ${got}, not the ${sha256} declared`, 422, false, undefined, undefined, "sha_mismatch");
+        }
+        let res: Response;
+        try {
+          res = await fetchFn(session, {
+            method: "PUT",
+            headers: { "Content-Range": `bytes ${offset}-${end - 1}/${size}` },
+            body: chunk as unknown as BodyInit,
+            signal: AbortSignal.timeout(180_000),
+          });
+        } catch {
+          throw new BrokerError("Network error sending the file to Google Drive", 500, true);
+        }
+        if (end < size) {
+          await res.text().catch(() => "");
+          // 308: Google has the chunk and wants the next one. Its Range says how far it got.
+          const range = res.headers?.get?.("range") ?? "";
+          if (res.status !== 308 || (range && range !== `bytes=0-${end - 1}`)) {
+            throw new BrokerError(`Google Drive did not take part of the file (HTTP ${res.status})`, res.status === 308 ? 502 : res.status, true);
+          }
+        } else {
+          const text = await res.text().catch(() => "");
+          if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, text);
+          const file = JSON.parse(text) as DriveFile;
+          if (typeof file.id !== "string") throw new BrokerError("Unexpected upload response", 200, false);
+          offset = end;
+          await input.onProgress?.(offset);
+          return result(file, false);
+        }
+        offset = end;
+        await input.onProgress?.(offset);
+      }
+      throw new BrokerError(`The file ended at ${offset} of ${size} bytes`, 422, false, undefined, undefined, "size_mismatch");
+    } catch (err) {
+      await cancel();
+      throw err;
+    }
+  }
+
+  return { resolve, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, thumbnail };
 }

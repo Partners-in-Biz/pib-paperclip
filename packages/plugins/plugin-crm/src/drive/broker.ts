@@ -39,6 +39,16 @@ export interface UploadResult {
   deduplicated: boolean;
 }
 
+export interface UploadStreamInput {
+  name: string;
+  mimeType: string;
+  parentFolderId?: string;
+  size: number;
+  sha256: string;
+  chunks: AsyncIterable<Uint8Array>;
+  onProgress?: (bytesDone: number) => Promise<void> | void;
+}
+
 export class BrokerError extends Error {
   constructor(
     message: string,
@@ -72,6 +82,11 @@ export interface Broker {
   ensure(body: EnsureBody): Promise<EnsureResult>;
   identity(sharedDriveId?: string): Promise<IdentityResult>;
   uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
+  /**
+   * A large file (PAR-8125), streamed: a Google resumable upload fed one chunk at a time. `sha256` is the producer's;
+   * the bytes are hashed on the way and the upload is cancelled before its last chunk when they differ.
+   */
+  uploadFileStream?(input: UploadStreamInput): Promise<UploadResult>;
   /** Reads for producer plugins (PAR-8107). Optional: brokers without them refuse the read routes. */
   listFiles?(parentFolderId: string): Promise<DriveFileInfo[]>;
   /** null when the file is missing, trashed, or not on this company's Shared Drive. */
