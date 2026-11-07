@@ -6,6 +6,7 @@ import { addComment, listComments, listVersions, restoreVersion, saveVersion } f
 import { briefDoc } from "./canvas-brief.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { reviewAsset } from "./review.js";
+import { saveAssetToDrive } from "./drive.js";
 import { errorText, StudioError } from "./errors.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
@@ -196,6 +197,13 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't approve or reject.", "forbidden");
       return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+
+    // Save to Drive (PAR-8106): into the asset's own client folder, `02 Assets`. Viewers can't.
+    ctx.actions.register("drive-save", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save to Drive.", "forbidden");
+      return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
