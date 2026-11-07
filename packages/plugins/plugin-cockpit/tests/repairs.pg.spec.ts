@@ -366,12 +366,9 @@ d("repairs (Postgres)", () => {
 
       // Read the migration file
       const fs = await import("node:fs");
-      const path = await import("node:path");
-      const migrationPath = path.join(
-        import.meta.url.replace(/^file:\/\//, ""),
-        "../..",
-        "migrations/008_cockpit.sql",
-      );
+      const { fileURLToPath } = await import("node:url");
+      // A URL, not a string strip: a checkout path with a space ("PiB Paperclip") is %20 in import.meta.url.
+      const migrationPath = fileURLToPath(new URL("../migrations/008_cockpit.sql", import.meta.url));
       const migrationContent = fs.readFileSync(migrationPath, "utf-8");
 
       // Apply the migration again (simulating a second run)
