@@ -22,7 +22,7 @@ import { seniorTried, startPreviewFix } from "./build.js";
 import { addNeedsYou, closeNeedsYouItems, closeSignoffItems } from "./needs-you.js";
 import { afterPreviewPassed, handleClientAnswer, isAutoSignoff } from "./client-signoff.js";
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
-import { exportToDrive } from "./drive-export.js";
+import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
@@ -130,7 +130,10 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   const today = env.now().toISOString().split("T")[0]!;
   const previewLabel = str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? "preview";
   const driveName = `${today} SEO preview ${previewLabel.slice(0, 80).replace(/[/\\:*?"<>|]/g, "")} v01.html`;
-  void exportToDrive(env.ctx, {
+  // The sprint's own client wins over the caller's; an own sprint asks for the own folder (PAR-8128). null = no copy.
+  const driveTarget = sprintDriveTarget(sprint, client);
+  if (!driveTarget) env.ctx.logger.warn("SEO preview not copied to Drive: the sprint names a client that is not linked in the CRM", { sprintId });
+  if (driveTarget) void exportToDrive(env.ctx, {
     companyId,
     kind: "seo",
     name: driveName,
@@ -138,7 +141,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
     timeoutMs: 5000,
-    ...(client ? { client } : {}),
+    ...driveTarget,
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });

@@ -41,7 +41,8 @@ export async function saveCreativeToDrive(ctx: PluginContext, c: CreativeDriveCo
       bytes: Buffer.from(JSON.stringify({ name: c.name, platform: c.platform, ...c.fields }, null, 2), "utf-8"),
       subfolder: "02 Assets",
       timeoutMs: 10_000,
-      ...(c.client?.kind && c.client.ref ? { client: { kind: c.client.kind, ref: c.client.ref } } : {}),
+      // The company's own scope (no client) asks for the own folder explicitly (PAR-8128).
+      ...(c.client?.kind && c.client.ref ? { client: { kind: c.client.kind, ref: c.client.ref } } : { ownWork: true as const }),
     });
     if (result.status !== "saved") {
       ctx.logger.warn("Could not copy the ad creative to Drive", { status: result.status, reason: "reason" in result ? result.reason : undefined });

@@ -102,7 +102,8 @@ export async function saveAssetToDrive(ctx: PluginContext, companyId: string, as
     bytes,
     subfolder: "02 Assets",
     timeoutMs: DRIVE_TIMEOUT_MS,
-    ...(scope ? { client: { kind: scope.kind, ref: scope.id } } : {}),
+    // An asset with no client is the company's own; the CRM files it in the own folder only when told so (PAR-8128).
+    ...(scope ? { client: { kind: scope.kind, ref: scope.id } } : { ownWork: true as const }),
   });
   if (result.status !== "saved") throw new StudioError(refusalText(result), "drive_refused");
   const url = driveFileUrl(result.driveFileId);

@@ -182,13 +182,29 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
 /**
  * The project whose Drive folder a producer plugin's save lands in. A client's save goes to the
  * project linked to that client (the one of the same kind when there is one, e.g. the SEO project
- * for an SEO file, else the oldest); the company's own work goes to `drive.ownProjectId`.
+ * for an SEO file, else the oldest); the company's own work goes to `drive.ownProjectId`, but only when the producer
+ * asked for it (`ownWork`), so a save that lost its client is refused, never filed as ours (PAR-8128). A save that names
+ * a Paperclip project (`projectId`, e.g. the issue's) lands there only when that project is linked to a client or is
+ * the own project; the link decides, not the producer.
  */
 export async function resolveProducerSaveProject(
   ctx: PluginContext,
   companyId: string,
-  input: { kind?: string; clientKind?: string; clientRef?: string },
+  input: { kind?: string; clientKind?: string; clientRef?: string; ownWork?: boolean; projectId?: string },
 ): Promise<string | null> {
+  const ownProject = async (): Promise<string | null> => {
+    const cfg = await readConfig(ctx, companyId);
+    const own = (cfg.drive as { ownProjectId?: unknown } | undefined)?.ownProjectId;
+    return typeof own === "string" && own.trim() ? own.trim() : null;
+  };
+  if (input.projectId) {
+    const linked = await ctx.db.query<{ project_id: string }>(
+      `SELECT project_id FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND project_id = $2 LIMIT 1`,
+      [companyId, input.projectId],
+    );
+    if (linked.length) return input.projectId;
+    return (await ownProject()) === input.projectId ? input.projectId : null;
+  }
   if (input.clientKind && input.clientRef) {
     if (input.clientKind !== "company" && input.clientKind !== "contact") return null;
     const rows = await ctx.db.query<{ project_id: string; kind: string | null }>(
@@ -198,9 +214,7 @@ export async function resolveProducerSaveProject(
     if (!rows.length) return null;
     return (rows.find((r) => r.kind && r.kind === input.kind) ?? rows[0]).project_id;
   }
-  const cfg = await readConfig(ctx, companyId);
-  const own = (cfg.drive as { ownProjectId?: unknown } | undefined)?.ownProjectId;
-  return typeof own === "string" && own.trim() ? own.trim() : null;
+  return input.ownWork === true ? ownProject() : null;
 }
 
 /** The registry key of the folder an entity saves into: for a client's project the company's, otherwise the entity itself (also when the project is unknown). */
