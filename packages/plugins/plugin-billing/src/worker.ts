@@ -984,9 +984,11 @@ async function updateRecurring(ctx: PluginContext, context: PluginPerformActionC
   if (!row || row.company_id !== companyId) throw new BillingError("Recurring schedule was not found");
   const autoSend = optionalBoolean(params, "autoSend");
   if (autoSend) requirePerson(context, "turning on automatic sending");
+  // A schedule can be moved to another of the company's invoices (say, when its template was cancelled as a duplicate).
+  const template = optionalString(params, "templateInvoiceId") ? await requireOwnInvoice(ctx, companyId, requiredString(params, "templateInvoiceId")) : null;
   await ctx.db.execute(
-    `UPDATE ${table(ctx, "recurring_invoices")} SET auto_send = $2, ends_at = $3, frequency = $4, updated_at = now() WHERE id = $1`,
-    [row.id, autoSend ?? Boolean(row.auto_send), "endsAt" in params ? optionalDate(params, "endsAt") ?? null : row.ends_at ?? null, params.frequency ? assertFrequency(String(params.frequency)) : row.frequency],
+    `UPDATE ${table(ctx, "recurring_invoices")} SET auto_send = $2, ends_at = $3, frequency = $4, template_invoice_id = $5, updated_at = now() WHERE id = $1`,
+    [row.id, autoSend ?? Boolean(row.auto_send), "endsAt" in params ? optionalDate(params, "endsAt") ?? null : row.ends_at ?? null, params.frequency ? assertFrequency(String(params.frequency)) : row.frequency, template?.id ?? row.template_invoice_id],
   );
   return publicRecurring((await getRecurring(ctx, row.id))!);
 }

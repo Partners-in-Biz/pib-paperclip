@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { billingActivity, invoiceAgeing, invoiceMonths, invoiceStatusCounts, isOverdue, lastMonths, monthLabel, percentDelta, statusTone } from "../src/ui/series.js";
+import { billingActivity, invoiceAgeing, invoiceMonths, invoiceStatusCounts, isOverdue, lastMonths, monthLabel, percentDelta, recurringSources, statusTone } from "../src/ui/series.js";
 import type { Invoice } from "../src/ui/types.js";
 import { openFormFor } from "../src/ui/views.js";
 
@@ -76,5 +76,16 @@ describe("billing deep links", () => {
     expect(openFormFor("invoices")).toBe("invoice");
     expect(openFormFor("overview")).toBeNull();
     expect(openFormFor(null)).toBeNull();
+  });
+});
+
+describe("recurringSources (Overview MRR subtitle)", () => {
+  it("names retainers and repeating invoices apart, each only when present", () => {
+    expect(recurringSources({ active: 3, retainers: 1, repeating: 2 })).toBe("1 retainer and 2 repeating invoices");
+    expect(recurringSources({ active: 2, retainers: 2, repeating: 0 })).toBe("2 retainers");
+    expect(recurringSources({ active: 1, retainers: 0, repeating: 1 })).toBe("1 repeating invoice");
+    expect(recurringSources({ active: 0, retainers: 0, repeating: 0 })).toBe("0 retainers");
+    // An older server without the split: everything counts as retainers, as before.
+    expect(recurringSources({ active: 3 })).toBe("3 retainers");
   });
 });

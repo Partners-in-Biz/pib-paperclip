@@ -174,14 +174,15 @@ describe("reports", () => {
     const mrr = mrrMetrics({
       items: [
         { status: "active", priceMinor: 300_000, currency: "ZAR", period: "monthly", startedAt: "2026-01-01T00:00:00Z", cancelledAt: null },
-        { status: "active", priceMinor: 1_200_000, currency: "ZAR", period: "yearly", startedAt: "2026-09-10T00:00:00Z", cancelledAt: null },
+        { kind: "repeating", status: "active", priceMinor: 1_200_000, currency: "ZAR", period: "yearly", startedAt: "2026-09-10T00:00:00Z", cancelledAt: null },
         { status: "cancelled", priceMinor: 90_000, currency: "ZAR", period: "quarterly", startedAt: "2026-02-01T00:00:00Z", cancelledAt: "2026-09-20T00:00:00Z" },
       ],
       now,
       book: "ZAR",
       convert,
     });
-    expect(mrr).toMatchObject({ mrrMinor: 400_000, arrMinor: 4_800_000, active: 2, newMrrMinor: 100_000, churnedMrrMinor: 30_000, churned: 1, churnRate: 0.5 });
+    // `active` is both kinds together; `retainers` and `repeating` tell them apart (the Overview says "1 retainer and 1 repeating invoice").
+    expect(mrr).toMatchObject({ mrrMinor: 400_000, arrMinor: 4_800_000, active: 2, retainers: 1, repeating: 1, newMrrMinor: 100_000, churnedMrrMinor: 30_000, churned: 1, churnRate: 0.5 });
   });
 });
 
