@@ -25,7 +25,7 @@ describe("what 0.14.0 declares", () => {
       "projects.read", "http.outbound", "issues.read", "issues.create", "issues.update", "issues.wakeup", "issue.comments.create", "issue.interactions.create", "issue.interactions.read", "issue.documents.write", "api.routes.register",
       "webhooks.receive", "ui.page.register", "ui.sidebar.register",
     ]);
-    expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs", "issues", "cost_events"]);
+    expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs", "issues", "cost_events", "companies"]);
   });
 
   it("declares three public endpoints, each its own key, and the same jobs as before (the new work rides in the care job)", () => {
