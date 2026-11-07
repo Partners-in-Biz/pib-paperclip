@@ -5,6 +5,7 @@ import { deleteCanvasTemplate, listCanvasTemplates, saveCanvasTemplate } from ".
 import { boardFieldLabel, boardFields, boardSummary, boardToTemplateDoc, CANVAS_TEMPLATE_CATEGORIES, CANVAS_TEMPLATES, fillBoard, filterCanvasTemplates } from "../src/canvas-templates.js";
 import { cardInputs } from "../src/canvas-inputs.js";
 import { normalizeDoc } from "../src/canvas.js";
+import { LAYOUT_SIZES, partText } from "../src/layout.js";
 
 function fakeCtx() {
   const data = new Map<string, unknown>();
@@ -45,12 +46,6 @@ describe("the starter boards", () => {
     for (const page of pages) expect(book.doc.edges.some((e) => e.source === "sheet" && e.target === page.id), page.id).toBe(true);
   });
 
-  it("notes that are not for the model stay unconnected", () => {
-    for (const t of CANVAS_TEMPLATES) for (const n of t.doc.nodes.filter((x) => (x.data.label ?? "").includes("not sent to the model"))) {
-      expect(t.doc.edges.some((e) => e.source === n.id), `${t.id}: ${n.id}`).toBe(false);
-    }
-  });
-
   it("pictures ask for no lettering, or inherit that from a prompt card", () => {
     for (const t of CANVAS_TEMPLATES) {
       for (const n of t.doc.nodes.filter((x) => x.type === "image")) expect(cardInputs(t.doc.nodes, t.doc.edges, n.id).prompt, `${t.id}: ${n.id}`).toMatch(/No text|same look|same style|Same look|same product|the same character/i);
@@ -75,6 +70,7 @@ describe("board helpers", () => {
     expect(boardFieldLabel("article1")).toBe("Article 1");
     expect(boardFieldLabel("brand_colour")).toBe("Brand colour");
     expect(boardSummary(CANVAS_TEMPLATES.find((x) => x.id === "product-launch")!.doc)).toBe("3 pictures, 1 video");
+    expect(boardSummary(CANVAS_TEMPLATES.find((x) => x.id === "ad-test")!.doc)).toBe("4 pictures, 4 finished pages");
   });
   it("filters by category and words", () => {
     expect(filterCanvasTemplates(CANVAS_TEMPLATES, { category: "books" }).map((x) => x.id)).toEqual(["picture-book", "ebook"]);
@@ -114,5 +110,39 @@ describe("saved canvas templates", () => {
     await expect(saveCanvasTemplate(ctx, "c", { title: "x", doc: { nodes: [], edges: [] } })).rejects.toThrow("no cards");
     for (let i = 0; i < 50; i++) await saveCanvasTemplate(ctx, "c", { title: `t${i}`, doc });
     await expect(saveCanvasTemplate(ctx, "c", { title: "more", doc })).rejects.toThrow("Delete one first");
+  });
+});
+
+describe("boards with finished pages", () => {
+  it("every Layout card gets a picture and has words for its part", () => {
+    const withPages = CANVAS_TEMPLATES.filter((t) => t.doc.nodes.some((n) => n.type === "layout"));
+    expect(withPages.map((t) => t.id)).toEqual(expect.arrayContaining(["app-store-set", "picture-book", "ebook", "carousel", "ad-test", "youtube-thumbnails"]));
+    for (const t of withPages) {
+      const filled = fillBoard(t.doc, t.examples);
+      for (const n of filled.nodes.filter((x) => x.type === "layout")) {
+        const froms = filled.edges.filter((e) => e.target === n.id).map((e) => filled.nodes.find((x) => x.id === e.source)!);
+        expect(froms.some((x) => x.type === "image" || x.type === "source"), `${t.id}: ${n.id} picture`).toBe(true);
+        const text = froms.find((x) => x.type === "text");
+        expect(text, `${t.id}: ${n.id} words`).toBeTruthy();
+        expect(partText(text!.data.text, n.data.part), `${t.id}: ${n.id} part ${n.data.part}`).not.toBe("");
+        expect(LAYOUT_SIZES.map((s) => s.id), `${t.id}: ${n.id} size`).toContain(n.data.size);
+      }
+    }
+  });
+  it("the app store set comes out at Apple's size, and the book at print size with serif words under the picture", () => {
+    const shots = CANVAS_TEMPLATES.find((t) => t.id === "app-store-set")!.doc.nodes.filter((n) => n.type === "layout");
+    expect(shots.length).toBe(5);
+    expect(shots.every((n) => n.data.size === "app-store-iphone")).toBe(true);
+    const book = CANVAS_TEMPLATES.find((t) => t.id === "picture-book")!.doc.nodes.filter((n) => n.type === "layout");
+    expect(book.map((n) => n.data.part)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(book.every((n) => n.data.position === "below" && n.data.font === "serif")).toBe(true);
+  });
+  it("words on a Text card never reach an image model", () => {
+    for (const t of CANVAS_TEMPLATES) {
+      for (const n of t.doc.nodes.filter((x) => x.type === "text")) {
+        const targets = t.doc.edges.filter((e) => e.source === n.id).map((e) => t.doc.nodes.find((x) => x.id === e.target)!.type);
+        expect(targets.every((type) => type === "layout"), `${t.id}: ${n.id}`).toBe(true);
+      }
+    }
   });
 });

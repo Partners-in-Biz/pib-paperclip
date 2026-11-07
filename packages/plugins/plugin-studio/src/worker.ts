@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
-import { assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
@@ -14,6 +14,7 @@ import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbi
 import { brandKitFor } from "./brand-kit.js";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "./prompt-template-store.js";
 import { deleteCanvasTemplate, listCanvasTemplates, saveCanvasTemplate } from "./canvas-template-store.js";
+import { saveLayoutPage, takeTextDraft, textDrafts, writeCardText } from "./canvas-layout.js";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
@@ -130,6 +131,10 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
     }
     case "canvas-create-from-brief":
       return createFromBrief(ctx, params, run);
+    case "canvas-write-text": {
+      const work = await workOf(ctx, run, {});
+      return writeCardText(ctx, companyId, params, { agentId: run.agentId, projectId: work.projectId });
+    }
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }
@@ -312,6 +317,28 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't delete templates. Ask a company owner for member access.", "forbidden");
       return deleteCanvasTemplate(ctx, me.companyId, String(objectParams(params).id ?? ""));
+    });
+
+    // The Layout card: the picture's bytes to draw on, and saving the finished page.
+    action("asset-data", async (params, context) => {
+      const me = await person(context);
+      return assetBytesForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""));
+    });
+    action("layout-save", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save pages. Ask a company owner for member access.", "forbidden");
+      return saveLayoutPage(ctx, me.companyId, objectParams(params), me.userId);
+    });
+    // What agents wrote for Text cards, waiting for the open board to take them in.
+    action("canvas-text-drafts", async (params, context) => {
+      const me = await person(context);
+      return { drafts: await textDrafts(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
+    });
+    action("canvas-text-draft-taken", async (params, context) => {
+      const me = await person(context);
+      const p = objectParams(params);
+      await takeTextDraft(ctx, me.companyId, String(p.canvasId ?? ""), String(p.cardId ?? ""));
+      return { ok: true };
     });
 
     // Previews for a page of the library in one call. Links last five minutes.

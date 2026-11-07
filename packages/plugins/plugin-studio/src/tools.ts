@@ -1,6 +1,7 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { LINK_TARGETS } from "./assets.js";
 import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
+import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
 import { PHOTO_PRESETS } from "./presets.js";
 
@@ -110,6 +111,17 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     description:
       "The client's brand kit from the CRM: voice, audience, tone, banned words, colours and fonts, plus promptText, the exact text to add to a studio-generate prompt. Free. Nothing is added for you: put promptText in your prompt yourself, and say so on the issue.",
     parametersSchema: schema([], { client: CLIENT, issueId: ISSUE }),
+  },
+  {
+    name: "canvas-write-text",
+    displayName: "Write the words on a Studio canvas Text card",
+    description:
+      "Deliver words you were asked to write for a Text card on a Studio canvas. They land on the card for a person to check; nothing is published. Use the canvasId and cardId from the task. Plain words only. For a card feeding several pages, put a line holding only --- between each page's words.",
+    parametersSchema: schema(["canvasId", "cardId", "text"], {
+      canvasId: text("The canvas, from the task"),
+      cardId: text("The Text card, from the task"),
+      text: text(`The words, up to ${MAX_TEXT} characters`),
+    }),
   },
   {
     name: "canvas-create-from-brief",

@@ -30,6 +30,8 @@ import { useStudioAction } from "./action.js";
 import { Button, ButtonLink, EmptyState, errorText, Field, Input, Modal, Page, PageFrame, PageMessage, Section, SectionHeading, Select, tone } from "@partnersinbiz/pib-plugin-ui";
 import { relativeAge } from "./library.js";
 import { CanvasTemplateGallery } from "./CanvasTemplates.js";
+import { ExportBoard, LayoutBody, TextBody } from "./LayoutCard.js";
+import { splitParts } from "../layout.js";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
@@ -48,7 +50,7 @@ import { reviewQueue } from "./phone-review.js";
 import { CARD_LABELS, DELETE_KEYS, deleteConfirmText, isTypingTarget, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
-interface Board extends Summary { doc: CanvasDoc }
+interface Board extends Summary { doc: CanvasDoc; projectId?: string | null }
 interface LibraryAsset { id: string; name: string; kind: string; status?: string; prompt?: string | null; model?: string | null; credits?: number | null }
 interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
 interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
@@ -86,7 +88,7 @@ const boardCss = `
 .studio-card-head > .studio-pill { flex: none; }
 .studio-kind { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 0.375rem; font-size: var(--text-micro, 11px); font-weight: 700; color: var(--background); background: var(--kind); flex: none; }
 .studio-kind-prompt { --kind: var(--status-task-in_review); } .studio-kind-source { --kind: var(--status-task-in_progress); } .studio-kind-image { --kind: var(--status-task-todo); }
-.studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
+.studio-kind-text { --kind: var(--status-task-todo); } .studio-kind-layout { --kind: var(--status-task-in_review); } .studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
 .studio-media { position: relative; width: 100%; overflow: hidden; border-radius: 0.5rem; background: var(--muted); }
 .studio-media > img, .studio-media > video { display: block; width: 100%; height: 100%; object-fit: contain; }
 .studio-media-empty { display: grid; place-items: center; padding: 0.5rem; box-sizing: border-box; border: 1px dashed var(--border); background: none; color: var(--muted-foreground); font-size: var(--text-micro, 11px); text-align: center; }
@@ -137,6 +139,7 @@ const fieldStyle: CSSProperties = { width: "100%", boxSizing: "border-box", font
 
 /** What card components need from the board: undo before an edit, the library for source pickers, and what Generate needs. */
 interface BoardContext {
+  canvasId: string;
   beforeEdit: () => void;
   library: LibraryAsset[];
   companyId: string;
@@ -160,7 +163,7 @@ interface BoardContext {
   removeCard: ((cardId: string) => void) | null;
 }
 const NO_DIM = new Set<string>();
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, refreshLibrary: () => undefined, removeCard: null });
+const BoardCtx = createContext<BoardContext>({ canvasId: "", beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, refreshLibrary: () => undefined, removeCard: null });
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -582,6 +585,35 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const [selectMode, setSelectMode] = useState(false);
   const saveTemplateAction = useStudioAction("save-canvas-template");
   const [templateName, setTemplateName] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const draftsAction = useStudioAction("canvas-text-drafts");
+  const draftTaken = useStudioAction("canvas-text-draft-taken");
+  // Words an agent wrote wait in the plugin's state, not in the board: an agent saving the board would clash with whoever has it open.
+  const waitingForWords = nodes.some((n) => n.type === "text" && n.data.requested);
+  useEffect(() => {
+    if (!waitingForWords) return;
+    let live = true;
+    const check = () => {
+      void (draftsAction({ companyId, canvasId }) as Promise<{ drafts: Record<string, { text: string }> }>).then((out) => {
+        if (!live) return;
+        for (const [cardId, draft] of Object.entries(out.drafts)) {
+          if (!flow.getNode(cardId)) continue;
+          beforeEdit();
+          flow.updateNodeData(cardId, { text: draft.text, requested: "" });
+          void draftTaken({ companyId, canvasId, cardId }).catch(() => undefined);
+          setNotice("An agent's words have landed on the Text card. Check them before you use them.");
+        }
+      }).catch(() => undefined);
+    };
+    check();
+    const timer = setInterval(check, 15_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+    // The actions are new functions each render; this follows only whether a card is waiting.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingForWords, companyId, canvasId]);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [templateProblem, setTemplateProblem] = useState<string | null>(null);
   const saveAsTemplate = () => {
@@ -627,6 +659,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <span className="studio-chip" role="status">{status}</span>
         <span style={{ flex: "1 1 0" }} />
         {canGen === true ? <Button type="button" variant="secondary" onClick={() => setTemplateName(board.data?.title ?? "")}>Save as template</Button> : null}
+        {nodes.some((n) => n.type === "layout") ? <Button type="button" variant="secondary" onClick={() => setExporting(true)}>Export pages</Button> : null}
         {credits ? <span className="studio-chip" aria-label="Credits this month" style={{ color: "var(--foreground)" }}>{credits.cap === null ? `${credits.used} credits used · no cap set` : `${creditsLeft(credits.used, credits.cap)} of ${credits.cap} credits left`}</span> : null}
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
         <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} open={menu === "versions"} onOpenChange={(o) => setMenu(o ? "versions" : null)} />
@@ -649,7 +682,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         </div>
       ) : null}
       <PageMessage tone="danger" message={notice ?? undefined} />
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, refreshLibrary: assets.refresh, removeCard: conflict ? null : removeCard }}>
+      <BoardCtx.Provider value={{ canvasId, beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, refreshLibrary: assets.refresh, removeCard: conflict ? null : removeCard }}>
         <div className="studio-canvas-layout">
         <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
@@ -709,6 +742,11 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             assetStatus={library.find((a) => a.id === selectedCard.data.assetId)?.status}
             edit={(patch) => panelEdit(selectedCard.id, patch)}
             beforeEdit={beforeEdit}
+            layoutParts={Math.max(0, ...edges.filter((c) => c.target === selectedCard.id).map((c) => splitParts(nodes.find((n) => n.id === c.source && n.type === "text")?.data.text).length))}
+            textPages={edges.filter((c) => c.source === selectedCard.id).length}
+            boardTitle={board.data.title}
+            boardClient={board.data.client?.name ?? null}
+            boardProjectId={board.data.projectId ?? null}
             onGenerated={(groupId) => { flow.updateNodeData(selectedCard.id, { groupId }); overview.refresh(); }}
             onBuildOn={() => buildOn(selectedCard.id)}
             onDelete={conflict ? undefined : () => removeCard(selectedCard.id)}
@@ -717,6 +755,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         ) : null}
         </div>
       </BoardCtx.Provider>
+      <ExportBoard open={exporting} onClose={() => setExporting(false)} title={board.data.title} companyId={companyId} />
       <Modal
         open={templateName !== null}
         title="Save this board as a template"
@@ -737,10 +776,10 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   );
 }
 
-const KIND_LETTER: Record<NodeType, string> = { prompt: "T", source: "S", image: "I", video: "V", output: "O" };
+const KIND_LETTER: Record<NodeType, string> = { prompt: "P", text: "T", source: "S", image: "I", video: "V", output: "O", layout: "L" };
 
 function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
-  const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary, removeCard } = useContext(BoardCtx);
+  const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary, removeCard, canvasId: boardCanvasId } = useContext(BoardCtx);
   const flow = useReactFlow<FlowNode, Edge>();
   const kind = type as NodeType;
   const set = (patch: Record<string, string>) => flow.updateNodeData(id, patch);
@@ -764,6 +803,8 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
         </>
       ) : null}
       {kind === "image" || kind === "video" ? <GenerateSummary id={id} kind={kind} data={data} /> : null}
+      {kind === "text" ? <TextBody data={data} beforeEdit={beforeEdit} set={set} /> : null}
+      {kind === "layout" ? <LayoutBody id={id} data={data} companyId={companyId} canvasId={boardCanvasId} canEdit={canGenerate === true} set={set} /> : null}
       {kind === "source" ? (
         <>
           <Media assetId={data.assetId} name={data.label || "Source"} ratio="4:3" empty="Pick a library file below" />
