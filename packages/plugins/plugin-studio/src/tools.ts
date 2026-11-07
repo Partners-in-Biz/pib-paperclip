@@ -105,6 +105,13 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "studio-brand-kit",
+    displayName: "Read a client's brand kit",
+    description:
+      "The client's brand kit from the CRM: voice, audience, tone, banned words, colours and fonts, plus promptText, the exact text to add to a studio-generate prompt. Free. Nothing is added for you: put promptText in your prompt yourself, and say so on the issue.",
+    parametersSchema: schema([], { client: CLIENT, issueId: ISSUE }),
+  },
+  {
     name: "canvas-create-from-brief",
     displayName: "Create a Studio canvas from a brief",
     description:
