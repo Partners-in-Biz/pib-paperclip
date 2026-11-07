@@ -44,6 +44,8 @@ export interface PanelProps {
   beforeEdit: () => void;
   onGenerated: (groupId: string) => void;
   onBuildOn: () => void;
+  /** Deletes the card from the board (asks first when it shows a file); missing while the board is locked. */
+  onDelete?: () => void;
   onClose: () => void;
 }
 
@@ -67,6 +69,14 @@ export function SidePanel(props: PanelProps) {
         {tab === "Export" ? <Export {...props} /> : null}
         {tab === "Comments" ? <CommentsThread companyId={props.companyId} canvasId={props.canvasId} cardId={props.card.id} canEdit={props.canGenerate === true} meUserId={props.meUserId} /> : null}
       </div>
+      {props.onDelete ? (
+        <div style={{ ...group, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          <div style={wrap}>
+            <Button variant="secondary" onClick={props.onDelete} style={{ color: "var(--destructive)" }}>Delete card</Button>
+          </div>
+          <span style={muted}>{props.card.data.assetId ? "Removes the card and its connections from this board. The library file stays in the Studio library. Undo brings the card back." : "Removes the card and its connections from this board. Undo brings it back."}</span>
+        </div>
+      ) : null}
     </aside>
   );
 }

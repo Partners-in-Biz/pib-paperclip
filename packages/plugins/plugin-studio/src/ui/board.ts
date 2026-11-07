@@ -192,6 +192,37 @@ export function resultCards(nodes: ReadonlyArray<FlowNode>, edges: ReadonlyArray
   return out;
 }
 
+/** Keys that delete the selected cards or connections (React Flow's default is Backspace only, PAR-8104). */
+export const DELETE_KEYS = ["Backspace", "Delete"];
+
+/** True while focus is in a field, where Backspace / Delete / Ctrl+Z edit text and must not touch the board. */
+export function isTypingTarget(target: { closest?: (selector: string) => unknown } | null | undefined): boolean {
+  return Boolean(target && typeof target.closest === "function" && target.closest("input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])"));
+}
+
+/** The board without these cards and every connection to or from them. */
+export function removeCards(snap: Snapshot, ids: Iterable<string>): Snapshot {
+  const gone = new Set(ids);
+  return { nodes: snap.nodes.filter((n) => !gone.has(n.id)), edges: snap.edges.filter((e) => !gone.has(e.source) && !gone.has(e.target)) };
+}
+
+/** The board without these connections; the cards stay. */
+export function removeConnections(snap: Snapshot, ids: Iterable<string>): Snapshot {
+  const gone = new Set(ids);
+  return { nodes: snap.nodes, edges: snap.edges.filter((e) => !gone.has(e.id)) };
+}
+
+/**
+ * What to ask before cards are deleted, or null when nothing needs asking. A card that shows a file (a result, or a
+ * picked source) only leaves the board: the file stays in the library, and deleting a card never deletes an asset.
+ */
+export function deleteConfirmText(cards: ReadonlyArray<{ data?: Record<string, unknown> }>): string | null {
+  const withFiles = cards.filter((c) => typeof c.data?.assetId === "string" && c.data.assetId !== "").length;
+  if (withFiles === 0) return null;
+  const what = cards.length === 1 ? "this card" : `these ${cards.length} cards`;
+  return `Delete ${what} from the board? The library ${withFiles === 1 ? "file stays" : "files stay"} in the Studio library; only the card is removed. Undo brings it back.`;
+}
+
 /** Undo and redo over whole snapshots. Push before a change; undo hands back the state to show. */
 export class History {
   private past: Snapshot[] = [];
@@ -200,6 +231,9 @@ export class History {
   constructor(private readonly limit = 100) {}
 
   push(state: Snapshot): void {
+    // React Flow reports a card delete as a node change and an edge change in the same tick; both push the same
+    // snapshot. Keep one, so a single Undo brings the card back with its connections.
+    if (this.past[this.past.length - 1] === state) return;
     this.past.push(state);
     if (this.past.length > this.limit) this.past.shift();
     this.future = [];
