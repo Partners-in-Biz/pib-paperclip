@@ -93,6 +93,14 @@ export async function startHarness(): Promise<Harness> {
   const tools: Harness["tools"] = new Map();
   const jobs: Harness["jobs"] = new Map();
   let issueSeq = 0;
+  // Every send stores its PDF in private R2 first (PAR-8201): answer R2 calls locally so no test reaches the network.
+  // A test can still replace globalThis.fetch to make R2 fail.
+  const passThrough = globalThis.fetch;
+  const r2Fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.includes(".r2.cloudflarestorage.com") ? new Response() : passThrough(input, init);
+  }) as typeof fetch;
+  globalThis.fetch = r2Fetch;
 
   const run = async (sql: string, params: unknown[] = []) => {
     const bound = bindLikeHost(sql, params);
@@ -211,6 +219,7 @@ export async function startHarness(): Promise<Harness> {
       config.clear();
     },
     async stop() {
+      if (globalThis.fetch === r2Fetch) globalThis.fetch = passThrough;
       await client.end();
       await pg.stop();
       rmSync(dir, { recursive: true, force: true });
@@ -237,6 +246,7 @@ export const SETTINGS = {
   payment: { bankName: "FNB", accountName: "PiB", accountNumber: "62000000000", branchCode: "250655" },
   email: { enabled: true },
   ledger: { enabled: true },
+  r2: R2_SETTINGS,
 };
 
 export async function seedClient(h: Harness, input: { id: string; name: string; email?: string; kind?: "company" | "contact" }) {
