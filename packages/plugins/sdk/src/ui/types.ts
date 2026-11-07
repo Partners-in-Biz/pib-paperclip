@@ -192,6 +192,35 @@ export interface HostLocation {
 }
 
 /**
+ * Fields a plugin may prefill in the host New Task dialog via
+ * `useHostNewIssue().open()`. The board can change all of them.
+ */
+export interface HostNewIssueDefaults {
+  title?: string;
+  /** Markdown description. */
+  description?: string;
+  projectId?: string;
+  assigneeAgentId?: string;
+  priority?: string;
+  parentId?: string;
+}
+
+/** The issue the New Task dialog created. */
+export interface HostCreatedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  projectId: string | null;
+  assigneeAgentId: string | null;
+}
+
+/** Returned by `useHostNewIssue()`. */
+export interface HostNewIssue {
+  /** Resolves with the created issue, or `null` if the dialog closed without one. */
+  open(defaults?: HostNewIssueDefaults): Promise<HostCreatedIssue | null>;
+}
+
+/**
  * Host-managed navigation helpers for plugin UI.
  */
 export interface HostNavigation {
