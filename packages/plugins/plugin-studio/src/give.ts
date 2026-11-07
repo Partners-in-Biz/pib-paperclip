@@ -16,7 +16,7 @@ import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { num, table } from "./db.js";
 import { StudioError } from "./errors.js";
-import { clientOfProject } from "./scope.js";
+import { clientOfProject, projectsOfClient } from "./scope.js";
 import { canGenerate } from "./service.js";
 import { assertOwnKey, extFor, getObject, GIVEN_KEEP_DAYS, givenCopy, removeGivenCopy } from "./storage.js";
 
@@ -143,7 +143,22 @@ async function checkedRow(ctx: PluginContext, companyId: string, params: Record<
 /** Step 1, on click: every check, a copy of the file, and the popup prefill. */
 export async function prepareGive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver) {
   const row = await checkedRow(ctx, companyId, params, giver);
-  await assertProjectFits(ctx, companyId, row, row.project_id ?? null);
+  // A client's file often has no project of its own, which is fine here: the task's project is what must fit, and the
+  // person picks that in the popup (recordGive checks it). So prefill the client's project, and refuse now only if
+  // the file's own project is someone else's, or the client has no project for a task to go in.
+  let projectId: string | null = row.project_id ?? null;
+  if (projectId) {
+    await assertProjectFits(ctx, companyId, row, projectId);
+  } else {
+    const scope = scopeOfRow(row);
+    if (scope) {
+      const projects = await projectsOfClient(ctx, companyId, scope);
+      if (projects.length === 0) {
+        throw new StudioError(`${row.client_name ?? "This client"} has no project linked in the CRM, so a task for their file has nowhere to go. Link a project to the client first.`, "no_client_project");
+      }
+      projectId = projects[0]!;
+    }
+  }
 
   let generation: GiveFile["generation"] = null;
   const generationId = (row as { generation_id?: string | null }).generation_id;
@@ -154,7 +169,7 @@ export async function prepareGive(ctx: PluginContext, companyId: string, params:
     );
     if (gen) generation = { model: gen.model, prompt: gen.prompt ?? "", credits: num(gen.actual_credits ?? gen.estimated_credits) };
   }
-  const project = row.project_id ? ((await ctx.projects.get(row.project_id, companyId).catch(() => null)) as { name?: string } | null) : null;
+  const project = projectId ? ((await ctx.projects.get(projectId, companyId).catch(() => null)) as { name?: string } | null) : null;
 
   assertOwnKey(companyId, row.r2_key);
   const bucket = await new StudioConfig(ctx, companyId).bucket();
@@ -174,11 +189,11 @@ export async function prepareGive(ctx: PluginContext, companyId: string, params:
       assetId: row.id,
       status: String(extra.status ?? ""),
       client: row.client_name ?? "Own work",
-      project: project?.name ?? (row.project_id ? "Unknown project" : null),
+      project: project?.name ?? (projectId ? "Unknown project" : null),
       generation,
       path,
     }),
-    projectId: row.project_id ?? null,
+    projectId,
   };
 }
 
