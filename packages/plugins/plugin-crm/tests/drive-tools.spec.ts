@@ -336,6 +336,20 @@ describe("Drive folder tools", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("(i2) not_configured carries a fallback path for a client project and for a company", async () => {
+    const st = seed();
+    linked(st, "co-i2", "Acme Ltd");
+    const { harness } = await setup({ drive: { sharedDriveId: DRIVE_ID } }, st);
+    harness.seed({ projects: [{ id: "p1", companyId: CO, name: "P" } as never] });
+    const want = { sharedDriveId: DRIVE_ID, pathSegments: ["02 Partners in Biz", "Clients", "Acme Ltd (Primary Contact)", "Contracts & Quotes"] };
+    const proj = await toolRaw(harness, "drive_folder_resolve", { entity_type: "project", entity_id: "p1" });
+    expect(proj.data?.status).toBe("not_configured");
+    expect(proj.data?.fallback).toEqual(want);
+    const comp = await toolRaw(harness, "drive_folder_resolve", { entity_type: "crm_company", entity_id: "co-i2" });
+    expect(comp.data?.status).toBe("not_configured");
+    expect(comp.data?.fallback).toEqual(want);
+  });
+
   it("(k) Google 403 (service account not in the Shared Drive) fails the tool non-retryable, naming the fix, creating nothing", async () => {
     const st = seed();
     linked(st, "co-k", "Acme Ltd");

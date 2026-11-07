@@ -45,7 +45,7 @@ export function assertOwnKey(companyId: string, key: string): void {
   }
 }
 
-export function objectUrl(cfg: PrivateBucket, companyId: string, method: "GET" | "PUT", key: string, expiresSec: number): string {
+export function objectUrl(cfg: PrivateBucket, companyId: string, method: "GET" | "PUT" | "DELETE", key: string, expiresSec: number): string {
   assertOwnKey(companyId, key);
   return presignUrl({
     method,
@@ -68,6 +68,33 @@ export async function getObject(cfg: PrivateBucket, companyId: string, key: stri
   const res = await fetch(objectUrl(cfg, companyId, "GET", key, 300), { signal: AbortSignal.timeout(300_000) });
   if (!res.ok) throw new Error(`Storage read failed: HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
+}
+
+/**
+ * The first `n` bytes of an object, to check its type after a streamed copy (PAR-8125). A ranged GET, and the reader
+ * stops after `n` bytes even if the server sends more, so a 200 MB video is never read whole.
+ */
+export async function getObjectHead(cfg: PrivateBucket, companyId: string, key: string, n = 64): Promise<Uint8Array> {
+  const res = await fetch(objectUrl(cfg, companyId, "GET", key, 60), { headers: { Range: `bytes=0-${n - 1}` }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok || !res.body) throw new Error(`Storage read failed: HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const out = new Uint8Array(n);
+  let got = 0;
+  while (got < n) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const take = Math.min(value.byteLength, n - got);
+    out.set(value.subarray(0, take), got);
+    got += take;
+  }
+  await reader.cancel().catch(() => undefined);
+  return out.subarray(0, got);
+}
+
+/** Remove an object Studio wrote but won't keep (a streamed import of the wrong type). A missing object is fine. */
+export async function deleteObject(cfg: PrivateBucket, companyId: string, key: string): Promise<void> {
+  const res = await fetch(objectUrl(cfg, companyId, "DELETE", key, 60), { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+  if (!res.ok && res.status !== 404) throw new Error(`Storage delete failed: HTTP ${res.status}`);
 }
 
 export function sha256Hex(bytes: Uint8Array): string {
@@ -134,6 +161,20 @@ export async function givenCopy(companyId: string, giveId: string, assetId: stri
   const file = join(dir, `${segment(assetId, "asset id")}-v${version}-${segment(giveId, "give id")}.${segment(ext, "extension")}`);
   await writeFile(file, bytes, { mode: 0o600 });
   return file;
+}
+
+/** Removes the copy of one give (cancelled popup). Every name is checked, and only that give's own file is touched. */
+export async function removeGivenCopy(companyId: string, assetId: string, giveId: string): Promise<number> {
+  const dir = join(localRoot(), segment(companyId, "company id"), GIVEN_DIR);
+  const prefix = `${segment(assetId, "asset id")}-v`;
+  const tail = `-${segment(giveId, "give id")}.`;
+  let removed = 0;
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.startsWith(prefix) || !name.includes(tail)) continue;
+    await rm(join(dir, name), { force: true });
+    removed += 1;
+  }
+  return removed;
 }
 
 async function sweepFiles(dir: string, maxAgeMs: number, now: number): Promise<number> {

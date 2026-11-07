@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Button, errorText, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "./action.js";
+import { awaitTransfer, percent } from "./drive-transfer.js";
 import { useNarrow } from "./narrow.js";
 import { ALL_FOLDERS, NO_FOLDER, blockedReason, createThumbQueue, fileSize, folderLabel, folderTabs, shortDate, thumbFallback, visibleFiles, type DriveFile, type ThumbState } from "./drive-picker.js";
 
@@ -17,7 +18,7 @@ export interface ImportedAsset {
   name: string;
 }
 
-type Progress = { state: "adding" } | { state: "added"; assetId: string } | { state: "failed"; message: string };
+type Progress = { state: "adding"; percent?: number } | { state: "added"; assetId: string } | { state: "failed"; message: string };
 type ThumbRow = { id: string; url?: string; reason?: string };
 
 const muted: CSSProperties = { fontSize: 13, color: "var(--muted-foreground)" };
@@ -48,6 +49,7 @@ function DrivePicker({ companyId, client, variant, onImported, onClose }: { comp
   const list = useStudioAction("drive-list");
   const thumbsAction = useStudioAction("drive-thumbs");
   const importFile = useStudioAction("drive-import");
+  const pollTransfer = useStudioAction("drive-transfer");
   const [files, setFiles] = useState<DriveFile[] | null>(null);
   const [maxBytes, setMaxBytes] = useState(5 * 1024 * 1024);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -143,13 +145,18 @@ function DrivePicker({ companyId, client, variant, onImported, onClose }: { comp
     setAdding(true);
     setProgress((prev) => ({ ...prev, ...Object.fromEntries(ids.map((id) => [id, { state: "adding" } as Progress])) }));
     const added: ImportedAsset[] = [];
-    // Two at a time: each copy is one Drive read (up to 5 MB) inside the host's 30 s action limit.
+    // Two at a time. Up to 5 MB a copy is one Drive read inside the action; bigger ones run in the background (PAR-8125)
+    // and are polled here, with their progress on the tile.
     let next = 0;
     const one = async () => {
       while (next < ids.length) {
         const id = ids[next++]!;
         try {
-          const asset = (await importFile({ companyId, client, fileId: id })) as ImportedAsset;
+          const f = files?.find((x) => x.id === id);
+          const out = await importFile({ companyId, client, fileId: id, size: f?.size, mimeType: f?.mimeType });
+          const asset = await awaitTransfer<ImportedAsset>(out, pollTransfer, companyId, (done, total) =>
+            setProgress((prev) => ({ ...prev, [id]: { state: "adding", percent: percent(done, total) } })),
+          );
           added.push(asset);
           setProgress((prev) => ({ ...prev, [id]: { state: "added", assetId: asset.id } }));
           setFiles((prev) => prev?.map((f) => (f.id === id ? { ...f, assetId: asset.id } : f)) ?? prev);
@@ -394,7 +401,7 @@ function FileCard({ file: f, thumb, ticked, progress, blocked, disabled, watch, 
           <input type="checkbox" aria-label={`Tick ${f.name}`} checked={ticked || inLibrary} disabled={!tickable || disabled} onChange={onToggle} style={{ width: 18, height: 18, margin: 0, cursor: "inherit" }} />
         </label>
         <span style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "calc(100% - 52px)", pointerEvents: "none" }}>
-          {progress?.state === "adding" ? <span style={pill}>Adding…</span> : null}
+          {progress?.state === "adding" ? <span style={pill}>{progress.percent === undefined ? "Adding…" : `Adding… ${progress.percent}%`}</span> : null}
           {progress?.state === "failed" ? <span style={{ ...pill, borderColor: "var(--destructive)" }}>Failed</span> : null}
           {inLibrary ? <span style={pill}>{progress?.state === "added" ? "Added" : "In library"}</span> : null}
           {blocked ? <span style={{ ...pill, borderColor: "var(--destructive)" }}>Too large</span> : null}

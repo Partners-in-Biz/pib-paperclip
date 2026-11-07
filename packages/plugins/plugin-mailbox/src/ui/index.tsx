@@ -2,6 +2,7 @@ import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useHostLocation,
   DataTable,
+  useHostNewIssue,
   useHostNavigation,
   usePluginAction,
   type PluginPageProps,
@@ -23,6 +24,7 @@ import {
   EmptyState,
   Field,
   FileText,
+  GiveToAgentButton,
   IconBadge,
   Inbox,
   Input,
@@ -216,6 +218,7 @@ interface InboxMessage {
   client_ref: string | null;
   client_name: string | null;
   attachments: Array<{ filename: string }>;
+  gmail_thread_id?: string | null;
   reply_to: { plugin: string; kind: string } | null;
   /** `needs_mapping`: it looks like a client's mail but no mapping says so (worker 0.5.0+). */
   map_state?: string | null;
@@ -491,6 +494,9 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const clearHold = usePluginAction("mailbox.clear-reputation-hold");
   const loadPreferences = usePluginAction("mailbox.preferences-load");
   const savePreferences = usePluginAction("mailbox.preferences-save");
+  const handoffPrepare = usePluginAction("mailbox.handoff-prepare");
+  const handoffRecord = usePluginAction("mailbox.handoff-record");
+  const newIssue = useHostNewIssue();
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -959,6 +965,33 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const previewDraft = preview?.kind === "draft" ? allDrafts.find((row) => row.id === preview.id) ?? null : null;
   const previewMail = preview?.kind === "mail" ? (inbox?.messages ?? []).find((row) => row.id === preview.id) ?? null : null;
   const openMailId = previewMail?.id ?? null;
+  // `?mail=<id>` (the link a Give to agent task carries) opens that mail once the inbox is loaded.
+  const linkedMail = new URLSearchParams(hostLocation.search).get("mail");
+  useEffect(() => {
+    if (!linkedMail || !inbox) return;
+    if (inbox.messages.some((row) => row.id === linkedMail)) setPreview({ kind: "mail", id: linkedMail });
+    else setMessage("That mail is not in the inbox list here any more. Search Gmail for it, or ask the agent for its subject.");
+    const rest = new URLSearchParams(withoutParam(hostLocation.search, "mail")).toString();
+    hostNavigation.navigate(`/mailbox${rest ? `?${rest}` : ""}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedMail, inbox]);
+  /** Give to agent: the worker builds the prefill and, once the task exists, re-checks the client and links it. */
+  const giveButton = (row: InboxMessage, scope: "message" | "thread") => (
+    <GiveToAgentButton
+      key={scope}
+      label={scope === "thread" ? "Give thread to agent" : "Give to agent"}
+      disabled={busy}
+      newIssue={newIssue}
+      prepare={async () => {
+        const link = `${window.location.origin}${hostNavigation.resolveHref(`/mailbox?tab=inbox&mail=${encodeURIComponent(row.id)}`)}`;
+        const out = (await handoffPrepare({ messageId: row.id, scope, link })) as { title: string; description: string; projectId?: string };
+        return { title: out.title, description: out.description, projectId: out.projectId };
+      }}
+      record={async (issue) => (await handoffRecord({ messageId: row.id, scope, issueId: issue.id })) as { message: string; warning: string | null }}
+      onDone={(out) => setMessage(out.warning ? `${out.message} Warning: ${out.warning}` : out.message)}
+      onError={setMessage}
+    />
+  );
   useEffect(() => {
     if (!openMailId) {
       setMailBody(null);
@@ -1599,6 +1632,8 @@ function MailboxPageMain({ context }: PluginPageProps) {
           <>
             <Button type="button" variant="secondary" disabled={busy} onClick={() => setPreview(null)}>Close</Button>
             <Button type="button" variant="secondary" disabled={busy} onClick={() => openCorrection(previewMail)}>Fix sorting</Button>
+            {giveButton(previewMail, "message")}
+            {previewMail.gmail_thread_id ? giveButton(previewMail, "thread") : null}
             <Button type="button" variant="secondary" disabled={busy} onClick={() => void removeMail([previewMail.id])}>Delete</Button>
             <Button type="button" variant="secondary" disabled={busy} onClick={() => void replyTo(previewMail.id, "forward")}>Forward</Button>
             <Button type="button" variant="secondary" disabled={busy} onClick={() => void replyTo(previewMail.id, "reply_all")}>Reply all</Button>

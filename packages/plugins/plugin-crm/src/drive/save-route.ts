@@ -66,6 +66,15 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
       if (publicUrl) input.publicUrl = publicUrl as string;
       if (sha256) input.sha256 = sha256 as string;
       if (subfolder) input.subfolder = subfolder as string;
+      // A large file (PAR-8125): a signed R2 link, checked against R2 hosts in saveDriveFile. Progress goes back to the
+      // producer after each chunk, so its wait restarts while the transfer keeps moving.
+      if (typeof payload.r2Url === "string" && payload.r2Url) {
+        input.r2Url = payload.r2Url;
+        if (typeof payload.size === "number") input.size = payload.size;
+        input.onProgress = async (bytesDone, bytesTotal) => {
+          await reply(DRIVE_EVENTS.progress, companyId, { requestId, bytesDone, bytesTotal }).catch(() => undefined);
+        };
+      }
 
       // A system viewer: the producer already checked its own user; the CRM writes on the company's behalf.
       const result = await deps.save(ctx, { companyId, userId: null, agentId: null, role: null }, input);
