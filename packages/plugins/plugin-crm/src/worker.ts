@@ -3,6 +3,7 @@ import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "
 import { registerCallNotedSubscriber } from "./call-noted.js";
 import { emitAllOwnMetrics } from "./own-metrics.js";
 import { registerDriveReadRoutes } from "./drive/read.js";
+import { registerBrandKitRoute } from "./brand-kit-route.js";
 import {
   definePlugin,
   runWorker,
@@ -551,6 +552,9 @@ const plugin = definePlugin({
 
     // Drive reads for producer plugins (kit's driveList / driveRead, PAR-8107): only the client's own assets folders.
     registerDriveReadRoutes(ctx);
+
+    // A client's brand kit for producer plugins (kit's requestBrandKit, PAR-8134): that client's profile in this company only.
+    registerBrandKitRoute(ctx);
 
     // Subscribe to Setup plugin's drive.binding.set event
     ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
