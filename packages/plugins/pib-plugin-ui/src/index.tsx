@@ -1145,6 +1145,60 @@ export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   );
 }
 
+/** What the host's New Task popup takes (`useHostNewIssue().open`, plugin SDK). Kept structural so this kit needs no SDK import. */
+export interface HandoffIssueDefaults {
+  title?: string;
+  description?: string;
+  projectId?: string;
+  assigneeAgentId?: string;
+  priority?: string;
+  parentId?: string;
+}
+export interface HandoffCreatedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  projectId: string | null;
+  assigneeAgentId: string | null;
+}
+export interface HandoffNewIssue {
+  open(defaults?: HandoffIssueDefaults): Promise<HandoffCreatedIssue | null>;
+}
+
+/**
+ * Give to agent (PAR-8132): asks the module for the prefill, opens the host's New Task popup with it, and, when the
+ * person created the task, has the module record the link. Pass `useHostNewIssue()` as `newIssue`. The module's worker
+ * builds the text (buildHandoffDescription in the plugin kit) and re-checks the client on `record`.
+ */
+export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled }: {
+  newIssue: HandoffNewIssue;
+  prepare: () => Promise<HandoffIssueDefaults>;
+  record: (issue: HandoffCreatedIssue) => Promise<{ message?: string | null; warning?: string | null } | void>;
+  onDone?: (out: { issue: HandoffCreatedIssue; message: string; warning: string | null }) => void;
+  onError?: (message: string) => void;
+  label?: string;
+  variant?: "primary" | "secondary";
+  disabled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function give() {
+    setBusy(true);
+    try {
+      const defaults = await prepare();
+      const issue = await newIssue.open(defaults);
+      if (!issue) return;
+      const out = (await record(issue)) || {};
+      const name = issue.identifier ?? issue.title;
+      onDone?.({ issue, message: out.message ?? `${name} created.`, warning: out.warning ?? null });
+    } catch (error) {
+      onError?.(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <Button type="button" variant={variant} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
+}
+
 export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary";
 }) {
