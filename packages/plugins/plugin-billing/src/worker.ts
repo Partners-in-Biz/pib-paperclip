@@ -400,11 +400,12 @@ const ACTIONS: Record<string, Handler> = {
     return { ok: await correctDecision(ctx, requiredCompany(context), requiredString(params, "decisionId"), requiredString(params, "correctedTo"), userId) };
   },
   // PAR-8130: copy sent PDFs to Drive for a date range. A dry run (the default) only lists; saving needs a person.
+  // PAR-8121: a saving call does `limit` saves and returns `nextAfterId` for the next call (`afterId`).
   "billing.drive-catchup": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const dryRun = params.dryRun !== false;
     if (!dryRun) requirePerson(context, "the Drive catch-up");
-    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
+    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
   },
 };
 

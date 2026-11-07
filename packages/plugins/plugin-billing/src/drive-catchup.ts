@@ -5,6 +5,10 @@
  * Copy only: the bytes are the stored sent PDF in private R2 (`pdf_key`), never a re-render, and this module never
  * writes to a Billing table. The name uses the send date, so it matches what the send-time save would have made, and
  * the CRM skips a file already in the folder with the same name and sha256: a second run saves nothing new.
+ *
+ * Batches (PAR-8121): the host's action RPC gives up after 30 s, so a saving call does at most `limit` saves (and stops
+ * early once it has used its time budget), then returns `nextAfterId` (`<type>:<id>`) for the next call's `afterId`.
+ * Only one saving call runs per company at a time, because a call that timed out at the RPC keeps working.
  */
 import { driveSave } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -29,6 +33,7 @@ interface SentRow {
 }
 
 export interface CatchupItem {
+  id: string;
   type: DocType;
   number: string;
   client: string | null;
@@ -46,6 +51,7 @@ export interface CatchupDeps {
   readPdf: (r2: PrivateR2, key: string) => Promise<Uint8Array>;
   save: typeof driveSave;
   sleep: (ms: number) => Promise<void>;
+  now: () => number;
 }
 
 const DEFAULT_DEPS: CatchupDeps = {
@@ -56,11 +62,22 @@ const DEFAULT_DEPS: CatchupDeps = {
   readPdf: async (r2, key) => (await getObject(r2, key)).bytes,
   save: driveSave,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
 };
 
 const MAX_DOCS = 100;
 const MAX_RANGE_DAYS = 62;
 const DAY_MS = 86_400_000;
+const DEFAULT_LIMIT = 2;
+const MAX_LIMIT = 10;
+/** No new save starts after this; the action RPC times out at 30 s. */
+const TIME_BUDGET_MS = 15_000;
+const running = new Set<string>();
+
+export function catchupLimit(value: unknown): number {
+  const n = Math.floor(Number(value ?? DEFAULT_LIMIT));
+  return Number.isFinite(n) ? Math.max(1, Math.min(n, MAX_LIMIT)) : DEFAULT_LIMIT;
+}
 
 /** `from`/`to` are YYYY-MM-DD (UTC), both days included. */
 export function catchupRange(from: unknown, to: unknown): { start: Date; end: Date } {
@@ -89,31 +106,76 @@ async function sentDocs(ctx: PluginContext, companyId: string, type: DocType, st
 
 /**
  * Lists (dryRun) or saves the sent invoices and quotes in the range, one at a time with `delayMs` between saves.
- * Read-only on Billing: only SELECTs, an R2 read and the CRM's Drive save route.
+ * Read-only on Billing: only SELECTs, an R2 read and the CRM's Drive save route. A saving call starts after `afterId`
+ * and stops after `limit` saves or its time budget; `done: false` means call again with `afterId: nextAfterId`.
  */
 export async function driveCatchup(
   ctx: PluginContext,
   companyId: string,
-  params: { from: unknown; to: unknown; dryRun?: boolean; delayMs?: number },
+  params: { from: unknown; to: unknown; dryRun?: boolean; delayMs?: number; limit?: unknown; afterId?: unknown },
   deps: CatchupDeps = DEFAULT_DEPS,
-): Promise<{ dryRun: boolean; from: string; to: string; counts: Record<string, number>; items: CatchupItem[] }> {
+): Promise<CatchupResult> {
   const { start, end } = catchupRange(params.from, params.to);
   const dryRun = params.dryRun !== false;
+  if (params.afterId != null && typeof params.afterId !== "string") throw new BillingError("afterId must be a nextAfterId value");
+  if (dryRun) return run(ctx, companyId, params, deps, start, end, dryRun);
+  if (running.has(companyId)) throw new BillingError("A Drive catch-up is already running for this company; wait a minute and call again with the last nextAfterId");
+  running.add(companyId);
+  try {
+    return await run(ctx, companyId, params, deps, start, end, dryRun);
+  } finally {
+    running.delete(companyId);
+  }
+}
+
+type CatchupResult = {
+  dryRun: boolean;
+  from: string;
+  to: string;
+  counts: Record<string, number>;
+  items: CatchupItem[];
+  done: boolean;
+  nextAfterId: string | null;
+  remaining: number;
+};
+
+async function run(
+  ctx: PluginContext,
+  companyId: string,
+  params: { delayMs?: number; limit?: unknown; afterId?: unknown },
+  deps: CatchupDeps,
+  start: Date,
+  end: Date,
+  dryRun: boolean,
+): Promise<CatchupResult> {
+  const limit = catchupLimit(params.limit);
+  const afterId = typeof params.afterId === "string" ? params.afterId : null;
   const delayMs = Math.max(0, Math.min(Number(params.delayMs ?? 2000) || 0, 10_000));
   const rows = [
     ...(await sentDocs(ctx, companyId, "invoice", start, end)).map((row) => ({ type: "invoice" as const, row })),
     ...(await sentDocs(ctx, companyId, "quote", start, end)).map((row) => ({ type: "quote" as const, row })),
   ];
   if (rows.length > MAX_DOCS) throw new BillingError(`More than ${MAX_DOCS} documents in the range; use a shorter range`);
+  let index = 0;
+  if (afterId) {
+    index = rows.findIndex(({ type, row }) => `${type}:${row.id}` === afterId) + 1;
+    if (index === 0) throw new BillingError("afterId is not a sent document in this range");
+  }
 
-  const r2 = rows.some(({ row }) => row.pdf_key) ? await deps.r2(ctx, companyId) : null;
+  const r2 = rows.slice(index).some(({ row }) => row.pdf_key) ? await deps.r2(ctx, companyId) : null;
   const items: CatchupItem[] = [];
+  const startedAt = deps.now();
   let saves = 0;
-  for (const { type, row } of rows) {
+  let lastId = afterId;
+  let stopped = false;
+  for (; index < rows.length; index++) {
+    if (!dryRun && (saves >= limit || (saves > 0 && deps.now() - startedAt > TIME_BUDGET_MS))) { stopped = true; break; }
+    const { type, row } = rows[index];
+    lastId = `${type}:${row.id}`;
     const sentAt = new Date(row.sent_at);
     const number = invoiceNumberLabel(row.number);
     const client = row.customer_kind && row.customer_ref ? `${row.customer_kind}:${row.customer_ref}` : null;
-    const item: CatchupItem = { type, number, client, status: row.status, sentAt: sentAt.toISOString(), result: "skipped" };
+    const item: CatchupItem = { id: row.id, type, number, client, status: row.status, sentAt: sentAt.toISOString(), result: "skipped" };
     items.push(item);
     if (!row.pdf_key) { item.reason = "no_stored_pdf"; continue; }
     if (!client) { item.reason = "no_client"; continue; }
@@ -155,5 +217,14 @@ export async function driveCatchup(
     const key = item.result === "skipped" ? `skipped:${item.reason}` : item.result;
     counts[key] = (counts[key] ?? 0) + 1;
   }
-  return { dryRun, from: start.toISOString().slice(0, 10), to: new Date(end.getTime() - DAY_MS).toISOString().slice(0, 10), counts, items };
+  return {
+    dryRun,
+    from: start.toISOString().slice(0, 10),
+    to: new Date(end.getTime() - DAY_MS).toISOString().slice(0, 10),
+    counts,
+    items,
+    done: !stopped,
+    nextAfterId: stopped ? lastId : null,
+    remaining: rows.length - index,
+  };
 }
