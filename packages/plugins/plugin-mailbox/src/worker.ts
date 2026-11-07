@@ -102,6 +102,7 @@ import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
+import { taskLinks, threadContext, type MailLinksDeps } from "./mail-links.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let env: Env | null = null;
@@ -270,6 +271,11 @@ const plugin = definePlugin({
     user("mailbox.handoff-prepare", (companyId, _userId, params) =>
       prepareHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), link: optionalString(params, "link") ?? null }),
     );
+    // The thread around a mail or draft and the tasks linked to it (detail view), and one line per mail (the lists).
+    user("mailbox.thread-context", (companyId, _userId, params) => threadContext(mailLinksDeps(ctx, companyId), requiredString(params, "messageId")));
+    user("mailbox.task-links", async (companyId, _userId, params) => ({
+      links: await taskLinks(mailLinksDeps(ctx, companyId), Array.isArray(params.messageIds) ? params.messageIds.filter((id): id is string => typeof id === "string") : []),
+    }));
     user("mailbox.handoff-record", (companyId, _userId, params) =>
       recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
     );
@@ -391,7 +397,7 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
   try {
     const body = objectParams(params);
     if (name === "create-draft") {
-      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null) };
+      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null, await runIssueId(ctx, run)) };
     }
     if (name === "update-draft") {
       if (!run.agentId) throw new MailboxError("Only an agent can use this tool");
@@ -1075,7 +1081,7 @@ function drafter(context: PluginPerformActionContext): DraftExtras["by"] {
   return null;
 }
 
-async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean, by: DraftExtras["by"] = null) {
+async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean, by: DraftExtras["by"] = null, sourceIssueId: string | null = null) {
   const accountId = requiredString(params, "accountId");
   if (enforceDelegation) {
     if (!agentId) throw new MailboxError("This agent is not allowed to draft on that mailbox");
@@ -1105,7 +1111,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
+    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, sourceIssueId, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
   });
   return { id, status: "draft", to: to.map((a) => a.email) };
 }
@@ -1287,6 +1293,47 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
 
 function handoffScope(value: unknown): HandoffScope {
   return value === "thread" ? "thread" : "message";
+}
+
+/** What the thread and task links read, for one company. A task that can't be read is left out, it never fails the page. */
+function mailLinksDeps(ctx: PluginContext, companyId: string): MailLinksDeps {
+  const s = requireStore();
+  return {
+    findMessage: (id) => findMessage(companyId, id),
+    threadMessages: (threadId) => s.replyThread(companyId, threadId),
+    isPrivate: (row) => isPrivateMessage(companyId, row),
+    threadIssueId: (accountId, threadId) => s.threadIssueId(accountId, threadId),
+    handoffIssueIds: async (messageId) => {
+      const links = (await ctx.state.get({ scopeKind: "company", scopeId: companyId, namespace: "handoff", stateKey: `mail:${messageId}` }).catch(() => null)) as Array<{ issueId: string }> | null;
+      return (links ?? []).map((link) => link.issueId);
+    },
+    subtree: async (issueId, withNames) => {
+      try {
+        return await ctx.issues.getSubtree(issueId, companyId, { includeRoot: true, includeAssignees: withNames });
+      } catch {
+        const issue = await ctx.issues.get(issueId, companyId).catch(() => null);
+        return issue ? { issues: [issue] } : null;
+      }
+    },
+    linkRows: (ids) => s.messageLinkRows(companyId, ids),
+    threadIssueRows: (threadIds) => s.threadIssueRows(companyId, threadIds),
+  };
+}
+
+/** The task this agent's run is on, so a draft can point back at it. Never throws: a draft matters more than its link. */
+async function runIssueId(ctx: PluginContext, run: { companyId: string; agentId: string | null; runId?: string | null }): Promise<string | null> {
+  if (!run.agentId || !run.runId) return null;
+  try {
+    // A live run sets executionRunId on its task, which can still say "todo" (seen on the live server, 2026-11-07).
+    for (const status of ["in_progress", "todo", "in_review"] as const) {
+      const issues = await ctx.issues.list({ companyId: run.companyId, assigneeAgentId: run.agentId, status, limit: 50 });
+      const found = issues.find((issue) => issue.executionRunId === run.runId || issue.checkoutRunId === run.runId);
+      if (found) return found.id;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** What the hand-off needs from the store, Gmail, the CRM links and the host, for one company. */

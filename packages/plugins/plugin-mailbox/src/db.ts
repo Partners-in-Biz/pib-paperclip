@@ -4,6 +4,7 @@
  * SQL. `GmailStore` is what the Gmail logic needs (tests use an in-memory
  * one); `SqlStore` also carries the older delegation/draft/template queries.
  */
+import type { MessageLinkRow } from "./mail-links.js";
 import { randomUUID } from "node:crypto";
 import type { MailAddress, MailSendRequested } from "@partnersinbiz/pib-plugin-kit";
 import type { EspAuditRow, EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow, ReputationBaseline } from "./esp/types.js";
@@ -298,6 +299,8 @@ export interface GmailStore {
   crmContactEmails(companyId: string, contactId: string): Promise<string[]>;
   messagesInvolving(companyId: string, emails: string[]): Promise<Array<{ id: string; account_id: string; gmail_thread_id: string | null; status: string; direction: string }>>;
   threadIssueIds(companyId: string, threadIds: string[]): Promise<string[]>;
+  threadIssueRows(companyId: string, threadIds: string[]): Promise<Array<{ account_id: string; gmail_thread_id: string; issue_id: string }>>;
+  messageLinkRows(companyId: string, ids: string[]): Promise<MessageLinkRow[]>;
   deleteDecisionsFor(companyId: string, messageIds: string[]): Promise<number>;
   deleteMessages(companyId: string, ids: string[]): Promise<number>;
   /** Keys of send requests to, cc'd or bcc'd to these addresses. */
@@ -1232,6 +1235,25 @@ export class SqlStore implements GmailStore {
       [companyId, json(threadIds)],
     );
     return rows.map((row) => row.issue_id);
+  }
+
+  async threadIssueRows(companyId: string, threadIds: string[]): Promise<Array<{ account_id: string; gmail_thread_id: string; issue_id: string }>> {
+    if (threadIds.length === 0) return [];
+    return this.db.query<{ account_id: string; gmail_thread_id: string; issue_id: string }>(
+      `SELECT account_id, gmail_thread_id, issue_id FROM ${this.t("thread_issues")} WHERE company_id = $1 AND issue_id IS NOT NULL AND gmail_thread_id = ANY(${textArray(2)})`,
+      [companyId, json(threadIds)],
+    );
+  }
+
+  /** Only what the list chips need, so a page of mail doesn't read bodies or draft files. */
+  async messageLinkRows(companyId: string, ids: string[]): Promise<MessageLinkRow[]> {
+    if (ids.length === 0) return [];
+    return this.db.query<MessageLinkRow>(
+      `SELECT id, account_id, status, gmail_thread_id, gmail_message_id, draft ->> 'threadId' AS draft_thread_id, draft ->> 'replyToMessageId' AS reply_to_id,
+              draft ->> 'sourceIssueId' AS source_issue_id, draft -> 'rewrite' ->> 'issueId' AS rewrite_issue_id
+         FROM ${this.t("messages")} WHERE company_id = $1 AND id = ANY(${textArray(2)})`,
+      [companyId, json(ids)],
+    );
   }
 
   async deleteDecisionsFor(companyId: string, messageIds: string[]): Promise<number> {

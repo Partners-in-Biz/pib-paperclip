@@ -23,6 +23,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // The mailbox.delegate ask effect checks that the agent it grants is an active agent of this company.
     "agents.read",
     "issues.read",
+    // The Mailbox page shows the subtasks under the tasks linked to a mail.
+    "issue.subtree.read",
     "issues.create",
     "issues.update",
     "issues.wakeup",

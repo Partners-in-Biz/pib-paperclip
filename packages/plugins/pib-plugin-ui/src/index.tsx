@@ -674,13 +674,15 @@ export function useEscapeToClose(open: boolean, onClose: () => void, enabled = t
   }, [open, id]);
 }
 
-export function Modal({ open, title, description, children, onClose, footer }: {
+export function Modal({ open, title, description, children, onClose, footer, width = 500 }: {
   open: boolean;
   title: string;
   description?: string;
   children: ReactNode;
   onClose: () => void;
   footer?: ReactNode;
+  /** The panel's width in px on a wide screen; a phone always gets the full width. */
+  width?: number;
 }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -723,7 +725,7 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         tabIndex={-1}
         className="pib-ui"
         style={{
-          width: narrow ? "100%" : "min(500px, 100%)",
+          width: narrow ? "100%" : `min(${width}px, 100%)`,
           maxHeight: narrow ? "calc(100dvh - 8px - env(safe-area-inset-top, 0px))" : "90vh",
           overflowX: "hidden",
           overflowY: "auto",

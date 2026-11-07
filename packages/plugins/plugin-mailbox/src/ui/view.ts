@@ -210,3 +210,48 @@ export function trackingLine(row: Pick<EspDomainLike, "tracking">): string {
   const on = [t.click === true ? "click" : null, t.open === true ? "open" : null].filter(Boolean);
   return `${on.join(" and ")} tracking is on at the provider. Client messages (a signing link, a report) are refused through this domain until it is switched off in the provider's dashboard, because tracking rewrites links.`;
 }
+
+const TASK_STATUS: Record<string, string> = {
+  backlog: "Backlog",
+  todo: "To do",
+  in_progress: "In progress",
+  in_review: "In review",
+  blocked: "Blocked",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+const TASK_LINK: Record<string, string> = {
+  reply: "Reply task",
+  handoff: "Given to an agent",
+  draft: "Wrote this draft",
+  rewrite: "Rewrite request",
+  subtask: "Subtask",
+};
+
+export function taskStatusName(status: string): string {
+  return TASK_STATUS[status] ?? status.replace(/_/g, " ");
+}
+
+export function taskLinkName(link: string): string {
+  return TASK_LINK[link] ?? link;
+}
+
+export function taskTone(status: string): "ok" | "info" | "warn" | "bad" | "neutral" {
+  if (status === "done") return "ok";
+  if (status === "in_progress" || status === "in_review") return "info";
+  if (status === "blocked") return "bad";
+  if (status === "todo") return "warn";
+  return "neutral";
+}
+
+/** The host's address for a task. */
+export function taskHref(task: { id: string; identifier?: string | null }): string {
+  return `/issues/${encodeURIComponent(task.identifier ?? task.id)}`;
+}
+
+/** "PAR-12 · In progress +2" for a list row: the first task, and how many more hang off the mail. */
+export function taskLinkLine(link: { primary: { id: string; identifier?: string | null; status: string }; total: number }): string {
+  const name = link.primary.identifier ?? "Task";
+  const more = link.total > 1 ? ` +${link.total - 1}` : "";
+  return `${name} · ${taskStatusName(link.primary.status)}${more}`;
+}
