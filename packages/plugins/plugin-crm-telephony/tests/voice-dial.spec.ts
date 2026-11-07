@@ -7,9 +7,8 @@ const COMPANY = "c1";
 const SECRETS: Record<string, string | null> = {
   TWILIO_ACCOUNT_SID: "AC" + "a".repeat(32),
   TWILIO_AUTH_TOKEN: "tok",
-  TWILIO_ZA_NUMBER: "+27105550100",
-  TWILIO_US_NUMBER: "+12025550100",
 };
+const NUMBERS = [{ e164: "+27105550100", label: "PiB Cape Town", regions: ["27"], purposes: ["voice", "sms"], enabled: true, isDefault: true }, { e164: "+12025550100", label: "US sales", regions: ["1"], purposes: ["voice"], enabled: true, isDefault: false }];
 const PARENT = "CA" + "9".repeat(32);
 
 // 10:00 in Johannesburg on a Friday: inside the default 08:00-18:00 window; 03:00 in New York (outside US hours).
@@ -45,7 +44,7 @@ function fake(opts: {
   );
   const client = { createCall } as unknown as TwilioClient;
   const ctx = {
-    config: { get: vi.fn().mockResolvedValue({ voiceAllowedUserIds: ["user-1"], publicBaseUrl: "https://paperclip.example.com", ...(opts.config ?? {}) }) },
+    config: { get: vi.fn().mockResolvedValue({ voiceAllowedUserIds: ["user-1"], publicBaseUrl: "https://paperclip.example.com", numbers: NUMBERS, ...(opts.config ?? {}) }) },
     secrets: {
       resolve: vi.fn(async (name: string) => {
         const v = secrets[name];
@@ -101,7 +100,7 @@ describe("voiceDialAction", () => {
     const f = fake({ contacts: [{ id: "contact-7", phones: ["082 123 4567"] }] });
     const result = await voiceDialAction(f.ctx, { to: "+27 82 123 4567" }, userContext, { now: SAST_MORNING, client: f.client });
 
-    expect(result).toMatchObject({ callSid: PARENT, to: "+27821234567", callerId: "+27105550100", region: "ZA", contactId: "contact-7", recording: false, identity: "user-1" });
+    expect(result).toMatchObject({ callSid: PARENT, to: "+27821234567", callerId: "+27105550100", region: "27", numberLabel: "PiB Cape Town", matchedBy: "region", contactId: "contact-7", recording: false, identity: "user-1" });
 
     expect(f.createCall).toHaveBeenCalledTimes(1);
     const req = f.createCall.mock.calls[0][0] as Record<string, unknown>;
@@ -179,7 +178,8 @@ describe("voiceDialAction", () => {
     const ok = fake({ config: LATE_HOURS });
     const r = await voiceDialAction(ok.ctx, { to: "+12125552000" }, userContext, { now: BOTH_OPEN, client: ok.client });
     expect(r.callerId).toBe("+12025550100");
-    expect(r.region).toBe("US");
+    expect(r.region).toBe("1");
+    expect(r.matchedBy).toBe("region");
   });
 
   it("blocks when the daily cap is reached", async () => {
@@ -188,11 +188,26 @@ describe("voiceDialAction", () => {
     expect(f.audits[0]).toMatchObject({ detail: { reason: "cap_reached" } });
   });
 
-  it("names the number secret that is missing for the region, and refuses other regions", async () => {
-    const noUs = fake({ secrets: { TWILIO_US_NUMBER: null }, config: LATE_HOURS });
-    await expect(voiceDialAction(noUs.ctx, { to: "+12125552000" }, userContext, { now: BOTH_OPEN, client: noUs.client })).rejects.toThrow(/TWILIO_US_NUMBER/);
+  it("picks by region, falls back to the default, and names the Numbers settings when nothing fits", async () => {
+    // A UK lead: no +44 number, so the default (ZA) number is the caller ID.
     const uk = fake();
-    await expect(voiceDialAction(uk.ctx, { to: "+447700900123" }, userContext, { now: SAST_MORNING, client: uk.client })).rejects.toThrow(/\+27\) and US \(\+1\) numbers only/);
+    const r = await voiceDialAction(uk.ctx, { to: "+447700900123" }, userContext, { now: SAST_MORNING, client: uk.client });
+    expect(r).toMatchObject({ callerId: "+27105550100", region: "44", matchedBy: "default" });
+
+    // A single saved number is the default whatever the flag says, so a +27 lead gets the US number.
+    const usOnly = fake({ config: { numbers: [{ ...NUMBERS[1], isDefault: false }] } });
+    const lone = await voiceDialAction(usOnly.ctx, { to: "+27821234567" }, userContext, { now: SAST_MORNING, client: usOnly.client });
+    expect(lone).toMatchObject({ callerId: "+12025550100", matchedBy: "default" });
+
+    // A disabled number does not count.
+    const disabled = fake({ config: { numbers: NUMBERS.map((n) => ({ ...n, enabled: false })) } });
+    await expect(voiceDialAction(disabled.ctx, { to: "+27821234567" }, userContext, { now: SAST_MORNING, client: disabled.client })).rejects.toThrow(/No Voice number is set up/);
+
+    // The old secrets still work while the list is empty (seeded once).
+    const seeded = fake({ config: { numbers: [] }, secrets: { TWILIO_ZA_NUMBER: "+27115550199" } });
+    const s = await voiceDialAction(seeded.ctx, { to: "+27821234567" }, userContext, { now: SAST_MORNING, client: seeded.client });
+    expect(s.callerId).toBe("+27115550199");
+    expect(s.numberLabel).toContain("TWILIO_ZA_NUMBER");
   });
 
   it("says the credentials are missing without naming values", async () => {

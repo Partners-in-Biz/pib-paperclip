@@ -4,6 +4,7 @@ import type { R2Config } from "./r2-store.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
 import { describeVoiceReadiness, type VoiceReadiness } from "./voice-readiness.js";
 import { resolveTelephonySecret } from "./secrets.js";
+import { seedNumbersFromSecrets, validateNumbers, type NumbersSource, type TelephonyNumber } from "./numbers.js";
 
 export interface TelephonySettings {
   recordingEnabled: boolean;
@@ -22,6 +23,10 @@ export interface TelephonySettings {
   smsHolidays: string[];
   /** Where Twilio reaches this Paperclip (https://host, no path). Needed to place calls. */
   publicBaseUrl: string | null;
+  /** The company's Twilio numbers; see numbers.ts. */
+  numbers: TelephonyNumber[];
+  /** "settings" once saved here; "secrets" while the list is seeded from the old secret names; "none" when empty. */
+  numbersSource: NumbersSource;
 }
 
 export interface SecretStatus {
@@ -198,6 +203,8 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     : {}) as Record<string, unknown>;
 
   const callerIdList = Array.isArray(raw.callerIds) ? raw.callerIds : [];
+  const numbers = validateNumbers(raw.numbers).numbers;
+  const numbersSource: NumbersSource = numbers.length > 0 ? "settings" : "none";
   const userIdList = Array.isArray(raw.voiceAllowedUserIds) ? raw.voiceAllowedUserIds : [];
   const holidaysList = Array.isArray(raw.smsHolidays) ? raw.smsHolidays : [];
 
@@ -221,7 +228,26 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     whatsappFrom: validateWhatsappFrom(raw.whatsappFrom),
     smsHolidays: validateSmsHolidays(holidaysList),
     publicBaseUrl: validatePublicBaseUrl(raw.publicBaseUrl),
+    numbers,
+    numbersSource,
   };
+}
+
+/**
+ * The settings with the Numbers list filled from the old secrets when the
+ * company has saved none. Called where a number is needed, after any access
+ * check, so an unauthorised caller never triggers a secret read.
+ */
+export async function withSeededNumbers(ctx: PluginContext, companyId: string, settings: TelephonySettings): Promise<TelephonySettings> {
+  if (settings.numbers.length > 0) return settings;
+  let seeded: TelephonyNumber[] = [];
+  try {
+    seeded = await seedNumbersFromSecrets(ctx, companyId);
+  } catch {
+    seeded = [];
+  }
+  if (seeded.length === 0) return settings;
+  return { ...settings, numbers: seeded, numbersSource: "secrets" };
 }
 
 export async function saveSettings(
@@ -386,16 +412,28 @@ export async function saveSettings(
     }
   }
 
+  if ("numbers" in params) {
+    const checked = validateNumbers(params.numbers);
+    if (checked.errors.length > 0) {
+      errors.numbers = checked.errors.join(" ");
+    } else {
+      updates.numbers = checked.numbers;
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
   }
 
   const merged: TelephonySettings = { ...current, ...updates };
+  // The list is saved here now (an empty save means "no numbers", not "seed again").
+  const { numbersSource: _derived, ...toStore } = merged;
+  void _derived;
 
   // Write to state
-  await ctx.state.set(settingsStateKey(companyId), merged);
+  await ctx.state.set(settingsStateKey(companyId), toStore);
 
-  return { ok: true, settings: merged };
+  return { ok: true, settings: { ...merged, numbersSource: merged.numbers.length > 0 ? "settings" : "none" } };
 }
 
 export interface SettingsView {
@@ -408,7 +446,7 @@ export interface SettingsView {
 }
 
 export async function settingsView(ctx: PluginContext, companyId: string): Promise<SettingsView> {
-  const settings = await readSettings(ctx, companyId);
+  const settings = await withSeededNumbers(ctx, companyId, await readSettings(ctx, companyId));
   const status = await secretStatus(ctx, companyId, Array.from(TELEPHONY_SECRET_NAMES));
 
   let companyName: string | null = null;

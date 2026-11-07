@@ -7,10 +7,10 @@
  * `tel_calls` row; status callbacks update it (call-status.ts).
  */
 import type { PluginContext, PluginPerformActionContext, PluginApiRequestInput } from "@paperclipai/plugin-sdk";
-import { readSettings, r2Configured, validatePublicBaseUrl, type TelephonySettings } from "./settings.js";
+import { readSettings, r2Configured, validatePublicBaseUrl, withSeededNumbers, type TelephonySettings } from "./settings.js";
 import { checkVoiceAccess } from "./access.js";
 import { normalizeE164 } from "./phone.js";
-import { pickCallerId } from "./caller-id.js";
+import { pickCallerNumber } from "./caller-id.js";
 import { checkCallingHours } from "./tcpa.js";
 import { matchContactsByPhone } from "./contact-match.js";
 import { insertOnce } from "./idempotency.js";
@@ -39,7 +39,11 @@ export interface VoiceDialResult {
   callSid: string;
   to: string;
   callerId: string;
-  region: "ZA" | "US";
+  /** The lead's country calling code, digits only ("27", "1"). */
+  region: string;
+  /** Which number served it and why. */
+  numberLabel: string;
+  matchedBy: "region" | "default";
   contactId: string | null;
   recording: boolean;
   identity: string;
@@ -77,6 +81,7 @@ export function withinAllowedHours(now: Date, hours: TelephonySettings["allowedH
 const resolveOptional = (ctx: PluginContext, name: string, companyId: string): Promise<string | null> =>
   resolveTelephonySecret(ctx, companyId, name);
 
+
 export async function voiceDialAction(
   ctx: PluginContext,
   rawParams: unknown,
@@ -87,10 +92,11 @@ export async function voiceDialAction(
   const { companyId } = context;
   if (!companyId) throw new Error("A company is required");
 
-  const settings = await readSettings(ctx, companyId);
-  const access = checkVoiceAccess(actorForAccess(context), settings.voiceAllowedUserIds);
+  const saved = await readSettings(ctx, companyId);
+  const access = checkVoiceAccess(actorForAccess(context), saved.voiceAllowedUserIds);
   if (!access.ok) throw new Error(access.error);
   const identity = access.userId;
+  const settings = await withSeededNumbers(ctx, companyId, saved);
 
   const params = (rawParams && typeof rawParams === "object" ? rawParams : {}) as Partial<VoiceDialParams>;
   const to = typeof params.to === "string" ? normalizeE164(params.to) : null;
@@ -135,18 +141,10 @@ export async function voiceDialAction(
     await blocked("cap_reached", `The daily cap of ${settings.maxCallsPerDay} calls is reached. Raise Max calls in Telephony settings if needed.`, contactId);
   }
 
-  // Caller ID for the contact's region.
-  const numbers = {
-    za: (await resolveOptional(ctx, "TWILIO_ZA_NUMBER", companyId)) ?? undefined,
-    us: (await resolveOptional(ctx, "TWILIO_US_NUMBER", companyId)) ?? undefined,
-  };
-  const pick = pickCallerId(to, numbers);
+  // Caller ID: the company number that serves the lead's country, else the default (Numbers in Telephony settings).
+  const pick = pickCallerNumber(to, settings.numbers, "voice");
   if (!pick.ok) {
-    if (pick.reason === "unsupported_region") {
-      await blocked("unsupported_region", "Calls go to South African (+27) and US (+1) numbers only.", contactId);
-    }
-    const secretName = to.startsWith("+27") ? "TWILIO_ZA_NUMBER" : "TWILIO_US_NUMBER";
-    await blocked("caller_id_not_configured", `No Twilio number for this region: store the ${secretName} company secret.`, contactId);
+    await blocked(pick.reason === "no_numbers" ? "caller_id_not_configured" : "no_number_for_region", pick.message, contactId);
     throw new Error("unreachable");
   }
 
@@ -223,10 +221,13 @@ export async function voiceDialAction(
 
   await writeAudit(ctx.db, NAMESPACE, {
     companyId, userId: identity, action: "voice.dial", contactId,
-    detail: { callSid: created.value.sid, region: pick.region, recorded: record },
+    detail: { callSid: created.value.sid, callingCode: pick.callingCode, callerId: pick.callerId, matchedBy: pick.matchedBy, recorded: record },
   });
 
-  return { callSid: created.value.sid, to, callerId: pick.callerId, region: pick.region, contactId, recording: record, identity };
+  return {
+    callSid: created.value.sid, to, callerId: pick.callerId, region: pick.callingCode, numberLabel: pick.number.label, matchedBy: pick.matchedBy,
+    contactId, recording: record, identity,
+  };
 }
 
 export interface VoiceCallView {
