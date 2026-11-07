@@ -4,7 +4,7 @@
  * and recurring copies that keep every field.
  */
 import { invoiceNumberLabel } from "./invoice-number.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, iso, refreshInvoiceStatus } from "./balances.js";
@@ -1103,6 +1103,17 @@ export async function documentPdf(ctx: PluginContext, context: PluginPerformActi
     if (r2) sentCopyUrl = presignGet(r2, storedKey, 900, filename);
   }
   return { filename, mime: "application/pdf", base64: Buffer.from(bytes).toString("base64"), sentCopyUrl };
+}
+
+/** Agent tool `invoice-pdf`: the same PDF as `document-pdf`, with its sha256 and size, for the Drive filing script. Never a draft. */
+export async function invoicePdf(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const id = requiredString(params, "invoiceId");
+  const invoice = await requireInvoice(ctx, companyId, id);
+  if (invoice.status === "draft") throw new BillingError("This invoice is still a draft. Only sent or paid invoices have a PDF to file.");
+  const { filename, mime, base64 } = await documentPdf(ctx, context, { kind: "invoice", id });
+  const bytes = Buffer.from(base64, "base64");
+  return { filename, mime, base64, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length };
 }
 
 // ── Recurring ──────────────────────────────────────────────────────────────

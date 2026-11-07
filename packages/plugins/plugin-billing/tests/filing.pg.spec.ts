@@ -55,10 +55,15 @@ describe.skipIf(!available)("paid invoice filing issue (postgres)", () => {
     expect(issue!.title).toBe(`File paid invoice ${invoice.number} (Lumen Digital)`);
     const body = issue!.description!;
     expect(body).toContain("Lumen Digital");
-    expect(body).toContain("`Clients/<Company> (<Contact>)/Contracts & Quotes/`");
-    expect(body).toMatch(new RegExp(`\\d{4}-\\d{2}-\\d{2} Lumen Digital invoice ${invoice.number} SEO sprint v01\\.html`));
+    expect(body).toContain("`02 Partners in Biz/Clients/<Company> (<Contact>)/Contracts & Quotes/`");
+    expect(body).toContain("0ADMOMlq1HzGgUk9PVA");
+    expect(body).toContain("1FDrIxsipXHGSOCJzRls0kXAQqeCPFtnU");
+    expect(body).toMatch(new RegExp(`\\d{4}-\\d{2}-\\d{2} Lumen Digital invoice ${invoice.number} SEO sprint \\(paid\\) v01\\.pdf`));
     expect(body).toContain("pib-drive-saving");
-    expect(body).toContain("Drive file name in your closing comment");
+    expect(body).toContain("Google Drive (filing)");
+    expect(body).toContain(`drive-file.sh invoice-pdf ${invoice.id} <outFile>`);
+    expect(body).toContain("agent_authorization_required");
+    expect(body).toContain("Never create a client folder, never file under another name.");
     expect(body).not.toMatch(/https?:\/\//);
     const doc = h.documents.get(`${issue!.id}:invoice`)!;
     expect(doc.format).toBe("markdown");
@@ -67,11 +72,19 @@ describe.skipIf(!available)("paid invoice filing issue (postgres)", () => {
     expect(doc.body).toContain("<html");
   });
 
-  it("does not open a second issue when the paid hand-off is replayed", async () => {
+  it("does not open a second issue when the paid hand-off is replayed, and re-upserts the document once", async () => {
     const invoice = await sent();
     await pay(invoice.id);
     const row = (await getInvoice(h.ctx, invoice.id))!;
-    await openInvoiceFilingIssue(h.ctx, row, new Date());
+    const real = h.ctx.issues.documents.upsert;
+    let upserts = 0;
+    h.ctx.issues.documents.upsert = (async (input: Parameters<typeof real>[0]) => { upserts++; return real(input); }) as typeof real;
+    try {
+      await openInvoiceFilingIssue(h.ctx, row, new Date());
+    } finally {
+      h.ctx.issues.documents.upsert = real;
+    }
+    expect(upserts).toBe(1);
     await h.runJob("mark-overdue");
     await h.client.query(`UPDATE ${NAMESPACE}.handoffs SET last_emitted_at = now() - interval '2 hours'`);
     await h.runJob("mark-overdue");
@@ -96,6 +109,22 @@ describe.skipIf(!available)("paid invoice filing issue (postgres)", () => {
     }
     expect(filingIssues()).toHaveLength(1);
     expect(h.documents.get(`${filingIssues()[0]!.id}:invoice`)!.body).toContain(invoice.number);
+  });
+
+  it("invoice-pdf returns the same sha256 twice for a paid invoice and rejects a draft", async () => {
+    const invoice = await sent();
+    await pay(invoice.id);
+    type Pdf = { filename: string; mime: string; base64: string; sha256: string; bytes: number };
+    const a = await h.call<Pdf>("billing.invoice-pdf", { invoiceId: invoice.id });
+    const b = await h.call<Pdf>("billing.invoice-pdf", { invoiceId: invoice.id });
+    expect(a.mime).toBe("application/pdf");
+    expect(a.filename).toMatch(/\.pdf$/);
+    expect(a.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.sha256).toBe(b.sha256);
+    expect(a.bytes).toBe(Buffer.from(a.base64, "base64").length);
+    expect(Buffer.from(a.base64, "base64").subarray(0, 4).toString()).toBe("%PDF");
+    const d = await draft();
+    await expect(h.call("billing.invoice-pdf", { invoiceId: d.id })).rejects.toThrow(/draft/i);
   });
 
   it("opens nothing for a draft, a sent invoice or a part payment", async () => {
