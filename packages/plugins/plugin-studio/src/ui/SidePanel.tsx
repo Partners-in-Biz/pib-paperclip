@@ -5,7 +5,9 @@
  * disabled with the reason (canvas-settings.ts).
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { useHostNavigation, usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useStudioAction } from "./action.js";
+import { useMakerLabel } from "./maker.js";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { MAX_TEXT } from "../canvas-rules.js";
 import { modelOptions, type CardInputs } from "../canvas-inputs.js";
@@ -125,8 +127,8 @@ function Configure(props: PanelProps) {
 function GenerateConfigure({ card, companyId, client, canGenerate, models, unavailable, inputs, edit, beforeEdit, onGenerated }: PanelProps) {
   const kind = card.type as "image" | "video";
   const data = card.data;
-  const estimateAction = usePluginAction("estimate");
-  const generateAction = usePluginAction("generate");
+  const estimateAction = useStudioAction("estimate");
+  const generateAction = useStudioAction("generate");
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -217,7 +219,7 @@ function NoFile({ children }: { children: ReactNode }) {
 
 function Review({ card, companyId, assetStatus, canGenerate }: PanelProps) {
   const assetId = card.data.assetId;
-  const reviewAction = usePluginAction("review");
+  const reviewAction = useStudioAction("review");
   const [status, setStatus] = useState<string | undefined>(assetStatus);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -251,12 +253,11 @@ interface Detail {
 function Provenance({ card, companyId }: PanelProps) {
   const assetId = card.data.assetId;
   const detail = usePluginData<Detail>("asset", { companyId, assetId: assetId ?? "" });
+  const maker = useMakerLabel(companyId, detail.data?.madeBy);
   if (!assetId) return <NoFile>No file yet, so no history. It shows how a file was made once a generation has run.</NoFile>;
   if (detail.error) return <span role="alert" style={{ color: "var(--destructive)", fontSize: 12 }}>{errorText(detail.error)}</span>;
   if (!detail.data) return <NoFile>Loading…</NoFile>;
   const g = detail.data.generation;
-  const made = detail.data.madeBy;
-  const maker = made?.agentId ? `Agent ${made.agentId.slice(0, 8)}` : made?.userId ? "A person" : "Unknown";
   return (
     <dl style={{ display: "grid", gap: 6, margin: 0 }}>
       <Fact term="Made by" value={maker} />
@@ -286,7 +287,7 @@ function Fact({ term, value }: { term: string; value: string }) {
 function Export({ card, companyId, onBuildOn }: PanelProps) {
   const assetId = card.data.assetId;
   const nav = useHostNavigation();
-  const assetUrl = usePluginAction("asset-url");
+  const assetUrl = useStudioAction("asset-url");
   const [error, setError] = useState<string | null>(null);
   if (!assetId) return <NoFile>No file yet. Once this card has one you can download it, open it in the library or build on it.</NoFile>;
   const download = () => {

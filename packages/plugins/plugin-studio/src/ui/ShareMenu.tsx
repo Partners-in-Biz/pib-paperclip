@@ -4,8 +4,8 @@
  * Only editors get this menu: the list comes from an editor-only action because each entry carries the secret path.
  */
 import { useCallback, useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { useStudioAction } from "./action.js";
 
 interface Share {
   id: string;
@@ -25,9 +25,9 @@ export function ShareMenu({ companyId, canvasId, open: shown, onOpenChange }: { 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [list, setList] = useState<Share[] | null>(null);
-  const load = usePluginAction("canvas-share-list");
-  const create = usePluginAction("canvas-share-create");
-  const revoke = usePluginAction("canvas-share-revoke");
+  const load = useStudioAction("canvas-share-list");
+  const create = useStudioAction("canvas-share-create");
+  const revoke = useStudioAction("canvas-share-revoke");
 
   const refresh = useCallback(async () => {
     const out = (await load({ companyId, canvasId })) as { shares?: Share[] } | null;

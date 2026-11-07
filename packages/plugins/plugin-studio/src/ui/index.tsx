@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { useStudioAction } from "./action.js";
+import { useMakerLabel } from "./maker.js";
 import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { GiveButton, GivenList } from "./GiveToAgent.js";
@@ -110,7 +112,7 @@ export function StudioPage({ context }: PluginPageProps) {
   const host = useHostContext();
   const companyId = context.companyId ?? host.companyId ?? null;
   const overview = usePluginData<Overview>("overview", companyId ? { companyId } : undefined);
-  const meAction = usePluginAction("me");
+  const meAction = useStudioAction("me");
   const [me, setMe] = useState<Me | null>(null);
   const [meError, setMeError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("library");
@@ -388,8 +390,9 @@ function AssetDetail({
   const [v, setV] = useState(0);
   const detailParams = useMemo(() => ({ companyId, assetId, v }), [companyId, assetId, v]);
   const detail = usePluginData<Detail>("asset", detailParams);
-  const assetUrl = usePluginAction("asset-url");
-  const reviewAction = usePluginAction("review");
+  const maker = useMakerLabel(companyId, detail.data?.madeBy);
+  const assetUrl = useStudioAction("asset-url");
+  const reviewAction = useStudioAction("review");
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -499,7 +502,7 @@ function AssetDetail({
               <dt style={muted}>Cost</dt>
               <dd style={term}>{d.generation ? `${d.generation.actualCredits ?? d.generation.estimatedCredits} credits` : "—"}</dd>
               <dt style={muted}>Made by</dt>
-              <dd style={term}>{d.madeBy.agentId ? `Agent ${d.madeBy.agentId}` : d.madeBy.userId ? `Person ${d.madeBy.userId}` : "—"}</dd>
+              <dd style={term}>{maker}</dd>
               <dt style={muted}>Issue</dt>
               <dd style={term}>{d.issue ? `${d.issue.identifier ?? d.issue.id}${d.issue.title ? `: ${d.issue.title}` : ""}` : "—"}</dd>
               <dt style={muted}>Client</dt>
@@ -538,8 +541,8 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
-  const estimateAction = usePluginAction("estimate");
-  const generateAction = usePluginAction("generate");
+  const estimateAction = useStudioAction("estimate");
+  const generateAction = useStudioAction("generate");
 
   useEffect(() => {
     if (!model) return;
@@ -774,7 +777,7 @@ function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable }: { la
 }
 
 function Usage({ companyId, data, me, refresh }: { companyId: string; data: Overview; me: Me | null; refresh: () => void }) {
-  const setCap = usePluginAction("set-cap");
+  const setCap = useStudioAction("set-cap");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
   const [addClient, setAddClient] = useState("");

@@ -3,8 +3,8 @@
  * Each instance owns its own requests and state; nothing about Drive is kept after it closes.
  */
 import { useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { useStudioAction } from "./action.js";
 
 interface DriveFile {
   id: string;
@@ -20,8 +20,8 @@ function size(bytes: number): string {
 
 /** `client` is the scope the files are for: "company:<id>", "contact:<id>" or "own". Empty: no client picked yet. */
 export function FromDrive({ companyId, client, onImported, small }: { companyId: string; client: string; onImported: (asset: { id: string; name: string }) => void; small?: boolean }) {
-  const list = usePluginAction("drive-list");
-  const importFile = usePluginAction("drive-import");
+  const list = useStudioAction("drive-list");
+  const importFile = useStudioAction("drive-import");
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<DriveFile[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

@@ -25,7 +25,8 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import flowCss from "@xyflow/react/dist/style.css";
-import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import { useStudioAction } from "./action.js";
 import { Button, errorText, Field, Input, Page, PageFrame, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
@@ -178,7 +179,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
 
 /** True for people who may change canvases (the worker's canvasEditor check); false for viewers; null while loading. */
 function useCanEdit(companyId: string): boolean | null {
-  const meAction = usePluginAction("me");
+  const meAction = useStudioAction("me");
   const [canEdit, setCanEdit] = useState<boolean | null>(null);
   useEffect(() => {
     let live = true;
@@ -194,7 +195,7 @@ function useCanEdit(companyId: string): boolean | null {
 
 /** Archive a board after a confirm. Resolves true when it was archived. */
 function useArchive(companyId: string, onError: (text: string) => void) {
-  const archive = usePluginAction("canvas-archive");
+  const archive = useStudioAction("canvas-archive");
   const [busyId, setBusyId] = useState<string | null>(null);
   const run = async (b: { id: string; title: string }) => {
     if (!window.confirm(`Archive "${b.title}"? It leaves the canvas list.`)) return false;
@@ -215,7 +216,7 @@ function useArchive(companyId: string, onError: (text: string) => void) {
 function CanvasList({ companyId }: { companyId: string }) {
   const nav = useHostNavigation();
   const list = usePluginData<{ canvases: Summary[] }>("canvases", { companyId, limit: 100 });
-  const create = usePluginAction("canvas-create");
+  const create = useStudioAction("canvas-create");
   const canEdit = useCanEdit(companyId);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -273,7 +274,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const nav = useHostNavigation();
   const flow = useReactFlow();
   const board = usePluginData<Board>("canvas", { companyId, canvasId });
-  const saveAction = usePluginAction("canvas-save");
+  const saveAction = useStudioAction("canvas-save");
   const client = board.data?.client ? `${board.data.client.kind}:${board.data.client.id}` : undefined;
   const assets = usePluginData<{ assets: LibraryAsset[] }>("assets", { companyId, client, limit: 60 });
   const library = useMemo(() => (assets.data?.assets ?? []).filter((a) => a.kind === "image" || a.kind === "video"), [assets.data]);
@@ -304,7 +305,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 
   // Generate on a card: the same models, estimate and generate actions as the Generate tab.
   const overview = usePluginData<{ models?: PageModel[]; unavailableModels?: Unavailable[]; companyUsed: number; caps: Array<{ scopeKey: string; monthlyCredits: number }>; clientUsage: Array<{ scopeKey: string; used: number }> }>("overview", { companyId });
-  const meAction = usePluginAction("me");
+  const meAction = useStudioAction("me");
   const [canGen, setCanGen] = useState<boolean | null>(null);
   const [meUserId, setMeUserId] = useState<string | null>(null);
   const [giving, setGiving] = useState<string | null>(null);
@@ -768,7 +769,7 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
 function ResultBar({ id, assetId }: { id: string; assetId: string }) {
   const { companyId, buildOn, canGenerate, give } = useContext(BoardCtx);
   const nav = useHostNavigation();
-  const assetUrl = usePluginAction("asset-url");
+  const assetUrl = useStudioAction("asset-url");
   const [error, setError] = useState<string | null>(null);
   const download = () => {
     setError(null);

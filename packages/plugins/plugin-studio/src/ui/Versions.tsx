@@ -3,7 +3,8 @@
  * editors save or restore a version or write a comment (the worker checks this again).
  */
 import { useState, type CSSProperties } from "react";
-import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useStudioAction } from "./action.js";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 
 interface Version { id: string; name: string; revision: number; cards: number; createdAt: string | null }
@@ -40,8 +41,8 @@ export function VersionsMenu({ companyId, canvasId, canEdit, saved, revision, on
 
 function VersionsList({ companyId, canvasId, canEdit, saved, revision, onRestored }: VersionsProps) {
   const list = usePluginData<{ versions: Version[] }>("canvas-versions", { companyId, canvasId });
-  const saveVersion = usePluginAction("canvas-version-save");
-  const restore = usePluginAction("canvas-version-restore");
+  const saveVersion = useStudioAction("canvas-version-save");
+  const restore = useStudioAction("canvas-version-restore");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +94,7 @@ function VersionsList({ companyId, canvasId, canEdit, saved, revision, onRestore
 
 export function CommentsThread({ companyId, canvasId, cardId, canEdit, meUserId }: { companyId: string; canvasId: string; cardId: string; canEdit: boolean; meUserId: string | null }) {
   const thread = usePluginData<{ comments: Comment[] }>("canvas-comments", { companyId, canvasId, cardId });
-  const add = usePluginAction("canvas-comment-add");
+  const add = useStudioAction("canvas-comment-add");
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
