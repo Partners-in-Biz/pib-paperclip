@@ -206,6 +206,7 @@ import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatc
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { registerDriveSaveRoute } from "./drive/save-route.js";
+import { reportsDriveCatchup } from "./report-drive-catchup.js";
 import { listDriveFiles } from "./drive/store.js";
 import { listClientFiles } from "./drive/files-list.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
@@ -304,6 +305,13 @@ const plugin = definePlugin({
       return load(ctx, context);
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
+    // PAR-8130: copy sent reports to Drive for a date range. A dry run (the default) only lists; saving needs a board user.
+    registerAction("crm.reports-drive-catchup", async (params, context) => {
+      const companyId = requireCompany(context);
+      const dryRun = params.dryRun !== false;
+      if (!dryRun) requireUser(context, "run the Drive catch-up");
+      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
+    });
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
     registerAction("crm.delete-company", (params, context) => deleteCompanyAction(ctx, context, params));
