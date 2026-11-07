@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { Building2, Flame, Icon, Input, Megaphone, Package, SectionHeading, Share2, Sparkles, Stamp, UserRound, seriesColor, tone, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
+import { PLUGIN_ID } from "../namespace.js";
 import { PHOTO_PRESETS } from "../presets.js";
 import { TEMPLATE_CATEGORIES, filterTemplates, PROMPT_TEMPLATES, type PromptTemplate } from "../prompt-templates.js";
 import { aspectCss } from "./card-look.js";
@@ -12,8 +14,11 @@ const ICONS: Record<(typeof ORDER)[number], LucideIcon> = { product: Package, ad
 const MUTED = "var(--muted-foreground)";
 const cover = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 35%" } as const;
 
-/** A built-in image template's example picture, shipped with the plugin (the build copies `assets/template-samples` next to the page). */
-const sampleUrl = (t: PromptTemplate) => (t.kind === "image" ? new URL(`./template-samples/${t.id}.jpg`, import.meta.url).href : undefined);
+/**
+ * A built-in image template's example picture, shipped with the plugin (the build copies `assets/template-samples` next to the page).
+ * Never build this from `import.meta.url` directly: the host runs plugin pages from a blob: address, where `new URL` throws and takes the page down.
+ */
+const sampleUrl = (t: PromptTemplate, base: string | null) => (base && t.kind === "image" ? `${base}template-samples/${t.id}.jpg` : undefined);
 const cardGrid = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(190px, 100%), 1fr))", gap: 12, minWidth: 0 } as const;
 
 /** A card's picture: a saved template's real result, or a tile showing the shape it is composed for. */
@@ -69,6 +74,16 @@ export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("");
   const [kind, setKind] = useState("");
+  const [uiBase, setUiBase] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void resolvePluginUiBase(PLUGIN_ID, import.meta.url).then((base) => {
+      if (live) setUiBase(base);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   const thumbs = useMemo(() => saved.map((t) => t.assetId).filter((id): id is string => Boolean(id)), [saved]);
   const previews = usePreviewUrls(companyId, thumbs);
   const needle = q.trim().toLowerCase();
@@ -108,7 +123,7 @@ export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick
           <SectionHeading title="Templates" />
           <div style={cardGrid}>
             {showBuiltIn.map((t) => (
-              <Card key={t.id} title={t.title} tagline={t.tagline} selected={selectedId === t.id} onPick={() => onPick(t)} art={<Art family={t.category} ratio={t.ratio} kind={t.kind} url={sampleUrl(t)} />} />
+              <Card key={t.id} title={t.title} tagline={t.tagline} selected={selectedId === t.id} onPick={() => onPick(t)} art={<Art family={t.category} ratio={t.ratio} kind={t.kind} url={sampleUrl(t, uiBase)} />} />
             ))}
           </div>
         </section>
