@@ -265,6 +265,12 @@ const plugin = definePlugin({
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return driveThumbs(ctx, me.companyId, objectParams(params));
     });
+    // Progress of a Drive save or import over 5 MiB (PAR-8125). The UI polls this; people only.
+    action("drive-transfer", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't use Drive transfers.", "forbidden");
+      return getTransfer(me.companyId, String(objectParams(params).transferId ?? "").trim());
+    });
 
     // The picked client's brand kit from the CRM (PAR-8134). Shown on the card; a person adds it to the prompt.
     registerBrandKitReplies(ctx);
