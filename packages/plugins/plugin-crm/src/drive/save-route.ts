@@ -16,7 +16,7 @@ import { registerProducerRoute, type ProducerRequest } from "./producer-route.js
 type RouteCtx = Pick<PluginContext, "events" | "logger">;
 
 export interface DriveSaveRouteDeps {
-  resolveProject: (ctx: any, companyId: string, client: { kind?: string; clientKind?: string; clientRef?: string }) => Promise<string | null | undefined>;
+  resolveProject: (ctx: any, companyId: string, client: { kind?: string; clientKind?: string; clientRef?: string; ownWork?: boolean; projectId?: string }) => Promise<string | null | undefined>;
   save: (ctx: any, viewer: Parameters<typeof saveDriveFile>[1], input: Parameters<typeof saveDriveFile>[2]) => Promise<{ status: string; driveFileId?: string; url?: string; hint?: string }>;
 }
 
@@ -35,13 +35,23 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
       return send(name, rest);
     };
     const { kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
+    const ownWork = payload.ownWork === true;
+    const workProjectId = str(payload.projectId)?.trim() || undefined;
 
     try {
-      const projectId = await deps.resolveProject(ctx, companyId, { kind: str(kind), clientKind: str(clientKind), clientRef: str(clientRef) });
+      // Never mix clients (PAR-8128): the own folder is only for a producer that says the work is ours. A save that
+      // names no client, no project and no ownWork lost its client somewhere, so it is refused, not filed as ours.
+      if (!workProjectId && !ownWork && !(str(clientKind) && str(clientRef))) {
+        await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: "no_client", hint: "The save named no client and was not marked as the company's own work (ownWork), so it was not filed anywhere." });
+        return;
+      }
+      const projectId = await deps.resolveProject(ctx, companyId, { kind: str(kind), clientKind: str(clientKind), clientRef: str(clientRef), ...(ownWork ? { ownWork } : {}), ...(workProjectId ? { projectId: workProjectId } : {}) });
       if (!projectId) {
-        const hint = clientRef
-          ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
-          : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
+        const hint = workProjectId
+          ? "This work's project is not linked to a client in the CRM and is not the company's own Drive project. Link it (client projects) and retry."
+          : clientRef
+            ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
+            : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
         await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: "no_project", hint });
         return;
       }

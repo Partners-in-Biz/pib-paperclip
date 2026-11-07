@@ -58,6 +58,12 @@ export async function saveEvidenceToDrive(
     step: string;
     pngBase64: string;
     client?: EvidenceClient | null;
+    /**
+     * The issue's Paperclip project (PAR-8128). When set it decides the folder: the CRM files the file there only
+     * when the project is linked to a client or is the company's own Drive project, and refuses it otherwise.
+     * The agent's `client` is then ignored. With neither a project nor a client the copy is skipped.
+     */
+    projectId?: string | null;
   },
 ): Promise<DriveSaveResult | null> {
   try {
@@ -76,6 +82,13 @@ export async function saveEvidenceToDrive(
       return null;
     }
 
+    // Never guess the folder: no project and no client means we cannot tell whose work this is, so no copy.
+    const projectId = typeof args.projectId === "string" && args.projectId.trim() ? args.projectId.trim() : null;
+    if (!projectId && !parsed.client) {
+      ctx.logger.warn("cockpit: evidence not copied to Drive (no project or client for the issue)", { companyId, issueId });
+      return { status: "failed", requestId: "none", reason: "no_client", hint: "The issue has no project and no client was given, so the Drive copy was skipped." };
+    }
+
     // Decode base64 to bytes
     const bytes = Buffer.from(pngBase64, "base64");
 
@@ -92,7 +105,7 @@ export async function saveEvidenceToDrive(
       mimeType: "image/png",
       bytes,
       subfolder: EVIDENCE_SUBFOLDER,
-      ...(parsed.client ? { client: parsed.client } : {}),
+      ...(projectId ? { projectId } : { client: parsed.client! }),
     });
 
     // Log warnings only on failure; do not log PNG content

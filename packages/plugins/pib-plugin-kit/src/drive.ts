@@ -63,7 +63,18 @@ export type DriveSaveOptions = {
   mimeType: string;
   subfolder?: DriveSubfolder;
   timeoutMs?: number;
+  /** The CRM client the file belongs to: it lands in that client's linked project. */
   client?: { kind: string; ref: string };
+  /**
+   * The company's own work (PAR-8128): the file lands in the CRM's `drive.ownProjectId`. Must be asked for: a save with
+   * no client, no `ownWork` and no `projectId` is refused, so a missing client is never filed as the company's own.
+   */
+  ownWork?: true;
+  /**
+   * The Paperclip project the work belongs to (e.g. an issue's project). The CRM files it in that project when the
+   * project is linked to a client or is the own project, and refuses it otherwise. Wins over `client` and `ownWork`.
+   */
+  projectId?: string;
 } & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -137,6 +148,13 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
         return { status: "failed", requestId, reason: "invalid_input" };
       }
     }
+    // A client's file and the company's own work are two different folders: never both.
+    if (opts.ownWork !== undefined && (opts.ownWork !== true || client !== undefined)) {
+      return { status: "failed", requestId, reason: "invalid_input" };
+    }
+    if (opts.projectId !== undefined && (typeof opts.projectId !== "string" || opts.projectId.trim().length === 0)) {
+      return { status: "failed", requestId, reason: "invalid_input" };
+    }
 
     // Register handlers and check for duplicate
     registerDriveReplies(ctx);
@@ -175,6 +193,8 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
       payload.clientKind = client.kind;
       payload.clientRef = client.ref;
     }
+    if (opts.ownWork === true) payload.ownWork = true;
+    if (opts.projectId) payload.projectId = opts.projectId.trim();
 
     // Setup promise and handlers
     const tm = timeoutMs ?? DEFAULT_TIMEOUT_MS;

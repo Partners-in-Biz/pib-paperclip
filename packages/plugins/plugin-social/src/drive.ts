@@ -53,6 +53,8 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
   const postId = shortId(opts.post.id);
   // Never mix clients: a client's post goes to that client's folder, never the company's own one.
   const client = opts.post.client_kind && opts.post.client_ref ? { kind: opts.post.client_kind, ref: opts.post.client_ref } : undefined;
+  // A post with no client is the company's own; the CRM uses the own folder only when asked (PAR-8128).
+  const target = client ? { client } : { ownWork: true as const };
 
   // Save caption/text as text/plain
   try {
@@ -66,7 +68,7 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
       bytes: captionBytes,
       subfolder: "02 Assets",
       timeoutMs: 10000,
-      ...(client ? { client } : {}),
+      ...target,
     });
     if (result.status !== "saved") {
       ctx.logger.warn("Failed to save post caption to Drive", { status: result.status, reason: "reason" in result ? result.reason : undefined });
@@ -93,7 +95,7 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
         publicUrl: media.url,
         subfolder: "02 Assets",
         timeoutMs: 10000,
-        ...(client ? { client } : {}),
+        ...target,
       });
 
       if (result.status !== "saved") {

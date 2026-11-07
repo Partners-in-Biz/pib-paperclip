@@ -93,13 +93,12 @@ describe("create-preview", () => {
     expect(fakeDriveSave.mock.calls[0]![1]).toMatchObject({ kind: "seo", subfolder: "03 Deliverables", client: { kind: "company", ref: "crm-co-42" } });
   });
 
-  it("without a client the Drive save call is unchanged (no client key)", async () => {
+  it("a sprint with only a free-text client name and no caller client is not copied to Drive (PAR-8128)", async () => {
+    // The fixture sprint has client_ref null and client_name "Acme Ltd" (legacy): it could be anyone's, so no own-folder copy.
     fakeDriveSave.mockClear();
-    await createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
-    expect(fakeDriveSave).toHaveBeenCalledTimes(1);
-    const opts = fakeDriveSave.mock.calls[0]![1];
-    expect(opts).not.toHaveProperty("client");
-    expect(Object.keys(opts).sort()).toEqual(["bytes", "companyId", "kind", "mimeType", "name", "requestId", "subfolder", "timeoutMs"]);
+    const result = await createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
+    expect(result).toBeTruthy();
+    expect(fakeDriveSave).not.toHaveBeenCalled();
   });
 
   it.each([

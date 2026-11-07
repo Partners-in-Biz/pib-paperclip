@@ -49,6 +49,7 @@ describe("evidence-drive functions", () => {
 
       await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: validPngBase64,
@@ -68,6 +69,7 @@ describe("evidence-drive functions", () => {
 
       await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-456",
         step: "submit-form",
         pngBase64: validPngBase64,
@@ -81,6 +83,7 @@ describe("evidence-drive functions", () => {
     it("rejects invalid PNG signature", async () => {
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: "aGVsbG8gd29ybGQ=", // "hello world" in base64, not PNG
@@ -94,6 +97,7 @@ describe("evidence-drive functions", () => {
     it("rejects invalid issue id", async () => {
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "INVALID",
         step: "login",
         pngBase64: validPngBase64,
@@ -109,6 +113,7 @@ describe("evidence-drive functions", () => {
 
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: validPngBase64,
@@ -123,6 +128,7 @@ describe("evidence-drive functions", () => {
 
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: validPngBase64,
@@ -137,6 +143,7 @@ describe("evidence-drive functions", () => {
 
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: validPngBase64,
@@ -152,6 +159,7 @@ describe("evidence-drive functions", () => {
 
       const result = await saveEvidenceToDrive(mockCtx, {
         companyId: "co-1",
+        projectId: "proj-1",
         issueId: "PAR-123",
         step: "login",
         pngBase64: validPngBase64,
@@ -184,13 +192,20 @@ describe("evidence-drive functions", () => {
       expect(payloads[0]).toMatchObject({ clientKind: "company", clientRef: "canary-abc12345", kind: "ops", subfolder: EVIDENCE_SUBFOLDER });
     });
 
-    it("without client: payload has no client fields and driveSave gets no client", async () => {
-      await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64 });
-      expect(fakeDriveSave.mock.calls[0]![1]).not.toHaveProperty("client");
+    it("no project and no client: the copy is skipped, nothing emitted (PAR-8128)", async () => {
+      const result = await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64 });
+      expect(result).toMatchObject({ status: "failed", reason: "no_client" });
+      expect(fakeDriveSave).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("with the issue's project: drive.save-requested carries projectId and no agent client (PAR-8128)", async () => {
+      await saveEvidenceToDrive(eventCtx, { companyId: "co-1", issueId: "PAR-1", step: "login", pngBase64: validPngBase64, projectId: "proj-1", client: { kind: "company", ref: "someone-else" } });
       const payloads = saveRequests();
       expect(payloads).toHaveLength(1);
-      expect(payloads[0]).not.toHaveProperty("clientKind");
+      expect(payloads[0]).toMatchObject({ projectId: "proj-1", kind: "ops" });
       expect(payloads[0]).not.toHaveProperty("clientRef");
+      expect(payloads[0]).not.toHaveProperty("ownWork");
     });
 
     it.each([
