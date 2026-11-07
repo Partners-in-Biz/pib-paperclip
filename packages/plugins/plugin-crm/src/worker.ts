@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
 import { emitAllOwnMetrics } from "./own-metrics.js";
+import { registerDriveReadRoutes } from "./drive/read.js";
 import {
   definePlugin,
   runWorker,
@@ -587,6 +588,9 @@ const plugin = definePlugin({
         await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
       }
     });
+
+    // Drive reads for producer plugins (kit's driveList / driveRead, PAR-8107): only the client's own assets folders.
+    registerDriveReadRoutes(ctx);
 
     // Subscribe to Setup plugin's drive.binding.set event
     ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {

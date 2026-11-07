@@ -24,6 +24,7 @@ import {
   type UploadResult,
 } from "./broker.js";
 import { GoogleAuthError, serviceAccountToken, type GoogleFetch, type ServiceAccountKey } from "./google-sa.js";
+import type { DriveFileInfo } from "./broker.js";
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -370,5 +371,45 @@ export function createGoogleDriveBroker(
     };
   }
 
-  return { resolve, ensure, identity, uploadFile };
+  const fileInfo = (f: DriveFile): DriveFileInfo => ({ id: f.id, name: f.name, mimeType: f.mimeType ?? "application/octet-stream", size: Number(f.size ?? 0), parents: f.parents ?? [] });
+
+  /** The files (not folders) directly in one folder, oldest first, at most 200. */
+  async function listFiles(parentFolderId: string): Promise<DriveFileInfo[]> {
+    const files = await list(`${q(parentFolderId)} in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`, "id,name,mimeType,size,parents", 200);
+    return files.filter((f) => f.mimeType !== "application/vnd.google-apps.folder").map(fileInfo);
+  }
+
+  async function fileMeta(fileId: string): Promise<DriveFileInfo | null> {
+    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,name,mimeType,size,parents,driveId,trashed")}`);
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
+    const file = JSON.parse(res.text) as DriveFile & { driveId?: string; trashed?: boolean };
+    // Only this company's Shared Drive: a file the service account can see elsewhere is not reachable here.
+    if (typeof file.id !== "string" || file.trashed || file.driveId !== sharedDriveId) return null;
+    return fileInfo(file);
+  }
+
+  async function downloadFile(fileId: string, maxBytes: number): Promise<Uint8Array> {
+    let token: string;
+    try {
+      token = await serviceAccountToken(fetchFn, key, undefined, now());
+    } catch (err) {
+      if (err instanceof GoogleAuthError) throw new BrokerError(err.message, err.status === 400 ? 401 : err.status, err.status >= 500, undefined, undefined, "bad_credential");
+      throw new BrokerError(`Network error getting a Google token: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+    let res: Response;
+    try {
+      res = await fetchFn(`${DRIVE}/files/${encodeURIComponent(fileId)}?alt=media&${shared}`, { method: "GET", headers: { Authorization: "Bearer " + token }, signal: AbortSignal.timeout(60_000) });
+    } catch (err) {
+      throw new BrokerError(`Network error talking to Google Drive: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, await res.text().catch(() => ""));
+    const declared = Number(res.headers?.get?.("content-length") ?? 0);
+    if (declared > maxBytes) throw new BrokerError(`File too large (${declared} bytes exceeds the limit)`, 413, false, undefined, undefined, "too_large");
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new BrokerError(`File too large (${bytes.byteLength} bytes exceeds the limit)`, 413, false, undefined, undefined, "too_large");
+    return bytes;
+  }
+
+  return { resolve, ensure, identity, uploadFile, listFiles, fileMeta, downloadFile };
 }
