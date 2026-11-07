@@ -4,11 +4,11 @@
  * width; the other results sit in a strip under it; Reject / Approve stay at the bottom and use the `review` action.
  */
 import { useState, type AnchorHTMLAttributes } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { errorText } from "@partnersinbiz/pib-plugin-ui";
 import { metaLine, posterFrameUrl, statusTone } from "./library.js";
 import { previewPlaceholder } from "./preview-state.js";
 import { awaitingLine, clipPrompt, nextAfterReview, reviewPill, type ReviewItem } from "./phone-review.js";
+import { useStudioAction } from "./action.js";
 
 export const phoneReviewCss = `
 .studio-phone { display: grid; gap: 0.75rem; padding: 0.75rem 0.75rem calc(5.5rem + env(safe-area-inset-bottom)); min-width: 0; }
@@ -62,7 +62,7 @@ export function PhoneReview({
   backLink: AnchorHTMLAttributes<HTMLAnchorElement>;
   onReviewed: () => void;
 }) {
-  const reviewAction = usePluginAction("review");
+  const reviewAction = useStudioAction("review");
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);

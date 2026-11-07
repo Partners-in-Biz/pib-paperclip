@@ -11,6 +11,7 @@ import { saveAssetToDrive } from "./drive.js";
 import { importFromDrive, listDriveFiles } from "./drive-import.js";
 import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { errorText, StudioError } from "./errors.js";
+import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { setCap } from "./ledger.js";
@@ -128,6 +129,9 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
 
 const plugin = definePlugin({
   async setup(ctx) {
+    // Every page action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
+    type ActionHandler = Parameters<PluginContext["actions"]["register"]>[1];
+    const action = (key: string, handler: ActionHandler) => ctx.actions.register.call(ctx.actions, key, guardAction(handler));
     registerCrmProjection(ctx, ctx.db.namespace);
     registerClientProjectWatch(ctx);
 
@@ -152,7 +156,7 @@ const plugin = definePlugin({
       return overview(ctx, companyId);
     });
 
-    ctx.actions.register("set-cap", async (params, context) => {
+    action("set-cap", async (params, context) => {
       const companyId = context.companyId ?? context.actor.companyId;
       if (!companyId) throw new StudioError("Company is required");
       if (!(await isCompanyOwner(ctx, companyId, context.actor))) throw new StudioError("Only a company owner can change a credit cap.", "forbidden");
@@ -185,56 +189,56 @@ const plugin = definePlugin({
       return { companyId, role, userId: String(context.actor.userId) };
     }
 
-    ctx.actions.register("me", async (_params, context) => {
+    action("me", async (_params, context) => {
       const me = await person(context);
       return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", userId: me.userId };
     });
 
-    ctx.actions.register("asset-url", async (params, context) => {
+    action("asset-url", async (params, context) => {
       const me = await person(context);
       return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
     });
 
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
-    ctx.actions.register("review", async (params, context) => {
+    action("review", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't approve or reject.", "forbidden");
       return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
     // Save to Drive (PAR-8106): into the asset's own client folder, `02 Assets`. Viewers can't.
-    ctx.actions.register("drive-save", async (params, context) => {
+    action("drive-save", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save to Drive.", "forbidden");
       return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
     });
 
     // Give to agent (give.ts): agents that can run, then a normal issue for the chosen one. Viewers can't give.
-    ctx.actions.register("give-agents", async (_params, context) => {
+    action("give-agents", async (_params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
       return { agents: await giveChoices(ctx, me.companyId) };
     });
-    ctx.actions.register("give", async (params, context) => {
+    action("give", async (params, context) => {
       const me = await person(context);
       return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
 
     // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.
     registerDriveReadReplies(ctx);
-    ctx.actions.register("drive-list", async (params, context) => {
+    action("drive-list", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return listDriveFiles(ctx, me.companyId, objectParams(params));
     });
-    ctx.actions.register("drive-import", async (params, context) => {
+    action("drive-import", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
-    ctx.actions.register("asset-urls", async (params, context) => {
+    action("asset-urls", async (params, context) => {
       const me = await person(context);
       const raw = objectParams(params).assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
@@ -252,12 +256,12 @@ const plugin = definePlugin({
     }
 
     // The page's generate form: the same estimate, queue, caps and ledger as the agent tools.
-    ctx.actions.register("estimate", async (params, context) => {
+    action("estimate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       return estimateGeneration(ctx, me.companyId, request, actor);
     });
 
-    ctx.actions.register("generate", async (params, context) => {
+    action("generate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       const out = await requestGeneration(ctx, me.companyId, request, actor);
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
@@ -273,44 +277,44 @@ const plugin = definePlugin({
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at canvases but can't change them.", "forbidden");
       return me;
     }
-    ctx.actions.register("canvas-create", async (params, context) => {
+    action("canvas-create", async (params, context) => {
       const me = await canvasEditor(context);
       return createCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-save", async (params, context) => {
+    action("canvas-save", async (params, context) => {
       const me = await canvasEditor(context);
       return saveCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-archive", async (params, context) => {
+    action("canvas-archive", async (params, context) => {
       const me = await canvasEditor(context);
       return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
     });
     // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
     pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
     pageData("canvas-comments", (companyId, p) => listComments(ctx, companyId, String(p.canvasId ?? ""), p.cardId).then((comments) => ({ comments })));
-    ctx.actions.register("canvas-version-save", async (params, context) => {
+    action("canvas-version-save", async (params, context) => {
       const me = await canvasEditor(context);
       return saveVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-version-restore", async (params, context) => {
+    action("canvas-version-restore", async (params, context) => {
       const me = await canvasEditor(context);
       return restoreVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-comment-add", async (params, context) => {
+    action("canvas-comment-add", async (params, context) => {
       const me = await canvasEditor(context);
       return addComment(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     // Read-only share links (canvas-share.ts): only editors list, make and revoke them. The list is an action, not
     // page data, because page data has no caller and each entry carries the secret link path.
-    ctx.actions.register("canvas-share-list", async (params, context) => {
+    action("canvas-share-list", async (params, context) => {
       const me = await canvasEditor(context);
       return { shares: await listShares(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
     });
-    ctx.actions.register("canvas-share-create", async (params, context) => {
+    action("canvas-share-create", async (params, context) => {
       const me = await canvasEditor(context);
       return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-share-revoke", async (params, context) => {
+    action("canvas-share-revoke", async (params, context) => {
       const me = await canvasEditor(context);
       return revokeShare(ctx, me.companyId, objectParams(params));
     });

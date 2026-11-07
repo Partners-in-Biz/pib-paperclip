@@ -76,7 +76,7 @@ describe("deleting cards and connections (PAR-8104)", () => {
   it("calls no asset action from the canvas page or side panel, so deleting a card can't delete a library file", () => {
     for (const file of ["../src/ui/CanvasPage.tsx", "../src/ui/SidePanel.tsx"]) {
       const src = readFileSync(new URL(file, import.meta.url), "utf8");
-      const actions = [...src.matchAll(/usePluginAction\(\s*"([^"]+)"/g)].map((m) => m[1]);
+      const actions = [...src.matchAll(/use(?:Plugin|Studio)Action\(\s*"([^"]+)"/g)].map((m) => m[1]);
       expect(actions.length).toBeGreaterThan(0);
       expect(actions.filter((a) => /delete|remove|archive-asset|asset-archive|trash|purge/i.test(a))).toEqual([]);
     }

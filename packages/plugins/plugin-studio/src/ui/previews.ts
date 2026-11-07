@@ -3,15 +3,15 @@
  * when it fails, or some links are missing, the page says so and asks again soon instead of waiting four minutes.
  */
 import { useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { errorText } from "@partnersinbiz/pib-plugin-ui";
 import { previewReply, URL_RETRY_MS, type PreviewState } from "./preview-state.js";
+import { useStudioAction } from "./action.js";
 
 export { previewPlaceholder } from "./preview-state.js";
 
 /** People only: the worker checks membership, and agents never get links. */
 export function usePreviewUrls(companyId: string, ids: string[]): PreviewState {
-  const assetUrls = usePluginAction("asset-urls");
+  const assetUrls = useStudioAction("asset-urls");
   const [state, setState] = useState<PreviewState>({ urls: {}, error: null });
   const key = ids.join(",");
   useEffect(() => {

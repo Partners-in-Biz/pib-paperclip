@@ -4,7 +4,8 @@
  * can't open the copy, so they're listed with the reason and can't be picked.
  */
 import { useEffect, useState } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useStudioAction } from "./action.js";
 import { Button, errorText, Field, Modal, PageMessage, Select, TextArea } from "@partnersinbiz/pib-plugin-ui";
 
 export interface AgentChoice {
@@ -44,8 +45,8 @@ export function GiveDialog({ open, companyId, assetId, assetName, onClose, onGiv
   onGiven?: (given: Given) => void;
 }) {
   const nav = useHostNavigation();
-  const listAction = usePluginAction("give-agents");
-  const giveAction = usePluginAction("give");
+  const listAction = useStudioAction("give-agents");
+  const giveAction = useStudioAction("give");
   const [agents, setAgents] = useState<AgentChoice[] | null>(null);
   const [agentId, setAgentId] = useState("");
   const [instruction, setInstruction] = useState("");

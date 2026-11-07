@@ -3,12 +3,12 @@
  * then shows the Drive link or the refusal in plain words. Each instance owns its own request and state.
  */
 import { useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { DRIVE_MAX_BYTES } from "../drive-limits.js";
+import { useStudioAction } from "./action.js";
 
 export function SaveToDrive({ companyId, assetId, bytes, savedUrl, small }: { companyId: string; assetId: string; bytes?: number; savedUrl?: string | null; small?: boolean }) {
-  const save = usePluginAction("drive-save");
+  const save = useStudioAction("drive-save");
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
