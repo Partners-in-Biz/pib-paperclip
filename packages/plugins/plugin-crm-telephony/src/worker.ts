@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
-import { readSettings, secretStatus } from "./settings.js";
+import { readSettings, secretStatus, withSeededNumbers } from "./settings.js";
 import { registerSettingsActions } from "./settings-actions.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
@@ -20,6 +20,7 @@ import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
 import { syncTemplates, listPickerTemplates } from "./templates.js";
 import { normalizeE164 } from "./phone.js";
+import { pickCallerNumber } from "./caller-id.js";
 import { runRetention, retentionEnabledCompanyIds } from "./retention.js";
 
 let ctx: PluginContext | null = null;
@@ -120,11 +121,15 @@ export const toolHandlers: Record<
     const e164 = normalizeE164(p.toE164);
     if (!e164) return { error: `Invalid phone number: ${p.toE164}` };
 
-    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM"];
+    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"];
     const result = await buildTwilioClientForSecrets(pluginCtx, run.companyId, requiredSecrets);
     if (!result) return { error: `Missing required secrets: ${requiredSecrets.join(", ")}` };
 
-    const settings = await readSettings(pluginCtx, run.companyId);
+    const settings = await withSeededNumbers(pluginCtx, run.companyId, await readSettings(pluginCtx, run.companyId));
+    // The WhatsApp sender: a number with purpose WhatsApp from the list (region, else default), else the old setting.
+    const sender = pickCallerNumber(e164, settings.numbers, "whatsapp");
+    const fromWhatsapp = sender.ok ? sender.callerId : settings.whatsappFrom;
+    if (!fromWhatsapp) return { error: sender.ok ? "No WhatsApp sender" : sender.message };
     const { sendWhatsapp } = await import("./whatsapp-send.js");
     const variablesRecord = p.variables
       ? Object.fromEntries(p.variables.map((v, i) => [`${i}`, v]))
@@ -136,7 +141,7 @@ export const toolHandlers: Record<
         namespace: NAMESPACE,
         client: result.client,
         settings,
-        fromWhatsapp: result.secrets.TWILIO_WHATSAPP_FROM,
+        fromWhatsapp,
         statusCallbackUrl: undefined,
         now: () => new Date(),
       },

@@ -18,16 +18,14 @@ export const instanceConfigSchema: JsonSchema = {
     secrets: {
       type: "object",
       title: "Credentials",
-      description: "Pick the company secret for each one. Voice calling needs the first four and at least one number.",
+      description: "Pick the company secret for each one. Voice calling needs the first four; the numbers themselves are set under Numbers in Telephony settings.",
       properties: {
         TWILIO_ACCOUNT_SID: secret("Twilio Account SID", "Starts with AC. Twilio console → Account info."),
         TWILIO_AUTH_TOKEN: secret("Twilio Auth Token", "Twilio console → Account info. Signs the webhooks Twilio sends here."),
         TWILIO_API_KEY_SID: secret("Twilio API Key SID", "Starts with SK. Twilio console → Account → API keys & tokens → Create API key (Standard)."),
         TWILIO_API_KEY_SECRET: secret("Twilio API Key Secret", "Shown once when the API key is created."),
-        TWILIO_ZA_NUMBER: secret("Twilio number for +27 calls", "A voice-capable Twilio number in E.164, for example +27105550100. The caller ID for South African numbers."),
-        TWILIO_US_NUMBER: secret("Twilio number for +1 calls", "A voice-capable Twilio number in E.164. The caller ID for US numbers."),
         TWILIO_TWIML_APP_SID: secret("Twilio TwiML App SID (optional)", "Not needed: the Dialer places calls through the REST API."),
-        TWILIO_WHATSAPP_FROM: secret("Twilio WhatsApp sender", "whatsapp:+… for WhatsApp messaging."),
+        TWILIO_WHATSAPP_FROM: secret("Twilio WhatsApp sender (legacy)", "Only read to seed the Numbers list in Telephony settings when it is empty. Add numbers there instead."),
         DEEPGRAM_API_KEY: secret("Deepgram API key", "Transcribes recordings. Only with recording on."),
         ANTHROPIC_API_KEY: secret("Anthropic API key", "Summarises transcripts. Only with recording on."),
       },

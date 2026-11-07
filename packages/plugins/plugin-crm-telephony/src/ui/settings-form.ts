@@ -1,4 +1,5 @@
 import type { TelephonySettings } from "../settings.js";
+import type { NumberPurpose, TelephonyNumber } from "../numbers.js";
 
 export interface SettingsFormState {
   recordingEnabled: boolean;
@@ -17,6 +18,76 @@ export interface SettingsFormState {
   voiceAllowedUserIds: string;
   smsHolidays: string;
   publicBaseUrl: string;
+  numbers: NumberRow[];
+}
+
+/** One editable row of the Numbers list. */
+export interface NumberRow {
+  e164: string;
+  label: string;
+  /** Comma-separated calling codes or ISO codes as typed: "27, 1" */
+  regions: string;
+  voice: boolean;
+  sms: boolean;
+  whatsapp: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+}
+
+export function numberToRow(n: TelephonyNumber): NumberRow {
+  return {
+    e164: n.e164, label: n.label, regions: n.regions.join(", "),
+    voice: n.purposes.includes("voice"), sms: n.purposes.includes("sms"), whatsapp: n.purposes.includes("whatsapp"),
+    enabled: n.enabled, isDefault: n.isDefault,
+  };
+}
+
+export function emptyNumberRow(isDefault = false): NumberRow {
+  return { e164: "", label: "", regions: "", voice: true, sms: false, whatsapp: false, enabled: true, isDefault };
+}
+
+/** The rows as the save action wants them; the server validates and keeps exactly one default. */
+export function rowsToNumbers(rows: NumberRow[]): Array<{ e164: string; label: string; regions: string[]; purposes: NumberPurpose[]; enabled: boolean; isDefault: boolean }> {
+  return rows
+    .filter((r) => r.e164.trim() || r.label.trim())
+    .map((r) => ({
+      e164: r.e164.trim(),
+      label: r.label.trim(),
+      regions: r.regions.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean),
+      purposes: (["voice", "sms", "whatsapp"] as const).filter((p) => r[p]),
+      enabled: r.enabled,
+      isDefault: r.isDefault,
+    }));
+}
+
+const E164_SHAPE = /^\+[1-9]\d{6,14}$/;
+
+/** Row-level problems before the save, keyed `numbers.<index>`. */
+export function validateNumberRows(rows: NumberRow[]): Record<string, string> {
+  const errors: Record<string, string> = {};
+  const seen = new Set<string>();
+  rows.forEach((r, i) => {
+    if (!r.e164.trim() && !r.label.trim()) return;
+    const e164 = r.e164.replace(/[\s()-]/g, "");
+    if (!E164_SHAPE.test(e164)) errors[`numbers.${i}`] = "Enter the number in E.164, like +27105550100";
+    else if (seen.has(e164)) errors[`numbers.${i}`] = "This number is listed twice";
+    else if (!r.voice && !r.sms && !r.whatsapp) errors[`numbers.${i}`] = "Tick at least one of Voice, SMS, WhatsApp";
+    seen.add(e164);
+  });
+  return errors;
+}
+
+/** Make `index` the default and clear the others. */
+export function setDefaultRow(rows: NumberRow[], index: number): NumberRow[] {
+  return rows.map((r, i) => ({ ...r, isDefault: i === index }));
+}
+
+export function moveRow(rows: NumberRow[], index: number, delta: -1 | 1): NumberRow[] {
+  const target = index + delta;
+  if (target < 0 || target >= rows.length) return rows;
+  const next = rows.slice();
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
 }
 
 export const SECRET_LABELS = {
@@ -25,9 +96,7 @@ export const SECRET_LABELS = {
   TWILIO_API_KEY_SID: "Twilio API Key SID",
   TWILIO_API_KEY_SECRET: "Twilio API Key Secret",
   TWILIO_TWIML_APP_SID: "Twilio TwiML App SID",
-  TWILIO_ZA_NUMBER: "Twilio ZA Number",
-  TWILIO_US_NUMBER: "Twilio US Number",
-  TWILIO_WHATSAPP_FROM: "Twilio WhatsApp From",
+  TWILIO_WHATSAPP_FROM: "Twilio WhatsApp From (legacy, seeds Numbers)",
   DEEPGRAM_API_KEY: "Deepgram API Key",
   SMS_PROVIDER_API_KEY: "SMS Provider API Key",
   TEL_BRIDGE_AGENT_NUMBER: "Tel Bridge Agent Number",
@@ -54,6 +123,7 @@ export function toFormState(settings: TelephonySettings): SettingsFormState {
     voiceAllowedUserIds: settings.voiceAllowedUserIds.join("\n"),
     smsHolidays: settings.smsHolidays.join("\n"),
     publicBaseUrl: settings.publicBaseUrl ?? "",
+    numbers: settings.numbers.map(numberToRow),
   };
 }
 
@@ -79,6 +149,7 @@ export function validateForm(form: SettingsFormState): Record<string, string> {
   if (form.publicBaseUrl.trim() && !publicOrigin(form.publicBaseUrl)) {
     errors.publicBaseUrl = "Must be an http(s) address with no path, like https://paperclip.example.com";
   }
+  Object.assign(errors, validateNumberRows(form.numbers));
   return errors;
 }
 
@@ -127,12 +198,13 @@ export interface ReadinessRow {
 export interface VoiceReadinessView {
   ready: boolean;
   missingSecrets: string[];
-  numbers: { za: "set" | "missing"; us: "set" | "missing" };
+  numbers: { total: number; enabled: number; voice: number; whatsapp: number; defaultE164: string | null; voiceRegions: string[]; source: "settings" | "secrets" | "none"; lines: string[] };
   twimlApp: "set" | "missing";
   publicBaseUrl: string | null;
   recording: { enabled: boolean; r2Configured: boolean; active: boolean };
   voiceUsers: number;
   blockers: string[];
+  notes: string[];
 }
 
 const VOICE_SECRET_ORDER = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"] as const;
@@ -143,8 +215,13 @@ export function describeVoiceReadiness(voice: VoiceReadinessView, secrets: Recor
     label: `${SECRET_LABELS[name]} (${name})`,
     status: secrets[name] === "set" ? "set" : "missing",
   }));
-  rows.push({ label: "Twilio number for +27 calls (TWILIO_ZA_NUMBER)", status: voice.numbers.za, hint: voice.numbers.za === "missing" && voice.numbers.us === "set" ? "Optional while only US numbers are called" : undefined });
-  rows.push({ label: "Twilio number for +1 calls (TWILIO_US_NUMBER)", status: voice.numbers.us, hint: voice.numbers.us === "missing" && voice.numbers.za === "set" ? "Optional while only South African numbers are called" : undefined });
+  rows.push({
+    label: "Numbers (caller IDs)",
+    status: voice.numbers.voice > 0 ? "set" : "missing",
+    hint: voice.numbers.voice > 0
+      ? `${voice.numbers.voice} for voice${voice.numbers.voiceRegions.length ? `, serving +${voice.numbers.voiceRegions.join(", +")}` : ""}${voice.numbers.defaultE164 ? `; default ${voice.numbers.defaultE164}` : "; no default"}${voice.numbers.source === "secrets" ? " (from the old secrets, not saved yet)" : ""}`
+      : "Add one under Numbers below",
+  });
   rows.push({ label: "TwiML app SID (TWILIO_TWIML_APP_SID)", status: "optional", hint: "Not needed: calls are placed through the REST API" });
   rows.push({ label: "Public base URL", status: voice.publicBaseUrl ? "set" : "missing", hint: voice.publicBaseUrl ?? undefined });
   rows.push({ label: "Voice user IDs", status: voice.voiceUsers > 0 ? "set" : "missing", hint: voice.voiceUsers > 0 ? `${voice.voiceUsers} allowed` : "Add the user ids who may call" });
@@ -173,6 +250,7 @@ export function toSavePayload(form: SettingsFormState): Partial<TelephonySetting
     voiceAllowedUserIds: parseLines(form.voiceAllowedUserIds),
     smsHolidays: parseLines(form.smsHolidays),
     publicBaseUrl: form.publicBaseUrl.trim() || null,
+    numbers: rowsToNumbers(form.numbers) as TelephonyNumber[],
   };
 }
 

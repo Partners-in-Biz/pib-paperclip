@@ -10,12 +10,13 @@
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { buildPublicWebhookUrl, parseFormParams } from "./twilio-signature.js";
 import { getPublicBaseUrl, resolveVerifiedCompany } from "./company-resolve.js";
-import { pickCallerId } from "./caller-id.js";
+import { pickCallerNumber } from "./caller-id.js";
+import type { TelephonyNumber } from "./numbers.js";
+import { readSettings, withSeededNumbers } from "./settings.js";
 import { normalizeE164 } from "./phone.js";
 import { buildDialTwiml } from "./twiml.js";
-import { resolveTelephonySecret } from "./secrets.js";
 
-export type VoiceTwimlRefusal = "bad_number" | "unsupported_region" | "caller_id_not_configured";
+export type VoiceTwimlRefusal = "bad_number" | "no_numbers" | "no_match";
 
 export interface VoiceTwimlOptions {
   record: boolean;
@@ -26,12 +27,12 @@ export interface VoiceTwimlOptions {
 /** Pure: the TwiML for a `To` number given the company's numbers, or why not. */
 export function twimlForVoiceRequest(
   params: { To?: string | null },
-  numbers: { za?: string; us?: string },
+  numbers: TelephonyNumber[],
   opts: VoiceTwimlOptions,
 ): { ok: true; twiml: string; callerId: string; to: string } | { ok: false; reason: VoiceTwimlRefusal } {
   const to = params.To ? normalizeE164(params.To) : null;
   if (!to) return { ok: false, reason: "bad_number" };
-  const pick = pickCallerId(to, numbers);
+  const pick = pickCallerNumber(to, numbers, "voice");
   if (!pick.ok) return { ok: false, reason: pick.reason };
   const twiml = buildDialTwiml({
     to,
@@ -63,13 +64,9 @@ export async function handleVoiceTwiml(
   }
 
   const params = parseFormParams(rawBody);
-  const numbers: { za?: string; us?: string } = {};
-  for (const [key, name] of [["za", "TWILIO_ZA_NUMBER"], ["us", "TWILIO_US_NUMBER"]] as const) {
-    const value = await resolveTelephonySecret(ctx, verified.companyId, name);
-    if (value) numbers[key] = value;
-  }
+  const settings = await withSeededNumbers(ctx, verified.companyId, await readSettings(ctx, verified.companyId));
 
-  const result = twimlForVoiceRequest({ To: params.To?.[0] ?? null }, numbers, { record: false });
+  const result = twimlForVoiceRequest({ To: params.To?.[0] ?? null }, settings.numbers, { record: false });
   ctx.logger.warn(
     "voice-twiml webhook: this host cannot answer Twilio with TwiML. Calls are placed by the Dialer through the REST API with inline TwiML; remove the TwiML app voice URL that points here.",
     { to_ok: result.ok, reason: result.ok ? undefined : result.reason },
