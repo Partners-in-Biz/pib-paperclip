@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginAction, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { ClientCards } from "./ClientCards.js";
 import { useNarrow } from "./narrow.js";
+import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
 import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
@@ -88,8 +89,6 @@ const AGENT_RUN_SCOPE = "agent_run";
 const DEFAULT_RUN_LIMIT = 2;
 const COMPANY_SCOPE = "company";
 const FINISHED = new Set(["succeeded", "failed"]);
-/** The server's signed links last 5 minutes; fetch fresh ones before that. */
-const URL_REFRESH_MS = 4 * 60 * 1000;
 const POLL_MS = 4000;
 
 const muted = { fontSize: 13, opacity: 0.7 } as const;
@@ -201,37 +200,6 @@ export function StudioPage({ context }: PluginPageProps) {
   );
 }
 
-/** Fresh signed preview links for these assets, renewed before they expire. People only: agents never get links. */
-function usePreviewUrls(companyId: string, ids: string[]): { urls: Record<string, string>; error: string | null } {
-  const assetUrls = usePluginAction("asset-urls");
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const key = ids.join(",");
-  useEffect(() => {
-    if (!key) {
-      setUrls({});
-      return;
-    }
-    let live = true;
-    const load = () =>
-      assetUrls({ companyId, assetIds: key.split(",") })
-        .then((out) => {
-          if (!live) return;
-          setUrls((out as { urls?: Record<string, string> }).urls ?? {});
-          setError(null);
-        })
-        .catch((err) => {
-          if (live) setError(errorText(err));
-        });
-    void load();
-    const timer = setInterval(() => void load(), URL_REFRESH_MS);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [companyId, key]);
-  return { urls, error };
-}
 
 function Preview({ kind, name, url, height = 160 }: { kind: string; name: string; url: string | undefined; height?: number }) {
   const box = { width: "100%", height, objectFit: "cover" as const, borderRadius: 8, background: "rgba(127,127,127,0.12)", display: "block" };
@@ -369,7 +337,7 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
         </div>
         </details>
         {assets.error ? <PageMessage tone="danger" message={errorText(assets.error)} /> : null}
-        {previews.error ? <PageMessage tone="warning" message={`Previews: ${previews.error}`} /> : null}
+        {previews.error ? <PageMessage tone="warning" message={`${previews.error} Trying again shortly.`} /> : null}
         {assets.data && list.length === 0 ? <EmptyState compact title="No assets match these filters" description="Clear a filter, or generate something new." /> : null}
         <div style={narrow ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 } : grid(220)}>
           {!assets.data && !assets.error ? Array.from({ length: 8 }, (_, i) => <div key={i} aria-hidden="true" style={{ ...cardBox, aspectRatio: "4 / 3", background: "var(--muted)" }} />) : null}

@@ -25,11 +25,14 @@ export interface VersionsProps {
   onRestored: () => void;
 }
 
-export function VersionsMenu({ companyId, canvasId, canEdit, saved, revision, onRestored }: VersionsProps) {
-  const [open, setOpen] = useState(false);
+/** Open state can come from the page, so opening this menu closes the Share one (PAR-8102). */
+export function VersionsMenu({ companyId, canvasId, canEdit, saved, revision, onRestored, open: shown, onOpenChange }: VersionsProps & { open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const setOpen = onOpenChange ?? setOwn;
   return (
     <div className="studio-canvas-versions">
-      <Button variant="secondary" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Versions</Button>
+      <Button variant="secondary" aria-expanded={open} onClick={() => setOpen(!open)}>Versions</Button>
       {open ? <VersionsList {...{ companyId, canvasId, canEdit, saved, revision, onRestored }} /> : null}
     </div>
   );

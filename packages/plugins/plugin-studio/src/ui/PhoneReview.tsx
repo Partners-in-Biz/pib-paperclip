@@ -7,6 +7,7 @@ import { useState, type AnchorHTMLAttributes } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { errorText } from "@partnersinbiz/pib-plugin-ui";
 import { metaLine, posterFrameUrl, statusTone } from "./library.js";
+import { previewPlaceholder } from "./preview-state.js";
 import { awaitingLine, clipPrompt, nextAfterReview, reviewPill, type ReviewItem } from "./phone-review.js";
 
 export const phoneReviewCss = `
@@ -43,6 +44,7 @@ export function PhoneReview({
   title,
   items,
   urls,
+  previewError = null,
   modelLabel,
   canReview,
   backLink,
@@ -52,6 +54,8 @@ export function PhoneReview({
   title: string;
   items: ReviewItem[];
   urls: Record<string, string>;
+  /** The last preview request failed: cards say so instead of "Loading". */
+  previewError?: string | null;
   modelLabel: (id: string) => string;
   /** Viewers can't review (the worker refuses them too), so they don't get the bar. */
   canReview: boolean;
@@ -104,7 +108,7 @@ export function PhoneReview({
         <p className="studio-phone-banner" role="note">Editing boards needs a larger screen. Review and approve here.</p>
         {selected ? (
           <article className="studio-phone-main" aria-label="Selected result">
-            <Thumb item={selected} url={urls[selected.assetId]} big />
+            <Thumb item={selected} url={urls[selected.assetId]} previewError={previewError} big />
             <div className="studio-phone-body">
               <h2>{selected.title}</h2>
               <p>{metaLine({ kind: selected.kind, model: selected.model, credits: selected.credits, createdAt: null }, modelLabel)}</p>
@@ -122,7 +126,7 @@ export function PhoneReview({
             {others.map((i) => (
               <li key={i.assetId}>
                 <button type="button" onClick={() => pick(i.assetId)} aria-label={`${i.title}, ${reviewPill(i.status)}`}>
-                  <Thumb item={i} url={urls[i.assetId]} />
+                  <Thumb item={i} url={urls[i.assetId]} previewError={previewError} />
                 </button>
               </li>
             ))}
@@ -143,11 +147,11 @@ export function PhoneReview({
 }
 
 /** A result's picture or first video frame with its status pill; the big one shows the pill top-left like the mock. */
-function Thumb({ item, url, big }: { item: ReviewItem; url: string | undefined; big?: boolean }) {
+function Thumb({ item, url, big, previewError = null }: { item: ReviewItem; url: string | undefined; big?: boolean; previewError?: string | null }) {
   const tone = TONE_CLASS[statusTone(item.status)];
   return (
     <div className="studio-media">
-      {!url ? <div className="studio-media-empty" style={{ height: "100%", border: 0 }}>Loading preview…</div>
+      {!url ? <div className="studio-media-empty" title={previewError ?? undefined} style={{ height: "100%", border: 0 }}>{previewPlaceholder(previewError)}</div>
         : item.kind === "video" ? <video src={big ? url : posterFrameUrl(url)} muted playsInline controls={big} preload="metadata" />
         : <img src={url} alt={item.title} />}
       {big ? <div className="studio-overlay" style={{ left: "0.5rem", top: "0.5rem" }}><span className={`studio-pill studio-tone-${tone}`} aria-label="Review status">{reviewPill(item.status)}</span></div> : null}

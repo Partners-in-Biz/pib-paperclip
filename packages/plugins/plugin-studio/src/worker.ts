@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
-import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
@@ -203,15 +203,8 @@ const plugin = definePlugin({
       const me = await person(context);
       const raw = objectParams(params).assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
-      const urls: Record<string, string> = {};
-      for (const id of ids) {
-        try {
-          urls[id] = await assetUrlForPerson(ctx, me.companyId, id);
-        } catch {
-          // A missing asset just has no preview.
-        }
-      }
-      return { urls };
+      // One settings read and one secret lookup for the whole page (PAR-8102); a failure is reported, not hidden.
+      return assetUrlsForPerson(ctx, me.companyId, ids);
     });
 
     async function generator(context: Parameters<typeof person>[0], params: unknown) {
