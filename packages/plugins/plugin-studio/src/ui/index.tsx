@@ -485,7 +485,21 @@ function AssetDetail({
               <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
             ) : null}
             {/* Viewers can't give (the worker refuses them too). */}
-            {canReview && d ? <GiveButton companyId={companyId} assetId={assetId} assetName={d.asset.name} onGiven={() => setV((n) => n + 1)} /> : null}
+            {canReview && d ? (
+              <GiveButton
+                companyId={companyId}
+                assetId={assetId}
+                onGiven={(out) => {
+                  setMessage(out.warning);
+                  setNotice(out.message);
+                  setV((n) => n + 1);
+                }}
+                onError={(err) => {
+                  setNotice(null);
+                  setMessage(err);
+                }}
+              />
+            ) : null}
             <Button variant="secondary" onClick={close}>
               Close
             </Button>

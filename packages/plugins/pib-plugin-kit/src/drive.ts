@@ -6,11 +6,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { CRM_PLUGIN_ID } from "./crm-projection.js";
+import { DRIVE_INLINE_MAX_BYTES, DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, isSha256Hex } from "./drive-transfer.js";
 
 export const DRIVE_EVENTS = {
   saveRequested: "drive.save-requested",
   saved: "drive.file.saved",
   failed: "drive.file.failed",
+  /** A large transfer's bytes so far (PAR-8125): `{ requestId, bytesDone, bytesTotal }`. Each one restarts the wait. */
+  progress: "drive.transfer.progress",
 } as const;
 
 /**
@@ -75,11 +78,28 @@ export type DriveSaveOptions = {
    * project is linked to a client or is the own project, and refuses it otherwise. Wins over `client` and `ownWork`.
    */
   projectId?: string;
-} & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
+  /** Large transfers only: called on each progress reply from the CRM. */
+  onProgress?: (progress: DriveTransferProgress) => void;
+} & (
+  | { bytes: Uint8Array | Buffer; publicUrl?: undefined; r2Url?: undefined }
+  | { publicUrl: string; bytes?: undefined; r2Url?: undefined }
+  /**
+   * A file over 5 MiB (PAR-8125): a short-lived signed GET link to the object in R2, its exact size and sha256. The CRM
+   * streams it to Drive. `timeoutMs` is then the longest wait between two progress replies, not for the whole transfer.
+   * The link is a secret: never give it to an agent or log it.
+   */
+  | { r2Url: string; size: number; sha256: string; bytes?: undefined; publicUrl?: undefined }
+);
+
+export interface DriveTransferProgress {
+  bytesDone: number;
+  bytesTotal: number;
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_BYTES = 5 * 1024 * 1024;
-const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Map<string, { resolve: (r: DriveSaveResult) => void; companyId: string }>>();
+const MAX_BYTES = DRIVE_INLINE_MAX_BYTES;
+type Pending = { resolve: (r: DriveSaveResult) => void; companyId: string; progress?: (p: DriveTransferProgress) => void };
+const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Map<string, Pending>>();
 
 export function registerDriveReplies(ctx: Pick<PluginContext, "events">): void {
   if (pendingByCtx.has(ctx)) return;
@@ -112,6 +132,18 @@ export function registerDriveReplies(ctx: Pick<PluginContext, "events">): void {
     }
   };
 
+  const handleProgress = async (event: PluginEvent) => {
+    const payload = event.payload as { requestId?: unknown; bytesDone?: unknown; bytesTotal?: unknown } | undefined;
+    if (!payload || typeof payload.requestId !== "string") return;
+    const entry = pendingByCtx.get(ctx)?.get(payload.requestId);
+    if (!entry || entry.companyId !== event.companyId || !entry.progress) return;
+    const bytesDone = Number(payload.bytesDone);
+    const bytesTotal = Number(payload.bytesTotal);
+    if (!Number.isFinite(bytesDone) || !Number.isFinite(bytesTotal)) return;
+    entry.progress({ bytesDone, bytesTotal });
+  };
+
+  ctx.events.on(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.progress}`, (event) => handleProgress(event));
   ctx.events.on(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.saved}`, (event) => handleReply(event, true));
   ctx.events.on(`plugin.${CRM_PLUGIN_ID}.${DRIVE_EVENTS.failed}`, (event) => handleReply(event, false));
 }
@@ -121,10 +153,14 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
     const { companyId, kind, name, mimeType, timeoutMs, subfolder, client } = opts;
     const hasBytesOption = "bytes" in opts && opts.bytes !== undefined && opts.bytes !== null;
     const hasUrlOption = "publicUrl" in opts && opts.publicUrl !== undefined && opts.publicUrl !== null;
+    const hasR2Option = "r2Url" in opts && opts.r2Url !== undefined && opts.r2Url !== null;
     const providedRequestId = opts.requestId;
 
-    // Validate input: either bytes or publicUrl, not both or neither
-    if (!(hasBytesOption || hasUrlOption)) {
+    // Validate input: either bytes or publicUrl, not both or neither. A signed R2 link goes alone.
+    if (hasR2Option && (hasBytesOption || hasUrlOption)) {
+      return { status: "failed", requestId: providedRequestId ?? "unknown", reason: "invalid_input" };
+    }
+    if (!(hasBytesOption || hasUrlOption || hasR2Option)) {
       return { status: "failed", requestId: providedRequestId ?? "unknown", reason: "invalid_input" };
     }
 
@@ -177,6 +213,18 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
       }
       payload.sha256 = createHash("sha256").update(bytes).digest("hex");
       payload.contentBase64 = Buffer.from(bytes).toString("base64");
+    } else if (hasR2Option) {
+      const { r2Url, size, sha256 } = opts as { r2Url: unknown; size: unknown; sha256: unknown };
+      // R2 hosts only: the CRM checks again before it fetches anything.
+      if (!isR2ObjectUrl(r2Url) || !isSha256Hex(sha256) || typeof size !== "number" || !Number.isInteger(size) || size <= 0) {
+        return { status: "failed", requestId, reason: "invalid_input" };
+      }
+      if (size > DRIVE_TRANSFER_MAX_BYTES) {
+        return { status: "failed", requestId, reason: "too_large" };
+      }
+      payload.r2Url = r2Url;
+      payload.size = size;
+      payload.sha256 = sha256.toLowerCase();
     } else {
       const publicUrl = (opts as any).publicUrl as string;
       if (!publicUrl.startsWith("https://")) {
@@ -210,11 +258,27 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
         resolve(result);
       };
 
-      pending.set(requestId, { resolve: settle, companyId });
+      const arm = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => {
+          settle({ status: "no_ack", requestId });
+        }, tm);
+      };
+      // A large transfer runs as long as it keeps moving: each progress reply restarts the wait.
+      const progress = hasR2Option
+        ? (p: DriveTransferProgress) => {
+            if (settled) return;
+            arm();
+            try {
+              opts.onProgress?.(p);
+            } catch {
+              // a caller's progress handler never ends the transfer
+            }
+          }
+        : undefined;
+      pending.set(requestId, { resolve: settle, companyId, ...(progress ? { progress } : {}) });
 
-      timeoutHandle = setTimeout(() => {
-        settle({ status: "no_ack", requestId });
-      }, tm);
+      arm();
 
       // Emit, handling both sync throws and rejections
       Promise.resolve()

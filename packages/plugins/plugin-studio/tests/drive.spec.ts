@@ -48,7 +48,7 @@ describe("Save to Drive", () => {
 
   it("saves into the asset's own client 02 Assets and records the link", async () => {
     const save = vi.fn(async () => ({ status: "saved" as const, driveFileId: "1AbCdEfGhIjKlMnOp" }));
-    const out = await saveAssetToDrive(ctx, "co-1", row.id, save as never);
+    const out = (await saveAssetToDrive(ctx, "co-1", row.id, save as never)) as { url: string };
     expect(save).toHaveBeenCalledTimes(1);
     const opts = (save.mock.calls[0] as unknown as [unknown, Record<string, unknown>])[1];
     expect(opts).toMatchObject({ companyId: "co-1", subfolder: "02 Assets", mimeType: "image/png", client: { kind: "crm_contact", ref: "client-9" } });
@@ -60,7 +60,7 @@ describe("Save to Drive", () => {
   it("refuses files over the broker limit before reading R2 or calling CRM", async () => {
     row.bytes = DRIVE_MAX_BYTES + 1;
     const save = vi.fn();
-    await expect(saveAssetToDrive(ctx, "co-1", row.id, save as never)).rejects.toThrow(/up to 5\.0 MB/);
+    await expect(saveAssetToDrive(ctx, "co-1", row.id, save as never)).rejects.toThrow(/up to 200\.0 MB, the largest file Studio keeps/);
     expect(save).not.toHaveBeenCalled();
     expect(links).toEqual([]);
   });

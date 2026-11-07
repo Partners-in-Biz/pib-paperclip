@@ -341,6 +341,72 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     expect(row!.updatedAt.getTime()).toBeGreaterThan(oldEnough().getTime());
   });
 
+  // PAR-4555: every lease on one SSH host records the same provider lease id,
+  // so a live run on that host must not keep dead leases active forever.
+  it("test_releases_a_terminal_ssh_lease_that_shares_its_provider_lease_id_with_a_live_run", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.update(environments).set({ driver: "ssh", config: {} }).where(eq(environments.id, environmentId));
+    const sharedHostId = "ssh://build@mac-host:22/workspace";
+    const deadRunIds = [
+      await insertHeartbeatRun({ companyId, agentId, status: "cancelled" }),
+      await insertHeartbeatRun({ companyId, agentId, status: "interrupted" }),
+    ];
+    const liveRunId = await insertHeartbeatRun({ companyId, agentId, status: "running" });
+    const staleAt = oldEnough();
+    const deadLeaseIds: string[] = [];
+    for (const runId of deadRunIds) {
+      deadLeaseIds.push(await insertActiveLease({
+        companyId, environmentId, heartbeatRunId: runId, updatedAt: staleAt,
+        provider: "ssh", providerLeaseId: sharedHostId,
+      }));
+    }
+    const liveLeaseId = await insertActiveLease({
+      companyId, environmentId, heartbeatRunId: liveRunId, updatedAt: staleAt,
+      provider: "ssh", providerLeaseId: sharedHostId,
+    });
+    const destroyRunLease = vi.fn();
+    const retryPendingSandboxTeardown = vi.fn();
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: { destroyRunLease, retryPendingSandboxTeardown } as unknown as HeartbeatEnvironmentRuntime,
+    });
+
+    const result = await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 });
+
+    expect(result).toEqual({ recovered: 2 });
+    for (const leaseId of deadLeaseIds) {
+      const row = await leaseRow(leaseId);
+      expect(row).toMatchObject({ status: "released", failureReason: "orphaned_ssh_lease_released" });
+      expect(row?.releasedAt).toBeInstanceOf(Date);
+    }
+    // The live run keeps its lease and its timestamp.
+    const live = await leaseRow(liveLeaseId);
+    expect(live?.status).toBe("active");
+    expect(live?.updatedAt.getTime()).toBe(staleAt.getTime());
+    // No sandbox teardown through the shared host id.
+    expect(destroyRunLease).not.toHaveBeenCalled();
+    expect(retryPendingSandboxTeardown).not.toHaveBeenCalled();
+  });
+
+  it("test_does_not_defer_a_stale_ssh_lease", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const staleAt = oldEnough();
+    const leaseId = await insertActiveLease({
+      companyId, environmentId, heartbeatRunId: runId, updatedAt: staleAt,
+      provider: "ssh", providerLeaseId: "ssh://shared-host",
+    });
+
+    // Inside the backoff window: the sweep neither releases nor bumps the row,
+    // so it keeps ageing toward the cutoff.
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 2 * 60 * 60 * 1000 });
+
+    expect(result).toEqual({ recovered: 0 });
+    const row = await leaseRow(leaseId);
+    expect(row?.status).toBe("active");
+    expect(row?.updatedAt.getTime()).toBe(staleAt.getTime());
+  });
+
   it("test_a_full_page_of_guarded_leases_does_not_starve_a_later_eligible_orphan", async () => {
     const { companyId, environmentId } = await seedCompanyAgentAndEnvironment();
     const veryOld = new Date(Date.now() - 3 * 60 * 60 * 1000);

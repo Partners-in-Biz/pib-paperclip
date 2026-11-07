@@ -18835,6 +18835,10 @@ export function heartbeatService(
   // it. The bump pushes the row past the fixed-size page, so the next tick
   // reaches the rows behind it. It costs the row one extra backoff wait,
   // which is safe because the guard means a physical sandbox still exists.
+  // The defer never touches an SSH lease: an SSH row is meant to age past the
+  // cutoff and be released, and a fresh `updatedAt` would keep it out of the
+  // sweep forever (PAR-4555).
+  const SSH_LEASE_PROVIDER = "ssh";
   async function deferOrphanedActiveLease(leaseId: string): Promise<void> {
     const now = new Date();
     await db
@@ -18844,8 +18848,23 @@ export function heartbeatService(
         and(
           eq(environmentLeases.id, leaseId),
           eq(environmentLeases.status, "active"),
+          or(
+            isNull(environmentLeases.provider),
+            ne(environmentLeases.provider, SSH_LEASE_PROVIDER),
+          ),
         ),
       );
+  }
+
+  // An SSH lease's `providerLeaseId` names a shared host, not one exclusive
+  // sandbox: every run on that host records the same id. So the shared-resource
+  // guard and the sandbox teardown do not apply. A terminal-run SSH lease is
+  // marked released directly, with no teardown, because a teardown through the
+  // shared id could touch the host that live runs still use (PAR-4555).
+  function isSshLease(lease: { provider: string | null; metadata: unknown }): boolean {
+    if (lease.provider === SSH_LEASE_PROVIDER) return true;
+    const metadata = lease.metadata as Record<string, unknown> | null;
+    return metadata?.driver === SSH_LEASE_PROVIDER;
   }
 
   // An active lease is reachable only while its heartbeat run keeps the
@@ -18887,6 +18906,33 @@ export function heartbeatService(
 
     let recovered = 0;
     for (const { lease } of rows) {
+      if (isSshLease(lease)) {
+        // The guard re-checks the selected state in the write: the row is
+        // still active, still on the same run, and still older than the
+        // cutoff. A reuse or a renewal in between changes one of them, so
+        // the release cannot hit a lease that a live run picked up again.
+        const released = await db
+          .update(environmentLeases)
+          .set({
+            status: "released",
+            releasedAt: new Date(),
+            failureReason: "orphaned_ssh_lease_released",
+          })
+          .where(
+            and(
+              eq(environmentLeases.id, lease.id),
+              eq(environmentLeases.status, "active"),
+              lease.heartbeatRunId
+                ? eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId)
+                : isNull(environmentLeases.heartbeatRunId),
+              lte(environmentLeases.updatedAt, cutoff),
+            ),
+          )
+          .returning({ id: environmentLeases.id });
+        if (released.length > 0) recovered += 1;
+        continue;
+      }
+
       // A provider resource id names one physical sandbox. A different lease
       // row can still hold that same resource in a live status, so this sweep
       // must not tear down a sandbox that a different lease still owns.

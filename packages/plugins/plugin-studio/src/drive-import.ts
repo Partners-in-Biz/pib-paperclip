@@ -4,10 +4,12 @@
  * only reads that client's own assets folders, so a file id from another client's folder is refused there.
  * People only: the Drive id is kept as the asset's source ref (`drive:<scope>:<fileId>`), which agents never see.
  */
+import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   driveList as kitDriveList,
   driveRead as kitDriveRead,
+  driveReadToR2 as kitDriveReadToR2,
   driveThumbs as kitDriveThumbs,
   DRIVE_THUMBS_MAX,
   formatClientParam,
@@ -16,27 +18,33 @@ import {
   type DriveListResult,
   type DriveReadResult,
   type DriveReadTarget,
+  type DriveReadToR2Result,
   type DriveThumbSize,
   type DriveThumbsResult,
+  type DriveTransferProgress,
 } from "@partnersinbiz/pib-plugin-kit";
-import { assetOut, getAssetRow, storeAsset } from "./assets.js";
+import { assetOut, getAssetRow, recordStoredAsset, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { table } from "./db.js";
-import { DRIVE_MAX_BYTES } from "./drive-limits.js";
+import { TRANSFER_IDLE_MS, TRANSFER_LINK_SEC } from "./drive.js";
+import { startTransfer, type TransferView } from "./drive-jobs.js";
+import { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES } from "./drive-limits.js";
 import { StudioError } from "./errors.js";
-import { MAX_ASSET_BYTES, sniffMime } from "./storage.js";
+import { assetKey, deleteObject, extFor, getObjectHead, MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
 import { resolveScope, scopeInput } from "./scope.js";
 
 /** Under the host's 30 s action limit, so a silent CRM gives the plain message below rather than a bare 502 (PAR-8114). */
 export const TIMEOUT_MS = 20_000;
 const STUDIO_TYPES = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|quicktime))$/;
+const UNSUPPORTED = "Studio stores JPEG, PNG, GIF and WebP images and MP4 and MOV videos, and this file is none of those.";
 
 export interface DriveReaders {
   list: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget) => Promise<DriveListResult>;
   read: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileId: string }) => Promise<DriveReadResult>;
   thumbs?: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileIds: string[]; size?: DriveThumbSize }) => Promise<DriveThumbsResult>;
+  readToR2?: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileId: string; r2PutUrl: string; onProgress?: (p: DriveTransferProgress) => void }) => Promise<DriveReadToR2Result>;
 }
-const KIT: DriveReaders = { list: kitDriveList, read: kitDriveRead, thumbs: kitDriveThumbs };
+const KIT: DriveReaders = { list: kitDriveList, read: kitDriveRead, thumbs: kitDriveThumbs, readToR2: kitDriveReadToR2 };
 const FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
 
 function mb(bytes: number): string {
@@ -52,7 +60,10 @@ export function readRefusal(result: DriveFailure): string {
     case "not_found":
       return "That file is no longer in Drive.";
     case "too_large":
-      return `Studio takes Drive files up to ${mb(DRIVE_MAX_BYTES)} for now.`;
+      return `Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps.`;
+    case "sha256_mismatch":
+    case "size_mismatch":
+      return "The file changed in Drive while it was being copied, so Studio kept nothing. Try again.";
     case "no_project":
       return "This client has no Drive project in CRM yet, so there is no folder to read from.";
     case "no_assets_folder":
@@ -140,12 +151,17 @@ export async function importFromDrive(ctx: PluginContext, companyId: string, par
   const existing = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND source_ref = $2`, [companyId, sourceRef]);
   if (existing[0]) return { ...assetOut(await getAssetRow(ctx, companyId, existing[0].id)), reused: true };
 
+  // Over 5 MiB (PAR-8125): a background transfer. The page passes the size and type from the listing; they only pick
+  // the path and the file extension. The CRM enforces the real size and the type is checked on the stored bytes.
+  const listedSize = Number(params.size);
+  if (Number.isFinite(listedSize) && listedSize > DRIVE_INLINE_MAX_BYTES) return importLarge(ctx, companyId, params, fileId, listedSize, resolved, sourceRef, actor, readers);
+
   const result = await readers.read(ctx, { ...target(companyId, resolved.scope), fileId });
   if (result.status !== "read") throw new StudioError(readRefusal(result), "drive_refused");
   if (result.bytes.byteLength > Math.min(DRIVE_MAX_BYTES, MAX_ASSET_BYTES)) throw new StudioError(readRefusal({ status: "failed", requestId: result.requestId, reason: "too_large" }), "too_large");
   const bytes = new Uint8Array(result.bytes) as Uint8Array<ArrayBuffer>;
   const mime = sniffMime(bytes);
-  if (!mime) throw new StudioError("Studio stores JPEG, PNG, GIF and WebP images and MP4 and MOV videos, and this file is none of those.", "unsupported_type");
+  if (!mime) throw new StudioError(UNSUPPORTED, "unsupported_type");
   const name = (typeof params.name === "string" && params.name.trim()) || result.file.name.replace(/\.[A-Za-z0-9]{1,5}$/, "") || "Drive file";
   const id = await storeAsset(ctx, new StudioConfig(ctx, companyId), {
     companyId,
@@ -161,6 +177,72 @@ export async function importFromDrive(ctx: PluginContext, companyId: string, par
     mime,
   });
   return { ...assetOut(await getAssetRow(ctx, companyId, id)), reused: false };
+}
+
+type Resolved = Awaited<ReturnType<typeof pickedScope>>;
+
+/**
+ * Stream one large Drive file into R2 through a signed PUT link (the CRM does the copy, chunk by chunk), then check its
+ * type from the first bytes and record it. The link goes only into the CRM event: never into a result, error or log.
+ */
+function importLarge(
+  ctx: PluginContext,
+  companyId: string,
+  params: Record<string, unknown>,
+  fileId: string,
+  listedSize: number,
+  resolved: Resolved,
+  sourceRef: string,
+  actor: { userId: string | null },
+  readers: DriveReaders,
+): TransferView {
+  if (listedSize > Math.min(DRIVE_MAX_BYTES, MAX_ASSET_BYTES)) throw new StudioError(`This file is ${mb(listedSize)}. ${readRefusal({ status: "failed", requestId: "", reason: "too_large" })}`, "too_large");
+  const mime = typeof params.mimeType === "string" && STUDIO_TYPES.test(params.mimeType) ? params.mimeType : null;
+  if (!mime) throw new StudioError(UNSUPPORTED, "unsupported_type");
+  const readToR2 = readers.readToR2;
+  if (!readToR2) throw new StudioError("Large Drive files can't be added here.", "drive_refused");
+  return startTransfer(companyId, "import", `import:${sourceRef}`, listedSize, async (progress) => {
+    const config = new StudioConfig(ctx, companyId);
+    const bucket = await config.bucket();
+    const id = randomUUID();
+    const key = assetKey(companyId, resolved.scope, id, 1, extFor(mime));
+    const result = await readToR2(ctx, {
+      ...target(companyId, resolved.scope),
+      timeoutMs: TRANSFER_IDLE_MS,
+      fileId,
+      r2PutUrl: objectUrl(bucket, companyId, "PUT", key, TRANSFER_LINK_SEC),
+      onProgress: (p: DriveTransferProgress) => progress(p.bytesDone, p.bytesTotal),
+    });
+    if (result.status !== "stored") throw new StudioError(readRefusal(result), "drive_refused");
+    // A second import of the same file may have finished meanwhile: keep that one and drop this copy.
+    const again = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND source_ref = $2`, [companyId, sourceRef]);
+    if (again[0]) {
+      await deleteObject(bucket, companyId, key).catch(() => undefined);
+      return { ...assetOut(await getAssetRow(ctx, companyId, again[0].id)), reused: true };
+    }
+    if (sniffMime(await getObjectHead(bucket, companyId, key)) !== mime) {
+      await deleteObject(bucket, companyId, key).catch(() => undefined);
+      throw new StudioError(UNSUPPORTED, "unsupported_type");
+    }
+    const name = (typeof params.name === "string" && params.name.trim()) || result.file.name.replace(/\.[A-Za-z0-9]{1,5}$/, "") || "Drive file";
+    await recordStoredAsset(ctx, {
+      id,
+      key,
+      size: result.size,
+      sha256: result.sha256,
+      companyId,
+      scope: resolved.scope,
+      clientName: resolved.client?.name ?? null,
+      projectId: null,
+      issueId: null,
+      name: name.slice(0, 200),
+      source: "drive",
+      sourceRef,
+      userId: actor.userId,
+      mime,
+    });
+    return { ...assetOut(await getAssetRow(ctx, companyId, id)), reused: false };
+  });
 }
 
 /** People's page only: where a Drive import came from. */

@@ -14,6 +14,8 @@ import { WORK_ORIGINS } from "./origins.js";
 import { assigneeOf, workRoute } from "./routing.js";
 
 export const INVOICE_TO_FILE_KEY = "invoice";
+const DRIVE_ID = "0ADMOMlq1HzGgUk9PVA";
+const CLIENTS_ID = "1FDrIxsipXHGSOCJzRls0kXAQqeCPFtnU";
 
 /** Path separators and control characters out of a Drive name part. */
 const safe = (text: string) => text.replace(/[/\\\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
@@ -30,7 +32,7 @@ export async function openInvoiceFilingIssue(ctx: PluginContext, invoice: Invoic
   const client = safe(String(view.customer.name ?? "")) || "Client";
   const topic = safe(view.lines[0]?.description ?? "").slice(0, 40);
   const label = [invoice.number, topic].filter(Boolean).join(" ");
-  const fileName = `${(iso(paidAt) ?? new Date().toISOString()).slice(0, 10)} ${client} invoice ${label} v01.html`;
+  const fileName = `${(iso(paidAt) ?? new Date().toISOString()).slice(0, 10)} ${client} invoice ${label} (paid) v01.pdf`;
   const total = formatMoneyMinor(view.totalMinor, invoice.currency);
 
   // On a replay the issue exists; the upsert below re-attaches the document if an earlier attempt failed after creating it.
@@ -38,16 +40,24 @@ export async function openInvoiceFilingIssue(ctx: PluginContext, invoice: Invoic
     companyId: invoice.company_id,
     title: `File paid invoice ${invoice.number} (${client})`.slice(0, 200),
     description: [
-      `Invoice ${invoice.number} for ${client} (${total}) is paid. Save the invoice to Drive.`,
+      `Invoice ${invoice.number} for ${client} (${total}) is paid. Save the invoice PDF to Drive.`,
       "",
       "**Where to save it:**",
-      "- Folder: `Clients/<Company> (<Contact>)/Contracts & Quotes/`",
+      `- Shared Drive \`${DRIVE_ID}\`, path \`02 Partners in Biz/Clients/<Company> (<Contact>)/Contracts & Quotes/\``,
       `- File name: \`${fileName}\``,
       "",
-      "**What to do:**",
-      `Use the \`pib-drive-saving\` skill to save the printable invoice (document key \`${INVOICE_TO_FILE_KEY}\` on this issue) to the folder above. Post the Drive file name in your closing comment.`,
+      "**What to do** (use the `pib-drive-saving` skill and the connection \"Google Drive (filing)\"):",
+      `1. Build the PDF: \`bash <pib-drive-saving skill dir>/scripts/drive-file.sh invoice-pdf ${invoice.id} <outFile>\``,
+      `2. Upload it: \`bash <pib-drive-saving skill dir>/scripts/drive-file.sh upload <parentId> <outFile> "${fileName}"\``,
+      `3. Post the Drive file name and id in your closing comment (never a link). The printable HTML is also on this issue as document \`${INVOICE_TO_FILE_KEY}\`.`,
       "",
-      "See the skill for Drive naming and folder rules.",
+      "**Filing rules:**",
+      `1. Resolve the folder by id chain, never by a bare title search: \`Clients\` (\`${CLIENTS_ID}\`, Shared Drive \`${DRIVE_ID}\`) > \`search-files\` \`parentId = '<Clients>' and title = '<Company> (<Contact>)'\` > \`search-files\` \`parentId = '<client>' and title = 'Contracts & Quotes'\`.`,
+      "2. Client folder missing: stop, comment \"client folder missing\", hand the issue to the Delivery Lead. Never create a client folder, never file under another name.",
+      "3. `Contracts & Quotes` missing under an existing client folder: create only that subfolder, then continue.",
+      "4. Before upload, `search-files` `parentId = '<Contracts & Quotes>' and title = '<file name>'`; if it exists, skip the upload and report its id (no deletes ever).",
+      "5. Upload with `contentMimeType: application/pdf`, `disableConversionToGoogleType: true`. Never call any permission or sharing tool. Report file name and id, never a link.",
+      "6. 409 `agent_authorization_required` means the agent grant is gone: comment the error, set the issue blocked on Peet re-consenting. Do not retry.",
     ].join("\n"),
     originKind,
     originId,

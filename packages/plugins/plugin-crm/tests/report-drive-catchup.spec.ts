@@ -32,6 +32,7 @@ function setup() {
     project: vi.fn(async (_c, _co, client) => (client.ref === "c9" ? null : `proj-${client.ref}`)),
     save: save as unknown as ReportCatchupDeps["save"],
     sleep: vi.fn(async () => undefined),
+    now: () => 0,
   };
   return { ctx, execute, save, deps };
 }
@@ -53,7 +54,7 @@ describe("crm.reports-drive-catchup", () => {
 
   it("saves the stored HTML to the client's 04 Reports, paced; a rerun is all duplicates", async () => {
     const { ctx, execute, save, deps } = setup();
-    const first = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false }, deps);
+    const first = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 10 }, deps);
     expect(save).toHaveBeenCalledTimes(2);
     const input = save.mock.calls[0][2];
     expect(input).toMatchObject({ companyId: "co1", projectId: "proj-c1", fileKind: "client", mimeType: "text/html", subfolder: "04 Reports", name: "2026-10-01 Lumen Labs Pty Ltd v01.html" });
@@ -63,9 +64,49 @@ describe("crm.reports-drive-catchup", () => {
     expect(deps.sleep).toHaveBeenCalledTimes(1);
     expect(first.counts).toEqual({ saved: 2, "skipped:no_client": 1, "skipped:no_project": 1 });
 
-    const second = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false }, deps);
+    const second = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 10 }, deps);
     expect(second.counts).toEqual({ duplicate: 2, "skipped:no_client": 1, "skipped:no_project": 1 });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("works in batches: limit saves per call, then nextAfterId carries on (PAR-8121)", async () => {
+    const { ctx, save, deps } = setup();
+    const first = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1 }, deps);
+    expect(first.items.map((i) => [i.reportId, i.result])).toEqual([["r1", "saved"]]);
+    expect(first).toMatchObject({ done: false, nextAfterId: "r1", remaining: 3 });
+    const second = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1, afterId: "r1" }, deps);
+    expect(second.items.map((i) => [i.reportId, i.result])).toEqual([["r2", "skipped"], ["r3", "saved"]]);
+    expect(second).toMatchObject({ done: false, nextAfterId: "r3", remaining: 1 });
+    const third = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1, afterId: "r3" }, deps);
+    expect(third).toMatchObject({ done: true, nextAfterId: null, remaining: 0, counts: { "skipped:no_project": 1 } });
+    expect(save).toHaveBeenCalledTimes(2);
+    await expect(reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, afterId: "nope" }, deps)).rejects.toThrow(/afterId/);
+  });
+
+  it("stops starting saves once the time budget is used", async () => {
+    const { ctx, deps } = setup();
+    let t = 0;
+    deps.now = () => t;
+    const inner = deps.save;
+    deps.save = vi.fn(async (...args: Parameters<ReportCatchupDeps["save"]>) => {
+      t += 16_000;
+      return inner(...args);
+    });
+    const out = await reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 10 }, deps);
+    expect(deps.save).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ done: false, nextAfterId: "r1" });
+  });
+
+  it("refuses a second saving call while one runs; dry runs are not blocked", async () => {
+    const { ctx, deps } = setup();
+    let release!: () => void;
+    deps.save = vi.fn(() => new Promise<{ status: string }>((resolve) => { release = () => resolve({ status: "saved" }); })) as unknown as ReportCatchupDeps["save"];
+    const first = reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1 }, deps);
+    await vi.waitFor(() => expect(deps.save).toHaveBeenCalled());
+    await expect(reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false }, deps)).rejects.toThrow(/already running/);
+    await expect(reportsDriveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07" }, deps)).resolves.toMatchObject({ dryRun: true });
+    release();
+    await expect(first).resolves.toMatchObject({ done: false, nextAfterId: "r1" });
   });
 
   it("reports a failed save with its status", async () => {

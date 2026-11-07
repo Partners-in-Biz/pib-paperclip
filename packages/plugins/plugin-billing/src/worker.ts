@@ -129,6 +129,7 @@ import {
   customerDetails,
   customerNameOf,
   documentPdf,
+  invoicePdf,
   invoiceHtmlOf,
   invoiceView,
   markSentAction,
@@ -225,6 +226,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.cancel-invoice": cancelInvoice,
   "billing.delete-draft-invoice": deleteDraftInvoice,
   "billing.document-pdf": documentPdf,
+  "billing.invoice-pdf": invoicePdf,
   "billing.create-quote": createQuote,
   "billing.add-quote-line": addQuoteLine,
   "billing.update-quote-line": updateQuoteLine,
@@ -400,11 +402,12 @@ const ACTIONS: Record<string, Handler> = {
     return { ok: await correctDecision(ctx, requiredCompany(context), requiredString(params, "decisionId"), requiredString(params, "correctedTo"), userId) };
   },
   // PAR-8130: copy sent PDFs to Drive for a date range. A dry run (the default) only lists; saving needs a person.
+  // PAR-8121: a saving call does `limit` saves and returns `nextAfterId` for the next call (`afterId`).
   "billing.drive-catchup": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const dryRun = params.dryRun !== false;
     if (!dryRun) requirePerson(context, "the Drive catch-up");
-    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
+    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
   },
 };
 
@@ -507,6 +510,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "remove-line": { action: "billing.remove-line", message: "Invoice line removed" },
   "update-invoice": { action: "billing.update-invoice", message: "Invoice changed" },
   "invoice-detail": { action: "billing.invoice-detail", message: "Invoice loaded" },
+  "invoice-pdf": { action: "billing.invoice-pdf", message: "Invoice PDF built" },
   "list-open-invoices": { action: "billing.open-invoices", message: "Open invoices listed" },
   "request-invoice-send": { action: "billing.request-send", message: (d) => (d.already ? "A send approval is already open for this invoice" : "Send approval issue opened for a person") },
   "invoice-html": { action: "billing.invoice-html", message: "Invoice HTML generated" },

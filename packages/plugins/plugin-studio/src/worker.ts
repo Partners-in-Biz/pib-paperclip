@@ -5,9 +5,10 @@ import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
-import { giveAsset, giveChoices } from "./give.js";
+import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
+import { getTransfer } from "./drive-jobs.js";
 import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
 import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { brandKitFor } from "./brand-kit.js";
@@ -231,15 +232,19 @@ const plugin = definePlugin({
       return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
     });
 
-    // Give to agent (give.ts): agents that can run, then a normal issue for the chosen one. Viewers can't give.
-    action("give-agents", async (_params, context) => {
+    // Give to agent (give.ts, PAR-8138): the page opens the host's New Task popup. Prefill, then link or clean up.
+    // Viewers can't give: every step checks the role again.
+    action("give-prepare", async (params, context) => {
       const me = await person(context);
-      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
-      return { agents: await giveChoices(ctx, me.companyId) };
+      return prepareGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
-    action("give", async (params, context) => {
+    action("give-record", async (params, context) => {
       const me = await person(context);
-      return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+      return recordGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+    });
+    action("give-discard", async (params, context) => {
+      const me = await person(context);
+      return discardGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
 
     // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.

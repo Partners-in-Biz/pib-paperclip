@@ -307,11 +307,12 @@ const plugin = definePlugin({
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
     // PAR-8130: copy sent reports to Drive for a date range. A dry run (the default) only lists; saving needs a board user.
+    // PAR-8121: a saving call does `limit` reports and returns `nextAfterId` for the next call (`afterId`).
     registerAction("crm.reports-drive-catchup", async (params, context) => {
       const companyId = requireCompany(context);
       const dryRun = params.dryRun !== false;
       if (!dryRun) requireUser(context, "run the Drive catch-up");
-      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
+      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
     });
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
