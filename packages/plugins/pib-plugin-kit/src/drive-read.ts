@@ -7,6 +7,8 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { CRM_PLUGIN_ID } from "./crm-projection.js";
+import type { DriveTransferProgress } from "./drive.js";
+import { DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, isSha256Hex } from "./drive-transfer.js";
 
 export const DRIVE_READ_EVENTS = {
   listRequested: "drive.list-requested",
@@ -15,6 +17,8 @@ export const DRIVE_READ_EVENTS = {
   readRequested: "drive.read-requested",
   read: "drive.file.read",
   readFailed: "drive.read.failed",
+  /** Bytes copied so far by a large read into R2 (PAR-8125). Each one restarts the wait. */
+  readProgress: "drive.read.progress",
   /** Drive's previews of up to DRIVE_THUMBS_MAX files, for a person's picker (PAR-8124). */
   thumbsRequested: "drive.thumbs-requested",
   thumbs: "drive.thumbs.read",
@@ -56,7 +60,7 @@ export interface DriveReadTarget {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-type Pending = Map<string, { resolve: (ok: boolean, payload: Record<string, unknown>) => void; companyId: string }>;
+type Pending = Map<string, { resolve: (ok: boolean, payload: Record<string, unknown>) => void; companyId: string; progress?: (payload: Record<string, unknown>) => void }>;
 type Which = "list" | "read" | "thumbs";
 const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Record<Which, Pending>>();
 
@@ -65,13 +69,17 @@ function pendingFor(ctx: Pick<PluginContext, "events">) {
   if (known) return known;
   const maps: Record<Which, Pending> = { list: new Map(), read: new Map(), thumbs: new Map() };
   pendingByCtx.set(ctx, maps);
-  const on = (event: string, pending: Pending, ok: boolean) =>
+  const on = (event: string, pending: Pending, ok: boolean | "progress") =>
     ctx.events.on(`plugin.${CRM_PLUGIN_ID}.${event}` as never, async (e: PluginEvent) => {
       const payload = (e.payload ?? {}) as Record<string, unknown>;
       if (typeof payload.requestId !== "string") return;
       const entry = pending.get(payload.requestId);
       // A reply for another company is never taken for this one.
       if (!entry || entry.companyId !== e.companyId) return;
+      if (ok === "progress") {
+        entry.progress?.(payload);
+        return;
+      }
       pending.delete(payload.requestId);
       entry.resolve(ok, payload);
     });
@@ -79,6 +87,7 @@ function pendingFor(ctx: Pick<PluginContext, "events">) {
   on(DRIVE_READ_EVENTS.listFailed, maps.list, false);
   on(DRIVE_READ_EVENTS.read, maps.read, true);
   on(DRIVE_READ_EVENTS.readFailed, maps.read, false);
+  on(DRIVE_READ_EVENTS.readProgress, maps.read, "progress");
   on(DRIVE_READ_EVENTS.thumbs, maps.thumbs, true);
   on(DRIVE_READ_EVENTS.thumbsFailed, maps.thumbs, false);
   return maps;
@@ -102,6 +111,8 @@ async function request(
   event: string,
   t: DriveReadTarget,
   extra: Record<string, unknown>,
+  /** Only for a large read: progress replies go here, and each one restarts the wait (so `timeoutMs` is the idle wait). */
+  onProgress?: (progress: DriveTransferProgress) => void,
 ): Promise<{ ok: true; requestId: string; payload: Record<string, unknown> } | DriveFailure> {
   const requestId = t.requestId ?? randomUUID().replace(/-/g, "");
   const bad = validTarget(t);
@@ -122,11 +133,29 @@ async function request(
       pending.delete(requestId);
       resolve(result);
     };
-    const timer = setTimeout(() => settle({ status: "no_ack", requestId }), t.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => settle({ status: "no_ack", requestId }), t.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    };
+    arm();
     pending.set(requestId, {
       companyId: t.companyId,
       resolve: (ok, p) =>
         settle(ok ? { ok: true, requestId, payload: p } : { status: "failed", requestId, reason: typeof p.reason === "string" ? p.reason : "failed", hint: typeof p.hint === "string" ? p.hint : undefined }),
+      progress: onProgress
+        ? (p) => {
+            const bytesDone = Number(p.bytesDone);
+            const bytesTotal = Number(p.bytesTotal);
+            if (settled || !Number.isFinite(bytesDone) || !Number.isFinite(bytesTotal)) return;
+            arm();
+            try {
+              onProgress({ bytesDone, bytesTotal });
+            } catch {
+              // A caller's progress handler never breaks the wait.
+            }
+          }
+        : undefined,
     });
     Promise.resolve()
       .then(() => ctx.events.emit(event as never, t.companyId, payload))
@@ -199,4 +228,30 @@ export async function driveThumbs(ctx: Pick<PluginContext, "events">, t: DriveRe
   }
   for (const id of asked) thumbs.push({ id, reason: "no_reply" });
   return { status: "thumbs", requestId: out.requestId, thumbs };
+}
+
+export type DriveReadToR2Result = { status: "stored"; requestId: string; file: DriveListedFile; size: number; sha256: string } | DriveFailure;
+
+/**
+ * A large file (PAR-8125), up to DRIVE_TRANSFER_MAX_BYTES: the CRM streams it from Drive straight into R2 at `r2PutUrl`,
+ * a short-lived signed PUT link this plugin made. No bytes ride in an event and no worker holds the whole file.
+ * The link is a secret: it goes to the CRM only; never return it to an agent or log it. `timeoutMs` is the wait
+ * between progress replies, not for the whole copy. On `stored`, the object at the link holds `size` bytes with `sha256`.
+ */
+export async function driveReadToR2(
+  ctx: Pick<PluginContext, "events">,
+  t: DriveReadTarget & { fileId: string; r2PutUrl: string; onProgress?: (progress: DriveTransferProgress) => void },
+): Promise<DriveReadToR2Result> {
+  const requestId = t.requestId ?? randomUUID().replace(/-/g, "");
+  if (typeof t.fileId !== "string" || !FILE_ID.test(t.fileId)) return { status: "failed", requestId, reason: "invalid_input" };
+  if (!isR2ObjectUrl(t.r2PutUrl)) return { status: "failed", requestId, reason: "invalid_input", hint: "The storage link is not a Cloudflare R2 link." };
+  const out = await request(ctx, "read", DRIVE_READ_EVENTS.readRequested, { ...t, requestId }, { fileId: t.fileId, r2PutUrl: t.r2PutUrl }, (p) => t.onProgress?.(p));
+  if (!("ok" in out)) return out;
+  const file = listedFile(out.payload.file);
+  const size = out.payload.size;
+  const sha256 = out.payload.sha256;
+  if (!file || file.id !== t.fileId || !isSha256Hex(sha256) || typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > DRIVE_TRANSFER_MAX_BYTES) {
+    return { status: "failed", requestId, reason: "bad_reply" };
+  }
+  return { status: "stored", requestId, file: { ...file, size }, size, sha256: sha256.toLowerCase() };
 }
