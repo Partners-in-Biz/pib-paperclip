@@ -833,13 +833,15 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
           <span style={{ color: tokens.muted }}>{backup.text}{backup.status !== "ok" ? " Backups run hourly; check the server." : ""}</span>
         </div>
       ) : null}
-      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : shown.length === 0 ? <Muted>Every check passes.</Muted> : <div style={{ ...grid(520, 10), alignItems: "start" }}>{shown.map((group) => {
+      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : shown.length === 0 ? <Muted>Every check passes.</Muted> : <div style={{ ...grid(520, 10), alignItems: "start", gridAutoFlow: "dense" }}>{shown.map((group) => {
         const all = groups.find((g) => g.plugin === group.plugin)?.checks ?? group.checks;
         const failing = all.filter((c) => c.status !== "ok").length;
         const t = tone(group.status);
         const Glyph = groupIcon(group.plugin);
+        // A long group takes the whole row with its checks in columns: in one column it stretches the row and leaves a hole beside it.
+        const wide = group.checks.length > 6;
         return (
-          <details key={group.plugin} className="pib-health-group" open={group.status === "bad"} style={{ borderRadius: 12, border: `1px solid ${group.status === "ok" ? tokens.border : t.border}`, background: group.status === "ok" ? tokens.bg : `linear-gradient(180deg, ${t.soft}, transparent 80%), ${tokens.bg}`, padding: "10px 12px" }}>
+          <details key={group.plugin} className="pib-health-group" open={group.status === "bad"} style={{ gridColumn: wide ? "1 / -1" : undefined, minWidth: 0, borderRadius: 12, border: `1px solid ${group.status === "ok" ? tokens.border : t.border}`, background: group.status === "ok" ? tokens.bg : `linear-gradient(180deg, ${t.soft}, transparent 80%), ${tokens.bg}`, padding: "10px 12px" }}>
             <summary style={{ cursor: "pointer", display: "grid", gap: 2, listStyle: "none", minHeight: 28, minWidth: 0 }}>
               <span style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
                 <Light status={group.status} label="" />
@@ -853,7 +855,7 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
                 {group.checks.map((check) => check.title).join(" · ")}
               </span>
             </summary>
-            <div style={{ display: "grid", marginTop: 8 }}>
+            <div style={wide ? { ...grid(420, 0), columnGap: 24, marginTop: 8 } : { display: "grid", marginTop: 8 }}>
               {group.checks.map((check) => {
                 const plain = check.raw ? { text: check.detail ?? "", raw: check.raw } : plainDetail(check.detail);
                 return (
