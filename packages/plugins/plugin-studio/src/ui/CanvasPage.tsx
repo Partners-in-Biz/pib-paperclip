@@ -42,7 +42,7 @@ import { useNarrow } from "./narrow.js";
 import { PhoneReview } from "./PhoneReview.js";
 import { previewPlaceholder, usePreviewUrls } from "./previews.js";
 import { reviewQueue } from "./phone-review.js";
-import { CARD_LABELS, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
+import { CARD_LABELS, DELETE_KEYS, deleteConfirmText, isTypingTarget, cascadePosition, placeCard, visibleArea, CARD_SIZE, FIT_MIN_ZOOM, type Rect, connectionProblem, fromFlow, History, isConflict, labelEdges, newId, resultCards, toFlow, RESULT_GAP_X, type CardData, type FlowNode, type Snapshot } from "./board.js";
 
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc }
@@ -77,6 +77,10 @@ const boardCss = `
 .studio-card[data-dim="true"] { opacity: 0.35; }
 .studio-card-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; font-size: var(--text-compact, 13px); font-weight: 600; }
 .studio-card-head > span:nth-child(2) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.studio-card-del { flex: none; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; border: 1px solid transparent; border-radius: 0.375rem; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--text-compact, 13px); line-height: 1; cursor: pointer; }
+.studio-card-del:hover, .studio-card-del:focus-visible { color: var(--destructive); border-color: var(--border); background: var(--accent); }
+.studio-card-del:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.studio-card-head > .studio-pill { flex: none; }
 .studio-kind { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 0.375rem; font-size: var(--text-micro, 11px); font-weight: 700; color: var(--background); background: var(--kind); flex: none; }
 .studio-kind-prompt { --kind: var(--status-task-in_review); } .studio-kind-source { --kind: var(--status-task-in_progress); } .studio-kind-image { --kind: var(--status-task-todo); }
 .studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
@@ -151,9 +155,11 @@ interface BoardContext {
   give: (assetId: string) => void;
   /** Reloads the library after a file is added from Drive. */
   refreshLibrary: () => void;
+  /** Deletes one card (asks first when it shows a library file, which stays); null while the board is locked. */
+  removeCard: ((cardId: string) => void) | null;
 }
 const NO_DIM = new Set<string>();
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, give: () => undefined, refreshLibrary: () => undefined });
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, give: () => undefined, refreshLibrary: () => undefined, removeCard: null });
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -523,6 +529,18 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
     setEdges(snap.edges);
     changed();
   };
+  // Every delete (Backspace / Delete, the card's x, the panel's and the dock's Delete) goes through React Flow, so its
+  // node and edge changes land in onNodesChange / onEdgesChange and take one undo step. Cards only leave the board:
+  // no asset action is called, so library files stay (PAR-8104).
+  const onBeforeDelete = useCallback(async ({ nodes: ns }: { nodes: FlowNode[]; edges: Edge[] }) => {
+    if (isTypingTarget(document.activeElement)) return false;
+    const ask = deleteConfirmText(ns);
+    return ask ? window.confirm(ask) : true;
+  }, []);
+  const removeCard = useCallback((cardId: string) => void flow.deleteElements({ nodes: [{ id: cardId }] }), [flow]);
+  const selectedEdges = edges.filter((e) => e.selected);
+  const deleteSelected = () => void flow.deleteElements({ nodes: nodes.filter((n) => n.selected).map((n) => ({ id: n.id })), edges: selectedEdges.map((e) => ({ id: e.id })) });
+
   const undo = () => restore(history.current.undo(now.current));
   const redo = () => restore(history.current.redo(now.current));
 
@@ -530,7 +548,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || t?.closest("input, textarea, select, [contenteditable]")) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || isTypingTarget(t)) return;
       e.preventDefault();
       if (e.shiftKey) redo();
       else undo();
@@ -613,7 +631,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         assetName={library.find((a) => a.id === giving)?.name ?? "this file"}
         onClose={() => setGiving(null)}
       />
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, give: setGiving, refreshLibrary: assets.refresh }}>
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, give: setGiving, refreshLibrary: assets.refresh, removeCard: conflict ? null : removeCard }}>
         <div className="studio-canvas-layout">
         <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
@@ -626,6 +644,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             onConnectStart={onConnectStart}
             onConnectEnd={onConnectEnd}
             isValidConnection={isValidConnection}
+            deleteKeyCode={conflict ? null : DELETE_KEYS}
+            onBeforeDelete={onBeforeDelete}
             onNodeDragStart={beforeEdit}
             onMoveEnd={(_, vp) => { viewport.current = vp; }}
             defaultViewport={board.data.doc.viewport}
@@ -648,6 +668,9 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
               <button key={t} type="button" disabled={conflict} onClick={() => addCard(t)}>+ {CARD_LABELS[t]}</button>
             ))}
             <hr />
+            <button type="button" disabled={conflict || (selectedNodes.length === 0 && selectedEdges.length === 0)} onClick={deleteSelected} aria-label="Delete selected" title={selectedNodes.length === 0 && selectedEdges.length === 1 ? "Delete the selected connection (Delete or Backspace)" : "Delete the selected cards and connections (Delete or Backspace). Library files stay."}>
+              {selectedNodes.length === 0 && selectedEdges.length > 0 ? `Delete connection${selectedEdges.length === 1 ? "" : "s"}` : "Delete"}
+            </button>
             <button type="button" disabled={!history.current.canUndo || conflict} onClick={undo} aria-label="Undo" title="Undo">↶</button>
             <button type="button" disabled={!history.current.canRedo || conflict} onClick={redo} aria-label="Redo" title="Redo">↷</button>
           </div>
@@ -670,6 +693,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
             beforeEdit={beforeEdit}
             onGenerated={(groupId) => { flow.updateNodeData(selectedCard.id, { groupId }); overview.refresh(); }}
             onBuildOn={() => buildOn(selectedCard.id)}
+            onDelete={conflict ? undefined : () => removeCard(selectedCard.id)}
             onClose={() => setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))}
           />
         ) : null}
@@ -682,7 +706,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
 const KIND_LETTER: Record<NodeType, string> = { prompt: "T", source: "S", image: "I", video: "V", output: "O" };
 
 function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
-  const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary } = useContext(BoardCtx);
+  const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary, removeCard } = useContext(BoardCtx);
   const flow = useReactFlow<FlowNode, Edge>();
   const kind = type as NodeType;
   const set = (patch: Record<string, string>) => flow.updateNodeData(id, patch);
@@ -695,6 +719,9 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
         <span className={`studio-kind studio-kind-${kind}`} aria-hidden="true">{KIND_LETTER[kind]}</span>
         <span title={data.label || CARD_LABELS[kind]}>{data.label || CARD_LABELS[kind]}</span>
         {status && kind !== "output" ? <span className={`studio-pill studio-tone-${status.tone}`}>{status.label}</span> : null}
+        {removeCard ? (
+          <button type="button" className="studio-card-del nodrag" aria-label={`Delete ${data.label || CARD_LABELS[kind]} card`} title={data.assetId ? "Delete card (the library file stays)" : "Delete card"} onClick={(e) => { e.stopPropagation(); removeCard(id); }}>×</button>
+        ) : null}
       </div>
       {kind === "prompt" ? (
         <>
