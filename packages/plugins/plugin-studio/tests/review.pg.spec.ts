@@ -57,7 +57,7 @@ describe.skipIf(!available)("review through the host's db binding", () => {
   });
 
   describe("an agent approving its own asset", () => {
-    const status = async () => (await pg.client.query(`SELECT status FROM ${T("assets")} WHERE id = 'a1'`)).rows[0].status;
+    const status = async () => ((await pg.client.query(`SELECT status FROM ${T("assets")} WHERE id = 'a1'`)).rows[0] as { status: string }).status;
     const makeBy = (agent: string | null) => pg.client.query(`UPDATE ${T("assets")} SET created_by_agent_id = $1 WHERE id = 'a1'`, [agent]);
 
     it("is refused, names a reviewer not a person, leaves the status and exports nothing", async () => {
