@@ -985,6 +985,23 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const previewDraft = preview?.kind === "draft" ? allDrafts.find((row) => row.id === preview.id) ?? null : null;
   const previewMail = preview?.kind === "mail" ? (inbox?.messages ?? []).find((row) => row.id === preview.id) ?? null : null;
   const openMailId = previewMail?.id ?? null;
+  // `?compose=1&to=<address>[&subject=]` (the CRM's Email button, 0.9.8) opens a new draft to that address once the
+  // mailboxes are known, then takes the ask off the address so a reload does not open it twice.
+  const composeAsk = new URLSearchParams(hostLocation.search);
+  const wantsCompose = composeAsk.get("compose") === "1";
+  useEffect(() => {
+    if (!wantsCompose || !snapshot) return;
+    const to = (composeAsk.get("to") ?? "").trim();
+    const subjectAsk = (composeAsk.get("subject") ?? "").trim();
+    const first = (snapshot.accounts ?? []).filter((account) => account.kind !== "email-provider" && canSendFrom(account))[0];
+    if (first && !accountId) setAccountId(first.id);
+    setDraftTo(to);
+    if (subjectAsk) setSubject(subjectAsk);
+    setCreate("draft");
+    const rest = new URLSearchParams(withoutParam(withoutParam(withoutParam(hostLocation.search, "compose"), "to"), "subject")).toString();
+    hostNavigation.navigate(`/mailbox${rest ? `?${rest}` : ""}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsCompose, snapshot]);
   // `?mail=<id>` (the link a Give to agent task carries) opens that mail once the inbox is loaded.
   const linkedMail = new URLSearchParams(hostLocation.search).get("mail");
   useEffect(() => {

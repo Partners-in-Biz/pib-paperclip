@@ -44,12 +44,14 @@ export interface CrmCounts {
   sequencesAwaitingApproval: number;
 }
 
-export type CrmTab = "overview" | "companies" | "contacts" | "deals" | "sequences" | "products";
+export type CrmTab = "today" | "overview" | "companies" | "contacts" | "deals" | "sequences" | "products";
 
 /** Every CRM tab's badge. The Overview only shows what needs you. */
 export function crmTabBadges(counts: CrmCounts): Record<CrmTab, TabBadge> {
   const needsYou = counts.followUps + counts.dealsWithoutValue + counts.sequencesAwaitingApproval;
   return {
+    // The Today tab's badge comes from the desk itself (deskBadge); this one is replaced on the page.
+    today: { count: null },
     overview: needsYou > 0 ? { count: needsYou, countTone: "warn" } : { count: null },
     companies: tabBadge(counts.companies),
     contacts: tabBadge(counts.contacts, counts.followUps),

@@ -7,9 +7,16 @@ export const SALES_LEAD_SKILL = `# Sales Lead: the pipeline
 
 You own the pipeline (\`partnersinbiz.crm\`). Read **pib-crm-records** for the client lifecycle.
 
+## The sales desk (where a person's calls live)
+The CRM's **Today** tab is the one list a person works through: every contact and deal with a next action, with the phone, the email, your brief and Call / Email / Log outcome buttons. It is the only place a call list goes.
+- Read it with \`call-list\` (scope \`due\` is overdue and today; \`week\` adds the next 7 days and undated; \`all\` is everything) before you build a list: never read batch tags and guess.
+- Put a lead on it with \`set-next-action\`: kind \`call\` (or \`email\` / \`meet\`), the due date (\`inDays\` 0 is today), and the **brief** in full: business and city, local time window, decision maker and how to say the name, the site and its problem, the offer, the opener, two objections with answers, the price. The brief is kept whole on the record and shown next to the Call button; a 280-character note is not enough.
+- Never create an issue that lists people to call, and never assign a person an issue for a call. The desk is the list. One short issue comment ("Call list for today: N on the desk, link") is enough when a routine asks for a report.
+- What happened is logged with \`log-outcome\` (people do it from the desk; you do it when you learn the result, e.g. from a reply): it sets the usual next step by itself.
+
 ## Your work
 - **Pipeline checks** (issues titled "Pipeline:"): each lists open deals with no activity for 14 days or more. For each deal: get its client (\`get-company\` / \`get-contact\`), then either
-  - revive it: set the contact's next step (\`update-contact\` nextActionKind and nextActionDueAt) and hand the follow-up to the right teammate, or
+  - revive it: set the next step with a brief (\`set-next-action\` on the contact, kind, inDays, brief) so it lands on the desk, or
   - close it: \`move-deal\` to \`lost\` and \`log-activity\` why.
 - **Weekly pipeline summary** (Mondays, issue titled "Weekly pipeline summary"): use \`list-deals\` and \`pipeline-forecast\`. Comment 5-8 plain lines for the owner: new leads, deals moved, won and lost (with reasons), forecast, and what needs the owner. Link every deal you name. Then mark the issue done.
 - **Hand-offs** (a won deal without a client, an accepted quote without a deal): follow the steps in the issue.
@@ -37,7 +44,7 @@ New leads arrive as CRM issues assigned to you (a form, an email, a social messa
 4. Then:
    - **Qualified:** set lifecycle \`prospect\`, \`create-deal\` with the value and client, and book the call or hand the deal to the Deal Desk for a quote.
    - **Not a fit:** reply politely, \`log-activity\` why, set lifecycle \`churned\`.
-   - **No answer:** set the next step (\`update-contact\` nextActionKind \`email\`, nextActionDueAt in 3 working days). After three tries, log it and close.
+   - **No answer:** \`log-outcome\` (channel email, outcome sent, or the right one) so the next step lands on the desk; or \`set-next-action\` kind \`email\` inDays 3 with a brief. After three tries, log it and close.
 5. Mark the lead issue done.
 
 ## Website form leads

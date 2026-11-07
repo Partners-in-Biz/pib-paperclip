@@ -116,7 +116,7 @@ function signed(value: number, suffix: string): string | null {
   return `${value > 0 ? "+" : "−"}${Math.abs(value)} ${suffix}`;
 }
 
-export function CrmOverview({ summary, series, stages, contacts, needs, unlinked, onTab }: {
+export function CrmOverview({ summary, series, stages, contacts, needs, unlinked, onTab, snapshot }: {
   summary: OverviewSummary | undefined;
   series: CrmSeries | undefined;
   stages: OverviewStage[];
@@ -126,6 +126,8 @@ export function CrmOverview({ summary, series, stages, contacts, needs, unlinked
   /** Contacts not linked to a company: worth a look, not a problem (a sole trader stays unlinked). */
   unlinked: AttentionItem[];
   onTab?: (tab: "companies" | "contacts" | "deals") => void;
+  /** The sales snapshot (activity per day, funnel, lead batches), drawn by the desk module. */
+  snapshot?: ReactNode;
 }) {
   const currency = mainCurrency(summary, series);
   const won = series?.wonByMonth ?? [];
@@ -149,6 +151,8 @@ export function CrmOverview({ summary, series, stages, contacts, needs, unlinked
     <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
       {/* What needs you comes first: the answer to "what needs me?" before any number. */}
       <NeedsYouCard groups={needs} />
+
+      {snapshot}
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 10 }}>
         <KpiCard
@@ -391,6 +395,8 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   meeting: "Meeting",
   message: "Message",
   task: "Task",
+  brief: "Agent brief",
+  given: "Given to agent",
 };
 
 const ACTIVITY_LOOK: Record<string, { tone: ToneInput; icon?: LucideIcon }> = {
@@ -407,6 +413,10 @@ const ACTIVITY_LOOK: Record<string, { tone: ToneInput; icon?: LucideIcon }> = {
   email_status: { tone: "warn", icon: CircleAlert },
   note: { tone: "neutral", icon: MessageSquare },
   care_event: { tone: "info", icon: MessageSquare },
+  call: { tone: "ok", icon: MessageSquare },
+  meeting: { tone: "ok", icon: Target },
+  brief: { tone: "info", icon: Workflow },
+  given: { tone: "accent", icon: Workflow },
 };
 
 export function activityItems(items: ActivityLike[]): TimelineItem[] {
