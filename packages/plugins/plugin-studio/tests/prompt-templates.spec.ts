@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "../src/prompt-template-store.js";
 import { fieldLabel, fillPrompt, filterTemplates, missingFields, placeholdersOf, PROMPT_TEMPLATES, TEMPLATE_CATEGORIES } from "../src/prompt-templates.js";
@@ -18,6 +19,20 @@ describe("the built-in templates", () => {
       for (const field of placeholdersOf(t.prompt)) expect(t.examples?.[field], `${t.id} ${field}`).toBeTruthy();
       expect(t.prompt.length, t.id).toBeLessThan(1000);
     }
+  });
+
+  it("every image template has its example picture, and uses a ratio the default model can make", () => {
+    const soul = ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"];
+    for (const t of PROMPT_TEMPLATES.filter((x) => x.kind === "image")) {
+      expect(existsSync(new URL(`../assets/template-samples/${t.id}.jpg`, import.meta.url)), t.id).toBe(true);
+      expect(soul, t.id).toContain(t.ratio);
+    }
+  });
+
+  it("never builds a picture address from import.meta.url: the host runs pages from a blob: address, where new URL throws", () => {
+    const source = readFileSync(new URL("../src/ui/TemplateGallery.tsx", import.meta.url), "utf8");
+    expect(source).not.toMatch(/new URL\([^)]*import\.meta\.url/);
+    expect(() => new URL("./x.jpg", "blob:https://example.com/abc")).toThrow();
   });
 
   it("cover images and video, and every category has something", () => {

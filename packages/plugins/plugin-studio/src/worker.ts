@@ -13,6 +13,7 @@ import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js"
 import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { brandKitFor } from "./brand-kit.js";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "./prompt-template-store.js";
+import { deleteCanvasTemplate, listCanvasTemplates, saveCanvasTemplate } from "./canvas-template-store.js";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
@@ -295,6 +296,22 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't delete templates. Ask a company owner for member access.", "forbidden");
       return deleteTemplate(ctx, me.companyId, String(objectParams(params).id ?? ""));
+    });
+
+    // The canvases page's saved board templates: same rules as the prompt templates above.
+    action("canvas-templates", async (_params, context) => {
+      const me = await person(context);
+      return { saved: await listCanvasTemplates(ctx, me.companyId) };
+    });
+    action("save-canvas-template", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save templates. Ask a company owner for member access.", "forbidden");
+      return { template: await saveCanvasTemplate(ctx, me.companyId, objectParams(params)) };
+    });
+    action("delete-canvas-template", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't delete templates. Ask a company owner for member access.", "forbidden");
+      return deleteCanvasTemplate(ctx, me.companyId, String(objectParams(params).id ?? ""));
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
