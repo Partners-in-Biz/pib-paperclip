@@ -10,7 +10,8 @@ import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
 import { getTransfer } from "./drive-jobs.js";
 import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
-import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
+import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
+import { brandKitFor } from "./brand-kit.js";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
@@ -20,7 +21,7 @@ import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { clientSummaries } from "./summary.js";
-import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
+import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
 
 function objectParams(params: unknown): Record<string, unknown> {
@@ -120,6 +121,10 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const row = await getAssetRow(ctx, companyId, String(params.assetId ?? "").trim());
       await assertReachable(ctx, companyId, scopeOfRow(row), work.projectId);
       return reviewAsset(ctx, companyId, params, { agentId: run.agentId });
+    }
+    case "studio-brand-kit": {
+      const work = await workOf(ctx, run, params);
+      return brandKitFor(ctx, companyId, await scopeForWork(ctx, companyId, scopeInput(params), work.projectId));
     }
     case "canvas-create-from-brief":
       return createFromBrief(ctx, params, run);
@@ -261,11 +266,12 @@ const plugin = definePlugin({
       return driveThumbs(ctx, me.companyId, objectParams(params));
     });
 
-    // A Drive save or import over 5 MiB runs in the background (PAR-8125): the page polls this for progress and the result.
-    action("drive-transfer", async (params, context) => {
+    // The picked client's brand kit from the CRM (PAR-8134). Shown on the card; a person adds it to the prompt.
+    registerBrandKitReplies(ctx);
+    action("brand-kit", async (params, context) => {
       const me = await person(context);
-      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't use Drive transfers.", "forbidden");
-      return getTransfer(me.companyId, String(objectParams(params).transferId ?? "").trim());
+      const requested = scopeInput({ client: objectParams(params).client ?? null });
+      return brandKitFor(ctx, me.companyId, await resolveScope(ctx, me.companyId, requested ?? null));
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
