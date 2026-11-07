@@ -10,7 +10,7 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
-import { Button, ButtonLink, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { Blocks, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
@@ -101,7 +101,7 @@ const AGENT_LIMIT_PREFIX = "agent:";
 const FINISHED = new Set(["succeeded", "failed"]);
 const POLL_MS = 4000;
 
-const muted = { fontSize: 13, opacity: 0.7 } as const;
+const muted = { fontSize: 13, color: "var(--muted-foreground)" } as const;
 const row = { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" } as const;
 const grid = (min: number) => ({ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${min}px), 1fr))`, gap: 12 });
 
@@ -110,6 +110,19 @@ function when(at: string | null | undefined): string {
 }
 
 type Tab = "library" | "generate" | "usage";
+const TAB_ICONS = { library: Blocks, generate: Sparkles, usage: Gauge } as const;
+
+const roundCredits = (n: number) => Math.round(n * 100) / 100;
+
+/** The credits number on the Library: what is left of the cap that applies, or what was used when no cap is set. */
+function CreditsMetric({ data }: { data: Overview }) {
+  const cap = data.caps.find((c) => c.scopeKey === COMPANY_SCOPE) ?? data.caps.find((c) => c.scopeKey === DEFAULT_SCOPE) ?? null;
+  const used = roundCredits(data.companyUsed);
+  if (!cap) return <MetricCard icon={Coins} value={used} label="Credits used this month" description="No cap set, so generation is off" tone="warn" />;
+  const left = Math.max(0, roundCredits(cap.monthlyCredits - data.companyUsed));
+  const low = left <= cap.monthlyCredits * 0.1;
+  return <MetricCard icon={Coins} value={left} label="Credits left this month" description={`${used} used of ${cap.monthlyCredits}`} tone={left === 0 ? "bad" : low ? "warn" : undefined} />;
+}
 
 export function StudioPage({ context }: PluginPageProps) {
   usePibBaseStyles();
@@ -141,10 +154,10 @@ export function StudioPage({ context }: PluginPageProps) {
   }, [companyId]);
 
   const description = "Creative assets, generation and monthly credit caps.";
-  if (!companyId) return <Page title="Studio" description="Pick a company first.">{null}</Page>;
-  if (overview.error) return <Page title="Studio" description={description} message={errorText(overview.error)} messageTone="danger">{null}</Page>;
+  if (!companyId) return <Page accent="studio" title="Studio" description="Pick a company first.">{null}</Page>;
+  if (overview.error) return <Page accent="studio" title="Studio" description={description} message={errorText(overview.error)} messageTone="danger">{null}</Page>;
   const data = overview.data;
-  if (!data) return <Page title="Studio" description={description}>Loading…</Page>;
+  if (!data) return <Page accent="studio" title="Studio" description={description}>Loading…</Page>;
 
   const tabs: Array<[Tab, string]> = [
     ["library", "Library"],
@@ -153,7 +166,7 @@ export function StudioPage({ context }: PluginPageProps) {
   ];
 
   return (
-    <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`} actions={<ButtonLink {...canvasNav.linkProps("/studio-canvas")}>Open canvas</ButtonLink>}>
+    <Page accent="studio" title="Studio" description={`Images and video from your team and agents. Credits used in ${data.period}: ${roundCredits(data.companyUsed)}.`} actions={<ButtonLink {...canvasNav.linkProps("/studio-canvas")}>Open canvas</ButtonLink>}>
       {meError ? <PageMessage tone="danger" message={meError} /> : null}
       {narrow ? (
         // Phone: a bottom tab bar (spec PAR-8040 item 7); Boards opens the canvas.
@@ -173,13 +186,7 @@ export function StudioPage({ context }: PluginPageProps) {
           })}
         </nav>
       ) : (
-        <div role="tablist" aria-label="Studio" style={{ ...row, marginBottom: 12 }}>
-          {tabs.map(([key, label]) => (
-            <Button key={key} role="tab" aria-selected={tab === key} variant={tab === key ? "primary" : "secondary"} onClick={() => setTab(key)}>
-              {label}
-            </Button>
-          ))}
-        </div>
+        <Tabs tabs={tabs.map(([id, label]) => ({ id, label, icon: TAB_ICONS[id] }))} active={tab} onChange={(id) => setTab(id as Tab)} />
       )}
       {tab === "library" ? <Library companyId={companyId} data={data} version={libraryVersion} presetClient={libraryClient} canReview={me?.canGenerate === true} /> : null}
       {tab === "library" ? (
@@ -220,7 +227,7 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
 
 export { useNarrow };
 
-const cardBox = { borderRadius: "var(--radius-lg, 10px)", border: "1px solid var(--border)", overflow: "hidden", minWidth: 0 } as const;
+const cardBox = { borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", minWidth: 0 } as const;
 /** Text on media: a dark scrim keeps pills readable (AA) on any picture. */
 const scrim = "color-mix(in srgb, var(--background, black) 72%, transparent)";
 
@@ -257,7 +264,8 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
       onClick={onOpen}
       aria-label={`Open ${humanTitle(asset.prompt, asset.name)}`}
       title={asset.prompt ?? asset.name}
-      style={{ ...cardBox, textAlign: "left", background: "var(--card)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
+      className="pib-link-card"
+      style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
     >
       <div style={{ position: "relative", aspectRatio: "4 / 3", background: "var(--muted)", width: "100%" }}>
         {!url ? null : isVideo ? (
@@ -274,8 +282,8 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
         {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{formatDuration(duration)}</span> : null}
       </div>
       <div style={{ padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
-        <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{humanTitle(asset.prompt, asset.name)}</div>
-        <div style={{ ...muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
+        <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{humanTitle(asset.prompt, asset.name)}</div>
+        <div style={{ ...muted, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
       </div>
     </button>
   );
@@ -302,11 +310,38 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
   const narrow = useNarrow();
   const labels = useMemo(() => new Map([...(data.models ?? []), ...(data.unavailableModels ?? [])].map((m) => [m.id, m.label])), [data]);
   const modelLabel = (id: string) => labels.get(id) ?? id;
+  const clientSelect = (
+    <Select aria-label="Client" value={client} onChange={(e) => setClient(e.target.value)} style={{ width: narrow ? undefined : "auto" }}>
+      <option value="">All clients</option>
+      <option value="own">Own work</option>
+      {data.clients.map((c) => (
+        <option key={c.scopeKey} value={c.scopeKey}>
+          {c.name}
+        </option>
+      ))}
+    </Select>
+  );
+  const projectSelect = (
+    <Select aria-label="Project" value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ width: narrow ? undefined : "auto" }}>
+      <option value="">All projects</option>
+      {(data.projects ?? []).map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name}
+        </option>
+      ))}
+    </Select>
+  );
 
   return (
     <>
-      <Section title="Library">
-        <div style={{ ...row, marginBottom: 10 }}>
+      <MetricRow>
+        <MetricCard icon={Package} value={counts.all ?? "–"} label="Files" description={client || projectId ? "With these filters" : "Images and video"} />
+        <MetricCard icon={Hourglass} value={counts.draft ?? "–"} label="Waiting for review" description="Drafts nobody has approved yet" />
+        <MetricCard icon={CircleCheck} value={counts.approved ?? "–"} label="Approved" description="Ready to use" />
+        <CreditsMetric data={data} />
+      </MetricRow>
+      <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+        <div style={row}>
           <ChipGroup
             label="Status"
             value={status}
@@ -314,40 +349,25 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
             options={[["", "All", counts.all], ["draft", "Draft", counts.draft], ["approved", "Approved", counts.approved], ["rejected", "Rejected", counts.rejected]]}
           />
           <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"]]} />
-          <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value === "oldest" ? "oldest" : "newest")} style={{ width: "auto" }}>
+          {narrow ? null : clientSelect}
+          {narrow ? null : projectSelect}
+          <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value === "oldest" ? "oldest" : "newest")} style={{ width: "auto", marginLeft: narrow ? undefined : "auto" }}>
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
           </Select>
         </div>
         {/* Phone: client and project fold away so the grid starts near the top (spec PAR-8040 item 7). */}
-        <details open={!narrow || client !== "" || projectId !== ""} style={{ marginBottom: 12 }}>
-          <summary style={{ ...muted, cursor: "pointer", marginBottom: 8, display: narrow ? undefined : "none" }}>More filters</summary>
-        <div style={grid(160)}>
-          <Field label="Client">
-            <Select aria-label="Client" value={client} onChange={(e) => setClient(e.target.value)}>
-              <option value="">All</option>
-              <option value="own">Own work</option>
-              {data.clients.map((c) => (
-                <option key={c.scopeKey} value={c.scopeKey}>
-                  {c.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Project">
-            <Select aria-label="Project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              <option value="">All</option>
-              {(data.projects ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-        </details>
+        {narrow ? (
+          <details open={client !== "" || projectId !== ""}>
+            <summary style={{ ...muted, cursor: "pointer", marginBottom: 8 }}>More filters</summary>
+            <div style={grid(160)}>
+              {clientSelect}
+              {projectSelect}
+            </div>
+          </details>
+        ) : null}
         {canReview ? (
-          <div style={{ marginBottom: 12 }}>
+          <div>
             <FromDrive
               companyId={companyId}
               client={client}
@@ -368,7 +388,7 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
             <LibraryCard key={a.id} asset={a} url={previews.urls[a.id]} meta={metaLine(a, modelLabel, narrow)} onOpen={() => setOpenId(a.id)} />
           ))}
         </div>
-      </Section>
+      </div>
       {openId ? <AssetDetail companyId={companyId} assetId={openId} kind={open?.kind ?? "image"} previewUrl={previews.urls[openId]} canReview={canReview} close={() => setOpenId(null)} onReviewed={() => setReviewed((n) => n + 1)} /> : null}
     </>
   );

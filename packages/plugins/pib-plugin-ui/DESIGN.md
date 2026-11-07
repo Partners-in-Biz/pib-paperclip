@@ -100,6 +100,8 @@ Other theme APIs:
 | `Tabs` | tabs on a page | Tabs can take `icon`, `count` and `countTone`. The active underline uses the accent. |
 | `SectionCard` | each block on an overview | `title`, `subtitle`, `icon`, `tone` or `accent`, `strip` (3px top line for attention), `actions`, `footer`. The title is 14px and semibold. |
 | `Section` | dense forms and lists | Small uppercase title. It is the older style and is still fine. |
+| `MetricRow` + `MetricCard` | a page's headline numbers | The host Dashboard's look: no box, a 30px number, a muted label, a quiet icon. `tone` colours the number only when it needs attention. Two columns on a phone. |
+| `SectionHeading` | a title over content with no box | The Dashboard's small uppercase title. Prefer it to a `Section` around a full-width grid. |
 | `KpiCard` | one number | `label`, `value`, `tone`, `delta` (number, or text like `"+12% vs last week"`, shown as ▲/▼), `invert` (lower is better), `deltaTone`, `hint`, `icon` + `iconAccent`, `sparkline`, `link={linkProps(href)}`, `size="sm"`. Lay them out in `fluidColumns(150)`. |
 | `StatusDot` | status beside a name | `tone`, `pulse` (live or running), `halo` (traffic-light look), `label` when the dot stands alone. |
 | `Pill` / `Badge` | status, kind, counts | `tone`, `variant` (soft, solid or outline), `icon`, `dot`, `size`. |

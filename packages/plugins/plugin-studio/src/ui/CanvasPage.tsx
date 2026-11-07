@@ -165,7 +165,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? host.companyId ?? null;
   const { search } = useHostLocation();
   const canvasId = new URLSearchParams(search).get("canvas");
-  if (!companyId) return <Page title="Studio canvas" description="Pick a company first.">{null}</Page>;
+  if (!companyId) return <Page accent="studio" title="Studio canvas" description="Pick a company first.">{null}</Page>;
   if (!canvasId) return <CanvasList companyId={companyId} />;
   return (
     <ReactFlowProvider>
@@ -230,7 +230,7 @@ function CanvasList({ companyId }: { companyId: string }) {
   };
   const boards = list.data?.canvases ?? [];
   return (
-    <Page title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
+    <Page accent="studio" title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
       <PageMessage tone="danger" message={error ?? (list.error ? errorText(list.error) : undefined)} />
       <Section title="New canvas">
         <div style={row}>
@@ -574,8 +574,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 
-  if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<ButtonLink {...nav.linkProps("/studio-canvas")}>All canvases</ButtonLink>}>{null}</Page>;
-  if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
+  if (board.error) return <Page accent="studio" title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<ButtonLink {...nav.linkProps("/studio-canvas")}>All canvases</ButtonLink>}>{null}</Page>;
+  if (!board.data) return <Page accent="studio" title="Studio canvas" description="Loading…">{null}</Page>;
   if (narrow) {
     const labels = new Map((overview.data?.models ?? []).map((m) => [m.id, m.label]));
     return (
