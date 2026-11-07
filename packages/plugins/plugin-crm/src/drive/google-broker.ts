@@ -24,7 +24,7 @@ import {
   type UploadResult,
 } from "./broker.js";
 import { GoogleAuthError, serviceAccountToken, type GoogleFetch, type ServiceAccountKey } from "./google-sa.js";
-import type { DriveFileInfo } from "./broker.js";
+import type { DriveFileInfo, DriveThumbnail } from "./broker.js";
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -371,11 +371,14 @@ export function createGoogleDriveBroker(
     };
   }
 
-  const fileInfo = (f: DriveFile): DriveFileInfo => ({ id: f.id, name: f.name, mimeType: f.mimeType ?? "application/octet-stream", size: Number(f.size ?? 0), parents: f.parents ?? [] });
+  const fileInfo = (f: DriveFile): DriveFileInfo => {
+    const modified = (f as DriveFile & { modifiedTime?: string }).modifiedTime;
+    return { id: f.id, name: f.name, mimeType: f.mimeType ?? "application/octet-stream", size: Number(f.size ?? 0), parents: f.parents ?? [], ...(typeof modified === "string" ? { modifiedTime: modified } : {}) };
+  };
 
   /** The files (not folders) directly in one folder, oldest first, at most 200. */
   async function listFiles(parentFolderId: string): Promise<DriveFileInfo[]> {
-    const files = await list(`${q(parentFolderId)} in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`, "id,name,mimeType,size,parents", 200);
+    const files = await list(`${q(parentFolderId)} in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`, "id,name,mimeType,size,parents,modifiedTime", 200);
     return files.filter((f) => f.mimeType !== "application/vnd.google-apps.folder").map(fileInfo);
   }
 
@@ -389,14 +392,44 @@ export function createGoogleDriveBroker(
     return fileInfo(file);
   }
 
-  async function downloadFile(fileId: string, maxBytes: number): Promise<Uint8Array> {
-    let token: string;
+  async function bearer(): Promise<string> {
     try {
-      token = await serviceAccountToken(fetchFn, key, undefined, now());
+      return await serviceAccountToken(fetchFn, key, undefined, now());
     } catch (err) {
       if (err instanceof GoogleAuthError) throw new BrokerError(err.message, err.status === 400 ? 401 : err.status, err.status >= 500, undefined, undefined, "bad_credential");
       throw new BrokerError(`Network error getting a Google token: ${err instanceof Error ? err.message : String(err)}`, 500, true);
     }
+  }
+
+  /** Drive's preview image, fetched here with the service account: the link and the token never leave the CRM (PAR-8124). */
+  async function thumbnail(fileId: string, px: number, maxBytes: number, allowed: (parents: string[]) => boolean): Promise<DriveThumbnail | null> {
+    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,parents,driveId,trashed,hasThumbnail,thumbnailLink")}`);
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
+    const file = JSON.parse(res.text) as { id?: string; parents?: string[]; driveId?: string; trashed?: boolean; thumbnailLink?: string };
+    if (typeof file.id !== "string" || file.trashed || file.driveId !== sharedDriveId) return null;
+    if (!allowed(file.parents ?? [])) return { status: "not_in_client_folder" };
+    if (typeof file.thumbnailLink !== "string" || !/^https:\/\/[a-z0-9.-]+\.(googleusercontent|google)\.com\//.test(file.thumbnailLink)) return { status: "no_preview" };
+    const link = /=s\d+$/.test(file.thumbnailLink) ? file.thumbnailLink.replace(/=s\d+$/, `=s${px}`) : file.thumbnailLink;
+    const token = await bearer();
+    let img: Response;
+    try {
+      img = await fetchFn(link, { method: "GET", headers: { Authorization: "Bearer " + token }, signal: AbortSignal.timeout(10_000) });
+    } catch (err) {
+      throw new BrokerError(`Network error fetching a Drive preview: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+    if (img.status === 404) return { status: "no_preview" };
+    if (img.status < 200 || img.status >= 300) throw toBrokerError(img.status, await img.text().catch(() => ""));
+    const mimeType = (img.headers?.get?.("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(mimeType)) return { status: "no_preview" };
+    if (Number(img.headers?.get?.("content-length") ?? 0) > maxBytes) return { status: "too_large" };
+    const bytes = new Uint8Array(await img.arrayBuffer());
+    if (bytes.byteLength > maxBytes) return { status: "too_large" };
+    return { status: "ok", mimeType, bytes };
+  }
+
+  async function downloadFile(fileId: string, maxBytes: number): Promise<Uint8Array> {
+    const token = await bearer();
     let res: Response;
     try {
       res = await fetchFn(`${DRIVE}/files/${encodeURIComponent(fileId)}?alt=media&${shared}`, { method: "GET", headers: { Authorization: "Bearer " + token }, signal: AbortSignal.timeout(60_000) });
@@ -411,5 +444,5 @@ export function createGoogleDriveBroker(
     return bytes;
   }
 
-  return { resolve, ensure, identity, uploadFile, listFiles, fileMeta, downloadFile };
+  return { resolve, ensure, identity, uploadFile, listFiles, fileMeta, downloadFile, thumbnail };
 }

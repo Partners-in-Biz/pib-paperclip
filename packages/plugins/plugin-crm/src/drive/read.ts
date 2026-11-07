@@ -5,7 +5,7 @@
  * The company comes from the event, never from the payload.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { DRIVE_PRODUCER_PLUGINS, DRIVE_READ_EVENTS } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_PRODUCER_PLUGINS, DRIVE_READ_EVENTS, DRIVE_THUMB_SIZES, DRIVE_THUMBS_MAX, type DriveThumbSize } from "@partnersinbiz/pib-plugin-kit";
 import { registerProducerRoute } from "./producer-route.js";
 import { DriveNotBoundError, type Broker, type DriveFileInfo } from "./broker.js";
 import { createBrokerForCompany, driveFolderEnsure, resolveProducerSaveProject } from "./tools.js";
@@ -36,8 +36,33 @@ async function brokerOf(ctx: PluginContext, companyId: string, brokerFor: Broker
   }
 }
 
+type Folders = { folderIds: string[]; labels: Record<string, string> };
+
+/**
+ * A picker asks for a page of previews every few seconds (PAR-8124). Each asks for the client's folders, which costs a
+ * secret lookup and a Drive call; they are kept for two minutes per company and client, so one preview batch costs one
+ * lookup. Only a found set is kept, never a refusal.
+ */
+const FOLDER_TTL_MS = 120_000;
+const folderCache = new Map<string, { at: number; value: Folders }>();
+export function clearAssetFolderCache(): void {
+  folderCache.clear();
+}
+
+async function cachedAssetFolders(ctx: PluginContext, companyId: string, client: Client): Promise<ReadOutcome<Folders>> {
+  const key = `${companyId}|${client.clientKind ?? ""}|${client.clientRef ?? ""}`;
+  const hit = folderCache.get(key);
+  if (hit && Date.now() - hit.at < FOLDER_TTL_MS) return { status: "ok", ...hit.value };
+  const res = await assetFolderIds(ctx, companyId, client);
+  if (res.status === "ok" && "folderIds" in res) {
+    if (folderCache.size > 500) folderCache.clear();
+    folderCache.set(key, { at: Date.now(), value: { folderIds: res.folderIds, labels: res.labels } });
+  }
+  return res;
+}
+
 /** The folder ids a read may reach for this client: its assets sub-folders, or the folder itself when it has none. */
-export async function assetFolderIds(ctx: PluginContext, companyId: string, client: Client): Promise<ReadOutcome<{ folderIds: string[] }>> {
+export async function assetFolderIds(ctx: PluginContext, companyId: string, client: Client): Promise<ReadOutcome<Folders>> {
   const projectId = await resolveProducerSaveProject(ctx, companyId, { kind: "marketing", clientKind: client.clientKind, clientRef: client.clientRef });
   if (!projectId) {
     return { status: "no_project", hint: client.clientRef ? "No project is linked to this client in the CRM." : "No project is set for the company's own Drive folder (drive.ownProjectId)." };
@@ -54,28 +79,80 @@ export async function assetFolderIds(ctx: PluginContext, companyId: string, clie
   if (res.status !== "created" && res.status !== "exists") return { status: res.status ?? "invalid_input", hint: res.hint };
   if (!res.folder_id) return { status: "invalid_input", hint: "No folder_id from ensure result" };
   const tree = res.tree ?? [];
-  if (tree.length === 0) return { status: "ok", folderIds: [res.folder_id] };
+  if (tree.length === 0) return { status: "ok", folderIds: [res.folder_id], labels: { [res.folder_id]: "Drive folder" } };
   const below = `${res.path}/`;
-  const folderIds = tree
-    .filter((e) => e.folderId && e.path?.startsWith(below) && ASSET_ROOTS.some((root) => e.path!.slice(below.length).startsWith(root)))
-    .map((e) => e.folderId!);
-  if (folderIds.length === 0) return { status: "no_assets_folder", hint: "This client's Drive folder has no Assets sub-folders." };
-  return { status: "ok", folderIds };
+  const assets = tree.filter((e) => e.folderId && e.path?.startsWith(below) && ASSET_ROOTS.some((root) => e.path!.slice(below.length).startsWith(root)));
+  if (assets.length === 0) return { status: "no_assets_folder", hint: "This client's Drive folder has no Assets sub-folders." };
+  // The label is the path below the client's folder ("Assets/Images"): the picker groups by it. No ids or links.
+  return { status: "ok", folderIds: assets.map((e) => e.folderId!), labels: Object.fromEntries(assets.map((e) => [e.folderId!, e.path!.slice(below.length)])) };
 }
 
 const out = (f: DriveFileInfo) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: f.size });
+const listed = (f: DriveFileInfo, labels: Record<string, string>) => {
+  const folder = f.parents.map((p) => labels[p]).find((l) => typeof l === "string");
+  return { ...out(f), ...(folder ? { folder } : {}), ...(f.modifiedTime ? { modifiedTime: f.modifiedTime } : {}) };
+};
 
-export async function listAssetFiles(ctx: PluginContext, companyId: string, client: Client, brokerFor: BrokerFor = createBrokerForCompany): Promise<ReadOutcome<{ files: Array<ReturnType<typeof out>> }>> {
+export async function listAssetFiles(ctx: PluginContext, companyId: string, client: Client, brokerFor: BrokerFor = createBrokerForCompany): Promise<ReadOutcome<{ files: Array<ReturnType<typeof listed>> }>> {
   const b = await brokerOf(ctx, companyId, brokerFor);
   if (!("broker" in b)) return b;
-  const folders = await assetFolderIds(ctx, companyId, client);
+  // A fresh lookup: opening the picker is when a person expects a new folder to show up.
+  folderCache.delete(`${companyId}|${client.clientKind ?? ""}|${client.clientRef ?? ""}`);
+  const folders = await cachedAssetFolders(ctx, companyId, client);
   if (folders.status !== "ok" || !("folderIds" in folders)) return folders;
-  const files: DriveFileInfo[] = [];
-  for (const id of folders.folderIds) {
-    if (files.length >= LIST_MAX) break;
-    files.push(...(await b.broker.listFiles!(id)));
+  // The folders are listed at the same time: one after the other took 9 to 20 s on live (PAR-8124).
+  const perFolder = await Promise.all(folders.folderIds.map((id) => b.broker.listFiles!(id)));
+  const files = perFolder.flat().slice(0, LIST_MAX);
+  return { status: "ok", files: files.map((f) => listed(f, folders.labels)) };
+}
+
+export interface ThumbOut {
+  id: string;
+  mimeType?: string;
+  contentBase64?: string;
+  reason?: string;
+}
+
+/**
+ * Previews for a person's picker (PAR-8124): Drive's own thumbnails, fetched here, for files directly in this client's
+ * assets folders only (the same rule as a read). A file elsewhere gets `not_in_client_folder` and nothing is fetched.
+ */
+export async function thumbAssetFiles(
+  ctx: PluginContext,
+  companyId: string,
+  client: Client,
+  fileIds: unknown,
+  size: unknown,
+  brokerFor: BrokerFor = createBrokerForCompany,
+): Promise<ReadOutcome<{ thumbs: ThumbOut[] }>> {
+  if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > DRIVE_THUMBS_MAX || !fileIds.every((id) => typeof id === "string" && FILE_ID.test(id))) {
+    return { status: "invalid_input", hint: `Ask for 1 to ${DRIVE_THUMBS_MAX} Drive file ids.` };
   }
-  return { status: "ok", files: files.slice(0, LIST_MAX).map(out) };
+  const spec = DRIVE_THUMB_SIZES[(size === "large" ? "large" : "small") as DriveThumbSize];
+  const b = await brokerOf(ctx, companyId, brokerFor);
+  if (!("broker" in b)) return b;
+  if (!b.broker.thumbnail) return { status: "not_supported", hint: "This Drive connection can't show previews." };
+  const folders = await cachedAssetFolders(ctx, companyId, client);
+  if (folders.status !== "ok" || !("folderIds" in folders)) return folders;
+  const allowed = (parents: string[]) => parents.some((p) => folders.folderIds.includes(p));
+  const ids = [...new Set(fileIds as string[])];
+  const thumbs: ThumbOut[] = new Array(ids.length);
+  // Six at a time, so a batch stays well inside the 30 s an action gets.
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const i = next++;
+      const id = ids[i]!;
+      try {
+        const t = await b.broker.thumbnail!(id, spec.px, spec.maxBytes, allowed);
+        thumbs[i] = !t ? { id, reason: "not_found" } : t.status === "ok" ? { id, mimeType: t.mimeType, contentBase64: Buffer.from(t.bytes).toString("base64") } : { id, reason: t.status };
+      } catch (e) {
+        thumbs[i] = { id, reason: errorReason(e).reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
+  return { status: "ok", thumbs };
 }
 
 export async function readAssetFile(
@@ -88,6 +165,7 @@ export async function readAssetFile(
   if (typeof fileId !== "string" || !FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is not a Drive file id" };
   const b = await brokerOf(ctx, companyId, brokerFor);
   if (!("broker" in b)) return b;
+  // A read always looks the folders up fresh: it copies bytes, so a just-unlinked client must stop it at once.
   const folders = await assetFolderIds(ctx, companyId, client);
   if (folders.status !== "ok" || !("folderIds" in folders)) return folders;
   const meta = await b.broker.fileMeta!(fileId);
@@ -142,6 +220,22 @@ export function registerDriveReadRoutes(ctx: PluginContext, brokerFor: BrokerFor
       } catch (e) {
         ctx.logger.info("Drive read event handler failed", { requestId, producer, error: e instanceof Error ? e.message : String(e) });
         await reply(DRIVE_READ_EVENTS.readFailed, errorReason(e)).catch(() => undefined);
+      }
+    },
+    producers,
+  );
+
+  registerProducerRoute(
+    ctx,
+    DRIVE_READ_EVENTS.thumbsRequested,
+    async ({ producer, companyId, requestId, payload, reply }) => {
+      try {
+        const res = await thumbAssetFiles(ctx, companyId, clientOf(payload), payload.fileIds, payload.size, brokerFor);
+        if (res.status === "ok" && "thumbs" in res) await reply(DRIVE_READ_EVENTS.thumbs, { thumbs: res.thumbs });
+        else await reply(DRIVE_READ_EVENTS.thumbsFailed, { reason: res.status, hint: (res as { hint?: string }).hint });
+      } catch (e) {
+        ctx.logger.info("Drive thumbs event handler failed", { requestId, producer, error: e instanceof Error ? e.message : String(e) });
+        await reply(DRIVE_READ_EVENTS.thumbsFailed, errorReason(e)).catch(() => undefined);
       }
     },
     producers,

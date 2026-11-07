@@ -8,7 +8,7 @@ import { createShare, listShares, refreshShares, revokeShare } from "./canvas-sh
 import { giveAsset, giveChoices } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
-import { importFromDrive, listDriveFiles } from "./drive-import.js";
+import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
 import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
@@ -235,6 +235,12 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    // The picker's previews (PAR-8124): a page of small images, or one large one, through the CRM. People only.
+    action("drive-thumbs", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return driveThumbs(ctx, me.companyId, objectParams(params));
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
