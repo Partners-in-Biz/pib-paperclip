@@ -1,4 +1,5 @@
 import esbuild from "esbuild";
+import { cpSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
 
@@ -33,4 +34,6 @@ if (watch) {
 } else {
   await Promise.all([workerCtx.rebuild(), manifestCtx.rebuild(), uiCtx.rebuild()]);
   await Promise.all([workerCtx.dispose(), manifestCtx.dispose(), uiCtx.dispose()]);
+  // The prompt template gallery's example pictures, served from beside the page.
+  cpSync(new URL("./assets/template-samples", import.meta.url), new URL("./dist/ui/template-samples", import.meta.url), { recursive: true });
 }

@@ -16,7 +16,7 @@ export interface PromptTemplate {
   tagline: string;
   category: TemplateCategory;
   kind: TemplateKind;
-  /** The ratio it is composed for; used only when the model offers it. */
+  /** The ratio it is composed for; used only when the model offers it. Soul v2, the default, has no 4:5. */
   ratio: string;
   prompt: string;
   /** Example text for a field, keyed by field name. */
@@ -37,7 +37,7 @@ export const TEMPLATE_CATEGORIES: ReadonlyArray<{ id: TemplateCategory; label: s
   { id: "food", label: "Food" },
 ];
 
-const NO_TEXT = "No text, logos or watermarks.";
+const NO_TEXT = "No text, lettering, logos or watermarks anywhere, including on products, packaging and signs.";
 const PRODUCT = { product: "a matte black insulated coffee flask" };
 const PERSON = { person: "a woman in her thirties in a navy blazer" };
 
@@ -49,7 +49,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     examples: PRODUCT,
   },
   {
-    id: "lifestyle-scene", category: "product", kind: "image", ratio: "4:5", title: "Lifestyle scene", tagline: "Your product in real life",
+    id: "lifestyle-scene", category: "product", kind: "image", ratio: "3:4", title: "Lifestyle scene", tagline: "Your product in real life",
     prompt: `{{product}} in use in {{setting}}. Natural window light from the left, a lived-in but tidy scene, shallow depth of field with the product in sharp focus, warm true-to-life colours, editorial lifestyle photography. ${NO_TEXT}`,
     examples: { ...PRODUCT, setting: "a sunlit kitchen on a weekday morning" },
   },
@@ -64,7 +64,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     examples: { ...PRODUCT, surface: "warm oak wood", props: "a notebook, a sprig of eucalyptus and reading glasses" },
   },
   {
-    id: "in-hand", category: "product", kind: "image", ratio: "4:5", title: "Product in hand", tagline: "Shows size and feels personal",
+    id: "in-hand", category: "product", kind: "image", ratio: "3:4", title: "Product in hand", tagline: "Shows size and feels personal",
     prompt: `Close-up of a hand holding {{product}} toward the camera, with {{setting}} softly blurred behind. Natural daylight, realistic skin texture and fingers, the product label side facing forward and in sharp focus, shot on a 50mm lens. ${NO_TEXT}`,
     examples: { ...PRODUCT, setting: "a busy city street" },
   },
@@ -85,7 +85,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     examples: { before: "a cluttered, dull office desk", after: "the same desk, tidy and full of daylight" },
   },
   {
-    id: "seasonal", category: "ads", kind: "image", ratio: "4:5", title: "Seasonal promotion", tagline: "Black Friday, festive, back to school",
+    id: "seasonal", category: "ads", kind: "image", ratio: "3:4", title: "Seasonal promotion", tagline: "Black Friday, festive, back to school",
     prompt: `Promotional image of {{product}} styled for {{season}}. Tasteful themed props and colours around the product, rich but controlled lighting, the product as the clear focal point, a clean area at the top for an offer. ${NO_TEXT}`,
     examples: { ...PRODUCT, season: "the South African summer holidays" },
   },
@@ -96,28 +96,28 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
   },
   // Social
   {
-    id: "carousel-cover", category: "social", kind: "image", ratio: "4:5", title: "Carousel cover", tagline: "Stops the scroll",
+    id: "carousel-cover", category: "social", kind: "image", ratio: "3:4", title: "Carousel cover", tagline: "Stops the scroll",
     prompt: `Eye-catching social media cover image about {{topic}}. One bold central subject, strong contrast against a saturated {{colour}} background, generous empty space at the top for a title, clean modern art direction. ${NO_TEXT}`,
     examples: { topic: "saving money on small business tax", colour: "emerald green" },
   },
   {
-    id: "behind-scenes", category: "social", kind: "image", ratio: "4:5", title: "Behind the scenes", tagline: "Candid, real, not staged",
+    id: "behind-scenes", category: "social", kind: "image", ratio: "3:4", title: "Behind the scenes", tagline: "Candid, real, not staged",
     prompt: `Candid behind-the-scenes photo of {{activity}} at {{place}}. Looks like a good phone photo: natural mixed light, slight motion and imperfection, people unaware of the camera, authentic and warm. ${NO_TEXT}`,
     examples: { activity: "a small team packing orders", place: "a busy workshop" },
   },
   {
     id: "quote-background", category: "social", kind: "image", ratio: "1:1", title: "Quote background", tagline: "Calm texture to put words on",
-    prompt: `Minimal abstract background of {{texture}} in {{colour}} tones. Soft even light, gentle gradient, very low detail in the centre so text placed there stays easy to read, calm and premium. ${NO_TEXT}`,
-    examples: { texture: "softly folded paper", colour: "sand and terracotta" },
+    prompt: `Minimal abstract background of {{texture}} in {{colour}} tones, with visible surface detail. Soft even light, gentle gradient, very low detail in the centre so words placed there stay easy to read, calm and premium. ${NO_TEXT}`,
+    examples: { texture: "softly folded hand-made paper", colour: "sand and terracotta" },
   },
   {
     id: "story-vertical", category: "social", kind: "image", ratio: "9:16", title: "Vertical story", tagline: "Full screen for Stories and Status",
-    prompt: `Vertical full-screen photo of {{subject}} in {{setting}}, with the subject in the middle of the frame and clear space at the top and bottom for app buttons and stickers. Vivid natural colour, strong sense of place. ${NO_TEXT}`,
+    prompt: `Vertical full-screen photograph of {{subject}} in {{setting}}, with the subject in the middle of the frame and calm, uncluttered space at the top and bottom. Vivid natural colour, strong sense of place. A real photograph, not a screenshot. ${NO_TEXT}`,
     examples: { subject: "a barista handing over a coffee", setting: "a sunny corner cafe" },
   },
   // People
   {
-    id: "founder-portrait", category: "people", kind: "image", ratio: "4:5", title: "Founder portrait", tagline: "For the About page and press",
+    id: "founder-portrait", category: "people", kind: "image", ratio: "3:4", title: "Founder portrait", tagline: "For the About page and press",
     prompt: `Editorial portrait of {{person}} in {{setting}}, relaxed confident expression, looking just off camera. Soft window light, background softly blurred, natural skin texture, shot on an 85mm lens at f/2. ${NO_TEXT}`,
     examples: { ...PERSON, setting: "their modern office" },
   },
@@ -127,7 +127,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     examples: { team: "three colleagues", setting: "a shared table with laptops" },
   },
   {
-    id: "happy-customer", category: "people", kind: "image", ratio: "4:5", title: "Happy customer", tagline: "The moment the product pays off",
+    id: "happy-customer", category: "people", kind: "image", ratio: "3:4", title: "Happy customer", tagline: "The moment the product pays off",
     prompt: `{{person}} enjoying {{moment}}, a genuine unposed smile. Natural light, warm and optimistic mood, shallow depth of field, documentary-style photography that feels true rather than staged. ${NO_TEXT}`,
     examples: { person: "a retired couple", moment: "the keys to their new holiday home" },
   },
@@ -144,7 +144,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
   },
   {
     id: "storefront", category: "places", kind: "image", ratio: "4:3", title: "Shop front", tagline: "Makes a local business look its best",
-    prompt: `Street-level photo of {{business}} on a clear morning, the entrance inviting and well lit, a few people passing naturally, gentle sun on the facade, realistic urban detail. ${NO_TEXT}`,
+    prompt: `Street-level photo of {{business}} on a clear morning, a plain unbranded shopfront, the entrance inviting and well lit, a few people passing naturally, gentle sun on the facade, realistic urban detail. ${NO_TEXT}`,
     examples: { business: "a small independent bicycle shop" },
   },
   // Food
@@ -154,7 +154,7 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     examples: { dishes: "a shared braai platter with salads", surface: "a rustic wooden table" },
   },
   {
-    id: "food-closeup", category: "food", kind: "image", ratio: "4:5", title: "Hero dish", tagline: "Close enough to taste",
+    id: "food-closeup", category: "food", kind: "image", ratio: "3:4", title: "Hero dish", tagline: "Close enough to taste",
     prompt: `Close-up of {{dish}} from a 45-degree angle, with fresh texture and glistening detail in sharp focus and the background softly blurred. Warm side light, dark moody surface, shot on a 100mm macro lens. ${NO_TEXT}`,
     examples: { dish: "a stacked burger with melted cheddar" },
   },

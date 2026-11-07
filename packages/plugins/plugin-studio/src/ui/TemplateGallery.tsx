@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Building2, Flame, Icon, Input, Megaphone, Package, SectionHeading, Share2, Sparkles, Stamp, UserRound, seriesColor, tone, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
 import { PHOTO_PRESETS } from "../presets.js";
-import { TEMPLATE_CATEGORIES, filterTemplates, PROMPT_TEMPLATES, type PromptTemplate, type TemplateCategory } from "../prompt-templates.js";
+import { TEMPLATE_CATEGORIES, filterTemplates, PROMPT_TEMPLATES, type PromptTemplate } from "../prompt-templates.js";
 import { aspectCss } from "./card-look.js";
 import { posterFrameUrl } from "./library.js";
 import { ChipGroup } from "./ChipGroup.js";
@@ -10,18 +10,23 @@ import { usePreviewUrls } from "./previews.js";
 const ORDER = ["product", "ads", "social", "people", "places", "food", "saved", "styles"] as const;
 const ICONS: Record<(typeof ORDER)[number], LucideIcon> = { product: Package, ads: Megaphone, social: Share2, people: UserRound, places: Building2, food: Flame, saved: Stamp, styles: Sparkles };
 const MUTED = "var(--muted-foreground)";
-const cover = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" } as const;
+const cover = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 35%" } as const;
+
+/** A built-in image template's example picture, shipped with the plugin (the build copies `assets/template-samples` next to the page). */
+const sampleUrl = (t: PromptTemplate) => (t.kind === "image" ? new URL(`./template-samples/${t.id}.jpg`, import.meta.url).href : undefined);
 const cardGrid = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(190px, 100%), 1fr))", gap: 12, minWidth: 0 } as const;
 
 /** A card's picture: a saved template's real result, or a tile showing the shape it is composed for. */
 function Art({ family, ratio, kind, url }: { family: (typeof ORDER)[number]; ratio: string; kind: string; url?: string | undefined }) {
   const colour = seriesColor(ORDER.indexOf(family));
+  const [broken, setBroken] = useState(false);
+  const shown = broken ? undefined : url;
   return (
-    <div style={{ position: "relative", aspectRatio: "16 / 10", width: "100%", display: "grid", placeItems: "center", overflow: "hidden", background: `radial-gradient(120% 120% at 15% 0%, color-mix(in oklab, ${colour} 42%, transparent), transparent 62%), color-mix(in oklab, ${colour} 10%, var(--background))` }}>
-      {url && kind === "video" ? (
-        <video src={posterFrameUrl(url)} muted playsInline preload="metadata" aria-hidden="true" style={cover} />
-      ) : url ? (
-        <img src={url} alt="" loading="lazy" style={cover} />
+    <div style={{ position: "relative", aspectRatio: "4 / 3", width: "100%", display: "grid", placeItems: "center", overflow: "hidden", background: `radial-gradient(120% 120% at 15% 0%, color-mix(in oklab, ${colour} 42%, transparent), transparent 62%), color-mix(in oklab, ${colour} 10%, var(--background))` }}>
+      {shown && kind === "video" ? (
+        <video src={posterFrameUrl(shown)} muted playsInline preload="metadata" aria-hidden="true" onError={() => setBroken(true)} style={cover} />
+      ) : shown ? (
+        <img src={shown} alt="" loading="lazy" onError={() => setBroken(true)} style={cover} />
       ) : (
         <span aria-hidden="true" style={{ height: "58%", maxWidth: "70%", aspectRatio: ratio ? aspectCss(ratio) : "1 / 1", display: "grid", placeItems: "center", borderRadius: 6, border: `1.5px solid color-mix(in oklab, ${colour} 65%, transparent)`, background: `color-mix(in oklab, ${colour} 14%, transparent)` }}>
           <Icon icon={ICONS[family]} size={18} color={colour} />
@@ -103,7 +108,7 @@ export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick
           <SectionHeading title="Templates" />
           <div style={cardGrid}>
             {showBuiltIn.map((t) => (
-              <Card key={t.id} title={t.title} tagline={t.tagline} selected={selectedId === t.id} onPick={() => onPick(t)} art={<Art family={t.category as Exclude<TemplateCategory, never>} ratio={t.ratio} kind={t.kind} />} />
+              <Card key={t.id} title={t.title} tagline={t.tagline} selected={selectedId === t.id} onPick={() => onPick(t)} art={<Art family={t.category} ratio={t.ratio} kind={t.kind} url={sampleUrl(t)} />} />
             ))}
           </div>
         </section>
