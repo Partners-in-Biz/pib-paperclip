@@ -13,6 +13,39 @@ export const DRIVE_EVENTS = {
   failed: "drive.file.failed",
 } as const;
 
+/**
+ * The plugins that may ask the CRM to write to a company's Drive (PAR-8114). The host delivers a plugin's emit as
+ * `plugin.<emitterId>.<name>` and only supports a trailing wildcard, so the CRM subscribes once per producer here; a
+ * plugin not on this list never reaches the Drive. Add a producer here before it calls `driveSave`.
+ */
+export const DRIVE_PRODUCER_PLUGINS = [
+  "partnersinbiz.studio",
+  "partnersinbiz.social",
+  "partnersinbiz.campaigns",
+  "partnersinbiz.ads",
+  "partnersinbiz.billing",
+  "partnersinbiz.cockpit",
+  "partnersinbiz.seo",
+  "partnersinbiz.crm",
+] as const;
+
+/** The name the host delivers a producer's request under: `plugin.<producerId>.<name>`. */
+export function producerEventName(producerId: string, name: string): `plugin.${string}` {
+  return `plugin.${producerId}.${name}`;
+}
+
+/**
+ * The producer that sent `event` as `name`, from the host-set event type, or null when it is not a known producer.
+ * The host builds the event type from the emitting plugin's own id, so a plugin cannot pose as another one.
+ */
+export function knownProducerOf(event: Pick<PluginEvent, "eventType">, name: string, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): string | null {
+  const type = String(event.eventType ?? "");
+  const suffix = `.${name}`;
+  if (!type.startsWith("plugin.") || !type.endsWith(suffix)) return null;
+  const id = type.slice("plugin.".length, type.length - suffix.length);
+  return producers.includes(id) ? id : null;
+}
+
 export const DRIVE_SUBFOLDERS = ["01 Briefs", "02 Assets", "03 Deliverables", "04 Reports", "05 Evidence", "99 Archive"] as const;
 
 export type DriveSubfolder = (typeof DRIVE_SUBFOLDERS)[number];
