@@ -32,6 +32,7 @@ import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
 import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js";
 import { pickerCss } from "./ModelPicker.js";
+import { GiveDialog } from "./GiveToAgent.js";
 import { ShareMenu } from "./ShareMenu.js";
 import { SidePanel } from "./SidePanel.js";
 import { SaveToDrive } from "./SaveToDrive.js";
@@ -145,9 +146,11 @@ interface BoardContext {
   buildOn: (cardId: string) => void;
   /** Cards the connection being dragged can't join. */
   dim: Set<string>;
+  /** Opens Give to agent for a result. The dialog lives outside the flow: a fixed panel inside a moved card would move too. */
+  give: (assetId: string) => void;
 }
 const NO_DIM = new Set<string>();
-const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM });
+const BoardCtx = createContext<BoardContext>({ beforeEdit: () => undefined, library: [], companyId: "", client: "own", canGenerate: null, models: [], unavailable: [], inputs: new Map(), urls: {}, previewError: null, videos: new Set(), buildOn: () => undefined, dim: NO_DIM, give: () => undefined });
 
 export function StudioCanvasPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -295,6 +298,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const meAction = usePluginAction("me");
   const [canGen, setCanGen] = useState<boolean | null>(null);
   const [meUserId, setMeUserId] = useState<string | null>(null);
+  const [giving, setGiving] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     meAction({ companyId })
@@ -599,7 +603,14 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         </div>
       ) : null}
       <PageMessage tone="danger" message={notice ?? undefined} />
-      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim }}>
+      <GiveDialog
+        open={giving !== null}
+        companyId={companyId}
+        assetId={giving ?? ""}
+        assetName={library.find((a) => a.id === giving)?.name ?? "this file"}
+        onClose={() => setGiving(null)}
+      />
+      <BoardCtx.Provider value={{ beforeEdit, library, companyId, client: client ?? "own", canGenerate: canGen, models: overview.data?.models ?? [], unavailable: overview.data?.unavailableModels ?? [], inputs, urls, previewError, videos, buildOn, dim, give: setGiving }}>
         <div className="studio-canvas-layout">
         <div className="studio-canvas-board studio-canvas-flow">
           <ReactFlow<FlowNode, Edge>
@@ -713,7 +724,7 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
 
 /** A result card's actions: open it in the library, build on it, download it. */
 function ResultBar({ id, assetId }: { id: string; assetId: string }) {
-  const { companyId, buildOn } = useContext(BoardCtx);
+  const { companyId, buildOn, canGenerate, give } = useContext(BoardCtx);
   const nav = useHostNavigation();
   const assetUrl = usePluginAction("asset-url");
   const [error, setError] = useState<string | null>(null);
@@ -730,6 +741,7 @@ function ResultBar({ id, assetId }: { id: string; assetId: string }) {
         <Button variant="secondary" onClick={() => buildOn(id)}>Use as input</Button>
         <Button variant="secondary" onClick={download}>Download</Button>
         <SaveToDrive companyId={companyId} assetId={assetId} small />
+        {canGenerate ? <Button variant="secondary" onClick={() => give(assetId)}>Give to agent</Button> : null}
       </div>
       {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize: 12, overflowWrap: "anywhere" }}>{error}</span> : null}
     </div>

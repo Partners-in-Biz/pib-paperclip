@@ -3,6 +3,7 @@
  * filters, one asset's provenance, and the progress of a person's own requests. None of it returns a link or a
  * storage key: signed links come only from the person-only actions in worker.ts.
  */
+import { givenIssues } from "./give.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
@@ -135,6 +136,7 @@ export async function assetDetail(ctx: PluginContext, companyId: string, assetId
     links: links.filter((l) => l.target_type !== DRIVE_LINK_TYPE).map((l) => ({ targetType: l.target_type, targetId: l.target_id })),
     // People's page only; agents never see Drive links.
     drive: await driveCopies(ctx, companyId, assetId),
+    givenTo: await givenIssues(ctx, companyId, assetId, links.filter((l) => l.target_type === "issue").map((l) => l.target_id)),
   };
 }
 

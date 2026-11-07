@@ -5,6 +5,7 @@ import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
+import { giveAsset, giveChoices } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
 import { errorText, StudioError } from "./errors.js";
@@ -204,6 +205,17 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save to Drive.", "forbidden");
       return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
+    });
+
+    // Give to agent (give.ts): agents that can run, then a normal issue for the chosen one. Viewers can't give.
+    ctx.actions.register("give-agents", async (_params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
+      return { agents: await giveChoices(ctx, me.companyId) };
+    });
+    ctx.actions.register("give", async (params, context) => {
+      const me = await person(context);
+      return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
