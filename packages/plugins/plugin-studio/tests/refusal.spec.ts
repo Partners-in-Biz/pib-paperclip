@@ -43,7 +43,7 @@ describe("page action refusals (PAR-8120)", () => {
     const src = join(__dirname, "../src");
     const worker = readFileSync(join(src, "worker.ts"), "utf8");
     expect(worker).not.toMatch(/ctx\.actions\.register\(/);
-    for (const key of ["drive-save", "drive-list", "drive-import", "give", "review", "generate", "estimate"]) {
+    for (const key of ["drive-save", "drive-list", "drive-import", "give-prepare", "give-record", "give-discard", "review", "generate", "estimate"]) {
       expect(worker).toContain(`action("${key}"`);
     }
     const ui = join(src, "ui");

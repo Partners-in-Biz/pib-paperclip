@@ -1,30 +1,34 @@
 /**
- * Give a Studio file to an agent: a person picks an agent that can run, writes what it should do, and Studio opens a
- * normal issue assigned to that agent with the instruction as written, linked to the asset.
+ * Give a Studio file to an agent (PAR-8138): the page opens the host's New Task popup, prefilled from the asset, and the
+ * person edits it, picks the agent and sends. Nothing is created until they send.
  *
  * The agent can't use `studio-get-asset` (installing a plugin grants nobody its tools) and never gets a signed link,
- * and the plugin SDK can't attach files to issues. So the worker writes a copy on this server and puts its path in the
- * issue. Only agents that run as local processes here can read it; the others are shown, with the reason, and refused.
- * Giving grants no tools and spends no credits.
+ * and the plugin SDK can't attach files to issues. So `prepareGive` writes a copy on this server and puts its path in
+ * the prefill; `recordGive` links the created issue to the asset; `discardGive` removes the copy when the popup closes
+ * without a task. The copy exists before the issue does, so the agent the host wakes on create always finds it.
+ * The prompt is received text: it goes in the kit's fenced block, never as instructions. Giving spends no credits.
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sameClient, scopeOfRow } from "@partnersinbiz/pib-plugin-kit";
+import { buildHandoffDescription, handoffTitle } from "@partnersinbiz/pib-plugin-kit/handoff";
 import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
-import { num } from "./db.js";
-import { errorText, StudioError } from "./errors.js";
+import { num, table } from "./db.js";
+import { StudioError } from "./errors.js";
 import { clientOfProject } from "./scope.js";
 import { canGenerate } from "./service.js";
-import { assertOwnKey, extFor, getObject, GIVEN_KEEP_DAYS, givenCopy } from "./storage.js";
+import { assertOwnKey, extFor, getObject, GIVEN_KEEP_DAYS, givenCopy, removeGivenCopy } from "./storage.js";
 
-/** Statuses an agent can be woken from. Paused, terminated and pending-approval agents are never offered. */
+/** Statuses an agent can be woken from. */
 export const RUNNABLE_STATUSES = ["active", "idle", "running", "error"] as const;
 
 /** Adapters that run as a process on this server, as the same user as the worker, so they can read the copy. */
 export const LOCAL_ADAPTERS = ["process", "claude_local", "codex_local", "gemini_local", "grok_local", "hermes_local", "kimi_local", "opencode_local", "pi_local", "acpx_local"] as const;
 
-export const MAX_INSTRUCTION = 10_000;
+/** The kind line of the hand-off; with the asset id it marks an issue as given from Studio. */
+export const GIVE_KIND = "Studio file";
+const GIVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface AgentLike {
   id: string;
@@ -57,115 +61,181 @@ export function agentChoice(agent: AgentLike): AgentChoice {
   return { id: agent.id, name: agent.name, title: agent.title ?? null, status: agent.status, adapterType: agent.adapterType, canRun, canOpen, why };
 }
 
-/** Agents a person may pick: only ones that can run; those that can open the file first, then by name. */
-export async function giveChoices(ctx: PluginContext, companyId: string): Promise<AgentChoice[]> {
-  const agents = (await ctx.agents.list({ companyId, limit: 500 })) as unknown as AgentLike[];
-  return agents
-    .map(agentChoice)
-    .filter((a) => a.canRun)
-    .sort((a, b) => Number(b.canOpen) - Number(a.canOpen) || a.name.localeCompare(b.name));
+export function giveTitle(assetName: string): string {
+  return handoffTitle("Studio: ", assetName, "file");
 }
 
-function firstLine(text: string, max: number): string {
-  const line = text.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
-  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+export interface GiveFile {
+  name: string;
+  kind: string;
+  mime: string;
+  bytes: number;
+  version: number;
+  assetId: string;
+  status: string;
+  client: string;
+  project: string | null;
+  /** Null when the file was imported, not generated. */
+  generation: { model: string; prompt: string; credits: number } | null;
+  path: string;
 }
 
-export function giveTitle(assetName: string, instruction: string): string {
-  return `Studio: ${firstLine(instruction, 80) || assetName}`;
-}
-
-export function giveDescription(instruction: string, file: { name: string; mime: string; bytes: number; version: number; assetId: string; client: string; path: string }): string {
-  return [
-    instruction,
-    "",
-    "---",
-    "**Studio file**, given to you from Studio by a person.",
-    "",
-    `- File: ${file.name} (${file.mime}, ${Math.max(1, Math.round(file.bytes / 1024))} KB, version ${file.version})`,
-    `- Studio asset id: \`${file.assetId}\``,
-    `- Client: ${file.client}`,
-    `- Path on this server (kept ${GIVEN_KEEP_DAYS} days): \`${file.path}\``,
-    "",
-    "Open the file at that path with your file tools. When you're done, comment on this issue with what you did.",
-  ].join("\n");
+/** The popup's description: a line for the person's words, the asset's facts and prompt as fenced data, then the path. */
+export function giveDescription(file: GiveFile): string {
+  const gen = file.generation;
+  return buildHandoffDescription({
+    source: {
+      kind: GIVE_KIND,
+      meta: [
+        ["Name", file.name],
+        ["Kind", file.kind],
+        ["Made", gen ? `Generated with ${gen.model}` : "Imported (not generated)"],
+        ["Status", file.status],
+        ["Cost", gen ? `${gen.credits} credits` : "None (imported)"],
+        ["Client", file.client],
+        ["Project", file.project ?? "None"],
+        ["File", `${file.mime}, ${Math.max(1, Math.round(file.bytes / 1024))} KB, version ${file.version}`],
+        ["Studio asset id", file.assetId],
+        ["Prompt", gen ? "in the block below" : "none (imported)"],
+      ],
+    },
+    receivedText: gen ? gen.prompt : "(Imported, so there is no prompt.)",
+    readMore: "the Studio library (asset id above)",
+    extra: [
+      `File on this server (kept ${GIVEN_KEEP_DAYS} days): \`${file.path}\``,
+      "",
+      "Open the file at that path with your file tools. Only agents that run on this server can open it.",
+    ],
+    footer: ["When you're done, comment on this issue with what you did."],
+  });
 }
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** The page's Give to agent action. Every check runs here, not only on the page. */
-export async function giveAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: { userId: string; role: string | null }) {
+function giveId(params: Record<string, unknown>): string {
+  const id = text(params.giveId).toLowerCase();
+  if (!GIVE_ID.test(id)) throw new StudioError("giveId is missing or not valid.", "bad_give");
+  return id;
+}
+
+type Giver = { userId: string; role: string | null };
+type Row = Awaited<ReturnType<typeof getAssetRow>>;
+
+/** A client's file only goes on that client's work: the project must be theirs; own work never goes in a client's. */
+async function assertProjectFits(ctx: PluginContext, companyId: string, row: Row, projectId: string | null) {
+  const scope = scopeOfRow(row);
+  const owner = await clientOfProject(ctx, companyId, projectId);
+  if (scope && (!owner || !sameClient(scope, { kind: owner.kind, id: owner.id }))) {
+    throw new StudioError(`This is ${row.client_name ?? "a client"}'s file and the task isn't in one of their projects. A client's file only goes on that client's work.`, "wrong_client");
+  }
+  if (!scope && owner) throw new StudioError(`This file is own work and the task is in ${owner.name}'s project.`, "wrong_client");
+}
+
+async function checkedRow(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver): Promise<Row> {
   if (!canGenerate(giver.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
   const assetId = text(params.assetId);
-  const agentId = text(params.agentId);
-  // The instruction goes into the issue as written: only checked, never trimmed or rewritten.
-  const instruction = typeof params.instruction === "string" ? params.instruction : "";
-  if (!assetId || !agentId) throw new StudioError("assetId and agentId are required.", "bad_give");
-  if (!instruction.trim()) throw new StudioError("Write what the agent should do with the file.", "bad_give");
-  if (instruction.length > MAX_INSTRUCTION) throw new StudioError(`The instruction is ${instruction.length} characters; keep it under ${MAX_INSTRUCTION}.`, "bad_give");
+  if (!assetId) throw new StudioError("assetId is required.", "bad_give");
+  return getAssetRow(ctx, companyId, assetId);
+}
 
-  const row = await getAssetRow(ctx, companyId, assetId);
-  // A client's file only goes on that client's work: the issue lands in the asset's project, which must be theirs.
-  const scope = scopeOfRow(row);
-  const owner = await clientOfProject(ctx, companyId, row.project_id);
-  if (scope && (!owner || !sameClient(scope, { kind: owner.kind, id: owner.id }))) {
-    throw new StudioError(`This is ${row.client_name ?? "a client"}'s file and it isn't in one of their projects, so Studio can't put it on a task. A client's file only goes on that client's work.`, "wrong_client");
+/** Step 1, on click: every check, a copy of the file, and the popup prefill. */
+export async function prepareGive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver) {
+  const row = await checkedRow(ctx, companyId, params, giver);
+  await assertProjectFits(ctx, companyId, row, row.project_id ?? null);
+
+  let generation: GiveFile["generation"] = null;
+  const generationId = (row as { generation_id?: string | null }).generation_id;
+  if (generationId) {
+    const [gen] = await ctx.db.query<{ model: string; prompt: string | null; estimated_credits: unknown; actual_credits: unknown }>(
+      `SELECT model, prompt, estimated_credits, actual_credits FROM ${table(ctx, "generations")} WHERE company_id = $1 AND id = $2`,
+      [companyId, generationId],
+    );
+    if (gen) generation = { model: gen.model, prompt: gen.prompt ?? "", credits: num(gen.actual_credits ?? gen.estimated_credits) };
   }
-  if (!scope && owner) throw new StudioError(`This file is own work but sits in ${owner.name}'s project, so Studio can't put it on a task.`, "wrong_client");
-
-  const agent = (await ctx.agents.get(agentId, companyId).catch(() => null)) as unknown as AgentLike | null;
-  if (!agent) throw new StudioError("That agent isn't in this company.", "unknown_agent");
-  const choice = agentChoice(agent);
-  if (choice.why) throw new StudioError(choice.why, choice.canRun ? "agent_cant_open" : "agent_cant_run");
+  const project = row.project_id ? ((await ctx.projects.get(row.project_id, companyId).catch(() => null)) as { name?: string } | null) : null;
 
   assertOwnKey(companyId, row.r2_key);
   const bucket = await new StudioConfig(ctx, companyId).bucket();
   const version = num(row.current_version);
-  const path = await givenCopy(companyId, randomUUID(), row.id, version, extFor(row.mime), await getObject(bucket, companyId, row.r2_key));
-
-  const issue = await ctx.issues.create({
-    companyId,
-    title: giveTitle(row.name, instruction),
-    description: giveDescription(instruction, { name: row.name, mime: row.mime, bytes: num(row.bytes), version, assetId: row.id, client: row.client_name ?? "Own work", path }),
-    projectId: row.project_id ?? undefined,
-    assigneeAgentId: agent.id,
-    status: "todo",
-    priority: "medium",
-    originId: row.id,
-    actor: { actorUserId: giver.userId },
-  });
-  await addLink(ctx, companyId, row.id, "issue", issue.id);
-
-  // The host doesn't wake an agent on a plugin-created issue, so ask once. A refused wake (budget) keeps the issue.
-  let woken = false;
-  let wakeError: string | null = null;
-  try {
-    const out = await ctx.issues.requestWakeup(issue.id, companyId, { reason: "studio_give", contextSource: "studio_give", idempotencyKey: `studio-give:${issue.id}`, actorUserId: giver.userId });
-    woken = (out as { queued?: boolean } | null)?.queued !== false;
-  } catch (error) {
-    wakeError = errorText(error);
-    ctx.logger.warn("Studio give: wake refused", { issueId: issue.id, error: wakeError });
-  }
+  const id = randomUUID();
+  const path = await givenCopy(companyId, id, row.id, version, extFor(row.mime), await getObject(bucket, companyId, row.r2_key));
+  const extra = row as { kind?: string | null; status?: string | null };
   return {
-    issueId: String(issue.id),
-    identifier: (issue as { identifier?: string | null }).identifier ?? null,
-    title: issue.title,
-    agent: { id: agent.id, name: agent.name },
-    woken,
-    wakeError,
+    giveId: id,
+    title: giveTitle(row.name),
+    description: giveDescription({
+      name: row.name,
+      kind: String(extra.kind ?? ""),
+      mime: row.mime,
+      bytes: num(row.bytes),
+      version,
+      assetId: row.id,
+      status: String(extra.status ?? ""),
+      client: row.client_name ?? "Own work",
+      project: project?.name ?? (row.project_id ? "Unknown project" : null),
+      generation,
+      path,
+    }),
+    projectId: row.project_id ?? null,
   };
 }
 
-/** The issues this asset was given to (Studio-made, with this asset as origin), newest last, for the asset detail. */
+/** The popup closed without a task: remove the copy so nothing is left behind. */
+export async function discardGive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver) {
+  const row = await checkedRow(ctx, companyId, params, giver);
+  return { removed: await removeGivenCopy(companyId, row.id, giveId(params)) };
+}
+
+/** Step 2, after the host created the task: re-check the client on the real issue, then link it to the asset. */
+export async function recordGive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver) {
+  const row = await checkedRow(ctx, companyId, params, giver);
+  const id = giveId(params);
+  const issueId = text(params.issueId);
+  if (!issueId) throw new StudioError("issueId is required.", "bad_give");
+  const issue = (await ctx.issues.get(issueId, companyId).catch(() => null)) as
+    | { id: string; identifier?: string | null; title?: string | null; description?: string | null; projectId?: string | null; assigneeAgentId?: string | null }
+    | null;
+  if (!issue) throw new StudioError("That task isn't in this company.", "unknown_issue");
+  const name = issue.identifier ?? issue.title ?? "The task";
+  try {
+    await assertProjectFits(ctx, companyId, row, issue.projectId ?? null);
+  } catch (error) {
+    // The person moved the task to a project this file can't go on: take the file back and don't link it.
+    await removeGivenCopy(companyId, row.id, id);
+    throw new StudioError(`${name} was created, but: ${(error as Error).message} Studio removed the file copy and didn't link it.`, "wrong_client");
+  }
+  await addLink(ctx, companyId, row.id, "issue", String(issue.id));
+
+  const warnings: string[] = [];
+  if (!String(issue.description ?? "").includes(id)) {
+    await removeGivenCopy(companyId, row.id, id);
+    warnings.push("The file path was taken out of the task, so the agent can't open the file. Give it again to add one.");
+  }
+  if (!issue.assigneeAgentId) {
+    warnings.push("No agent is assigned yet. Assign one that runs on this server.");
+  } else {
+    const agent = (await ctx.agents.get(issue.assigneeAgentId, companyId).catch(() => null)) as unknown as AgentLike | null;
+    const why = agent ? agentChoice(agent).why : null;
+    if (why) warnings.push(why);
+  }
+  return { message: `Given: ${name}.`, warning: warnings.length ? warnings.join(" ") : null };
+}
+
+/** The issues this asset was given to, newest last, for the asset detail. */
 export async function givenIssues(ctx: PluginContext, companyId: string, assetId: string, issueIds: string[]) {
   const out: Array<{ id: string; identifier: string | null; title: string | null; status: string | null; agentName: string | null }> = [];
   for (const id of [...new Set(issueIds)].slice(-20)) {
     const issue = (await ctx.issues.get(id, companyId).catch(() => null)) as
-      | { id: string; identifier?: string | null; title?: string | null; status?: string | null; originKind?: string | null; originId?: string | null; assigneeAgentId?: string | null }
+      | { id: string; identifier?: string | null; title?: string | null; status?: string | null; description?: string | null; originKind?: string | null; originId?: string | null; assigneeAgentId?: string | null }
       | null;
-    if (!issue || issue.originId !== assetId || !String(issue.originKind ?? "").startsWith("plugin:")) continue;
+    if (!issue) continue;
+    // Old gives: Studio made the issue with this asset as origin. New gives: the host made it from Studio's hand-off text.
+    const oldGive = issue.originId === assetId && String(issue.originKind ?? "").startsWith("plugin:");
+    const description = String(issue.description ?? "");
+    const newGive = description.includes(`**${GIVE_KIND}**`) && description.includes(assetId);
+    if (!oldGive && !newGive) continue;
     const agent = issue.assigneeAgentId ? ((await ctx.agents.get(issue.assigneeAgentId, companyId).catch(() => null)) as { name?: string } | null) : null;
     out.push({ id: String(issue.id), identifier: issue.identifier ?? null, title: issue.title ?? null, status: issue.status ?? null, agentName: agent?.name ?? null });
   }

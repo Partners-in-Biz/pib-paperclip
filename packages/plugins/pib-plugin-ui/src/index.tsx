@@ -1283,6 +1283,9 @@ export function ButtonLink({ variant = "secondary", ...props }: AnchorHTMLAttrib
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
+        // Border inside the 36px, as a <button> has it, so the link is exactly as tall as the buttons beside it.
+        boxSizing: "border-box",
+        lineHeight: 1,
         height: 36,
         borderRadius: 9,
         padding: "0 14px",

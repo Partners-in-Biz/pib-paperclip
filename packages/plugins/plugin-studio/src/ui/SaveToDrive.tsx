@@ -3,7 +3,7 @@
  * then shows the Drive link or the refusal in plain words. Each instance owns its own request and state.
  */
 import { useState } from "react";
-import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
+import { Button, errorText, ButtonLink } from "@partnersinbiz/pib-plugin-ui";
 import { DRIVE_MAX_BYTES } from "../drive-limits.js";
 import { useStudioAction } from "./action.js";
 
@@ -36,9 +36,9 @@ export function SaveToDrive({ companyId, assetId, bytes, savedUrl, small }: { co
       </Button>
       {tooLarge ? <span style={{ fontSize, color: "var(--muted-foreground)" }}>Too large for Drive (up to {(DRIVE_MAX_BYTES / 1024 / 1024).toFixed(1)} MB for now)</span> : null}
       {link ? (
-        <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize, overflowWrap: "anywhere" }}>
+        <ButtonLink variant="secondary" href={link} target="_blank" rel="noopener noreferrer">
           Open in Drive
-        </a>
+        </ButtonLink>
       ) : null}
       {error ? <span role="alert" style={{ color: "var(--destructive)", fontSize, overflowWrap: "anywhere" }}>{error}</span> : null}
     </span>
