@@ -102,7 +102,7 @@ export async function storeRenderedAsset(ctx: PluginContext, viewer: Viewer, par
       bytes,
       subfolder: "02 Assets",
       timeoutMs: 30_000,
-      ...(target.scope ? { client: { kind: target.scope.kind, ref: target.scope.id } } : {}),
+      ...(target.scope ? { client: { kind: target.scope.kind, ref: target.scope.id } } : { ownWork: true as const }),
     });
     drive = saved.status === "saved" ? { ok: true, url: saved.url, driveFileId: saved.driveFileId } : { ok: false, reason: saved.status === "failed" ? saved.reason : saved.status };
   } catch (error) {

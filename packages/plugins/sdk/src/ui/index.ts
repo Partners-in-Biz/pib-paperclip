@@ -45,6 +45,7 @@
  * - `useHostContext()` — read the current active company, project, entity, and user IDs
  * - `useHostNavigation()` — navigate Paperclip-internal links through the host router
  * - `useHostLocation()` — observe the current host pathname/search/hash for URL-driven UI
+ * - `useHostNewIssue()` — open the host New Task dialog prefilled; resolves with the created issue
  * - `usePluginStream(channel)` — subscribe to real-time SSE events from the worker
  */
 export {
@@ -53,6 +54,7 @@ export {
   useHostContext,
   useHostNavigation,
   useHostLocation,
+  useHostNewIssue,
   usePluginStream,
   usePluginToast,
 } from "./hooks.js";
@@ -124,6 +126,9 @@ export type {
   PluginBridgeError,
   PluginBridgeErrorCode,
   HostNavigation,
+  HostNewIssue,
+  HostNewIssueDefaults,
+  HostCreatedIssue,
   HostNavigationOptions,
   HostNavigationLinkOptions,
   HostNavigationLinkProps,

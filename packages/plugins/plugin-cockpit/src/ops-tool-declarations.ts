@@ -181,7 +181,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       pngBase64: { type: "string", maxLength: 1500000, description: "The PNG image as base64 (starts with iVBORw0KGgo, max 1.5 MB decoded)." },
       client: {
         type: "object",
-        description: "Optional: the client whose Drive folder gets the file (e.g. the canary client). Leave out to save under our own project.",
+        description: "Optional, only used when the issue has no project: the client whose Drive folder gets the file. The issue's project decides the folder otherwise (its CRM client, or our own Drive project); an unlinked project or no project and no client skips the copy.",
         properties: {
           kind: { type: "string", enum: ["company", "contact"], description: "CRM record kind of the client." },
           ref: { type: "string", minLength: 1, maxLength: 120, description: "The client's CRM record id." },

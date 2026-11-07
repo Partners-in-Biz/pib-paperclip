@@ -3,10 +3,13 @@
  * filters, one asset's provenance, and the progress of a person's own requests. None of it returns a link or a
  * storage key: signed links come only from the person-only actions in worker.ts.
  */
+import { givenIssues } from "./give.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { assetOut, getAssetRow, listAssets } from "./assets.js";
+import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
+import { DRIVE_LINK_TYPE, driveCopies } from "./drive.js";
+import { driveProvenance } from "./drive-import.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
 import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
@@ -85,13 +88,16 @@ export async function pageAssets(ctx: PluginContext, companyId: string, params: 
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const kind = str(params.kind);
   if (kind && kind !== "image" && kind !== "video") throw new StudioError("kind is image or video.", "bad_request");
-  return listAssets(ctx, companyId, {
+  const filter = {
     scope: clientFilter(params.client),
     projectId: str(params.projectId),
     kind,
     status: str(params.status),
     limit: typeof params.limit === "number" ? params.limit : 60,
-  });
+    sort: params.sort === "oldest" ? ("oldest" as const) : ("newest" as const),
+  };
+  const [assets, counts] = await Promise.all([listAssets(ctx, companyId, filter), countAssetsByStatus(ctx, companyId, filter)]);
+  return { assets, counts };
 }
 
 /** One asset with where it came from: prompt, model, cost, who made it, and what it's linked to. */
@@ -128,7 +134,11 @@ export async function assetDetail(ctx: PluginContext, companyId: string, assetId
         }
       : null,
     issue: issue ? { id: String(issue.id), identifier: (issue as { identifier?: string | null }).identifier ?? null, title: (issue as { title?: string | null }).title ?? null } : null,
-    links: links.map((l) => ({ targetType: l.target_type, targetId: l.target_id })),
+    links: links.filter((l) => l.target_type !== DRIVE_LINK_TYPE).map((l) => ({ targetType: l.target_type, targetId: l.target_id })),
+    // People's page only; agents never see Drive links.
+    drive: await driveCopies(ctx, companyId, assetId),
+    givenTo: await givenIssues(ctx, companyId, assetId, links.filter((l) => l.target_type === "issue").map((l) => l.target_id)),
+    provenance: await driveProvenance(ctx, companyId, assetId),
   };
 }
 

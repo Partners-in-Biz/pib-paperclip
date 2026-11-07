@@ -1,13 +1,22 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
-import { assetFileForAgent, assetUrlForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
+import { assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
+import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
+import { briefDoc } from "./canvas-brief.js";
+import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
+import { giveAsset, giveChoices } from "./give.js";
 import { reviewAsset } from "./review.js";
+import { saveAssetToDrive } from "./drive.js";
+import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
+import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { errorText, StudioError } from "./errors.js";
+import { guardAction } from "./refusal.js";
+import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
-import { setCap } from "./ledger.js";
+import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
-import { canGenerate, isCompanyOwner, memberRole, overview, usageView } from "./service.js";
+import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
@@ -37,6 +46,24 @@ async function workOf(ctx: PluginContext, run: ToolRunContext, params: Record<st
   return { issueId: issue.id, projectId: issue.projectId ?? (run.projectId || null) };
 }
 
+/** Lays out a board for a person to generate from. Never generates, never charges, never returns a link to a file. */
+async function createFromBrief(ctx: PluginContext, params: Record<string, unknown>, run: ToolRunContext) {
+  const work = await workOf(ctx, run, params);
+  const projectId = (typeof params.projectId === "string" && params.projectId.trim()) || work.projectId;
+  const doc = briefDoc(params);
+  const { client, title } = params;
+  const board = await createCanvas(ctx, run.companyId, { title, client, projectId, doc }, { agentId: run.agentId });
+  return {
+    canvasId: board.id,
+    title: board.title,
+    client: board.client,
+    projectId: board.projectId,
+    cards: board.cards,
+    open: `Studio > Canvas, board "${board.title}" (page path studio-canvas?canvas=${board.id})`,
+    next: "Nothing was generated or charged. A person opens the board and presses Generate on each image or video card.",
+  };
+}
+
 async function runTool(ctx: PluginContext, name: string, params: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
   switch (name) {
@@ -53,7 +80,7 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
       const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId });
-      void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     }
     case "studio-generation-status": {
@@ -93,6 +120,8 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       await assertReachable(ctx, companyId, scopeOfRow(row), work.projectId);
       return reviewAsset(ctx, companyId, params, { agentId: run.agentId });
     }
+    case "canvas-create-from-brief":
+      return createFromBrief(ctx, params, run);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }
@@ -100,6 +129,9 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
 
 const plugin = definePlugin({
   async setup(ctx) {
+    // Every page action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
+    type ActionHandler = Parameters<PluginContext["actions"]["register"]>[1];
+    const action = (key: string, handler: ActionHandler) => ctx.actions.register.call(ctx.actions, key, guardAction(handler));
     registerCrmProjection(ctx, ctx.db.namespace);
     registerClientProjectWatch(ctx);
 
@@ -124,13 +156,26 @@ const plugin = definePlugin({
       return overview(ctx, companyId);
     });
 
-    ctx.actions.register("set-cap", async (params, context) => {
+    action("set-cap", async (params, context) => {
       const companyId = context.companyId ?? context.actor.companyId;
       if (!companyId) throw new StudioError("Company is required");
       if (!(await isCompanyOwner(ctx, companyId, context.actor))) throw new StudioError("Only a company owner can change a credit cap.", "forbidden");
       const p = objectParams(params);
       const value = p.monthlyCredits === null || p.monthlyCredits === "" || p.monthlyCredits === undefined ? null : Number(p.monthlyCredits);
       await setCap(ctx, companyId, String(p.scopeKey ?? ""), value, String(context.actor.userId));
+      return overview(ctx, companyId);
+    });
+
+    // One agent's per-run limit (credit_limits key agent:<id>). Owner or admin; blank clears it.
+    action("set-agent-limit", async (params, context) => {
+      const companyId = context.companyId ?? context.actor.companyId;
+      if (!companyId) throw new StudioError("Company is required");
+      if (!(await isOwnerOrAdmin(ctx, companyId, context.actor))) throw new StudioError("Only a company owner or admin can set an agent's credit limit.", "forbidden");
+      const p = objectParams(params);
+      const agentId = String(p.agentId ?? "");
+      if (!isAgentLimitKey(agentLimitKey(agentId))) throw new StudioError("Pick an agent.", "bad_scope");
+      const value = p.credits === null || p.credits === "" || p.credits === undefined ? null : Number(p.credits);
+      await setCap(ctx, companyId, agentLimitKey(agentId), value, String(context.actor.userId));
       return overview(ctx, companyId);
     });
 
@@ -142,7 +187,7 @@ const plugin = definePlugin({
         if (!companyId) throw new StudioError("Company is required");
         return load(companyId, p);
       });
-    pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p).then((assets) => ({ assets })));
+    pageData("assets", (companyId, p) => pageAssets(ctx, companyId, p));
     pageData("asset", (companyId, p) => assetDetail(ctx, companyId, String(p.assetId ?? "").trim()));
     pageData("client-summaries", (companyId) => clientSummaries(ctx, companyId));
     pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));
@@ -157,37 +202,67 @@ const plugin = definePlugin({
       return { companyId, role, userId: String(context.actor.userId) };
     }
 
-    ctx.actions.register("me", async (_params, context) => {
+    action("me", async (_params, context) => {
       const me = await person(context);
-      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner" };
+      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", canSetAgentLimit: me.role === "owner" || me.role === "admin", userId: me.userId };
     });
 
-    ctx.actions.register("asset-url", async (params, context) => {
+    action("asset-url", async (params, context) => {
       const me = await person(context);
       return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
     });
 
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
-    ctx.actions.register("review", async (params, context) => {
+    action("review", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't approve or reject.", "forbidden");
       return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
 
+    // Save to Drive (PAR-8106): into the asset's own client folder, `02 Assets`. Viewers can't.
+    action("drive-save", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save to Drive.", "forbidden");
+      return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
+    });
+
+    // Give to agent (give.ts): agents that can run, then a normal issue for the chosen one. Viewers can't give.
+    action("give-agents", async (_params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
+      return { agents: await giveChoices(ctx, me.companyId) };
+    });
+    action("give", async (params, context) => {
+      const me = await person(context);
+      return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+    });
+
+    // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.
+    registerDriveReadReplies(ctx);
+    action("drive-list", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return listDriveFiles(ctx, me.companyId, objectParams(params));
+    });
+    action("drive-import", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    // The picker's previews (PAR-8124): a page of small images, or one large one, through the CRM. People only.
+    action("drive-thumbs", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
+      return driveThumbs(ctx, me.companyId, objectParams(params));
+    });
+
     // Previews for a page of the library in one call. Links last five minutes.
-    ctx.actions.register("asset-urls", async (params, context) => {
+    action("asset-urls", async (params, context) => {
       const me = await person(context);
       const raw = objectParams(params).assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
-      const urls: Record<string, string> = {};
-      for (const id of ids) {
-        try {
-          urls[id] = await assetUrlForPerson(ctx, me.companyId, id);
-        } catch {
-          // A missing asset just has no preview.
-        }
-      }
-      return { urls };
+      // One settings read and one secret lookup for the whole page (PAR-8102); a failure is reported, not hidden.
+      return assetUrlsForPerson(ctx, me.companyId, ids);
     });
 
     async function generator(context: Parameters<typeof person>[0], params: unknown) {
@@ -200,15 +275,15 @@ const plugin = definePlugin({
     }
 
     // The page's generate form: the same estimate, queue, caps and ledger as the agent tools.
-    ctx.actions.register("estimate", async (params, context) => {
+    action("estimate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       return estimateGeneration(ctx, me.companyId, request, actor);
     });
 
-    ctx.actions.register("generate", async (params, context) => {
+    action("generate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       const out = await requestGeneration(ctx, me.companyId, request, actor);
-      void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) }));
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     });
 
@@ -221,21 +296,57 @@ const plugin = definePlugin({
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at canvases but can't change them.", "forbidden");
       return me;
     }
-    ctx.actions.register("canvas-create", async (params, context) => {
+    action("canvas-create", async (params, context) => {
       const me = await canvasEditor(context);
       return createCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-save", async (params, context) => {
+    action("canvas-save", async (params, context) => {
       const me = await canvasEditor(context);
       return saveCanvas(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
-    ctx.actions.register("canvas-archive", async (params, context) => {
+    action("canvas-archive", async (params, context) => {
       const me = await canvasEditor(context);
       return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
     });
+    // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
+    pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
+    pageData("canvas-comments", (companyId, p) => listComments(ctx, companyId, String(p.canvasId ?? ""), p.cardId).then((comments) => ({ comments })));
+    action("canvas-version-save", async (params, context) => {
+      const me = await canvasEditor(context);
+      return saveVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("canvas-version-restore", async (params, context) => {
+      const me = await canvasEditor(context);
+      return restoreVersion(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("canvas-comment-add", async (params, context) => {
+      const me = await canvasEditor(context);
+      return addComment(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    // Read-only share links (canvas-share.ts): only editors list, make and revoke them. The list is an action, not
+    // page data, because page data has no caller and each entry carries the secret link path.
+    action("canvas-share-list", async (params, context) => {
+      const me = await canvasEditor(context);
+      return { shares: await listShares(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
+    });
+    action("canvas-share-create", async (params, context) => {
+      const me = await canvasEditor(context);
+      return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("canvas-share-revoke", async (params, context) => {
+      const me = await canvasEditor(context);
+      return revokeShare(ctx, me.companyId, objectParams(params));
+    });
+    const publishShares = () => refreshShares(ctx).catch((error) => ctx.logger.warn("Studio share pages not refreshed", { error: errorText(error) }));
+    runDetached(() => void publishShares());
 
+    // The one-minute job also keeps share pages fresh (new preview links) and deletes revoked or expired ones.
     ctx.jobs.register("process-queue", async () => {
-      await processQueue(ctx);
+      try {
+        await processQueue(ctx);
+      } finally {
+        await publishShares();
+      }
     });
     ctx.jobs.register("sweep-local-files", async () => {
       await sweepLocalCopies();

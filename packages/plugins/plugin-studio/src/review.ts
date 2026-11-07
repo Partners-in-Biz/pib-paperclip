@@ -51,6 +51,16 @@ function affected(result: unknown): number {
   return typeof count === "number" ? count : 0;
 }
 
+/** True when this agent made the asset: the asset row records its maker, and its generation does too. */
+async function madeByAgent(ctx: PluginContext, companyId: string, assetId: string, agentId: string): Promise<boolean> {
+  const rows = await ctx.db.query<{ mine: boolean }>(
+    `SELECT (a.created_by_agent_id = $3 OR EXISTS (SELECT 1 FROM ${table(ctx, "generations")} g WHERE g.company_id = a.company_id AND g.agent_id = $3 AND (g.asset_id = a.id OR g.id = a.generation_id))) AS mine
+     FROM ${table(ctx, "assets")} a WHERE a.company_id = $1 AND a.id = $2`,
+    [companyId, assetId, agentId],
+  );
+  return rows[0]?.mine === true;
+}
+
 /**
  * One guarded UPDATE decides the race: of two clicks (or a person and an agent) only one moves the status, and only
  * that one emits the event. If the emit fails, the status goes back, so a retry can approve and emit again.
@@ -67,6 +77,12 @@ export async function reviewAsset(
   const decision = decisionOf(params.decision);
   const before = await getAssetRow(ctx, companyId, assetId);
   if (before.status === decision) return { asset: assetOut(before), changed: false, exported: false };
+  if (decision === "approved" && actor.agentId && (await madeByAgent(ctx, companyId, assetId, actor.agentId))) {
+    throw new StudioError(
+      "You made this asset, so you can't approve it. Hand it to the Reviewer, or to another agent with review access, to approve. (Rejecting your own asset is fine.)",
+      "self_approval",
+    );
+  }
 
   const from = FROM[decision];
   const result = await ctx.db.execute(

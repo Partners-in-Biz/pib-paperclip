@@ -20,12 +20,26 @@ export const DEFAULT_SCOPE = "default";
 export const COMPANY_SCOPE = "company";
 /**
  * The most one agent run may spend, kept in credit_limits under this key (the column is named monthly_credits, but
- * for this row the amount is per run). Above it the agent's generate call is refused and it has to stop and ask a
- * person. People on the Studio page are not limited by it: they confirm an estimate before anything runs.
+ * for this row the amount is per run). Above it the agent's generate call is refused, with a message that sends it to
+ * the Creative Producer, not to a person. One agent can have its own limit under `agent:<agentId>` (same table, no
+ * migration); it replaces this one for that agent. People on the Studio page are not limited by either: they confirm an
+ * estimate before anything runs.
  */
 export const AGENT_RUN_SCOPE = "agent_run";
 /** Used when no per-run limit is set: enough for a few images, below one video (about 4.5 credits). */
 export const DEFAULT_RUN_LIMIT = 2;
+
+const AGENT_LIMIT_PREFIX = "agent:";
+const AGENT_LIMIT_KEY = /^agent:[A-Za-z0-9_-]+$/;
+
+/** The credit_limits key for one agent's per-run limit. */
+export function agentLimitKey(agentId: string): string {
+  return `${AGENT_LIMIT_PREFIX}${agentId}`;
+}
+
+export function isAgentLimitKey(value: string): boolean {
+  return AGENT_LIMIT_KEY.test(value);
+}
 
 export function currentPeriod(now = new Date()): string {
   return now.toISOString().slice(0, 7);
@@ -38,7 +52,7 @@ export function clientScopeKey(scope: ClientRefLike): string {
 type ClientRefLike = NonNullable<ClientScope>;
 
 export function isCapScope(value: string): boolean {
-  return value === DEFAULT_SCOPE || value === COMPANY_SCOPE || value === AGENT_RUN_SCOPE || /^(company|contact):[A-Za-z0-9_-]+$/.test(value);
+  return value === DEFAULT_SCOPE || value === COMPANY_SCOPE || value === AGENT_RUN_SCOPE || isAgentLimitKey(value) || /^(company|contact):[A-Za-z0-9_-]+$/.test(value);
 }
 
 export interface CapRow {
@@ -130,8 +144,10 @@ export function assertFits(check: CapCheck, needed: number): void {
   }
 }
 
-export function runLimitOf(caps: Array<Pick<CapRow, "scopeKey" | "monthlyCredits">>): number {
-  return caps.find((c) => c.scopeKey === AGENT_RUN_SCOPE)?.monthlyCredits ?? DEFAULT_RUN_LIMIT;
+/** The per-run limit for one agent: its own, else the company's, else the default. Other agents' limits never apply. */
+export function runLimitOf(caps: Array<Pick<CapRow, "scopeKey" | "monthlyCredits">>, agentId?: string | null): number {
+  const of = (key: string) => caps.find((c) => c.scopeKey === key)?.monthlyCredits;
+  return (agentId && isAgentLimitKey(agentLimitKey(agentId)) ? of(agentLimitKey(agentId)) : undefined) ?? of(AGENT_RUN_SCOPE) ?? DEFAULT_RUN_LIMIT;
 }
 
 /** Credits one agent run has used: its reservations less refunds, plus price differences. */
@@ -144,12 +160,12 @@ export async function runUsage(ctx: PluginContext, companyId: string, runId: str
 }
 
 /** Refuses an agent run's generation when it would take the run over the per-run limit. Call inside the company lock. */
-export async function assertRunFits(ctx: PluginContext, companyId: string, runId: string, needed: number): Promise<void> {
-  const limit = runLimitOf(await listCaps(ctx, companyId));
+export async function assertRunFits(ctx: PluginContext, companyId: string, runId: string, needed: number, agentId?: string | null): Promise<void> {
+  const limit = runLimitOf(await listCaps(ctx, companyId), agentId);
   const used = await runUsage(ctx, companyId, runId);
   if (credits(used + needed) > limit) {
     throw new StudioError(
-      `This needs ${needed} credits, and this agent run has used ${used} of its ${limit}-credit limit per run. Nothing was started. Stop and ask a person: they can generate it on the Studio page, or a company owner can raise the per-run limit in Studio's settings.`,
+      `This needs ${needed} credits, and this agent run has used ${used} of its ${limit}-credit limit per run. Nothing was started. For a video, or anything bigger than this limit, hand it to the Creative Producer through request-creative or an issue. If the monthly cap is the problem, tell PiB.`,
       "run_limit",
     );
   }

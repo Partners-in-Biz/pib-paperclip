@@ -37,6 +37,7 @@ import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToastActions, type ToastInput } from "@/context/ToastContext";
 import { useSidebar } from "@/context/SidebarContext";
+import { useDialogActions, type NewIssueCreatedSummary } from "@/context/DialogContext";
 import { isGlobalPath, normalizeCompanyPrefix } from "@/lib/company-routes";
 import { normalizeRememberedInstanceSettingsPath } from "@/lib/instance-settings";
 
@@ -562,6 +563,76 @@ export function useHostLocation(): HostLocation {
     }),
     [location.hash, location.pathname, location.search, location.state],
   );
+}
+
+// ---------------------------------------------------------------------------
+// useHostNewIssue — concrete implementation
+// ---------------------------------------------------------------------------
+
+/** Fields a plugin may prefill in the host New Task dialog. */
+export interface HostNewIssueDefaults {
+  title?: string;
+  description?: string;
+  projectId?: string;
+  assigneeAgentId?: string;
+  priority?: string;
+  parentId?: string;
+}
+
+export type HostCreatedIssue = NewIssueCreatedSummary;
+
+export interface HostNewIssue {
+  open(defaults?: HostNewIssueDefaults): Promise<HostCreatedIssue | null>;
+}
+
+const HOST_NEW_ISSUE_FIELDS = [
+  "title",
+  "description",
+  "projectId",
+  "assigneeAgentId",
+  "priority",
+  "parentId",
+] as const satisfies ReadonlyArray<keyof HostNewIssueDefaults>;
+
+/**
+ * Keep only the documented string fields. A plugin cannot set status,
+ * workspaces, or anything else the board would not see in the dialog.
+ */
+export function pickHostNewIssueDefaults(input: unknown): HostNewIssueDefaults {
+  const out: HostNewIssueDefaults = {};
+  if (!input || typeof input !== "object") return out;
+  const record = input as Record<string, unknown>;
+  for (const field of HOST_NEW_ISSUE_FIELDS) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > 0) out[field] = value;
+  }
+  return out;
+}
+
+/**
+ * Open the normal host New Task dialog with defaults. The board can edit
+ * everything before creating. Resolves with the created issue, or `null` when
+ * the dialog closes without creating one.
+ */
+export function useHostNewIssue(): HostNewIssue {
+  const { openNewIssue } = useDialogActions();
+  const open = useCallback(
+    (defaults?: HostNewIssueDefaults) =>
+      new Promise<HostCreatedIssue | null>((resolve) => {
+        let settled = false;
+        const settle = (value: HostCreatedIssue | null) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+        openNewIssue(pickHostNewIssueDefaults(defaults), {
+          onCreated: (issue) => settle({ ...issue }),
+          onClosed: () => settle(null),
+        });
+      }),
+    [openNewIssue],
+  );
+  return useMemo(() => ({ open }), [open]);
 }
 
 // ---------------------------------------------------------------------------

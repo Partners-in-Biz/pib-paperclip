@@ -1,33 +1,15 @@
-import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
-import { useEffect, useState } from "react";
+import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 import { Button, errorText, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
 import { clientsWithAssets, type ClientSummary } from "./clients.js";
+import { usePreviewUrls } from "./previews.js";
 
 const muted = { fontSize: 13, opacity: 0.7 } as const;
 
 /** One card per client. Thumbnails use the same person-only "asset-urls" action as the library. */
 export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: string; version: number; onOpenLibrary: (scopeKey: string) => void }) {
   const summaries = usePluginData<{ period: string; clients: ClientSummary[] }>("client-summaries", { companyId, v: version });
-  const assetUrls = usePluginAction("asset-urls");
-  const [urls, setUrls] = useState<Record<string, string>>({});
   const clients = clientsWithAssets(summaries.data?.clients ?? []);
-  const ids = clients.flatMap((c) => c.recentApproved.map((a) => a.id));
-  const key = ids.join(",");
-
-  useEffect(() => {
-    if (!key) return;
-    let live = true;
-    const load = () =>
-      assetUrls({ companyId, assetIds: key.split(",") })
-        .then((out) => live && setUrls((out as { urls?: Record<string, string> }).urls ?? {}))
-        .catch(() => undefined);
-    void load();
-    const timer = setInterval(() => void load(), 4 * 60 * 1000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [companyId, key]);
+  const { urls } = usePreviewUrls(companyId, clients.flatMap((c) => c.recentApproved.map((a) => a.id)));
 
   if (summaries.error) return <PageMessage tone="danger" message={errorText(summaries.error)} />;
   if (!summaries.data || clients.length === 0) return null;

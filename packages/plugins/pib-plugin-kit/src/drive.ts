@@ -13,6 +13,39 @@ export const DRIVE_EVENTS = {
   failed: "drive.file.failed",
 } as const;
 
+/**
+ * The plugins that may ask the CRM to write to a company's Drive (PAR-8114). The host delivers a plugin's emit as
+ * `plugin.<emitterId>.<name>` and only supports a trailing wildcard, so the CRM subscribes once per producer here; a
+ * plugin not on this list never reaches the Drive. Add a producer here before it calls `driveSave`.
+ */
+export const DRIVE_PRODUCER_PLUGINS = [
+  "partnersinbiz.studio",
+  "partnersinbiz.social",
+  "partnersinbiz.campaigns",
+  "partnersinbiz.ads",
+  "partnersinbiz.billing",
+  "partnersinbiz.cockpit",
+  "partnersinbiz.seo",
+  "partnersinbiz.crm",
+] as const;
+
+/** The name the host delivers a producer's request under: `plugin.<producerId>.<name>`. */
+export function producerEventName(producerId: string, name: string): `plugin.${string}` {
+  return `plugin.${producerId}.${name}`;
+}
+
+/**
+ * The producer that sent `event` as `name`, from the host-set event type, or null when it is not a known producer.
+ * The host builds the event type from the emitting plugin's own id, so a plugin cannot pose as another one.
+ */
+export function knownProducerOf(event: Pick<PluginEvent, "eventType">, name: string, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): string | null {
+  const type = String(event.eventType ?? "");
+  const suffix = `.${name}`;
+  if (!type.startsWith("plugin.") || !type.endsWith(suffix)) return null;
+  const id = type.slice("plugin.".length, type.length - suffix.length);
+  return producers.includes(id) ? id : null;
+}
+
 export const DRIVE_SUBFOLDERS = ["01 Briefs", "02 Assets", "03 Deliverables", "04 Reports", "05 Evidence", "99 Archive"] as const;
 
 export type DriveSubfolder = (typeof DRIVE_SUBFOLDERS)[number];
@@ -30,7 +63,18 @@ export type DriveSaveOptions = {
   mimeType: string;
   subfolder?: DriveSubfolder;
   timeoutMs?: number;
+  /** The CRM client the file belongs to: it lands in that client's linked project. */
   client?: { kind: string; ref: string };
+  /**
+   * The company's own work (PAR-8128): the file lands in the CRM's `drive.ownProjectId`. Must be asked for: a save with
+   * no client, no `ownWork` and no `projectId` is refused, so a missing client is never filed as the company's own.
+   */
+  ownWork?: true;
+  /**
+   * The Paperclip project the work belongs to (e.g. an issue's project). The CRM files it in that project when the
+   * project is linked to a client or is the own project, and refuses it otherwise. Wins over `client` and `ownWork`.
+   */
+  projectId?: string;
 } & ({ bytes: Uint8Array | Buffer; publicUrl?: undefined } | { publicUrl: string; bytes?: undefined });
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -104,6 +148,13 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
         return { status: "failed", requestId, reason: "invalid_input" };
       }
     }
+    // A client's file and the company's own work are two different folders: never both.
+    if (opts.ownWork !== undefined && (opts.ownWork !== true || client !== undefined)) {
+      return { status: "failed", requestId, reason: "invalid_input" };
+    }
+    if (opts.projectId !== undefined && (typeof opts.projectId !== "string" || opts.projectId.trim().length === 0)) {
+      return { status: "failed", requestId, reason: "invalid_input" };
+    }
 
     // Register handlers and check for duplicate
     registerDriveReplies(ctx);
@@ -142,6 +193,8 @@ export async function driveSave(ctx: Pick<PluginContext, "events">, opts: DriveS
       payload.clientKind = client.kind;
       payload.clientRef = client.ref;
     }
+    if (opts.ownWork === true) payload.ownWork = true;
+    if (opts.projectId) payload.projectId = opts.projectId.trim();
 
     // Setup promise and handlers
     const tm = timeoutMs ?? DEFAULT_TIMEOUT_MS;

@@ -8,7 +8,8 @@ import type { SocialPlatform } from "./platforms.js";
 
 export interface SaveToDriveOptions {
   companyId: string;
-  post: { id: string; body: string };
+  /** The post's client decides whose Drive folder gets the copy; no client means the company's own work. */
+  post: { id: string; body: string; client_kind?: string | null; client_ref?: string | null };
   platform: SocialPlatform;
   media: MediaRef[];
   publishedAt?: Date;
@@ -50,6 +51,10 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
   const dateStr = publishDate.toISOString().split("T")[0];
   const platformLabel = sanitizePart(opts.platform);
   const postId = shortId(opts.post.id);
+  // Never mix clients: a client's post goes to that client's folder, never the company's own one.
+  const client = opts.post.client_kind && opts.post.client_ref ? { kind: opts.post.client_kind, ref: opts.post.client_ref } : undefined;
+  // A post with no client is the company's own; the CRM uses the own folder only when asked (PAR-8128).
+  const target = client ? { client } : { ownWork: true as const };
 
   // Save caption/text as text/plain
   try {
@@ -63,9 +68,10 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
       bytes: captionBytes,
       subfolder: "02 Assets",
       timeoutMs: 10000,
+      ...target,
     });
-    if (result.status === "failed") {
-      ctx.logger.warn("Failed to save post caption to Drive", { status: result.status, reason: (result as any).reason });
+    if (result.status !== "saved") {
+      ctx.logger.warn("Failed to save post caption to Drive", { status: result.status, reason: "reason" in result ? result.reason : undefined });
     }
   } catch (error) {
     ctx.logger.warn("Error saving post caption to Drive", { error: error instanceof Error ? error.message : String(error) });
@@ -89,10 +95,11 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
         publicUrl: media.url,
         subfolder: "02 Assets",
         timeoutMs: 10000,
+        ...target,
       });
 
-      if (result.status === "failed") {
-        ctx.logger.warn("Failed to save post media to Drive", { index: i, status: result.status, reason: (result as any).reason });
+      if (result.status !== "saved") {
+        ctx.logger.warn("Failed to save post media to Drive", { index: i, status: result.status, reason: "reason" in result ? result.reason : undefined });
       }
     } catch (error) {
       ctx.logger.warn("Error saving post media to Drive", { index: i, error: error instanceof Error ? error.message : String(error) });

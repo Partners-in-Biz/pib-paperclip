@@ -79,4 +79,9 @@ describe("canvas save keeps a card's result", () => {
     expect(doc.nodes[1].data).toEqual({ assetId: "abc-2" });
     expect(() => normalizeDoc({ nodes: [card("i", "image", { assetId: "../x" })], edges: [] })).toThrow(/not an asset id/);
   });
+
+  it("keeps the generated mark on output cards, so a later run doesn't overwrite them", () => {
+    const doc = normalizeDoc({ nodes: [card("o", "output", { assetId: "abc-1", generated: "1" })], edges: [] });
+    expect(doc.nodes[0].data).toEqual({ assetId: "abc-1", generated: "1" });
+  });
 });

@@ -3,6 +3,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { driveSave, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { getCampaign } from "./db.js";
 
 export interface SaveSendRecordOptions {
   companyId: string;
@@ -16,6 +17,8 @@ export interface SaveSendRecordOptions {
   sentAt: Date;
   campaignName?: string | null;
   driveSave?: (ctx: Pick<PluginContext, "events">, opts: DriveSaveOptions) => Promise<DriveSaveResult>;
+  /** Reads the campaign's client (default: the campaigns table). */
+  loadCampaign?: (ctx: PluginContext, id: string) => Promise<{ clientKind: string | null; clientRef: string | null } | null>;
 }
 
 /**
@@ -55,6 +58,20 @@ export async function saveSendRecord(ctx: PluginContext, opts: SaveSendRecordOpt
     const recordName = `${sentDate} ${campaignLabel} send ${enrollmentId} step ${opts.stepPosition} v1.json`;
     const recordBytes = Buffer.from(JSON.stringify(record), "utf-8");
 
+    // Never mix clients (PAR-8128): a client campaign's record goes to that client's folder; our own campaign asks
+    // for the own folder. When the campaign cannot be read we cannot tell whose it is, so no copy.
+    let campaign: { clientKind: string | null; clientRef: string | null } | null = null;
+    try {
+      campaign = await (opts.loadCampaign ?? getCampaign)(ctx, opts.campaignId);
+    } catch {
+      campaign = null;
+    }
+    if (!campaign) {
+      ctx.logger.warn("Campaign send record not copied to Drive: campaign not found", { campaignId: opts.campaignId });
+      return;
+    }
+    const target = campaign.clientKind && campaign.clientRef ? { client: { kind: campaign.clientKind, ref: campaign.clientRef } } : { ownWork: true as const };
+
     const result = await drive(ctx, {
       companyId: opts.companyId,
       kind: "campaigns",
@@ -63,6 +80,7 @@ export async function saveSendRecord(ctx: PluginContext, opts: SaveSendRecordOpt
       bytes: recordBytes,
       subfolder: "03 Deliverables",
       timeoutMs: 10000,
+      ...target,
     });
 
     if (result.status === "failed") {

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import type { IssueWorkMode } from "@paperclipai/shared";
 
 interface NewIssueDefaults {
@@ -20,6 +20,25 @@ interface NewIssueDefaults {
   description?: string;
 }
 
+/** The created issue, as reported back to whoever opened the New Task dialog. */
+export interface NewIssueCreatedSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  projectId: string | null;
+  assigneeAgentId: string | null;
+}
+
+/**
+ * Optional callbacks for one opening of the New Task dialog. `onCreated` runs
+ * once when the dialog creates an issue; `onClosed` runs once when that opening
+ * ends (after a create, on cancel, or when another opening replaces it).
+ */
+export interface NewIssueHandlers {
+  onCreated?: (issue: NewIssueCreatedSummary) => void;
+  onClosed?: () => void;
+}
+
 interface NewGoalDefaults {
   parentId?: string;
 }
@@ -32,8 +51,10 @@ interface OnboardingOptions {
 interface DialogContextValue {
   newIssueOpen: boolean;
   newIssueDefaults: NewIssueDefaults;
-  openNewIssue: (defaults?: NewIssueDefaults) => void;
+  openNewIssue: (defaults?: NewIssueDefaults, handlers?: NewIssueHandlers) => void;
   closeNewIssue: () => void;
+  /** Called by the New Task dialog after it created an issue. */
+  notifyNewIssueCreated: (issue: NewIssueCreatedSummary) => void;
   newProjectOpen: boolean;
   openNewProject: () => void;
   closeNewProject: () => void;
@@ -84,14 +105,39 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
   const [onboardingRouteDismissed, setOnboardingRouteDismissed] = useState(false);
 
-  const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
-    setNewIssueDefaults(defaults);
-    setNewIssueOpen(true);
+  const newIssueHandlersRef = useRef<NewIssueHandlers | null>(null);
+
+  const endNewIssueHandlers = useCallback(() => {
+    const handlers = newIssueHandlersRef.current;
+    newIssueHandlersRef.current = null;
+    try {
+      handlers?.onClosed?.();
+    } catch {
+      // A caller's callback must never break the host dialog.
+    }
   }, []);
 
+  const openNewIssue = useCallback((defaults: NewIssueDefaults = {}, handlers?: NewIssueHandlers) => {
+    endNewIssueHandlers();
+    newIssueHandlersRef.current = handlers ?? null;
+    setNewIssueDefaults(defaults);
+    setNewIssueOpen(true);
+  }, [endNewIssueHandlers]);
+
   const closeNewIssue = useCallback(() => {
+    endNewIssueHandlers();
     setNewIssueOpen(false);
     setNewIssueDefaults({});
+  }, [endNewIssueHandlers]);
+
+  const notifyNewIssueCreated = useCallback((issue: NewIssueCreatedSummary) => {
+    const onCreated = newIssueHandlersRef.current?.onCreated;
+    if (newIssueHandlersRef.current) newIssueHandlersRef.current.onCreated = undefined;
+    try {
+      onCreated?.(issue);
+    } catch {
+      // A caller's callback must never break the host dialog.
+    }
   }, []);
 
   const openNewProject = useCallback(() => {
@@ -159,6 +205,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     () => ({
       openNewIssue,
       closeNewIssue,
+      notifyNewIssueCreated,
       openNewProject,
       closeNewProject,
       openNewGoal,
@@ -172,6 +219,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [
       openNewIssue,
       closeNewIssue,
+      notifyNewIssueCreated,
       openNewProject,
       closeNewProject,
       openNewGoal,

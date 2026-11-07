@@ -4,8 +4,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
-import { StudioError } from "./errors.js";
-import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime } from "./storage.js";
+import { errorText, StudioError } from "./errors.js";
+import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime, type PrivateBucket } from "./storage.js";
 import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
 
 export const LINK_TARGETS = ["issue", "goal", "project", "campaign", "social_post", "ad", "seo_page", "video", "book"] as const;
@@ -30,8 +30,8 @@ export interface AssetRow {
   bytes: unknown;
 }
 
-const ASSET_SELECT = (ctx: PluginContext) =>
-  `SELECT a.id, a.company_id, a.client_kind, a.client_ref, a.client_name, a.project_id, a.name, a.kind, a.alt_text, a.status, a.source, a.generation_id, a.current_version, a.created_at, v.r2_key, v.mime, v.bytes
+const ASSET_SELECT = (ctx: PluginContext, extraColumns = "") =>
+  `SELECT a.id, a.company_id, a.client_kind, a.client_ref, a.client_name, a.project_id, a.name, a.kind, a.alt_text, a.status, a.source, a.generation_id, a.current_version, a.created_at, v.r2_key, v.mime, v.bytes${extraColumns}
    FROM ${table(ctx, "assets")} a JOIN ${table(ctx, "asset_versions")} v ON v.asset_id = a.id AND v.version = a.current_version`;
 
 /** What people and agents see. No storage key and no URL. */
@@ -68,7 +68,7 @@ export interface StoreInput {
   issueId: string | null;
   name: string;
   altText?: string | null;
-  source: "generated" | "attachment";
+  source: "generated" | "attachment" | "drive";
   sourceRef: string | null;
   generationId?: string | null;
   agentId?: string | null;
@@ -99,7 +99,7 @@ export async function storeAsset(ctx: PluginContext, config: StudioConfig, input
   return id;
 }
 
-async function addLink(ctx: PluginContext, companyId: string, assetId: string, type: string, targetId: string): Promise<void> {
+export async function addLink(ctx: PluginContext, companyId: string, assetId: string, type: string, targetId: string): Promise<void> {
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "asset_links")} (company_id, asset_id, target_type, target_id) VALUES ($1, $2, $3, $4) ON CONFLICT (asset_id, target_type, target_id) DO NOTHING`,
     [companyId, assetId, type, targetId],
@@ -115,9 +115,17 @@ export interface ListFilter {
   kind?: string | null;
   status?: string | null;
   limit?: number;
+  /** Newest first unless "oldest". */
+  sort?: "newest" | "oldest" | null;
 }
 
-export async function listAssets(ctx: PluginContext, companyId: string, filter: ListFilter) {
+interface ListRow extends AssetRow {
+  gen_prompt: string | null;
+  gen_model: string | null;
+  gen_credits: unknown;
+}
+
+function listWhere(ctx: PluginContext, companyId: string, filter: ListFilter): { where: string; params: unknown[] } {
   const params: unknown[] = [companyId];
   let where = "WHERE a.company_id = $1";
   if (filter.scope !== undefined) {
@@ -142,9 +150,37 @@ export async function listAssets(ctx: PluginContext, companyId: string, filter: 
     params.push(filter.targetType, filter.targetId);
     where += ` AND EXISTS (SELECT 1 FROM ${table(ctx, "asset_links")} l WHERE l.asset_id = a.id AND l.target_type = $${params.length - 1} AND l.target_id = $${params.length})`;
   }
+  return { where, params };
+}
+
+/** Each asset plus the prompt, model and cost of the generation that made it (null for imports), for library cards. */
+export async function listAssets(ctx: PluginContext, companyId: string, filter: ListFilter) {
+  const { where, params } = listWhere(ctx, companyId, filter);
   params.push(Math.min(Math.max(filter.limit ?? 50, 1), 200));
-  const rows = await ctx.db.query<AssetRow>(`${ASSET_SELECT(ctx)} ${where} ORDER BY a.created_at DESC LIMIT $${params.length}`, params);
-  return rows.map(assetOut);
+  const order = filter.sort === "oldest" ? "ASC" : "DESC";
+  const select = ASSET_SELECT(ctx, ", g.prompt AS gen_prompt, g.model AS gen_model, COALESCE(g.actual_credits, g.estimated_credits) AS gen_credits");
+  const rows = await ctx.db.query<ListRow>(
+    `${select} LEFT JOIN ${table(ctx, "generations")} g ON g.id = a.generation_id AND g.company_id = a.company_id ${where} ORDER BY a.created_at ${order} LIMIT $${params.length}`,
+    params,
+  );
+  return rows.map((row) => ({
+    ...assetOut(row),
+    prompt: row.gen_prompt ?? null,
+    model: row.gen_model ?? null,
+    credits: row.gen_credits === null || row.gen_credits === undefined ? null : num(row.gen_credits),
+  }));
+}
+
+/** How many assets each status holds under the same filters (the status filter itself is ignored), for filter chips. */
+export async function countAssetsByStatus(ctx: PluginContext, companyId: string, filter: ListFilter): Promise<Record<string, number>> {
+  const { where, params } = listWhere(ctx, companyId, { ...filter, status: null });
+  const rows = await ctx.db.query<{ status: string; n: unknown }>(`SELECT a.status, COUNT(*) AS n FROM ${table(ctx, "assets")} a ${where} GROUP BY a.status`, params);
+  const out: Record<string, number> = { all: 0 };
+  for (const r of rows) {
+    out[r.status] = num(r.n);
+    out.all += num(r.n);
+  }
+  return out;
 }
 
 /** Agents get a path on this machine, because the host redacts signed URLs in what they read. */
@@ -157,10 +193,49 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
   return { ...assetOut(row), path };
 }
 
-/** For a person's browser, after an access check in the action. Short-lived. */
-export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string): Promise<string> {
+/**
+ * For a person's browser, after an access check in the action (or a share page). Short-lived. Pass one `config` for a
+ * whole request or job run: each new StudioConfig costs a secret lookup, and the host allows 30 a minute per company.
+ */
+export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300, config: StudioConfig = new StudioConfig(ctx, companyId)): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
-  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, 300);
+  return objectUrl(await config.bucket(), companyId, "GET", row.r2_key, expiresSec);
+}
+
+export interface PreviewBatch {
+  urls: Record<string, string>;
+  /** Assets that exist but got no link this time; the page retries them soon. */
+  failed: string[];
+  /** Safe to show a person; null when every known asset got a link. */
+  error: string | null;
+}
+
+/**
+ * Preview links for many assets with one settings read and one secret lookup (PAR-8102). Unknown assets are left out
+ * quietly; a storage or secret failure is reported in `error` so the page can say so and retry, never hidden.
+ */
+export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], expiresSec = 300, config?: StudioConfig): Promise<PreviewBatch> {
+  const urls: Record<string, string> = {};
+  if (!assetIds.length) return { urls, failed: [], error: null };
+  let bucket: PrivateBucket;
+  try {
+    bucket = await (config ?? new StudioConfig(ctx, companyId)).bucket();
+  } catch (error) {
+    ctx.logger.warn("Studio previews not signed", { assets: assetIds.length, error: errorText(error) });
+    const why = error instanceof StudioError ? error.message : "Studio couldn't read its storage settings just now.";
+    return { urls, failed: [...assetIds], error: `Previews couldn't load. ${why}` };
+  }
+  const failed: string[] = [];
+  for (const id of assetIds) {
+    try {
+      const row = await getAssetRow(ctx, companyId, id);
+      urls[id] = objectUrl(bucket, companyId, "GET", row.r2_key, expiresSec);
+    } catch (error) {
+      if (error instanceof StudioError && error.code === "unknown_asset") continue;
+      failed.push(id);
+    }
+  }
+  return { urls, failed, error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null };
 }
 
 export async function linkAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, runProjectId: string | null) {
