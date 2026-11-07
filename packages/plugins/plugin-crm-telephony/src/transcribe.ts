@@ -1,4 +1,5 @@
 import type { PipelineStep, PipelineStepCtx } from "./pipeline.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 export interface TranscribeDeps {
   audioUrl: (sc: PipelineStepCtx) => Promise<string>;
@@ -57,7 +58,7 @@ export function makeTranscribeStep(deps: TranscribeDeps): PipelineStep {
     }
 
     // Resolve Deepgram API key
-    const apiKey = await ctx.secrets.resolve("DEEPGRAM_API_KEY", { companyId });
+    const apiKey = await resolveTelephonySecret(ctx, companyId, "DEEPGRAM_API_KEY");
     if (!apiKey) throw new Error("DEEPGRAM_API_KEY not set");
 
     // Get audio URL and extend lease

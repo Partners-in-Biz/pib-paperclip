@@ -8,6 +8,7 @@ const baseSettings: TelephonySettings = {
   allowedHours: { start: "09:00", end: "17:00", timezone: "Africa/Johannesburg" },
   callerIds: ["+27123456789"], voiceAllowedUserIds: ["user1"], usSmsCampaignStatus: "approved",
   usMessagingServiceSid: "MGxxxxxxxxxxxxxxxxxxxxxxxx", whatsappFrom: "wa_id", smsHolidays: ["2026-12-25"],
+  publicBaseUrl: null,
 };
 
 describe("Settings form utilities", () => {
@@ -91,5 +92,57 @@ describe("Settings form utilities", () => {
     const rows = describeSecretStatus({ [name]: "set" });
     const row = rows.find((r) => r.name === name);
     expect(row).toMatchObject({ name, label: SECRET_LABELS[name], status: "set" });
+  });
+});
+
+describe("Voice readiness on the settings page", async () => {
+  const { publicOrigin, voiceWebhookRows, describeVoiceReadiness, TELEPHONY_PLUGIN_ID } = await import("../src/ui/settings-form.js");
+  const { PLUGIN_ID } = await import("../src/namespace.js");
+
+  it("keeps the browser-side plugin id equal to the worker's", () => {
+    expect(TELEPHONY_PLUGIN_ID).toBe(PLUGIN_ID);
+  });
+
+  it("publicOrigin accepts a bare origin and rejects paths, queries and other schemes", () => {
+    expect(publicOrigin(" https://paperclip.example.com/ ")).toBe("https://paperclip.example.com");
+    expect(publicOrigin("http://localhost:3100")).toBe("http://localhost:3100");
+    expect(publicOrigin("https://paperclip.example.com/PAR/dialer")).toBeNull();
+    expect(publicOrigin("https://paperclip.example.com/?x=1")).toBeNull();
+    expect(publicOrigin("ftp://host")).toBeNull();
+    expect(publicOrigin("not a url")).toBeNull();
+    expect(publicOrigin("")).toBeNull();
+  });
+
+  it("the form carries the public base URL both ways and validates it", () => {
+    const form = toFormState({ ...baseSettings, publicBaseUrl: "https://paperclip.example.com" });
+    expect(form.publicBaseUrl).toBe("https://paperclip.example.com");
+    expect(toSavePayload(form).publicBaseUrl).toBe("https://paperclip.example.com");
+    expect(toSavePayload({ ...form, publicBaseUrl: "  " }).publicBaseUrl).toBeNull();
+    expect(validateForm({ ...form, publicBaseUrl: "https://x.example.com/path" }).publicBaseUrl).toMatch(/no path/);
+    expect(validateForm(form).publicBaseUrl).toBeUndefined();
+  });
+
+  it("lists the three webhook addresses for an origin", () => {
+    const rows = voiceWebhookRows("https://paperclip.example.com");
+    expect(rows.map((r) => r.key)).toEqual(["call-status", "recording-status", "voice-twiml"]);
+    expect(rows[0].url).toBe(`https://paperclip.example.com/api/plugins/${PLUGIN_ID}/webhooks/call-status`);
+    expect(rows[2].note).toMatch(/Not used/);
+  });
+
+  it("builds the readiness checklist from the worker's view", () => {
+    const voice = {
+      ready: false, missingSecrets: ["TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"], numbers: { za: "set", us: "missing" } as const, twimlApp: "missing" as const,
+      publicBaseUrl: null, recording: { enabled: true, r2Configured: false, active: false }, voiceUsers: 0, blockers: ["x"],
+    };
+    const rows = describeVoiceReadiness(voice, { TWILIO_ACCOUNT_SID: "set", TWILIO_AUTH_TOKEN: "set" });
+    const byLabel = Object.fromEntries(rows.map((r) => [r.label, r]));
+    expect(byLabel["Twilio Account SID (TWILIO_ACCOUNT_SID)"].status).toBe("set");
+    expect(byLabel["Twilio API Key SID (TWILIO_API_KEY_SID)"].status).toBe("missing");
+    expect(byLabel["Twilio number for +27 calls (TWILIO_ZA_NUMBER)"].status).toBe("set");
+    expect(byLabel["Twilio number for +1 calls (TWILIO_US_NUMBER)"]).toMatchObject({ status: "missing", hint: expect.stringContaining("Optional") });
+    expect(byLabel["TwiML app SID (TWILIO_TWIML_APP_SID)"].status).toBe("optional");
+    expect(byLabel["Public base URL"].status).toBe("missing");
+    expect(byLabel["Voice user IDs"].status).toBe("missing");
+    expect(byLabel["Recording"]).toMatchObject({ status: "missing", hint: expect.stringContaining("R2") });
   });
 });

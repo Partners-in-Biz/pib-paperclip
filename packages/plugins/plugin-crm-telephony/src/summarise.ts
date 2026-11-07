@@ -1,4 +1,5 @@
 import type { PipelineStep, PipelineStepCtx, StepResult } from "./pipeline.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 export const SUMMARY_MODEL = "claude-haiku-4-5";
 
@@ -61,7 +62,7 @@ export function makeSummariseStep(): PipelineStep {
       return { state: "summarised" };
     }
 
-    const apiKey = await ctx.secrets.resolve("ANTHROPIC_API_KEY", { companyId });
+    const apiKey = await resolveTelephonySecret(ctx, companyId, "ANTHROPIC_API_KEY");
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
     await sc.extendLease();

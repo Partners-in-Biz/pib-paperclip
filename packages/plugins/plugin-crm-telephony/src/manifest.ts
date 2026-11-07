@@ -1,6 +1,51 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { secretField } from "@partnersinbiz/pib-plugin-kit";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
+
+const secret = (title: string, description?: string) => secretField(title, description) as unknown as JsonSchema;
+
+/**
+ * Per-company configuration (Plugins → CRM Telephony → Configuration). Every
+ * credential is a secret picked from the company's secrets; the host stores a
+ * secret reference and a binding at `secrets.<NAME>`, which is the only way a
+ * plugin can read a secret value (see src/secrets.ts). Feature switches, caps
+ * and hours live on the plugin's own Telephony settings page.
+ */
+export const instanceConfigSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    secrets: {
+      type: "object",
+      title: "Credentials",
+      description: "Pick the company secret for each one. Voice calling needs the first four and at least one number.",
+      properties: {
+        TWILIO_ACCOUNT_SID: secret("Twilio Account SID", "Starts with AC. Twilio console → Account info."),
+        TWILIO_AUTH_TOKEN: secret("Twilio Auth Token", "Twilio console → Account info. Signs the webhooks Twilio sends here."),
+        TWILIO_API_KEY_SID: secret("Twilio API Key SID", "Starts with SK. Twilio console → Account → API keys & tokens → Create API key (Standard)."),
+        TWILIO_API_KEY_SECRET: secret("Twilio API Key Secret", "Shown once when the API key is created."),
+        TWILIO_ZA_NUMBER: secret("Twilio number for +27 calls", "A voice-capable Twilio number in E.164, for example +27105550100. The caller ID for South African numbers."),
+        TWILIO_US_NUMBER: secret("Twilio number for +1 calls", "A voice-capable Twilio number in E.164. The caller ID for US numbers."),
+        TWILIO_TWIML_APP_SID: secret("Twilio TwiML App SID (optional)", "Not needed: the Dialer places calls through the REST API."),
+        TWILIO_WHATSAPP_FROM: secret("Twilio WhatsApp sender", "whatsapp:+… for WhatsApp messaging."),
+        DEEPGRAM_API_KEY: secret("Deepgram API key", "Transcribes recordings. Only with recording on."),
+        ANTHROPIC_API_KEY: secret("Anthropic API key", "Summarises transcripts. Only with recording on."),
+      },
+    } as unknown as JsonSchema,
+    r2: {
+      type: "object",
+      title: "Recording storage (Cloudflare R2)",
+      description: "Where recordings are kept. Calls are recorded only when this is filled in and Recording is on in Telephony settings.",
+      properties: {
+        accountId: { type: "string", title: "R2 account id" },
+        bucket: { type: "string", title: "Bucket" },
+        accessKeyId: { type: "string", title: "Access key id" },
+        secretAccessKey: secret("Secret access key"),
+        prefix: { type: "string", title: "Key prefix", description: "Default crm-telephony" },
+      },
+    } as unknown as JsonSchema,
+  },
+};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -28,6 +73,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.write",
   ],
   tools: TELEPHONY_TOOLS,
+  instanceConfigSchema,
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   ui: {
     slots: [

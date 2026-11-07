@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { usePluginAction, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, Input, Page, PageFrame, Form, Field, Section, Select, TextArea, errorText } from "@partnersinbiz/pib-plugin-ui";
-import { toFormState, toSavePayload, validateForm, describeSecretStatus, type SettingsFormState } from "./settings-form.js";
+import { Button, Input, Page, PageFrame, Form, Field, Pill, Section, Select, TextArea, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import {
+  toFormState, toSavePayload, validateForm, describeSecretStatus, describeVoiceReadiness, publicOrigin, voiceWebhookRows,
+  type SettingsFormState, type VoiceReadinessView,
+} from "./settings-form.js";
 import type { TelephonySettings } from "../settings.js";
 
 // Server error keys that have an inline slot below; anything else goes in the banner.
 const INLINE_ERROR_KEYS = [
   "maxCallsPerDay", "maxSmsPerDay", "maxWhatsappPerDay", "recordingRetentionDays",
-  "allowedHours", "callerIds", "whatsappFrom", "usMessagingServiceSid", "voiceAllowedUserIds", "smsHolidays",
+  "allowedHours", "callerIds", "whatsappFrom", "usMessagingServiceSid", "voiceAllowedUserIds", "smsHolidays", "publicBaseUrl",
 ];
 
 function FieldError({ message }: { message?: string }) {
@@ -20,6 +23,24 @@ interface SettingsData {
   settings: TelephonySettings;
   secrets: Record<string, "set" | "missing">;
   templateSyncRequestedAt: string | null;
+  voice: VoiceReadinessView;
+}
+
+const READINESS_TONE = { set: "good", missing: "bad", optional: "neutral", off: "neutral" } as const;
+const READINESS_TEXT = { set: "Set", missing: "Missing", optional: "Optional", off: "Off" } as const;
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // the URL is visible next to the button; selecting it still works
+    }
+  };
+  return <Button type="button" variant="secondary" onClick={copy} style={{ padding: "0 10px", minHeight: 28 }}>{copied ? "Copied" : "Copy"}</Button>;
 }
 
 export function TelephonySettingsPage(_props: PluginPageProps) {
@@ -134,6 +155,10 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
 
   const secrets = describeSecretStatus(data.secrets);
   const lastSync = syncedAt ?? data.templateSyncRequestedAt;
+  const readiness = describeVoiceReadiness(data.voice, data.secrets);
+  const previewOrigin = publicOrigin(form.publicBaseUrl) ?? data.voice.publicBaseUrl;
+  const webhookRows = previewOrigin ? voiceWebhookRows(previewOrigin) : [];
+  const pageOrigin = typeof window !== "undefined" ? window.location.origin : "";
 
   return (
     <PageFrame>
@@ -144,6 +169,63 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
         messageTone={error ? "bad" : saveSuccess || syncNote ? "good" : undefined}
       >
         <Form onSubmit={handleSave}>
+          <Section title="Voice calling" actions={<Pill tone={data.voice.ready ? "good" : "warn"} dot>{data.voice.ready ? "Ready" : "Not ready"}</Pill>}>
+            <div style={{ display: "grid", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13, color: "#999" }}>
+                The Dialer places calls through Twilio: it rings the salesperson's browser, then dials the contact from the company's number. Everything below must be in place first. Credentials are company secrets, picked once on the plugin's Configuration page (Plugins → CRM Telephony → Configuration); the names below are the fields there.
+              </p>
+              {data.voice.blockers.length > 0 && (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#b45309", display: "grid", gap: 4 }}>
+                  {data.voice.blockers.map((b) => <li key={b}>{b}</li>)}
+                </ul>
+              )}
+              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6, fontSize: 13 }}>
+                {readiness.map((row) => (
+                  <li key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, background: tokens.secondary, border: `1px solid ${tokens.border}`, flexWrap: "wrap" }}>
+                    <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                      {row.label}
+                      {row.hint && <span style={{ display: "block", fontSize: 12, color: tokens.muted }}>{row.hint}</span>}
+                    </span>
+                    <Pill tone={READINESS_TONE[row.status]} size="sm">{READINESS_TEXT[row.status]}</Pill>
+                  </li>
+                ))}
+              </ul>
+              <Field label="Public base URL (where Twilio reaches this Paperclip)">
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Input
+                    type="url"
+                    value={form.publicBaseUrl}
+                    onChange={(e) => handleChange("publicBaseUrl", e.currentTarget.value)}
+                    disabled={saving}
+                    placeholder="https://paperclip.example.com"
+                    aria-invalid={!!fieldErrors.publicBaseUrl}
+                    style={{ flex: "1 1 240px" }}
+                  />
+                  {pageOrigin && (
+                    <Button type="button" variant="secondary" disabled={saving} onClick={() => handleChange("publicBaseUrl", pageOrigin)}>Use this address</Button>
+                  )}
+                </div>
+                <FieldError message={fieldErrors.publicBaseUrl} />
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "#999" }}>Saved with the form. Status callbacks are signed against this address, so it must be the address Twilio can reach, not localhost.</p>
+              </Field>
+              {webhookRows.length > 0 && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: tokens.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>Webhook addresses</div>
+                  {webhookRows.map((row) => (
+                    <div key={row.key} style={{ display: "grid", gap: 4, padding: "8px 10px", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.secondary }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{row.label}</span>
+                        <CopyButton text={row.url} />
+                      </div>
+                      <code style={{ fontSize: 12, overflowWrap: "anywhere" }}>{row.url}</code>
+                      <span style={{ fontSize: 12, color: tokens.muted }}>{row.note}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Section>
+
           <Section title="Features">
             <div style={{ display: "grid", gap: 12 }}>
               {(["recordingEnabled", "smsEnabled", "whatsappEnabled"] as const).map((key) => (
@@ -216,7 +298,7 @@ export function TelephonySettingsPage(_props: PluginPageProps) {
           <Section title="Secrets">
             <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6, fontSize: 13 }}>
               {secrets.map((row) => (
-                <li key={row.name} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 10px", borderRadius: 8, background: "#f5f5f5" }}>
+                <li key={row.name} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "8px 10px", borderRadius: 8, background: tokens.secondary, border: `1px solid ${tokens.border}` }}>
                   <span>{row.label}</span>
                   <span style={{ fontSize: 12, color: row.status === "set" ? "#10b981" : "#ef4444" }}>{row.status === "set" ? "Set" : "Missing"}</span>
                 </li>

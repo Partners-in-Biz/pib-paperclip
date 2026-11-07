@@ -3,6 +3,7 @@ import type { R2Config } from "./r2-store.js";
 import { r2Delete, recordingKey } from "./r2-store.js";
 import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { readR2Config } from "./settings.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 export const QUIESCE_SECONDS = 3600;
 export const TRANSCRIPT_RETENTION_MONTHS = 12;
@@ -164,19 +165,11 @@ export async function runRetention(ctx: PluginContext, opts?: RetentionOpts): Pr
       } else {
         const accountSid = accountMatch[1];
         try {
-          let apiKey: string;
-          try {
-            apiKey = await ctx.secrets.resolve("TWILIO_API_KEY_SID", { companyId: row.company_id });
-          } catch {
-            throw new Error("Missing secret: TWILIO_API_KEY_SID");
-          }
+          const apiKey = await resolveTelephonySecret(ctx, row.company_id, "TWILIO_API_KEY_SID");
+          if (!apiKey) throw new Error("Missing secret: TWILIO_API_KEY_SID");
 
-          let apiSecret: string;
-          try {
-            apiSecret = await ctx.secrets.resolve("TWILIO_API_KEY_SECRET", { companyId: row.company_id });
-          } catch {
-            throw new Error("Missing secret: TWILIO_API_KEY_SECRET");
-          }
+          const apiSecret = await resolveTelephonySecret(ctx, row.company_id, "TWILIO_API_KEY_SECRET");
+          if (!apiSecret) throw new Error("Missing secret: TWILIO_API_KEY_SECRET");
 
           const authHeader = "Basic " + Buffer.from(`${apiKey}:${apiSecret}`).toString("base64");
           const deleteUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${row.recording_sid}.json`;

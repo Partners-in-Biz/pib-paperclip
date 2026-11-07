@@ -3,6 +3,7 @@ import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { readSettings } from "./settings.js";
 import { checkVoiceAccess } from "./access.js";
 import { buildVoiceAccessToken } from "./voice-token.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 export async function voiceTokenAction(
   ctx: PluginContext,
@@ -33,12 +34,13 @@ export async function voiceTokenAction(
   }
 
   // 3. Resolve secrets
-  const accountSid = await ctx.secrets.resolve("TWILIO_ACCOUNT_SID", { companyId });
-  const apiKeySid = await ctx.secrets.resolve("TWILIO_API_KEY_SID", { companyId });
-  const apiKeySecret = await ctx.secrets.resolve("TWILIO_API_KEY_SECRET", { companyId });
-  const twimlAppSid = await ctx.secrets.resolve("TWILIO_TWIML_APP_SID", { companyId });
+  const accountSid = await resolveTelephonySecret(ctx, companyId, "TWILIO_ACCOUNT_SID");
+  const apiKeySid = await resolveTelephonySecret(ctx, companyId, "TWILIO_API_KEY_SID");
+  const apiKeySecret = await resolveTelephonySecret(ctx, companyId, "TWILIO_API_KEY_SECRET");
+  // Optional: only a browser-initiated outgoing call needs a TwiML app.
+  const twimlAppSid = await resolveTelephonySecret(ctx, companyId, "TWILIO_TWIML_APP_SID");
 
-  if (!accountSid || !apiKeySid || !apiKeySecret || !twimlAppSid) {
+  if (!accountSid || !apiKeySid || !apiKeySecret) {
     throw new Error("Twilio voice credentials are not configured");
   }
 
