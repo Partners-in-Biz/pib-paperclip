@@ -50,6 +50,11 @@ export async function clientOfProject(ctx: PluginContext, companyId: string, pro
   return null;
 }
 
+/** The projects linked to a client, for prefilling a task. Empty when there are none or the CRM can't say. */
+export async function projectsOfClient(ctx: PluginContext, companyId: string, client: { kind: "company" | "contact"; id: string }): Promise<string[]> {
+  return clientProjectIds(ctx, companyId, client).catch(() => [] as string[]);
+}
+
 export interface WorkContext {
   issueId: string | null;
   projectId: string | null;
