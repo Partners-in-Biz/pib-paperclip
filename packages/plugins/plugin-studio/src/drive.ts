@@ -5,20 +5,24 @@
  * client's file only lands in that client's folder (own work goes to the company's own project).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
 import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
-import { assertOwnKey, extFor, getObject } from "./storage.js";
+import { assertOwnKey, extFor, getObject, objectUrl } from "./storage.js";
+import { startTransfer, type TransferView } from "./drive-jobs.js";
+import { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES } from "./drive-limits.js";
 
-import { DRIVE_MAX_BYTES } from "./drive-limits.js";
-
-// The broker's limit is checked here first, before reading from R2, for a clear message.
-export { DRIVE_MAX_BYTES };
+// The limit is checked here first, before reading from R2, for a clear message.
+export { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES };
 export const DRIVE_LINK_TYPE = "drive_file";
 // Well under the host's 30 s action limit, so people get the plain message instead of a bare 502 (PAR-8114).
 export const DRIVE_TIMEOUT_MS = 20_000;
+/** A large transfer: the longest wait between two progress replies (the CRM sends one per 8 MiB chunk). */
+export const TRANSFER_IDLE_MS = 60_000;
+/** Signed R2 links for a large transfer: long enough for 200 MB on a slow line, short enough to be worthless later. */
+export const TRANSFER_LINK_SEC = 15 * 60;
 
 export type DriveSaveFn = (ctx: Pick<PluginContext, "events">, opts: DriveSaveOptions) => Promise<DriveSaveResult>;
 
@@ -56,7 +60,9 @@ export function refusalText(result: Exclude<DriveSaveResult, { status: "saved" }
   const hint = result.hint ? ` (${result.hint})` : "";
   switch (result.reason) {
     case "too_large":
-      return `Drive saves take files up to ${mb(DRIVE_MAX_BYTES)} for now. Download the file and add it to Drive by hand.`;
+      return `Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps. Download the file and add it to Drive by hand.`;
+    case "sha256_mismatch":
+      return "The file changed while it was being copied, so Drive kept nothing. Try again.";
     case "no_project":
       return `This client has no Drive project in CRM yet, so there is no folder to save to. Set up the client's Drive folder in CRM first.${hint}`;
     case "drive_not_bound":
@@ -84,30 +90,50 @@ export async function driveCopies(ctx: PluginContext, companyId: string, assetId
  * Two people saving at once both reach the CRM; it and the broker dedupe on folder + name + sha256, so both get the
  * same file id and the link insert is idempotent.
  */
-export async function saveAssetToDrive(ctx: PluginContext, companyId: string, assetId: string, save: DriveSaveFn = kitDriveSave): Promise<DriveCopy> {
+export async function saveAssetToDrive(ctx: PluginContext, companyId: string, assetId: string, save: DriveSaveFn = kitDriveSave): Promise<DriveCopy | TransferView> {
   if (!assetId) throw new StudioError("assetId is required.", "bad_request");
   const row = await getAssetRow(ctx, companyId, assetId);
   const size = num(row.bytes);
   if (size > DRIVE_MAX_BYTES) {
-    throw new StudioError(`This file is ${mb(size)} and Drive saves take files up to ${mb(DRIVE_MAX_BYTES)} for now. Download it and add it to Drive by hand.`, "too_large");
+    throw new StudioError(`This file is ${mb(size)}. Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps. Download it and add it to Drive by hand.`, "too_large");
   }
   assertOwnKey(companyId, row.r2_key);
-  const bytes = await getObject(await new StudioConfig(ctx, companyId).bucket(), companyId, row.r2_key);
+  const bucket = await new StudioConfig(ctx, companyId).bucket();
   const scope = scopeOfRow(row);
-  const result = await save(ctx, {
+  const base = {
     companyId,
     kind: "marketing",
     name: driveFileName({ id: row.id, name: row.name, createdAt: iso(row.created_at), version: num(row.current_version), mime: row.mime }),
     mimeType: row.mime,
-    bytes,
-    subfolder: "02 Assets",
-    timeoutMs: DRIVE_TIMEOUT_MS,
+    subfolder: "02 Assets" as const,
     // An asset with no client is the company's own; the CRM files it in the own folder only when told so (PAR-8128).
     ...(scope ? { client: { kind: scope.kind, ref: scope.id } } : { ownWork: true as const }),
+  };
+  const record = async (result: DriveSaveResult): Promise<DriveCopy> => {
+    if (result.status !== "saved") throw new StudioError(refusalText(result), "drive_refused");
+    const url = driveFileUrl(result.driveFileId);
+    if (!url) throw new StudioError("Drive answered without a usable file id, so the save could not be recorded.", "drive_refused");
+    await addLink(ctx, companyId, row.id, DRIVE_LINK_TYPE, result.driveFileId);
+    return { fileId: result.driveFileId, url, savedAt: new Date().toISOString() };
+  };
+
+  // Up to 5 MiB: the same event path as before, answered within this action.
+  if (size <= DRIVE_INLINE_MAX_BYTES) {
+    const bytes = await getObject(bucket, companyId, row.r2_key);
+    return record(await save(ctx, { ...base, bytes, timeoutMs: DRIVE_TIMEOUT_MS }));
+  }
+
+  // Bigger (PAR-8125): a background transfer. The CRM streams the object from a signed R2 GET link to Google, checking
+  // it against the stored sha256. The link goes only into the CRM event: never into the result, an error or a log.
+  const versions = await ctx.db.query<{ sha256: string | null }>(
+    `SELECT sha256 FROM ${table(ctx, "asset_versions")} WHERE company_id = $1 AND asset_id = $2 AND r2_key = $3`,
+    [companyId, row.id, row.r2_key],
+  );
+  const sha256 = versions[0]?.sha256;
+  if (!sha256) throw new StudioError("Studio has no checksum for this file, so it can't check the Drive copy. Download it and add it to Drive by hand.", "drive_refused");
+  return startTransfer(companyId, "save", `save:${row.id}:${row.r2_key}`, size, async (progress) => {
+    const r2Url = objectUrl(bucket, companyId, "GET", row.r2_key, TRANSFER_LINK_SEC);
+    const result = await save(ctx, { ...base, r2Url, size, sha256, timeoutMs: TRANSFER_IDLE_MS, onProgress: (p: DriveTransferProgress) => progress(p.bytesDone, p.bytesTotal) });
+    return record(result);
   });
-  if (result.status !== "saved") throw new StudioError(refusalText(result), "drive_refused");
-  const url = driveFileUrl(result.driveFileId);
-  if (!url) throw new StudioError("Drive answered without a usable file id, so the save could not be recorded.", "drive_refused");
-  await addLink(ctx, companyId, row.id, DRIVE_LINK_TYPE, result.driveFileId);
-  return { fileId: result.driveFileId, url, savedAt: new Date().toISOString() };
 }

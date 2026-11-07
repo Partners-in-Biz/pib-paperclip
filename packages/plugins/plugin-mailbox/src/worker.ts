@@ -49,6 +49,9 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig, type LoadedConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
+import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
+import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { prepareHandoff, recordHandoff, type HandoffDeps, type HandoffScope } from "./handoff.js";
 import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
 import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
 import { sendingDomain } from "./dns.js";
@@ -263,6 +266,13 @@ const plugin = definePlugin({
       }),
     );
     user("mailbox.get-message", (companyId, _userId, params) => getMessage(companyId, requiredString(params, "messageId"), params, null));
+    // Give to agent (PAR-8137): the New Task popup's prefill, then the link and the client re-check once the task exists.
+    user("mailbox.handoff-prepare", (companyId, _userId, params) =>
+      prepareHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), link: optionalString(params, "link") ?? null }),
+    );
+    user("mailbox.handoff-record", (companyId, _userId, params) =>
+      recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
+    );
 
     ctx.jobs.register(SYNC_JOB_KEY, async () => {
       await trackJob(ctx, SYNC_JOB_KEY, async () => {
@@ -1272,6 +1282,41 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
   const maxChars = params.maxChars == null ? 8000 : integer(params.maxChars, "maxChars");
   const body = await readMessageBody(e, await loadMailboxConfig(e.ctx, companyId), account, row.gmail_message_id, maxChars);
   return { ...base, ...body, triage: messageView(row) };
+}
+
+function handoffScope(value: unknown): HandoffScope {
+  return value === "thread" ? "thread" : "message";
+}
+
+/** What the hand-off needs from the store, Gmail, the CRM links and the host, for one company. */
+function handoffDeps(ctx: PluginContext, companyId: string): HandoffDeps {
+  const s = requireStore();
+  return {
+    findMessage: (id) => findMessage(companyId, id),
+    threadMessages: (threadId) => s.replyThread(companyId, threadId),
+    isPrivate: (row) => isPrivateMessage(companyId, row),
+    bodyOf: async (row, maxChars) => {
+      const account = await s.getAccount(companyId, row.account_id);
+      if (!row.gmail_message_id || !account?.token_sealed) return row.body ?? row.snippet ?? "";
+      const e = requireEnv();
+      const out = await readMessageBody(e, await loadMailboxConfig(e.ctx, companyId), account, row.gmail_message_id, maxChars);
+      return out.text ?? "";
+    },
+    projectFor: async (client) => (await resolveClientProjectId(ctx, companyId, client as ClientScope)).projectId,
+    clientProjects: (client) => clientProjectIds(ctx, companyId, client as ClientScope),
+    getIssue: async (id) => (await ctx.issues.get(id, companyId)) ?? null,
+    cancelIssue: async (id, description) => {
+      await ctx.issues.update(id, { description, status: "cancelled" }, companyId);
+    },
+    getAgent: async (id) => ((await ctx.agents.get(id, companyId).catch(() => null)) as { name: string; status: string; adapterType: string } | null) ?? null,
+    mayRead: async (accountId, agentId) => Boolean((await delegationFor(accountId, agentId))?.canRead),
+    saveLink: async (row, scope, issueId) => {
+      const key = { scopeKind: "company" as const, scopeId: companyId, namespace: "handoff", stateKey: `mail:${row.id}` };
+      const prior = ((await ctx.state.get(key).catch(() => null)) as Array<{ issueId: string }> | null) ?? [];
+      if (prior.some((p) => p.issueId === issueId)) return;
+      await ctx.state.set(key, [...prior, { issueId, scope, threadId: row.gmail_thread_id, at: new Date().toISOString() }].slice(-20));
+    },
+  };
 }
 
 /** True when the stored message is the sent copy of a client message (the send record, not the copy, is what says so when the sync stored it first). */

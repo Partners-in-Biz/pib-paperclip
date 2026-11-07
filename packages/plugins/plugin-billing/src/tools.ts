@@ -109,6 +109,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "invoice-pdf",
+    displayName: "Invoice PDF",
+    description: "The PDF of a sent or paid invoice as { filename, mime, base64, sha256, bytes }; returns base64 for scripts; call it from the pib-drive-saving script, not from chat. Drafts are refused.",
+    parametersSchema: schema(["invoiceId"], { invoiceId }),
+  },
+  {
     name: "invoice-detail",
     displayName: "Invoice detail",
     description: "One invoice: status, what is owed, its lines, payments, payment links and recipients (compact), with a count of credits, credit notes, proofs of payment, emails, reminders and follow-ups. Add sections for those, or compact false for everything (large).",

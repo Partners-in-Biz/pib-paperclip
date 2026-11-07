@@ -5,8 +5,10 @@
  * The company comes from the event, never from the payload.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { DRIVE_PRODUCER_PLUGINS, DRIVE_READ_EVENTS, DRIVE_THUMB_SIZES, DRIVE_THUMBS_MAX, type DriveThumbSize } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_PRODUCER_PLUGINS, DRIVE_READ_EVENTS, DRIVE_THUMB_SIZES, DRIVE_THUMBS_MAX, DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, type DriveThumbSize } from "@partnersinbiz/pib-plugin-kit";
 import { registerProducerRoute } from "./producer-route.js";
+import { putToR2 } from "./r2-put.js";
+import { R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { DriveNotBoundError, type Broker, type DriveFileInfo } from "./broker.js";
 import { createBrokerForCompany, driveFolderEnsure, resolveProducerSaveProject } from "./tools.js";
 
@@ -177,7 +179,48 @@ export async function readAssetFile(
   return { status: "ok", file: { ...out(meta), size: bytes.byteLength }, contentBase64: Buffer.from(bytes).toString("base64") };
 }
 
+const mb = (bytes: number) => `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+
+/**
+ * A large read (PAR-8125): the file goes from Drive straight into R2 at the producer's signed PUT link, as a stream,
+ * up to DRIVE_TRANSFER_MAX_BYTES. Same access rule as `readAssetFile`. Nothing of the link is returned or logged.
+ */
+export async function copyAssetFileToR2(
+  ctx: PluginContext,
+  companyId: string,
+  client: Client,
+  fileId: string,
+  r2PutUrl: unknown,
+  onProgress: (bytesDone: number, bytesTotal: number) => void | Promise<void>,
+  brokerFor: BrokerFor = createBrokerForCompany,
+  fetchFn?: R2Fetch,
+): Promise<ReadOutcome<{ file: ReturnType<typeof out>; size: number; sha256: string }>> {
+  if (typeof fileId !== "string" || !FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is not a Drive file id" };
+  if (!isR2ObjectUrl(r2PutUrl)) return { status: "invalid_input", hint: "The storage link is not a Cloudflare R2 link." };
+  const b = await brokerOf(ctx, companyId, brokerFor);
+  if (!("broker" in b)) return b;
+  if (!b.broker.downloadStream) return { status: "not_supported", hint: "This Drive connection can't copy large files." };
+  const folders = await assetFolderIds(ctx, companyId, client);
+  if (folders.status !== "ok" || !("folderIds" in folders)) return folders;
+  const meta = await b.broker.fileMeta!(fileId);
+  if (!meta) return { status: "not_found" };
+  if (!meta.parents.some((p) => folders.folderIds.includes(p))) return { status: "not_in_client_folder", hint: "That file is not in this client's Drive assets folders." };
+  if (!(meta.size > 0)) return { status: "not_supported", hint: "This Drive file has no size (a Google Docs file?), so it can't be copied as a file." };
+  if (meta.size > DRIVE_TRANSFER_MAX_BYTES) {
+    return { status: "too_large", hint: `This file is ${mb(meta.size)}. Drive transfers take files up to ${mb(DRIVE_TRANSFER_MAX_BYTES)}, the largest file Studio keeps.` };
+  }
+  const dl = await b.broker.downloadStream(fileId);
+  if (dl.size !== null && dl.size !== meta.size) {
+    await dl.body.cancel().catch(() => undefined);
+    return { status: "size_mismatch", hint: "Drive sent a different size than it lists for this file. Try again." };
+  }
+  const { sha256 } = await putToR2(r2PutUrl, meta.size, dl.body, { mimeType: meta.mimeType, fetchFn, onProgress: (done) => onProgress(done, meta.size) });
+  return { status: "ok", file: out(meta), size: meta.size, sha256 };
+}
+
 function errorReason(e: unknown): { reason: string; hint: string } {
+  // R2 errors are written to be shown: they never carry the link.
+  if (e instanceof R2StreamError) return { reason: e.code === "not_r2" ? "invalid_input" : e.code === "size_mismatch" ? "size_mismatch" : "storage_failed", hint: e.message };
   const code = (e as { code?: unknown })?.code;
   return { reason: code === "too_large" ? "too_large" : "broker_error", hint: e instanceof Error ? e.message : String(e) };
 }
@@ -187,7 +230,13 @@ function errorReason(e: unknown): { reason: string; hint: string } {
  * heard, the company is the host-set one from the event, and replies use bare names. The client comes from the
  * payload but is resolved inside that company only, and a read is limited to that client's assets folders.
  */
-export function registerDriveReadRoutes(ctx: PluginContext, brokerFor: BrokerFor = createBrokerForCompany, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): void {
+export function registerDriveReadRoutes(
+  ctx: PluginContext,
+  brokerFor: BrokerFor = createBrokerForCompany,
+  producers: readonly string[] = DRIVE_PRODUCER_PLUGINS,
+  /** Tests only: the fetch used for the R2 PUT of a large read. */
+  r2Fetch?: R2Fetch,
+): void {
   const clientOf = (p: Record<string, unknown>): Client => ({
     clientKind: typeof p.clientKind === "string" ? p.clientKind : undefined,
     clientRef: typeof p.clientRef === "string" ? p.clientRef : undefined,
@@ -214,6 +263,14 @@ export function registerDriveReadRoutes(ctx: PluginContext, brokerFor: BrokerFor
     DRIVE_READ_EVENTS.readRequested,
     async ({ producer, companyId, requestId, payload, reply }) => {
       try {
+        // A large read (PAR-8125) names an R2 PUT link: the file is copied there and only its size and sha256 come back.
+        if (payload.r2PutUrl !== undefined) {
+          const progress = (bytesDone: number, bytesTotal: number) => reply(DRIVE_READ_EVENTS.readProgress, { bytesDone, bytesTotal }).catch(() => undefined);
+          const res = await copyAssetFileToR2(ctx, companyId, clientOf(payload), String(payload.fileId ?? ""), payload.r2PutUrl, progress, brokerFor, r2Fetch);
+          if (res.status === "ok" && "file" in res) await reply(DRIVE_READ_EVENTS.read, { file: res.file, size: res.size, sha256: res.sha256 });
+          else await reply(DRIVE_READ_EVENTS.readFailed, { reason: res.status, hint: (res as { hint?: string }).hint });
+          return;
+        }
         const res = await readAssetFile(ctx, companyId, clientOf(payload), String(payload.fileId ?? ""), brokerFor);
         if (res.status === "ok" && "file" in res) await reply(DRIVE_READ_EVENTS.read, { file: res.file, contentBase64: res.contentBase64 });
         else await reply(DRIVE_READ_EVENTS.readFailed, { reason: res.status, hint: (res as { hint?: string }).hint });

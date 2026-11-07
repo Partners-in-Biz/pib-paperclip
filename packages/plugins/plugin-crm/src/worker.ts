@@ -3,6 +3,7 @@ import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "
 import { registerCallNotedSubscriber } from "./call-noted.js";
 import { emitAllOwnMetrics } from "./own-metrics.js";
 import { registerDriveReadRoutes } from "./drive/read.js";
+import { registerBrandKitRoute } from "./brand-kit-route.js";
 import {
   definePlugin,
   runWorker,
@@ -306,11 +307,12 @@ const plugin = definePlugin({
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
     // PAR-8130: copy sent reports to Drive for a date range. A dry run (the default) only lists; saving needs a board user.
+    // PAR-8121: a saving call does `limit` reports and returns `nextAfterId` for the next call (`afterId`).
     registerAction("crm.reports-drive-catchup", async (params, context) => {
       const companyId = requireCompany(context);
       const dryRun = params.dryRun !== false;
       if (!dryRun) requireUser(context, "run the Drive catch-up");
-      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
+      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
     });
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
@@ -551,6 +553,9 @@ const plugin = definePlugin({
 
     // Drive reads for producer plugins (kit's driveList / driveRead, PAR-8107): only the client's own assets folders.
     registerDriveReadRoutes(ctx);
+
+    // A client's brand kit for producer plugins (kit's requestBrandKit, PAR-8134): that client's profile in this company only.
+    registerBrandKitRoute(ctx);
 
     // Subscribe to Setup plugin's drive.binding.set event
     ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {

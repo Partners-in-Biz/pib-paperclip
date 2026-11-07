@@ -25,7 +25,7 @@ function setup() {
     store.add(`${opts.client?.ref}/${opts.subfolder}/${opts.name}`);
     return { status: "saved" as const, requestId: "r", driveFileId: `f-${opts.name}`, url: "https://drive.example/f" };
   });
-  const deps: CatchupDeps = { r2: vi.fn(async () => R2), readPdf: vi.fn(async () => PDF), save: save as unknown as CatchupDeps["save"], sleep: vi.fn(async () => undefined) };
+  const deps: CatchupDeps = { r2: vi.fn(async () => R2), readPdf: vi.fn(async () => PDF), save: save as unknown as CatchupDeps["save"], sleep: vi.fn(async () => undefined), now: () => 0 };
   return { ctx, execute, save, deps, store };
 }
 
@@ -87,6 +87,49 @@ describe("billing.drive-catchup", () => {
     } finally {
       invoices[0].pdf_key = "billing/co1/invoice/2026-10/u1-inv.pdf";
     }
+  });
+
+  it("works in batches: limit saves per call, then nextAfterId carries on (PAR-8121)", async () => {
+    const { ctx, save, deps } = setup();
+    const first = await driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1 }, deps);
+    expect(first.items.map((i) => [i.number, i.result])).toEqual([["INV-0042", "saved"]]);
+    expect(first).toMatchObject({ done: false, nextAfterId: "invoice:i1", remaining: 3 });
+    const second = await driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1, afterId: first.nextAfterId }, deps);
+    expect(second.items.map((i) => [i.number, i.result, i.reason])).toEqual([
+      ["INV-0043", "skipped", "no_stored_pdf"],
+      ["INV-0044", "skipped", "no_client"],
+      ["Q-007", "saved", undefined],
+    ]);
+    expect(second).toMatchObject({ done: true, nextAfterId: null, remaining: 0 });
+    expect(save).toHaveBeenCalledTimes(2);
+    await expect(driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, afterId: "invoice:nope" }, deps)).rejects.toThrow(/afterId/);
+  });
+
+  it("stops starting saves once the time budget is used", async () => {
+    const { ctx, save, deps } = setup();
+    let t = 0;
+    deps.now = () => t;
+    save.mockImplementationOnce(async () => {
+      t += 16_000;
+      return { status: "saved" as const, requestId: "r", driveFileId: "f", url: "u" };
+    });
+    const out = await driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 10 }, deps);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ done: false, nextAfterId: "invoice:i1" });
+  });
+
+  it("refuses a second saving call while one runs; dry runs are not blocked", async () => {
+    const { ctx, deps } = setup();
+    let release!: () => void;
+    deps.readPdf = vi.fn(() => new Promise<Uint8Array>((resolve) => { release = () => resolve(PDF); }));
+    const first = driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, limit: 1 }, deps);
+    await vi.waitFor(() => expect(deps.readPdf).toHaveBeenCalled());
+    await expect(driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false }, deps)).rejects.toThrow(/already running/);
+    await expect(driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07" }, deps)).resolves.toMatchObject({ dryRun: true });
+    release();
+    await expect(first).resolves.toMatchObject({ done: false });
+    deps.readPdf = vi.fn(async () => PDF);
+    await expect(driveCatchup(ctx, "co1", { from: "2026-10-20", to: "2026-11-07", dryRun: false, afterId: "invoice:i1" }, deps)).resolves.toMatchObject({ done: true });
   });
 
   it("checks the range", async () => {

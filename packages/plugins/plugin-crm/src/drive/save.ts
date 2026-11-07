@@ -3,9 +3,10 @@ import { realpath as realpathAsync } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { relative } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { normalizeUrl, safeFetchBytes } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, isSha256Hex, normalizeUrl, safeFetchBytes } from "@partnersinbiz/pib-plugin-kit";
 import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError } from "./broker.js";
+import { r2Chunks, R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
 import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
 import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
@@ -49,6 +50,16 @@ export interface SaveDriveFileInput {
   sha256?: string;
   subfolder?: string | null;
   requestId?: string;
+  /** A file over 5 MiB (PAR-8125): a signed R2 GET link, with `size` and `sha256`. Never logged or shown. */
+  r2Url?: string;
+  size?: number;
+  /** Large files: called after each chunk reaches Drive. */
+  onProgress?: (bytesDone: number, bytesTotal: number) => Promise<void> | void;
+}
+
+function tooLargeHint(size: number): string {
+  const mb = (n: number) => Math.round(n / (1024 * 1024));
+  return `This file is ${mb(size)} MB. Drive transfers take files up to ${mb(DRIVE_TRANSFER_MAX_BYTES)} MB, the largest file Studio keeps.`;
 }
 
 export interface SaveDriveFileResult {
@@ -64,7 +75,7 @@ export interface SaveDriveFileResult {
   hint?: string;
 }
 
-export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[] }): Promise<SaveDriveFileResult> {
+export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
@@ -98,13 +109,29 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_kind", hint: `fileKind must be one of: ${VALID_KINDS.join(", ")}` };
   }
 
-  const sourceCount = [contentBase64, publicUrl, filePath].filter(Boolean).length;
+  const r2Url = input.r2Url;
+  const sourceCount = [contentBase64, publicUrl, filePath, r2Url].filter(Boolean).length;
   if (sourceCount !== 1) {
     return { status: "invalid_input", hint: "Provide exactly one of contentBase64, publicUrl, or path" };
   }
 
-  let bytes: Uint8Array;
-  try {
+  // A large file (PAR-8125): never loaded whole. Its size and sha256 are the producer's; the bytes are checked on the
+  // way to Drive. The link is a secret: no hint, log or reply carries it.
+  let large: { url: string; size: number } | null = null;
+  if (r2Url) {
+    const size = input.size;
+    if (!isR2ObjectUrl(r2Url)) return { status: "invalid_input", hint: "The storage link is not a Cloudflare R2 link, so it was not opened." };
+    if (!isSha256Hex(inputSha256) || typeof size !== "number" || !Number.isInteger(size) || size <= 0) {
+      return { status: "invalid_input", hint: "A large file needs its exact size and sha256." };
+    }
+    if (size > DRIVE_TRANSFER_MAX_BYTES) {
+      return { status: "too_large", hint: tooLargeHint(size) };
+    }
+    large = { url: r2Url, size };
+  }
+
+  let bytes: Uint8Array = new Uint8Array(0);
+  if (!large) try {
     if (contentBase64) {
       bytes = new Uint8Array(Buffer.from(contentBase64, "base64"));
     } else if (publicUrl) {
@@ -134,12 +161,12 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_input", hint: "Failed to load file from path" };
   }
 
-  if (bytes.byteLength > MAX_FILE_BYTES) {
+  if (!large && bytes.byteLength > MAX_FILE_BYTES) {
     return { status: "too_large" };
   }
 
-  const computedSha256 = createHash("sha256").update(bytes).digest("hex");
-  if (inputSha256 && inputSha256.toLowerCase() !== computedSha256) {
+  const computedSha256 = large ? inputSha256!.toLowerCase() : createHash("sha256").update(bytes).digest("hex");
+  if (!large && inputSha256 && inputSha256.toLowerCase() !== computedSha256) {
     return { status: "sha_mismatch", hint: `Expected ${inputSha256}, got ${computedSha256}` };
   }
 
@@ -203,8 +230,25 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
 
   let uploadResult;
   try {
-    uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
+    if (large) {
+      if (!broker.uploadFileStream) {
+        return { status: "broker_error", code: "unsupported", retryable: false, hint: "This Drive connection cannot take files over 5 MB." };
+      }
+      uploadResult = await broker.uploadFileStream({
+        name, mimeType, parentFolderId: uploadFolderId, size: large.size, sha256: computedSha256,
+        chunks: r2Chunks(large.url, large.size, opts?.r2FetchFn ? { fetchFn: opts.r2FetchFn } : {}),
+        onProgress: input.onProgress ? (done) => input.onProgress!(done, large!.size) : undefined,
+      });
+    } else {
+      uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
+    }
   } catch (e) {
+    if (e instanceof R2StreamError) {
+      return { status: "fetch_failed", code: e.code, retryable: e.code === "fetch_failed", hint: e.message };
+    }
+    if (e instanceof BrokerError && (e.code === "sha_mismatch" || e.code === "size_mismatch")) {
+      return { status: "sha_mismatch", code: e.code, retryable: false, hint: e.message };
+    }
     if (e instanceof BrokerError) {
       return { status: "broker_error", code: e.code, retryable: e.retryable, hint: e.message };
     }

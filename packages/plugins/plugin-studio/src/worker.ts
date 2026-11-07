@@ -5,11 +5,13 @@ import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
-import { giveAsset, giveChoices } from "./give.js";
+import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
+import { getTransfer } from "./drive-jobs.js";
 import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
-import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
+import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
+import { brandKitFor } from "./brand-kit.js";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
@@ -19,7 +21,7 @@ import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { clientSummaries } from "./summary.js";
-import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
+import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
 
 function objectParams(params: unknown): Record<string, unknown> {
@@ -119,6 +121,10 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const row = await getAssetRow(ctx, companyId, String(params.assetId ?? "").trim());
       await assertReachable(ctx, companyId, scopeOfRow(row), work.projectId);
       return reviewAsset(ctx, companyId, params, { agentId: run.agentId });
+    }
+    case "studio-brand-kit": {
+      const work = await workOf(ctx, run, params);
+      return brandKitFor(ctx, companyId, await scopeForWork(ctx, companyId, scopeInput(params), work.projectId));
     }
     case "canvas-create-from-brief":
       return createFromBrief(ctx, params, run);
@@ -226,15 +232,19 @@ const plugin = definePlugin({
       return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
     });
 
-    // Give to agent (give.ts): agents that can run, then a normal issue for the chosen one. Viewers can't give.
-    action("give-agents", async (_params, context) => {
+    // Give to agent (give.ts, PAR-8138): the page opens the host's New Task popup. Prefill, then link or clean up.
+    // Viewers can't give: every step checks the role again.
+    action("give-prepare", async (params, context) => {
       const me = await person(context);
-      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
-      return { agents: await giveChoices(ctx, me.companyId) };
+      return prepareGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
-    action("give", async (params, context) => {
+    action("give-record", async (params, context) => {
       const me = await person(context);
-      return giveAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+      return recordGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+    });
+    action("give-discard", async (params, context) => {
+      const me = await person(context);
+      return discardGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
     });
 
     // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.
@@ -254,6 +264,14 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return driveThumbs(ctx, me.companyId, objectParams(params));
+    });
+
+    // The picked client's brand kit from the CRM (PAR-8134). Shown on the card; a person adds it to the prompt.
+    registerBrandKitReplies(ctx);
+    action("brand-kit", async (params, context) => {
+      const me = await person(context);
+      const requested = scopeInput({ client: objectParams(params).client ?? null });
+      return brandKitFor(ctx, me.companyId, await resolveScope(ctx, me.companyId, requested ?? null));
     });
 
     // Previews for a page of the library in one call. Links last five minutes.
