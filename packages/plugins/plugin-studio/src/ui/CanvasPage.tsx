@@ -27,8 +27,9 @@ import {
 import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
-import { Button, ButtonLink, EmptyState, errorText, Field, Input, Page, PageFrame, PageMessage, Section, SectionHeading, Select, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ButtonLink, EmptyState, errorText, Field, Input, Modal, Page, PageFrame, PageMessage, Section, SectionHeading, Select, tone } from "@partnersinbiz/pib-plugin-ui";
 import { relativeAge } from "./library.js";
+import { CanvasTemplateGallery } from "./CanvasTemplates.js";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
@@ -230,6 +231,7 @@ function CanvasList({ companyId }: { companyId: string }) {
       .finally(() => setBusy(false));
   };
   const boards = list.data?.canvases ?? [];
+  const overviewForClients = usePluginData<{ clients: Array<{ scopeKey: string; name: string }> }>("overview", { companyId });
   return (
     <Page accent="studio" title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
       <PageMessage tone="danger" message={error ?? (list.error ? errorText(list.error) : undefined)} />
@@ -245,7 +247,7 @@ function CanvasList({ companyId }: { companyId: string }) {
         }
       />
       {!list.data && !list.error ? <span style={muted}>Loading…</span> : null}
-      {list.data && boards.length === 0 ? <EmptyState compact title="No canvases yet" description="Name one above to start wiring prompts, library files and generations together." /> : null}
+      {list.data && boards.length === 0 ? <EmptyState compact title="No canvases yet" description="Name one above, or start from a template below." /> : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(280px, 100%), 1fr))", gap: 12, minWidth: 0 }}>
         {boards.map((b) => (
           <div key={b.id} style={{ display: "flex", flexDirection: "column", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", minWidth: 0, background: "color-mix(in oklab, var(--background) 70%, transparent)" }}>
@@ -270,6 +272,7 @@ function CanvasList({ companyId }: { companyId: string }) {
           </div>
         ))}
       </div>
+      <CanvasTemplateGallery companyId={companyId} clients={overviewForClients.data?.clients ?? []} canEdit={canEdit !== false} onCreated={(id) => nav.navigate(`/studio-canvas?canvas=${encodeURIComponent(id)}`)} />
     </Page>
   );
 }
@@ -577,6 +580,21 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   }, [beforeEdit, flow]);
   const shownEdges = useMemo(() => markRunning(nodes, labelEdges(nodes, edges)), [nodes, edges]);
   const [selectMode, setSelectMode] = useState(false);
+  const saveTemplateAction = useStudioAction("save-canvas-template");
+  const [templateName, setTemplateName] = useState<string | null>(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateProblem, setTemplateProblem] = useState<string | null>(null);
+  const saveAsTemplate = () => {
+    setTemplateBusy(true);
+    setTemplateProblem(null);
+    saveTemplateAction({ companyId, title: templateName ?? "", doc: fromFlow(nodes, edges, viewport.current) })
+      .then(() => {
+        setTemplateName(null);
+        setNotice("Saved as a template. It's on the canvases page under Yours, without this board's files.");
+      })
+      .catch((err) => setTemplateProblem(errorText(err)))
+      .finally(() => setTemplateBusy(false));
+  };
   const nodeTypes = useMemo(() => Object.fromEntries(NODE_TYPES.map((t) => [t, Card])), []);
   const status = conflict ? "Not saved" : { saved: "All changes saved", dirty: "Unsaved changes", saving: "Saving…", error: "Save failed" }[state];
   const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
@@ -608,6 +626,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         <span className="studio-chip">{board.data.client?.name ?? "Own work"}</span>
         <span className="studio-chip" role="status">{status}</span>
         <span style={{ flex: "1 1 0" }} />
+        {canGen === true ? <Button type="button" variant="secondary" onClick={() => setTemplateName(board.data?.title ?? "")}>Save as template</Button> : null}
         {credits ? <span className="studio-chip" aria-label="Credits this month" style={{ color: "var(--foreground)" }}>{credits.cap === null ? `${credits.used} credits used · no cap set` : `${creditsLeft(credits.used, credits.cap)} of ${credits.cap} credits left`}</span> : null}
         {state === "error" && !conflict ? <Button onClick={() => void save()}>Save now</Button> : null}
         <VersionsMenu companyId={companyId} canvasId={canvasId} canEdit={canEdit === true} saved={state === "saved" && !conflict} revision={() => revision.current} onRestored={reload} open={menu === "versions"} onOpenChange={(o) => setMenu(o ? "versions" : null)} />
@@ -698,6 +717,22 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
         ) : null}
         </div>
       </BoardCtx.Provider>
+      <Modal
+        open={templateName !== null}
+        title="Save this board as a template"
+        description="Keeps the cards, the connections and the words. Files and results stay behind, so one client's work never reaches another's board."
+        onClose={() => setTemplateName(null)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" disabled={templateBusy} onClick={() => setTemplateName(null)}>Cancel</Button>
+            <Button type="button" disabled={templateBusy || !(templateName ?? "").trim()} onClick={saveAsTemplate}>{templateBusy ? "Saving…" : "Save template"}</Button>
+          </>
+        }
+      >
+        {templateProblem ? <PageMessage tone="danger" message={templateProblem} /> : null}
+        <Field label="Template name"><Input aria-label="Template name" value={templateName ?? ""} maxLength={80} autoFocus onChange={(e) => setTemplateName(e.target.value)} /></Field>
+        <span style={muted}>Tip: write {"{{name}}"} in a prompt to make it a field people fill in when they start a board from this.</span>
+      </Modal>
     </PageFrame>
   );
 }
