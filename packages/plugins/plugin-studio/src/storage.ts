@@ -136,6 +136,20 @@ export async function givenCopy(companyId: string, giveId: string, assetId: stri
   return file;
 }
 
+/** Removes the copy of one give (cancelled popup). Every name is checked, and only that give's own file is touched. */
+export async function removeGivenCopy(companyId: string, assetId: string, giveId: string): Promise<number> {
+  const dir = join(localRoot(), segment(companyId, "company id"), GIVEN_DIR);
+  const prefix = `${segment(assetId, "asset id")}-v`;
+  const tail = `-${segment(giveId, "give id")}.`;
+  let removed = 0;
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.startsWith(prefix) || !name.includes(tail)) continue;
+    await rm(join(dir, name), { force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
 async function sweepFiles(dir: string, maxAgeMs: number, now: number): Promise<number> {
   let removed = 0;
   for (const name of await readdir(dir).catch(() => [] as string[])) {
