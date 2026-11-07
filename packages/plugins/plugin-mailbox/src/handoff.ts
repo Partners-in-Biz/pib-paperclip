@@ -7,7 +7,7 @@
  * (and otherwise cancels it and takes the mail text out), records the link, and warns when the agent can't use it.
  * The hand-off grants nothing: replies still go through the Mailbox's draft and send path and its Tier rules.
  */
-import { buildHandoffDescription, handoffTitle, HANDOFF_DEFAULT_CAP, isLocalAgent, isRunnableAgent } from "@partnersinbiz/pib-plugin-kit/handoff";
+import { buildHandoffDescription, handoffTitle, HANDOFF_DEFAULT_CAP, inlineData, isLocalAgent, isRunnableAgent } from "@partnersinbiz/pib-plugin-kit/handoff";
 import { MailboxError } from "./domain.js";
 import type { MessageRow } from "./gmail/types.js";
 
@@ -73,9 +73,9 @@ export async function prepareHandoff(deps: HandoffDeps, params: { messageId: str
   const client = clientOf(row);
   const projectId = client ? await deps.projectFor(client) : null;
   const clientName = (row as { triage?: { clientName?: string | null } | null }).triage?.clientName ?? params.clientName ?? null;
-  const clientLine = !client ? NO_CLIENT_NOTE : projectId ? null : `${clientName ?? "This client"} has no project linked, so no project was picked. Link one in the CRM, or pick theirs here.`;
+  const clientLine = !client ? NO_CLIENT_NOTE : projectId ? null : `${clientName ? inlineData(clientName) : "This client"} has no project linked, so no project was picked. Link one in the CRM, or pick theirs here.`;
   const link = safeLink(params.link);
-  const attachments = rows.flatMap((r) => (r.attachments ?? []).map((a) => `${a.filename} (${Math.max(1, Math.round(a.bytes / 1024))} KB, message ${r.id}, attachment ${a.attachmentId})`));
+  const attachments = rows.flatMap((r) => (r.attachments ?? []).map((a) => `${inlineData(a.filename ?? "")} (${Math.max(1, Math.round(a.bytes / 1024))} KB, message ${r.id}, attachment ${a.attachmentId})`));
   const description = buildHandoffDescription({
     source: {
       kind: params.scope === "thread" ? `Mail thread (${rows.length} message${rows.length === 1 ? "" : "s"})` : "Mail",
@@ -95,7 +95,7 @@ export async function prepareHandoff(deps: HandoffDeps, params: { messageId: str
     extra: [
       ...(clientLine ? [`**${clientLine}**`] : []),
       ...(attachments.length
-        ? ["Files on this mail (not copied into the task). Fetch one with the Mailbox get-attachment tool, which needs read access on this mailbox:", ...attachments.map((a) => `- ${a.replace(/[\r\n`]/g, " ")}`)]
+        ? ["Files on this mail (not copied into the task). Fetch one with the Mailbox get-attachment tool, which needs read access on this mailbox:", ...attachments.map((a) => `- ${a}`)]
         : []),
     ],
     footer: [SEND_FOOTER],
