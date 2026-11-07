@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { Building2, Flame, Icon, Input, Megaphone, Package, SectionHeading, Share2, Sparkles, Stamp, UserRound, seriesColor, tone, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
-import { PLUGIN_ID } from "../namespace.js";
 import { PHOTO_PRESETS } from "../presets.js";
 import { TEMPLATE_CATEGORIES, filterTemplates, PROMPT_TEMPLATES, type PromptTemplate } from "../prompt-templates.js";
 import { aspectCss } from "./card-look.js";
@@ -11,6 +10,8 @@ import { usePreviewUrls } from "./previews.js";
 
 const ORDER = ["product", "ads", "social", "people", "places", "food", "saved", "styles"] as const;
 const ICONS: Record<(typeof ORDER)[number], LucideIcon> = { product: Package, ads: Megaphone, social: Share2, people: UserRound, places: Building2, food: Flame, saved: Stamp, styles: Sparkles };
+// Not imported from namespace.ts: that file uses node:crypto, which a browser bundle can't have.
+const PLUGIN_KEY = "partnersinbiz.studio";
 const MUTED = "var(--muted-foreground)";
 const cover = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 35%" } as const;
 
@@ -77,7 +78,7 @@ export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick
   const [uiBase, setUiBase] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    void resolvePluginUiBase(PLUGIN_ID, import.meta.url).then((base) => {
+    void resolvePluginUiBase(PLUGIN_KEY, import.meta.url).then((base) => {
       if (live) setUiBase(base);
     });
     return () => {
