@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CRM_PLUGIN_ID } from "../src/crm-projection.js";
-import { DRIVE_READ_EVENTS, driveList, driveRead, registerDriveReadReplies } from "../src/drive-read.js";
+import { DRIVE_READ_EVENTS, driveList, driveRead, driveThumbs, registerDriveReadReplies } from "../src/drive-read.js";
 
 type Handler = (event: { companyId: string; payload: unknown }) => Promise<void> | void;
 
@@ -62,6 +62,42 @@ describe("driveList / driveRead", () => {
     registerDriveReadReplies(b.ctx);
     registerDriveReadReplies(b.ctx);
     expect([...b.handlers.values()].every((h) => h.length === 1)).toBe(true);
-    expect(b.handlers.size).toBe(4);
+    expect(b.handlers.size).toBe(6);
+  });
+});
+
+describe("driveThumbs (PAR-8124)", () => {
+  it("returns only asked-for previews, caps their size, and names the missing ones", async () => {
+    const big = Buffer.alloc(200 * 1024).toString("base64");
+    const b = bus((_n, _c, p) => ({
+      event: DRIVE_READ_EVENTS.thumbs,
+      payload: {
+        requestId: p.requestId,
+        thumbs: [
+          { id: "aaaaaaaaaa01", mimeType: "image/jpeg", contentBase64: "AQID" },
+          { id: "aaaaaaaaaa02", mimeType: "image/jpeg", contentBase64: big },
+          { id: "zzzzzzzzzz99", mimeType: "image/jpeg", contentBase64: "AQID" },
+          { id: "aaaaaaaaaa03", mimeType: "text/html", contentBase64: "AQID" },
+        ],
+      },
+    }));
+    const out = await driveThumbs(b.ctx, { companyId: "co-1", client: { kind: "company", ref: "acme" }, fileIds: ["aaaaaaaaaa01", "aaaaaaaaaa02", "aaaaaaaaaa03", "aaaaaaaaaa04"] });
+    expect(b.emitted[0]).toMatchObject({ name: DRIVE_READ_EVENTS.thumbsRequested, payload: { fileIds: ["aaaaaaaaaa01", "aaaaaaaaaa02", "aaaaaaaaaa03", "aaaaaaaaaa04"], size: "small", clientKind: "company", clientRef: "acme" } });
+    expect(out.status).toBe("thumbs");
+    if (out.status !== "thumbs") return;
+    expect(out.thumbs.map((t) => ("bytes" in t ? [t.id, Array.from(t.bytes)] : [t.id, t.reason]))).toEqual([
+      ["aaaaaaaaaa01", [1, 2, 3]],
+      ["aaaaaaaaaa02", "too_large"],
+      ["aaaaaaaaaa03", "no_preview"],
+      ["aaaaaaaaaa04", "no_reply"],
+    ]);
+  });
+
+  it("refuses an empty, bad or too long id list without asking the CRM", async () => {
+    const b = bus(() => null);
+    expect(await driveThumbs(b.ctx, { companyId: "co-1", fileIds: [] })).toMatchObject({ status: "failed", reason: "invalid_input" });
+    expect(await driveThumbs(b.ctx, { companyId: "co-1", fileIds: ["../etc/passwd"] })).toMatchObject({ status: "failed", reason: "invalid_input" });
+    expect(await driveThumbs(b.ctx, { companyId: "co-1", fileIds: Array.from({ length: 25 }, (_, i) => `abcdefghij${i}`) })).toMatchObject({ status: "failed", reason: "invalid_input" });
+    expect(b.emitted).toEqual([]);
   });
 });

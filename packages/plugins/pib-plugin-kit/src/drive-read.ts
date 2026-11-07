@@ -15,17 +15,33 @@ export const DRIVE_READ_EVENTS = {
   readRequested: "drive.read-requested",
   read: "drive.file.read",
   readFailed: "drive.read.failed",
+  /** Drive's previews of up to DRIVE_THUMBS_MAX files, for a person's picker (PAR-8124). */
+  thumbsRequested: "drive.thumbs-requested",
+  thumbs: "drive.thumbs.read",
+  thumbsFailed: "drive.thumbs.failed",
 } as const;
 
 /** The CRM broker's file limit, the same as for saves. */
 export const DRIVE_READ_MAX_BYTES = 5 * 1024 * 1024;
+/** Files per thumbnail request, and the byte cap of one preview per size. */
+export const DRIVE_THUMBS_MAX = 24;
+export const DRIVE_THUMB_SIZES = { small: { px: 320, maxBytes: 150 * 1024 }, large: { px: 1024, maxBytes: 800 * 1024 } } as const;
+export type DriveThumbSize = keyof typeof DRIVE_THUMB_SIZES;
 
 export interface DriveListedFile {
   id: string;
   name: string;
   mimeType: string;
   size: number;
+  /** The folder below the client's folder, e.g. "Assets/Images", when the CRM gave one. */
+  folder?: string;
+  /** ISO time of the last change in Drive, when the CRM gave one. */
+  modifiedTime?: string;
 }
+
+/** One file's preview: the image, or why there is none (`no_preview`, `not_in_client_folder`, `too_large`, ...). */
+export type DriveThumb = { id: string; mimeType: string; bytes: Uint8Array } | { id: string; reason: string };
+export type DriveThumbsResult = { status: "thumbs"; requestId: string; thumbs: DriveThumb[] } | DriveFailure;
 
 export type DriveFailure = { status: "failed"; requestId: string; reason: string; hint?: string } | { status: "no_ack"; requestId: string };
 export type DriveListResult = { status: "listed"; requestId: string; files: DriveListedFile[] } | DriveFailure;
@@ -41,12 +57,13 @@ export interface DriveReadTarget {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 type Pending = Map<string, { resolve: (ok: boolean, payload: Record<string, unknown>) => void; companyId: string }>;
-const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, { list: Pending; read: Pending }>();
+type Which = "list" | "read" | "thumbs";
+const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Record<Which, Pending>>();
 
 function pendingFor(ctx: Pick<PluginContext, "events">) {
   const known = pendingByCtx.get(ctx);
   if (known) return known;
-  const maps = { list: new Map(), read: new Map() } as { list: Pending; read: Pending };
+  const maps: Record<Which, Pending> = { list: new Map(), read: new Map(), thumbs: new Map() };
   pendingByCtx.set(ctx, maps);
   const on = (event: string, pending: Pending, ok: boolean) =>
     ctx.events.on(`plugin.${CRM_PLUGIN_ID}.${event}` as never, async (e: PluginEvent) => {
@@ -62,6 +79,8 @@ function pendingFor(ctx: Pick<PluginContext, "events">) {
   on(DRIVE_READ_EVENTS.listFailed, maps.list, false);
   on(DRIVE_READ_EVENTS.read, maps.read, true);
   on(DRIVE_READ_EVENTS.readFailed, maps.read, false);
+  on(DRIVE_READ_EVENTS.thumbs, maps.thumbs, true);
+  on(DRIVE_READ_EVENTS.thumbsFailed, maps.thumbs, false);
   return maps;
 }
 
@@ -79,7 +98,7 @@ function validTarget(t: DriveReadTarget): string | null {
 
 async function request(
   ctx: Pick<PluginContext, "events">,
-  which: "list" | "read",
+  which: Which,
   event: string,
   t: DriveReadTarget,
   extra: Record<string, unknown>,
@@ -118,10 +137,17 @@ async function request(
 function listedFile(value: unknown): DriveListedFile | null {
   const f = value as Partial<DriveListedFile> | null;
   if (!f || typeof f.id !== "string" || typeof f.name !== "string") return null;
-  return { id: f.id, name: f.name, mimeType: typeof f.mimeType === "string" ? f.mimeType : "application/octet-stream", size: Number(f.size) || 0 };
+  return {
+    id: f.id,
+    name: f.name,
+    mimeType: typeof f.mimeType === "string" ? f.mimeType : "application/octet-stream",
+    size: Number(f.size) || 0,
+    ...(typeof f.folder === "string" ? { folder: f.folder } : {}),
+    ...(typeof f.modifiedTime === "string" ? { modifiedTime: f.modifiedTime } : {}),
+  };
 }
 
-/** The files in the client's assets folders: name, type, size and id only. */
+/** The files in the client's assets folders: id, name, type, size, and the folder and last change when known. No links. */
 export async function driveList(ctx: Pick<PluginContext, "events">, t: DriveReadTarget): Promise<DriveListResult> {
   const out = await request(ctx, "list", DRIVE_READ_EVENTS.listRequested, t, {});
   if (!("ok" in out)) return out;
@@ -141,4 +167,36 @@ export async function driveRead(ctx: Pick<PluginContext, "events">, t: DriveRead
   if (bytes.byteLength > DRIVE_READ_MAX_BYTES) return { status: "failed", requestId, reason: "too_large" };
   if (file.id !== t.fileId) return { status: "failed", requestId, reason: "bad_reply" };
   return { status: "read", requestId, file: { ...file, size: bytes.byteLength }, bytes };
+}
+
+const FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+const THUMB_MIME = /^image\/(jpeg|png|webp|gif)$/;
+
+/**
+ * Drive's own previews of up to DRIVE_THUMBS_MAX files in the client's assets folders (PAR-8124), small (320 px) or
+ * large (1024 px). The CRM fetches them, so no Drive link or token reaches the caller; a file outside the client's
+ * folders comes back with a reason and no image.
+ */
+export async function driveThumbs(ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileIds: string[]; size?: DriveThumbSize }): Promise<DriveThumbsResult> {
+  const requestId = t.requestId ?? randomUUID().replace(/-/g, "");
+  const size: DriveThumbSize = t.size === "large" ? "large" : "small";
+  if (!Array.isArray(t.fileIds) || t.fileIds.length === 0 || t.fileIds.length > DRIVE_THUMBS_MAX || !t.fileIds.every((id) => typeof id === "string" && FILE_ID.test(id))) {
+    return { status: "failed", requestId, reason: "invalid_input" };
+  }
+  const asked = new Set(t.fileIds);
+  const out = await request(ctx, "thumbs", DRIVE_READ_EVENTS.thumbsRequested, { ...t, requestId }, { fileIds: [...asked], size });
+  if (!("ok" in out)) return out;
+  const cap = DRIVE_THUMB_SIZES[size].maxBytes;
+  const thumbs: DriveThumb[] = [];
+  for (const raw of Array.isArray(out.payload.thumbs) ? out.payload.thumbs : []) {
+    const x = raw as { id?: unknown; mimeType?: unknown; contentBase64?: unknown; reason?: unknown } | null;
+    // Only files that were asked for, once each.
+    if (!x || typeof x.id !== "string" || !asked.delete(x.id)) continue;
+    if (typeof x.contentBase64 === "string" && typeof x.mimeType === "string" && THUMB_MIME.test(x.mimeType)) {
+      const bytes = new Uint8Array(Buffer.from(x.contentBase64, "base64"));
+      thumbs.push(bytes.byteLength > 0 && bytes.byteLength <= cap ? { id: x.id, mimeType: x.mimeType, bytes } : { id: x.id, reason: "too_large" });
+    } else thumbs.push({ id: x.id, reason: typeof x.reason === "string" ? x.reason : "no_preview" });
+  }
+  for (const id of asked) thumbs.push({ id, reason: "no_reply" });
+  return { status: "thumbs", requestId: out.requestId, thumbs };
 }
