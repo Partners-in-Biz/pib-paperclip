@@ -172,14 +172,17 @@ describe("Voice Token Action", () => {
       await expect(voiceTokenAction(ctx, context)).rejects.toThrow("Twilio voice credentials are not configured");
     });
 
-    it("missing TWILIO_TWIML_APP_SID -> rejects", async () => {
+    it("missing TWILIO_TWIML_APP_SID -> still issues a token, without the outgoing grant (the Dialer is rung by Twilio)", async () => {
       const ctx = mockCtx(
         { voiceAllowedUserIds: ["user-1"] },
         { TWILIO_TWIML_APP_SID: null }
       );
       const context = baseContext;
 
-      await expect(voiceTokenAction(ctx, context)).rejects.toThrow("Twilio voice credentials are not configured");
+      const result = await voiceTokenAction(ctx, context, { nowSeconds: 1000000 });
+      const { payload } = decodeJwt(result.token);
+      expect((payload as any).grants.voice.incoming.allow).toBe(true);
+      expect((payload as any).grants.voice.outgoing).toBeUndefined();
     });
   });
 
@@ -200,7 +203,8 @@ describe("Voice Token Action", () => {
       expect((payload as any).sub).toBe(TEST_SECRETS.TWILIO_ACCOUNT_SID);
       expect((payload as any).grants.identity).toBe("user-1");
       expect((payload as any).grants.voice.outgoing.application_sid).toBe(TEST_SECRETS.TWILIO_TWIML_APP_SID);
-      expect((payload as any).grants.voice.incoming.allow).toBe(false);
+      // Twilio rings this identity for every Dialer call, so incoming must be allowed.
+      expect((payload as any).grants.voice.incoming.allow).toBe(true);
     });
 
     it("ttl is 3600 seconds", async () => {

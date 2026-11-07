@@ -221,3 +221,51 @@ describe("Dialer UI utilities", () => {
     });
   });
 });
+
+describe("Dialer call state helpers", async () => {
+  const { formatCallDuration, isExpectedIncoming, phaseLabel, callOutcomeLabel, friendlyDialError, INCOMING_WAIT_MS, CALL_POLL_MS } = await import("../src/ui/dialer.js");
+
+  it("formats the talk timer", () => {
+    expect(formatCallDuration(5)).toBe("0:05");
+    expect(formatCallDuration(754)).toBe("12:34");
+    expect(formatCallDuration(3723)).toBe("1:02:03");
+    expect(formatCallDuration(-3)).toBe("0:00");
+  });
+
+  it("accepts only the incoming leg this page asked for", () => {
+    expect(isExpectedIncoming({ CallSid: "CA1", From: "+27105550100" }, "CA1")).toBe(true);
+    expect(isExpectedIncoming({ CallSid: "CA2" }, "CA1")).toBe(false);
+    expect(isExpectedIncoming({ CallSid: "CA1" }, null)).toBe(false);
+    expect(isExpectedIncoming(undefined, "CA1")).toBe(false);
+  });
+
+  it("labels each phase, with the contact's progress while ringing", () => {
+    expect(phaseLabel("idle", null)).toBe("Ready to call");
+    expect(phaseLabel("preparing", null)).toBe("Connecting to Twilio…");
+    expect(phaseLabel("dialing", null)).toBe("Placing the call…");
+    expect(phaseLabel("ringing", "initiated")).toBe("Connecting…");
+    expect(phaseLabel("ringing", "ringing")).toBe("Ringing the contact…");
+    expect(phaseLabel("in_call", "in-progress")).toBe("In call");
+    expect(phaseLabel("ended", "no-answer")).toBe("No answer");
+    expect(phaseLabel("ended", "completed")).toBe("Call ended");
+    expect(phaseLabel("error", null)).toBe("Call failed");
+    expect(callOutcomeLabel("busy")).toBe("Busy");
+    expect(callOutcomeLabel("failed")).toBe("Could not connect");
+  });
+
+  it("turns worker errors into one actionable sentence and flags setup problems", () => {
+    expect(friendlyDialError("Twilio voice credentials are not configured")).toMatchObject({ setup: true });
+    expect(friendlyDialError("Calling is not enabled for this user").text).toContain("Voice user IDs");
+    expect(friendlyDialError("Set the public base URL in Telephony settings so Twilio can report call status to this Paperclip.")).toMatchObject({ setup: true });
+    expect(friendlyDialError("No Twilio number for this region: store the TWILIO_ZA_NUMBER company secret.").setup).toBe(true);
+    expect(friendlyDialError("NotAllowedError: Permission denied").text).toContain("microphone");
+    expect(friendlyDialError("AccessTokenInvalid (20101)").setup).toBe(true);
+    expect(friendlyDialError("The daily cap of 50 calls is reached.")).toEqual({ text: "The daily cap of 50 calls is reached.", setup: false });
+    expect(friendlyDialError("").text).toBe("The call could not be placed.");
+  });
+
+  it("waits a bounded time for Twilio to ring the browser and polls while a call runs", () => {
+    expect(INCOMING_WAIT_MS).toBe(20_000);
+    expect(CALL_POLL_MS).toBe(2_000);
+  });
+});

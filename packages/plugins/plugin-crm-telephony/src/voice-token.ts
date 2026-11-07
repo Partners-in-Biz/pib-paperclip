@@ -4,7 +4,8 @@ export interface VoiceTokenInput {
   accountSid: string;
   apiKeySid: string;
   apiKeySecret: string;
-  twimlAppSid: string;
+  /** Only for browser-initiated outgoing calls through a TwiML app. The Dialer rings the browser instead. */
+  twimlAppSid?: string | null;
   identity: string;
   ttlSeconds?: number;
   nowSeconds?: number;
@@ -36,8 +37,10 @@ export function buildVoiceAccessToken(i: VoiceTokenInput): string {
     grants: {
       identity: i.identity,
       voice: {
-        incoming: { allow: false },
-        outgoing: { application_sid: i.twimlAppSid },
+        // The Dialer places the call with the REST API and Twilio rings this
+        // identity, so the browser must accept incoming calls.
+        incoming: { allow: true },
+        ...(i.twimlAppSid ? { outgoing: { application_sid: i.twimlAppSid } } : {}),
       },
     },
   };

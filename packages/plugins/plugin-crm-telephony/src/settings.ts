@@ -2,6 +2,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isSecretRef, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import type { R2Config } from "./r2-store.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
+import { describeVoiceReadiness, type VoiceReadiness } from "./voice-readiness.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 export interface TelephonySettings {
   recordingEnabled: boolean;
@@ -18,6 +20,8 @@ export interface TelephonySettings {
   usMessagingServiceSid: string | null;
   whatsappFrom: string | null;
   smsHolidays: string[];
+  /** Where Twilio reaches this Paperclip (https://host, no path). Needed to place calls. */
+  publicBaseUrl: string | null;
 }
 
 export interface SecretStatus {
@@ -124,6 +128,26 @@ function validateWhatsappFrom(value: unknown): string | null {
   return match[1];
 }
 
+/**
+ * The public address Twilio uses for status callbacks: http(s), no path beyond
+ * the origin, no query, no credentials. Trailing slashes are dropped.
+ */
+export function validatePublicBaseUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.search || url.hash || url.username || url.password) return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  return url.origin;
+}
+
 export interface StateKey {
   scopeKind: "company";
   scopeId: string;
@@ -196,6 +220,7 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     usMessagingServiceSid: validateMessagingServiceSid(raw.usMessagingServiceSid),
     whatsappFrom: validateWhatsappFrom(raw.whatsappFrom),
     smsHolidays: validateSmsHolidays(holidaysList),
+    publicBaseUrl: validatePublicBaseUrl(raw.publicBaseUrl),
   };
 }
 
@@ -347,6 +372,20 @@ export async function saveSettings(
     }
   }
 
+  if ("publicBaseUrl" in params) {
+    const val = params.publicBaseUrl;
+    if (val === null || val === "") {
+      updates.publicBaseUrl = null;
+    } else {
+      const validated = validatePublicBaseUrl(val);
+      if (validated === null) {
+        errors.publicBaseUrl = "Must be an http(s) origin like https://paperclip.example.com, with no path or query";
+      } else {
+        updates.publicBaseUrl = validated;
+      }
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
   }
@@ -364,6 +403,8 @@ export interface SettingsView {
   settings: TelephonySettings;
   secrets: SecretStatus;
   templateSyncRequestedAt: string | null;
+  /** What voice calling still needs; see voice-readiness.ts. */
+  voice: VoiceReadiness;
 }
 
 export async function settingsView(ctx: PluginContext, companyId: string): Promise<SettingsView> {
@@ -393,11 +434,20 @@ export async function settingsView(ctx: PluginContext, companyId: string): Promi
     // Tolerate errors
   }
 
+  let r2 = false;
+  try {
+    const cfg = await ctx.config.get(companyId);
+    r2 = r2Configured(cfg && typeof cfg === "object" ? (cfg as Record<string, unknown>) : {});
+  } catch {
+    r2 = false;
+  }
+
   return {
     company: { id: companyId, name: companyName },
     settings,
     secrets: status,
     templateSyncRequestedAt,
+    voice: describeVoiceReadiness(status, settings, r2),
   };
 }
 
@@ -410,12 +460,8 @@ export async function requestTemplateSync(ctx: PluginContext, companyId: string,
 export async function secretStatus(ctx: PluginContext, companyId: string, refs: string[]): Promise<SecretStatus> {
   const result: SecretStatus = {};
   for (const ref of refs) {
-    try {
-      const value = await ctx.secrets.resolve(ref, { companyId });
-      result[ref] = value ? "set" : "missing";
-    } catch {
-      result[ref] = "missing";
-    }
+    const value = await resolveTelephonySecret(ctx, companyId, ref);
+    result[ref] = value ? "set" : "missing";
   }
   return result;
 }

@@ -10,6 +10,10 @@ import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
 import { createMediaSteps } from "./media-steps.js";
 import { voiceTokenAction } from "./voice-token-action.js";
+import { voiceDialAction, voiceCallLookupAction } from "./voice-dial.js";
+import { handleCallStatus } from "./call-status.js";
+import { handleVoiceTwiml } from "./voice-twiml.js";
+import { resolveTelephonySecret } from "./secrets.js";
 import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
@@ -46,13 +50,9 @@ async function buildTwilioClientForSecrets(
 ) {
   const secrets: Record<string, string> = {};
   for (const secretName of requiredSecrets) {
-    try {
-      const value = await pluginCtx.secrets.resolve(secretName, { companyId });
-      if (!value) return null;
-      secrets[secretName] = value;
-    } catch {
-      return null;
-    }
+    const value = await resolveTelephonySecret(pluginCtx, companyId, secretName);
+    if (!value) return null;
+    secrets[secretName] = value;
   }
 
   const { createTwilioClient } = await import("./twilio-client.js");
@@ -218,6 +218,14 @@ const plugin = definePlugin({
       return voiceTokenAction(pluginCtx, context);
     });
 
+    // The Dialer: place a call (Twilio rings the browser, then dials the contact) and watch it.
+    pluginCtx.actions.register("voice-dial", async (params, context: PluginPerformActionContext) => {
+      return voiceDialAction(pluginCtx, params, context);
+    });
+    pluginCtx.actions.register("voice-call", async (params, context: PluginPerformActionContext) => {
+      return voiceCallLookupAction(pluginCtx, params, context);
+    });
+
     await registerTimelineHandlers(pluginCtx);
   },
 
@@ -241,7 +249,18 @@ const plugin = definePlugin({
       return;
     }
 
-    // Other endpoints: acknowledge and return
+    if (endpointKey === "call-status") {
+      await handleCallStatus(pluginCtx, pluginCtx.db, NAMESPACE, input, PLUGIN_ID);
+      return;
+    }
+
+    if (endpointKey === "voice-twiml") {
+      // The host answers with JSON, never TwiML: verify, log, and point at the REST path (voice-twiml.ts).
+      await handleVoiceTwiml(pluginCtx, input, PLUGIN_ID);
+      return;
+    }
+
+    // Other endpoints (sms-inbound): acknowledge and return
   },
 
   async onHealth() {
