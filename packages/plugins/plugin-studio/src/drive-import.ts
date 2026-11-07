@@ -5,7 +5,20 @@
  * People only: the Drive id is kept as the asset's source ref (`drive:<scope>:<fileId>`), which agents never see.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveList as kitDriveList, driveRead as kitDriveRead, formatClientParam, type ClientScope, type DriveFailure, type DriveListResult, type DriveReadResult, type DriveReadTarget } from "@partnersinbiz/pib-plugin-kit";
+import {
+  driveList as kitDriveList,
+  driveRead as kitDriveRead,
+  driveThumbs as kitDriveThumbs,
+  DRIVE_THUMBS_MAX,
+  formatClientParam,
+  type ClientScope,
+  type DriveFailure,
+  type DriveListResult,
+  type DriveReadResult,
+  type DriveReadTarget,
+  type DriveThumbSize,
+  type DriveThumbsResult,
+} from "@partnersinbiz/pib-plugin-kit";
 import { assetOut, getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { table } from "./db.js";
@@ -21,8 +34,10 @@ const STUDIO_TYPES = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|quicktime))$/;
 export interface DriveReaders {
   list: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget) => Promise<DriveListResult>;
   read: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileId: string }) => Promise<DriveReadResult>;
+  thumbs?: (ctx: Pick<PluginContext, "events">, t: DriveReadTarget & { fileIds: string[]; size?: DriveThumbSize }) => Promise<DriveThumbsResult>;
 }
-const KIT: DriveReaders = { list: kitDriveList, read: kitDriveRead };
+const KIT: DriveReaders = { list: kitDriveList, read: kitDriveRead, thumbs: kitDriveThumbs };
+const FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
 
 function mb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -64,15 +79,52 @@ export function driveSourceRef(scope: ClientScope, fileId: string): string {
   return `drive:${scope ? formatClientParam(scope) : "own"}:${fileId}`;
 }
 
-/** The Drive files Studio could take for this client: images and videos up to the limit, flagged when too big. */
+/**
+ * The Drive files Studio could take for this client: images and videos, newest first, with their folder
+ * ("Assets/Images"), flagged when too big, and with the library asset when this client already has it (PAR-8124).
+ */
 export async function listDriveFiles(ctx: PluginContext, companyId: string, params: Record<string, unknown>, readers: DriveReaders = KIT) {
   const { scope } = await pickedScope(ctx, companyId, params);
   const result = await readers.list(ctx, target(companyId, scope));
   if (result.status !== "listed") throw new StudioError(readRefusal(result), "drive_refused");
+  const prefix = driveSourceRef(scope, "");
+  // One query for every file already copied for this client: the same source ref the import dedupes on.
+  const rows = await ctx.db.query<{ id: string; source_ref: string }>(
+    `SELECT id, source_ref FROM ${table(ctx, "assets")} WHERE company_id = $1 AND source = 'drive' AND source_ref LIKE $2`,
+    [companyId, `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`],
+  );
+  const added = new Map(rows.filter((r) => r.source_ref?.startsWith(prefix)).map((r) => [r.source_ref.slice(prefix.length), r.id]));
+  const files = result.files
+    .filter((f) => STUDIO_TYPES.test(f.mimeType))
+    .map((f) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      size: f.size,
+      folder: f.folder ?? null,
+      modifiedTime: f.modifiedTime ?? null,
+      tooLarge: f.size > DRIVE_MAX_BYTES,
+      assetId: added.get(f.id) ?? null,
+    }));
+  files.sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? "") || a.name.localeCompare(b.name));
+  return { files, maxBytes: DRIVE_MAX_BYTES };
+}
+
+/**
+ * Previews for the picker (PAR-8124): Drive's own small images, fetched by the CRM inside this client's assets folders
+ * and handed back as data: URLs, so no Drive link or token reaches the browser. A file without one gets a reason.
+ */
+export async function driveThumbs(ctx: PluginContext, companyId: string, params: Record<string, unknown>, readers: DriveReaders = KIT) {
+  const raw = Array.isArray(params.fileIds) ? params.fileIds : [];
+  const fileIds = [...new Set(raw.filter((id): id is string => typeof id === "string" && FILE_ID.test(id)))];
+  if (fileIds.length === 0 || fileIds.length > DRIVE_THUMBS_MAX || fileIds.length !== raw.length) throw new StudioError(`Ask for 1 to ${DRIVE_THUMBS_MAX} Drive files.`, "bad_request");
+  if (!readers.thumbs) throw new StudioError("Previews from Drive aren't available.", "drive_refused");
+  const { scope } = await pickedScope(ctx, companyId, params);
+  const size: DriveThumbSize = params.size === "large" ? "large" : "small";
+  const result = await readers.thumbs(ctx, { ...target(companyId, scope), fileIds, size });
+  if (result.status !== "thumbs") throw new StudioError(readRefusal(result), "drive_refused");
   return {
-    files: result.files
-      .filter((f) => STUDIO_TYPES.test(f.mimeType))
-      .map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: f.size, tooLarge: f.size > DRIVE_MAX_BYTES })),
+    thumbs: result.thumbs.map((t) => ("bytes" in t ? { id: t.id, url: `data:${t.mimeType};base64,${Buffer.from(t.bytes).toString("base64")}` } : { id: t.id, reason: t.reason })),
   };
 }
 
@@ -82,7 +134,7 @@ export async function listDriveFiles(ctx: PluginContext, companyId: string, para
  */
 export async function importFromDrive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string | null }, readers: DriveReaders = KIT) {
   const fileId = String(params.fileId ?? "").trim();
-  if (!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) throw new StudioError("Pick a Drive file first.", "bad_request");
+  if (!FILE_ID.test(fileId)) throw new StudioError("Pick a Drive file first.", "bad_request");
   const resolved = await pickedScope(ctx, companyId, params);
   const sourceRef = driveSourceRef(resolved.scope, fileId);
   const existing = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND source_ref = $2`, [companyId, sourceRef]);

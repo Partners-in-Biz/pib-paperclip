@@ -37,7 +37,7 @@ describe("saveSendRecord", () => {
       threadId: "thr-789",
       sentAt,
       campaignName: "Welcome Series",
-      driveSave: mockDriveSave,
+      loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
     });
 
     expect(savedRequests).toHaveLength(1);
@@ -82,7 +82,7 @@ describe("saveSendRecord", () => {
       messageId: null,
       threadId: null,
       sentAt: new Date("2026-10-20"),
-      driveSave: mockDriveSave,
+      loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
     });
 
     const req = savedRequests[0];
@@ -110,7 +110,7 @@ describe("saveSendRecord", () => {
         messageId: null,
         threadId: null,
         sentAt: new Date(),
-        driveSave: mockDriveSave,
+        loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
       })
     ).resolves.toBeUndefined();
 
@@ -137,7 +137,7 @@ describe("saveSendRecord", () => {
         messageId: "msg-123",
         threadId: "thr-456",
         sentAt: new Date(),
-        driveSave: mockDriveSave,
+        loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
       })
     ).resolves.toBeUndefined();
 
@@ -165,7 +165,7 @@ describe("saveSendRecord", () => {
       threadId: null,
       sentAt: new Date(),
       campaignName: "Bad/Name\\With\x00Control",
-      driveSave: mockDriveSave,
+      loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
     });
 
     const name = savedRequests[0].name;
@@ -193,7 +193,7 @@ describe("saveSendRecord", () => {
       messageId: null,
       threadId: null,
       sentAt: new Date(),
-      driveSave: mockDriveSave,
+      loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
     });
 
     // no_ack is not treated as a warning
@@ -222,7 +222,7 @@ describe("saveSendRecord", () => {
         messageId: "msg-789",
         threadId: "thr-012",
         sentAt: new Date(),
-        driveSave: mockDriveSave,
+        loadCampaign: async () => ({ clientKind: null, clientRef: null }), driveSave: mockDriveSave,
       })
     ).resolves.toBeUndefined();
 

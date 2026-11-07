@@ -55,4 +55,54 @@ describe.skipIf(!available)("review through the host's db binding", () => {
     const rows = await pg.client.query(`SELECT status FROM ${T("assets")} WHERE id = 'a1'`);
     expect(rows.rows).toEqual([{ status: "approved" }]);
   });
+
+  describe("an agent approving its own asset", () => {
+    const status = async () => ((await pg.client.query(`SELECT status FROM ${T("assets")} WHERE id = 'a1'`)).rows[0] as { status: string }).status;
+    const makeBy = (agent: string | null) => pg.client.query(`UPDATE ${T("assets")} SET created_by_agent_id = $1 WHERE id = 'a1'`, [agent]);
+
+    it("is refused, names a reviewer not a person, leaves the status and exports nothing", async () => {
+      await makeBy("agentA");
+      const err = await reviewAsset(ctx(), CO, { assetId: "a1", decision: "approved" }, { agentId: "agentA" }, deps).catch((e) => e);
+      expect(err).toMatchObject({ code: "self_approval" });
+      expect(String((err as Error).message)).toMatch(/Reviewer/);
+      expect(String((err as Error).message)).not.toMatch(/ask a person|Peet|board/i);
+      expect(await status()).toBe("draft");
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("is refused when only the generation (by asset_id) records the agent", async () => {
+      await pg.client.query(
+        `INSERT INTO ${T("generations")} (id, group_id, company_id, agent_id, provider, model, prompt, name, status, period, estimated_credits, asset_id) VALUES ('g1', 'g1', $1, 'agentA', 'p', 'm', 'x', 'n', 'done', '2026-11', 1, 'a1')`,
+        [CO],
+      );
+      await expect(reviewAsset(ctx(), CO, { assetId: "a1", decision: "approved" }, { agentId: "agentA" }, deps)).rejects.toMatchObject({ code: "self_approval" });
+      expect(await status()).toBe("draft");
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("may still reject its own asset", async () => {
+      await makeBy("agentA");
+      const out = await reviewAsset(ctx(), CO, { assetId: "a1", decision: "rejected" }, { agentId: "agentA" }, deps);
+      expect(out).toMatchObject({ changed: true });
+      expect(await status()).toBe("rejected");
+    });
+
+    it("another agent can approve it", async () => {
+      await makeBy("agentA");
+      const out = await reviewAsset(ctx(), CO, { assetId: "a1", decision: "approved" }, { agentId: "agentB" }, deps);
+      expect(out).toMatchObject({ exported: true });
+      expect(emit).toHaveBeenCalledTimes(1);
+    });
+
+    it("a person can approve an agent's asset", async () => {
+      await makeBy("agentA");
+      const out = await reviewAsset(ctx(), CO, { assetId: "a1", decision: "approved" }, { userId: "u1" }, deps);
+      expect(out).toMatchObject({ exported: true });
+    });
+
+    it("an asset with no recorded agent behaves as before", async () => {
+      const out = await reviewAsset(ctx(), CO, { assetId: "a1", decision: "approved" }, { agentId: "agentA" }, deps);
+      expect(out).toMatchObject({ exported: true });
+    });
+  });
 });

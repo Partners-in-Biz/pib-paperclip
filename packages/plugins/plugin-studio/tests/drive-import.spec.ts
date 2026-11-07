@@ -20,12 +20,17 @@ vi.mock("../src/scope.js", () => ({
   resolveScope: vi.fn(async (_ctx: unknown, _co: string, scope: { kind: string; id: string } | null) => (scope ? { scope, client: { name: "Acme" } } : { scope: null, client: null })),
 }));
 
-const { importFromDrive, listDriveFiles, driveSourceRef } = await import("../src/drive-import.js");
+const { importFromDrive, listDriveFiles, driveSourceRef, driveThumbs } = await import("../src/drive-import.js");
 
 const ctx = {
   db: {
     namespace: "plugin_studio_test",
-    query: vi.fn(async (_sql: string, args: unknown[]) => {
+    query: vi.fn(async (sql: string, args: unknown[]) => {
+      // The picker's "already added" lookup: every Drive copy under a source-ref prefix (LIKE 'drive:<scope>:%').
+      if (sql.includes("LIKE")) {
+        const prefix = String(args[1]).replace(/%$/, "").replace(/\\(.)/g, "$1");
+        return [...existing.entries()].filter(([ref]) => ref.startsWith(prefix)).map(([source_ref, id]) => ({ id, source_ref }));
+      }
       const id = existing.get(String(args[1]));
       return id ? [{ id }] : [];
     }),
@@ -70,5 +75,34 @@ describe("From Drive", () => {
     expect(out.files.map((f) => [f.id, f.tooLarge])).toEqual([[FILE.id, false], ["3", true]]);
     expect(list).toHaveBeenCalledWith(ctx, expect.not.objectContaining({ client: expect.anything() }));
     expect(driveSourceRef(null, "abc")).toBe("drive:own:abc");
+  });
+
+  it("lists newest first with folders, and marks files this client already has", async () => {
+    existing.set(`drive:company:acme:${FILE.id}`, "asset-old");
+    existing.set("drive:own:2BbCdEfGhIjKlMnOp", "asset-own");
+    const files = [
+      { ...FILE, folder: "Assets/Images", modifiedTime: "2026-10-01T00:00:00Z" },
+      { ...FILE, id: "2BbCdEfGhIjKlMnOp", name: "new.png", folder: "Assets/Social", modifiedTime: "2026-11-05T00:00:00Z" },
+      { ...FILE, id: "3BbCdEfGhIjKlMnOp", name: "clip.mp4", mimeType: "video/mp4" },
+    ];
+    const list = vi.fn(async () => ({ status: "listed" as const, requestId: "r", files }));
+    const out = await listDriveFiles(ctx, "co-1", { client: "company:acme" }, { list, read: vi.fn() } as never);
+    expect(out.files.map((f) => [f.id, f.folder, f.assetId])).toEqual([
+      ["2BbCdEfGhIjKlMnOp", "Assets/Social", null], // another scope's copy doesn't count
+      [FILE.id, "Assets/Images", "asset-old"],
+      ["3BbCdEfGhIjKlMnOp", null, null],
+    ]);
+    expect(out.maxBytes).toBeGreaterThan(0);
+  });
+
+  it("turns the CRM's previews into data URLs and passes reasons through", async () => {
+    const thumbs = vi.fn(async () => ({ status: "thumbs" as const, requestId: "r", thumbs: [{ id: FILE.id, mimeType: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) }, { id: "2BbCdEfGhIjKlMnOp", reason: "no_preview" }] }));
+    const out = await driveThumbs(ctx, "co-1", { client: "company:acme", fileIds: [FILE.id, "2BbCdEfGhIjKlMnOp"], size: "large" }, { list: vi.fn(), read: vi.fn(), thumbs } as never);
+    expect(out.thumbs).toEqual([{ id: FILE.id, url: "data:image/jpeg;base64,AQID" }, { id: "2BbCdEfGhIjKlMnOp", reason: "no_preview" }]);
+    expect(thumbs).toHaveBeenCalledWith(ctx, expect.objectContaining({ client: { kind: "company", ref: "acme" }, fileIds: [FILE.id, "2BbCdEfGhIjKlMnOp"], size: "large" }));
+    await expect(driveThumbs(ctx, "co-1", { client: "own", fileIds: ["../x"] }, { list: vi.fn(), read: vi.fn(), thumbs } as never)).rejects.toThrow(/Ask for 1 to 24/);
+    await expect(driveThumbs(ctx, "co-1", { client: "own", fileIds: Array.from({ length: 25 }, (_, i) => `abcdefghij${i}`) }, { list: vi.fn(), read: vi.fn(), thumbs } as never)).rejects.toThrow(/Ask for 1 to 24/);
+    const refused = vi.fn(async () => ({ status: "failed" as const, requestId: "r", reason: "no_project" }));
+    await expect(driveThumbs(ctx, "co-1", { client: "own", fileIds: [FILE.id] }, { list: vi.fn(), read: vi.fn(), thumbs: refused } as never)).rejects.toThrow(/no Drive project/);
   });
 });

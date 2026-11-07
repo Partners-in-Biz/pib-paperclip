@@ -51,6 +51,7 @@ import { shapeToolResult } from "./tool-results.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { asAtDate, customerCredit, invoiceBalance, invoiceBalances, iso, refreshAsAtStatuses, statusAsAtToday, type InvoiceBalance } from "./balances.js";
 import { BANK_MATCHED_EVENT } from "./bank.js";
+import { driveCatchup } from "./drive-catchup.js";
 import {
   billingSettings,
   emailEnabled,
@@ -397,6 +398,13 @@ const ACTIONS: Record<string, Handler> = {
   "billing.correct-decision": async (ctx, context, params) => {
     const userId = requirePerson(context, "correcting a decision");
     return { ok: await correctDecision(ctx, requiredCompany(context), requiredString(params, "decisionId"), requiredString(params, "correctedTo"), userId) };
+  },
+  // PAR-8130: copy sent PDFs to Drive for a date range. A dry run (the default) only lists; saving needs a person.
+  "billing.drive-catchup": async (ctx, context, params) => {
+    const companyId = requiredCompany(context);
+    const dryRun = params.dryRun !== false;
+    if (!dryRun) requirePerson(context, "the Drive catch-up");
+    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined });
   },
 };
 

@@ -20,6 +20,25 @@ export interface ExportDriveFileOptions {
   timeoutMs?: number;
   /** Optional CRM client the file belongs to; the Drive save files it under that client's folder. */
   client?: { kind: "company" | "contact"; ref: string };
+  /** The company's own site: the CRM files it in its own folder only when this is set (PAR-8128). */
+  ownWork?: true;
+}
+
+type SprintClient = { clientKind: "company" | "contact" | null; clientRef: string | null; legacyClientName?: string | null };
+
+/**
+ * Where a sprint's Drive copy goes (PAR-8128): a client sprint always carries the sprint's own client (a caller's
+ * `client` never overrides it); an own sprint is marked `ownWork`. Null means "do not copy": an own sprint that names
+ * a free-text client from before the CRM link (`legacyClientName`) and no client from the caller could be anyone's.
+ */
+export function sprintDriveTarget(
+  sprint: SprintClient,
+  callerClient?: { kind: "company" | "contact"; ref: string } | null,
+): { client: { kind: "company" | "contact"; ref: string } } | { ownWork: true } | null {
+  if (sprint.clientKind && sprint.clientRef) return { client: { kind: sprint.clientKind, ref: sprint.clientRef } };
+  if (callerClient) return { client: callerClient };
+  if (sprint.legacyClientName && sprint.legacyClientName.trim()) return null;
+  return { ownWork: true };
 }
 
 /** Safe Drive export: never throws, only logs warnings on failure. */
@@ -53,7 +72,7 @@ export async function exportToDrive(ctx: Pick<PluginContext, "logger" | "events"
       ...(opts.bytes !== undefined ? { bytes: opts.bytes } : { publicUrl: opts.publicUrl ?? "" }),
       requestId: opts.requestId,
       timeoutMs: opts.timeoutMs ?? 10_000,
-      ...(opts.client ? { client: { kind: opts.client.kind, ref: opts.client.ref } } : {}),
+      ...(opts.client ? { client: { kind: opts.client.kind, ref: opts.client.ref } } : opts.ownWork === true ? { ownWork: true as const } : {}),
     });
 
     // Log results

@@ -303,7 +303,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
     const check = await capCheck(ctx, companyId, where.scope, period);
     assertFits(check, total);
     // Agent tool calls carry a run id; people on the page don't, and they already confirm an estimate first.
-    if (actor.runId) await assertRunFits(ctx, companyId, actor.runId, total);
+    if (actor.runId) await assertRunFits(ctx, companyId, actor.runId, total, actor.agentId);
     for (const id of ids) {
       await ctx.db.execute(
         `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids)

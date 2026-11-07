@@ -2,7 +2,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
-import { capCheck, capHistory, currentPeriod, listCaps, usage } from "./ledger.js";
+import { capCheck, capHistory, currentPeriod, isAgentLimitKey, listCaps, usage } from "./ledger.js";
 import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
@@ -21,6 +21,12 @@ export async function memberRole(ctx: PluginContext, companyId: string, actor: A
 /** Caps spend real money, so this is stricter than Studio's other actions: an owner, not an admin or an agent. */
 export async function isCompanyOwner(ctx: PluginContext, companyId: string, actor: Actor): Promise<boolean> {
   return (await memberRole(ctx, companyId, actor)) === "owner";
+}
+
+/** Agent limits spend real money too: an owner or an admin. */
+export async function isOwnerOrAdmin(ctx: PluginContext, companyId: string, actor: Actor): Promise<boolean> {
+  const role = await memberRole(ctx, companyId, actor);
+  return role === "owner" || role === "admin";
 }
 
 /** Generating spends credits: any active member but a viewer. */
@@ -45,17 +51,18 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
 /** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
-  const [caps, history, clients, assets, companyUsed, projects] = await Promise.all([
+  const [caps, history, clients, assets, companyUsed, projects, agents] = await Promise.all([
     listCaps(ctx, companyId),
     capHistory(ctx, companyId),
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
     listAssets(ctx, companyId, { limit: 24 }),
     usage(ctx, companyId, period),
     ctx.projects.list({ companyId, limit: 200 }).catch(() => []),
+    ctx.agents.list({ companyId, limit: 500 }).catch(() => []),
   ]);
   const clientUsage = await Promise.all(
     caps
-      .filter((c) => c.scopeKey.includes(":"))
+      .filter((c) => c.scopeKey.includes(":") && !isAgentLimitKey(c.scopeKey))
       .map(async (c) => {
         const [kind, id] = c.scopeKey.split(":") as ["company" | "contact", string];
         return { scopeKey: c.scopeKey, used: await usage(ctx, companyId, period, { kind, id }) };
@@ -70,6 +77,10 @@ export async function overview(ctx: PluginContext, companyId: string) {
     assets,
     clients: clients.map((c) => ({ scopeKey: formatClientParam({ kind: c.kind, id: c.id }), name: c.name })),
     projects: projects.map((p) => ({ id: String(p.id), name: String((p as { name?: string | null }).name ?? p.id) })),
+    agents: (agents as unknown as Array<{ id: string; name?: string | null; title?: string | null; status?: string }>)
+      .filter((a) => a.status !== "terminated")
+      .map((a) => ({ id: String(a.id), name: String(a.name ?? a.id), title: a.title ?? null }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
     models: PAGE_MODELS,
     unavailableModels: UNAVAILABLE_MODELS,
   };

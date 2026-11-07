@@ -94,8 +94,19 @@ describe("resolveProducerSaveProject (producer plugin saves)", () => {
 
   it("own work goes to drive.ownProjectId when set, else nowhere", async () => {
     const without = await setup();
-    expect(await resolveProducerSaveProject(without.harness.ctx, CO, { kind: "social" })).toBeNull();
+    expect(await resolveProducerSaveProject(without.harness.ctx, CO, { kind: "social", ownWork: true })).toBeNull();
     const withOwn = await setup({ drive: { sharedDriveId: DRIVE_ID, ownProjectId: " p-web " } });
-    expect(await resolveProducerSaveProject(withOwn.harness.ctx, CO, { kind: "social" })).toBe("p-web");
+    expect(await resolveProducerSaveProject(withOwn.harness.ctx, CO, { kind: "social", ownWork: true })).toBe("p-web");
+  });
+
+  it("PAR-8128: no client and no ownWork is never the own project, even when it is set", async () => {
+    const withOwn = await setup({ drive: { sharedDriveId: DRIVE_ID, ownProjectId: " p-web " } });
+    expect(await resolveProducerSaveProject(withOwn.harness.ctx, CO, { kind: "social" })).toBeNull();
+  });
+
+  it("PAR-8128: a work project lands only when it is the own project (unlinked projects are refused)", async () => {
+    const withOwn = await setup({ drive: { sharedDriveId: DRIVE_ID, ownProjectId: "p-web" } });
+    expect(await resolveProducerSaveProject(withOwn.harness.ctx, CO, { kind: "ops", projectId: "p-web" })).toBe("p-web");
+    expect(await resolveProducerSaveProject(withOwn.harness.ctx, CO, { kind: "ops", projectId: "p-unlinked" })).toBeNull();
   });
 });

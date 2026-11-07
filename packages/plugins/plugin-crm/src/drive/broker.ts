@@ -77,6 +77,11 @@ export interface Broker {
   /** null when the file is missing, trashed, or not on this company's Shared Drive. */
   fileMeta?(fileId: string): Promise<DriveFileInfo | null>;
   downloadFile?(fileId: string, maxBytes: number): Promise<Uint8Array>;
+  /**
+   * Drive's own preview of a file at about `px` wide (PAR-8124), fetched with the service account so no link leaves
+   * the CRM. `allowed` sees the file's parents first; when it says no, nothing is fetched. null: no such file, or no preview.
+   */
+  thumbnail?(fileId: string, px: number, maxBytes: number, allowed: (parents: string[]) => boolean): Promise<DriveThumbnail | null>;
 }
 
 /** A Drive file as the read routes see it: no link, no owner. */
@@ -86,4 +91,8 @@ export interface DriveFileInfo {
   mimeType: string;
   size: number;
   parents: string[];
+  /** ISO time, when Drive gave one. */
+  modifiedTime?: string;
 }
+
+export type DriveThumbnail = { status: "ok"; mimeType: string; bytes: Uint8Array } | { status: "not_in_client_folder" | "no_preview" | "too_large" };

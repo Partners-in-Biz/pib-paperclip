@@ -21,8 +21,8 @@ const tools = vi.hoisted(() => ({
 }));
 vi.mock("../src/drive/tools.js", () => tools);
 
-import { driveList, driveRead } from "@partnersinbiz/pib-plugin-kit";
-import { registerDriveReadRoutes } from "../src/drive/read.js";
+import { driveList, driveRead, driveThumbs } from "@partnersinbiz/pib-plugin-kit";
+import { clearAssetFolderCache, registerDriveReadRoutes } from "../src/drive/read.js";
 
 interface ScopedBus {
   subscribe(pattern: string, fn: (event: any) => Promise<void> | void): void;
@@ -67,6 +67,12 @@ function broker() {
     listFiles: vi.fn(async (folderId: string) => Object.values(files).filter((f) => f.parents.includes(folderId))),
     fileMeta: vi.fn(async (id: string) => files[id] ?? null),
     downloadFile: vi.fn(async () => new Uint8Array(BYTES)),
+    thumbnail: vi.fn(async (id: string, _px: number, _max: number, allowed: (parents: string[]) => boolean) => {
+      const f = files[id];
+      if (!f) return null;
+      if (!allowed(f.parents)) return { status: "not_in_client_folder" as const };
+      return { status: "ok" as const, mimeType: "image/jpeg", bytes: new Uint8Array([7, 7, 7]) };
+    }),
   };
 }
 
@@ -81,7 +87,20 @@ async function setup() {
 const client = { kind: "company", ref: "co-a" };
 
 describe("Drive list and read routes on the host event bus", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearAssetFolderCache();
+  });
+
+  it("Studio's driveThumbs gets previews for its client's files only, over the real bus (PAR-8124)", async () => {
+    const { studio, b } = await setup();
+    const result = await driveThumbs(studio, { companyId: "company-a", client, fileIds: [FILE_A, FILE_B], timeoutMs: 2_000 });
+    expect(result).toMatchObject({ status: "thumbs", thumbs: [{ id: FILE_A, mimeType: "image/jpeg" }, { id: FILE_B, reason: "not_in_client_folder" }] });
+    if (result.status === "thumbs") expect(Array.from((result.thumbs[0] as { bytes: Uint8Array }).bytes)).toEqual([7, 7, 7]);
+    // Another company asking for company-a's client gets no previews at all.
+    expect(await driveThumbs(studio, { companyId: "company-b", client, fileIds: [FILE_A], timeoutMs: 2_000 })).toMatchObject({ status: "failed", reason: "no_project" });
+    expect(b.thumbnail).toHaveBeenCalledTimes(2);
+  });
 
   it("Studio's driveList reaches the CRM and gets the client's 02 Assets files back", async () => {
     const { studio, brokerFor } = await setup();
@@ -117,6 +136,7 @@ describe("Drive list and read routes on the host event bus", () => {
     const other = pluginCtx(bus, "someone.else");
     expect((await driveList(other, { companyId: "company-a", client, timeoutMs: 100 })).status).toBe("no_ack");
     expect((await driveRead(other, { companyId: "company-a", client, fileId: FILE_A, timeoutMs: 100 })).status).toBe("no_ack");
+    expect((await driveThumbs(other, { companyId: "company-a", client, fileIds: [FILE_A], timeoutMs: 100 })).status).toBe("no_ack");
     expect(brokerFor).not.toHaveBeenCalled();
     expect(b.downloadFile).not.toHaveBeenCalled();
   });
