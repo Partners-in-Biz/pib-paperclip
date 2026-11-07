@@ -347,9 +347,10 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
             <FromDrive
               companyId={companyId}
               client={client}
-              onImported={(a) => {
+              onImported={(added) => {
                 setReviewed((n) => n + 1);
-                setOpenId(a.id);
+                // One file opens; several stay in the grid, newest first.
+                if (added.length === 1) setOpenId(added[0]!.id);
               }}
             />
           </div>
