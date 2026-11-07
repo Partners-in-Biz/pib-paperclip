@@ -53,6 +53,7 @@ interface Overview {
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
   clients: Array<{ scopeKey: string; name: string }>;
+  agents?: Array<{ id: string; name: string; title: string | null }>;
   projects?: Array<{ id: string; name: string }>;
   models?: Model[];
   unavailableModels?: Array<{ id: string; label: string; note: string }>;
@@ -62,6 +63,7 @@ interface Me {
   role: string;
   canGenerate: boolean;
   isOwner: boolean;
+  canSetAgentLimit?: boolean;
 }
 
 interface Detail {
@@ -94,6 +96,8 @@ const DEFAULT_SCOPE = "default";
 const AGENT_RUN_SCOPE = "agent_run";
 const DEFAULT_RUN_LIMIT = 2;
 const COMPANY_SCOPE = "company";
+// Mirrors agentLimitKey in ../ledger.ts: one agent's per-run limit lives under agent:<agentId>.
+const AGENT_LIMIT_PREFIX = "agent:";
 const FINISHED = new Set(["succeeded", "failed"]);
 const POLL_MS = 4000;
 
@@ -748,7 +752,7 @@ function Progress({ companyId, groups, onStored }: { companyId: string; groups: 
   );
 }
 
-function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable }: { label: string; hint: string; scopeKey: string; cap: Cap | undefined; used?: number; save: (scopeKey: string, value: string) => void; busy: boolean; editable: boolean }) {
+function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable, unit = "monthly credits" }: { unit?: string; label: string; hint: string; scopeKey: string; cap: Cap | undefined; used?: number; save: (scopeKey: string, value: string) => void; busy: boolean; editable: boolean }) {
   const [value, setValue] = useState(cap ? String(cap.monthlyCredits) : "");
   useEffect(() => setValue(cap ? String(cap.monthlyCredits) : ""), [cap?.monthlyCredits]);
   const changed = value.trim() !== (cap ? String(cap.monthlyCredits) : "");
@@ -764,7 +768,7 @@ function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable }: { la
       {editable ? (
         <>
           <div style={{ width: 120 }}>
-            <Input aria-label={`${label} monthly credits`} type="number" min={0} step="any" placeholder="Not set" value={value} onChange={(event) => setValue(event.target.value)} />
+            <Input aria-label={`${label} ${unit}`} type="number" min={0} step="any" placeholder="Not set" value={value} onChange={(event) => setValue(event.target.value)} />
           </div>
           <Button disabled={busy || !changed} onClick={() => save(scopeKey, value)}>
             Save
@@ -779,14 +783,21 @@ function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable }: { la
 
 function Usage({ companyId, data, me, refresh }: { companyId: string; data: Overview; me: Me | null; refresh: () => void }) {
   const setCap = useStudioAction("set-cap");
+  const setAgentLimit = useStudioAction("set-agent-limit");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
   const [addClient, setAddClient] = useState("");
   const owner = me?.isOwner === true;
 
   const capOf = (key: string) => data.caps.find((c) => c.scopeKey === key);
-  const nameOf = (key: string) => (key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : key === AGENT_RUN_SCOPE ? "Per agent run" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
-  const clientCaps = data.caps.filter((c) => c.scopeKey.includes(":"));
+  const agentName = (id: string) => data.agents?.find((a) => a.id === id)?.name ?? id;
+  const nameOf = (key: string) => (key.startsWith(AGENT_LIMIT_PREFIX) ? `${agentName(key.slice(AGENT_LIMIT_PREFIX.length))} (per run)` : key === DEFAULT_SCOPE ? "Default" : key === COMPANY_SCOPE ? "Company" : key === AGENT_RUN_SCOPE ? "Per agent run" : (data.clients.find((c) => c.scopeKey === key)?.name ?? key));
+  const clientCaps = data.caps.filter((c) => c.scopeKey.includes(":") && !c.scopeKey.startsWith(AGENT_LIMIT_PREFIX));
+  const agentCaps = data.caps.filter((c) => c.scopeKey.startsWith(AGENT_LIMIT_PREFIX));
+  const agentAdmin = me?.canSetAgentLimit === true || owner;
+  const addableAgents = (data.agents ?? []).filter((a) => !capOf(`${AGENT_LIMIT_PREFIX}${a.id}`));
+  const [addAgent, setAddAgent] = useState("");
+  const runDefault = capOf(AGENT_RUN_SCOPE)?.monthlyCredits ?? DEFAULT_RUN_LIMIT;
   const addable = data.clients.filter((c) => !capOf(c.scopeKey));
   const anyCap = data.caps.some((c) => c.scopeKey === COMPANY_SCOPE || c.scopeKey === DEFAULT_SCOPE);
 
@@ -797,6 +808,20 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
       await setCap({ companyId, scopeKey, monthlyCredits: value.trim() === "" ? null : Number(value) });
       refresh();
       setMessage({ text: `${nameOf(scopeKey)} cap saved. It applies to the next generation.`, tone: "success" });
+    } catch (err) {
+      setMessage({ text: errorText(err), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAgent(scopeKey: string, value: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await setAgentLimit({ companyId, agentId: scopeKey.slice(AGENT_LIMIT_PREFIX.length), credits: value.trim() === "" ? null : Number(value) });
+      refresh();
+      setMessage({ text: `${nameOf(scopeKey)} limit saved. It applies to that agent's next generation.`, tone: "success" });
     } catch (err) {
       setMessage({ text: errorText(err), tone: "danger" });
     } finally {
@@ -840,15 +865,52 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           </div>
         ) : null}
         <p style={{ ...muted, marginTop: 12 }}>{owner ? "Leave a cap blank to clear it. 0 turns generation off." : "Only a company owner can change a cap."}</p>
+      </Section>
+      <Section title="Credits per agent run">
+        <p style={{ ...muted, marginBottom: 8 }}>
+          The most one agent run may spend. Above it the agent is refused, told nothing was started, and sent to the Creative Producer. The monthly cap still applies to everyone. People on this page are not limited by it.
+        </p>
         <CapRow
-          label="Per agent run"
-          hint={`The most one agent run may spend. Above it the agent stops and asks a person. Blank uses the default of ${DEFAULT_RUN_LIMIT} credits; 0 stops agents generating. People on this page are not limited by it.`}
+          label="All agents"
+          hint={`Used by an agent with no limit of its own. Blank uses the default of ${DEFAULT_RUN_LIMIT} credits.`}
+          unit="credits per run"
           scopeKey={AGENT_RUN_SCOPE}
           cap={capOf(AGENT_RUN_SCOPE)}
           save={save}
           busy={busy}
           editable={owner}
         />
+        {agentCaps.length === 0 ? <div style={{ ...muted, padding: "10px 0" }}>No agent has its own limit. Every agent gets {runDefault} credits per run.</div> : null}
+        {agentCaps.map((c) => (
+          <CapRow key={c.scopeKey} label={agentName(c.scopeKey.slice(AGENT_LIMIT_PREFIX.length))} hint="This agent's own limit. 0 stops it generating." unit="credits per run" scopeKey={c.scopeKey} cap={c} save={saveAgent} busy={busy} editable={agentAdmin} />
+        ))}
+        {agentAdmin && addableAgents.length > 0 ? (
+          <div style={{ ...row, paddingTop: 12 }}>
+            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+              <Select aria-label="Agent" value={addAgent} onChange={(event) => setAddAgent(event.target.value)}>
+                <option value="">Set a limit for an agent…</option>
+                {addableAgents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.title ? ` · ${a.title}` : ""}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <Button
+              variant="secondary"
+              disabled={busy || !addAgent}
+              onClick={() => {
+                const id = addAgent;
+                setAddAgent("");
+                void saveAgent(`${AGENT_LIMIT_PREFIX}${id}`, String(runDefault));
+              }}
+            >
+              Add
+            </Button>
+          </div>
+        ) : null}
+        <p style={{ ...muted, marginTop: 12 }}>{agentAdmin ? "Add an agent, then set its credits per run. Leave it blank to go back to the company limit." : "Only a company owner or admin can change an agent's limit."}</p>
       </Section>
       <Section title="Cap changes">
         {data.history.length === 0 ? <div style={muted}>No changes yet.</div> : null}

@@ -6,7 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetOut, getAssetRow, importFromAttachment, linkAsset, listAssets } from "../src/assets.js";
 import { processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
-import { capHistory, setCap, usage, currentPeriod, DEFAULT_RUN_LIMIT, runLimitOf, runUsage } from "../src/ledger.js";
+import { capHistory, setCap, usage, currentPeriod, DEFAULT_RUN_LIMIT, runLimitOf, runUsage, agentLimitKey } from "../src/ledger.js";
 import { ProviderError, type GenerationProvider, type JobState } from "../src/provider.js";
 import { isCompanyOwner, usageView } from "../src/service.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
@@ -189,6 +189,71 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       await expect(requestGeneration(world.ctx, CO, REQUEST, { agentId: "agent-1", runId: "run-zero" }, runtime)).rejects.toMatchObject({ code: "run_limit" });
       await setCap(world.ctx, CO, "agent_run", 50, "owner-1");
       await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, { agentId: "agent-1", runId: "run-zero" }, runtime)).resolves.toBeTruthy();
+    });
+  });
+
+  describe("per agent limit (PAR-8142)", () => {
+    const CREATIVE = { agentId: "creative-1", runId: "run-creative" };
+    const DEV = { agentId: "dev-1", runId: "run-dev" };
+    const reservedRows = async () => (await rows(world, `SELECT COUNT(*)::int AS n FROM ${T("credit_ledger")}`))[0].n as number;
+
+    it("resolves agent limit, then company limit, then the default of 2", () => {
+      const caps = [
+        { scopeKey: agentLimitKey("creative-1"), monthlyCredits: 10 },
+        { scopeKey: "agent_run", monthlyCredits: 5 },
+      ];
+      expect(runLimitOf(caps, "creative-1")).toBe(10);
+      expect(runLimitOf(caps, "dev-1")).toBe(5);
+      expect(runLimitOf(caps, null)).toBe(5);
+      expect(runLimitOf([{ scopeKey: agentLimitKey("creative-1"), monthlyCredits: 10 }], "dev-1")).toBe(DEFAULT_RUN_LIMIT);
+    });
+
+    it("the agent limit overrides the company limit, and does not apply to another agent", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await setCap(world.ctx, CO, "agent_run", 0.5, "owner-1");
+      await setCap(world.ctx, CO, agentLimitKey("creative-1"), 50, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, CREATIVE, runtime)).resolves.toBeTruthy();
+      await requestGeneration(world.ctx, CO, REQUEST, DEV, runtime);
+      await expect(requestGeneration(world.ctx, CO, REQUEST, DEV, runtime)).rejects.toMatchObject({ code: "run_limit" });
+    });
+
+    it("refuses over the agent limit with nothing reserved, and says where to go", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await setCap(world.ctx, CO, agentLimitKey("dev-1"), 0.1, "owner-1");
+      const before = await reservedRows();
+      const err = await requestGeneration(world.ctx, CO, REQUEST, DEV, runtime).catch((e) => e);
+      expect(err).toMatchObject({ code: "run_limit" });
+      expect(err.message).toContain("Nothing was started");
+      expect(err.message).toContain("Creative Producer");
+      expect(err.message).toContain("request-creative");
+      expect(err.message).toContain("PiB");
+      expect(err.message).not.toMatch(/ask a person/i);
+      expect(await reservedRows()).toBe(before);
+      expect(await runUsage(world.ctx, CO, "run-dev")).toBe(0);
+    });
+
+    it("the monthly cap still wins over a higher agent limit", async () => {
+      await setCap(world.ctx, CO, "company", 1, "owner-1");
+      await setCap(world.ctx, CO, agentLimitKey("creative-1"), 50, "owner-1");
+      let refused: unknown = null;
+      for (let i = 0; i < 6 && !refused; i++) refused = await requestGeneration(world.ctx, CO, REQUEST, CREATIVE, runtime).then(() => null, (e) => e);
+      expect(refused).toMatchObject({ code: "cap_reached" });
+      expect(await runUsage(world.ctx, CO, "run-creative")).toBeLessThanOrEqual(1);
+    });
+
+    it("a person (no run id) is not affected by any agent limit", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await setCap(world.ctx, CO, "agent_run", 0, "owner-1");
+      await setCap(world.ctx, CO, agentLimitKey("dev-1"), 0, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, { userId: "user-1" } as never, runtime)).resolves.toBeTruthy();
+    });
+
+    it("an agent limit can be cleared, falling back to the company limit", async () => {
+      await setCap(world.ctx, CO, "company", 100, "owner-1");
+      await setCap(world.ctx, CO, agentLimitKey("dev-1"), 0, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, DEV, runtime)).rejects.toMatchObject({ code: "run_limit" });
+      await setCap(world.ctx, CO, agentLimitKey("dev-1"), null, "owner-1");
+      await expect(requestGeneration(world.ctx, CO, REQUEST, DEV, runtime)).resolves.toBeTruthy();
     });
   });
 

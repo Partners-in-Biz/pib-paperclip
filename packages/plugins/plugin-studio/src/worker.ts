@@ -14,9 +14,9 @@ import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
-import { setCap } from "./ledger.js";
+import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
-import { canGenerate, isCompanyOwner, memberRole, overview, usageView } from "./service.js";
+import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
@@ -166,6 +166,19 @@ const plugin = definePlugin({
       return overview(ctx, companyId);
     });
 
+    // One agent's per-run limit (credit_limits key agent:<id>). Owner or admin; blank clears it.
+    action("set-agent-limit", async (params, context) => {
+      const companyId = context.companyId ?? context.actor.companyId;
+      if (!companyId) throw new StudioError("Company is required");
+      if (!(await isOwnerOrAdmin(ctx, companyId, context.actor))) throw new StudioError("Only a company owner or admin can set an agent's credit limit.", "forbidden");
+      const p = objectParams(params);
+      const agentId = String(p.agentId ?? "");
+      if (!isAgentLimitKey(agentLimitKey(agentId))) throw new StudioError("Pick an agent.", "bad_scope");
+      const value = p.credits === null || p.credits === "" || p.credits === undefined ? null : Number(p.credits);
+      await setCap(ctx, companyId, agentLimitKey(agentId), value, String(context.actor.userId));
+      return overview(ctx, companyId);
+    });
+
     // Page data. Same host company check as "overview"; none of these returns a link or a storage key.
     const pageData = (key: string, load: (companyId: string, p: Record<string, unknown>) => Promise<unknown>) =>
       ctx.data.register(key, async (params) => {
@@ -191,7 +204,7 @@ const plugin = definePlugin({
 
     action("me", async (_params, context) => {
       const me = await person(context);
-      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", userId: me.userId };
+      return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", canSetAgentLimit: me.role === "owner" || me.role === "admin", userId: me.userId };
     });
 
     action("asset-url", async (params, context) => {

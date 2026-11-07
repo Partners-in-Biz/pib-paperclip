@@ -83,8 +83,8 @@ describe("which cap applies", () => {
   });
 
   it("knows which caps exist", () => {
-    for (const ok of ["default", "company", "company:abc", "contact:a-b"]) expect(isCapScope(ok)).toBe(true);
-    for (const bad of ["", "all", "company:", "company:a b", "other:1"]) expect(isCapScope(bad)).toBe(false);
+    for (const ok of ["default", "company", "company:abc", "contact:a-b", "agent:8c0973a2-43bf-4acc-8ac7-dec8a679449f"]) expect(isCapScope(ok)).toBe(true);
+    for (const bad of ["", "all", "company:", "company:a b", "other:1", "agent:", "agent:a b"]) expect(isCapScope(bad)).toBe(false);
   });
 });
 
