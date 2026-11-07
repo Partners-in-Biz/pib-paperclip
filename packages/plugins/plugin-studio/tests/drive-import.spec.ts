@@ -70,9 +70,10 @@ describe("From Drive", () => {
   });
 
   it("lists only images and videos and flags files over the limit", async () => {
-    const list = vi.fn(async () => ({ status: "listed" as const, requestId: "r", files: [FILE, { ...FILE, id: "2", name: "q.pdf", mimeType: "application/pdf" }, { ...FILE, id: "3", mimeType: "video/mp4", size: 6 * 1024 * 1024 }] }));
+    const list = vi.fn(async () => ({ status: "listed" as const, requestId: "r", files: [FILE, { ...FILE, id: "2", name: "q.pdf", mimeType: "application/pdf" }, { ...FILE, id: "3", mimeType: "video/mp4", size: 201 * 1024 * 1024 }, { ...FILE, id: "4", mimeType: "video/mp4", size: 6 * 1024 * 1024 }] }));
     const out = await listDriveFiles(ctx, "co-1", { client: "own" }, { list, read: vi.fn() } as never);
-    expect(out.files.map((f) => [f.id, f.tooLarge])).toEqual([[FILE.id, false], ["3", true]]);
+    // Over 5 MiB is fine now (a background transfer, PAR-8125); only over 200 MB is too large.
+    expect(out.files.map((f) => [f.id, f.tooLarge])).toEqual([[FILE.id, false], ["3", true], ["4", false]]);
     expect(list).toHaveBeenCalledWith(ctx, expect.not.objectContaining({ client: expect.anything() }));
     expect(driveSourceRef(null, "abc")).toBe("drive:own:abc");
   });

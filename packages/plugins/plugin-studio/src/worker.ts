@@ -8,6 +8,7 @@ import { createShare, listShares, refreshShares, revokeShare } from "./canvas-sh
 import { giveAsset, giveChoices } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
+import { getTransfer } from "./drive-jobs.js";
 import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
 import { registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { errorText, StudioError } from "./errors.js";
@@ -254,6 +255,13 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
       return driveThumbs(ctx, me.companyId, objectParams(params));
+    });
+
+    // A Drive save or import over 5 MiB runs in the background (PAR-8125): the page polls this for progress and the result.
+    action("drive-transfer", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't use Drive transfers.", "forbidden");
+      return getTransfer(me.companyId, String(objectParams(params).transferId ?? "").trim());
     });
 
     // Previews for a page of the library in one call. Links last five minutes.

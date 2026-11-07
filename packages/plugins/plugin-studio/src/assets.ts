@@ -85,6 +85,17 @@ export async function storeAsset(ctx: PluginContext, config: StudioConfig, input
   const id = input.id ?? randomUUID();
   const key = assetKey(input.companyId, input.scope, id, 1, extFor(input.mime));
   await putObject(await config.bucket(), input.companyId, key, input.bytes, input.mime);
+  const { bytes, ...rest } = input;
+  await recordStoredAsset(ctx, { ...rest, id, key, size: bytes.length, sha256: sha256Hex(bytes) });
+  return id;
+}
+
+/**
+ * Record a file that is already in R2 at `key` (a streamed Drive import, PAR-8125). Same rows and links as storeAsset;
+ * every write is idempotent.
+ */
+export async function recordStoredAsset(ctx: PluginContext, input: Omit<StoreInput, "bytes"> & { id: string; key: string; size: number; sha256: string }): Promise<void> {
+  const { id, key } = input;
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "assets")} (id, company_id, client_kind, client_ref, client_name, project_id, name, kind, alt_text, source, source_ref, generation_id, created_by_agent_id, created_by_user_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (id) DO NOTHING`,
@@ -92,11 +103,10 @@ export async function storeAsset(ctx: PluginContext, config: StudioConfig, input
   );
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "asset_versions")} (asset_id, version, company_id, r2_key, mime, bytes, sha256) VALUES ($1, 1, $2, $3, $4, $5, $6) ON CONFLICT (asset_id, version) DO NOTHING`,
-    [id, input.companyId, key, input.mime, input.bytes.length, sha256Hex(input.bytes)],
+    [id, input.companyId, key, input.mime, input.size, input.sha256],
   );
   if (input.issueId) await addLink(ctx, input.companyId, id, "issue", input.issueId);
   if (input.projectId) await addLink(ctx, input.companyId, id, "project", input.projectId);
-  return id;
 }
 
 export async function addLink(ctx: PluginContext, companyId: string, assetId: string, type: string, targetId: string): Promise<void> {
