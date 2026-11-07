@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
-import { createGoogleDriveBroker } from "./google-broker.js";
+import { createGoogleDriveBroker, CLIENTS_PATH } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
@@ -85,7 +85,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 
   try {
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
-    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson" };
+    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson", ...(await notConfiguredFallback(ctx, viewer, type, id)) };
 
     // A client's project has no folder of its own: it is looked up as its company's folder.
     const target = await registryTarget(ctx, viewer, type, id);
@@ -96,6 +96,21 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
       return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
     }
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Where a person can file by hand when Drive is not configured: the company's Contracts & Quotes folder. Omitted when there is no client folder (product, book, no client) or the facts cannot be read. */
+async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<{ fallback?: { sharedDriveId: string | null; pathSegments: string[] } }> {
+  try {
+    const facts = type === "crm_company" ? await loadDriveFacts(ctx, viewer, type, id) : await loadProjectFacts(ctx, viewer, id);
+    if (!facts) return {};
+    const target = folderTarget(facts);
+    if (target.entityType !== "crm_company") return {};
+    const name = type === "crm_company" ? facts.name : facts.companyName!;
+    const sharedDriveId = await effectiveSharedDriveId(ctx, viewer.companyId, await readConfig(ctx, viewer.companyId));
+    return { fallback: { sharedDriveId: sharedDriveId || null, pathSegments: [...CLIENTS_PATH, companyFolderName(name, facts.contactName), "Contracts & Quotes"] } };
+  } catch {
+    return {};
   }
 }
 
