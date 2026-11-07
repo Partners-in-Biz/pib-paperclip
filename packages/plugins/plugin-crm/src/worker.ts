@@ -114,6 +114,7 @@ import {
   recordDates,
 } from "./db.js";
 import { crmSeries } from "./series.js";
+import { callList, deskView, givePrepare, giveRecord, logOutcome, setNextAction, type DeskDeps } from "./desk-actions.js";
 import {
   advanceEnrollment,
   applyFieldPatch,
@@ -306,6 +307,19 @@ const plugin = definePlugin({
       return load(ctx, context);
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
+    // The sales desk (0.37.0): the Today queue, outcomes, next actions with briefs, and Give to agent on a record.
+    registerAction("crm.desk", async (_params, context) => deskView(ctx, await actionViewer(ctx, context), DESK_DEPS));
+    registerAction("crm.log-outcome", async (params, context) => logOutcome(ctx, await actionViewer(ctx, context), DESK_DEPS, params, actionSource(context)));
+    registerAction("crm.set-next-action", async (params, context) => setNextAction(ctx, await actionViewer(ctx, context), DESK_DEPS, params, actionSource(context)));
+    registerAction("crm.call-list", async (params, context) => callList(ctx, await actionViewer(ctx, context), DESK_DEPS, params));
+    registerAction("crm.give-prepare", async (params, context) => {
+      requireUser(context, "give a record to an agent");
+      return givePrepare(ctx, await actionViewer(ctx, context), DESK_DEPS, params);
+    });
+    registerAction("crm.give-record", async (params, context) => {
+      requireUser(context, "give a record to an agent");
+      return giveRecord(ctx, await actionViewer(ctx, context), DESK_DEPS, params);
+    });
     // PAR-8130: copy sent reports to Drive for a date range. A dry run (the default) only lists; saving needs a board user.
     // PAR-8121: a saving call does `limit` reports and returns `nextAfterId` for the next call (`afterId`).
     registerAction("crm.reports-drive-catchup", async (params, context) => {
@@ -736,6 +750,12 @@ async function dispatch(
       return linkRecords(ctx, viewer, body);
     case "log-activity":
       return logActivity(ctx, viewer, body);
+    case "call-list":
+      return callList(ctx, viewer, DESK_DEPS, body);
+    case "set-next-action":
+      return setNextAction(ctx, viewer, DESK_DEPS, body, source);
+    case "log-outcome":
+      return logOutcome(ctx, viewer, DESK_DEPS, body, source);
     case "create-deal":
       return createDeal(ctx, viewer, body);
     case "move-deal":
@@ -859,6 +879,12 @@ async function dispatch(
 }
 
 /** Every company, contact, deal and link this viewer may see, plus the pipeline. */
+/** What the sales desk needs from this file: the visibility-filtered records and the record check every write uses. */
+const DESK_DEPS: DeskDeps = {
+  records: (ctx, viewer) => visibleRecords(ctx, viewer),
+  requireRecord: (ctx, viewer, recordType, id) => requireRecord(ctx, viewer, recordType, id),
+};
+
 async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
   const [accounts, contacts, deals, links, sequences, stages] = await Promise.all([
