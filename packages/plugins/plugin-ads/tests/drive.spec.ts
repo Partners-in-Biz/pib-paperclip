@@ -37,3 +37,17 @@ describe("saveCreativeToDrive", () => {
     expect(creativeFileName({ ...base, name: "a/b\\c\n" })).toBe("2026-10-20 meta a-b-c 1234abcd v01.json");
   });
 });
+
+describe("saveCreativeToDrive client (PAR-8123)", () => {
+  const ok = () => vi.fn<DriveSaveFn>(async () => ({ status: "saved", requestId: "r", driveFileId: "d", url: "https://drive/x" }));
+  it("passes the scope's client", async () => {
+    const fake = ok();
+    await saveCreativeToDrive(ctx, { ...base, client: { kind: "crm_org", ref: "velox" }, driveSave: fake });
+    expect(fake.mock.calls[0]![1].client).toEqual({ kind: "crm_org", ref: "velox" });
+  });
+  it("sends no client for the company's own scope", async () => {
+    const fake = ok();
+    await saveCreativeToDrive(ctx, { ...base, client: null, driveSave: fake });
+    expect(fake.mock.calls[0]![1]).not.toHaveProperty("client");
+  });
+});

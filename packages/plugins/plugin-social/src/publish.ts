@@ -177,7 +177,7 @@ async function publishDestination(
       // Not awaited: publish returns immediately; Drive save continues in the background.
       void saveToDrive(ctx, {
         companyId,
-        post: { id: post.id, body: post.body },
+        post: { id: post.id, body: post.body, client_kind: post.client_kind, client_ref: post.client_ref },
         platform,
         media: postMedia(post),
         publishedAt: new Date(),

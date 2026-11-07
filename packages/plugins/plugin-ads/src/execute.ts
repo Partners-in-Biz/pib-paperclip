@@ -218,6 +218,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           platform: t.account.platform,
           fields: { externalId: created.externalId, link: payload.link, headline: payload.headline, body: payload.body, cta: payload.cta, imageHash: payload.imageHash ?? null, videoId: payload.videoId ?? null },
           savedAt: rt.now(),
+          client: scope.client_kind && scope.client_ref ? { kind: scope.client_kind, ref: scope.client_ref } : null,
           driveSave: rt.driveSave,
         });
       } else if (p.kind === "create_ad") {
