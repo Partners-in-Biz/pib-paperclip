@@ -14,6 +14,7 @@ import { modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { CommentsThread } from "./Versions.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { ModelPicker } from "./ModelPicker.js";
+import { BrandKitBox } from "./BrandKit.js";
 import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
 export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
@@ -171,6 +172,7 @@ function GenerateConfigure({ card, companyId, client, canGenerate, models, unava
         <span style={muted}>Prompt (added to any connected prompt cards)</span>
         <textarea aria-label="Prompt" rows={4} maxLength={MAX_TEXT} value={data.prompt ?? ""} onFocus={beforeEdit} onChange={(e) => edit({ prompt: e.target.value })} style={{ ...field, resize: "vertical" }} />
       </label>
+      <BrandKitBox companyId={companyId} client={client} prompt={data.prompt ?? ""} disabled={running || canGenerate !== true} onAdd={(prompt) => { beforeEdit(); edit({ prompt }); }} />
       <span style={muted}>
         {inputs.prompt ? `${inputs.prompt.length} characters in all` : "No prompt yet"} · {refs.length} reference{refs.length === 1 ? "" : "s"} from connected cards
       </span>
