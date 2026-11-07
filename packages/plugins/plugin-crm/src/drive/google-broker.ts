@@ -550,5 +550,29 @@ export function createGoogleDriveBroker(
     }
   }
 
-  return { resolve, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, thumbnail };
+  /** PAR-8125: `alt=media` as a stream, for a copy into R2. The timeout covers the whole body, for a 200 MiB file. */
+  async function downloadStream(fileId: string): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }> {
+    const token = await bearer();
+    let res: Response;
+    try {
+      res = await fetchFn(`${DRIVE}/files/${encodeURIComponent(fileId)}?alt=media&${shared}`, {
+        method: "GET",
+        headers: { Authorization: "Bearer " + token },
+        signal: AbortSignal.timeout(30 * 60 * 1000),
+      });
+    } catch (err) {
+      throw new BrokerError(`Network error talking to Google Drive: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, await res.text().catch(() => ""));
+    if (!res.body) throw new BrokerError("Google Drive sent no file body.", 502, true);
+    const declared = res.headers?.get?.("content-length");
+    const size = declared ? Number(declared) : null;
+    if (size !== null && size > MAX_STREAM_UPLOAD_BYTES) {
+      await res.body.cancel().catch(() => undefined);
+      throw new BrokerError(`File too large (${size} bytes).`, 413, false, undefined, undefined, "too_large");
+    }
+    return { body: res.body as ReadableStream<Uint8Array>, size: size !== null && Number.isFinite(size) ? size : null };
+  }
+
+  return { resolve, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, downloadStream, thumbnail };
 }

@@ -92,6 +92,8 @@ export interface Broker {
   /** null when the file is missing, trashed, or not on this company's Shared Drive. */
   fileMeta?(fileId: string): Promise<DriveFileInfo | null>;
   downloadFile?(fileId: string, maxBytes: number): Promise<Uint8Array>;
+  /** A large file's bytes as a stream (PAR-8125), for a copy into R2. Nothing is buffered. `size` is Drive's Content-Length when sent. */
+  downloadStream?(fileId: string): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }>;
   /**
    * Drive's own preview of a file at about `px` wide (PAR-8124), fetched with the service account so no link leaves
    * the CRM. `allowed` sees the file's parents first; when it says no, nothing is fetched. null: no such file, or no preview.
