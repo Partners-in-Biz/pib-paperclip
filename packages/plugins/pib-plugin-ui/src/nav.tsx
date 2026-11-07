@@ -26,6 +26,8 @@ export interface NavMember {
   label: string;
   /** Plugin page route (no company prefix), e.g. `/billing`. */
   route: string;
+  /** Other routes that count as being on this member (highlight it), e.g. `/studio-canvas`. */
+  alsoRoutes?: string[];
 }
 
 export interface NavGroup {
@@ -61,6 +63,7 @@ export const NAV_GROUPS: Record<NavGroupKey, NavGroup> = {
       { module: "seo", pluginKey: "partnersinbiz.seo", label: "SEO", route: "/seo" },
       { module: "campaigns", pluginKey: "partnersinbiz.campaigns", label: "Campaigns", route: "/campaigns" },
       { module: "ads", pluginKey: "partnersinbiz.ads", label: "Paid ads", route: "/ads" },
+      { module: "studio", pluginKey: "partnersinbiz.studio", label: "Studio", route: "/studio", alsoRoutes: ["/studio-canvas"] },
     ],
   },
   finance: {

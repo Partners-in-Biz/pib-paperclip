@@ -7,6 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   BookOpen,
   Calculator,
+  Clapperboard,
   Gauge,
   Handshake,
   Inbox,
@@ -130,6 +131,7 @@ export const MODULE_ICONS: Record<ModuleKey, LucideIcon> = {
   seo: Search,
   campaigns: Send,
   ads: Target,
+  studio: Clapperboard,
   billing: Receipt,
   accounting: Calculator,
   payroll: Wallet,
