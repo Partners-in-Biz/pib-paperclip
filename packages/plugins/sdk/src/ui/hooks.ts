@@ -3,6 +3,7 @@ import type {
   PluginActionFn,
   HostLocation,
   HostNavigation,
+  HostNewIssue,
   PluginHostContext,
   PluginStreamResult,
   PluginToastFn,
@@ -165,6 +166,40 @@ export function useHostNavigation(): HostNavigation {
  */
 export function useHostLocation(): HostLocation {
   const impl = getSdkUiRuntimeValue<() => HostLocation>("useHostLocation");
+  return impl();
+}
+
+// ---------------------------------------------------------------------------
+// useHostNewIssue
+// ---------------------------------------------------------------------------
+
+/**
+ * Open the host's normal New Task dialog with prefilled fields. The board can
+ * edit or add to everything before creating. `open()` resolves with the
+ * created issue (so the plugin can record a link), or `null` when the dialog
+ * closes without creating one.
+ *
+ * Only `title`, `description`, `projectId`, `assigneeAgentId`, `priority` and
+ * `parentId` are accepted; other fields are dropped by the host. Hosts older
+ * than this hook throw when it is called: check
+ * `globalThis.__paperclipPluginBridge__?.sdkUi?.useHostNewIssue` first if the
+ * plugin must also run on older hosts.
+ *
+ * @example
+ * ```tsx
+ * function GiveButton() {
+ *   const newIssue = useHostNewIssue();
+ *   return (
+ *     <button onClick={async () => {
+ *       const issue = await newIssue.open({ title: "Follow up", description: "..." });
+ *       if (issue) recordLink(issue.id);
+ *     }}>Give to agent</button>
+ *   );
+ * }
+ * ```
+ */
+export function useHostNewIssue(): HostNewIssue {
+  const impl = getSdkUiRuntimeValue<() => HostNewIssue>("useHostNewIssue");
   return impl();
 }
 
