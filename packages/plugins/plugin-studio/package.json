@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-studio",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "private": true,
   "type": "module",
   "description": "Creative assets, image and video generation, and monthly credit caps for people and agents.",

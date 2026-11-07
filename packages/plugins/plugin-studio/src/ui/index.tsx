@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
 import { useMakerLabel } from "./maker.js";
+import { BrandKitBox } from "./BrandKit.js";
+import { ChipGroup } from "./ChipGroup.js";
+import { TemplateGallery } from "./TemplateGallery.js";
+import { fieldLabel, fillPrompt, missingFields, placeholdersOf, type PromptTemplate } from "../prompt-templates.js";
 import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { GiveButton, GivenList } from "./GiveToAgent.js";
@@ -10,9 +14,9 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
-import { Blocks, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
-import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
+import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX } from "../presets.js";
 
 interface Cap {
   scopeKey: string;
@@ -114,9 +118,12 @@ const TAB_ICONS = { library: Blocks, generate: Sparkles, usage: Gauge } as const
 
 const roundCredits = (n: number) => Math.round(n * 100) / 100;
 
+/** The company cap, or the default when the company cap is blank. */
+const effectiveCap = (data: Overview) => data.caps.find((c) => c.scopeKey === COMPANY_SCOPE) ?? data.caps.find((c) => c.scopeKey === DEFAULT_SCOPE) ?? null;
+
 /** The credits number on the Library: what is left of the cap that applies, or what was used when no cap is set. */
 function CreditsMetric({ data }: { data: Overview }) {
-  const cap = data.caps.find((c) => c.scopeKey === COMPANY_SCOPE) ?? data.caps.find((c) => c.scopeKey === DEFAULT_SCOPE) ?? null;
+  const cap = effectiveCap(data);
   const used = roundCredits(data.companyUsed);
   if (!cap) return <MetricCard icon={Coins} value={used} label="Credits used this month" description="No cap set, so generation is off" tone="warn" />;
   const left = Math.max(0, roundCredits(cap.monthlyCredits - data.companyUsed));
@@ -230,27 +237,6 @@ export { useNarrow };
 const cardBox = { borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", minWidth: 0 } as const;
 /** Text on media: a dark scrim keeps pills readable (AA) on any picture. */
 const scrim = "color-mix(in srgb, var(--background, black) 72%, transparent)";
-
-/** A segmented row of filter chips; a count shows after the label when given. */
-function ChipGroup({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: Array<[string, string, number?]> }) {
-  return (
-    // One row that scrolls sideways on a phone rather than wrapping inside the pill.
-    <div role="group" aria-label={label} style={{ display: "inline-flex", flexWrap: "nowrap", overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "none", gap: 2, padding: 2, border: "1px solid var(--border)", borderRadius: 999, maxWidth: "100%" }}>
-      {options.map(([v, text, n]) => (
-        <button
-          key={v || "all"}
-          type="button"
-          aria-pressed={value === v}
-          onClick={() => onChange(v)}
-          style={{ border: 0, borderRadius: 999, padding: "4px 12px", minHeight: 32, font: "inherit", fontSize: 13, cursor: "pointer", color: value === v ? "var(--foreground)" : "var(--muted-foreground)", background: value === v ? "var(--accent, var(--muted))" : "transparent", fontWeight: value === v ? 600 : 400 }}
-        >
-          {text}
-          {typeof n === "number" ? <span style={{ marginLeft: 6, opacity: 0.7 }}>{n}</span> : null}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /** Library card: 4:3 media first, status pill on it, a human title and one meta line. Videos show their first frame. */
 function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string | undefined; meta: string; onOpen: () => void }) {
@@ -418,6 +404,7 @@ function AssetDetail({
   const maker = useMakerLabel(companyId, detail.data?.madeBy);
   const assetUrl = useStudioAction("asset-url");
   const reviewAction = useStudioAction("review");
+  const saveTemplateAction = useStudioAction("save-prompt-template");
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -431,6 +418,27 @@ function AssetDetail({
       setNotice(out.exported ? "Approved. It's on its way to Social's media library for this client." : out.changed ? "Rejected." : `Already ${decision}.`);
       setV((n) => n + 1);
       onReviewed();
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveAsTemplate(from: Detail) {
+    setBusy(true);
+    setMessage(null);
+    setNotice(null);
+    try {
+      await saveTemplateAction({
+        companyId,
+        title: humanTitle(from.generation?.prompt, from.asset.name).slice(0, 80),
+        tagline: "Saved from the library",
+        prompt: from.generation?.prompt,
+        kind: from.asset.kind,
+        model: from.generation?.model,
+        assetId: from.asset.id,
+      });
+      setNotice("Saved. It's under Your templates on the Generate tab, with this file as its picture.");
     } catch (err) {
       setMessage(errorText(err));
     } finally {
@@ -504,6 +512,11 @@ function AssetDetail({
             {canReview && d ? (
               <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
             ) : null}
+            {canReview && d?.generation?.prompt ? (
+              <Button variant="secondary" disabled={busy} onClick={() => void saveAsTemplate(d)}>
+                Save as template
+              </Button>
+            ) : null}
             {/* Viewers can't give (the worker refuses them too). */}
             {canReview && d ? (
               <GiveButton
@@ -567,6 +580,7 @@ function AssetDetail({
 function Generate({ companyId, data, me, onStored }: { companyId: string; data: Overview; me: Me | null; onStored: () => void }) {
   // Models that need a reference image wait for the canvas (slice 2b): the page has no picker for one yet.
   const models = (data.models ?? []).filter((m) => !m.minRefs);
+  const narrow = useNarrow();
   const [modelId, setModelId] = useState(models[0]?.id ?? "");
   const model = models.find((m) => m.id === modelId) ?? models[0];
   const [prompt, setPrompt] = useState("");
@@ -580,28 +594,118 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
+  const [saved, setSaved] = useState<PromptTemplate[]>([]);
+  const [savedProblem, setSavedProblem] = useState<string | null>(null);
+  const [template, setTemplate] = useState<PromptTemplate | null>(null);
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [naming, setNaming] = useState<string | null>(null);
+  const composerRef = useRef<HTMLElement | null>(null);
   const estimateAction = useStudioAction("estimate");
   const generateAction = useStudioAction("generate");
+  const listTemplates = useStudioAction("prompt-templates");
+  const saveTemplateAction = useStudioAction("save-prompt-template");
+  const deleteTemplateAction = useStudioAction("delete-prompt-template");
+
+  useEffect(() => {
+    let live = true;
+    listTemplates({ companyId })
+      .then((out) => live && setSaved((out as { saved: PromptTemplate[] }).saved))
+      .catch((err) => live && setSavedProblem(errorText(err)));
+    return () => {
+      live = false;
+    };
+    // `listTemplates` is a new function each render; the list depends only on the company.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId]);
 
   useEffect(() => {
     if (!model) return;
     if (!model.ratios.includes(ratio)) setRatio(model.ratios[0] ?? "");
     if (!model.resolutions.includes(resolution)) setResolution(model.resolutions[0] ?? "");
   }, [model?.id]);
+  const finalPrompt = preset ? prompt : fillPrompt(prompt, fields);
+  const blanks = preset ? [] : missingFields(prompt, fields);
+  const fieldNames = preset ? [] : placeholdersOf(prompt);
   // Any change to the request makes the shown price stale.
-  useEffect(() => setEstimate(null), [modelId, prompt, presetId, ratio, resolution, batchSize, client]);
+  useEffect(() => setEstimate(null), [modelId, finalPrompt, presetId, ratio, resolution, batchSize, client]);
+
+  /** Bring the composer into view when picking wrapped it out of sight (a phone or a narrow window). */
+  const showComposer = () => composerRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
 
   function pickPreset(id: string) {
+    setTemplate(null);
+    setFields({});
+    setNaming(null);
     setPresetId(id);
     const next = getPhotoPreset(id);
-    if (!next) return;
-    const soul = models.find((m) => m.id === DEFAULT_PRESET_MODEL);
-    if (soul) setModelId(soul.id);
-    if ((soul ?? model)?.ratios.includes(DEFAULT_PRESET_RATIO)) setRatio(DEFAULT_PRESET_RATIO);
-    setPrompt((p) => p.slice(0, PHOTO_NOTE_MAX));
+    if (next) {
+      const soul = models.find((m) => m.id === DEFAULT_PRESET_MODEL);
+      if (soul) setModelId(soul.id);
+      if ((soul ?? model)?.ratios.includes(DEFAULT_PRESET_RATIO)) setRatio(DEFAULT_PRESET_RATIO);
+      setPrompt("");
+    }
+    showComposer();
   }
 
-  const request = () => ({ companyId, model: model?.id, prompt, preset: presetId || undefined, ratio, resolution, batchSize: Number(batchSize), client });
+  function pickTemplate(next: PromptTemplate) {
+    setPresetId("");
+    setNaming(null);
+    setMessage(null);
+    setTemplate(next);
+    setFields({});
+    setPrompt(next.prompt);
+    const chosen = models.find((m) => m.id === next.model) ?? (model?.kind === next.kind ? model : models.find((m) => m.kind === next.kind));
+    if (chosen) {
+      setModelId(chosen.id);
+      if (next.ratio && chosen.ratios.includes(next.ratio)) setRatio(next.ratio);
+      if (next.resolution && chosen.resolutions.includes(next.resolution)) setResolution(next.resolution);
+    } else {
+      setMessage({ text: `No ${next.kind} model is on offer right now, so this template can't run yet.`, tone: "danger" });
+    }
+    showComposer();
+  }
+
+  function startBlank() {
+    setTemplate(null);
+    setPresetId("");
+    setFields({});
+    setNaming(null);
+    setPrompt("");
+    setMessage(null);
+  }
+
+  async function saveAsTemplate() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const out = (await saveTemplateAction({ companyId, title: naming ?? "", prompt, kind: model?.kind, ratio, model: model?.id, resolution })) as { template: PromptTemplate };
+      setSaved((list) => [out.template, ...list]);
+      setTemplate(out.template);
+      setNaming(null);
+      setMessage({ text: "Saved. Everyone in this company can use it now.", tone: "success" });
+    } catch (err) {
+      setMessage({ text: errorText(err), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeTemplate(target: PromptTemplate) {
+    if (!window.confirm(`Delete the template "${target.title}"? This removes it for everyone in the company. Files it already made stay in the library.`)) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await deleteTemplateAction({ companyId, id: target.id });
+      setSaved((list) => list.filter((t) => t.id !== target.id));
+      setTemplate(null);
+    } catch (err) {
+      setMessage({ text: errorText(err), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const request = () => ({ companyId, model: model?.id, prompt: finalPrompt, preset: presetId || undefined, ratio, resolution, batchSize: Number(batchSize), client });
 
   async function runEstimate() {
     setBusy(true);
@@ -631,109 +735,148 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   }
 
   const viewer = me !== null && !me.canGenerate;
-  const ready = !!model && (preset !== null || prompt.trim().length > 0) && !busy && !viewer;
+  const ready = !!model && (preset !== null || finalPrompt.trim().length > 0) && blanks.length === 0 && !busy && !viewer;
+  const cap = effectiveCap(data);
+  const heading = preset ? preset.label : template ? template.title : "Your own prompt";
 
   return (
     <>
-      <Section title="Generate">
-        {viewer ? <PageMessage tone="warning" message="Viewers can look at Studio but can't generate. Ask a company owner for member access." /> : null}
-        {models.length === 0 ? <PageMessage tone="warning" message="No fixed-price models are offered yet." /> : null}
-        <div style={grid(160)}>
-          <Field label="Style">
-            <Select aria-label="Style" value={presetId} onChange={(e) => pickPreset(e.target.value)}>
-              <option value="">No style (free prompt)</option>
-              {PHOTO_PRESETS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label} · {p.tagline}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Model">
-            <Select aria-label="Model" value={model?.id ?? ""} onChange={(e) => setModelId(e.target.value)}>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-              {(data.unavailableModels ?? []).map((m) => (
-                <option key={`na-${m.id}`} value={`na-${m.id}`} disabled>
-                  {m.label} · {m.note}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Ratio">
-            <Select aria-label="Ratio" value={ratio} onChange={(e) => setRatio(e.target.value)}>
-              {(model?.ratios ?? []).map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Resolution">
-            <Select aria-label="Resolution" value={resolution} onChange={(e) => setResolution(e.target.value)}>
-              {(model?.resolutions ?? []).map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Batch size">
-            <Select aria-label="Batch size" value={batchSize} onChange={(e) => setBatchSize(e.target.value)}>
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                <option key={n} value={String(n)}>
-                  {n}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="For">
-            <Select aria-label="For client" value={client} onChange={(e) => setClient(e.target.value)}>
-              <option value="own">Own work</option>
-              {data.clients.map((c) => (
-                <option key={c.scopeKey} value={c.scopeKey}>
-                  {c.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", minWidth: 0 }}>
+        <div style={{ flex: "999 1 520px", minWidth: 0, maxWidth: "100%", order: narrow ? 1 : 0 }}>
+          <TemplateGallery companyId={companyId} saved={saved} selectedId={template?.id ?? ""} presetId={presetId} onPick={pickTemplate} onPickPreset={pickPreset} problem={savedProblem} />
         </div>
-        <div style={{ marginTop: 10 }}>
-          <Field label={preset ? "Extra direction (optional)" : "Prompt"}>
+        <section
+          ref={composerRef}
+          aria-label="Compose"
+          style={{ flex: "1 1 400px", minWidth: 0, maxWidth: "100%", order: narrow ? 0 : 1, position: narrow ? undefined : "sticky", top: 0, maxHeight: narrow ? undefined : "calc(100vh - 110px)", overflowY: narrow ? undefined : "auto", display: "grid", gap: 12, padding: 16, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}
+        >
+          <div style={{ ...row, justifyContent: "space-between", gap: 8 }}>
+            <strong style={{ fontSize: 15, minWidth: 0, overflowWrap: "anywhere" }}>{heading}</strong>
+            {preset || template ? <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={startBlank}>Start blank</Button> : null}
+          </div>
+          {cap ? <ProgressBar done={roundCredits(data.companyUsed)} total={cap.monthlyCredits} tone="budget" label="Credits this month" size="sm" /> : null}
+          {viewer ? <PageMessage tone="warning" message="Viewers can look at Studio but can't generate. Ask a company owner for member access." /> : null}
+          {models.length === 0 ? <PageMessage tone="warning" message="No fixed-price models are offered yet." /> : null}
+          {fieldNames.map((name) => (
+            <Field key={name} label={fieldLabel(name)}>
+              <Input aria-label={fieldLabel(name)} value={fields[name] ?? ""} placeholder={template?.examples?.[name] ? `For example: ${template.examples[name]}` : undefined} onChange={(e) => setFields((f) => ({ ...f, [name]: e.target.value }))} />
+            </Field>
+          ))}
+          <Field label={preset ? "Extra direction (optional)" : fieldNames.length ? "Template" : "Prompt"}>
             <textarea
               aria-label="Prompt"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
+              rows={fieldNames.length ? 5 : 6}
               maxLength={preset ? PHOTO_NOTE_MAX : 4000}
-              placeholder={preset ? `Optional note, up to ${PHOTO_NOTE_MAX} characters` : "Describe the image"}
-              style={{ width: "100%", boxSizing: "border-box", font: "inherit", padding: 8, borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", resize: "vertical" }}
+              placeholder={preset ? `Optional note, up to ${PHOTO_NOTE_MAX} characters` : "Describe what you want, or pick a template. Use {{name}} to make a field you fill in each time."}
+              style={{ width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 13, lineHeight: 1.45, padding: 8, borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "inherit", resize: "vertical" }}
             />
           </Field>
-        </div>
-        {preset ? <p style={{ ...muted, margin: "8px 0 0" }}>{preset.label} builds the prompt for you. Best with {preset.subject === "any" ? "anything" : `a ${preset.subject}`}.</p> : null}
-        {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
-        {estimate ? (
-          <div style={{ ...row, margin: "10px 0" }} aria-live="polite">
-            <strong>
-              {estimate.creditsTotal} credits ({estimate.batchSize} × {estimate.creditsEach})
-            </strong>
-            <span style={muted}>{estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}</span>
+          {preset ? <p style={{ ...muted, margin: 0 }}>{preset.label} builds the prompt for you. Best with {preset.subject === "any" ? "anything" : `a ${preset.subject}`}.</p> : null}
+          {blanks.length ? <p style={{ ...muted, margin: 0 }}>Still to fill in: {blanks.map(fieldLabel).join(", ")}.</p> : null}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(150px, 100%), 1fr))", gap: 10 }}>
+            <Field label="Model">
+              <Select aria-label="Model" value={model?.id ?? ""} onChange={(e) => setModelId(e.target.value)}>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+                {(data.unavailableModels ?? []).map((m) => (
+                  <option key={`na-${m.id}`} value={`na-${m.id}`} disabled>
+                    {m.label} · {m.note}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="For">
+              <Select aria-label="For client" value={client} onChange={(e) => setClient(e.target.value)}>
+                <option value="own">Own work</option>
+                {data.clients.map((c) => (
+                  <option key={c.scopeKey} value={c.scopeKey}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Ratio">
+              <Select aria-label="Ratio" value={ratio} onChange={(e) => setRatio(e.target.value)}>
+                {(model?.ratios ?? []).map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Resolution">
+              <Select aria-label="Resolution" value={resolution} onChange={(e) => setResolution(e.target.value)}>
+                {(model?.resolutions ?? []).map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Batch size">
+              <Select aria-label="Batch size" value={batchSize} onChange={(e) => setBatchSize(e.target.value)}>
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                  <option key={n} value={String(n)}>
+                    {n}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           </div>
-        ) : null}
-        <div style={{ ...row, marginTop: 10 }}>
-          <Button variant="secondary" disabled={!ready} onClick={() => void runEstimate()}>
-            Estimate
-          </Button>
-          <Button disabled={!ready || !estimate} onClick={() => void runGenerate()}>
-            {busy ? "Working…" : estimate ? `Generate for ${estimate.creditsTotal} credits` : "Generate"}
-          </Button>
+          {!preset ? <BrandKitBox companyId={companyId} client={client} prompt={prompt} disabled={busy} onAdd={setPrompt} /> : null}
+          {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
+          {estimate ? (
+            <div style={{ ...row }} aria-live="polite">
+              <strong>
+                {estimate.creditsTotal} credits ({estimate.batchSize} × {estimate.creditsEach})
+              </strong>
+              <span style={muted}>{estimate.monthlyCap === null ? "No cap is set, so generation is off." : `${estimate.remaining} of ${estimate.monthlyCap} left this month.`}</span>
+            </div>
+          ) : null}
+          <div style={row}>
+            <Button variant="secondary" disabled={!ready} onClick={() => void runEstimate()}>
+              Estimate
+            </Button>
+            <Button disabled={!ready || !estimate} onClick={() => void runGenerate()}>
+              {busy ? "Working…" : estimate ? `Generate for ${estimate.creditsTotal} credits` : "Generate"}
+            </Button>
+          </div>
           {!estimate ? <span style={muted}>Estimate first: it shows the cost before anything is charged.</span> : null}
-        </div>
-      </Section>
+          {!preset && !viewer && prompt.trim() ? (
+            naming === null ? (
+              <div style={{ ...row, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                <Button variant="secondary" disabled={busy} style={{ height: 30, fontSize: 12.5 }} onClick={() => setNaming(template?.category === "saved" ? `${template.title} copy` : template?.title ?? "")}>
+                  Save as template
+                </Button>
+                {template?.category === "saved" ? (
+                  <Button variant="secondary" disabled={busy} style={{ height: 30, fontSize: 12.5 }} onClick={() => void removeTemplate(template)}>
+                    Delete template
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                <Field label="Template name">
+                  <Input aria-label="Template name" value={naming} maxLength={80} autoFocus onChange={(e) => setNaming(e.target.value)} />
+                </Field>
+                <div style={row}>
+                  <Button disabled={busy || !naming.trim()} style={{ height: 30, fontSize: 12.5 }} onClick={() => void saveAsTemplate()}>
+                    Save
+                  </Button>
+                  <Button variant="secondary" disabled={busy} style={{ height: 30, fontSize: 12.5 }} onClick={() => setNaming(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )
+          ) : null}
+        </section>
+      </div>
       {groups.length > 0 ? <Progress companyId={companyId} groups={groups} onStored={onStored} /> : null}
     </>
   );
@@ -867,6 +1010,21 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
     <>
       {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
       {!anyCap ? <PageMessage tone="warning" message="No cap is set, so generation is off. A company owner sets a company cap to turn it on." /> : null}
+      <MetricRow>
+        <MetricCard icon={Coins} value={roundCredits(data.companyUsed)} label="Credits used" description={`In ${data.period}`} />
+        {effectiveCap(data) ? <CreditsMetric data={data} /> : null}
+        <MetricCard icon={Gauge} value={effectiveCap(data)?.monthlyCredits ?? "–"} label="Monthly cap" description={data.caps.some((c) => c.scopeKey === COMPANY_SCOPE) ? "Company cap" : effectiveCap(data) ? "Default cap" : "Not set"} />
+        <MetricCard icon={Building2} value={data.clientUsage.filter((c) => c.used > 0).length} label="Clients with spend" description="This month" />
+      </MetricRow>
+      {data.clientUsage.some((c) => c.used > 0) ? (
+        <Section title="Credits by client">
+          <BarList
+            bare
+            title="Credits by client"
+            items={data.clientUsage.filter((c) => c.used > 0).sort((a, b) => b.used - a.used).map((c) => ({ label: data.clients.find((k) => k.scopeKey === c.scopeKey)?.name ?? c.scopeKey, value: roundCredits(c.used) }))}
+          />
+        </Section>
+      ) : null}
       <Section title="Monthly credit caps">
         <CapRow label="Company" hint="All of this company's work, clients included." scopeKey={COMPANY_SCOPE} cap={capOf(COMPANY_SCOPE)} used={data.companyUsed} save={save} busy={busy} editable={owner} />
         <CapRow label="Default" hint="Used when the company cap is blank." scopeKey={DEFAULT_SCOPE} cap={capOf(DEFAULT_SCOPE)} save={save} busy={busy} editable={owner} />
