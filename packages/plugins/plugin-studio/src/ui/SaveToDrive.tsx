@@ -34,7 +34,7 @@ export function SaveToDrive({ companyId, assetId, bytes, savedUrl, small }: { co
       <Button variant="secondary" disabled={busy || tooLarge} onClick={() => void run()}>
         {busy ? "Saving…" : link ? "Save to Drive again" : "Save to Drive"}
       </Button>
-      {tooLarge ? <span style={{ fontSize, color: "var(--muted-foreground)" }}>Too large for Drive (up to 5 MB for now)</span> : null}
+      {tooLarge ? <span style={{ fontSize, color: "var(--muted-foreground)" }}>Too large for Drive (up to {(DRIVE_MAX_BYTES / 1024 / 1024).toFixed(1)} MB for now)</span> : null}
       {link ? (
         <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize, overflowWrap: "anywhere" }}>
           Open in Drive
