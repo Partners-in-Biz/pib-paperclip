@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -128,7 +129,12 @@ describePostgres("single-server lock", () => {
       await acquireServerLock(process.env.TEST_URL, { retryMs: 0 });
       console.log("locked");
       setInterval(() => {}, 1000);
-    `], { env: { ...process.env, TEST_URL: database.connectionString }, stdio: ["ignore", "pipe", "inherit"] });
+    `], {
+      // `--import tsx` resolves from the working directory. CI runs vitest from the repo root, which has no tsx.
+      cwd: dirname(script),
+      env: { ...process.env, TEST_URL: database.connectionString },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
     await new Promise<void>((resolve, reject) => {
       child.stdout.on("data", (chunk) => { if (String(chunk).includes("locked")) resolve(); });
       child.on("exit", () => reject(new Error("child exited early")));
