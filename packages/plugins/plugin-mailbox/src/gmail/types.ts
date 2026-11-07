@@ -123,6 +123,8 @@ export interface DraftExtras {
   /** Reply-To and display name the draft is sent with. */
   replyTo?: MailAddress | null;
   fromName?: string | null;
+  /** The task the agent's run was working on when it saved this draft. */
+  sourceIssueId?: string | null;
   /** Who saved the draft: an agent (tool or action) or a person on the Mailbox page. */
   by?: { kind: "agent" | "user"; id: string } | null;
   /** Append the Gmail signature of the sending mailbox when the draft is sent. */

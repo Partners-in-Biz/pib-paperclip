@@ -16,6 +16,7 @@ export interface SettingsFormState {
   usSmsCampaignStatus: "none" | "pending" | "approved" | "rejected";
   voiceAllowedUserIds: string;
   smsHolidays: string;
+  publicBaseUrl: string;
 }
 
 export const SECRET_LABELS = {
@@ -52,6 +53,7 @@ export function toFormState(settings: TelephonySettings): SettingsFormState {
     usSmsCampaignStatus: settings.usSmsCampaignStatus,
     voiceAllowedUserIds: settings.voiceAllowedUserIds.join("\n"),
     smsHolidays: settings.smsHolidays.join("\n"),
+    publicBaseUrl: settings.publicBaseUrl ?? "",
   };
 }
 
@@ -74,7 +76,84 @@ export function validateForm(form: SettingsFormState): Record<string, string> {
     if (value === undefined) errors[key] = "Required";
     else if (!Number.isInteger(value) || value < min || value > max) errors[key] = `Must be a whole number ${min}-${max}`;
   }
+  if (form.publicBaseUrl.trim() && !publicOrigin(form.publicBaseUrl)) {
+    errors.publicBaseUrl = "Must be an http(s) address with no path, like https://paperclip.example.com";
+  }
   return errors;
+}
+
+/** Same id as `PLUGIN_ID` in src/namespace.ts, which the browser bundle cannot import (node:crypto). */
+export const TELEPHONY_PLUGIN_ID = "partnersinbiz.crm-telephony";
+
+/** The origin Twilio would call back to, or null when the text is not a plain http(s) origin. */
+export function publicOrigin(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.search || url.hash || url.username || url.password) return null;
+    if (url.pathname !== "/" && url.pathname !== "") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+export interface WebhookUrlRow {
+  key: "call-status" | "recording-status" | "voice-twiml";
+  label: string;
+  url: string;
+  /** What a person does with it. */
+  note: string;
+}
+
+/** The webhook addresses for a public origin, in the order the Settings page lists them. */
+export function voiceWebhookRows(origin: string): WebhookUrlRow[] {
+  const base = `${origin}/api/plugins/${TELEPHONY_PLUGIN_ID}/webhooks`;
+  return [
+    { key: "call-status", label: "Call status callback", url: `${base}/call-status`, note: "Set on every call the Dialer places. Nothing to paste." },
+    { key: "recording-status", label: "Recording status callback", url: `${base}/recording-status`, note: "Set in the call's TwiML when recording is on. Nothing to paste." },
+    { key: "voice-twiml", label: "TwiML app voice URL", url: `${base}/voice-twiml`, note: "Not used: this host answers webhooks with JSON, not TwiML. Leave the TwiML app's voice URL empty." },
+  ];
+}
+
+export interface ReadinessRow {
+  label: string;
+  status: "set" | "missing" | "optional" | "off";
+  hint?: string;
+}
+
+export interface VoiceReadinessView {
+  ready: boolean;
+  missingSecrets: string[];
+  numbers: { za: "set" | "missing"; us: "set" | "missing" };
+  twimlApp: "set" | "missing";
+  publicBaseUrl: string | null;
+  recording: { enabled: boolean; r2Configured: boolean; active: boolean };
+  voiceUsers: number;
+  blockers: string[];
+}
+
+const VOICE_SECRET_ORDER = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"] as const;
+
+/** The checklist the Settings page shows for voice calling. */
+export function describeVoiceReadiness(voice: VoiceReadinessView, secrets: Record<string, "set" | "missing">): ReadinessRow[] {
+  const rows: ReadinessRow[] = VOICE_SECRET_ORDER.map((name) => ({
+    label: `${SECRET_LABELS[name]} (${name})`,
+    status: secrets[name] === "set" ? "set" : "missing",
+  }));
+  rows.push({ label: "Twilio number for +27 calls (TWILIO_ZA_NUMBER)", status: voice.numbers.za, hint: voice.numbers.za === "missing" && voice.numbers.us === "set" ? "Optional while only US numbers are called" : undefined });
+  rows.push({ label: "Twilio number for +1 calls (TWILIO_US_NUMBER)", status: voice.numbers.us, hint: voice.numbers.us === "missing" && voice.numbers.za === "set" ? "Optional while only South African numbers are called" : undefined });
+  rows.push({ label: "TwiML app SID (TWILIO_TWIML_APP_SID)", status: "optional", hint: "Not needed: calls are placed through the REST API" });
+  rows.push({ label: "Public base URL", status: voice.publicBaseUrl ? "set" : "missing", hint: voice.publicBaseUrl ?? undefined });
+  rows.push({ label: "Voice user IDs", status: voice.voiceUsers > 0 ? "set" : "missing", hint: voice.voiceUsers > 0 ? `${voice.voiceUsers} allowed` : "Add the user ids who may call" });
+  rows.push({
+    label: "Recording",
+    status: voice.recording.active ? "set" : voice.recording.enabled ? "missing" : "off",
+    hint: voice.recording.active ? "On, stored in R2" : voice.recording.enabled ? "On, but R2 storage is not filled in, so calls are not recorded" : "Off",
+  });
+  return rows;
 }
 
 export function toSavePayload(form: SettingsFormState): Partial<TelephonySettings> {
@@ -93,6 +172,7 @@ export function toSavePayload(form: SettingsFormState): Partial<TelephonySetting
     usSmsCampaignStatus: form.usSmsCampaignStatus,
     voiceAllowedUserIds: parseLines(form.voiceAllowedUserIds),
     smsHolidays: parseLines(form.smsHolidays),
+    publicBaseUrl: form.publicBaseUrl.trim() || null,
   };
 }
 

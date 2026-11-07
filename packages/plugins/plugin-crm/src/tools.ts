@@ -635,6 +635,52 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       issueId: text("The Paperclip issue this belongs to, if any."),
     }),
   },
+  // -------------------------------------------------------------------------
+  // The sales desk (0.37.0): the call list people work through, outcomes and next steps
+  // -------------------------------------------------------------------------
+  {
+    name: "call-list",
+    displayName: "Call list (the sales desk)",
+    description:
+      "What a person works through on the CRM's Today tab: every contact and deal with a next action, in buckets (overdue, today, soon, later, undated), each with phone, email, company, lead band, the latest brief and the last touch. Read this before you build a call list, and put a lead ON it with set-next-action instead of listing leads in an issue.",
+    parametersSchema: schema([], {
+      scope: oneOf(["due", "week", "all"], "due (default): overdue and today. week: everything within 7 days plus undated. all: every next action."),
+      kind: oneOf(NEXT_ACTIONS, "Only this kind of next action, e.g. call."),
+      limit: int("Most rows to return, 1 to 200 (default 50).", { minimum: 1, maximum: 200 }),
+    }),
+  },
+  {
+    name: "set-next-action",
+    displayName: "Set next action (with a brief)",
+    description:
+      "Put a contact or deal on the sales desk: the next step (call, email or meet), when it is due, and your brief: the full talking points for that call or email (business and city, decision maker, the problem, the offer, the opener, two objections with answers, the price). The brief is kept whole on the record and shown next to the Call button. Use this for every lead you want a person to call; never put the list in an issue instead. kind none clears the next action.",
+    parametersSchema: schema(["recordType", "recordId"], {
+      recordType: oneOf(["contact", "deal"], "A contact or a deal."),
+      recordId: text("The record's id (contact:<id> also works)."),
+      kind: oneOf([...NEXT_ACTIONS, "none"], "call, email or meet; none clears it."),
+      dueAt: text("When it is due: a date (2026-11-10, the company's day) or a date-time. Leave out with inDays."),
+      inDays: int("Due this many days from today (0 = today) when dueAt is not given.", { minimum: 0, maximum: 365 }),
+      brief: text(`Your talking points, in full (up to ${8000} characters). Plain words, facts you checked, no guesses; say "unverified" where you are not sure.`),
+      issueId: text("The issue this came from, if any."),
+    }),
+  },
+  {
+    name: "log-outcome",
+    displayName: "Log an outcome",
+    description:
+      "Record what happened on a call, email, meeting or message and set the next step in one go. Without nextActionKind the outcome's usual next step is used: no_answer → call tomorrow, voicemail → call in 2 days, busy → call tomorrow, reached → email in 2 days, sent → call in 3 days, replied → email tomorrow, meeting_booked → meet (give the date), wrong_number and not_interested → nothing. Logs it on the timeline with the outcome.",
+    parametersSchema: schema(["recordType", "recordId", "outcome"], {
+      recordType: oneOf(["contact", "deal"], "A contact or a deal."),
+      recordId: text("The record's id (contact:<id> also works)."),
+      channel: oneOf(["call", "email", "meeting", "message"], "How you reached them (default call)."),
+      outcome: oneOf(["reached", "no_answer", "voicemail", "busy", "wrong_number", "meeting_booked", "sent", "replied", "not_interested"], "What happened."),
+      note: text("What was said or agreed, in plain words (optional)."),
+      nextActionKind: oneOf([...NEXT_ACTIONS, "none"], "The next step; none clears it. Leave out to use the outcome's usual step."),
+      nextActionDueAt: text("When the next step is due (date or date-time). Needed with nextActionKind unless none."),
+      lifecycle: oneOf(LIFECYCLES, "Also move the contact's lifecycle, e.g. prospect after a good call or churned when not interested."),
+      issueId: text("The issue this belongs to, if any."),
+    }),
+  },
   {
     name: "share-record",
     displayName: "Share record",

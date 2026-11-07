@@ -509,16 +509,57 @@ export async function insertFacts(
 
 export async function insertActivity(
   ctx: PluginContext,
-  input: { companyId: string; recordType: RecordType; recordId: string; kind: string; body: string; issueId?: string | null },
+  input: { companyId: string; recordType: RecordType; recordId: string; kind: string; body: string; issueId?: string | null; meta?: Record<string, unknown> | null },
 ): Promise<string> {
   const id = randomUUID();
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "activities")}
-      (id, company_id, record_type, record_id, kind, body, issue_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [id, input.companyId, input.recordType, input.recordId, input.kind, input.body, input.issueId ?? null],
+      (id, company_id, record_type, record_id, kind, body, issue_id, meta)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+    [id, input.companyId, input.recordType, input.recordId, input.kind, input.body, input.issueId ?? null, input.meta ? json(input.meta) : null],
   );
   return id;
+}
+
+export interface ActivityOut { id: string; recordType: string; recordId: string; kind: string; body: string; issueId: string | null; createdAt: string; meta: Record<string, unknown> }
+
+function activityOut(row: ActivityRow): ActivityOut {
+  return {
+    id: row.id,
+    recordType: row.record_type,
+    recordId: row.record_id,
+    kind: row.kind,
+    body: row.body,
+    issueId: row.issue_id,
+    createdAt: row.created_at == null ? "" : new Date(String(row.created_at)).toISOString(),
+    meta: asRecord(row.meta),
+  };
+}
+
+/** Every activity in the workspace since `sinceIso`, newest first (the sales desk and the overview charts). */
+export async function activitiesSince(ctx: PluginContext, companyId: string, sinceIso: string, limit = 5000): Promise<ActivityOut[]> {
+  const rows = await ctx.db.query<ActivityRow>(
+    `SELECT id, company_id, record_type, record_id, kind, body, issue_id, created_at, meta
+       FROM ${table(ctx, "activities")}
+      WHERE company_id = $1 AND created_at >= $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [companyId, sinceIso, limit],
+  );
+  return rows.map(activityOut);
+}
+
+/** The newest activities of one kind in the workspace (e.g. the agents' briefs), newest first. */
+export async function latestActivitiesOfKind(ctx: PluginContext, companyId: string, kind: string, limit = 500): Promise<ActivityOut[]> {
+  const rows = await ctx.db.query<ActivityRow>(
+    `SELECT id, company_id, record_type, record_id, kind, body, issue_id, created_at, meta
+       FROM ${table(ctx, "activities")}
+      WHERE company_id = $1 AND kind = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [companyId, kind, limit],
+  );
+  return rows.map(activityOut);
 }
 
 export async function insertGrant(

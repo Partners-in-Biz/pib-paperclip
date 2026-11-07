@@ -117,14 +117,32 @@ export async function emitContactDeleted(ctx: PluginContext, companyId: string, 
   await sendHandoff(ctx, companyId, "contact.deleted", { key: `contact:${contactId}:deleted`, id: contactId });
 }
 
-/** Every Paperclip company that has CRM rows. Jobs use this instead of companies.list. */
+/**
+ * Every live Paperclip company that has CRM rows. Jobs use this instead of companies.list.
+ *
+ * Rows left behind by a company that was deleted (or archived) in Paperclip are skipped
+ * (PAR-8198): the host refuses every job call that names such a company, so looping over
+ * it only logged ~45 "host handler error" lines an hour and did no work. If the core
+ * `companies` read is refused (an older host or manifest), fall back to the unfiltered list.
+ */
 export async function crmCompanyIds(ctx: PluginContext): Promise<string[]> {
-  const rows = await ctx.db.query<{ company_id: string }>(
-    `SELECT company_id FROM ${table(ctx, "companies")}
+  const crmIds = `SELECT company_id FROM ${table(ctx, "companies")}
      UNION
-     SELECT company_id FROM ${table(ctx, "contacts")}`,
-  );
-  return rows.map((row) => row.company_id);
+     SELECT company_id FROM ${table(ctx, "contacts")}`;
+  try {
+    const rows = await ctx.db.query<{ company_id: string }>(
+      `SELECT ids.company_id FROM (${crmIds}) AS ids
+       JOIN public.companies AS c ON c.id::text = ids.company_id::text
+       WHERE c.status <> 'archived'`,
+    );
+    return rows.map((row) => row.company_id);
+  } catch (error) {
+    ctx.logger.info("CRM company list not filtered by live companies", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const rows = await ctx.db.query<{ company_id: string }>(crmIds);
+    return rows.map((row) => row.company_id);
+  }
 }
 
 /** Touch a contact so the next emit carries its new company links. */

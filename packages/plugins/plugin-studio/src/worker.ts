@@ -12,6 +12,7 @@ import { getTransfer } from "./drive-jobs.js";
 import { importFromDrive, driveThumbs, listDriveFiles } from "./drive-import.js";
 import { registerBrandKitReplies, registerDriveReadReplies } from "@partnersinbiz/pib-plugin-kit";
 import { brandKitFor } from "./brand-kit.js";
+import { deleteTemplate, listSavedTemplates, saveTemplate } from "./prompt-template-store.js";
 import { errorText, StudioError } from "./errors.js";
 import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
@@ -278,6 +279,22 @@ const plugin = definePlugin({
       const me = await person(context);
       const requested = scopeInput({ client: objectParams(params).client ?? null });
       return brandKitFor(ctx, me.companyId, await resolveScope(ctx, me.companyId, requested ?? null));
+    });
+
+    // The Generate page's saved prompt templates: anyone in the company can read them; viewers can't change them.
+    action("prompt-templates", async (_params, context) => {
+      const me = await person(context);
+      return { saved: await listSavedTemplates(ctx, me.companyId) };
+    });
+    action("save-prompt-template", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save templates. Ask a company owner for member access.", "forbidden");
+      return { template: await saveTemplate(ctx, me.companyId, objectParams(params)) };
+    });
+    action("delete-prompt-template", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't delete templates. Ask a company owner for member access.", "forbidden");
+      return deleteTemplate(ctx, me.companyId, String(objectParams(params).id ?? ""));
     });
 
     // Previews for a page of the library in one call. Links last five minutes.

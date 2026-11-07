@@ -10,6 +10,7 @@ import { useHostLocation,
 } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { DraftEditor } from "./draft-editor.js";
+import { MailContext, TaskChip, type TaskLink } from "./mail-context.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import {
   BarChart,
@@ -61,6 +62,7 @@ import {
 import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
+import { taskLinkLine } from "./view.js";
 import { MAP_TYPE_NAMES, canSendFrom, connectReadiness, dnsRecordLine, domainFacts, domainStatusLabel, domainTone, draftRecipients, espCapLine, espReputationLine, espStatusLabel, espStatusTone, holdLiftedLine, missingTechnical, recentTime, sendBlock, sentBy, suggestMapping, trackingLine, trackingOn } from "./view.js";
 
 const PLUGIN_KEY = "partnersinbiz.mailbox";
@@ -496,6 +498,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const savePreferences = usePluginAction("mailbox.preferences-save");
   const handoffPrepare = usePluginAction("mailbox.handoff-prepare");
   const handoffRecord = usePluginAction("mailbox.handoff-record");
+  const loadTaskLinks = usePluginAction("mailbox.task-links");
   const newIssue = useHostNewIssue();
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -962,9 +965,43 @@ function MailboxPageMain({ context }: PluginPageProps) {
     setFix({ category: row.category ?? "", urgency: "", needsReply: "", client: "" });
   }
 
+  // The task chips on the Inbox and Drafts rows load after the list, so a slow task lookup never holds up the mail.
+  const [taskLinkMap, setTaskLinkMap] = useState<Record<string, TaskLink>>({});
+  const linkSource = tab === "inbox" ? inbox?.messages : tab === "drafts" ? allDrafts : null;
+  useEffect(() => {
+    const messageIds = (linkSource ?? []).map((row) => row.id);
+    if (messageIds.length === 0) return;
+    let live = true;
+    (loadTaskLinks({ messageIds }) as Promise<{ links: Record<string, TaskLink> }>)
+      .then((out) => {
+        if (live) setTaskLinkMap((current) => ({ ...current, ...out.links }));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [linkSource]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const previewDraft = preview?.kind === "draft" ? allDrafts.find((row) => row.id === preview.id) ?? null : null;
   const previewMail = preview?.kind === "mail" ? (inbox?.messages ?? []).find((row) => row.id === preview.id) ?? null : null;
   const openMailId = previewMail?.id ?? null;
+  // `?compose=1&to=<address>[&subject=]` (the CRM's Email button, 0.9.8) opens a new draft to that address once the
+  // mailboxes are known, then takes the ask off the address so a reload does not open it twice.
+  const composeAsk = new URLSearchParams(hostLocation.search);
+  const wantsCompose = composeAsk.get("compose") === "1";
+  useEffect(() => {
+    if (!wantsCompose || !snapshot) return;
+    const to = (composeAsk.get("to") ?? "").trim();
+    const subjectAsk = (composeAsk.get("subject") ?? "").trim();
+    const first = (snapshot.accounts ?? []).filter((account) => account.kind !== "email-provider" && canSendFrom(account))[0];
+    if (first && !accountId) setAccountId(first.id);
+    setDraftTo(to);
+    if (subjectAsk) setSubject(subjectAsk);
+    setCreate("draft");
+    const rest = new URLSearchParams(withoutParam(withoutParam(withoutParam(hostLocation.search, "compose"), "to"), "subject")).toString();
+    hostNavigation.navigate(`/mailbox${rest ? `?${rest}` : ""}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsCompose, snapshot]);
   // `?mail=<id>` (the link a Give to agent task carries) opens that mail once the inbox is loaded.
   const linkedMail = new URLSearchParams(hostLocation.search).get("mail");
   useEffect(() => {
@@ -1124,7 +1161,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
               label="Inbox"
               rows={inboxRows}
               title={(row) => `${row.is_read ? "" : "● "}${row.subject || "(no subject)"}`}
-              meta={(row) => [row.from ? row.from.name || row.from.email : null, row.category ? CATEGORY_NAMES[row.category] ?? row.category : "Not sorted yet", whenText(row.received_at ?? row.created_at, now)].filter(Boolean).join(" · ")}
+              meta={(row) => [row.from ? row.from.name || row.from.email : null, row.category ? CATEGORY_NAMES[row.category] ?? row.category : "Not sorted yet", whenText(row.received_at ?? row.created_at, now), taskLinkMap[row.id] ? taskLinkLine(taskLinkMap[row.id]!) : null].filter(Boolean).join(" · ")}
               trailing={mailFlag}
               onOpen={(row) => setPreview({ kind: "mail", id: row.id })}
               empty="No mail matches."
@@ -1157,6 +1194,10 @@ function MailboxPageMain({ context }: PluginPageProps) {
                   },
                 },
                 { key: "sorting", header: "Sorted as", render: (_value, row) => <SortingChips row={row as unknown as InboxMessage} /> },
+                { key: "tasks", header: "Tasks", render: (_value, row) => {
+                  const link = taskLinkMap[(row as unknown as InboxMessage).id];
+                  return link ? <TaskChip link={link} /> : null;
+                } },
                 {
                   key: "fix",
                   header: "",
@@ -1311,7 +1352,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
               label="Drafts"
               rows={drafts}
               title={(row) => row.subject || "(no subject)"}
-              meta={(row) => [draftRecipients(row).length ? `To ${draftRecipients(row).join(", ")}` : null, row.drafted_by ? `By ${drafterName(row.drafted_by)}` : null, row.created_at ? `Saved ${whenText(row.created_at, now)}` : null].filter(Boolean).join(" · ")}
+              meta={(row) => [taskLinkMap[row.id] ? taskLinkLine(taskLinkMap[row.id]!) : null, draftRecipients(row).length ? `To ${draftRecipients(row).join(", ")}` : null, row.drafted_by ? `By ${drafterName(row.drafted_by)}` : null, row.created_at ? `Saved ${whenText(row.created_at, now)}` : null].filter(Boolean).join(" · ")}
               trailing={(row) => draftRecipients(row).length === 0 ? <Chip tone="warn">No recipient</Chip> : <Pill size="sm" tone={draftTone(row.status)} dot>{DRAFT_STATUS[row.status] ?? row.status}</Pill>}
               onOpen={(row) => setPreview({ kind: "draft", id: row.id })}
               empty="No drafts match."
@@ -1325,6 +1366,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
                     <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
                       <OpenButton onClick={() => setPreview({ kind: "draft", id: d.id })}>{String(value) || "(no subject)"}</OpenButton>
                       {d.is_reply ? <span style={{ fontSize: 12, color: tokens.muted }}>Reply in a thread</span> : null}
+                      {taskLinkMap[d.id] ? <span><TaskChip link={taskLinkMap[d.id]!} /></span> : null}
                     </div>
                   );
                 } },
@@ -1627,6 +1669,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
       <Modal
         open={Boolean(previewMail)}
         title={previewMail ? previewMail.subject || "(no subject)" : "Mail"}
+        width={760}
         onClose={() => setPreview(null)}
         footer={previewMail ? (
           <>
@@ -1666,6 +1709,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
             {mailBody?.id !== previewMail.id ? <Muted>Loading the whole message…</Muted> : null}
             {mailBody?.id === previewMail.id && mailBody.note ? <Muted>{mailBody.note}</Muted> : null}
             {mailBody?.id === previewMail.id && mailBody.truncated ? <Muted>This is long, so only the start is shown. Open Gmail for the rest.</Muted> : null}
+            <MailContext messageId={previewMail.id} />
           </>
         ) : null}
       </Modal>

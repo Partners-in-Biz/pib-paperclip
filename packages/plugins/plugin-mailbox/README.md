@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.8: open a new draft from a link
+
+`/mailbox?compose=1&to=<address>[&subject=<text>]` opens the New draft dialog with the recipient (and subject) filled in and the first Gmail mailbox chosen, then takes the ask off the address. The CRM's Email buttons (0.37.0) use it. Nothing is sent: the draft still goes through the editor and a person's Send.
+
 ## 0.9.2: follow-ups on closed threads; reply issues in the client's project
 
 A thread keeps one "Reply needed" issue. New mail that needs a reply and has no answer yet now reopens a done or cancelled issue and wakes the assignee, wakes a blocked one, or comments on one already being worked on. Mail older than 7 days (a backlog after a reconnect) reopens nothing. A thread whose issue was never created or is gone gets a new one.

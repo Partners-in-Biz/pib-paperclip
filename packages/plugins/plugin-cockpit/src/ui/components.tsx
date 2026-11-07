@@ -304,7 +304,7 @@ export function AskCard({ item, linkFor, now }: { item: WaitingEntry; linkFor: L
   return (
     <div
       data-ask={ask.kind}
-      style={{ position: "relative", display: "grid", gap: 8, padding: "12px 12px 12px 15px", borderRadius: 12, border: `1px solid ${t.border}`, background: `linear-gradient(90deg, ${t.soft}, transparent 70%), ${tokens.bg}`, minWidth: 0 }}
+      style={{ position: "relative", display: "flex", flexDirection: "column", gap: 8, padding: "12px 12px 12px 15px", borderRadius: 12, border: `1px solid ${t.border}`, background: tokens.bg, minWidth: 0 }}
     >
       <span aria-hidden="true" style={{ position: "absolute", left: -1, top: 10, bottom: 10, width: 3, borderRadius: 999, background: t.solid }} />
       <div style={{ display: "flex", gap: "6px 8px", alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
@@ -319,7 +319,7 @@ export function AskCard({ item, linkFor, now }: { item: WaitingEntry; linkFor: L
           ))}
         </ol>
       ) : null}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between", marginTop: "auto" }}>
         {ask.why ? <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.45, flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere" }}>{ask.why}</span> : <span />}
         {answer ? <a {...answer} style={primaryLinkStyle} aria-label={`Answer: ${ask.question}`}>Answer →</a> : null}
       </div>
@@ -443,18 +443,22 @@ export function WaitingList({ items, linkFor, now, limit, onDismiss }: { items: 
       {asks.length ? (
         <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
           <span style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, letterSpacing: 0.2 }}>{asks.length === 1 ? "A question from an agent" : `${asks.length} questions from agents`}: reply on the issue and it goes back to them</span>
-          {asks.map((item) => <AskCard key={item.key} item={item} linkFor={linkFor} now={now} />)}
+          <div style={grid(480, 10)}>
+            {asks.map((item) => <AskCard key={item.key} item={item} linkFor={linkFor} now={now} />)}
+          </div>
         </div>
       ) : null}
       {rest.length ? (
-        <div style={{ display: "grid", minWidth: 0 }}>
+        <div style={{ ...grid(520, 0), columnGap: 24, minWidth: 0 }}>
           {rest.map((item, index) => <WaitingRow key={item.key} item={item} linkFor={linkFor} now={now} first={index === 0} />)}
         </div>
       ) : null}
       {infos.length ? (
         <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
           <span style={{ fontSize: 12, fontWeight: 650, color: tokens.muted, letterSpacing: 0.2 }}>Sent to clients without asking you (Tier A): no action needed</span>
-          {infos.map((item) => <InfoCard key={item.key} item={item} linkFor={linkFor} now={now} onDismiss={onDismiss} />)}
+          <div style={grid(480, 8)}>
+            {infos.map((item) => <InfoCard key={item.key} item={item} linkFor={linkFor} now={now} onDismiss={onDismiss} />)}
+          </div>
         </div>
       ) : null}
       {limit && items.length > limit ? <Muted>Showing {limit} of {items.length}. {items.length - limit} more not shown.</Muted> : null}
@@ -829,7 +833,7 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
           <span style={{ color: tokens.muted }}>{backup.text}{backup.status !== "ok" ? " Backups run hourly; check the server." : ""}</span>
         </div>
       ) : null}
-      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : shown.length === 0 ? <Muted>Every check passes.</Muted> : shown.map((group) => {
+      {groups.length === 0 ? <Muted>No plugin has reported health yet.</Muted> : shown.length === 0 ? <Muted>Every check passes.</Muted> : <div style={{ ...grid(520, 10), alignItems: "start" }}>{shown.map((group) => {
         const all = groups.find((g) => g.plugin === group.plugin)?.checks ?? group.checks;
         const failing = all.filter((c) => c.status !== "ok").length;
         const t = tone(group.status);
@@ -868,7 +872,7 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
             </div>
           </details>
         );
-      })}
+      })}</div>}
     </div>
   );
 }

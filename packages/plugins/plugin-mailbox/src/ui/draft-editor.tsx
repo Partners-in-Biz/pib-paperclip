@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { MailContext } from "./mail-context.js";
 import { Button, Field, Input, Modal, Pill, TextArea, errorText, formatDateTime, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 
 type Address = { email: string; name?: string | null };
@@ -289,6 +290,7 @@ export function DraftEditor({ draft, from, drafter, agentDrafted, canSend, onClo
       open
       title={draft.subject || "(no subject)"}
       description="A draft. Nothing is sent until someone clicks Send."
+      width={760}
       onClose={onClose}
       footer={panel ? (
         <>
@@ -323,6 +325,7 @@ export function DraftEditor({ draft, from, drafter, agentDrafted, canSend, onClo
         </>
       ) : (
         <>
+          <MailContext messageId={draft.id} />
           {blocked && recipients > 0 ? <Note>Can't send yet: {blocked}</Note> : null}
           <Field label="From"><Input value={from} readOnly /></Field>
           <RecipientField label="To" values={to} onChange={setTo} search={async (q) => ((await contactSearch({ q })) as { contacts: Array<{ id: string; name: string; email: string }> }).contacts} />

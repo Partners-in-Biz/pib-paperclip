@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.8.9");
-    expect(PLUGIN_VERSION).toBe("0.8.9");
-    expect(pkg.version).toBe("0.8.9");
+    expect(manifest.version).toBe("0.8.10");
+    expect(PLUGIN_VERSION).toBe("0.8.10");
+    expect(pkg.version).toBe("0.8.10");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {

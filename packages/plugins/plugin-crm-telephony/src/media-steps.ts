@@ -4,6 +4,7 @@ import { ErasedError } from "./pipeline.js";
 import { readR2Config } from "./settings.js";
 import { r2Delete, r2Head, r2Put, recordingKey, type R2Config } from "./r2-store.js";
 import { sha256Hex } from "./sigv4.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 const MAX_RECORDING_BYTES = 200 * 1024 * 1024; // 200 MB
 
@@ -26,19 +27,11 @@ export function createMediaSteps(deps?: {
    * Throws with secret name only (no value leaks).
    */
   async function twilioAuth(ctx: PluginContext, companyId: string): Promise<string> {
-    let apiKey: string;
-    try {
-      apiKey = await ctx.secrets.resolve("TWILIO_API_KEY_SID", { companyId });
-    } catch {
-      throw new Error("Missing secret: TWILIO_API_KEY_SID");
-    }
+    const apiKey = await resolveTelephonySecret(ctx, companyId, "TWILIO_API_KEY_SID");
+    if (!apiKey) throw new Error("Missing secret: TWILIO_API_KEY_SID");
 
-    let apiSecret: string;
-    try {
-      apiSecret = await ctx.secrets.resolve("TWILIO_API_KEY_SECRET", { companyId });
-    } catch {
-      throw new Error("Missing secret: TWILIO_API_KEY_SECRET");
-    }
+    const apiSecret = await resolveTelephonySecret(ctx, companyId, "TWILIO_API_KEY_SECRET");
+    if (!apiSecret) throw new Error("Missing secret: TWILIO_API_KEY_SECRET");
 
     return "Basic " + Buffer.from(`${apiKey}:${apiSecret}`).toString("base64");
   }

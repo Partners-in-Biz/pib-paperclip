@@ -132,7 +132,8 @@ describe.skipIf(!available)("billing setup (postgres)", () => {
 
   describe("module switches", () => {
     beforeEach(async () => {
-      h.config.set(COMPANY, { ...FULL });
+      // The harness answers R2 calls; FULL's secret-ref key does not resolve here, and a send stores its PDF first (PAR-8201).
+      h.config.set(COMPANY, { ...FULL, r2: SETTINGS.r2 });
       await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
     });
 

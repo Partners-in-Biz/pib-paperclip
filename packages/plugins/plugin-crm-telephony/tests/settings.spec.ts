@@ -183,3 +183,42 @@ describe("Telephony Settings", () => {
     expect(r3.whatsappFrom).toBeNull();
   });
 });
+
+describe("Telephony Settings: public base URL", async () => {
+  const { readSettings, saveSettings, validatePublicBaseUrl } = await import("../src/settings.js");
+  const { vi } = await import("vitest");
+
+  function ctxWith(config: Record<string, unknown>, state: Record<string, unknown> | null = null) {
+    const store = new Map<string, unknown>();
+    return {
+      config: { get: vi.fn().mockResolvedValue(config) },
+      state: {
+        get: vi.fn(async () => state ?? store.get("s") ?? null),
+        set: vi.fn(async (_k: unknown, v: unknown) => { store.set("s", v); }),
+      },
+      secrets: { resolve: vi.fn() },
+    } as any;
+  }
+
+  it("defaults to null and accepts only a plain http(s) origin", async () => {
+    expect((await readSettings(ctxWith({}), "c1")).publicBaseUrl).toBeNull();
+    expect((await readSettings(ctxWith({ publicBaseUrl: "https://paperclip.example.com/" }), "c1")).publicBaseUrl).toBe("https://paperclip.example.com");
+    expect((await readSettings(ctxWith({ publicBaseUrl: "https://paperclip.example.com/PAR" }), "c1")).publicBaseUrl).toBeNull();
+    expect(validatePublicBaseUrl("http://127.0.0.1:3100")).toBe("http://127.0.0.1:3100");
+    expect(validatePublicBaseUrl("https://user:pw@host")).toBeNull();
+    expect(validatePublicBaseUrl("https://host/?q=1")).toBeNull();
+    expect(validatePublicBaseUrl(42)).toBeNull();
+  });
+
+  it("save stores the origin, clears on empty, and refuses a path", async () => {
+    const ctx = ctxWith({});
+    const ok = await saveSettings(ctx, "c1", { publicBaseUrl: "https://paperclip.example.com/" });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.settings.publicBaseUrl).toBe("https://paperclip.example.com");
+    const cleared = await saveSettings(ctx, "c1", { publicBaseUrl: "" });
+    if (cleared.ok) expect(cleared.settings.publicBaseUrl).toBeNull();
+    const bad = await saveSettings(ctx, "c1", { publicBaseUrl: "https://paperclip.example.com/dialer" });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.publicBaseUrl).toMatch(/origin/);
+  });
+});

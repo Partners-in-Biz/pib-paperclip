@@ -135,3 +135,46 @@ describe("Twilio Client", () => {
     }
   });
 });
+
+describe("Twilio Client: createCall", () => {
+  const VALID_ACCOUNT_SID = "AC" + "a".repeat(32);
+
+  it("posts To, From, inline Twiml and repeated StatusCallbackEvent values to Calls.json", async () => {
+    let capturedUrl: string | undefined;
+    let capturedBody: string | undefined;
+    const fetch: HttpFetch = async (url: string, init?: any) => {
+      capturedUrl = url;
+      capturedBody = init?.body;
+      return { status: 201, ok: true, headers: {}, text: async () => JSON.stringify({ sid: "CA" + "1".repeat(32), status: "queued" }) };
+    };
+    const client = createTwilioClient({ accountSid: VALID_ACCOUNT_SID, authToken: "t", fetch });
+    const result = await client.createCall({
+      to: "client:user-1",
+      from: "+27105550100",
+      twiml: "<Response><Dial callerId=\"+27105550100\">+27821234567</Dial></Response>",
+      statusCallback: "https://p.example.com/cb",
+      statusCallbackEvents: ["initiated", "completed"],
+      timeoutSeconds: 20,
+    });
+    expect(result.ok).toBe(true);
+    expect((result as any).value.sid).toBe("CA" + "1".repeat(32));
+    expect(capturedUrl).toBe(`https://api.twilio.com/2010-04-01/Accounts/${VALID_ACCOUNT_SID}/Calls.json`);
+    const params = new URLSearchParams(capturedBody);
+    expect(params.get("To")).toBe("client:user-1");
+    expect(params.get("From")).toBe("+27105550100");
+    expect(params.get("Twiml")).toContain("<Dial");
+    expect(params.get("StatusCallback")).toBe("https://p.example.com/cb");
+    expect(params.getAll("StatusCallbackEvent")).toEqual(["initiated", "completed"]);
+    expect(params.get("StatusCallbackMethod")).toBe("POST");
+    expect(params.get("Timeout")).toBe("20");
+  });
+
+  it("classifies a 400 as rejected with Twilio's message and never leaks the token", async () => {
+    const fetch: HttpFetch = async () => ({ status: 400, ok: false, headers: {}, text: async () => JSON.stringify({ code: 21212, message: "Invalid From number" }) });
+    const client = createTwilioClient({ accountSid: VALID_ACCOUNT_SID, authToken: "very-secret", fetch });
+    const result = await client.createCall({ to: "client:u", from: "+27105550100", twiml: "<Response/>" });
+    expect(result.ok).toBe(false);
+    expect((result as any).failure).toMatchObject({ kind: "rejected", status: 400, code: 21212, error: "Invalid From number" });
+    expect(JSON.stringify(result)).not.toContain("very-secret");
+  });
+});

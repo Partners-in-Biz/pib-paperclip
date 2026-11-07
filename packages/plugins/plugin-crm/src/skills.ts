@@ -25,7 +25,7 @@ The CRM (\`partnersinbiz.crm\`) is the source of truth for clients. A client is 
 
 ## Keeping records
 - Money is an integer in minor units plus a currency: R 1,500.00 is \`150000\` ZAR.
-- Log calls, meetings and decisions with \`log-activity\` (add the \`issueId\`). Set the next step on the contact (nextActionKind and nextActionDueAt).
+- Log calls and decisions with \`log-activity\`, results with \`log-outcome\`. \`set-next-action\` (kind, due, brief) puts a person on the CRM's Today tab (\`call-list\` reads it). Never put a call list in an issue.
 - A field a person owns keeps its value: fill it only while it is empty. A refused write is noted on the record; do not retry it.
 - One record per person and company: the CRM refuses a second contact with the same email or phone (it updates the existing one) and a second company with the same website. Contacts that share an email are merged with \`merge-contacts\` (the Data Steward's job); likely but uncertain duplicates go to a person.
 - New and changed clients reach the other modules within 15 minutes. If a module does not show a client yet, wait 15 minutes; do not ask anyone to resync.

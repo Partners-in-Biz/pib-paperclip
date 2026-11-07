@@ -2,7 +2,8 @@ import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plu
 import { checkVoiceAccess } from "./access.js";
 import { playRecording, type PlaybackError } from "./playback.js";
 import { getTimeline, getTranscript, listUnmatched, setContactPrefs, type TimelineResult } from "./timeline.js";
-import { readSettings } from "./settings.js";
+import { readSettings, readR2Config } from "./settings.js";
+import { resolveTelephonySecret } from "./secrets.js";
 import { NAMESPACE } from "./namespace.js";
 
 // Convert plugin action actor to checkVoiceAccess format
@@ -206,14 +207,16 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
       const callSid = requiredString(params, "callSid");
       const contactId = optionalString(params, "contactId");
 
-      // Resolve R2 config from secrets
+      // R2 from the plugin config (r2.*), else the named secrets
       let r2Config = null;
       try {
-        const [accountId, bucket, accessKeyId, secretAccessKey] = await Promise.all([
-          ctx.secrets.resolve("R2_ACCOUNT_ID", { companyId }),
-          ctx.secrets.resolve("R2_BUCKET", { companyId }),
-          ctx.secrets.resolve("R2_ACCESS_KEY_ID", { companyId }),
-          ctx.secrets.resolve("R2_SECRET_ACCESS_KEY", { companyId }),
+        const fromConfig = await readR2Config(ctx, companyId);
+        if (fromConfig) r2Config = fromConfig;
+        const [accountId, bucket, accessKeyId, secretAccessKey] = r2Config ? [null, null, null, null] : await Promise.all([
+          resolveTelephonySecret(ctx, companyId, "R2_ACCOUNT_ID"),
+          resolveTelephonySecret(ctx, companyId, "R2_BUCKET"),
+          resolveTelephonySecret(ctx, companyId, "R2_ACCESS_KEY_ID"),
+          resolveTelephonySecret(ctx, companyId, "R2_SECRET_ACCESS_KEY"),
         ]);
 
         if (accountId && bucket && accessKeyId && secretAccessKey) {

@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-crm-telephony",
-  "version": "0.3.21",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts.",
@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@partnersinbiz/pib-plugin-kit": "workspace:*",
-    "@partnersinbiz/pib-plugin-ui": "workspace:*"
+    "@partnersinbiz/pib-plugin-ui": "workspace:*",
+    "@twilio/voice-sdk": "2.18.5"
   }
 }

@@ -759,6 +759,34 @@ export class MemoryStore implements GmailStore {
       .filter((m) => m.company_id === companyId && this.involves(m, emails))
       .map((m) => ({ id: m.id, account_id: m.account_id, gmail_thread_id: m.gmail_thread_id, status: m.status, direction: m.direction }));
   }
+  async threadIssueRows(_companyId: string, threadIds: string[]) {
+    const rows: Array<{ account_id: string; gmail_thread_id: string; issue_id: string }> = [];
+    for (const [key, issue] of this.threadIssues) {
+      const cut = key.indexOf(":");
+      const thread = key.slice(cut + 1);
+      if (issue && threadIds.includes(thread)) rows.push({ account_id: key.slice(0, cut), gmail_thread_id: thread, issue_id: issue });
+    }
+    return rows;
+  }
+  async messageLinkRows(companyId: string, ids: string[]) {
+    const rows = [];
+    for (const id of ids) {
+      const row = await this.getMessage(companyId, id);
+      if (!row) continue;
+      rows.push({
+        id: row.id,
+        account_id: row.account_id,
+        status: row.status,
+        gmail_thread_id: row.gmail_thread_id ?? null,
+        gmail_message_id: row.gmail_message_id ?? null,
+        draft_thread_id: row.draft?.threadId ?? null,
+        reply_to_id: row.draft?.replyToMessageId ?? null,
+        source_issue_id: row.draft?.sourceIssueId ?? null,
+        rewrite_issue_id: row.draft?.rewrite?.issueId ?? null,
+      });
+    }
+    return rows;
+  }
   async threadIssueIds(_companyId: string, threadIds: string[]) {
     const ids: string[] = [];
     for (const [key, issue] of this.threadIssues) {

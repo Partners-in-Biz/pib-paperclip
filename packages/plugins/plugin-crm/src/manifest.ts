@@ -159,7 +159,8 @@ const manifest: PaperclipPluginManifestV1 = {
     namespaceSlug: "crm",
     migrationsDir: "migrations",
     // cost_events (new in 0.13.0): the notional effort of a client's project, for the monthly report (internal only).
-    coreReadTables: ["heartbeat_runs", "issues", "cost_events"],
+    // companies (PAR-8198): jobs skip CRM rows of a company deleted or archived in Paperclip.
+    coreReadTables: ["heartbeat_runs", "issues", "cost_events", "companies"],
   },
   tools: CRM_TOOLS,
   webhooks: [

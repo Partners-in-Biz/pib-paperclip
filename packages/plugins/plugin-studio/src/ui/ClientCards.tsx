@@ -1,9 +1,9 @@
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
-import { Button, errorText, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
+import { Button, errorText, PageMessage, SectionHeading } from "@partnersinbiz/pib-plugin-ui";
 import { clientsWithAssets, type ClientSummary } from "./clients.js";
 import { usePreviewUrls } from "./previews.js";
 
-const muted = { fontSize: 13, opacity: 0.7 } as const;
+const muted = { fontSize: 13, color: "var(--muted-foreground)" } as const;
 
 /** One card per client. Thumbnails use the same person-only "asset-urls" action as the library. */
 export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: string; version: number; onOpenLibrary: (scopeKey: string) => void }) {
@@ -15,10 +15,11 @@ export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: 
   if (!summaries.data || clients.length === 0) return null;
 
   return (
-    <Section title="Clients">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 260px), 1fr))", gap: 12, marginBottom: 12 }}>
+    <section style={{ display: "grid", gap: 12, minWidth: 0 }} aria-label="Clients">
+      <SectionHeading title="Clients" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 260px), 1fr))", gap: 12 }}>
         {clients.map((c) => (
-          <div key={c.scopeKey} data-testid="client-card" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, minWidth: 0, display: "grid", gap: 8 }}>
+          <div key={c.scopeKey} data-testid="client-card" style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 12, background: "color-mix(in oklab, var(--background) 70%, transparent)", minWidth: 0, display: "grid", gap: 8 }}>
             <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{c.name}</div>
             <div style={muted}>
               {c.counts.draft} draft · {c.counts.approved} approved · {c.counts.rejected} rejected
@@ -40,6 +41,6 @@ export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: 
           </div>
         ))}
       </div>
-    </Section>
+    </section>
   );
 }

@@ -112,3 +112,49 @@ export function buildSignedRecordingStatusInput(
 
   return { formBody, params: parsedParams, signature, input };
 }
+
+export interface CallStatusParams {
+  callSid: string;
+  callStatus: string;
+  parentCallSid?: string;
+  callDuration?: number;
+  from?: string;
+  to?: string;
+  direction?: string;
+}
+
+/** A Twilio call status callback signed for the `call-status` endpoint. */
+export function buildSignedCallStatusInput(
+  authToken: string,
+  params: CallStatusParams,
+  baseUrl: string = "https://example.com",
+): SignedWebhookInput {
+  const proto = new URL(baseUrl).protocol.slice(0, -1);
+  const host = new URL(baseUrl).host;
+  const webhookUrl = buildPublicWebhookUrl({ baseUrl, pluginId: PLUGIN_ID, endpointKey: "call-status" });
+
+  const search = new URLSearchParams();
+  search.set("CallSid", params.callSid);
+  search.set("CallStatus", params.callStatus);
+  if (params.parentCallSid) search.set("ParentCallSid", params.parentCallSid);
+  if (params.callDuration !== undefined) search.set("CallDuration", String(params.callDuration));
+  if (params.from) search.set("From", params.from);
+  if (params.to) search.set("To", params.to);
+  if (params.direction) search.set("Direction", params.direction);
+  const formBody = search.toString();
+  const parsedParams = parseFormParams(formBody);
+  const signature = computeTwilioSignature(authToken, webhookUrl, parsedParams);
+
+  const input: PluginWebhookInput = {
+    requestId: `test-req-${params.callSid}-${params.callStatus}`,
+    endpointKey: "call-status",
+    headers: {
+      "x-forwarded-proto": proto,
+      "x-forwarded-host": host,
+      "x-twilio-signature": signature,
+    },
+    rawBody: formBody,
+    parsedBody: parsedParams,
+  };
+  return { formBody, params: parsedParams, signature, input };
+}

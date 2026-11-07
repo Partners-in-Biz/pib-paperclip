@@ -41,6 +41,7 @@ function makeSettings(overrides?: Partial<TelephonySettings>): TelephonySettings
     usSmsCampaignStatus: "none",
     usMessagingServiceSid: null,
     smsHolidays: [],
+    publicBaseUrl: null,
     ...overrides,
   };
 }

@@ -27,7 +27,8 @@ import {
 import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
-import { Button, ButtonLink, errorText, Field, Input, Page, PageFrame, PageMessage, Section, Select } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ButtonLink, EmptyState, errorText, Field, Input, Page, PageFrame, PageMessage, Section, SectionHeading, Select, tone } from "@partnersinbiz/pib-plugin-ui";
+import { relativeAge } from "./library.js";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
@@ -165,7 +166,7 @@ export function StudioCanvasPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? host.companyId ?? null;
   const { search } = useHostLocation();
   const canvasId = new URLSearchParams(search).get("canvas");
-  if (!companyId) return <Page title="Studio canvas" description="Pick a company first.">{null}</Page>;
+  if (!companyId) return <Page accent="studio" title="Studio canvas" description="Pick a company first.">{null}</Page>;
   if (!canvasId) return <CanvasList companyId={companyId} />;
   return (
     <ReactFlowProvider>
@@ -230,27 +231,34 @@ function CanvasList({ companyId }: { companyId: string }) {
   };
   const boards = list.data?.canvases ?? [];
   return (
-    <Page title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
+    <Page accent="studio" title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
       <PageMessage tone="danger" message={error ?? (list.error ? errorText(list.error) : undefined)} />
-      <Section title="New canvas">
-        <div style={row}>
-          <Field label="Name">
-            <Input value={title} maxLength={120} placeholder="Untitled canvas" onChange={(e) => setTitle(e.target.value)} />
-          </Field>
-          <Button disabled={busy} onClick={start}>{busy ? "Creating…" : "Create canvas"}</Button>
-        </div>
-      </Section>
-      <Section title="Canvases">
-        {!list.data && !list.error ? <span style={muted}>Loading…</span> : null}
-        {list.data && boards.length === 0 ? <span style={muted}>No canvases yet. Create one above.</span> : null}
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
-          {boards.map((b) => (
-            <li key={b.id} style={{ ...row, justifyContent: "space-between", minWidth: 0 }}>
-              <a {...nav.linkProps(`/studio-canvas?canvas=${encodeURIComponent(b.id)}`)} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 12rem" }}>{b.title}</a>
-              <span style={muted}>{b.client?.name ?? "Own work"} · {b.cards} cards · {new Date(b.updatedAt).toLocaleString()}</span>
+      <SectionHeading
+        title="Canvases"
+        actions={
+          <form style={{ ...row, flexWrap: "wrap" }} onSubmit={(e) => { e.preventDefault(); if (!busy) start(); }}>
+            <div style={{ width: 220, maxWidth: "100%" }}>
+              <Input aria-label="Name" value={title} maxLength={120} placeholder="Untitled canvas" onChange={(e) => setTitle(e.target.value)} />
+            </div>
+            <Button type="submit" disabled={busy}>{busy ? "Creating…" : "Create canvas"}</Button>
+          </form>
+        }
+      />
+      {!list.data && !list.error ? <span style={muted}>Loading…</span> : null}
+      {list.data && boards.length === 0 ? <EmptyState compact title="No canvases yet" description="Name one above to start wiring prompts, library files and generations together." /> : null}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(280px, 100%), 1fr))", gap: 12, minWidth: 0 }}>
+        {boards.map((b) => (
+          <div key={b.id} style={{ display: "flex", flexDirection: "column", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden", minWidth: 0, background: "color-mix(in oklab, var(--background) 70%, transparent)" }}>
+            <a {...nav.linkProps(`/studio-canvas?canvas=${encodeURIComponent(b.id)}`)} className="pib-link-card" style={{ display: "grid", gap: 4, padding: 14, color: "inherit", textDecoration: "none", minWidth: 0, flex: "1 1 auto", background: `radial-gradient(120% 140% at 0% 0%, color-mix(in oklab, ${tone("accent").solid} 14%, transparent), transparent 60%)` }}>
+              <span style={{ fontSize: 14.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</span>
+              <span style={{ ...muted, fontSize: 12.5 }}>{b.client?.name ?? "Own work"} · {b.cards} {b.cards === 1 ? "card" : "cards"}</span>
+            </a>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 14px", borderTop: "1px solid var(--border)" }}>
+              <span style={{ ...muted, fontSize: 12 }}>{relativeAge(b.updatedAt)}</span>
               {canEdit ? (
                 <Button
                   variant="secondary"
+                  style={{ height: 28, fontSize: 12 }}
                   disabled={archive.busyId !== null}
                   aria-label={`Archive ${b.title}`}
                   onClick={() => void archive.run(b).then((done) => { if (done) { setError(null); list.refresh(); } })}
@@ -258,10 +266,10 @@ function CanvasList({ companyId }: { companyId: string }) {
                   {archive.busyId === b.id ? "Archiving…" : "Archive"}
                 </Button>
               ) : null}
-            </li>
-          ))}
-        </ul>
-      </Section>
+            </div>
+          </div>
+        ))}
+      </div>
     </Page>
   );
 }
@@ -574,8 +582,8 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 
-  if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<ButtonLink {...nav.linkProps("/studio-canvas")}>All canvases</ButtonLink>}>{null}</Page>;
-  if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
+  if (board.error) return <Page accent="studio" title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<ButtonLink {...nav.linkProps("/studio-canvas")}>All canvases</ButtonLink>}>{null}</Page>;
+  if (!board.data) return <Page accent="studio" title="Studio canvas" description="Loading…">{null}</Page>;
   if (narrow) {
     const labels = new Map((overview.data?.models ?? []).map((m) => [m.id, m.label]));
     return (

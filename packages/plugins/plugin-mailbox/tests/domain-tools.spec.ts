@@ -63,7 +63,7 @@ const account = (address: string, over: Row = {}): Row => ({ id: "acc-1", compan
 describe("check-sender-domain", () => {
   it("reads a new client's domain through the host's guarded fetch, keeps it, and returns the exact records to add", async () => {
     const { run, data, executed, doh } = await boot({ "MX newclient.co.za": ["1 smtp.google.com."] });
-    const result = await run("check-sender-domain", { domain: "NewClient.co.za", clientKind: "company", clientRef: "crm-1" });
+    const result = await run("check-sender-domain", { domain: "NewClient.co.za", watch: true, clientKind: "company", clientRef: "crm-1" });
     expect(result.error).toBeUndefined();
     expect(result.content).toBe("newclient.co.za: bad");
     expect(result.data).toMatchObject({ domain: "newclient.co.za", applicable: true, status: "bad", healthy: false, sendReady: false, watched: true, mx: { state: "ok", provider: "google" } });
@@ -97,11 +97,18 @@ describe("check-sender-domain", () => {
     expect(data.domain_checks).toEqual([]);
   });
 
+  it("an agent's plain check is a lookup only: the domain is not stored or watched", async () => {
+    const { run, data } = await boot({ "MX vendor.com": ["1 smtp.google.com."] });
+    expect((await run("check-sender-domain", { domain: "vendor.com" })).data).toMatchObject({ domain: "vendor.com", watched: false });
+    expect(data.domain_checks).toEqual([]);
+    expect((await run("check-sender-domain", { domain: "client.co.za", clientKind: "company", clientRef: "crm-1" })).data).toMatchObject({ watched: true });
+  });
+
   it("refuses to watch more than 25 domains on purpose, but still re-checks one it already watches", async () => {
     const rows = Array.from({ length: 25 }, (_, i) => ({ company_id: CO, domain: `d${i}.co.za`, status: "unknown", result: {}, source: "manual", client_kind: null, client_ref: null, checked_at: "2026-10-01T00:00:00.000Z", first_checked_at: "2026-10-01T00:00:00.000Z", status_since: "2026-10-01T00:00:00.000Z", dmarc_none_since: null }));
     const { run } = await boot({}, { domain_checks: rows });
-    expect((await run("check-sender-domain", { domain: "new.co.za" })).error).toMatch(/25 domains are already watched/);
-    expect((await run("check-sender-domain", { domain: "d3.co.za" })).error).toBeUndefined();
+    expect((await run("check-sender-domain", { domain: "new.co.za", watch: true })).error).toMatch(/25 domains are already watched/);
+    expect((await run("check-sender-domain", { domain: "d3.co.za", watch: true })).error).toBeUndefined();
   });
 
   it("extra DKIM selectors from the caller are tried on top of the usual ones", async () => {

@@ -143,8 +143,8 @@ export function ResponsiveGrid({ columns, narrowColumns = 1, spanFirst = false, 
 }
 
 /**
- * The page root every PiB plugin page uses (`Page` wraps it). Full width on a phone (the host already
- * pads the screen), one shrinkable grid column, and the shared base rules. `accent` gives the page its
+ * The page root every PiB plugin page uses (`Page` wraps it). Full width everywhere, like the Dashboard (the host already
+ * pads the screen, so no extra padding or width cap here), one shrinkable grid column, and the shared base rules. `accent` gives the page its
  * module colour (see `PluginThemeProvider`).
  */
 export function PageFrame({ children, style, accent }: { children: ReactNode; style?: CSSProperties; accent?: AccentInput }) {
@@ -157,8 +157,7 @@ export function PageFrame({ children, style, accent }: { children: ReactNode; st
       style={{
         fontFamily: font,
         color: tokens.fg,
-        padding: narrow ? "4px 0 calc(24px + env(safe-area-inset-bottom, 0px))" : 28,
-        maxWidth: 1160,
+        padding: narrow ? "4px 0 calc(24px + env(safe-area-inset-bottom, 0px))" : "0 0 24px",
         width: "100%",
         minWidth: 0,
         display: "grid",
@@ -675,13 +674,15 @@ export function useEscapeToClose(open: boolean, onClose: () => void, enabled = t
   }, [open, id]);
 }
 
-export function Modal({ open, title, description, children, onClose, footer }: {
+export function Modal({ open, title, description, children, onClose, footer, width = 500 }: {
   open: boolean;
   title: string;
   description?: string;
   children: ReactNode;
   onClose: () => void;
   footer?: ReactNode;
+  /** The panel's width in px on a wide screen; a phone always gets the full width. */
+  width?: number;
 }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -724,7 +725,7 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         tabIndex={-1}
         className="pib-ui"
         style={{
-          width: narrow ? "100%" : "min(500px, 100%)",
+          width: narrow ? "100%" : `min(${width}px, 100%)`,
           maxHeight: narrow ? "calc(100dvh - 8px - env(safe-area-inset-top, 0px))" : "90vh",
           overflowX: "hidden",
           overflowY: "auto",

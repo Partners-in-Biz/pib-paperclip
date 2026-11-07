@@ -91,7 +91,8 @@ describe.skipIf(!available)("invoice send gate (postgres)", () => {
   });
 
   it("no R2 with email on fails instead of sending without the PDF", async () => {
-    h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9" });
+    const { r2: _r2, ...noR2 } = SETTINGS;
+    h.config.set(COMPANY, { ...noR2, reviewerUserId: "user-9" });
     const { id, issueId } = await request();
     await close(issueId, "user");
     expect(await row(id)).toMatchObject({ status: "draft", pending_action: "send", delivery_status: "failed" });
@@ -140,6 +141,7 @@ describe.skipIf(!available)("invoice send gate (postgres)", () => {
   });
 
   it("email off: done marks it sent without email and reopens nothing", async () => {
+    okR2();
     h.config.set(COMPANY, { ...SETTINGS, reviewerUserId: "user-9", email: { enabled: false } });
     const { id, issueId } = await request();
     await close(issueId, "user");
