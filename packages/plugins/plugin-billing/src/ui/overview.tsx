@@ -49,6 +49,7 @@ import {
   lastMonths,
   monthLabel,
   percentDelta,
+  recurringSources,
   waitingOnPerson,
   type AgeBuckets,
   type Tone,
@@ -63,7 +64,7 @@ export interface OverviewReports {
   revenue: { months: Array<{ month: string; invoicedMinor: number; collectedMinor: number }> };
   clients: { clients: Array<{ clientKey: string; clientName: string; collectedMinor: number; lifetimePaidMinor: number; outstandingMinor: number }> };
   agedDebtors: { buckets: AgeBuckets; totalMinor: number; parties: Array<{ party: string; totalMinor: number }> };
-  mrr: { mrrMinor: number; active: number };
+  mrr: { mrrMinor: number; active: number; retainers?: number; repeating?: number };
   mrrTrend?: Array<{ month: string; mrrMinor: number; active: number }>;
 }
 
@@ -337,7 +338,7 @@ export function Overview({ snapshot, scope, call, go, onOpenInvoice, onOpenQuote
         </SectionCard>
 
         {!scope ? (
-          <SectionCard title="Recurring revenue" icon={RefreshCw} subtitle={reports ? `MRR ${money(reports.mrr.mrrMinor, cur)} from ${reports.mrr.active} retainer${reports.mrr.active === 1 ? "" : "s"} and repeating invoices.` : "MRR at each month end."}>
+          <SectionCard title="Recurring revenue" icon={RefreshCw} subtitle={reports ? `MRR ${money(reports.mrr.mrrMinor, cur)} from ${recurringSources(reports.mrr)}.` : "MRR at each month end."}>
             {reports ? (
               <TrendChart
                 title="MRR"

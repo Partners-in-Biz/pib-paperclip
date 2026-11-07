@@ -259,6 +259,8 @@ export function expenseSummary(input: { items: ExpenseItem[]; from: string; to: 
 }
 
 export interface RecurringRevenue {
+  /** A retainer (subscription) or a repeating-invoice schedule; left out, a retainer. */
+  kind?: "retainer" | "repeating";
   status: "active" | "paused" | "cancelled";
   priceMinor: number;
   currency: string;
@@ -267,13 +269,15 @@ export interface RecurringRevenue {
   cancelledAt: string | null;
 }
 
-/** MRR/ARR from active retainers (and recurring schedules), plus new, churned and churn rate over 30 days. */
+/** MRR/ARR from active retainers and repeating-invoice schedules (counted apart in `retainers` and `repeating`), plus new, churned and churn rate over 30 days. */
 export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: string; convert: Convert }) {
   const windowStart = input.now.getTime() - 30 * 86_400_000;
   let mrrMinor = 0;
   let newMinor = 0;
   let churnedMinor = 0;
   let active = 0;
+  let retainers = 0;
+  let repeating = 0;
   let activeAtStart = 0;
   let churned = 0;
   let unconverted = 0;
@@ -288,6 +292,8 @@ export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: 
     if (item.status === "active" && !(Number.isFinite(started) && started > input.now.getTime())) {
       mrrMinor += monthly;
       active += 1;
+      if (item.kind === "repeating") repeating += 1;
+      else retainers += 1;
       if (Number.isFinite(started) && started >= windowStart) newMinor += monthly;
     }
     if (cancelled != null && Number.isFinite(cancelled) && cancelled >= windowStart && cancelled <= input.now.getTime()) {
@@ -301,6 +307,8 @@ export function mrrMetrics(input: { items: RecurringRevenue[]; now: Date; book: 
     mrrMinor,
     arrMinor: mrrMinor * 12,
     active,
+    retainers,
+    repeating,
     newMrrMinor: newMinor,
     churnedMrrMinor: churnedMinor,
     churned,
