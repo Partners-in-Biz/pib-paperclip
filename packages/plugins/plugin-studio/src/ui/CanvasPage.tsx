@@ -27,7 +27,7 @@ import {
 import flowCss from "@xyflow/react/dist/style.css";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
-import { Button, errorText, Field, Input, Page, PageFrame, PageMessage, Section } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ButtonLink, errorText, Field, Input, Page, PageFrame, PageMessage, Section, Select } from "@partnersinbiz/pib-plugin-ui";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
 import { effectiveValue, headerCredits } from "../canvas-settings.js";
@@ -232,7 +232,7 @@ function CanvasList({ companyId }: { companyId: string }) {
   };
   const boards = list.data?.canvases ?? [];
   return (
-    <Page title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<a {...nav.linkProps("/studio")}>Back to Studio</a>}>
+    <Page title="Studio canvas" description="Boards that wire prompts, library files and generations together." actions={<ButtonLink {...nav.linkProps("/studio")}>Back to Studio</ButtonLink>}>
       <PageMessage tone="danger" message={error ?? (list.error ? errorText(list.error) : undefined)} />
       <Section title="New canvas">
         <div style={row}>
@@ -577,7 +577,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   const credits = overview.data && overview.data.caps ? headerCredits(overview.data as Parameters<typeof headerCredits>[0], client) : null;
   const dark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 
-  if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<a {...nav.linkProps("/studio-canvas")}>All canvases</a>}>{null}</Page>;
+  if (board.error) return <Page title="Studio canvas" description="" message={errorText(board.error)} messageTone="danger" actions={<ButtonLink {...nav.linkProps("/studio-canvas")}>All canvases</ButtonLink>}>{null}</Page>;
   if (!board.data) return <Page title="Studio canvas" description="Loading…">{null}</Page>;
   if (narrow) {
     const labels = new Map((overview.data?.models ?? []).map((m) => [m.id, m.label]));
@@ -734,11 +734,11 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
       {kind === "source" ? (
         <>
           <Media assetId={data.assetId} name={data.label || "Source"} ratio="4:3" empty="Pick a library file below" />
-          <select className="nodrag" aria-label="Library file" value={data.assetId ?? ""} onFocus={beforeEdit} onChange={(e) => { const a = library.find((x) => x.id === e.target.value); set({ assetId: e.target.value, label: data.label || a?.name || "" }); }} style={fieldStyle}>
+          <Select className="nodrag" aria-label="Library file" value={data.assetId ?? ""} onFocus={beforeEdit} onChange={(e) => { const a = library.find((x) => x.id === e.target.value); set({ assetId: e.target.value, label: data.label || a?.name || "" }); }} style={fieldStyle}>
             <option value="">Pick a file…</option>
             {data.assetId && !picked ? <option value={data.assetId}>File {data.assetId.slice(0, 8)}</option> : null}
             {library.map((a) => <option key={a.id} value={a.id}>{a.kind === "video" ? "Video" : "Image"}: {a.name}</option>)}
-          </select>
+          </Select>
           {library.length === 0 ? <span style={muted}>No images or videos in this library yet.</span> : null}
           {canGenerate === true ? (
             <FromDrive

@@ -3,6 +3,7 @@ import {
   useId,
   useRef,
   useState,
+  type AnchorHTMLAttributes,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type FormEvent,
@@ -20,6 +21,9 @@ import { PluginThemeProvider, accentVars, resolveAccent, useResolvedAccent, type
 import { tokens, tone, type ToneInput } from "./tokens.js";
 import { useUiContributions, type UiContribution } from "./nav.js";
 import { HelpBannerSlot } from "./help-banner.js";
+import { SEARCHABLE_SELECT_THRESHOLD, SearchableSelect, flattenOptions } from "./searchable-select.js";
+
+export { SEARCHABLE_SELECT_THRESHOLD, filterOptions, flattenOptions } from "./searchable-select.js";
 
 export { HELP_BANNER_TEXT } from "./help-banner.js";
 export { HELP_FALLBACKS, HELP_PAGES, HELP_PLACEHOLDERS, fillHelp, helpBackTo, helpPageFor, helpTexts, helpTo, isHelpRequested, type HelpPageContent, type HelpVars } from "./help-content.js";
@@ -903,7 +907,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
           </div>
           <div style={{ padding: "0 16px 8px", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: tokens.muted, flexWrap: "wrap" }}>
             <span style={{ width: 24, textAlign: "center" }}>For</span>
-            <select
+            <Select
               aria-label="Assignee"
               value={assignee}
               disabled={busy}
@@ -921,7 +925,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
                   {agents.map((a) => <option key={`agent:${a.id}`} value={`agent:${a.id}`}>{a.name}{a.detail ? ` · ${a.detail}` : ""}{a.status === "paused" ? " (paused)" : ""}</option>)}
                 </optgroup>
               ) : null}
-            </select>
+            </Select>
           </div>
           {selected?.kind === "agent" && selected.status === "paused" ? (
             <div style={{ margin: "0 16px 8px", fontSize: 12.5, borderRadius: 6, padding: "8px 10px", border: "1px solid color-mix(in oklab, orange 45%, transparent)", background: "color-mix(in oklab, orange 10%, transparent)" }}>
@@ -1099,8 +1103,16 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
+/**
+ * A native select for short lists. With more than SEARCHABLE_SELECT_THRESHOLD options it becomes a
+ * searchable list (search box on top) with the same props and `onChange(event.target.value)`.
+ */
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   usePibBaseStyles();
+  const options = props.multiple || (props.size ?? 0) > 1 ? null : flattenOptions(props.children);
+  if (options && options.length > SEARCHABLE_SELECT_THRESHOLD) {
+    return <SearchableSelect {...props} options={options} base={fieldBase} focusRing={focusRing} />;
+  }
   return (
     <select
       {...props}
@@ -1179,6 +1191,53 @@ export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<H
         fontFamily: "inherit",
         cursor: props.disabled ? "not-allowed" : "pointer",
         opacity: props.disabled ? 0.55 : 1,
+        transition: "filter 120ms ease, box-shadow 120ms ease",
+        ...styles,
+        ...((props.style as CSSProperties) ?? {}),
+      }}
+    />
+  );
+}
+
+/** A link that looks like a `Button` (same height, radius and weight). Spread `nav.linkProps(path)` into it. */
+export function ButtonLink({ variant = "secondary", ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & {
+  variant?: "primary" | "secondary";
+}) {
+  const styles: CSSProperties = variant === "primary"
+    ? { background: tokens.primary, color: tokens.primaryFg, border: "1px solid transparent" }
+    : { background: tokens.secondary, color: tokens.secondaryFg, border: `1px solid ${tokens.border}` };
+  return (
+    <a
+      {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.filter = "brightness(0.97)";
+        props.onMouseEnter?.(event);
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.filter = "none";
+        props.onMouseLeave?.(event);
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: 36,
+        borderRadius: 9,
+        padding: "0 14px",
+        fontSize: 13,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        textDecoration: "none",
+        whiteSpace: "nowrap",
+        cursor: "pointer",
         transition: "filter 120ms ease, box-shadow 120ms ease",
         ...styles,
         ...((props.style as CSSProperties) ?? {}),

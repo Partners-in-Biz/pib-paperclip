@@ -10,7 +10,7 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
-import { Button, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
+import { Button, ButtonLink, EmptyState, errorText, Field, Input, Page, PageMessage, Section, Select, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX, PHOTO_PRESETS } from "../presets.js";
 
@@ -153,7 +153,7 @@ export function StudioPage({ context }: PluginPageProps) {
   ];
 
   return (
-    <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`} actions={<a {...canvasNav.linkProps("/studio-canvas")}>Open canvas</a>}>
+    <Page title="Studio" description={`Credits used in ${data.period}: ${data.companyUsed}`} actions={<ButtonLink {...canvasNav.linkProps("/studio-canvas")}>Open canvas</ButtonLink>}>
       {meError ? <PageMessage tone="danger" message={meError} /> : null}
       {narrow ? (
         // Phone: a bottom tab bar (spec PAR-8040 item 7); Boards opens the canvas.
