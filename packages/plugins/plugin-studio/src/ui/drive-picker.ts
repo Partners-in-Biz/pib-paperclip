@@ -34,6 +34,12 @@ export function folderLabel(folder: string | null): string {
   return parts.length > 1 ? parts.slice(1).join(" / ") : (parts[0] ?? "Other");
 }
 
+/** The whole path under the client's Drive folder: "Assets/Marketing" reads as "Assets / Marketing". */
+export function folderPath(folder: string | null): string {
+  const parts = (folder ?? "").split("/").filter(Boolean);
+  return parts.length ? parts.join(" / ") : "No folder";
+}
+
 /** Folder tabs in a steady order (by label), each with its count, after "All". */
 export function folderTabs(files: DriveFile[]): Array<[string, string, number]> {
   const counts = new Map<string, number>();
