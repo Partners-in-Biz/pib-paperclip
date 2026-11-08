@@ -7,17 +7,18 @@
  * `transitionIn` that overlaps the clip before it is joined with `xfade=fade` over the overlap (no overlap: it fades in from
  * black); gaps, the lead-in before the first clip and the tail up to the edit's end are black `color` segments. Every
  * `overlay` track is then laid over that base in track order, each clip at its centre offset x/y and fit scale.
- * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Audio (A5b) is not compiled here
- * yet: it and anything else outside this model throw `CompileError` with `unsupported_feature:<name>`. The output has no
- * audio stream (`-an`) until A5b.
+ * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
+ * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
+ * model throws `CompileError` with `unsupported_feature:<name>`.
  */
 import { StudioError } from "../errors.js";
+import { AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform } from "./timeline.js";
 
 /** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
-export interface CompileInput { path: string; kind: "video" | "image" }
+export interface CompileInput { path: string; kind: "video" | "image" | "audio"; hasAudio?: boolean }
 /** Inputs keyed by `inputKey(assetId, version)`. */
 export type CompileInputs = Record<string, CompileInput>;
 export interface CompileFile { name: string; content: string }
@@ -25,7 +26,7 @@ export interface CompiledVideo { args: string[]; files: CompileFile[] }
 /** The video half of a render, for the audio compiler to extend: input args, graph lines, the final label, work-dir files. */
 export interface VideoGraph { inputArgs: string[]; filters: string[]; outLabel: string; inputCount: number; duration: number; files: CompileFile[] }
 /** `fontsDir`: where the bundled TTFs are (default: beside the worker); only read when the edit has text or captions. */
-export interface CompileOptions { fontsDir?: string }
+export interface CompileOptions { fontsDir?: string; loudnorm?: boolean }
 
 export const GRAPH_FILE = "video.graph";
 /** H.264 High, CRF 20 capped at 6 Mbit/s: a 180 s 1080x1920 render stays near 140 MB (plan PAR-8276, Critic 2d). */
@@ -46,14 +47,14 @@ const unsupported = (name: string): never => {
 };
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 /** A number for the graph: millisecond precision, never exponent notation (all values are range-checked by normalizeEdit). */
-const num = (n: number) => {
+export const num = (n: number) => {
   const v = ms(n);
   return Object.is(v, -0) ? "0" : String(v);
 };
 const EPS = 0.0005;
 
 /** `file:` stops ffmpeg reading a path as a protocol (`http:`, `concat:`) or an option (`-x`). */
-function filePath(path: string): string {
+export function filePath(path: string): string {
   if (!path || /[\0\n\r]/.test(path)) throw new CompileError("bad_input_path", "empty or has control characters");
   return `file:${path}`;
 }
@@ -198,10 +199,6 @@ class Graph {
 
 /** Builds the picture graph. Throws `CompileError` for what Phase A can't render. */
 export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: CompileOptions = {}): VideoGraph {
-  for (const track of doc.tracks) {
-    if (track.clips.length === 0) continue;
-    if (track.kind === "audio") unsupported(track.kind);
-  }
   const videoTracks = doc.tracks.filter((t) => t.kind === "video" && t.clips.length > 0);
   if (videoTracks.length > 1) unsupported("multiple_video_tracks");
   const duration = editDuration(doc);
@@ -238,20 +235,23 @@ export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: C
   return { inputArgs: g.inputArgs, filters: g.filters, outLabel, inputCount: g.inputArgs.filter((a) => a === "-i").length, duration, files: text.files };
 }
 
-/** Full ffmpeg args for a picture-only render to `outputPath` (relative to the work dir, or absolute). */
+/** Full ffmpeg args for a render (picture, text, sound) to `outputPath` (relative to the work dir, or absolute). */
 export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: string, options: CompileOptions = {}): CompiledVideo {
   const graph = buildVideoGraph(doc, sources, options);
+  const audio = buildAudioGraph(doc, sources, graph.inputCount, { loudnorm: options.loudnorm });
+  const filters = [...graph.filters, ...audio.filters];
   const args = [
     "-hide_banner", "-nostdin", "-y",
     ...graph.inputArgs,
+    ...audio.inputArgs,
     "-filter_complex_script", GRAPH_FILE,
     "-map", `[${graph.outLabel}]`,
-    "-an",
+    ...(audio.outLabel ? ["-map", `[${audio.outLabel}]`, ...AUDIO_ENCODER_ARGS] : ["-an"]),
     ...ENCODER_ARGS,
     "-r", String(doc.project.fps),
     "-t", num(graph.duration),
     "-movflags", "+faststart",
     filePath(outputPath),
   ];
-  return { args, files: [{ name: GRAPH_FILE, content: `${graph.filters.join(";\n")}\n` }, ...graph.files] };
+  return { args, files: [{ name: GRAPH_FILE, content: `${filters.join(";\n")}\n` }, ...graph.files] };
 }
