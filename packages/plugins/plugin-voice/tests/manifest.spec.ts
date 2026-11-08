@@ -7,7 +7,7 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 describe("manifest", () => {
   it("matches package.json and declares only what it uses", () => {
     expect(manifest.version).toBe(pkg.version);
-    expect(manifest.capabilities).toEqual(["agents.read", "http.outbound", "secrets.read-ref", "ui.action.register"]);
+    expect(manifest.capabilities).toEqual(["agents.read", "http.outbound", "plugin.state.read", "plugin.state.write", "secrets.read-ref", "ui.action.register"]);
   });
 
   it("mounts once in the app shell", () => {
