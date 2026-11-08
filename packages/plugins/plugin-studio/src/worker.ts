@@ -25,6 +25,7 @@ import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
+import { createRenderRunner } from "./video-edit/runner.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
@@ -435,6 +436,13 @@ const plugin = definePlugin({
       } finally {
         await publishShares();
       }
+    });
+    // Video renders (PAR-8276 A7a): one runner per worker. It recovers renders a dead worker left behind now and on
+    // every tick; it claims nothing until the render pipeline (A7b) passes it an executor.
+    const renders = createRenderRunner(ctx);
+    runDetached(() => void renders.recover().catch((error) => ctx.logger.warn("Studio render recovery failed", { error: errorText(error) })));
+    ctx.jobs.register("process-renders", async () => {
+      await renders.tick();
     });
     ctx.jobs.register("sweep-local-files", async () => {
       await sweepLocalCopies();
