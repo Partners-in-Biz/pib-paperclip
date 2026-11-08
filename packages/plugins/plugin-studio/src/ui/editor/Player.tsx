@@ -12,6 +12,7 @@ import type { EditorStore } from "./editor-store.js";
 import { assignSlots, buildPreviewPlan, frameAt, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
+import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 /** Seconds the playing video may drift from the clock before it is re-seeked. */
@@ -30,7 +31,11 @@ export function Player({ store }: { store: EditorStore }) {
   const byId = useMemo(() => new Map(plan.segments.map((s) => [s.clipId, s])), [plan]);
   const end = plan.end;
   const frame = frameAt(plan, playhead);
-  const previews = usePreviewUrls(companyId, [...new Set(plan.segments.map((s) => s.assetId))]);
+  // Audio clips near the playhead get an <audio> element (PAR-8322); their assets' links load with the video's.
+  const audioNear = audioWindow(doc, playhead);
+  const allAudio = useMemo(() => audioClips(doc), [doc]);
+  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
+  useSyncExternalStore(audioMute.subscribe, audioMute.getSnapshot, audioMute.getSnapshot);
   const [playing, setPlaying] = useState(false);
   const aspect = doc ? `${doc.project.width} / ${doc.project.height}` : "16 / 9";
 
@@ -64,6 +69,27 @@ export function Player({ store }: { store: EditorStore }) {
         if (!v.paused) v.pause();
         if (ready && Math.abs(v.currentTime - seg.in) > STILL) v.currentTime = seg.in;
       }
+    }
+  });
+
+  // Audio clips: the one(s) under the playhead play (volume and fades applied, track mute honoured); the rest wait.
+  const audios = useRef(new Map<string, HTMLAudioElement>());
+  useEffect(() => {
+    for (const { trackId, clip } of audioNear) {
+      const a = audios.current.get(clip.id);
+      if (!a) continue;
+      const f = audioFrameAt(clip, playhead);
+      if (a.playbackRate !== clip.speed) a.playbackRate = clip.speed;
+      a.muted = !f || audioMute.isMuted(trackId);
+      if (!f) {
+        if (!a.paused) a.pause();
+        continue;
+      }
+      a.volume = f.volume;
+      const ready = a.readyState >= 1 && !a.seeking;
+      if (ready && Math.abs(a.currentTime - f.sourceTime) > (playing ? DRIFT : STILL)) a.currentTime = f.sourceTime;
+      if (playing && a.paused) void a.play().catch(() => undefined);
+      if (!playing && !a.paused) a.pause();
     }
   });
 
@@ -141,6 +167,12 @@ export function Player({ store }: { store: EditorStore }) {
               onSeeked={resync}
               style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: showing ? frame.opacity : 0 }}
             />
+          ) : null;
+        })}
+        {audioNear.map(({ clip }) => {
+          const src = previews.urls[clip.assetId];
+          return src ? (
+            <audio key={clip.id} ref={(el) => { if (el) audios.current.set(clip.id, el); else audios.current.delete(clip.id); }} src={src} data-audio-clip={clip.id} preload="auto" onLoadedMetadata={resync} />
           ) : null;
         })}
         <Overlay store={store} />
