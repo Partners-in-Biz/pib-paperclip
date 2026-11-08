@@ -67,6 +67,7 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "studio-page", displayName: "Studio", exportName: "StudioPage", routePath: "studio" },
       { type: "page", id: "studio-canvas", displayName: "Studio canvas", exportName: "StudioCanvasPage", routePath: "studio-canvas" },
+      { type: "page", id: "studio-editor", displayName: "Studio video editor", exportName: "StudioEditorPage", routePath: "studio-editor" },
       { type: "sidebar", id: "studio-sidebar", displayName: "Studio", exportName: "StudioSidebar", order: 42 },
     ],
   },
