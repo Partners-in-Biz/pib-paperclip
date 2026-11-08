@@ -56,6 +56,8 @@ export interface Pg {
   /** The `ctx.db` the plugin sees. */
   db: { namespace: string; query: (sql: string, params?: unknown[]) => Promise<any[]>; execute: (sql: string, params?: unknown[]) => Promise<{ rowCount: number }> };
   statements: string[];
+  /** Another `ctx.db` on its own connection, so two callers really run at the same time (closed by `stop`). */
+  connect: () => Promise<Pg["db"]>;
   /** Empties every table of the plugin's namespace. */
   reset: () => Promise<void>;
   stop: () => Promise<void>;
@@ -81,12 +83,14 @@ export async function startPg(opts?: { upTo?: string }): Promise<Pg> {
   }
   const statements: string[] = [];
   const bind = await hostBinder();
+  const extra: PgClient[] = [];
+  const dbOn = (conn: PgClient): Pg["db"] => {
   const run = async (sql: string, params: unknown[] = []) => {
     const bound = bind(sql, params);
     statements.push(sql);
-    return client.query(bound.sql, bound.values);
+    return conn.query(bound.sql, bound.values);
   };
-  const db: Pg["db"] = {
+  return {
     namespace: NAMESPACE,
     // Rows cross the host's JSON RPC: dates arrive as ISO strings.
     query: async (sql, params = []) => {
@@ -98,15 +102,25 @@ export async function startPg(opts?: { upTo?: string }): Promise<Pg> {
       return { rowCount: (await run(sql, params)).rowCount ?? 0 };
     },
   };
+  };
+  const db = dbOn(client);
   return {
     client,
     db,
     statements,
+    async connect() {
+      const conn = pg.getPgClient();
+      await conn.connect();
+      await conn.query("SET TIME ZONE 'UTC'");
+      extra.push(conn);
+      return dbOn(conn);
+    },
     async reset() {
       const tables = (await client.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = '${NAMESPACE}'`)).rows as Array<{ table_name: string }>;
       if (tables.length) await client.query(`TRUNCATE ${tables.map((t) => `${NAMESPACE}.${t.table_name}`).join(", ")} CASCADE`);
     },
     async stop() {
+      for (const conn of extra) await conn.end();
       await client.end();
       await pg.stop();
       rmSync(dir, { recursive: true, force: true });
