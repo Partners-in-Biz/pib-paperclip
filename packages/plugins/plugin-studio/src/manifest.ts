@@ -6,7 +6,7 @@ import { STUDIO_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.41",
+  version: "0.1.42",
   displayName: "Studio",
   description: "Creative assets and image and video generation for people and agents. Every file is saved to private storage and tied to a company, client, project and task. Credits are tracked per client, under monthly caps a company owner sets.",
   author: "Partners in Biz",
@@ -67,6 +67,7 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "studio-page", displayName: "Studio", exportName: "StudioPage", routePath: "studio" },
       { type: "page", id: "studio-canvas", displayName: "Studio canvas", exportName: "StudioCanvasPage", routePath: "studio-canvas" },
+      { type: "page", id: "studio-editor", displayName: "Studio video editor", exportName: "StudioEditorPage", routePath: "studio-editor" },
       { type: "sidebar", id: "studio-sidebar", displayName: "Studio", exportName: "StudioSidebar", order: 42 },
     ],
   },

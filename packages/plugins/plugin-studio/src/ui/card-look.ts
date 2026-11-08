@@ -14,7 +14,7 @@ export function cardStatus(kind: string, data: CardData, assetStatus: string | u
   if (assetStatus === "approved") return { label: "Approved", tone: "approved" };
   if (assetStatus === "rejected") return { label: "Rejected", tone: "rejected" };
   if (kind === "output" || kind === "layout") return { label: "Draft", tone: "draft" };
-  return kind === "image" || kind === "video" ? { label: "Done", tone: "done" } : null;
+  return kind === "image" || kind === "video" || kind === "edit" ? { label: "Done", tone: "done" } : null;
 }
 
 /** "16:9" -> "16 / 9" for CSS aspect-ratio; anything else falls back to a square. */

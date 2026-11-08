@@ -14,6 +14,7 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
+export { StudioEditorPage } from "./editor/EditorPage.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX } from "../presets.js";
@@ -405,6 +406,8 @@ function AssetDetail({
   const assetUrl = useStudioAction("asset-url");
   const reviewAction = useStudioAction("review");
   const saveTemplateAction = useStudioAction("save-prompt-template");
+  const createEditAction = useStudioAction("video-edit-create");
+  const editNav = useHostNavigation();
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -460,6 +463,20 @@ function AssetDetail({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  async function editVideo() {
+    setMessage(null);
+    setBusy(true);
+    try {
+      const out = (await createEditAction({ companyId, assetIds: [assetId] })) as { id?: string };
+      if (!out?.id) throw new Error("The video edit could not be created. Try again.");
+      editNav.navigate(`/studio-editor?edit=${encodeURIComponent(out.id)}`);
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function download() {
     setMessage(null);
     try {
@@ -509,6 +526,11 @@ function AssetDetail({
               </Button>
             ) : null}
             <Button onClick={() => void download()}>Download</Button>
+            {canReview && kind === "video" ? (
+              <Button variant="secondary" disabled={busy} onClick={() => void editVideo()}>
+                Edit video
+              </Button>
+            ) : null}
             {canReview && d ? (
               <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
             ) : null}
