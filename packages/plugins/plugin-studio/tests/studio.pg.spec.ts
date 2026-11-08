@@ -6,6 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetOut, getAssetRow, importFromAttachment, linkAsset, listAssets } from "../src/assets.js";
 import { estimateGeneration, processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
+import { lipsyncAction } from "../src/lipsync.js";
 import { capHistory, setCap, usage, currentPeriod, DEFAULT_RUN_LIMIT, runLimitOf, runUsage, agentLimitKey } from "../src/ledger.js";
 import { ProviderError, type GenerationProvider, type JobState } from "../src/provider.js";
 import { isCompanyOwner, usageView } from "../src/service.js";
@@ -182,6 +183,51 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       // A fresh run starts at zero; people (no run id) are not limited by it.
       await expect(requestGeneration(world.ctx, CO, REQUEST, { agentId: "agent-1", runId: "run-other" }, runtime)).resolves.toBeTruthy();
       await expect(requestGeneration(world.ctx, CO, { ...REQUEST, batchSize: 4 }, { userId: "user-1" } as never, runtime)).resolves.toBeTruthy();
+    });
+
+    describe("studio-lipsync (PAR-8436)", () => {
+      /** A library asset made by a person (people have no run limit), as the other suites' libraryImage does. */
+      async function libraryAsset() {
+        const out = await requestGeneration(world.ctx, CO, REQUEST, { userId: "user-1", issueId: "issue-acme", projectId: "project-acme" } as never, runtime);
+        await processQueue(world.ctx, runtime);
+        await processQueue(world.ctx, runtime);
+        resetQueueStateForTests();
+        return out.generationIds[0]!;
+      }
+
+      async function assets() {
+        const image = await libraryAsset();
+        const audio = await libraryAsset();
+        await pg.client.query(`UPDATE ${T("assets")} SET kind = 'audio' WHERE id = $1`, [audio]);
+        return { image, audio };
+      }
+
+      it.each([
+        ["audio", "alibaba/wan-3.0-prime/reference-to-video"],
+        ["line", "bytedance/seedance-2.5/image-to-video"],
+      ] as const)("%s: the action calls generate with the resolved model", async (input, model) => {
+        const { image, audio } = await assets();
+        const calls: Record<string, unknown>[] = [];
+        const generate = (async (_ctx: unknown, _co: unknown, request: Record<string, unknown>) => {
+          calls.push(request);
+          return { generationIds: ["g-1"] };
+        }) as never;
+        const params = input === "audio" ? { portraitAssetId: image, audioAssetId: audio } : { portraitAssetId: image, line: "Hi there" };
+        const out = await lipsyncAction(world.ctx, CO, params, { userId: "user-1" } as never, generate);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.model).toBe(model);
+        expect(out).toMatchObject({ input, generationIds: ["g-1"] });
+      });
+
+      it("an agent run at the default run limit is refused with run_limit before any reserve", async () => {
+        const { image, audio } = await assets();
+        const run = { ...acmeWork(), runId: "run-lipsync" };
+        const before = (await rows(world, `SELECT id FROM ${T("generations")}`, [])).length;
+        const generate = ((c: never, co: string, p: Record<string, unknown>, a: never) => requestGeneration(c, co, p, a, runtime)) as never;
+        await expect(lipsyncAction(world.ctx, CO, { portraitAssetId: image, audioAssetId: audio, issueId: "issue-acme" }, run as never, generate)).rejects.toMatchObject({ code: "run_limit" });
+        expect(await runUsage(world.ctx, CO, "run-lipsync")).toBe(0);
+        expect(await rows(world, `SELECT id FROM ${T("generations")}`, [])).toHaveLength(before);
+      });
     });
 
     it("is a setting: 0 stops agent runs, a higher value lets them through", async () => {

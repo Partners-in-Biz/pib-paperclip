@@ -16,6 +16,7 @@ description: Generate images and short videos (Higgsfield models) through the St
 - `studio-usage`: credits used this month, the cap and what is left. Read-only.
 - `studio-estimate`: free. The price of a job and what is left under the cap. Always run it before `studio-generate`.
 - `studio-generate`: queue the job. Pass `model`, `prompt`, the model's own fields flat in `params` (e.g. `{"aspect_ratio":"9:16"}`), a `name`, and `batchSize` only for planned variants (each one is charged). `preset` picks a Photo Studio style that builds the prompt for you.
+- `studio-lipsync`: a talking video from one portrait (`portraitAssetId`) plus either our audio (`audioAssetId`, e.g. a voiceover) or a typed `line` the model says. `provider` is optional (default: the company's setting). Charged like `studio-generate`; a job is 5 to 30 credits, so at the default run limit an agent run is refused (`run_limit`): ask a person to run it on the Studio page.
 - `studio-generation-status`: where a job is (queued, submitted, storing, succeeded, failed), its cost and asset id.
 - `studio-brand-kit`: free. The client's brand kit from the CRM (voice, audience, tone, banned words, colours, fonts) and `promptText`, the exact text to add. Nothing is added for you: for client work, put `promptText` in your `studio-generate` prompt yourself and say on the issue that you did.
 - `studio-list-assets`, `studio-get-asset`: find assets and open one. `studio-get-asset` gives a local file path to look at; it is not a link and expires after a day (ask again).
