@@ -9,9 +9,16 @@
  *   clip's old end) shifts by the change in the clip's length, so no gap opens (or the clips make room); other tracks
  *   never move. Without it the later clips stay put: a shorter clip leaves a gap, a longer one may overlap (refused).
  * - `split` and `trim` shorten fades and the fade-in transition to fit the new length; `split` leaves no fade at the cut.
+ * - Keyframes (schema v2) follow the picture: `split` gives every keyframed property a key at the cut on both halves
+ *   (same value, so nothing jumps), `trim` rebases key times, drops keys outside the clip and puts a key with the
+ *   value there on each edge it moved inward. An op that would leave a property over `LIMITS.maxKeyframes` keys
+ *   is refused with `keyframe_limit`.
+ * - `setProps` sets `keyframes` per property (a list replaces that property's keys, `[]` or null removes them,
+ *   `keyframes: null` removes all) and `transitionIn` of any `TRANSITIONS` type on video and overlay clips (overlay
+ *   transitions are still refused when rendering); text clips only fade in.
  * - `reorder` sets the track order (first track is the bottom layer); `removeTrack` removes the track with its clips.
  */
-import { clipDuration, EditError, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Track, type TrackKind } from "./timeline.js";
+import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
 
 export const MAX_OPS = 500;
 export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "setProps", "addTrack", "removeTrack", "setProject"] as const;
@@ -40,10 +47,10 @@ export class OpError extends EditError {
 const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volume", "fadeIn", "fadeOut"];
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
-  video: [...SOURCE_PROPS, "transform", "transitionIn"],
-  overlay: [...SOURCE_PROPS, "transform", "transitionIn"],
-  audio: SOURCE_PROPS,
-  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn"],
+  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
+  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
+  audio: [...SOURCE_PROPS, "keyframes"],
+  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
   caption: ["start", "style", "words"],
 };
 
@@ -96,13 +103,55 @@ function freeId(doc: EditDoc, base: string): string {
 }
 /** Shortens fades and the fade-in transition so they fit a clip of `length` seconds. */
 function fitFades(clip: Clip, length: number): Clip {
-  const c = { ...clip } as Clip & { fadeIn?: number; fadeOut?: number; transitionIn?: { type: "fade"; duration: number } | null };
+  const c = { ...clip } as Clip & { fadeIn?: number; fadeOut?: number; transitionIn?: Transition | null };
   if (c.fadeIn !== undefined && c.fadeOut !== undefined) {
     c.fadeIn = Math.min(c.fadeIn, length);
     c.fadeOut = Math.min(c.fadeOut, ms(length - c.fadeIn));
   }
   if (c.transitionIn && c.transitionIn.duration > length) c.transitionIn = { ...c.transitionIn, duration: length };
   return c;
+}
+
+/** How the move from one key to the next runs (the earlier key's ease), 0..1 -> 0..1; `hold` jumps at the next key. */
+const EASE: Record<Keyframe["ease"], (p: number) => number> = {
+  linear: (p) => p, easeIn: (p) => p * p, easeOut: (p) => p * (2 - p), easeInOut: (p) => p * p * (3 - 2 * p), hold: () => 0,
+};
+/** A keyed property's value at clip time `t`: the first key's value before it, the last key's after it. */
+function valueAt(keys: readonly Keyframe[], t: number): number {
+  if (t <= keys[0].t) return keys[0].value;
+  for (let k = 1; k < keys.length; k++) {
+    const a = keys[k - 1];
+    const b = keys[k];
+    if (t < b.t) return a.value + (b.value - a.value) * EASE[a.ease]((t - a.t) / (b.t - a.t));
+  }
+  return keys[keys.length - 1].value;
+}
+/** The ease of the move running at `t` (the last key at or before it), so a key put there keeps the curve's shape. */
+const easeAt = (keys: readonly Keyframe[], t: number) => keys.filter((k) => k.t <= t).pop()?.ease ?? "linear";
+/**
+ * A clip's keys cut to the window `from`..`from + length` of its old clip time and rebased to start at 0. Keys outside
+ * the window are dropped; each edge that cuts through the keys gets a key with the value there (`pin` puts one on that
+ * edge in any case: split cuts every property). Refuses (`keyframe_limit`) a property that would end up over the cap.
+ */
+function fitKeys(keyframes: Keyframes | undefined, from: number, length: number, pin: { start?: boolean; end?: boolean }, i: number): { keyframes?: Keyframes } {
+  if (!keyframes) return {};
+  const to = ms(from + length);
+  const out: Keyframes = {};
+  for (const prop of KEYFRAME_PROPS) {
+    const keys = keyframes[prop];
+    if (!keys?.length) continue;
+    const kept: Keyframe[] = [];
+    for (const k of keys) {
+      const t = Math.min(ms(k.t - from), length);
+      if (k.t >= from && k.t <= to && !(kept.length && t <= kept[kept.length - 1].t)) kept.push({ ...k, t });
+    }
+    const edge = (t: number): Keyframe => ({ t: ms(t - from), value: ms(valueAt(keys, t)), ease: easeAt(keys, t) });
+    if ((pin.start || keys[0].t < from) && kept[0]?.t !== 0) kept.unshift({ ...edge(from), t: 0 });
+    if ((pin.end || keys[keys.length - 1].t > to) && kept[kept.length - 1]?.t !== length) kept.push({ ...edge(to), t: length });
+    if (kept.length > LIMITS.maxKeyframes) fail(i, "keyframe_limit", `keyframes.${prop}`, `would leave ${kept.length} ${prop} keyframes on one clip; the most is ${LIMITS.maxKeyframes}.`);
+    out[prop] = kept;
+  }
+  return { keyframes: out };
 }
 /** Clips move between tracks of the same kind; video and overlay clips share a shape, so they move between those too. */
 const PICTURE: readonly TrackKind[] = ["video", "overlay"];
@@ -127,16 +176,18 @@ function split(doc: EditDoc, o: Args, i: number): void {
     left = { ...clip, words: before };
     right = { ...clip, id: newId, start: at, words: after.map((w) => ({ ...w, start: ms(w.start - offset), end: ms(w.end - offset) })) };
   } else if ("duration" in clip) {
-    left = fitFades({ ...clip, duration: offset, fadeOut: 0 }, offset);
-    right = fitFades({ ...clip, id: newId, start: at, duration: ms(end - at), fadeIn: 0, transitionIn: null }, ms(end - at));
+    const rest = ms(end - at);
+    left = fitFades({ ...clip, duration: offset, fadeOut: 0, ...fitKeys(clip.keyframes, 0, offset, { end: true }, i) }, offset);
+    right = fitFades({ ...clip, id: newId, start: at, duration: rest, fadeIn: 0, transitionIn: null, ...fitKeys(clip.keyframes, offset, rest, { start: true }, i) }, rest);
   } else {
     const cut = ms(clip.in + offset * clip.speed);
     if (cut <= clip.in || cut >= clip.out) fail(i, "out_of_range", "at", "is too close to the clip's edge at this speed.");
     const l = { ...clip, out: cut, fadeOut: 0 };
-    left = fitFades(l, clipDuration(l));
+    const leftLength = clipDuration(l);
+    left = fitFades({ ...l, ...fitKeys(clip.keyframes, 0, leftLength, { end: true }, i) }, leftLength);
     // The right part starts where the left part really ends, so ms rounding at odd speeds can't make them overlap.
-    const r = { ...clip, id: newId, start: ms(clip.start + clipDuration(l)), in: cut, fadeIn: 0, ...("transitionIn" in clip ? { transitionIn: null } : {}) };
-    right = fitFades(r, clipDuration(r));
+    const r = { ...clip, id: newId, start: ms(clip.start + leftLength), in: cut, fadeIn: 0, ...("transitionIn" in clip ? { transitionIn: null } : {}) };
+    right = fitFades({ ...r, ...fitKeys(clip.keyframes, leftLength, clipDuration(r), { start: true }, i) }, clipDuration(r));
   }
   clipsOf(track).splice(index, 1, left, right);
 }
@@ -172,7 +223,10 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
           if (j !== index && c.start >= oldEnd) clipsOf(track)[j] = { ...c, start: ms(c.start + shift) };
         });
       }
-      clipsOf(track)[index] = fitFades(next, length);
+      // Keys stay on the same source frames: a later in moves them earlier on the clip; each edge cut inward gets a key.
+      const from = ms((next.in - clip.in) / clip.speed);
+      const keys = fitKeys(clip.keyframes, from, length, { start: from > 0, end: ms(from + length) < clipDuration(clip) }, i);
+      clipsOf(track)[index] = fitFades({ ...next, ...keys }, length);
       return;
     }
     case "move": {
@@ -220,6 +274,18 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       if ("transform" in clip && props.transform !== undefined) {
         const t = record(props.transform) ?? {};
         (next as { transform: unknown }).transform = { ...clip.transform, ...t, crop: { ...clip.transform.crop, ...(record(t.crop) ?? {}) } };
+      }
+      const transitionIn = record(props.transitionIn);
+      if (transitionIn) {
+        // Transitions other than a fade join main-track clips; text only fades in (overlay ones are refused at render).
+        if (track.kind === "text" && (transitionIn.type ?? "fade") !== "fade") fail(i, "unknown_transition", "props.transitionIn.type", "a text clip can only fade in.");
+        if ("transitionIn" in clip && clip.transitionIn) (next as { transitionIn: unknown }).transitionIn = { ...clip.transitionIn, ...transitionIn };
+      }
+      if (props.keyframes !== undefined) {
+        // Per property: a list replaces that property's keys, [] or null removes them; null removes every key.
+        const keys = props.keyframes === null ? null : record(props.keyframes);
+        if (props.keyframes !== null && !keys) fail(i, "invalid", "props.keyframes", "must be an object of property lists, or null.");
+        (next as { keyframes?: unknown }).keyframes = keys ? { ...("keyframes" in clip ? clip.keyframes : {}), ...keys } : undefined;
       }
       clipsOf(track)[index] = next;
       sortClips(track);

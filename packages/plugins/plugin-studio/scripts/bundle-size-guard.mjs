@@ -3,7 +3,9 @@
 // BUDGET is the bundle size with the font loader in, plus 50 KB of headroom for fonts; raise it only with a reason.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 
-const BUDGET = 950_000; // bytes; 897,553 before B12 + ~2 KB loader + 50 KB
+// 2026-11-08: raised to 1,050,000 for Studio 0.1.49 (lip-sync form, ClipInspector, transition picker, keyframe preview
+// grew the UI to 956,057 bytes with no font inlined; the font checks below still guard that). Next growth still fails loudly.
+const BUDGET = 1_050_000; // bytes; was 950,000 (897,553 before B12 + ~2 KB loader + 50 KB)
 const bundle = new URL("../dist/ui/index.js", import.meta.url);
 const fontsDir = new URL("../dist/ui/fonts/", import.meta.url);
 const size = statSync(bundle).size;

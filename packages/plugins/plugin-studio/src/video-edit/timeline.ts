@@ -1,13 +1,27 @@
 /**
- * The video edit document (timeline JSON), schema version 1. Pure: no I/O, so the page, the ops, the store and the
- * ffmpeg compiler all share it. Times are seconds on the timeline, rounded to milliseconds. `normalizeEdit` keeps only
- * the fields below, fills defaults and refuses anything out of range with an `EditError` that names the field.
- * Version 1 has static transforms, crop, speed, volume, fades and a fade-in transition only; keyframes and effects come
- * with schemaVersion 2 (Phase D), which `normalizeEdit` will migrate to.
+ * The video edit document (timeline JSON). Pure: no I/O, so the page, the ops, the store and the ffmpeg compiler all
+ * share it. Times are seconds on the timeline, rounded to milliseconds. `normalizeEdit` keeps only the fields below,
+ * fills defaults and refuses anything out of range with an `EditError` that names the field.
+ * Version 1: static transforms, crop, speed, volume, fades and a fade-in transition. Version 2 (Phase D) adds the other
+ * `TRANSITIONS` and per-clip `keyframes`. Rollback-safe writer: `normalizeEdit` reads both and writes `schemaVersion: 1`
+ * unless the doc uses a version 2 feature, so a plain edit stays readable by the previous build.
  */
 import { StudioError } from "../errors.js";
 
-export const SCHEMA_VERSION = 1;
+/** The newest schema version this build reads; `normalizeEdit` writes the lowest version that holds the doc. */
+export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSIONS = [1, 2] as const;
+export type SchemaVersion = (typeof SCHEMA_VERSIONS)[number];
+/** Transitions between main-track clips (ffmpeg xfade names). Only `fade` is version 1. */
+export const TRANSITIONS = [
+  "fade", "fadeblack", "fadewhite", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown",
+  "slideleft", "slideright", "slideup", "slidedown", "circleopen", "circleclose", "zoomin",
+] as const;
+export type TransitionType = (typeof TRANSITIONS)[number];
+export const EASES = ["linear", "easeIn", "easeOut", "easeInOut", "hold"] as const;
+export type Ease = (typeof EASES)[number];
+export const KEYFRAME_PROPS = ["x", "y", "scale", "rotate", "opacity", "volume"] as const;
+export type KeyframeProp = (typeof KEYFRAME_PROPS)[number];
 export const SIZES = { "9:16": { width: 1080, height: 1920 }, "1:1": { width: 1080, height: 1080 }, "4:5": { width: 1080, height: 1350 }, "16:9": { width: 1920, height: 1080 } } as const;
 export type SizePreset = keyof typeof SIZES;
 export const FPS = [24, 25, 30, 60] as const;
@@ -30,13 +44,19 @@ export const LIMITS = {
   offset: [-8000, 8000],
   fontSize: [8, 400],
   maxTransition: 5,
+  maxKeyframes: 50,
+  opacity: [0, 1],
 } as const;
 
 export interface Crop { left: number; top: number; right: number; bottom: number }
 /** x/y: offset of the clip's centre from the frame's centre in px; scale 1 = fit; rotate in degrees; crop as fractions. */
 export interface Transform { x: number; y: number; scale: number; rotate: number; crop: Crop }
-export interface Transition { type: "fade"; duration: number }
-interface Timed { id: string; start: number; fadeIn: number; fadeOut: number }
+export interface Transition { type: TransitionType; duration: number }
+/** `t`: seconds from the clip's own `start` (a transition's overlap included), 0..clip duration. */
+export interface Keyframe { t: number; value: number; ease: Ease }
+/** Only properties with at least one key are kept; an empty `keyframes` is dropped. */
+export type Keyframes = Partial<Record<KeyframeProp, Keyframe[]>>;
+interface Timed { id: string; start: number; fadeIn: number; fadeOut: number; keyframes?: Keyframes }
 export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null }
 export interface AudioClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number }
 export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null }
@@ -50,9 +70,11 @@ export type Track =
   | { id: string; kind: "text"; clips: TextClip[] }
   | { id: string; kind: "caption"; clips: CaptionClip[] };
 export interface EditProject { size: SizePreset; width: number; height: number; fps: Fps }
-export interface EditDoc { schemaVersion: 1; project: EditProject; tracks: Track[] }
+export interface EditDoc { schemaVersion: SchemaVersion; project: EditProject; tracks: Track[] }
 
-export type EditErrorReason = "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found";
+export type EditErrorReason =
+  | "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found"
+  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
@@ -119,11 +141,56 @@ function transform(value: unknown, path: string): Transform {
 function transition(value: unknown, path: string, length: number): Transition | null {
   if (value === undefined || value === null) return null;
   const t = obj(value);
-  if (t.type !== "fade") fail("invalid", `${path}.type`, `only "fade" is supported.`);
+  const type = (t.type ?? "fade") as TransitionType;
+  if (!TRANSITIONS.includes(type)) fail("unknown_transition", `${path}.type`, `must be one of ${TRANSITIONS.join(", ")}.`);
   const duration = number(t.duration, `${path}.duration`, 0.001, LIMITS.maxTransition);
   if (duration > length) fail("out_of_range", `${path}.duration`, "is longer than the clip.");
-  return { type: "fade", duration };
+  return { type, duration };
 }
+
+const KEY_RANGE: Record<KeyframeProp, readonly [number, number]> = {
+  x: LIMITS.offset, y: LIMITS.offset, scale: LIMITS.scale, rotate: LIMITS.rotate, opacity: LIMITS.opacity, volume: LIMITS.volume,
+};
+/**
+ * A clip's keyframes: `allowed` lists the properties its kind can animate; `volume` also needs sound (`silent` = the
+ * clip has none). Each list is sorted by unique `t` in 0..length, at most `LIMITS.maxKeyframes`. Returns {} for none.
+ */
+function keyframes(value: unknown, path: string, length: number, allowed: readonly KeyframeProp[], silent: boolean): { keyframes?: Keyframes } {
+  if (value === undefined || value === null || (Array.isArray(value) && !value.length)) return {};
+  if (typeof value !== "object" || Array.isArray(value)) fail("invalid", path, "must be an object of property lists.");
+  const raw = value as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!(KEYFRAME_PROPS as readonly string[]).includes(key)) fail("invalid", `${path}.${key}`, `is not animatable; use ${KEYFRAME_PROPS.join(", ")}.`);
+    if (!allowed.includes(key as KeyframeProp) && key !== "volume") fail("invalid", `${path}.${key}`, `this clip can only animate ${allowed.join(", ")}.`);
+  }
+  const out: Keyframes = {};
+  for (const prop of KEYFRAME_PROPS) {
+    const p = `${path}.${prop}`;
+    if (raw[prop] !== undefined && raw[prop] !== null && !Array.isArray(raw[prop])) fail("invalid", p, "must be a list.");
+    const items = (raw[prop] ?? []) as unknown[];
+    if (!items.length) continue;
+    if (prop === "volume" && (silent || !allowed.includes("volume"))) fail("no_audio", p, "this clip has no sound to change the volume of.");
+    if (items.length > LIMITS.maxKeyframes) fail("keyframe_limit", p, `holds at most ${LIMITS.maxKeyframes} keyframes.`);
+    const [lo, hi] = KEY_RANGE[prop];
+    let last = -1;
+    out[prop] = items.map((item, i): Keyframe => {
+      const k = obj(item);
+      const t = number(k.t, `${p}[${i}].t`, 0, length);
+      if (t <= last) fail("keyframe_order", `${p}[${i}].t`, t === last ? `two keyframes at ${t} s.` : "keyframes must be in time order.");
+      last = t;
+      const ease = (k.ease ?? "linear") as Ease;
+      if (!EASES.includes(ease)) fail("unknown_ease", `${p}[${i}].ease`, `must be one of ${EASES.join(", ")}.`);
+      return { t, value: number(k.value, `${p}[${i}].value`, lo, hi), ease };
+    });
+  }
+  return Object.keys(out).length ? { keyframes: out } : {};
+}
+const MEDIA_KEYS: readonly KeyframeProp[] = KEYFRAME_PROPS;
+const TEXT_KEYS: readonly KeyframeProp[] = ["x", "y", "scale", "rotate", "opacity"];
+const AUDIO_KEYS: readonly KeyframeProp[] = ["volume"];
+
+/** Optional facts `normalizeEdit` can't see in the doc. `hasAudio` false = that asset version has no sound. */
+export interface NormalizeOptions { hasAudio?: (assetId: string, version: number) => boolean | undefined }
 function fades(c: Record<string, unknown>, path: string, length: number) {
   const fadeIn = number(c.fadeIn, `${path}.fadeIn`, 0, length, 0);
   const fadeOut = number(c.fadeOut, `${path}.fadeOut`, 0, length, 0);
@@ -154,7 +221,7 @@ export function editDuration(doc: EditDoc): number {
   return end;
 }
 
-function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>): Clip {
+function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, options: NormalizeOptions): Clip {
   const c = obj(raw);
   const base = { id: id(c.id, `${path}.id`, ids), start: number(c.start, `${path}.start`, 0, LIMITS.maxDuration, 0) };
   if (kind === "caption") {
@@ -183,18 +250,33 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>): Cl
       ...base, ...fades(c, path, duration), text: text(c.text, `${path}.text`, LIMITS.maxText), duration, font, color: color.toUpperCase(),
       fontSize: number(c.fontSize, `${path}.fontSize`, LIMITS.fontSize[0], LIMITS.fontSize[1], 64),
       transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, duration),
+      ...keyframes(c.keyframes, `${path}.keyframes`, duration, TEXT_KEYS, true),
     };
   }
   const src = source(c, path);
   const length = ms((src.out - src.in) / src.speed);
-  if (kind === "audio") return { ...base, ...src, ...fades(c, path, length) };
-  return { ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length) };
+  const silent = options.hasAudio?.(src.assetId, src.version) === false;
+  if (kind === "audio") return { ...base, ...src, ...fades(c, path, length), ...keyframes(c.keyframes, `${path}.keyframes`, length, AUDIO_KEYS, silent) };
+  return {
+    ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length),
+    ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent),
+  };
 }
 
-/** Validates and trims an edit document from the page or an agent. Throws `EditError` with a message a person can act on. */
-export function normalizeEdit(input: unknown): EditDoc {
+/** True when the doc needs schema version 2: a non-fade transition or any keyframes. */
+export function usesV2(tracks: Track[]): boolean {
+  return tracks.some((track) => (track.clips as Clip[]).some((c) => ("keyframes" in c && c.keyframes !== undefined) || ("transitionIn" in c && c.transitionIn !== null && c.transitionIn.type !== "fade")));
+}
+
+/**
+ * Validates and trims an edit document from the page or an agent. Throws `EditError` with a message a person can act on.
+ * Reads schema versions 1 and 2; the result is version 1 unless it uses a version 2 feature (`usesV2`).
+ */
+export function normalizeEdit(input: unknown, options: NormalizeOptions = {}): EditDoc {
   const raw = obj(input);
-  if (raw.schemaVersion !== undefined && raw.schemaVersion !== SCHEMA_VERSION) fail("unsupported_version", "schemaVersion", `version ${String(raw.schemaVersion)} is not supported (this build reads ${SCHEMA_VERSION}).`);
+  if (raw.schemaVersion !== undefined && !(SCHEMA_VERSIONS as readonly unknown[]).includes(raw.schemaVersion)) {
+    fail("unsupported_version", "schemaVersion", `version ${String(raw.schemaVersion)} is not supported (this build reads ${SCHEMA_VERSIONS.join(" and ")}).`);
+  }
   const p = obj(raw.project);
   const size = (p.size ?? "9:16") as SizePreset;
   if (!Object.hasOwn(SIZES, size)) fail("invalid", "project.size", `must be one of ${Object.keys(SIZES).join(", ")}.`);
@@ -210,7 +292,7 @@ export function normalizeEdit(input: unknown): EditDoc {
     const trackId = id(tr.id, `${path}.id`, trackIds);
     const kind = tr.kind as TrackKind;
     if (!TRACK_KINDS.includes(kind)) fail("invalid", `${path}.kind`, `must be one of ${TRACK_KINDS.join(", ")}.`);
-    const clips = list(tr.clips, `${path}.clips`, LIMITS.maxClipsPerTrack).map((c, i) => clip(kind, c, `${path}.clips[${i}]`, clipIds));
+    const clips = list(tr.clips, `${path}.clips`, LIMITS.maxClipsPerTrack).map((c, i) => clip(kind, c, `${path}.clips[${i}]`, clipIds, options));
     // Clips on one track can't overlap, except by the later clip's fade-in transition (rendered as a cross-fade).
     const order = clips.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start);
     for (let k = 1; k < order.length; k++) {
@@ -222,7 +304,7 @@ export function normalizeEdit(input: unknown): EditDoc {
     return { id: trackId, kind, clips } as Track;
   });
 
-  const doc: EditDoc = { schemaVersion: SCHEMA_VERSION, project, tracks };
+  const doc: EditDoc = { schemaVersion: usesV2(tracks) ? 2 : 1, project, tracks };
   const total = editDuration(doc);
   if (total > LIMITS.maxDuration) fail("too_long", "tracks", `the edit is ${total} s long; the most is ${LIMITS.maxDuration} s.`);
   return doc;

@@ -8,7 +8,7 @@ import { PHOTO_PRESETS } from "./presets.js";
 import { LIPSYNC } from "./providers/registry.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
-import { CAPTION_STYLES, SIZES } from "./video-edit/timeline.js";
+import { CAPTION_STYLES, EASES, LIMITS, SIZES, TRANSITIONS } from "./video-edit/timeline.js";
 import { DEFAULT_VOICE, XAI_VOICES } from "./video-edit/tts.js";
 import { MAX_SCRIPT_CHARS, ttsCredits } from "./video-edit/tts-price.js";
 
@@ -77,7 +77,7 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     name: "video-edit-apply-ops",
     displayName: "Change a video edit",
     description:
-      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). Free.",
+      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). setProps props can hold transitionIn {type,duration} (type one of " + TRANSITIONS.join(", ") + "; only fade on text clips, and only main video track clips render the others) and keyframes {x,y,scale,rotate,opacity,volume: [{t,value,ease}]} (t = seconds from the clip's start, ease one of " + EASES.join(", ") + ", at most " + LIMITS.maxKeyframes + " per property; a list replaces that property's keys, [] removes them, keyframes:null removes all). split and trim keep keyframes on the same frames and add a key at each cut; going over the limit is refused with keyframe_limit. Free.",
     parametersSchema: schema(["editId", "baseRevision", "ops"], {
       editId: EDIT_ID,
       baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,

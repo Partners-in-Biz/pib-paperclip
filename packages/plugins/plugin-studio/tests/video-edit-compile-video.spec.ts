@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CompileError, compileVideo, GRAPH_FILE, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
-import { editDuration, normalizeEdit } from "../src/video-edit/timeline.js";
+import { editDuration, normalizeEdit, TRANSITIONS } from "../src/video-edit/timeline.js";
 
 const inputs: CompileInputs = {
   [inputKey("a", 1)]: { path: "in/a.mp4", kind: "video" },
@@ -51,6 +51,12 @@ describe("compileVideo snapshots", () => {
     expect(r).toMatchSnapshot();
     expect(graph(r)).toContain("[seg0][seg1]xfade=transition=fade:duration=1:offset=2[xf3]");
     expect(graph(r)).toContain("[xf3][seg2]concat=n=2");
+  });
+
+  it.each(TRANSITIONS)("xfade type %s is passed through to ffmpeg", (type) => {
+    const r = compile([video(clip("c1", "a", 0, 0, 3), clip("c2", "b", 2, 0, 3, { transitionIn: { type, duration: 1 } }))]);
+    expect(graph(r)).toMatchSnapshot();
+    expect(graph(r)).toContain(`[seg0][seg1]xfade=transition=${type}:duration=1:offset=2[`);
   });
 
   it("transition with nothing before it fades in from black", () => {
@@ -165,4 +171,44 @@ describe.skipIf(!hasFfmpeg)("compileVideo with real ffmpeg", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
+});
+
+describe.skipIf(!hasFfmpeg)("every xfade type renders (1 s, midpoint pixel probe)", () => {
+  const FADES: string[] = ["fade", "dissolve"];
+  it.each(TRANSITIONS)("%s", (type) => {
+    const dir = mkdtempSync(join(tmpdir(), "studio-xfade-"));
+    try {
+      const run = (args: string[]) => spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", ...args], { cwd: dir, encoding: "utf8" });
+      expect(run(["-f", "lavfi", "-i", "color=c=0x404040:s=160x120:r=30", "-t", "1", "-pix_fmt", "yuv420p", "a.mp4"]).status).toBe(0);
+      expect(run(["-f", "lavfi", "-i", "color=c=0xC0C0C0:s=160x120:r=30", "-t", "1", "-pix_fmt", "yuv420p", "b.mp4"]).status).toBe(0);
+      // a: 0 to 0.6 s, b: 0.2 to 1.0 s; the 0.4 s overlap is the transition, so the edit is 1 s and its midpoint is 0.4 s.
+      const doc = normalizeEdit({
+        project: { size: "1:1", fps: 30 },
+        tracks: [video(
+          { id: "c1", assetId: "a", version: 1, start: 0, in: 0, out: 0.6 },
+          { id: "c2", assetId: "b", version: 1, start: 0.2, in: 0, out: 0.8, transitionIn: { type, duration: 0.4 } },
+        )],
+      });
+      const r = compileVideo(doc, { [inputKey("a", 1)]: { path: "a.mp4", kind: "video" }, [inputKey("b", 1)]: { path: "b.mp4", kind: "video" } }, "out.mp4");
+      for (const f of r.files) writeFileSync(join(dir, f.name), f.content);
+      // ffmpeg 6.1.1 xfade=slideup segfaults intermittently (~1 in 40 runs, reproduced with a bare xfade command); retry on SIGSEGV only.
+      let render = spawnSync("ffmpeg", [...r.args.slice(0, 3), "-loglevel", "error", ...r.args.slice(3)], { cwd: dir, encoding: "utf8" });
+      for (let retry = 0; retry < 3 && render.signal === "SIGSEGV"; retry++) render = spawnSync("ffmpeg", [...r.args.slice(0, 3), "-loglevel", "error", ...r.args.slice(3)], { cwd: dir, encoding: "utf8" });
+      expect({ status: render.status, signal: render.signal, stderr: render.stderr }).toEqual({ status: 0, signal: null, stderr: "" });
+      const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "json", "out.mp4"], { cwd: dir, encoding: "utf8" });
+      expect(Math.abs(Number((JSON.parse(probe.stdout) as { format: { duration: string } }).format.duration) - 1)).toBeLessThan(0.1);
+      const frame = (t: number) => spawnSync("ffmpeg", ["-v", "error", "-ss", String(t), "-i", "out.mp4", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"], { cwd: dir, maxBuffer: 1 << 24 }).stdout;
+      const mean = (b: Buffer) => b.reduce((sum, v) => sum + v, 0) / b.length;
+      const pureA = frame(0.05), mid = frame(0.4), pureB = frame(0.95);
+      expect(mid.length).toBeGreaterThan(0);
+      expect(mid.equals(pureA)).toBe(false);
+      expect(mid.equals(pureB)).toBe(false);
+      if (FADES.includes(type)) {
+        expect(mean(mid)).toBeGreaterThan(Math.min(mean(pureA), mean(pureB)) + 5);
+        expect(mean(mid)).toBeLessThan(Math.max(mean(pureA), mean(pureB)) - 5);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

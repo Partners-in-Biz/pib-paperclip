@@ -304,6 +304,126 @@ exports[`compileVideo snapshots > three clips back to back: one concat 1`] = `
 }
 `;
 
+exports[`compileVideo snapshots > xfade type circleclose is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=circleclose:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type circleopen is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=circleopen:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type dissolve is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=dissolve:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type fade is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=fade:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type fadeblack is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=fadeblack:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type fadewhite is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=fadewhite:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type slidedown is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=slidedown:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type slideleft is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=slideleft:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type slideright is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=slideright:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type slideup is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=slideup:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type wipedown is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=wipedown:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type wipeleft is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=wipeleft:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type wiperight is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=wiperight:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type wipeup is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=wipeup:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`compileVideo snapshots > xfade type zoomin is passed through to ffmpeg 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[seg0][seg1]xfade=transition=zoomin:duration=1:offset=2[xf2];
+[xf2]format=yuv420p,setsar=1[vout]
+"
+`;
+
 exports[`compileVideo snapshots > xfade: a fade transition over the overlap 1`] = `
 {
   "args": [

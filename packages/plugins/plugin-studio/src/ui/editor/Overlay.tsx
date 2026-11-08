@@ -2,7 +2,7 @@
  * Text overlay (PAR-8320): draws the text clips showing at the playhead over the player, placed the way the render's
  * drawtext places them (centred, then offset by transform x/y in output pixels; size = fontSize x scale, against the
  * project's height). Text is plain React text, never HTML. The font is the render's own TTF, loaded in the browser
- * from the plugin's served fonts (B12; ../fonts.ts).
+ * from the plugin's served fonts (B12; ../fonts.ts). Text x/y/opacity keyframes apply at the playhead (PAR-8449).
  */
 import { useSyncExternalStore } from "react";
 import type { EditDoc } from "../../video-edit/timeline.js";
@@ -10,6 +10,7 @@ import type { EditorStore } from "./editor-store.js";
 import { captionStyle, STYLE_LOOK, visibleCaptions, captionClips } from "./caption-timing.js";
 import { useStudioFonts } from "../fonts.js";
 import { overlayStyle, textClips, visibleText } from "./text-track.js";
+import { keyedText } from "./preview-plan.js";
 
 export function Overlay({ store }: { store: EditorStore }) {
   const { doc, playhead } = useSyncExternalStore(store.subscribe, store.getState, store.getState);
@@ -20,10 +21,10 @@ export function OverlayView({ doc, playhead }: { doc: EditDoc | null; playhead: 
   useStudioFonts();
   if (!doc || (!textClips(doc).length && !captionClips(doc).length)) return null;
   const { width, height } = doc.project;
-  const shown = visibleText(doc, playhead);
+  const shown = visibleText(doc, playhead).map(({ clip, opacity }) => keyedText(clip, playhead, opacity));
   const captions = visibleCaptions(doc, playhead);
   return (
-    <div data-text-overlay aria-hidden={shown.length || captions.length ? undefined : true} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", containerType: "size" }}>
+    <div data-text-overlay aria-hidden={shown.length || captions.length ? undefined : true} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", containerType: "size", zIndex: 5 }}>
       {shown.map(({ clip, opacity }) => (
         <div
           key={clip.id}
