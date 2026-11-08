@@ -3,7 +3,9 @@
  * trim drag sends. Pure and React-free so it is unit tested; Timeline.tsx draws with it. Only type imports from the
  * worker's timeline module, so nothing server-side lands in the UI bundle. Times are timeline seconds, rounded to ms.
  */
-import type { Clip, EditDoc, Track, TrackKind } from "../../video-edit/timeline.js";
+import type { Clip, EditDoc, Ease, Keyframe, KeyframeProp, Track, TrackKind } from "../../video-edit/timeline.js";
+// The shared evaluator is dependency-free (no node imports), so the editor reads the same curve the render does.
+import { valueAt } from "../../video-edit/keyframes.js";
 
 export type TrimEdge = "in" | "out";
 export type HitPart = "body" | TrimEdge;
@@ -304,6 +306,108 @@ export function transitionOps(doc: EditDoc | null, toId: string, pick: Transitio
   const set = { op: "setProps", clipId: toId, props: { transitionIn: pick ? { type: pick.type, duration } : null } };
   if (!shift) return [set];
   return shift < 0 ? [set, ...moves] : [...moves.reverse(), set];
+}
+
+/** Keyframes (PAR-8451). Each change is one `setProps { keyframes: { <prop>: list } }` (D1a2: a list replaces that property's keys). */
+export const KEY_EASES = ["linear", "easeIn", "easeOut", "easeInOut", "hold"] as const satisfies readonly Ease[];
+export const EASE_LABELS: Record<Ease, string> = { linear: "Linear", easeIn: "Ease in", easeOut: "Ease out", easeInOut: "Ease in-out", hold: "Hold" };
+/** The worker's LIMITS.maxKeyframes and value ranges (timeline.ts KEY_RANGE). */
+export const MAX_KEYFRAMES = 50;
+export const KEY_RANGES: Record<KeyframeProp, readonly [number, number]> = { x: [-8000, 8000], y: [-8000, 8000], scale: [0.01, 10], rotate: [-360, 360], opacity: [0, 1], volume: [0, 2] };
+export const KEY_LABELS: Record<KeyframeProp, string> = { x: "X (px)", y: "Y (px)", scale: "Scale", rotate: "Rotate (°)", opacity: "Opacity", volume: "Volume" };
+export const KEY_LIMIT_TEXT = `A property holds at most ${MAX_KEYFRAMES} keyframes. Remove one before adding another.`;
+const KEY_EPS = 0.0005;
+
+/** What a clip on a `kind` track can animate here. Text: x, y, opacity only (plan Q14: text scale/rotate don't render). */
+export function keyProps(kind: TrackKind): KeyframeProp[] {
+  if (kind === "video" || kind === "overlay") return ["x", "y", "scale", "rotate", "opacity", "volume"];
+  if (kind === "text") return ["x", "y", "opacity"];
+  return kind === "audio" ? ["volume"] : [];
+}
+export const keysOf = (clip: Clip, prop: KeyframeProp): Keyframe[] => ("keyframes" in clip ? clip.keyframes?.[prop] : undefined) ?? [];
+/** The value a property has with no keys: the clip's static transform / volume; opacity 1. */
+export function baseValue(clip: Clip, prop: KeyframeProp): number {
+  if (prop === "opacity") return 1;
+  if (prop === "volume") return "volume" in clip ? clip.volume : 1;
+  return "transform" in clip ? clip.transform[prop] : prop === "scale" ? 1 : 0;
+}
+export const propValueAt = (clip: Clip, prop: KeyframeProp, t: number) => ms(valueAt(keysOf(clip, prop), t, baseValue(clip, prop)));
+/** The playhead in clip time (seconds from the clip's start), or null when it is outside the clip. */
+export function localTime(clip: Clip, playhead: number): number | null {
+  const t = ms(playhead - clip.start);
+  return t >= -KEY_EPS && t <= clipLength(clip) + KEY_EPS ? Math.min(Math.max(0, t), clipLength(clip)) : null;
+}
+export const keyIndexAt = (keys: readonly Keyframe[], t: number) => keys.findIndex((k) => Math.abs(k.t - t) < KEY_EPS);
+
+/** `ops` sends the change; `undo` is the batch that puts every touched property's keys back. */
+export type KeyEdit = { ops: Record<string, unknown>[]; undo: Record<string, unknown>[] } | { error: string };
+function keyEdit(clip: Clip, lists: Partial<Record<KeyframeProp, Keyframe[]>>): KeyEdit {
+  const before: Partial<Record<KeyframeProp, Keyframe[]>> = {};
+  for (const prop of Object.keys(lists) as KeyframeProp[]) before[prop] = keysOf(clip, prop);
+  const set = (keyframes: unknown) => [{ op: "setProps", clipId: clip.id, props: { keyframes } }];
+  return { ops: set(lists), undo: set(before) };
+}
+/** Add a key at clip time `t`, or change the one already there. Null when nothing changes. */
+export function setKeyOps(clip: Clip, prop: KeyframeProp, t: number, value: number, ease: Ease): KeyEdit | null {
+  const [lo, hi] = KEY_RANGES[prop];
+  if (!Number.isFinite(value)) return { error: `${KEY_LABELS[prop]}: enter a number.` };
+  if (value < lo || value > hi) return { error: `${KEY_LABELS[prop]} must be between ${lo} and ${hi}.` };
+  if (!(t >= 0 && t <= clipLength(clip) + KEY_EPS)) return { error: "Move the playhead inside the clip first." };
+  const keys = keysOf(clip, prop);
+  const at = keyIndexAt(keys, t);
+  const key: Keyframe = { t: at >= 0 ? keys[at].t : ms(t), value: ms(value), ease };
+  if (at >= 0 && keys[at].value === key.value && keys[at].ease === ease) return null;
+  if (at < 0 && keys.length >= MAX_KEYFRAMES) return { error: KEY_LIMIT_TEXT };
+  const next = at >= 0 ? keys.map((k, i) => (i === at ? key : k)) : [...keys, key].sort((a, b) => a.t - b.t);
+  return keyEdit(clip, { [prop]: next });
+}
+export function removeKeyOps(clip: Clip, prop: KeyframeProp, t: number): KeyEdit | null {
+  const keys = keysOf(clip, prop);
+  const at = keyIndexAt(keys, t);
+  return at < 0 ? null : keyEdit(clip, { [prop]: keys.filter((_, i) => i !== at) });
+}
+/** A marker drag: every property's key at `from` moves to `to` (kept inside the clip). Null when it doesn't move. */
+export function moveKeysOps(clip: Clip, from: number, to: number): KeyEdit | null {
+  const dest = ms(Math.min(Math.max(0, to), clipLength(clip)));
+  if (Math.abs(dest - from) < KEY_EPS) return null;
+  const lists: Partial<Record<KeyframeProp, Keyframe[]>> = {};
+  for (const prop of KEYFRAME_PROP_LIST) {
+    const keys = keysOf(clip, prop);
+    const at = keyIndexAt(keys, from);
+    if (at < 0) continue;
+    if (keyIndexAt(keys, dest) >= 0) return { error: `${KEY_LABELS[prop]} already has a key at ${formatTime(dest)} in this clip.` };
+    lists[prop] = keys.map((k, i) => (i === at ? { ...k, t: dest } : k)).sort((a, b) => a.t - b.t);
+  }
+  return Object.keys(lists).length ? keyEdit(clip, lists) : null;
+}
+const KEYFRAME_PROP_LIST: readonly KeyframeProp[] = ["x", "y", "scale", "rotate", "opacity", "volume"];
+/** One marker per key time on the clip, with the properties keyed there. */
+export function keyMarkers(clip: Clip): { t: number; props: KeyframeProp[] }[] {
+  const byT = new Map<number, KeyframeProp[]>();
+  for (const prop of KEYFRAME_PROP_LIST) for (const k of keysOf(clip, prop)) byT.set(k.t, [...(byT.get(k.t) ?? []), prop]);
+  return [...byT].sort((a, b) => a[0] - b[0]).map(([t, props]) => ({ t, props }));
+}
+/** A worker refusal in words a person can act on (`keyframe_limit`, `no_audio`); other text passes through. */
+export function keyframeErrorText(message: string | null | undefined): string {
+  const text = (message ?? "").trim();
+  if (/keyframe_limit|at most \d+ keyframes|the most is \d+/i.test(text)) return KEY_LIMIT_TEXT;
+  if (/no_audio|no sound/i.test(text)) return "This clip has no sound, so its volume can't be animated.";
+  return text || "The key wasn't saved. Try again.";
+}
+
+/** Undo for key changes in this page session: the Timeline (marker drags) and the ClipInspector share one. */
+export interface KeyHistory { push(entry: { clipId: string; ops: Record<string, unknown>[] }): void; peek(): { clipId: string; ops: Record<string, unknown>[] } | undefined; drop(): void; size(): number; subscribe(fn: () => void): () => void }
+export function createKeyHistory(max = 20): KeyHistory {
+  let stack: { clipId: string; ops: Record<string, unknown>[] }[] = [];
+  const fns = new Set<() => void>();
+  const emit = () => fns.forEach((f) => f());
+  return {
+    push(entry) { stack = [...stack.slice(-(max - 1)), entry]; emit(); },
+    peek: () => stack[stack.length - 1],
+    drop() { stack = stack.slice(0, -1); emit(); },
+    size: () => stack.length,
+    subscribe(fn) { fns.add(fn); return () => void fns.delete(fn); },
+  };
 }
 
 /** Ruler step: the smallest of 1, 2, 5, 10, 15, 30, 60 s that puts ticks at least `minGapPx` apart. */

@@ -1,6 +1,7 @@
 /**
  * The `studio-editor` page (PAR-8313): `?edit=<id>` loads a video edit and shows the player, timeline and render
- * panel around one editor store. Later tickets fill the three panels and never touch this file.
+ * panel around one editor store. Later tickets fill the three panels and never touch this file (PAR-8451 adds the
+ * ClipInspector under the timeline).
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
@@ -9,6 +10,8 @@ import { useStudioAction } from "../action.js";
 import { clipCount, createEditorStore, type EditorApi } from "./editor-store.js";
 import { Player } from "./Player.js";
 import { Timeline } from "./Timeline.js";
+import { ClipInspector } from "./ClipInspector.js";
+import { createKeyHistory } from "./timeline-view.js";
 import { RenderPanel } from "./RenderPanel.js";
 import { VersionsPanel } from "./VersionsPanel.js";
 
@@ -35,6 +38,8 @@ export function StudioEditorPage({ context }: PluginPageProps) {
     };
     return createEditorStore(api);
   }, [companyId]);
+  // Key changes from the inspector and the timeline markers share one undo list per edit (PAR-8451).
+  const keyHistory = useMemo(() => createKeyHistory(), [store, editId]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   useEffect(() => {
     if (companyId) void store.load(editId);
@@ -64,7 +69,8 @@ export function StudioEditorPage({ context }: PluginPageProps) {
         <div data-editor-ready style={{ display: "grid", gap: 12, minWidth: 0 }}>
           {clipCount(state.doc) === 0 ? <PageMessage message="This edit is empty. Add a clip to start." /> : null}
           <Player store={store} />
-          <Timeline store={store} />
+          <Timeline store={store} keyHistory={keyHistory} />
+          <ClipInspector store={store} history={keyHistory} />
           <RenderPanel store={store} />
           <VersionsPanel store={store} />
         </div>
