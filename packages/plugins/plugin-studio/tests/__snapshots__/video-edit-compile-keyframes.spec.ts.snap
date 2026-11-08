@@ -1,0 +1,33 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`keyframed x/y/scale/rotate: compiled graph > overlay clip: every expression sits on the timeline clock at the clip's start 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=4[seg0];
+[1:v]setpts=PTS-STARTPTS+1.5/TB,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,rotate=a='(if(lt(t,1.5),0,if(lt(t,3.5),0+45*((t-1.5)/2),45)))*PI/180':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=black@0,scale=w='max(2,iw*(if(lt(t,1.5),0.3,if(lt(t,3.5),0.3+0.3*((t-1.5)/2),0.6))))':h='max(2,ih*(if(lt(t,1.5),0.3,if(lt(t,3.5),0.3+0.3*((t-1.5)/2),0.6))))':eval=frame,fade=t=out:st=3.2:d=0.3:alpha=1[ov1];
+[seg0][ov1]overlay=x='(W-w)/2+if(lt(t,1.5),0,if(lt(t,3.5),0+300*((t-1.5)/2),300))':y='(H-h)/2+if(lt(t,1.5),0,if(lt(t,3.5),0+(-300)*((t-1.5)/2),(-300)))':eval=frame:eof_action=pass[base2];
+[base2]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`keyframed x/y/scale/rotate: compiled graph > scale + rotate keys on a main clip: fit, diagonal transparent canvas, per-frame scale 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,rotate=a='(if(lt(t,0),0,if(lt(t,3),0+90*((t-0)/3)*((t-0)/3),90)))*PI/180':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=black@0,scale=w='max(2,iw*(if(lt(t,0),0.5,if(lt(t,3),0.5+0.5*((t-0)/3),1))))':h='max(2,ih*(if(lt(t,0),0.5,if(lt(t,3),0.5+0.5*((t-0)/3),1))))':eval=frame[shp1];
+color=c=black:s=1080x1920:r=30:d=3,format=yuv420p,setsar=1[blk2];
+[blk2][shp1]overlay=x='(W-w)/2+0':y='(H-h)/2+0':eval=frame:eof_action=pass,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[seg0]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`keyframed x/y/scale/rotate: compiled graph > scale keys only with a static rotation keep the rotated-box fit at scale 1 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,rotate=a=15*PI/180:ow=rotw(15*PI/180):oh=roth(15*PI/180):c=black@0,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,scale=w='max(2,iw*(if(lt(t,0),0.2,if(lt(t,2),0.2+0.2*((t-0)/2),0.4))))':h='max(2,ih*(if(lt(t,0),0.2,if(lt(t,2),0.2+0.2*((t-0)/2),0.4))))':eval=frame[shp1];
+color=c=black:s=1080x1920:r=30:d=3,format=yuv420p,setsar=1[blk2];
+[blk2][shp1]overlay=x='(W-w)/2+0':y='(H-h)/2+0':eval=frame:eof_action=pass,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[seg0]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`keyframed x/y/scale/rotate: compiled graph > x/y keys on an identity main clip: static shape, per-frame overlay position at offset 0 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2[shp1];
+color=c=black:s=1080x1920:r=30:d=3,format=yuv420p,setsar=1[blk2];
+[blk2][shp1]overlay=x='(W-w)/2+if(lt(t,0),(-100),if(lt(t,3),(-100)+200*((t-0)/3),100))':y='(H-h)/2+if(lt(t,1),50,if(lt(t,2),50,0))':eval=frame:eof_action=pass,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[seg0]format=yuv420p,setsar=1[vout]
+"
+`;
