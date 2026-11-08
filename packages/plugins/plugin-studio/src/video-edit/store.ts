@@ -193,6 +193,31 @@ export async function archiveVideoEdit(ctx: PluginContext, companyId: string, id
   return { id: row.id, archived: true };
 }
 
+/**
+ * Deletes a video edit and its saved versions. With `client` (a client filter like the list takes), the edit must belong
+ * to that client or own work. Refused while a render of the edit is queued, rendering or uploading. Rendered assets are
+ * library files with their own lifecycle and stay; so do the render rows (history). The edit row goes in one statement
+ * guarded against a render queued meanwhile.
+ */
+export async function deleteVideoEdit(ctx: PluginContext, companyId: string, id: string, clientParam?: unknown) {
+  const row = await getRow(ctx, companyId, editId(id));
+  const filter = clientFilter(clientParam);
+  if (filter !== undefined && !sameClient(scopeOfRow(row), filter)) {
+    throw new StudioError("That video edit belongs to another client.", "wrong_client");
+  }
+  const active = (status: string) => `EXISTS (SELECT 1 FROM ${table(ctx, "video_renders")} r WHERE r.company_id = $2 AND r.edit_id = $1 AND r.status IN (${status}))`;
+  const busy = "'queued', 'rendering', 'uploading'";
+  const refuse = () => new StudioError("This video edit has a render queued or running. Cancel it or wait for it to finish, then delete.", "render_active");
+  const out = await ctx.db.execute(`DELETE FROM ${table(ctx, "video_edits")} WHERE id = $1 AND company_id = $2 AND NOT ${active(busy)}`, [row.id, companyId]);
+  if (!out.rowCount) {
+    const [still] = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "video_edits")} WHERE id = $1 AND company_id = $2`, [row.id, companyId]);
+    if (still) throw refuse();
+    throw new StudioError("That video edit was not found in this company.", "unknown_edit");
+  }
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "video_edit_versions")} WHERE edit_id = $1 AND company_id = $2`, [row.id, companyId]);
+  return { id: row.id, deleted: true };
+}
+
 /** Snapshots the timeline as it is saved now (not the caller's unsaved edits). At most MAX_EDIT_VERSIONS per edit. */
 export async function saveEditVersion(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
   const name = text(params.name, "version", MAX_EDIT_TITLE);

@@ -105,6 +105,13 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     description: "Drop a queued render, or stop a running one.",
     parametersSchema: schema(["renderId"], { renderId: RENDER_ID }),
   },
+  {
+    name: "video-edit-delete",
+    displayName: "Delete a video edit",
+    description:
+      "Delete a video edit and its saved versions. Refused (render_active) while a render of it is queued or running: cancel it first. Rendered videos stay in the library. Pass client to refuse unless the edit belongs to that client. Cannot be undone.",
+    parametersSchema: schema(["editId"], { editId: EDIT_ID, client: CLIENT }),
+  },
 ];
 
 export const STUDIO_TOOLS: PluginToolDeclaration[] = [
