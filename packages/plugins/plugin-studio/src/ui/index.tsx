@@ -14,6 +14,7 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
+export { StudioEditorPage } from "./editor/EditorPage.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX } from "../presets.js";
