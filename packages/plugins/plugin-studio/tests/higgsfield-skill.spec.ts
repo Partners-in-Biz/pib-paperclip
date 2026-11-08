@@ -13,7 +13,8 @@ describe("higgsfield skill", () => {
 
   it("names every Studio tool, and only tools Studio registers", () => {
     const registered = new Set(STUDIO_TOOLS.map((t) => t.name));
-    for (const name of registered) expect(md, name).toContain(`\`${name}\``);
+    // The video edit tools (PAR-8276) are granted to no agent yet and have their own skill later.
+    for (const name of registered) if (!name.startsWith("video-edit-")) expect(md, name).toContain(`\`${name}\``);
     const named = [...md.matchAll(/`(studio-[a-z-]+)`/g)].map((m) => m[1]!);
     expect(named.filter((n) => !registered.has(n))).toEqual([]);
   });
