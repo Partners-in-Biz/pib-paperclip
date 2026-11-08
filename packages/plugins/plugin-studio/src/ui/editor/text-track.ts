@@ -5,6 +5,7 @@
 import type { LayoutFont } from "../../layout.js";
 import type { Clip, EditDoc, TextClip } from "../../video-edit/timeline.js";
 import { freeId } from "./timeline-view.js";
+import { fontStack, UI_FONTS } from "../font-names.js";
 
 /** A5a's font ids (`src/video-edit/fonts.ts` FONT_IDS; a test keeps them equal). Copied, not imported: fonts.ts reads the disk. */
 export const TEXT_FONTS = ["sans", "serif", "rounded"] as const satisfies readonly LayoutFont[];
@@ -91,9 +92,6 @@ export function textEditOps(clip: TextClip, form: TextForm): Ops | { error: stri
   return { ops: [{ op: "setProps", clipId: clip.id, props }] };
 }
 
-export const PREVIEW_NOTE = "preview; the render uses the exact font";
-/** Generic stacks per font id: no FontFace, no font download. */
-export const PREVIEW_FONT: Record<LayoutFont, string> = { sans: "system-ui, sans-serif", serif: "Georgia, serif", rounded: "ui-rounded, system-ui, sans-serif" };
 
 /** The text clips showing at `t`, bottom track first, with the opacity their fades give them there. */
 export function visibleText(doc: EditDoc | null, t: number): { clip: TextClip; opacity: number }[] {
@@ -117,7 +115,7 @@ export function overlayStyle(clip: TextClip, project: { width: number; height: n
     left: `${ms(50 + (clip.transform.x / project.width) * 100)}%`,
     top: `${ms(50 + (clip.transform.y / project.height) * 100)}%`,
     transform: `translate(-50%, -50%) rotate(${clip.transform.rotate}deg)`,
-    fontFamily: PREVIEW_FONT[(clip.font ?? "sans") as LayoutFont] ?? PREVIEW_FONT.sans,
+    fontFamily: fontStack(((clip.font ?? "sans") as LayoutFont) in UI_FONTS ? ((clip.font ?? "sans") as LayoutFont) : "sans"),
     // Size against the frame height, like fontsize= against the output height.
     fontSize: `${ms(((clip.fontSize * clip.transform.scale) / project.height) * 100)}cqh`,
     // The render draws the bold face with a thin dark border.
