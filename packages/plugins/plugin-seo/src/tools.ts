@@ -725,6 +725,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       taskIds: list("Tasks that continue when it is done"),
       optional: flag("Listed under Optional on the Needs you issue (default false)"),
       wpVerifyFailed: text("Verification items on a WordPress site with wp-verify are refused unless this says what you tried and the error; it is recorded on the sprint."),
+      personOnly: text("Page changes and template markup you can make yourself are refused; only if one truly needs a person (wp-admin, an account, a judgement), say here exactly what only a person can do (kept on the item)."),
     }),
   },
   { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text("Item key (from needs-you)"), note: text("What was done, stored on the item (max 1000 chars)") }) },

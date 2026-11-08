@@ -47,6 +47,8 @@ import { requireSprint, sprintCopy } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "../engine/items.js";
 import { settingsPath } from "./settings-path.js";
+import { agentInstruction, agentRouteFor, type AgentRoute, type HandoffSite } from "../engine/needs-you-handoff.js";
+import { findSeoClientProject } from "./site.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { routePrReview } from "./review.js";
 import { setVerifyFailure, sprintVerifyRoute, sprintWordPressSite, verifyFailureOf, sprintHasSftp, wpConnectorItemFor, wpSftpItemFor } from "./wordpress.js";
@@ -497,13 +499,28 @@ export function itemView(item: NeedsYouItem) {
   return { key: item.key, kind: item.kind, title: item.title, why: item.why, steps: item.steps, links: item.links, after: item.after, copy: item.copy ?? null, optional: Boolean(item.optional), status: item.status, check: item.check, taskIds: item.taskIds ?? [], addedAt: item.addedAt, doneAt: item.doneAt ?? null };
 }
 
+/** The site facts that decide which items the SEO agent can take over (Give to agent). */
+export async function handoffSite(env: Env, sprint: db.Sprint): Promise<HandoffSite> {
+  const wp = sprint.siteAccess === "wordpress" ? await sprintWordPressSite(env, sprint).catch(() => null) : null;
+  return {
+    siteAccess: sprint.siteAccess,
+    changePolicy: sprint.changePolicy,
+    clientSignoff: sprint.clientSignoff,
+    connectorConnected: wp?.connector_status === "connected",
+    sftp: Boolean(wp && Array.isArray(wp.access) && wp.access.includes("sftp")),
+  };
+}
+
 export async function needsYouView(env: Env, info: CompanyInfo, sprint: db.Sprint) {
   const digest = await currentDigest(env, info, sprint, "read");
+  const open = digest ? openItems(digest.items) : [];
+  const site = open.length > 0 ? await handoffSite(env, sprint) : null;
   return {
     weekStart: digest?.weekStart ?? weekStart(info.today),
     issueId: digest?.issueId ?? null,
     issueIdentifier: digest?.issueIdentifier ?? null,
-    open: digest ? openItems(digest.items).map(itemView) : [],
+    // agent: the route when the SEO agent can do the item itself (the page shows Give to agent), else null.
+    open: open.map((item) => ({ ...itemView(item), agent: site ? agentRouteFor(item, site) : null })),
     done: digest ? digest.items.filter((i) => i.status === "done").map(itemView) : [],
   };
 }
@@ -637,6 +654,16 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
       await setVerifyFailure(env, sprint, verifyKind, tried);
     }
   }
+  // A page change or template markup the agent can make itself is not a person's job (the Give to agent rules). A real
+  // person-only step that the rules mistake for one is let through with personOnly saying why (kept on the item).
+  const route = verifyKind ? null : agentRouteFor({ ...item, status: "open" }, await handoffSite(env, sprint));
+  if (route === "content" || route === "theme") {
+    const personOnly = str(params, "personOnly", { max: 500 });
+    if (!personOnly) {
+      throw new SeoError(`Not a Needs you item: you can do this yourself. ${agentInstruction(route, await handoffSite(env, sprint), sprint.id)} Only if it truly needs a person (wp-admin, an account, a judgement), call needs-you-add again with personOnly saying exactly what only a person can do.`);
+    }
+    item.why = `${item.why}\n\nOnly a person: ${personOnly}`.slice(0, 2600);
+  }
   const result = await addNeedsYou(env, info, sprint, item, { reopen: true });
   // An out-of-scope PR is outward-facing: the Cockpit Reviewer checks it before the owner merges.
   const reviewIssueId = kind === "pr" && result.added ? await routePrReview(env, sprint, item) : null;
@@ -650,4 +677,121 @@ export async function needsYouResolveTool(env: Env, companyId: string, actor: Ac
   const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), str(params, "note", { max: 1000 }) ?? null, { person: actor.kind === "user" });
   if (!result.resolved && !result.stillOpen) throw new SeoError(`No open Needs you item ${key} on this sprint`);
   return { sprintId: sprint.id, key, ...result };
+}
+
+// ---------------------------------------------------------------------------
+// Give to agent (SEO page, Integrations → Needs you)
+// ---------------------------------------------------------------------------
+
+/** Items one "give all" hands over; the rest stay on the page for another press. */
+export const GIVE_ALL_MAX = 60;
+const GIVE_WHY_MAX = 600;
+const GIVE_STEP_MAX = 300;
+
+function handoffSection(item: NeedsYouItem, route: AgentRoute, site: HandoffSite, sprintId: string, n: number | null): string[] {
+  const lines = [`### ${n ? `${n}. ` : ""}${clip(item.title, 200)}`, "", agentInstruction(route, site, sprintId), "", `**What the item said:** ${clip(item.why, GIVE_WHY_MAX)}`];
+  if (item.steps.length > 0) lines.push("", ...item.steps.slice(0, 6).map((step, i) => `${i + 1}. ${clip(step, GIVE_STEP_MAX)}`));
+  if ((item.taskIds ?? []).length > 0) lines.push("", `Sprint tasks: ${(item.taskIds ?? []).map((id) => `\`${id}\``).join(", ")}`);
+  lines.push("", `<sub>Needs you key \`${item.key}\`: the whole item (links, copy-ready text) is in partnersinbiz.seo:needs-you with this key.</sub>`, "");
+  return lines;
+}
+
+/**
+ * A person gives Needs you items the SEO agent can do back to it: one item (`key`) or every such item (`all`). Each item is
+ * closed as handed over; tasks it waited on go back to the agent with the item's instructions as a comment, and items with
+ * no open task become one issue for the agent in the client's project. Items only a person can do are refused.
+ */
+export async function giveNeedsYouToAgent(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user") throw new SeoError("Give to agent is a button for people on the SEO page.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  if (isRehearsalSprint(sprint)) throw new SeoError("A rehearsal sprint hands nothing to anybody.");
+  const info = await companyInfo(env, companyId);
+  const digest = await currentDigest(env, info, sprint, "read");
+  const key = str(params, "key", { max: 200 });
+  const all = bool(params, "all") === true;
+  if (!key && !all) throw new SeoError("Pass key (one item) or all: true.");
+  const site = await handoffSite(env, sprint);
+  const open = digest ? openItems(digest.items) : [];
+  const picked = (key ? open.filter((i) => i.key === key) : open)
+    .map((item) => ({ item, route: agentRouteFor(item, site) }))
+    .filter((x): x is { item: NeedsYouItem; route: AgentRoute } => x.route !== null)
+    .slice(0, GIVE_ALL_MAX);
+  if (key && open.every((i) => i.key !== key)) throw new SeoError(`No open Needs you item ${key} on this sprint.`);
+  if (picked.length === 0) throw new SeoError(key ? "Only a person can do this one: it stays on Needs you." : "Nothing on Needs you is something the agent can do itself.");
+  const agent = await resolveAgent(env, companyId);
+  if (!agent || ["paused", "pending_approval", "terminated"].includes(agent.status)) {
+    throw new SeoError("The SEO Specialist is not available (not hired, paused or terminated): nothing was handed over.");
+  }
+  const by = `${actorLabel(actor)}, given to the SEO Specialist`;
+
+  // Tasks the items waited on: each goes back to the agent once, with every item that named it.
+  const byTask = new Map<string, Array<{ item: NeedsYouItem; route: AgentRoute }>>();
+  const loose: Array<{ item: NeedsYouItem; route: AgentRoute }> = [];
+  for (const entry of picked) {
+    let placed = false;
+    for (const taskId of entry.item.taskIds ?? []) {
+      const task = await db.getTask(env.ctx.db, companyId, taskId);
+      if (!task?.issueId || (TERMINAL_TASK_STATUSES as string[]).includes(task.status)) continue;
+      byTask.set(task.id, [...(byTask.get(task.id) ?? []), entry]);
+      placed = true;
+      break;
+    }
+    if (!placed) loose.push(entry);
+  }
+
+  // Close first, so the 5-minute job does not park a task again while it still sees the item open.
+  const issues: string[] = [];
+  await closeNeedsYouItems(env, info, sprint, picked.map((p) => p.item.key), by, "Given to the SEO Specialist from the SEO page.");
+
+  let tasksResumed = 0;
+  for (const [taskId, entries] of byTask) {
+    const task = await db.getTask(env.ctx.db, companyId, taskId);
+    if (!task?.issueId) continue;
+    const updated = await patchIssue(env, companyId, task.issueId, { status: "todo", assigneeAgentId: agent.id, assigneeUserId: null });
+    if (!updated) {
+      loose.push(...entries);
+      continue;
+    }
+    await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+    const body = [`A person gave this back to you from the Needs you list: you can do ${entries.length === 1 ? "it" : "these"} yourself.`, "", ...entries.flatMap((e) => handoffSection(e.item, e.route, site, sprint.id, null))];
+    await commentOn(env, companyId, task.issueId, body.join("\n").trimEnd());
+    try {
+      await env.ctx.issues.requestWakeup(task.issueId, companyId, { reason: "Needs you item given to the SEO Specialist", idempotencyKey: `give:${task.issueId}:${Date.now()}` });
+    } catch (error) {
+      env.ctx.logger.info("SEO wake skipped", { issueId: task.issueId, error: errorMessage(error) });
+    }
+    issues.push(task.issueId);
+    tasksResumed += 1;
+  }
+
+  let createdIssueId: string | null = null;
+  if (loose.length > 0) {
+    const projectId = sprint.clientProjectId ?? (await findSeoClientProject(env, sprint).catch(() => null));
+    const title = loose.length === 1 ? `Do it yourself: ${clip(loose[0]!.item.title, 180)}` : `Needs you items given back to you: ${sprintLabel(sprint)} (${loose.length})`;
+    const description = [
+      `A person gave ${loose.length === 1 ? "this item" : `these ${loose.length} items`} from ${sprintLabel(sprint)}'s Needs you list back to you (sprintId ${sprint.id}): you can do ${loose.length === 1 ? "it" : "them"} yourself.`,
+      "",
+      loose.length > 1 ? "Several items often describe the same page change (refresh, apply, approve): treat those as one piece of work. Work through them in one run where you can; complete this issue when every item is done or explained." : "Complete this issue when it is done or explained.",
+      "",
+      ...loose.flatMap((e, i) => handoffSection(e.item, e.route, site, sprint.id, loose.length > 1 ? i + 1 : null)),
+    ].join("\n").trimEnd();
+    const created = await openIssue(env, {
+      companyId,
+      sprint,
+      title,
+      description,
+      originKind: ORIGIN.needsYou,
+      originId: `give:${sprint.id}:${env.now().getTime()}`,
+      ...(projectId ? { projectId } : {}),
+      assigneeAgentId: agent.id,
+      priority: "medium",
+      wake: true,
+      wakeReason: "Needs you items given to the SEO Specialist",
+    });
+    createdIssueId = created.id;
+    issues.push(created.id);
+  }
+
+  const left = open.length - picked.length;
+  return { sprintId: sprint.id, given: picked.length, tasksResumed, issueId: createdIssueId, issueIds: issues, stillNeedYou: left };
 }
