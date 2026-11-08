@@ -49,7 +49,7 @@ export class RenderFailure extends Error {
   }
 }
 
-const DETERMINISTIC = new Set(["probe_failed", "unsupported_codec", "unsupported_feature", "compile_error", "ffmpeg_failed", "verify_failed", "too_large", "unsafe_key", "bad_render", "bad_edit", "unknown_asset"]);
+const DETERMINISTIC = new Set(["probe_failed", "unsupported_codec", "unsupported_feature", "compile_error", "ffmpeg_failed", "verify_failed", "too_large", "unsafe_key", "forbidden_key", "missing_input", "bad_input_path", "bad_render", "bad_edit", "unknown_asset"]);
 const INFRA = new Set(["disk_low", "timeout", "rlimit", "stale_heartbeat", "cancelled"]);
 
 export interface ClassifiedFailure {
