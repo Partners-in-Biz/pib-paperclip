@@ -1774,6 +1774,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 
+  // PAR-8293: a run that hands its issue on is cancelled in the same instant the
+  // next owner is woken. Admission still sees the exiting owner's lease and drops
+  // the wake; nothing retried it, so reviews sat in in_review for 18-49 minutes.
+  it("redelivers a hand-off wake once the exiting owner releases its lease", async () => {
+    const { companyId, agentId: developerId, issueId, runId } = await seedRunFixture({
+      agentStatus: "idle", runStatus: "interrupted",
+    });
+    await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId, status: "active" }).returning();
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({ id: reviewerId, companyId, name: "Code Reviewer", role: "engineer", status: "idle",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.update(issues).set({ status: "in_review", assigneeAgentId: reviewerId, executionRunId: null, checkoutRunId: null })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    const reviewerRuns = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, reviewerId));
+
+    expect(await heartbeat.wakeup(reviewerId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      requestedByActorType: "agent", requestedByActorId: developerId,
+      contextSnapshot: { issueId, handoffMarker: "review-stage" },
+    })).toBeNull();
+    const [dropped] = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.agentId, reviewerId), eq(agentWakeupRequests.status, "skipped")));
+    expect(dropped).toMatchObject({ reason: "execution_reconciliation_required" });
+    expect((dropped!.payload as Record<string, any>).executionWait.ownerExit).toMatchObject({ runId, reason: "issue_assigned" });
+
+    // Still held: the tick must not start the reviewer early.
+    await heartbeat.resumeQueuedRuns();
+    expect(await reviewerRuns()).toHaveLength(0);
+
+    await db.update(environmentLeases).set({ releasedAt: new Date(), status: "released" }).where(eq(environmentLeases.id, lease!.id));
+    await heartbeat.resumeQueuedRuns();
+    const runs = await reviewerRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({ issueId, handoffMarker: "review-stage", wakeReason: "issue_assigned" });
+    await waitForRunToSettle(heartbeat, runs[0]!.id);
+    await heartbeat.waitForRunExecutionDrain(runs[0]!.id);
+
+    // Delivered once: later ticks do not wake the reviewer again.
+    await heartbeat.resumeQueuedRuns();
+    expect(await reviewerRuns()).toHaveLength(1);
+    const [marked] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, dropped!.id));
+    expect((marked!.payload as Record<string, any>).executionWait.redeliveredAt).toEqual(expect.any(String));
+  });
+
   it("keeps an unsafe Stop blocked when recovery sees a deferred human comment", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress", runStatus: "cancelled",
