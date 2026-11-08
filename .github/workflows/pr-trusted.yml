@@ -25,10 +25,12 @@ concurrency:
 
 jobs:
   gate:
-    # PiB fork: every job below maps the GitHub-hosted 'ubuntu-latest' this gate picks to
-    # 'ubuntu-24.04': production is Ubuntu 24.04, and ubuntu-latest moved to 26.04, whose
-    # multi-call coreutils breaks the runner staging tests.
-    uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
+    # PiB fork: this repo's own copy. On this repository it skips the incremental plan and runs
+    # the full suite (the plan for an upstream merge exceeds GitHub's 1 MB job-output limit).
+    # Every job below maps the GitHub-hosted 'ubuntu-latest' this gate picks to 'ubuntu-24.04':
+    # production is Ubuntu 24.04, and ubuntu-latest moved to 26.04, whose multi-call coreutils
+    # breaks the runner staging tests.
+    uses: ./.github/workflows/ci-routing.yml
 
   test_selection:
     name: Select Vitest files
