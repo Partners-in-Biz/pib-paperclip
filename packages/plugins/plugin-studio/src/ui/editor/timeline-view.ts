@@ -226,6 +226,86 @@ export function addClipOps(doc: EditDoc | null, pick: LibraryPick): { ops: Recor
 }
 const clipCountOf = (doc: EditDoc | null) => (doc?.tracks ?? []).reduce((n, t) => n + t.clips.length, 0);
 
+/** The worker's TRANSITIONS (video-edit/timeline.ts, ffmpeg xfade names), copied so no server code loads; a test keeps them equal. */
+export const TRANSITION_TYPES = [
+  "fade", "fadeblack", "fadewhite", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown",
+  "slideleft", "slideright", "slideup", "slidedown", "circleopen", "circleclose", "zoomin",
+] as const;
+export type TransitionKind = (typeof TRANSITION_TYPES)[number];
+export const TRANSITION_LABELS: Record<TransitionKind, string> = {
+  fade: "Cross-fade", fadeblack: "Fade through black", fadewhite: "Fade through white", dissolve: "Dissolve",
+  wipeleft: "Wipe left", wiperight: "Wipe right", wipeup: "Wipe up", wipedown: "Wipe down",
+  slideleft: "Slide left", slideright: "Slide right", slideup: "Slide up", slidedown: "Slide down",
+  circleopen: "Circle open", circleclose: "Circle close", zoomin: "Zoom in",
+};
+/** The worker's LIMITS.maxTransition, and the length a new transition starts at. */
+export const MAX_TRANSITION_SECONDS = 5;
+export const DEFAULT_TRANSITION_SECONDS = 0.5;
+const EPS = 1e-6;
+
+export interface TransitionPick { type: TransitionKind; duration: number }
+/**
+ * Where two clips meet on the main track (the first picture track, when it is a video track: the one the render joins
+ * with xfade). `transition` is the later clip's transitionIn when it really overlaps the clip before (an xfade window of
+ * `overlap` s), else null. `maxDuration` is the longest transition this join takes: under the worker's limit, and short
+ * enough to leave each clip's other transition window whole.
+ */
+export interface Join { trackId: string; fromId: string; toId: string; at: number; overlap: number; transition: TransitionPick | null; maxDuration: number }
+
+function mainTrack(doc: EditDoc | null): Track | null {
+  const first = (doc?.tracks ?? []).find((t) => t.kind === "video" || t.kind === "overlay");
+  return first?.kind === "video" ? first : null;
+}
+const overlapOf = (prev: Clip, next: Clip) => Math.max(0, ms(clipEnd(prev) - next.start));
+
+/** Every join on the main track: back-to-back or overlapping clips, in time order. Clips with a gap between them have none. */
+export function clipJoins(doc: EditDoc | null): Join[] {
+  const track = mainTrack(doc);
+  if (!track) return [];
+  const clips = [...(track.clips as Clip[])].sort((a, b) => a.start - b.start);
+  const joins: Join[] = [];
+  for (let i = 1; i < clips.length; i++) {
+    const prev = clips[i - 1];
+    const next = clips[i];
+    if (next.start > clipEnd(prev) + EPS) continue;
+    const overlap = overlapOf(prev, next);
+    const tr = "transitionIn" in next ? next.transitionIn : null;
+    const prevIn = i > 1 ? overlapOf(clips[i - 2], prev) : 0;
+    const nextOut = i + 1 < clips.length ? overlapOf(next, clips[i + 1]) : 0;
+    const maxDuration = ms(Math.max(0, Math.min(MAX_TRANSITION_SECONDS, clipLength(prev) - prevIn, clipLength(next) - nextOut)));
+    joins.push({
+      trackId: track.id, fromId: prev.id, toId: next.id, at: ms(next.start + overlap / 2), overlap,
+      transition: tr && overlap > EPS ? { type: tr.type as TransitionKind, duration: overlap } : null, maxDuration,
+    });
+  }
+  return joins;
+}
+
+/**
+ * The one ops batch that sets (or with null removes) the transition into clip `toId`. An xfade needs the two clips to
+ * overlap by the transition's length, so the later clip and every main-track clip after it ripple by the change in
+ * overlap (the edit gets shorter when a transition is added, longer when one is removed); other tracks stay put.
+ * The worker checks each op on its own, so the order never overlaps clips without a transition covering it: growing the
+ * overlap sets `transitionIn` first, then moves clips earlier first-first; shrinking it moves clips later last-first,
+ * then sets `transitionIn`. Null when the join doesn't exist, nothing changes, or the length is outside 0.1..maxDuration.
+ */
+export function transitionOps(doc: EditDoc | null, toId: string, pick: TransitionPick | null): Record<string, unknown>[] | null {
+  const join = clipJoins(doc).find((j) => j.toId === toId);
+  if (!join) return null;
+  const duration = pick ? ms(pick.duration) : 0;
+  if (pick && (!TRANSITION_TYPES.includes(pick.type) || !(duration >= MIN_CLIP_SECONDS) || duration > join.maxDuration + EPS)) return null;
+  const cur = join.transition;
+  if (pick ? cur?.type === pick.type && cur.duration === duration : !cur && join.overlap <= EPS) return null;
+  const shift = ms(join.overlap - duration); // > 0: clips move later
+  const track = mainTrack(doc) as Track;
+  const to = (track.clips as Clip[]).find((c) => c.id === toId) as Clip;
+  const later = (track.clips as Clip[]).filter((c) => c.start >= to.start).sort((a, b) => a.start - b.start);
+  const moves = later.map((c) => ({ op: "move", clipId: c.id, start: ms(c.start + shift) }));
+  const set = { op: "setProps", clipId: toId, props: { transitionIn: pick ? { type: pick.type, duration } : null } };
+  if (!shift) return [set];
+  return shift < 0 ? [set, ...moves] : [...moves.reverse(), set];
+}
+
 /** Ruler step: the smallest of 1, 2, 5, 10, 15, 30, 60 s that puts ticks at least `minGapPx` apart. */
 export function tickStep(pxPerSecond: number, minGapPx = 60): number {
   for (const step of [1, 2, 5, 10, 15, 30, 60]) if (step * pxPerSecond >= minGapPx) return step;
