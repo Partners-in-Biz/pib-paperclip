@@ -33,6 +33,7 @@ export const MODULES = {
   mailbox: { title: "Mailbox (Gmail)", plugins: [PIB_PLUGINS.mailbox], description: "Connect Gmail: triage, and sending for invoices, payslips, sequences and campaigns." },
   social: { title: "Social media", plugins: [PIB_PLUGINS.social], description: "Accounts, scheduling, inbox, Growth Lab." },
   seo: { title: "SEO", plugins: [PIB_PLUGINS.seo], description: "90-day SEO sprints worked by the SEO agent through the site repo." },
+  ads: { title: "Ads", plugins: [PIB_PLUGINS.ads], description: "Ad accounts and results." },
   campaigns: { title: "Email campaigns", plugins: [PIB_PLUGINS.campaigns], description: "Themed email programmes sent through the Mailbox." },
   billing: { title: "Billing", plugins: [PIB_PLUGINS.billing], description: "Invoices, quotes, payments, bills, expenses, retainers." },
   accounting: { title: "Accounting", plugins: [PIB_PLUGINS.accounting], description: "Ledger, bank reconciliation, VAT, reports." },

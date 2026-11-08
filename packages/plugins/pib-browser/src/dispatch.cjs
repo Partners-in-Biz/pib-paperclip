@@ -45,7 +45,7 @@ function createDispatcher(deps = {}) {
   };
 
   async function dispatch(request, overrideDeps = null) {
-    const { authenticate, browser, policy, sites, clock } = overrideDeps || deps;
+    const { authenticate, browser, policy, sites, clock, apiBase } = overrideDeps || deps;
 
     try {
       const { cmd, token, issue, identity: identityStr, args = {} } = request || {};
@@ -56,7 +56,7 @@ function createDispatcher(deps = {}) {
       }
 
       // Authenticate
-      const auth = await authenticate({ token, issue }, { fetch: global.fetch });
+      const auth = await authenticate({ token, issue }, { fetch: global.fetch, apiBase });
       if (!auth.ok) {
         return { exit: auth.exit, ok: false, reason: auth.reason };
       }

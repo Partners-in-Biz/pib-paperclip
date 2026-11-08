@@ -23,6 +23,7 @@ The company's Gmail hub, with the \`partnersinbiz.mailbox\` tools. Every plugin 
 ## Drafting and sending
 - \`create-draft\` on a mailbox where \`mayDraft\` is true: \`to\` (and \`cc\`, \`bcc\`), subject, \`body\` (optional \`html\`). \`replyToMessageId\` keeps the Gmail thread. \`replyTo\` and \`fromName\` set where replies go and the name shown when it is not the mailbox's own.
 - A mailbox that belongs to a client sends only that client's mail, as the client. Never draft another client's or the company's own mail on it, and never put a client's mail on the company's own mailbox to avoid that.
+- A person may edit your draft, ask you for a new version, or delete it with a reason. A rewrite request arrives as an issue: save the new text over the same draft with \`update-draft\` (\`messageId\`, then \`subject\`, \`body\`, optional \`html\`; never a second draft), then say what you changed. A deleted draft arrives as an issue with the person's reason: do not draft it again; close with one **Learned:** line.
 - \`send-draft\` only where \`maySend\` is true. Without a connected Gmail account it queues the draft for a person: say so; never claim it was delivered.
 - Every email says who we are. Writing to or for a client: read \`partnersinbiz.crm:get-client-profile\` first (brand voice, banned words). The person you write to may work for several companies: \`partnersinbiz.crm:get-contact\` lists them all; follow the \`crm-records\` step \"A person who works for several companies\" (profile and memory for each, say which company each point is about, never leak one company's details into another's) before you draft. Replies, invoices, quotes and payslips are transactional; campaigns and sequences are marketing and never reach an address that opted out.
 - \`create-email-template\` and \`list-email-templates\` keep reusable copy.
@@ -43,6 +44,11 @@ New mail is triaged every 2 minutes (the sender in the CRM, a reply to mail a pl
 
 Never answer a legal threat or a money question you cannot check: ask the owner.
 
+## One issue per thread, in the client's project
+A thread keeps its one "Reply needed" issue. New mail that needs a reply reopens it if it was closed, or wakes you if it was blocked, with a comment naming the new message: answer that message, not only the first one.
+
+The issue opens in the client's own project when the sender is a reliable match: an outside sender the CRM knows, a client mail mapping, or a person's correction. Mail from our own staff and Jev's guesses open with no project. Work beyond a reply (a fix, a build, a publish) goes in a child issue in the project it belongs to: \`partnersinbiz.crm:list-client-projects\` lists a client's projects, and platform work goes in the company's own platform project. Unsure which project: say so and do not guess, because the project decides the repository.
+
 ## Closing a "Reply needed" issue
 When you close an issue this module opened, it checks the work; if it reopens, it lists what's missing: finish those. Done means the thread's newest mail that needs a reply has your reply draft (\`create-draft\` with \`replyToMessageId\`) or a sent reply after it, or \`correct-triage\` set needsReply false because no reply is needed.
 
@@ -55,7 +61,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - A person erased on request leaves only a hash behind so they are never mailed again. You never erase mail yourself: the CRM runs an approved erasure (\`references/privacy.md\`).
 
 ## Sender domains
-Mail from a domain with no SPF, DKIM or DMARC bounces or lands in spam. \`check-sender-domain\` reads the DNS of a domain (SPF, DKIM, DMARC, MX; nothing is changed) and returns healthy, warn or bad with each problem and fix, plus the exact records to add for a new client domain. \`sender-domain-health\` returns the last stored check of every sending domain. Before a campaign goes out from a domain it must be healthy. Through Gmail the Mailbox itself blocks nothing; a domain at the email provider is held back when its check is bad (see Email provider). DNS is edited by whoever controls the domain, so hand them the \`onboarding\` steps in one \`partnersinbiz.cockpit:ask-owner\`, then check again when they say it is done. Never call a domain healthy without a check. Details: \`references/sender-domains.md\`.
+Mail from a domain with no SPF, DKIM or DMARC bounces or lands in spam. \`check-sender-domain\` reads the DNS of a domain (SPF, DKIM, DMARC, MX; nothing is changed) and returns healthy, warn or bad with each problem and fix, plus the exact records to add for a new client domain. \`sender-domain-health\` returns the last stored check of every sending domain. Before a campaign goes out from a domain it must be healthy. Through Gmail the Mailbox itself blocks nothing; a domain at the email provider is held back when its check is bad (see Email provider). A plain check is a lookup only: it does not add the domain to the company's sender domains, so use it freely on a lead's or vendor's domain; pass \`watch: true\` (or the client it sends for) only for a domain the company or a client really sends from. DNS is edited by whoever controls the domain, so hand them the \`onboarding\` steps in one \`partnersinbiz.cockpit:ask-owner\`, then check again when they say it is done. Never call a domain healthy without a check. Details: \`references/sender-domains.md\`.
 
 ## Email provider: sending as a client's own domain
 Gmail is the default sender and the only inbox. For a client's mail to go out as the client's own verified domain the Mailbox can also send through an email provider (Resend or Amazon SES): a send-only account (no inbox) on a domain the provider has verified.

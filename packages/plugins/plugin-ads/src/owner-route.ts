@@ -3,6 +3,7 @@ import { teamAgentId, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { daysBetween } from "./dates.js";
 import type { ApprovalRow, ProposalRow, ScopeRow } from "./db.js";
+import type { ProposalKind } from "./platforms.js";
 
 /** The team role whose agent may approve, as the owner's delegate, a proposal within the owner threshold. */
 export const OWNER_DELEGATE_ROLE: TeamRoleKey = "account-manager";
@@ -92,10 +93,37 @@ export function lifetimeBudgetMinor(p: Pick<ProposalRow, "kind" | "payload" | "i
   return null;
 }
 
-/** Determine if the owner's delegate can approve (within threshold) or if the owner is required, from a spend amount. */
-export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, lifetimeMinor: number | null): OwnerRoute {
+/**
+ * Kinds that can raise spend: only the owner (Peet, a person) approves them, whatever the amount or currency (PAR-6684). Pause and a true budget
+ * decrease keep the role route. A kind here that is also in SPEND_KINDS needs a branch in `assertPlatformCapsFor` (PAR-3765).
+ */
+export const SPEND_RAISING_KINDS: readonly ProposalKind[] = ["create_campaign", "create_ad_set", "resume_campaign", "change_budget", "create_ad_group", "add_keywords", "create_responsive_search_ad", "create_ad"];
+
+/** Kinds that create something on the platform: always created PAUSED. */
+export const CREATE_KINDS: readonly ProposalKind[] = ["create_campaign", "create_ad_set", "create_ad_creative", "create_ad", "create_ad_group", "add_keywords", "create_responsive_search_ad"];
+
+/**
+ * Whether a proposal can raise spend. change_budget is a decrease only when the new and the current daily budget are both numbers and new < current;
+ * a missing value on either side counts as spend-raising (fail closed). `currentDailyBudgetMinor` overrides the payload's copy (a fresh campaigns read).
+ */
+export function isSpendRaising(p: Pick<ProposalRow, "kind" | "payload">, currentDailyBudgetMinor?: number | null): boolean {
+  if (!SPEND_RAISING_KINDS.includes(p.kind)) return false;
+  if (p.kind !== "change_budget") return true;
+  const next = p.payload.newDailyBudgetMinor;
+  const current = currentDailyBudgetMinor !== undefined ? currentDailyBudgetMinor : p.payload.currentDailyBudgetMinor;
+  const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  return !(isNum(next) && isNum(current) && next < current);
+}
+
+/** A create payload that asks for anything but PAUSED (e.g. ACTIVE): refused at proposal time and at run time. */
+export function asksForActive(p: Pick<ProposalRow, "kind" | "payload">): boolean {
+  return CREATE_KINDS.includes(p.kind) && p.payload.status !== undefined && p.payload.status !== null && p.payload.status !== "PAUSED";
+}
+
+/** Determine if the owner's delegate can approve (within threshold) or if the owner is required, from a spend amount. A spend-raising kind is always owner_required. */
+export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, lifetimeMinor: number | null, spendRaising = false): OwnerRoute {
   const threshold = ownerThresholdMinor(scope);
-  const route: OwnerRoute["route"] = lifetimeMinor === null || lifetimeMinor > threshold ? "owner_required" : "delegate";
+  const route: OwnerRoute["route"] = spendRaising || lifetimeMinor === null || lifetimeMinor > threshold ? "owner_required" : "delegate";
   return {
     route,
     lifetimeMinor,
@@ -104,9 +132,9 @@ export function routeForSpend(scope: Pick<ScopeRow, "currency" | "owner_threshol
 }
 
 /** Determine if the owner's delegate can approve (within threshold) or if the owner is required. */
-export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, p: Pick<ProposalRow, "kind" | "payload" | "impact">): OwnerRoute {
+export function ownerRouteOf(scope: Pick<ScopeRow, "currency" | "owner_threshold_minor">, p: Pick<ProposalRow, "kind" | "payload" | "impact">, currentDailyBudgetMinor?: number | null): OwnerRoute {
   const lifetime = lifetimeBudgetMinor(p);
-  return routeForSpend(scope, lifetime);
+  return routeForSpend(scope, lifetime, isSpendRaising(p, currentDailyBudgetMinor));
 }
 
 /** Route codes stored in a proposal's impact before 0.3.9 (named the person); they read as the role-based codes. */

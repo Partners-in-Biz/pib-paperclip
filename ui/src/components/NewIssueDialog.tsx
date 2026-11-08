@@ -481,7 +481,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
 
 export function NewIssueDialog() {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
-  const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
+  const { newIssueOpen, newIssueDefaults, closeNewIssue, notifyNewIssueCreated } = useDialog();
   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
   const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
@@ -684,6 +684,13 @@ export function NewIssueDialog() {
             : undefined,
         });
       }
+      notifyNewIssueCreated({
+        id: issue.id,
+        identifier: issue.identifier ?? null,
+        title: issue.title,
+        projectId: issue.projectId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+      });
       clearDraft();
       reset();
       closeNewIssue();

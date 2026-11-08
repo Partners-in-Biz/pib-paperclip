@@ -2,9 +2,10 @@
 #
 # Our own code lives only under packages/plugins/. Upstream's workflows skip all of it (they are built for the
 # Paperclip host), so until this file existed ~2,450 plugin tests and the kit contract tests only ran when someone
-# remembered to run them before a manual deploy. This workflow is the gate: typecheck, tests and build for every PiB
-# package on every push and pull request to `development` (our working branch; main/master only moves with the
-# owner's approval).
+# remembered to run them before a manual deploy. This workflow is the gate: typecheck, tests and build for the PiB
+# packages a push or pull request to `development` changes (our working branch; main/master only moves with the
+# owner's approval). A change to shared code (kit, UI kit, plugin SDK, lockfile, root config, this file) checks every
+# PiB package; the weekly run and a manual run always check every PiB package.
 #
 # Not product code: this is the one file outside packages/plugins that we add, because GitHub only reads workflows
 # from .github/workflows. It does not touch, replace or depend on any upstream workflow.
@@ -14,8 +15,9 @@
 # checks is what gets deployed.
 name: PiB plugins CI
 
-# No paths filter on purpose: the aggregate check "PiB plugins CI" below is meant to be a required branch check, and a
-# required check that is skipped by a paths filter never reports, which blocks the pull request forever.
+# No paths filter on purpose: the check "PiB plugins CI" below is meant to be a required branch check, and a
+# required check that is skipped by a paths filter never reports, which blocks the pull request forever. The scope is
+# picked inside the run instead (step `Pick the scope`); the job always runs and reports.
 on:
   push:
     branches: [development]
@@ -23,88 +25,210 @@ on:
     branches: [development]
   workflow_dispatch:
   # A daily run of the same checks: tests that quietly depend on today's date (a fixed fixture clock against code that reads the real one) pass for a day and then fail the deploy gate; this shows them as a red run overnight instead.
-  # Was daily ("17 3 * * *"); weekly since 2026-10-11 (Actions-minutes slim), Mondays 03:17 UTC.
+  # Was daily ("17 3 * * *"); weekly since 2026-10-11 (Actions-minutes slim), Mondays 03:17 UTC. Always a full run.
   schedule:
     - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
-# A newer push to a pull request replaces the older run; runs on `development` itself are never cancelled, so every
-# commit that can be deployed has its own finished result.
+# A newer push replaces the older run, on pull requests and on `development` alike (PAR-7886: one self-hosted runner,
+# bursts of merges queued for hours). A push run checks everything changed since the last green `development` push
+# run, so a cancelled run's changes are checked by the run that replaced it. Scheduled and manual runs have their own
+# group and are never cancelled.
 concurrency:
-  group: pib-plugins-ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: pib-plugins-ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  package:
-    name: ${{ matrix.package }}
-    runs-on: [self-hosted, pib-vps]
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      # One VPS runs every package job; a few at a time keeps installs and builds from starving each other.
-      max-parallel: 4
-      matrix:
-        package:
-          # pib-plugin-ui has no scripts of its own: its sources are typechecked and bundled by every plugin that uses it.
-          - pib-plugin-kit
-          - pib-browser
-          - plugin-accounting
-          - plugin-ads
-          - plugin-billing
-          - plugin-campaigns
-          - plugin-cockpit
-          - plugin-crm
-          - plugin-crm-telephony
-          - plugin-mailbox
-          - plugin-partners
-          - plugin-payroll
-          - plugin-seo
-          - plugin-setup
-          - plugin-social
-          - plugin-voice
-          - pib-wp-connector
+  # One job, so a run waits for a runner once (PAR-7886, 2026-11-08). It used to be four jobs (scope, packages,
+  # telephony guard, aggregate) on the same self-hosted lane: each one queued again behind every other pull request's
+  # jobs, so a 6-minute check took 10-17 minutes. The steps are the same, in the same order:
+  #   1. pick the scope: full | some | none, the changed packages (their declared dependents are checked too) and the
+  #      extras checked as-is (the kit, whose contract tests read every plugin's sources, and packages whose tests or
+  #      build read another plugin's files by relative path)
+  #   2. the telephony secret guard, when telephony is in scope
+  #   3. typecheck, test and build the packages in scope, then the PHP connector when it is in scope
+  # The job is named "PiB plugins CI" (the one check name to watch or require) and always reports, also for a change
+  # outside the PiB packages (scope none: only steps 1-2 run, about 20 s).
+  # A pull request from a fork never runs on the self-hosted runner: it gets a GitHub-hosted runner that only fails
+  # the check with a message, so a fork pull request can't be merged on a skipped check either.
+  pib-plugins-ci:
+    name: PiB plugins CI
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","pib-vps"]') }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
+      - name: Refuse a fork pull request
+        if: env.FORK == 'true'
+        run: |
+          echo "Pull requests from forks are not checked here (self-hosted runner). Push the branch to ${{ github.repository }}." >&2
+          exit 1
+
+      - name: Root disk before
+        run: df -h /
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
           persist-credentials: false
+          fetch-depth: 0
 
-      # No `version:` here: the action reads it from package.json "packageManager" (pnpm@9.15.4).
+      - name: Pick the scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          API: ${{ github.api_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          out() { echo "$1" >> "$GITHUB_OUTPUT"; echo "$1"; }
+          full() {
+            echo "full run: $1"
+            out scope=full; out seeds=; out extras=; out connector=true; out telephony=true
+            exit 0
+          }
+          case "$EVENT" in
+            pull_request)
+              range="origin/${BASE_REF}...HEAD" ;;
+            push)
+              # Base = the commit of the last green push run on development (not the push's `before`): superseded
+              # runs are cancelled, so their changes must be checked by the run that replaced them.
+              base="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                "${API}/repos/${REPO}/actions/workflows/pib-plugins-ci.yml/runs?branch=development&event=push&status=success&per_page=1" \
+                | jq -r '.workflow_runs[0].head_sha // empty')" || base=""
+              [ -n "$base" ] || full "no earlier green push run found"
+              git cat-file -e "${base}^{commit}" 2>/dev/null || full "last green commit ${base} not in this checkout"
+              git merge-base --is-ancestor "$base" HEAD || full "last green commit ${base} is not an ancestor of HEAD"
+              range="${base}..HEAD" ;;
+            *)
+              full "event ${EVENT}" ;;
+          esac
+          echo "diff range: ${range}"
+          changed="$(git diff --name-only "$range")"
+          printf '%s\n' "$changed"
+          # Shared code: every PiB package is checked.
+          if grep -Eq '^(packages/plugins/(sdk|pib-plugin-kit|pib-plugin-ui)/|packages/shared/|patches/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|tsconfig[^/]*\.json$|\.npmrc$|\.github/workflows/pib-plugins-ci\.yml$)' <<< "$changed"; then
+            full "shared code changed"
+          fi
+          seeds=(); extras=()
+          for dir in $(grep -oE '^packages/plugins/[^/]+/' <<< "$changed" | cut -d/ -f3 | sort -u || true); do
+            manifest="packages/plugins/${dir}/package.json"
+            [ -f "$manifest" ] || continue
+            name="$(jq -r '.name' "$manifest")"
+            case "$name" in
+              @partnersinbiz/*|pib-browser) seeds+=("$name") ;;
+              *) continue ;;
+            esac
+            # Undeclared cross-plugin reads (relative paths in tests and build scripts):
+            # plugin-cockpit tests read plugin-crm, plugin-seo, plugin-social and pib-browser files;
+            # plugin-crm bundles the pib-wp-connector zip and its tests read the connector.
+            case "$dir" in
+              plugin-crm) extras+=(@partnersinbiz/plugin-cockpit @partnersinbiz/pib-wp-connector) ;;
+              plugin-seo|plugin-social|pib-browser) extras+=(@partnersinbiz/plugin-cockpit) ;;
+              pib-wp-connector) extras+=(@partnersinbiz/plugin-crm) ;;
+            esac
+          done
+          if [ "${#seeds[@]}" -eq 0 ]; then
+            echo "no PiB package changed"
+            out scope=none; out seeds=; out extras=; out connector=false; out telephony=false
+            exit 0
+          fi
+          # The kit's contract tests read every PiB plugin's sources: run them on every plugin change.
+          extras+=(@partnersinbiz/pib-plugin-kit)
+          all=" ${seeds[*]} ${extras[*]} "
+          connector=false; telephony=false
+          [[ "$all" == *" @partnersinbiz/pib-wp-connector "* ]] && connector=true
+          [[ "$all" == *" @partnersinbiz/plugin-crm-telephony "* ]] && telephony=true
+          out scope=some
+          out "seeds=${seeds[*]}"
+          out "extras=$(printf '%s\n' "${extras[@]}" | sort -u | tr '\n' ' ')"
+          out "connector=${connector}"
+          out "telephony=${telephony}"
+
+      - name: Telephony secret guard
+        if: steps.scope.outputs.telephony == 'true'
+        run: |
+          set -euo pipefail
+          if grep -rEln '\b(AC|SK)[0-9a-f]{32}\b' packages/plugins/plugin-crm-telephony --exclude-dir=node_modules --exclude-dir=dist; then
+            echo "Twilio SID-shaped value found in plugin-crm-telephony: secrets are Paperclip secrets only" >&2
+            exit 1
+          fi
+
       - name: Set up pnpm
+        if: steps.scope.outputs.scope != 'none'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - name: Set up Node 24
+        if: steps.scope.outputs.scope != 'none'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install (frozen lockfile)
+        if: steps.scope.outputs.scope != 'none'
         run: pnpm install --frozen-lockfile --prefer-offline
 
       # The workspace plugin SDK is consumed through its built declarations (dist/ is not committed): without this
       # step every package that imports it fails to typecheck on a fresh runner (the kit was red on every run).
       - name: Build the plugin SDK
+        if: steps.scope.outputs.scope != 'none'
         run: pnpm --filter @paperclipai/plugin-sdk run build
 
-      # The scripts a package does not have are skipped (--if-present): the kit and the UI package have no build, the
-      # connector has only a build. The kit's `test` runs its unit tests and then the cross-plugin contract tests
-      # (skill text against registered tools) that read every PiB plugin's sources.
+      # Full: every PiB package (@partnersinbiz/*, under packages/plugins/, plus pib-browser). Otherwise: the changed
+      # packages, their declared dependents and the extras from `changes`, kept to PiB packages.
+      - name: Pick the packages to check
+        if: steps.scope.outputs.scope != 'none'
+        env:
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          SEEDS: ${{ steps.scope.outputs.seeds }}
+          EXTRAS: ${{ steps.scope.outputs.extras }}
+        run: |
+          set -euo pipefail
+          if [ "$SCOPE" = "full" ]; then
+            filters='--filter @partnersinbiz/* --filter pib-browser'
+          else
+            args=()
+            for n in $SEEDS; do args+=(--filter "...${n}"); done
+            for n in $EXTRAS; do args+=(--filter "${n}"); done
+            names="$(pnpm "${args[@]}" list --json --depth -1 | jq -r '.[].name' | grep -E '^(@partnersinbiz/|pib-browser$)' | sort -u)"
+            filters="$(for n in $names; do printf -- '--filter %s ' "$n"; done)"
+          fi
+          echo "PIB_FILTERS=${filters}" >> "$GITHUB_ENV"
+          echo "packages: ${filters}"
+
+      # Two at a time at most (one runner). The scripts a package does not have are skipped (--if-present). The kit's
+      # `test` also runs the cross-plugin contract tests (skill text against registered tools) that read every PiB
+      # plugin's sources. `read -ra` splits the filter list without glob expansion.
       - name: Typecheck
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present typecheck
+        if: steps.scope.outputs.scope != 'none'
+        run: |
+          read -ra f <<< "$PIB_FILTERS"
+          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run typecheck
 
       - name: Test
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present test
+        if: steps.scope.outputs.scope != 'none'
+        run: |
+          read -ra f <<< "$PIB_FILTERS"
+          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run test
 
       - name: Build
-        run: pnpm --filter "@partnersinbiz/${{ matrix.package }}" run --if-present build
+        if: steps.scope.outputs.scope != 'none'
+        run: |
+          read -ra f <<< "$PIB_FILTERS"
+          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run build
 
       # The connector is PHP. Its own tests run on the runner's PHP; the zip it ships (inside the CRM bundle) must be
       # byte-for-byte the same on every build, because the CRM hands its sha256 to the sites that self-update.
       - name: Connector tests and reproducible zip
-        if: matrix.package == 'pib-wp-connector'
+        if: steps.scope.outputs.connector == 'true'
         run: |
           php --version
           php packages/plugins/pib-wp-connector/tests/run.php
@@ -114,33 +238,13 @@ jobs:
           second="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
           test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
 
-  telephony-secret-guard:
-    name: Telephony secret guard
-    runs-on: [self-hosted, pib-vps]
-    timeout-minutes: 5
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
-        with:
-          persist-credentials: false
+      - name: Prune pnpm store
+        if: always() && env.FORK != 'true'
+        run: pnpm store prune || true
 
-      - name: Guard against Twilio SID patterns
+      - name: Root disk after (must stay under 80%)
+        if: always() && env.FORK != 'true'
         run: |
-          set -euo pipefail
-          if grep -rEln '\b(AC|SK)[0-9a-f]{32}\b' packages/plugins/plugin-crm-telephony --exclude-dir=node_modules --exclude-dir=dist; then
-            echo "Twilio SID-shaped value found in plugin-crm-telephony: secrets are Paperclip secrets only" >&2
-            exit 1
-          fi
-
-  # One stable name for a branch rule: every package above must have passed.
-  pib-plugins-ci:
-    name: PiB plugins CI
-    needs: [package, telephony-secret-guard]
-    if: always()
-    runs-on: [self-hosted, pib-vps]
-    timeout-minutes: 5
-    steps:
-      - name: All packages and guards passed
-        run: |
-          test "${{ needs.package.result }}" = "success" || { echo "a package failed: ${{ needs.package.result }}"; exit 1; }
-          test "${{ needs.telephony-secret-guard.result }}" = "success" || { echo "telephony secret guard failed: ${{ needs.telephony-secret-guard.result }}"; exit 1; }
+          df -h /
+          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
+          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }

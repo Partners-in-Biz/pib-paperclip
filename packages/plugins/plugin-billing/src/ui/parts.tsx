@@ -16,7 +16,7 @@ const ACTION_KEYS = [
   "billing.update-quote", "billing.quote-detail", "billing.set-quote-status", "billing.request-quote-send", "billing.convert-quote",
   "billing.create-expense", "billing.update-expense", "billing.void-expense", "billing.receipt-to-expense", "billing.receipt-file", "billing.upload-url",
   "billing.record-payment", "billing.create-credit-note", "billing.credit-note-pdf", "billing.send-credit-note", "billing.statement-pdf",
-  "billing.send-statement", "billing.apply-credit", "billing.write-off", "billing.register-pop", "billing.confirm-pop", "billing.reject-pop",
+  "billing.send-statement", "billing.apply-credit", "billing.write-off", "billing.register-pop", "billing.confirm-pop", "billing.link-pop", "billing.reject-pop",
   "billing.pop-file", "billing.create-bill", "billing.add-bill-line", "billing.remove-bill-line", "billing.update-bill", "billing.bill-detail",
   "billing.approve-bill", "billing.pay-bill", "billing.cancel-bill", "billing.attach-bill-file", "billing.bill-file", "billing.start-timer",
   "billing.stop-timer", "billing.log-time", "billing.delete-time-entry", "billing.bill-time", "billing.create-plan", "billing.update-plan",

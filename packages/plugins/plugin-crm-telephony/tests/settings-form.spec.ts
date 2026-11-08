@@ -8,6 +8,9 @@ const baseSettings: TelephonySettings = {
   allowedHours: { start: "09:00", end: "17:00", timezone: "Africa/Johannesburg" },
   callerIds: ["+27123456789"], voiceAllowedUserIds: ["user1"], usSmsCampaignStatus: "approved",
   usMessagingServiceSid: "MGxxxxxxxxxxxxxxxxxxxxxxxx", whatsappFrom: "wa_id", smsHolidays: ["2026-12-25"],
+  publicBaseUrl: null,
+  numbers: [{ e164: "+27105550100", label: "PiB Cape Town", regions: ["27"], purposes: ["voice", "sms"], enabled: true, isDefault: true }],
+  numbersSource: "settings",
 };
 
 describe("Settings form utilities", () => {
@@ -80,9 +83,10 @@ describe("Settings form utilities", () => {
     expect(errors).toEqual({ maxCallsPerDay: message });
   });
 
-  it("describeSecretStatus has all 12 secrets including ANTHROPIC_API_KEY", () => {
+  it("describeSecretStatus lists the credential secrets including ANTHROPIC_API_KEY (the two number secrets are gone)", () => {
     const rows = describeSecretStatus({});
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(10);
+    expect(rows.map((r) => r.name)).not.toContain("TWILIO_ZA_NUMBER");
     expect(rows.map((r) => r.name)).toContain("ANTHROPIC_API_KEY");
     expect(rows.every((r) => r.status === "missing")).toBe(true);
   });
@@ -91,5 +95,90 @@ describe("Settings form utilities", () => {
     const rows = describeSecretStatus({ [name]: "set" });
     const row = rows.find((r) => r.name === name);
     expect(row).toMatchObject({ name, label: SECRET_LABELS[name], status: "set" });
+  });
+});
+
+describe("Voice readiness on the settings page", async () => {
+  const { publicOrigin, voiceWebhookRows, describeVoiceReadiness, TELEPHONY_PLUGIN_ID } = await import("../src/ui/settings-form.js");
+  const { PLUGIN_ID } = await import("../src/namespace.js");
+
+  it("keeps the browser-side plugin id equal to the worker's", () => {
+    expect(TELEPHONY_PLUGIN_ID).toBe(PLUGIN_ID);
+  });
+
+  it("publicOrigin accepts a bare origin and rejects paths, queries and other schemes", () => {
+    expect(publicOrigin(" https://paperclip.example.com/ ")).toBe("https://paperclip.example.com");
+    expect(publicOrigin("http://localhost:3100")).toBe("http://localhost:3100");
+    expect(publicOrigin("https://paperclip.example.com/PAR/dialer")).toBeNull();
+    expect(publicOrigin("https://paperclip.example.com/?x=1")).toBeNull();
+    expect(publicOrigin("ftp://host")).toBeNull();
+    expect(publicOrigin("not a url")).toBeNull();
+    expect(publicOrigin("")).toBeNull();
+  });
+
+  it("the form carries the public base URL both ways and validates it", () => {
+    const form = toFormState({ ...baseSettings, publicBaseUrl: "https://paperclip.example.com" });
+    expect(form.publicBaseUrl).toBe("https://paperclip.example.com");
+    expect(toSavePayload(form).publicBaseUrl).toBe("https://paperclip.example.com");
+    expect(toSavePayload({ ...form, publicBaseUrl: "  " }).publicBaseUrl).toBeNull();
+    expect(validateForm({ ...form, publicBaseUrl: "https://x.example.com/path" }).publicBaseUrl).toMatch(/no path/);
+    expect(validateForm(form).publicBaseUrl).toBeUndefined();
+  });
+
+  it("lists the three webhook addresses for an origin", () => {
+    const rows = voiceWebhookRows("https://paperclip.example.com");
+    expect(rows.map((r) => r.key)).toEqual(["call-status", "recording-status", "voice-twiml"]);
+    expect(rows[0].url).toBe(`https://paperclip.example.com/api/plugins/${PLUGIN_ID}/webhooks/call-status`);
+    expect(rows[2].note).toMatch(/Not used/);
+  });
+
+  it("builds the readiness checklist from the worker's view", () => {
+    const voice = {
+      ready: false, missingSecrets: ["TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"],
+      numbers: { total: 1, enabled: 1, voice: 1, whatsapp: 0, defaultE164: "+27105550100", voiceRegions: ["27"], source: "secrets" as const, lines: [] },
+      twimlApp: "missing" as const,
+      publicBaseUrl: null, recording: { enabled: true, r2Configured: false, active: false }, voiceUsers: 0, blockers: ["x"], notes: [],
+    };
+    const rows = describeVoiceReadiness(voice, { TWILIO_ACCOUNT_SID: "set", TWILIO_AUTH_TOKEN: "set" });
+    const byLabel = Object.fromEntries(rows.map((r) => [r.label, r]));
+    expect(byLabel["Twilio Account SID (TWILIO_ACCOUNT_SID)"].status).toBe("set");
+    expect(byLabel["Twilio API Key SID (TWILIO_API_KEY_SID)"].status).toBe("missing");
+    expect(byLabel["Numbers (caller IDs)"]).toMatchObject({ status: "set", hint: "1 for voice, serving +27; default +27105550100 (from the old secrets, not saved yet)" });
+    expect(byLabel["TwiML app SID (TWILIO_TWIML_APP_SID)"].status).toBe("optional");
+    expect(byLabel["Public base URL"].status).toBe("missing");
+    expect(byLabel["Voice user IDs"].status).toBe("missing");
+    expect(byLabel["Recording"]).toMatchObject({ status: "missing", hint: expect.stringContaining("R2") });
+    const none = describeVoiceReadiness({ ...voice, numbers: { ...voice.numbers, voice: 0, enabled: 0, total: 0, defaultE164: null, voiceRegions: [], source: "none" } }, {});
+    expect(none.find((r) => r.label === "Numbers (caller IDs)")).toMatchObject({ status: "missing", hint: "Add one under Numbers below" });
+  });
+});
+
+describe("Numbers rows on the settings form", async () => {
+  const { numberToRow, rowsToNumbers, validateNumberRows, setDefaultRow, moveRow, emptyNumberRow } = await import("../src/ui/settings-form.js");
+
+  it("round-trips a number through a row", () => {
+    const row = numberToRow(baseSettings.numbers[0]);
+    expect(row).toEqual({ e164: "+27105550100", label: "PiB Cape Town", regions: "27", voice: true, sms: true, whatsapp: false, enabled: true, isDefault: true });
+    expect(rowsToNumbers([row])).toEqual([{ e164: "+27105550100", label: "PiB Cape Town", regions: ["27"], purposes: ["voice", "sms"], enabled: true, isDefault: true }]);
+    expect(toSavePayload(toFormState(baseSettings)).numbers).toEqual(baseSettings.numbers);
+  });
+
+  it("drops blank rows, splits regions on commas and spaces, and validates each row", () => {
+    const rows = [emptyNumberRow(), { ...emptyNumberRow(), e164: "+1 202 555 0100", label: "US", regions: "1, 44 ZA", voice: false, sms: true }];
+    expect(rowsToNumbers(rows)).toEqual([{ e164: "+1 202 555 0100", label: "US", regions: ["1", "44", "ZA"], purposes: ["sms"], enabled: true, isDefault: false }]);
+    expect(validateNumberRows(rows)).toEqual({});
+    expect(validateNumberRows([{ ...emptyNumberRow(), e164: "0105550100" }])).toEqual({ "numbers.0": "Enter the number in E.164, like +27105550100" });
+    expect(validateNumberRows([{ ...emptyNumberRow(), e164: "+27105550100", voice: false }])).toEqual({ "numbers.0": "Tick at least one of Voice, SMS, WhatsApp" });
+    expect(validateNumberRows([{ ...emptyNumberRow(), e164: "+27105550100" }, { ...emptyNumberRow(), e164: "+27105550100" }])["numbers.1"]).toBe("This number is listed twice");
+    expect(validateForm({ ...toFormState(baseSettings), numbers: [{ ...emptyNumberRow(), e164: "nope" }] })["numbers.0"]).toBeTruthy();
+  });
+
+  it("keeps exactly one default and reorders", () => {
+    const rows = [emptyNumberRow(true), emptyNumberRow(), emptyNumberRow()];
+    const moved = setDefaultRow(rows, 2);
+    expect(moved.map((r) => r.isDefault)).toEqual([false, false, true]);
+    expect(moveRow(moved, 2, -1).map((r) => r.isDefault)).toEqual([false, true, false]);
+    expect(moveRow(moved, 2, 1)).toBe(moved);
+    expect(moveRow(moved, 0, -1)).toBe(moved);
   });
 });

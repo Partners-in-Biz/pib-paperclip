@@ -3,12 +3,13 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   useHostLocation,
   useHostNavigation,
+  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, KeyRound, Lightbulb, Megaphone, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -22,9 +23,13 @@ import { MemoryPanel } from "./memory.js";
 import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { MaintenancePanel } from "./maintenance.js";
 import { PolicyPanel } from "./policy.js";
+import { BrowserPanel } from "./browser-page.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
+
+/** Tier A info cards (key outward-send:*) need no action, so they do not count as waiting. */
+const needsAction = (w: { key: string }) => !w.key.startsWith("outward-send:");
 
 export { ClientsNav, FinanceNav, HostedClientsNav, MarketingNav } from "./nav.js";
 
@@ -64,7 +69,7 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance", "policy", "hosted"] as const;
+const TAB_IDS = ["overview", "flows", "profile", "memory", "notifications", "maintenance", "policy", "browser", "hosted"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
 /** `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
@@ -116,10 +121,12 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [windowHours, setWindowHours] = useState(24);
   const data = useCockpitData(companyId, { windowHours });
+  const dismissCard = usePluginAction("outward-send.dismiss");
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
   const [policyTick, setPolicyTick] = useState(0);
+  const [browserTick, setBrowserTick] = useState(0);
   const hosted = useHostedUsage(companyId);
   const showHosted = hostedAllowed(hosted.state);
   const moved = movedTabTarget(location.search);
@@ -149,7 +156,8 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const maintenanceTab = tab === "maintenance";
   const policyTab = tab === "policy";
   const hostedTab = tab === "hosted";
-  const pageTab = memoryTab || profileTab || maintenanceTab || policyTab || hostedTab;
+  const browserTab = tab === "browser";
+  const pageTab = memoryTab || profileTab || maintenanceTab || policyTab || hostedTab || browserTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
@@ -168,7 +176,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : policyTab ? setPolicyTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
+              onClick={() => (memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : policyTab ? setPolicyTick((n) => n + 1) : browserTab ? setBrowserTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
               disabled={!pageTab && data.loading}
             >
               {!pageTab && data.loading ? "Loading…" : "Refresh"}
@@ -180,13 +188,14 @@ function CockpitPageMain({ context }: PluginPageProps) {
       {moved ? <Muted>The team moved to <a {...linkFor(moved)} style={{ color: tokens.primary, fontWeight: 600 }}>Setup → Team</a>.</Muted> : null}
       <Tabs
         tabs={[
-          { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
+          { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.filter(needsAction).length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
           { id: "flows", label: "Flows", icon: Workflow, count: view?.flows.stuck.length || null, countTone: "warn" },
           { id: "profile", label: "Profile", icon: Building2 },
           { id: "memory", label: "Memory", icon: Lightbulb },
           { id: "notifications", label: "Notifications", icon: Megaphone },
           { id: "maintenance", label: "Maintenance", icon: Wrench },
           { id: "policy", label: "Policy", icon: ShieldCheck },
+          { id: "browser", label: "Browser", icon: KeyRound },
           // Owner company only: other companies get no tab (a `?tab=hosted` link there shows "not available").
           ...(showHosted ? [{ id: "hosted", label: "Hosted clients", icon: Building2 }] : []),
         ]}
@@ -197,6 +206,8 @@ function CockpitPageMain({ context }: PluginPageProps) {
         <HostedView key={companyId} state={hosted.state} now={new Date()} onRetry={() => void hosted.reload()} />
       ) : tab === "notifications" ? (
         <NotificationsPage key={companyId} />
+      ) : browserTab ? (
+        <BrowserPanel key={companyId} refreshKey={browserTick} identity={new URLSearchParams(location.search).get("identity")} />
       ) : policyTab ? (
         <PolicyPanel key={companyId} linkFor={linkFor} refreshKey={policyTick} />
       ) : maintenanceTab ? (
@@ -214,7 +225,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
       ) : view && tab === "flows" ? (
         <FlowsPanel view={view.flows} linkFor={linkFor} focus={location.hash} />
       ) : view ? (
-        <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} />
+        <Overview view={view} load={data.raw!.load} runs={data.raw!.runs} linkFor={linkFor} windowHours={windowHours} onWindow={setWindowHours} onDismiss={(key) => void dismissCard({ id: key }).then(() => data.reload(), () => undefined)} />
       ) : emptyViewText(data) ? <Muted>{emptyViewText(data)}</Muted> : null}
     </Shell>
   );
@@ -222,7 +233,9 @@ function CockpitPageMain({ context }: PluginPageProps) {
 
 const NUMBER_GROUPS = ["money", "pipeline", "marketing", "delivery"] as const;
 
-export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now = new Date() }: {
+export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onDismiss, now = new Date() }: {
+  /** Dismiss an info card (a Tier A client send) by its waiting key. */
+  onDismiss?: (key: string) => void;
   view: CockpitView;
   load: LoadResult;
   /** Host heartbeat runs, for the runs-per-day chart and the Today card's run line. */
@@ -276,13 +289,13 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, now
 
       <Card
         id="waiting"
-        title={`Waiting on you${view.waiting.length ? ` (${view.waiting.length})` : ""}`}
+        title={`Waiting on you${view.waiting.filter(needsAction).length ? ` (${view.waiting.filter(needsAction).length})` : ""}`}
         icon={Inbox}
-        tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.length ? "warn" : "ok"}
+        tone={view.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : view.waiting.some(needsAction) ? "warn" : "ok"}
         subtitle={view.waiting.some((w) => w.ask) ? "Questions from agents first, then decisions only you can make." : "Decisions only you can make, most urgent first."}
         actions={<WaitingKinds items={view.waiting} />}
       >
-        <WaitingList items={view.waiting} linkFor={linkFor} now={now} />
+        <WaitingList items={view.waiting} linkFor={linkFor} now={now} onDismiss={onDismiss} />
       </Card>
 
       <FlowsSummary view={view.flows} linkFor={linkFor} />
@@ -361,7 +374,7 @@ export function CompanyTodayWidget({ context }: PluginWidgetProps) {
   const data = useCockpitData(context.companyId, { light: true });
   const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.view) return null;
-  return <TodayCard waiting={data.view.waiting.length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
+  return <TodayCard waiting={data.view.waiting.filter(needsAction).length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
 }
 
 export function CockpitSidebar({ context }: PluginSidebarProps) {
@@ -369,7 +382,7 @@ export function CockpitSidebar({ context }: PluginSidebarProps) {
   const location = useHostLocation();
   // Shared with the Clients / Marketing / Finance groups: one light load for the whole sidebar.
   const view = useSidebarView(context.companyId, location.pathname);
-  const waiting = view?.waiting.length ?? 0;
+  const waiting = view?.waiting.filter(needsAction).length ?? 0;
   const urgent = view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ?? false;
   const health = view?.health ?? "ok";
   const href = hostNavigation.resolveHref("/cockpit");

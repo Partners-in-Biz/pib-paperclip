@@ -103,5 +103,13 @@ describe("drafts record who saved them", () => {
     await harness.performAction("mailbox.create-draft", { accountId: "acc-1", subject: "Hi", to: "ada@x.test" }, { companyId: CO, actor: { type: "user", userId: "user-peet" } });
     await harness.executeTool("create-draft", { accountId: "acc-1", subject: "Hello", to: "ada@x.test" }, { agentId: "agent-am", companyId: CO });
     expect(inserts.map((params) => JSON.parse(String(params[8])).by)).toEqual([{ kind: "user", id: "user-peet" }, { kind: "agent", id: "agent-am" }]);
+
+    // The draft points back at the task the run is on, even while that task still says "todo"; finding no task never blocks the draft.
+    const list = vi.spyOn(harness.ctx.issues, "list").mockImplementation((async (input: { status?: string }) =>
+      input.status === "todo" ? [{ id: "other", executionRunId: "run-2" }, { id: "iss-1", executionRunId: "run-1" }] : []) as never);
+    await harness.executeTool("create-draft", { accountId: "acc-1", subject: "With task", to: "ada@x.test" }, { agentId: "agent-am", companyId: CO, runId: "run-1" });
+    list.mockRejectedValue(new Error("host down"));
+    await harness.executeTool("create-draft", { accountId: "acc-1", subject: "No task", to: "ada@x.test" }, { agentId: "agent-am", companyId: CO, runId: "run-1" });
+    expect(inserts.slice(2).map((params) => JSON.parse(String(params[8])).sourceIssueId)).toEqual(["iss-1", null]);
   });
 });

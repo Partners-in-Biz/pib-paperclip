@@ -57,6 +57,8 @@ export function statsQuery(ctx: PluginContext, companyId: string, scope: ClientS
   const params: unknown[] = [companyId];
   const w = clientWhere(scope, params.length + 1, "p");
   params.push(...w.params);
+  // Own work is the company's posts: a person's My Social posts never count.
+  w.sql += " AND p.scope = 'org'";
   params.push(days);
   const daysParam = `$${params.length}`;
   const destinations = table(ctx, "destinations");

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
 import { emitAllOwnMetrics } from "./own-metrics.js";
+import { registerDriveReadRoutes } from "./drive/read.js";
+import { registerBrandKitRoute } from "./brand-kit-route.js";
 import {
   definePlugin,
   runWorker,
@@ -17,7 +19,6 @@ import {
   COCKPIT_ROUTE,
   createSkillSyncer,
   createWorkIssue,
-  DRIVE_EVENTS,
   HOSTED_TIERS,
   isHostedTier,
   isModuleEnabled,
@@ -113,6 +114,7 @@ import {
   recordDates,
 } from "./db.js";
 import { crmSeries } from "./series.js";
+import { callList, deskView, givePrepare, giveRecord, logOutcome, setNextAction, type DeskDeps } from "./desk-actions.js";
 import {
   advanceEnrollment,
   applyFieldPatch,
@@ -203,9 +205,10 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany, resolveProducerSaveProject } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
-import { saveDriveFile } from "./drive/save.js";
+import { registerDriveSaveRoute } from "./drive/save-route.js";
+import { reportsDriveCatchup } from "./report-drive-catchup.js";
 import { listDriveFiles } from "./drive/store.js";
 import { listClientFiles } from "./drive/files-list.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
@@ -304,6 +307,27 @@ const plugin = definePlugin({
       return load(ctx, context);
     });
     registerAction("crm.client-workspace", (params, context) => clientWorkspaceAction(ctx, context, params));
+    // The sales desk (0.37.0): the Today queue, outcomes, next actions with briefs, and Give to agent on a record.
+    registerAction("crm.desk", async (_params, context) => deskView(ctx, await actionViewer(ctx, context), DESK_DEPS));
+    registerAction("crm.log-outcome", async (params, context) => logOutcome(ctx, await actionViewer(ctx, context), DESK_DEPS, params, actionSource(context)));
+    registerAction("crm.set-next-action", async (params, context) => setNextAction(ctx, await actionViewer(ctx, context), DESK_DEPS, params, actionSource(context)));
+    registerAction("crm.call-list", async (params, context) => callList(ctx, await actionViewer(ctx, context), DESK_DEPS, params));
+    registerAction("crm.give-prepare", async (params, context) => {
+      requireUser(context, "give a record to an agent");
+      return givePrepare(ctx, await actionViewer(ctx, context), DESK_DEPS, params);
+    });
+    registerAction("crm.give-record", async (params, context) => {
+      requireUser(context, "give a record to an agent");
+      return giveRecord(ctx, await actionViewer(ctx, context), DESK_DEPS, params);
+    });
+    // PAR-8130: copy sent reports to Drive for a date range. A dry run (the default) only lists; saving needs a board user.
+    // PAR-8121: a saving call does `limit` reports and returns `nextAfterId` for the next call (`afterId`).
+    registerAction("crm.reports-drive-catchup", async (params, context) => {
+      const companyId = requireCompany(context);
+      const dryRun = params.dryRun !== false;
+      if (!dryRun) requireUser(context, "run the Drive catch-up");
+      return reportsDriveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
+    });
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
     registerAction("crm.delete-company", (params, context) => deleteCompanyAction(ctx, context, params));
@@ -538,55 +562,14 @@ const plugin = definePlugin({
     // Emit client projects for all companies at startup (never blocks start).
     void startupClientProjectsEmit(ctx).catch((error) => ctx.logger.info("CRM client projects startup emit failed", { error: error instanceof Error ? error.message : String(error) }));
 
-    // Event handler for Drive save requests from other plugins (kit's driveSave)
-    // The kit emits this bare event; SDK types don't include it, so we cast the event name
-    // SDK event typing does not accept this bare kit event name
-    ctx.events.on(DRIVE_EVENTS.saveRequested as any, async (event: PluginEvent) => {
-      const { companyId } = event;
-      const payload = (event.payload as Record<string, unknown> | undefined) || {};
-      // Extract fields emitted by kit's driveSave: contentBase64 or publicUrl, optional sha256, subfolder, clientKind/clientRef
-      const { requestId, kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
-      if (!requestId) return;
+    // Drive save requests from known producer plugins (kit's driveSave), PAR-8114
+    registerDriveSaveRoute(ctx);
 
-      try {
-        const projectId = await resolveProducerSaveProject(ctx, companyId, {
-          kind: typeof kind === "string" ? kind : undefined,
-          clientKind: typeof clientKind === "string" ? clientKind : undefined,
-          clientRef: typeof clientRef === "string" ? clientRef : undefined,
-        });
-        if (!projectId) {
-          const hint = clientRef
-            ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
-            : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
-          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "no_project", hint });
-          return;
-        }
-        const input: Parameters<typeof saveDriveFile>[2] = {
-          companyId,
-          projectId,
-          fileKind: (kind as string) || "ops",
-          name: (name as string) || "",
-          mimeType: (mimeType as string) || "",
-        };
-        if (contentBase64) input.contentBase64 = contentBase64 as string;
-        if (publicUrl) input.publicUrl = publicUrl as string;
-        if (sha256) input.sha256 = sha256 as string;
-        if (subfolder) input.subfolder = subfolder as string;
+    // Drive reads for producer plugins (kit's driveList / driveRead, PAR-8107): only the client's own assets folders.
+    registerDriveReadRoutes(ctx);
 
-        // Use a system viewer for internal CRM saves (no user context)
-        const viewer: Viewer = { companyId, userId: null, agentId: null, role: null };
-        const result = await saveDriveFile(ctx, viewer, input);
-
-        if (result.status === "saved") {
-          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.saved}`, companyId, { requestId, driveFileId: result.driveFileId, url: result.url });
-        } else {
-          await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: result.status, hint: result.hint });
-        }
-      } catch (error) {
-        ctx.logger.info("Drive save event handler failed", { requestId, error: error instanceof Error ? error.message : String(error) });
-        await ctx.events.emit(`plugin.partnersinbiz.crm.${DRIVE_EVENTS.failed}`, companyId, { requestId, reason: "handler_error", hint: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
-      }
-    });
+    // A client's brand kit for producer plugins (kit's requestBrandKit, PAR-8134): that client's profile in this company only.
+    registerBrandKitRoute(ctx);
 
     // Subscribe to Setup plugin's drive.binding.set event
     ctx.events.on(pluginEvent(PIB_PLUGINS.setup, "drive.binding.set"), async (event: PluginEvent) => {
@@ -767,6 +750,12 @@ async function dispatch(
       return linkRecords(ctx, viewer, body);
     case "log-activity":
       return logActivity(ctx, viewer, body);
+    case "call-list":
+      return callList(ctx, viewer, DESK_DEPS, body);
+    case "set-next-action":
+      return setNextAction(ctx, viewer, DESK_DEPS, body, source);
+    case "log-outcome":
+      return logOutcome(ctx, viewer, DESK_DEPS, body, source);
     case "create-deal":
       return createDeal(ctx, viewer, body);
     case "move-deal":
@@ -890,6 +879,12 @@ async function dispatch(
 }
 
 /** Every company, contact, deal and link this viewer may see, plus the pipeline. */
+/** What the sales desk needs from this file: the visibility-filtered records and the record check every write uses. */
+const DESK_DEPS: DeskDeps = {
+  records: (ctx, viewer) => visibleRecords(ctx, viewer),
+  requireRecord: (ctx, viewer, recordType, id) => requireRecord(ctx, viewer, recordType, id),
+};
+
 async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
   const [accounts, contacts, deals, links, sequences, stages] = await Promise.all([

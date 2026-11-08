@@ -1,6 +1,6 @@
 # Mailbox
 
-Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend or Amazon SES, 0.7.0) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold.
+Paperclip plugin `partnersinbiz.mailbox`. Accounts keep credential secret refs. A delegation lets an agent read or draft. Sending stays off unless that delegation says send. Since 0.6.0 a second, send-only kind of account sends through an email provider (Resend or Amazon SES, 0.7.0) as a client's own verified domain; Gmail stays the default. 0.6.1 keeps the private link in a client's signing email out of every table, keeps tracking off for such mail, and gives a person the way to lift a reputation hold. 0.7.1 lets a person work on a draft before it goes out: edit To/Cc/Bcc (searching CRM contacts), subject and text, add files, tick the Gmail signature, ask the drafting agent for a rewrite, or delete the draft with a reason the agent learns from (no migration; agents get an `update-draft` tool).
 
 ## Gmail hub (0.2.0)
 
@@ -41,7 +41,7 @@ The Mailbox is the company's Gmail. Every PiB plugin sends and receives mail thr
 
 ### Connect Gmail
 
-Mailbox page → **Connect Gmail**. Scopes: `gmail.modify`, `gmail.send`, `openid`, `email` (`access_type=offline`, `prompt=consent`). The callback is the kit OAuth bridge page; register this redirect URI on the Google Web client (shown on the page):
+Mailbox page → **Connect Gmail**. Scopes: `gmail.modify` (covers read and send), `openid`, `email` (`access_type=offline`, `prompt=consent`). The callback is the kit OAuth bridge page; register this redirect URI on the Google Web client (shown on the page):
 
 `<publicBaseUrl>/_plugins/<installation uuid>/ui/oauth-callback.html`
 
@@ -63,6 +63,20 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - MIME: multipart/mixed → multipart/alternative (text + html); attachments downloaded from the given (presigned) URLs; UTF-8 headers encoded. `inReplyToMessageId` (Gmail id, Mailbox id or `<Message-ID>`) sets `threadId`, In-Reply-To and References; `threadId` alone answers the thread's newest message. Requested labels (e.g. `PiB/Invoices`, `PiB/Sequences`, `PiB/Campaigns`) are created and added.
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
+
+## 0.9.8: open a new draft from a link
+
+`/mailbox?compose=1&to=<address>[&subject=<text>]` opens the New draft dialog with the recipient (and subject) filled in and the first Gmail mailbox chosen, then takes the ask off the address. The CRM's Email buttons (0.37.0) use it. Nothing is sent: the draft still goes through the editor and a person's Send.
+
+## 0.9.2: follow-ups on closed threads; reply issues in the client's project
+
+A thread keeps one "Reply needed" issue. New mail that needs a reply and has no answer yet now reopens a done or cancelled issue and wakes the assignee, wakes a blocked one, or comments on one already being worked on. Mail older than 7 days (a backlog after a reconnect) reopens nothing. A thread whose issue was never created or is gone gets a new one.
+
+A new reply issue opens in the client's `website` project (kit `resolveClientProjectId`, then `platform`, then a link with no kind) when the client match is reliable: a person's correction, a mail mapping, or the CRM's match on an outside sender. Our own staff (same domain as a connected mailbox, free-mail domains excepted) and Jev's guesses open with no project, and the issue tells the agent how to route further work. Existing issues do not move.
+
+## 0.9.0: read, reply, forward and delete on the page; draft editor
+
+Opening a mail shows its whole text. **Reply**, **Reply all** and **Forward** save a draft (`mailbox.start-reply`: quoted text, right thread, a forward carries the original's files up to the draft limits) and open the draft editor, where To, Cc, Bcc, text and files can be changed; nothing goes out until someone clicks Send. **Delete** (one mail, or several ticked in the list; `mailbox.delete-mail`) moves the mail to the Bin in Gmail (`users.messages.trash`, recoverable for 30 days) and removes the row from the hub. Mail trashed in Gmail itself also leaves the inbox list. People only: no agent tool deletes mail. Sent records stay: they are the send log.
 
 ### Gmail drafts for other plugins (0.6.4)
 

@@ -208,10 +208,10 @@ describe("finish setup content", () => {
       installed,
       prefix: "PIB",
     });
-    // 1 (CRM) + 1 (Mailbox, never reported) + 8 switched-on modules whose plugin is not installed.
-    expect(content?.title).toBe("Finish setup: 10 steps left");
-    expect(content?.summary).toEqual({ requiredDone: 1, requiredTotal: 11, requiredLeft: 10, optionalLeft: 1 });
-    expect(content?.description).toContain("10 steps left (1 of 11 required steps done)");
+    // 1 (CRM) + 1 (Mailbox, never reported) + 9 switched-on modules whose plugin is not installed.
+    expect(content?.title).toBe("Finish setup: 11 steps left");
+    expect(content?.summary).toEqual({ requiredDone: 1, requiredTotal: 12, requiredLeft: 11, optionalLeft: 1 });
+    expect(content?.description).toContain("11 steps left (1 of 12 required steps done)");
     expect(content?.description).toContain("## CRM (1 of 2 done)");
     expect(content?.description).toContain("- [ ] **Connect Gmail** — Sequences send through it. [Open Mailbox](/PIB/mailbox)");
     expect(content?.description).toContain("Once done: Sends due sequence steps.");
@@ -224,7 +224,7 @@ describe("finish setup content", () => {
     expect(content?.description).toContain("## Social media (0 of 1 done)");
     expect(content?.description).toContain("**Install the Social media plugin**");
     expect(content?.description).toContain("[Open the Setup page](/PIB/setup)");
-    expect(content?.missing.map((m) => `${m.module}:${m.item.key}`)).toEqual(["crm:gmail", "mailbox:settings", "cockpit:install", "memory:install", "social:install", "campaigns:install", "billing:install", "accounting:install", "payroll:install", "partners:install"]);
+    expect(content?.missing.map((m) => `${m.module}:${m.item.key}`)).toEqual(["crm:gmail", "mailbox:settings", "cockpit:install", "memory:install", "social:install", "ads:install", "campaigns:install", "billing:install", "accounting:install", "payroll:install", "partners:install"]);
   });
 
   it("counts the same steps as the page: kit setupSummary over the counted statuses, switched-off modules skipped", () => {

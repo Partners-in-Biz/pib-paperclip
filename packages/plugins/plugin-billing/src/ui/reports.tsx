@@ -14,7 +14,7 @@ interface Reports {
   agedDebtors: Ageing;
   agedCreditors: Ageing;
   expenses: { categories: Array<{ category: string; totalMinor: number; vatClaimableMinor: number; count: number }>; totalMinor: number; vatClaimableMinor: number };
-  mrr: { mrrMinor: number; arrMinor: number; active: number; newMrrMinor: number; churnedMrrMinor: number; churned: number; churnRate: number };
+  mrr: { mrrMinor: number; arrMinor: number; active: number; retainers?: number; repeating?: number; newMrrMinor: number; churnedMrrMinor: number; churned: number; churnRate: number };
   mrrTrend?: Array<{ month: string; mrrMinor: number; active: number }>;
 }
 
@@ -84,7 +84,8 @@ export function ReportsTab() {
         <div style={{ display: "grid", gridTemplateColumns: fluidColumns(140), gap: 10 }}>
           <KpiCard size="sm" label="MRR" value={money(data.mrr.mrrMinor, cur)} />
           <KpiCard size="sm" label="ARR" value={money(data.mrr.arrMinor, cur)} />
-          <KpiCard size="sm" label="Active retainers" value={data.mrr.active} />
+          <KpiCard size="sm" label="Active retainers" value={data.mrr.retainers ?? data.mrr.active} />
+          <KpiCard size="sm" label="Repeating invoices" value={data.mrr.repeating ?? 0} />
           <KpiCard size="sm" label="New MRR (30 days)" value={money(data.mrr.newMrrMinor, cur)} tone={data.mrr.newMrrMinor > 0 ? "ok" : undefined} />
           <KpiCard size="sm" label="Churned MRR (30 days)" value={money(data.mrr.churnedMrrMinor, cur)} tone={data.mrr.churnedMrrMinor > 0 ? "bad" : undefined} />
           <KpiCard size="sm" label="Churn (30 days)" value={`${Math.round(data.mrr.churnRate * 1000) / 10}%`} tone={data.mrr.churnRate > 0.05 ? "warn" : undefined} />

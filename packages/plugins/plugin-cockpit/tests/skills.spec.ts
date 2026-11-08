@@ -11,7 +11,7 @@ import { canonicalSkillKey, PLUGIN_KEY } from "../src/constants.js";
 import { COMPANY_OS_SKILL_KEY as LOCAL_OS_KEY } from "../src/hire.js";
 import manifest from "../src/manifest.js";
 import { OPERATOR_SKILL_BODY, REVIEWER_SKILL_BODY, routingMap, SKILLS } from "../src/skills.js";
-import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, RETRO_REFERENCE, STALLS_REFERENCE } from "../src/skill-references.js";
+import { ASKING_REFERENCE, CLOSEOUT_REFERENCE, CREATIVE_BAR_PATH, CREDENTIALS_REFERENCE, GOALS_REFERENCE, HEALTH_REFERENCE, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH, EVIDENCE_REFERENCE, RETRO_REFERENCE, STALLS_REFERENCE } from "../src/skill-references.js";
 import { CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, skillVersion } from "@partnersinbiz/pib-plugin-kit";
 import { COCKPIT_TOOLS } from "../src/tools.js";
 import { onboardingContent } from "../src/onboarding.js";
@@ -215,6 +215,19 @@ describe("owner-checks reference", () => {
   });
 });
 
+describe("evidence reference", () => {
+  it("names the tools, the exits and the exemption the gate accepts, and every Cockpit tool it names is real", () => {
+    for (const t of ["pib-browser shot", "pib-evidence", "evidence-record", "ask-owner", "Exit 6", "Exit 7", "Exit 8", "Evidence: not applicable, because", "Never in a shot", "Visual QA"]) {
+      expect(EVIDENCE_REFERENCE, t).toContain(t);
+    }
+    const own = new Set(COCKPIT_TOOLS.map((t) => t.name));
+    for (const [, plugin, name] of EVIDENCE_REFERENCE.matchAll(/partnersinbiz\.([a-z]+):([a-z0-9-]+)/g)) {
+      if (plugin === "cockpit") expect(own.has(name), `partnersinbiz.${plugin}:${name}`).toBe(true);
+    }
+    expect(EVIDENCE_REFERENCE.length).toBeLessThan(8_000);
+  });
+});
+
 describe("stalls reference", () => {
   it("mentions watchdog-findings, chain_idle and orphan_blocker findings, and names only real tools", () => {
     expect(STALLS_REFERENCE).toContain(`\`${PLUGIN_KEY}:watchdog-findings\``);
@@ -285,10 +298,11 @@ describe("the Operator's references (Wave 3)", () => {
       expect(OPERATOR_SKILL_BODY, path).toContain(`\`${path}\``);
     }
     // The Reviewer carries only the creative bar; the manual carries two reference files (how to look at a page, and owner-check rules) and the Acceptance skill its own two.
-    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH]);
-    expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md"]);
+    expect((skill("pib-reviewer") as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual([CREATIVE_BAR_PATH, "references/code-review.md"]);
+    expect((skill(COMPANY_SKILL_SLUG) as { files?: Array<{ path: string }> }).files?.map((f) => f.path)).toEqual(["references/screenshots.md", "references/owner-checks.md", "references/evidence.md"]);
     expect(companySkillBody()).toContain("`references/screenshots.md`");
     expect(companySkillBody()).toContain("`references/owner-checks.md`");
+    expect(companySkillBody()).toContain("`references/evidence.md`");
   });
 
   it("a re-run of acceptance is asked for through an issue to the Acceptance agent: the Cockpit has no Run button to point at", () => {

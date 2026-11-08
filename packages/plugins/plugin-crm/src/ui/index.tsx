@@ -88,6 +88,8 @@ import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts
 import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
 import { dialerHref, TELEPHONY_PLUGIN_KEY } from "../phone-link.js";
 import { DriveFolderLink } from "./DriveFolderLink.js";
+import { CrmGiveButton, LogOutcomeModal, ReachButtons, SalesDesk, SalesSnapshot, deskBadge, type DeskView, type OutcomeTarget, type QueueItem } from "./desk.js";
+import { Sun } from "@partnersinbiz/pib-plugin-ui";
 
 interface Account {
   id: string;
@@ -100,11 +102,13 @@ interface Contact {
   id: string;
   name: string;
   emails: string[];
+  phones?: string[];
   lifecycle: string;
   humanOwned: string[];
   nextActionKind?: string | null;
   nextActionDueAt?: string | null;
   leadScore?: LeadScore | null;
+  emailStatus?: string | null;
 }
 
 interface Deal {
@@ -115,6 +119,8 @@ interface Deal {
   stageId: string;
   contactId: string | null;
   accountId: string | null;
+  nextActionKind?: string | null;
+  nextActionDueAt?: string | null;
 }
 
 interface Link {
@@ -185,7 +191,7 @@ type Detail =
 
 const PLUGIN_ID = "partnersinbiz.crm";
 const BILLING_PLUGIN = "partnersinbiz.billing";
-const TAB_IDS: CrmTab[] = ["overview", "companies", "contacts", "deals", "sequences", "products"];
+const TAB_IDS: CrmTab[] = ["today", "overview", "companies", "contacts", "deals", "sequences", "products"];
 const LIFECYCLE_OPTIONS = ["lead", "prospect", "customer", "churned"] as const;
 const NEXT_ACTION_OPTIONS = ["call", "email", "meet"] as const;
 const NEXT_ACTION_LABEL: Record<string, string> = { call: "Call", email: "Email", meet: "Meet" };
@@ -236,7 +242,14 @@ function CrmList({ context }: PluginPageProps) {
   const [message, setMessage] = useState("");
   const hostLocation = useHostLocation();
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
-  const [tab, setTab] = useUrlTab<CrmTab>(TAB_IDS, "overview", { path: "/crm", search: hostLocation.search, navigate: navigation.navigate });
+  // The sales desk is the landing tab: the list to work through comes before the numbers.
+  const [tab, setTab] = useUrlTab<CrmTab>(TAB_IDS, "today", { path: "/crm", search: hostLocation.search, navigate: navigation.navigate });
+  const loadDesk = usePluginAction("crm.desk");
+  const logOutcome = usePluginAction("crm.log-outcome");
+  const setNextAction = usePluginAction("crm.set-next-action");
+  const [desk, setDesk] = useState<DeskView | null>(null);
+  const [outcomeTarget, setOutcomeTarget] = useState<OutcomeTarget | null>(null);
+  const [deskBusy, setDeskBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState<CreateKind>(null);
   const [detail, setDetail] = useState<Detail>(null);
@@ -261,13 +274,40 @@ function CrmList({ context }: PluginPageProps) {
   const [productCurrency, setProductCurrency] = useState("ZAR");
 
   async function refresh() {
-    setSnapshot((await load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
+    const [next, deskNext] = await Promise.all([
+      load({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) }) as Promise<Snapshot>,
+      (loadDesk({}) as Promise<DeskView>).catch(() => null),
+    ]);
+    setSnapshot(next);
+    setDesk(deskNext);
   }
 
   useEffect(() => {
     if (!context.companyId) return;
     refresh().catch((error: unknown) => setMessage(errorText(error)));
   }, [context.companyId]);
+
+  /** The desk's own writes: an outcome, a snooze, a "done". Each one refreshes the whole page. */
+  async function deskRun(work: () => Promise<unknown>, success: string) {
+    setMessage("");
+    setDeskBusy(true);
+    try {
+      await work();
+      await refresh();
+      setMessage(success);
+      setOutcomeTarget(null);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setDeskBusy(false);
+    }
+  }
+  const snoozeItem = (item: QueueItem, inDays: number) => deskRun(() => setNextAction({ recordType: item.recordType, recordId: item.recordId, kind: item.kind, inDays }), inDays === 1 ? "Moved to tomorrow" : `Moved ${inDays} days on`);
+  const clearItem = (item: QueueItem) => deskRun(() => setNextAction({ recordType: item.recordType, recordId: item.recordId, kind: "none" }), "Done: nothing planned");
+  const onGiven = (out: { message: string; warning: string | null }) => {
+    setMessage(out.warning ? `${out.message} ${out.warning}` : out.message);
+    void refresh().catch(() => undefined);
+  };
 
   async function run(work: () => Promise<unknown>, success: string) {
     setMessage("");
@@ -348,6 +388,7 @@ function CrmList({ context }: PluginPageProps) {
 
   // One main action per tab, in the header. An empty list shows it in its empty state instead.
   const total: Record<CrmTab, number> = {
+    today: 1,
     overview: 1,
     companies: snapshot?.accounts.length ?? 0,
     contacts: snapshot?.contacts.length ?? 0,
@@ -356,6 +397,7 @@ function CrmList({ context }: PluginPageProps) {
     products: snapshot?.products.length ?? 0,
   };
   const mainAction: Record<CrmTab, { label: string; kind: Exclude<CreateKind, null> }> = {
+    today: { label: "+ Contact", kind: "contact" },
     overview: { label: "+ Deal", kind: "deal" },
     companies: { label: "+ Company", kind: "company" },
     contacts: { label: "+ Contact", kind: "contact" },
@@ -421,6 +463,7 @@ function CrmList({ context }: PluginPageProps) {
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
       <Tabs
         tabs={[
+          { id: "today", label: "Today", icon: Sun, ...deskBadge(desk) },
           { id: "overview", label: "Overview", icon: LayoutDashboard, ...badges.overview },
           { id: "companies", label: "Companies", icon: Building2, ...badges.companies },
           { id: "contacts", label: "Contacts", icon: ContactIcon, ...badges.contacts },
@@ -435,6 +478,27 @@ function CrmList({ context }: PluginPageProps) {
         }}
       />
 
+      {tab === "today" ? (
+        snapshot ? (
+          <SalesDesk
+            view={desk}
+            busy={deskBusy}
+            onOutcome={(item) => setOutcomeTarget({ recordType: item.recordType, recordId: item.recordId, name: item.name, kind: item.kind, lifecycle: item.lifecycle })}
+            onSnooze={(item, inDays) => void snoozeItem(item, inDays)}
+            onDone={(item) => void clearItem(item)}
+            onGiven={onGiven}
+            onError={setMessage}
+          />
+        ) : <Muted>{message ? "The CRM could not load." : "Loading the CRM…"}</Muted>
+      ) : null}
+      <LogOutcomeModal
+        target={outcomeTarget}
+        timezone={desk?.timezone}
+        busy={deskBusy}
+        onClose={() => setOutcomeTarget(null)}
+        onSave={(out) => void deskRun(() => logOutcome(out as unknown as Record<string, unknown>), "Outcome logged")}
+      />
+
       {/* Only when something is wrong with the Account Manager (staffed in Setup → Team), and not already a step in the card below. */}
       {tab === "overview" && snapshot && !agentStepShown ? <AccountManagerBox hire={snapshot.hire} refresh={refresh} onMessage={setMessage} /> : null}
       {tab === "overview" ? <GetStarted status={setupStatus} moduleName="CRM" hasData={hasData} linkFor={(href) => navigation.linkProps(href) as unknown as Record<string, unknown>} /> : null}
@@ -447,6 +511,7 @@ function CrmList({ context }: PluginPageProps) {
             contacts={snapshot.contacts}
             onTab={(next) => { setTab(next); setSearch(""); }}
             needs={needs}
+            snapshot={<SalesSnapshot view={desk} onToday={() => { setTab("today"); setSearch(""); }} />}
             unlinked={(summary?.unlinkedContactIds ?? []).map((id) => ({
               id,
               label: contactNameOf(id) ?? "A contact",
@@ -527,6 +592,7 @@ function CrmList({ context }: PluginPageProps) {
                 columns={[
                   { key: "name", header: "Contact", render: (value, row) => <NameLink to={clientPath("contact", String(row.id))} name={String(value)} /> },
                   { key: "email", header: "Email", render: (value) => value ? <EmailText email={String(value)} /> : <span style={{ color: tokens.muted }}>—</span> },
+                  { key: "phone", header: "Phone", render: (value) => value ? String(value) : <span style={{ color: tokens.muted }}>—</span> },
                   { key: "roles", header: "Company", render: (value) => value ? String(value) : <span style={{ color: tokens.muted }}>No company</span> },
                   { key: "next", header: "Next action", render: (_value, row) => {
                     const contact = row as unknown as Contact;
@@ -542,13 +608,23 @@ function CrmList({ context }: PluginPageProps) {
                   {
                     key: "id",
                     header: "",
-                    width: "80px",
-                    render: (_value, row) => <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />,
+                    width: "300px",
+                    render: (_value, row) => {
+                      const contact = row as unknown as Contact;
+                      return (
+                        <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          <ReachButtons phone={contact.phones?.[0]} email={contact.emails[0]} emailOk={(contact.emailStatus ?? "ok") === "ok"} name={contact.name} />
+                          <Button type="button" variant="secondary" style={smallButton} onClick={() => setOutcomeTarget({ recordType: "contact", recordId: contact.id, name: contact.name, kind: contact.nextActionKind, lifecycle: contact.lifecycle })}>Log outcome</Button>
+                          <OpenLink to={clientPath("contact", String(row.id))} label={`Open ${String(row.name)}`} />
+                        </span>
+                      );
+                    },
                   },
                 ]}
                 rows={contacts.map((row) => ({
                   ...row,
                   email: row.emails[0] ?? "",
+                  phone: row.phones?.[0] ?? "",
                   roles: rolesFor(row.id),
                   next: "",
                 }))}
@@ -602,7 +678,7 @@ function CrmList({ context }: PluginPageProps) {
                       <PipelineCard
                         key={deal.id}
                         title={deal.title}
-                        subtitle={`${deal.amountMinor > 0 ? formatMoney(deal.amountMinor, deal.currency) : "No value yet"} · ${clientOf(deal) ?? "No client yet"}`}
+                        subtitle={`${deal.amountMinor > 0 ? formatMoney(deal.amountMinor, deal.currency) : "No value yet"} · ${clientOf(deal) ?? "No client yet"}${deal.nextActionKind ? ` · ${nextActionText(deal.nextActionKind, deal.nextActionDueAt)}` : " · No next step"}`}
                         onClick={() => setDetail({ kind: "deal", id: deal.id })}
                         footer={(
                           <Select
@@ -1186,6 +1262,9 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const [note, setNote] = useState("");
   const [enrollSequenceId, setEnrollSequenceId] = useState("");
   const [score, setScore] = useState<ScoreResult | null>(null);
+  const logOutcomeAction = usePluginAction("crm.log-outcome");
+  const [outcomeTarget, setOutcomeTarget] = useState<OutcomeTarget | null>(null);
+  const [outcomeBusy, setOutcomeBusy] = useState(false);
 
   async function refresh() {
     setData((await load({ kind: client.kind, id: client.id })) as WorkspaceData);
@@ -1366,6 +1445,15 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
         ownPath="/crm?tab=companies"
         actions={(
           <>
+            <ReachButtons
+              phone={contact ? contact.phones[0] : company?.phone}
+              email={contact ? contact.emails[0] : company?.billingEmail}
+              emailOk={contact ? (contact.emailStatus ?? "ok") === "ok" : true}
+              name={name}
+              size="md"
+            />
+            {contact ? <Button type="button" variant="secondary" onClick={() => setOutcomeTarget({ recordType: "contact", recordId: contact.id, name: contact.name, kind: contact.nextActionKind, lifecycle: contact.lifecycle })}>Log outcome</Button> : null}
+            <CrmGiveButton recordType={client.kind} recordId={client.id} onDone={(out) => { setMessage(out.warning ? `${out.message} ${out.warning}` : out.message); void refresh().catch(() => undefined); }} onError={setMessage} />
             <Button type="button" onClick={() => openModal("deal")}>+ Deal</Button>
             {company ? (
               <MoreMenu
@@ -1377,6 +1465,16 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
         )}
       />
       <PageMessage message={message || undefined} />
+      <LogOutcomeModal
+        target={outcomeTarget}
+        timezone={null}
+        busy={outcomeBusy}
+        onClose={() => setOutcomeTarget(null)}
+        onSave={(out) => {
+          setOutcomeBusy(true);
+          void run(() => logOutcomeAction(out as unknown as Record<string, unknown>), "Outcome logged").finally(() => { setOutcomeBusy(false); setOutcomeTarget(null); });
+        }}
+      />
 
       <WorkspaceKpis company={company} contact={contact} deals={deals} contacts={contacts} activities={data.activities ?? []} score={scoreShown} />
 

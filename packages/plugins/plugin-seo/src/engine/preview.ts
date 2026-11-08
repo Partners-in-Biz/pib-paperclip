@@ -4,6 +4,7 @@
  * scripts are removed so the preview is static, and agent-written body HTML is stripped of anything active.
  */
 
+import { SeoError } from "../service/common.js";
 import { PREVIEW_BASE, previewSlug } from "../service/preview-links.js";
 
 /** before = added above the page's existing content (default), after = added below it, replace = takes the place of ALL of it. */
@@ -18,6 +19,8 @@ export interface PreviewChanges {
   bodyMode?: BodyMode;
   /** Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). */
   css?: string;
+  /** Optional CSS-like selector (#id, .class, tag, tag.class, tag#id) naming the element that is the content area; overrides the automatic search. */
+  contentSelector?: string;
   /** One client-facing sentence on why the change helps (shown in the approval email; not part of the page). */
   why?: string;
 }
@@ -33,9 +36,49 @@ export interface PreviewStats {
 
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
 
+/** Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced). */
+function stripElements(html: string, openRe: RegExp): string {
+  const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
+  let out = "";
+  let pos = 0;
+  openRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(html))) {
+    if (m.index < pos) continue;
+    let end = m.index + m[0].length;
+    if (!VOID.test(m[1]) && !/\/>$/.test(m[0])) {
+      const tagRe = new RegExp("<(/?)" + m[1] + "\\b[^>]*>", "gi");
+      tagRe.lastIndex = end;
+      let depth = 1;
+      let t: RegExpExecArray | null;
+      end = html.length;
+      while ((t = tagRe.exec(html))) {
+        if (t[1]) depth--;
+        else if (!/\/>$/.test(t[0])) depth++;
+        if (depth === 0) { end = t.index + t[0].length; break; }
+      }
+    }
+    out += html.slice(pos, m.index) + " ";
+    pos = end;
+    openRe.lastIndex = end;
+  }
+  return out + html.slice(pos);
+}
+
+/** Remove Google Translate widget elements to avoid counting their text as page content. */
+function stripGoogleTranslateWidget(html: string): string {
+  // Main widget container
+  html = stripElements(html, /<(div)\b[^>]*\bid\s*=\s*["']?google_translate_element\b[^>]*>/gi);
+  // Elements with the skiptranslate class
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*skiptranslate[^"'>]*["']?[^>]*>/gi);
+  // Generated goog-te-* / VIpgJd UI
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*(?:goog-te|VIpgJd)[^"'>]*["']?[^>]*>/gi);
+  return html;
+}
+
 /** Visible words of a page: no scripts, styles, tags or the preview's own bar. */
 export function visibleWords(html: string): string[] {
-  const text = html
+  const text = stripGoogleTranslateWidget(html)
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
@@ -103,14 +146,14 @@ function elementEnd(html: string, open: number, tag: string): { innerStart: numb
   return null;
 }
 
-/** The content area: the entry-content / post-content block, else <main>, else <article>. */
 /** Top-level <article> elements in document order (a listing page has one per item). */
-function topLevelArticles(html: string): Array<{ start: number; end: number }> {
+function topLevelArticles(html: string, limit = html.length): Array<{ start: number; end: number }> {
   const out: Array<{ start: number; end: number }> = [];
   const re = /<article\b[^>]*>/gi;
   let from = 0;
   for (let m = re.exec(html); m; m = re.exec(html)) {
     if (m.index < from) continue;
+    if (m.index >= limit) break;
     const range = elementEnd(html, m.index, "article");
     if (!range) break;
     const close = html.indexOf(">", range.innerEnd);
@@ -122,31 +165,114 @@ function topLevelArticles(html: string): Array<{ start: number; end: number }> {
 }
 
 /**
- * Where the page's own content is: the entry-content / post-content block, else <main>, else the single <article>.
- * A listing page (category archive, shop) has many <article> items and no such block: the area is the run of items,
- * so copy added "before" lands above the whole listing and "after" below it, never inside the first item.
+ * Where the page's own content stops: the earliest of the first <footer> that is not inside an <article>, the second
+ * <html> or <body> open tag (a pasted document, such as a theme's partner widget after the footer), and the end of the
+ * document. Anything after it is theme, never page content.
  */
-function findContentArea(html: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {
+function contentBoundary(html: string): number {
+  let end = html.search(/<\/body\s*>(?![\s\S]*<\/body\s*>)/i);
+  if (end === -1) end = html.length;
+  const nth = (re: RegExp, n: number): number => {
+    let i = 0;
+    for (let m = re.exec(html); m; m = re.exec(html)) if (++i === n) return m.index;
+    return -1;
+  };
+  const second = [nth(/<html\b/gi, 2), nth(/<body\b/gi, 2)].filter((i) => i !== -1);
+  let boundary = Math.min(end, ...second);
+  const articles = topLevelArticles(html);
+  const re = /<footer\b/gi;
+  for (let m = re.exec(html); m && m.index < boundary; m = re.exec(html)) {
+    if (!articles.some((a) => m!.index > a.start && m!.index < a.end)) {
+      boundary = m.index;
+      break;
+    }
+  }
+  return boundary;
+}
+
+/**
+ * Where the page's own content is: the entry-content / post-content block, else <main>, else [role="main"], else the
+ * single <article>. A listing page (category archive, shop) has many <article> items and no such block: the area is the
+ * run of items, so copy added "before" lands above the whole listing and "after" below it, never inside the first item.
+ * Only what starts before the boundary counts; the area never runs past it.
+ */
+const SELECTOR_RE = /^([a-z][a-z0-9]*)?(?:([#.])(-?[_a-z][\w-]*))?$/i;
+
+/** Parses a supported contentSelector (#id, .class, tag, tag.class, tag#id); anything else is refused. */
+export function parseContentSelector(raw: string): { tag?: string; kind?: "id" | "class"; name?: string } {
+  const sel = raw.trim();
+  const m = SELECTOR_RE.exec(sel);
+  if (!sel || sel.length > 100 || !m || (!m[1] && !m[3])) {
+    throw new SeoError(`contentSelector "${raw.slice(0, 100)}" is not supported. Use #id, .class, tag, tag.class or tag#id (no spaces, combinators or attributes).`);
+  }
+  return { tag: m[1]?.toLowerCase(), kind: m[2] === "#" ? "id" : m[2] === "." ? "class" : undefined, name: m[3] };
+}
+
+function findBySelector(html: string, raw: string): { innerStart: number; innerEnd: number } {
+  const sel = parseContentSelector(raw);
+  const re = new RegExp(`<${sel.tag ?? "([a-z][a-z0-9]*)"}\\b[^>]*>`, "gi");
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    const open = m[0];
+    if (sel.kind) {
+      const attr = new RegExp(`\\b${sel.kind}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(open);
+      const val = attr?.[1] ?? attr?.[2];
+      if (val === undefined) continue;
+      if (sel.kind === "id" ? val.trim() !== sel.name : !val.split(/\s+/).includes(sel.name!)) continue;
+    }
+    const tag = (sel.tag ?? m[1]!).toLowerCase();
+    const range = elementEnd(html, m.index, tag);
+    if (range) return range;
+  }
+  throw new SeoError(`contentSelector "${raw.trim()}" matches no element on the live page. Check it against the page's HTML, or leave contentSelector out.`);
+}
+
+function findContentArea(html: string, boundary: number, selector?: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {
+  if (selector) return findBySelector(html, selector);
   const candidates: Array<{ re: RegExp; tag: string }> = [
-    { re: /<(div|section)\b[^>]*class\s*=\s*"[^"]*\b(entry-content|post-content|wp-block-post-content)\b[^"]*"[^>]*>/i, tag: "" },
-    { re: /<(main)\b[^>]*>/i, tag: "main" },
+    { re: /<(div|section)\b[^>]*class\s*=\s*"[^"]*\b(entry-content|post-content|wp-block-post-content)\b[^"]*"[^>]*>/gi, tag: "" },
+    { re: /<(main)\b[^>]*>/gi, tag: "main" },
+    { re: /<([a-z][a-z0-9]*)\b[^>]*\brole\s*=\s*["']main["'][^>]*>/gi, tag: "" },
   ];
   for (const c of candidates) {
     const m = c.re.exec(html);
-    if (!m) continue;
+    if (!m || m.index >= boundary) continue;
     const range = elementEnd(html, m.index, c.tag || m[1]!.toLowerCase());
-    if (range) return range;
+    if (range) return { innerStart: range.innerStart, innerEnd: Math.min(range.innerEnd, boundary) };
   }
-  const articles = topLevelArticles(html);
+  const articles = topLevelArticles(html, boundary);
   if (articles.length === 1) {
     const only = articles[0]!;
     const range = elementEnd(html, only.start, "article");
-    if (range) return range;
+    if (range) return { innerStart: range.innerStart, innerEnd: Math.min(range.innerEnd, boundary) };
   }
   // The run of items can hold theme blocks between them (a partners section, an ad): headings in it are the theme's, not the page's.
   if (articles.length > 1) return { innerStart: articles[0]!.start, innerEnd: articles[articles.length - 1]!.end, listing: true };
   return null;
 }
+
+/**
+ * No landmarks: the first <h1> before the boundary that is not inside a <header>, <nav> or <aside>, else the first
+ * such <h2>. Copy goes immediately before that heading ("before") or immediately before the boundary ("after").
+ */
+function findHeadingAnchor(html: string, boundary: number): { before: number; after: number } | null {
+  const chrome: Array<[number, number]> = [];
+  for (const tag of ["header", "nav", "aside"]) {
+    const re = new RegExp(`<${tag}\\b[^>]*>`, "gi");
+    for (let m = re.exec(html); m && m.index < boundary; m = re.exec(html)) {
+      const range = elementEnd(html, m.index, tag);
+      if (range) chrome.push([m.index, range.innerEnd]);
+    }
+  }
+  for (const level of ["h1", "h2"]) {
+    const re = new RegExp(`<${level}\\b[^>]*>`, "gi");
+    for (let m = re.exec(html); m && m.index < boundary; m = re.exec(html)) {
+      if (!chrome.some(([s, e]) => m!.index > s && m!.index < e)) return { before: m.index, after: boundary };
+    }
+  }
+  return null;
+}
+
+const NO_AREA = "Could not find the page's content area on the live page (no entry-content, <main>, role=main or single article, and no usable heading before the footer). Set contentSelector to say where the copy goes.";
 
 function setMeta(html: string, attr: "name" | "property", key: string, value: string): string {
   const tag = `<meta ${attr}="${key}" content="${escapeHtml(value)}">`;
@@ -186,7 +312,7 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
   // goes at the top of the content instead and the theme's stays as it is.
   let headingHtml = "";
   if (changes.h1) {
-    const area = findContentArea(html);
+    const area = findContentArea(html, contentBoundary(html), changes.contentSelector);
     let replaced = false;
     if (area && !area.listing) {
       const inner = html.slice(area.innerStart, area.innerEnd);
@@ -215,19 +341,21 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
   if (changes.bodyHtml || headingHtml) {
     const body = `${headingHtml}${changes.bodyHtml ? sanitizeBody(changes.bodyHtml) : ""}`;
     const mode: BodyMode = changes.bodyHtml ? changes.bodyMode ?? "before" : "before";
-    const area = findContentArea(html);
-    if (area) {
-      const at = mode === "replace" ? [area.innerStart, area.innerEnd] : mode === "after" ? [area.innerEnd, area.innerEnd] : [area.innerStart, area.innerStart];
-      html = `${html.slice(0, at[0])}${body}${html.slice(at[1])}`;
-      if (changes.bodyHtml) applied.push("bodyHtml");
-      if (headingHtml) applied.push("h1");
-      if (mode === "replace" && changes.bodyHtml) notes.push("The page's whole content area was replaced.");
-    } else if (/<\/h1\s*>/i.test(html)) {
-      html = html.replace(/<\/h1\s*>/i, (m) => `${m}${body}`);
-      if (changes.bodyHtml) applied.push("bodyHtml");
-      if (headingHtml) applied.push("h1");
-      notes.push("No content area was found on the live page, so the copy was placed after the heading.");
-    } else notes.push("Could not find where the copy goes on the live page; it was not shown.");
+    const boundary = contentBoundary(html);
+    const area = findContentArea(html, boundary, changes.contentSelector);
+    const anchor = area ? null : findHeadingAnchor(html, boundary);
+    if (!area && !anchor) throw new SeoError(NO_AREA);
+    if (!area && mode === "replace" && changes.bodyHtml) {
+      throw new SeoError("bodyMode replace needs a known content area, and this page has none (no entry-content, <main>, role=main or single article). Use before or after, or set contentSelector.");
+    }
+    const at = area
+      ? mode === "replace" ? [area.innerStart, area.innerEnd] : mode === "after" ? [area.innerEnd, area.innerEnd] : [area.innerStart, area.innerStart]
+      : mode === "after" ? [anchor!.after, anchor!.after] : [anchor!.before, anchor!.before];
+    html = `${html.slice(0, at[0])}${body}${html.slice(at[1])}`;
+    if (changes.bodyHtml) applied.push("bodyHtml");
+    if (headingHtml) applied.push("h1");
+    if (area && mode === "replace" && changes.bodyHtml) notes.push("The page's whole content area was replaced.");
+    if (!area) notes.push("No content area was found on the live page, so the copy was placed relative to the page's first heading.");
   }
 
   if (changes.css) {

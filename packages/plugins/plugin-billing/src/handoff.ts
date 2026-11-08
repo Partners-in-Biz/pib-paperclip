@@ -10,6 +10,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { HANDOFF_EVENTS, type InvoicePaid, type QuoteAccepted } from "@partnersinbiz/pib-plugin-kit";
 import { asObject, table, type InvoiceRow, type QuoteRow } from "./db.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 /** How many times a hand-off is sent in total, and for how long it is repeated. */
 export const HANDOFF_MAX_EMITS = 6;
@@ -58,7 +59,7 @@ export function invoicePaidPayload(invoice: Pick<InvoiceRow, "id" | "number" | "
   return {
     key: `billing:invoice:${invoice.id}:paid`,
     invoiceId: invoice.id,
-    number: invoice.number,
+    number: invoiceNumberLabel(invoice.number),
     dealId: invoice.deal_id ?? null,
     ...clientOf(invoice.customer_kind, invoice.customer_ref),
     totalMinor: Number(invoice.total_minor),

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Button, Field, Input, Modal, Select, Tabs, TextArea, fluidColumns, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import {
+  editableViaDraft,
   OVERRIDE_FIELDS,
   PLATFORM_LABELS,
   PLATFORM_LIMITS,
@@ -10,7 +11,8 @@ import {
   type SocialPlatform,
 } from "../platforms.js";
 import { ExperimentSelect } from "./growth.js";
-import { Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel, toLocalInput } from "./parts.js";
+import { MediaViewer } from "./media-viewer.js";
+import { Banner, Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel, toLocalInput } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
 type Overrides = Partial<Record<SocialPlatform, PlatformOverride>>;
@@ -74,33 +76,44 @@ function mediaDimensions(file: File): Promise<{ width: number; height: number; d
   });
 }
 
-export function Thumb({ asset, selected, order, onClick }: { asset: { url: string; kind: string; name?: string }; selected?: boolean; order?: number; onClick?: () => void }) {
+export function Thumb({ asset, selected, order, onClick, onView }: { asset: { url: string; kind: string; name?: string }; selected?: boolean; order?: number; onClick?: () => void; onView?: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={asset.name}
-      style={{
-        position: "relative",
-        width: 84,
-        height: 84,
-        flexShrink: 0,
-        padding: 0,
-        borderRadius: 10,
-        overflow: "hidden",
-        border: selected ? `2px solid ${tokens.primary}` : `1px solid ${tokens.border}`,
-        background: tokens.secondary,
-        cursor: onClick ? "pointer" : "default",
-      }}
-    >
-      {asset.kind === "video" ? (
-        <video src={asset.url} muted preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : (
-        <img src={asset.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      )}
-      {asset.kind === "video" ? <span style={{ position: "absolute", left: 4, bottom: 4, fontSize: 10, padding: "1px 5px", borderRadius: 6, background: "rgba(0,0,0,.6)", color: "#fff" }}>video</span> : null}
-      {selected && order ? <span style={{ position: "absolute", right: 4, top: 4, fontSize: 11, width: 18, height: 18, borderRadius: 999, background: tokens.primary, color: tokens.primaryFg, display: "grid", placeItems: "center" }}>{order}</span> : null}
-    </button>
+    <div style={{ position: "relative", width: 84, height: 84, flexShrink: 0 }}>
+      <button
+        type="button"
+        onClick={onClick}
+        title={asset.name}
+        aria-label={asset.name ?? (asset.kind === "video" ? "Video" : "Image")}
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          padding: 0,
+          borderRadius: 10,
+          overflow: "hidden",
+          border: selected ? `2px solid ${tokens.primary}` : `1px solid ${tokens.border}`,
+          background: tokens.secondary,
+          cursor: onClick ? "pointer" : "default",
+        }}
+      >
+        {asset.kind === "video" ? (
+          <video src={asset.url} muted preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <img src={asset.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        )}
+        {asset.kind === "video" ? <span style={{ position: "absolute", left: 4, bottom: 4, fontSize: 10, padding: "1px 5px", borderRadius: 6, background: "rgba(0,0,0,.6)", color: "#fff" }}>▶ video</span> : null}
+        {selected && order ? <span style={{ position: "absolute", right: 4, top: 4, fontSize: 11, width: 18, height: 18, borderRadius: 999, background: tokens.primary, color: tokens.primaryFg, display: "grid", placeItems: "center" }}>{order}</span> : null}
+      </button>
+      {onView ? (
+        <button
+          type="button"
+          onClick={onView}
+          aria-label={`View ${asset.name ?? "media"} larger`}
+          title="View larger"
+          style={{ position: "absolute", right: 4, bottom: 4, width: 24, height: 24, padding: 0, borderRadius: 6, border: "none", background: "rgba(0,0,0,.65)", color: "#fff", fontSize: 13, lineHeight: 1, cursor: "pointer" }}
+        >⤢</button>
+      ) : null}
+    </div>
   );
 }
 
@@ -122,7 +135,8 @@ export function Composer({ snapshot, post, run, onClose }: {
   const [quoteUrl, setQuoteUrl] = useState(post?.quote?.url ?? "");
   const [note, setNote] = useState(post?.note ?? "");
   // The proposed publish time: approval schedules the post for it.
-  const [when, setWhen] = useState(post?.scheduledAt ? toLocalInput(new Date(post.scheduledAt)) : "");
+  // A failed post's time has passed; going back to draft clears it, so it is not offered again here.
+  const [when, setWhen] = useState(post?.scheduledAt && post.status !== "failed" ? toLocalInput(new Date(post.scheduledAt)) : "");
   const [overrides, setOverrides] = useState<Overrides>(post?.overrides ?? {});
   const [overrideTab, setOverrideTab] = useState<string>("");
   const initialTag = post?.experimentId && post.experimentArm ? `${post.experimentId}|${post.experimentArm}` : "";
@@ -139,7 +153,17 @@ export function Composer({ snapshot, post, run, onClose }: {
   );
   const assets = snapshot.media;
   const [extraAssets, setExtraAssets] = useState<MediaAsset[]>([]);
-  const allAssets = useMemo(() => [...extraAssets.filter((e) => !assets.some((a) => a.id === e.id)), ...assets], [assets, extraAssets]);
+  const allAssets = useMemo(() => {
+    const listed = [...extraAssets.filter((e) => !assets.some((a) => a.id === e.id)), ...assets];
+    // The post's own media always shows, even when it has dropped off the library's list.
+    const own = (post?.media ?? [])
+      .filter((m) => m.assetId && !listed.some((a) => a.id === m.assetId))
+      .map((m) => ({ id: m.assetId as string, url: m.url, kind: m.kind, name: m.altText ?? "Post media" }));
+    return [...own, ...listed];
+  }, [assets, extraAssets, post?.media]);
+  const [viewing, setViewing] = useState<number | null>(null);
+  // Approved, scheduled and failed posts go back to draft on save, never on opening or cancelling.
+  const backToDraft = post ? editableViaDraft(post.status) : false;
   const selectedPlatforms = useMemo(() => {
     const set = new Set<SocialPlatform>();
     for (const account of snapshot.accounts) if (accountIds.has(account.id)) set.add(account.platform);
@@ -201,6 +225,7 @@ export function Composer({ snapshot, post, run, onClose }: {
         ...(when ? { scheduledAt: new Date(when).toISOString() } : post ? { scheduledAt: "" } : {}),
         ...tagParams,
       };
+      if (post && backToDraft) await run("social.back-to-draft", { postId: post.id });
       const saved = (post
         ? await run("social.update-post", { postId: post.id, ...params }, sendToReview ? undefined : "Post saved")
         : await run("social.create-post", { ...params, ...scopeParams(snapshot) }, sendToReview ? undefined : "Draft saved")) as Post;
@@ -221,6 +246,7 @@ export function Composer({ snapshot, post, run, onClose }: {
   const effectiveText = (platform: SocialPlatform) => overrides[platform]?.text?.trim() || body;
 
   return (
+    <>
     <Modal
       open
       title={post ? "Edit post" : "New post"}
@@ -239,6 +265,11 @@ export function Composer({ snapshot, post, run, onClose }: {
       )}
     >
       {error ? <div role="alert" style={{ fontSize: 12, color: tone("bad").fg }}>{error}</div> : null}
+      {post && backToDraft ? (
+        <Banner tone="warn" title="Saving moves this post back to draft">
+          It is {post.status} now. Once saved it needs approving again before it can publish. Cancel leaves it as it is.
+        </Banner>
+      ) : null}
       <Muted>For <strong>{scopeName(snapshot)}</strong>. Only this {snapshot.client ? "client's" : "workspace's own"} accounts and media can be used.</Muted>
       <Field label={`Post (${Array.from(body).length} characters)`}>
         <TextArea value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="What do you want to say?" />
@@ -279,7 +310,7 @@ export function Composer({ snapshot, post, run, onClose }: {
         {allAssets.length === 0 ? <Muted>No media yet. Upload images or an MP4.</Muted> : (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", maxHeight: 200, overflow: "auto" }}>
             {allAssets.map((asset) => (
-              <Thumb key={asset.id} asset={asset} selected={mediaIds.includes(asset.id)} order={mediaIds.indexOf(asset.id) + 1} onClick={() => toggleMedia(asset.id)} />
+              <Thumb key={asset.id} asset={asset} selected={mediaIds.includes(asset.id)} order={mediaIds.indexOf(asset.id) + 1} onClick={() => toggleMedia(asset.id)} onView={() => setViewing(allAssets.indexOf(asset))} />
             ))}
           </div>
         )}
@@ -351,5 +382,7 @@ export function Composer({ snapshot, post, run, onClose }: {
         </div>
       ) : null}
     </Modal>
+    {viewing !== null ? <MediaViewer items={allAssets} start={viewing} onClose={() => setViewing(null)} /> : null}
+    </>
   );
 }

@@ -51,8 +51,28 @@ export interface ContentTemplate {
 
 export type ApprovalStatus = "approved" | "pending" | "rejected" | "unsubmitted" | "unknown";
 
+export interface CreateCallInput {
+  /** `client:<identity>` to ring a browser, or an E.164 number. */
+  to: string;
+  /** The caller ID shown to `to`: a Twilio number on the account, E.164. */
+  from: string;
+  /** Inline TwiML Twilio runs when `to` answers (max 4,000 characters). */
+  twiml: string;
+  statusCallback?: string;
+  /** Subset of initiated, ringing, answered, completed. */
+  statusCallbackEvents?: string[];
+  /** Seconds to ring `to` before giving up (5-600). */
+  timeoutSeconds?: number;
+}
+
+export interface CreatedCall {
+  sid: string;
+  status: string;
+}
+
 export interface TwilioClient {
   sendMessage(i: SendMessageInput): Promise<TwilioResult<SentMessage>>;
+  createCall(i: CreateCallInput): Promise<TwilioResult<CreatedCall>>;
   listContentTemplates(): Promise<TwilioResult<ContentTemplate[]>>;
   getApprovalStatus(contentSid: string): Promise<TwilioResult<ApprovalStatus>>;
 }
@@ -60,14 +80,16 @@ export interface TwilioClient {
 const DEFAULT_TIMEOUT_MS = 15000;
 const ACCOUNT_SID_PATTERN = /^AC[0-9a-fA-F]{32}$/;
 
-function encodeFormData(data: Record<string, string | null | undefined>): string {
-  return Object.entries(data)
-    .filter(([, v]) => v != null)
-    .map(([k, v]) => {
-      const encoded = encodeURIComponent(v as string).replace(/%20/g, "+");
-      return `${encodeURIComponent(k)}=${encoded}`;
-    })
-    .join("&");
+function encodeFormData(data: Record<string, string | string[] | null | undefined>): string {
+  const pairs: string[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (v == null) continue;
+    for (const item of Array.isArray(v) ? v : [v]) {
+      const encoded = encodeURIComponent(item).replace(/%20/g, "+");
+      pairs.push(`${encodeURIComponent(k)}=${encoded}`);
+    }
+  }
+  return pairs.join("&");
 }
 
 function toBase64(str: string): string {
@@ -258,6 +280,60 @@ export function createTwilioClient(opts: TwilioClientOptions): TwilioClient {
           error: message,
         },
       };
+    }
+  }
+
+  async function createCall(input: CreateCallInput): Promise<TwilioResult<CreatedCall>> {
+    try {
+      const formData: Record<string, string | string[] | null | undefined> = {
+        To: input.to,
+        From: input.from,
+        Twiml: input.twiml,
+        StatusCallback: input.statusCallback || null,
+        StatusCallbackEvent: input.statusCallback ? (input.statusCallbackEvents ?? ["initiated", "ringing", "answered", "completed"]) : null,
+        StatusCallbackMethod: input.statusCallback ? "POST" : null,
+        Timeout: input.timeoutSeconds ? String(Math.min(600, Math.max(5, Math.trunc(input.timeoutSeconds)))) : null,
+      };
+
+      const response = await withTimeout(
+        fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`, {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${basicAuth}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: encodeFormData(formData),
+        }),
+        timeoutMs
+      );
+
+      const text = await response.text();
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { message: text };
+      }
+
+      if (response.ok) {
+        const d = obj(data);
+        if (typeof d.sid === "string" && typeof d.status === "string") {
+          return { ok: true, value: { sid: d.sid, status: d.status } };
+        }
+        return {
+          ok: false,
+          failure: { kind: "unknown", status: response.status, code: null, error: "Response missing sid or status" },
+        };
+      }
+
+      const retryAfter = response.headers?.get?.("retry-after");
+      return { ok: false, failure: classifyTwilioFailure(response.status, data, retryAfter) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      if (message === "Timeout") {
+        return { ok: false, failure: { kind: "timeout", status: null, code: null, error: "Request timeout" } };
+      }
+      return { ok: false, failure: { kind: "unknown", status: null, code: null, error: message } };
     }
   }
 
@@ -457,6 +533,7 @@ export function createTwilioClient(opts: TwilioClientOptions): TwilioClient {
 
   return {
     sendMessage,
+    createCall,
     listContentTemplates,
     getApprovalStatus,
   };

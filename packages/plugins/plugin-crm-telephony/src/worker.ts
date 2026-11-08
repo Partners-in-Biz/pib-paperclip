@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
-import { readSettings, secretStatus } from "./settings.js";
+import { readSettings, secretStatus, withSeededNumbers } from "./settings.js";
 import { registerSettingsActions } from "./settings-actions.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
 import { TELEPHONY_TOOLS } from "./tools.js";
@@ -10,12 +10,17 @@ import { PLUGIN_ID, NAMESPACE } from "./namespace.js";
 import { runMediaPipeline } from "./pipeline.js";
 import { createMediaSteps } from "./media-steps.js";
 import { voiceTokenAction } from "./voice-token-action.js";
+import { voiceDialAction, voiceCallLookupAction } from "./voice-dial.js";
+import { handleCallStatus } from "./call-status.js";
+import { handleVoiceTwiml } from "./voice-twiml.js";
+import { resolveTelephonySecret } from "./secrets.js";
 import { makeTranscribeStep } from "./transcribe.js";
 import { makeSummariseStep } from "./summarise.js";
 import { makeNoteStep, registerNoteAck, sweepUnackedNotes } from "./note.js";
 import { registerTimelineHandlers } from "./timeline-handlers.js";
 import { syncTemplates, listPickerTemplates } from "./templates.js";
 import { normalizeE164 } from "./phone.js";
+import { pickCallerNumber } from "./caller-id.js";
 import { runRetention, retentionEnabledCompanyIds } from "./retention.js";
 
 let ctx: PluginContext | null = null;
@@ -46,13 +51,9 @@ async function buildTwilioClientForSecrets(
 ) {
   const secrets: Record<string, string> = {};
   for (const secretName of requiredSecrets) {
-    try {
-      const value = await pluginCtx.secrets.resolve(secretName, { companyId });
-      if (!value) return null;
-      secrets[secretName] = value;
-    } catch {
-      return null;
-    }
+    const value = await resolveTelephonySecret(pluginCtx, companyId, secretName);
+    if (!value) return null;
+    secrets[secretName] = value;
   }
 
   const { createTwilioClient } = await import("./twilio-client.js");
@@ -120,11 +121,15 @@ export const toolHandlers: Record<
     const e164 = normalizeE164(p.toE164);
     if (!e164) return { error: `Invalid phone number: ${p.toE164}` };
 
-    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM"];
+    const requiredSecrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"];
     const result = await buildTwilioClientForSecrets(pluginCtx, run.companyId, requiredSecrets);
     if (!result) return { error: `Missing required secrets: ${requiredSecrets.join(", ")}` };
 
-    const settings = await readSettings(pluginCtx, run.companyId);
+    const settings = await withSeededNumbers(pluginCtx, run.companyId, await readSettings(pluginCtx, run.companyId));
+    // The WhatsApp sender: a number with purpose WhatsApp from the list (region, else default), else the old setting.
+    const sender = pickCallerNumber(e164, settings.numbers, "whatsapp");
+    const fromWhatsapp = sender.ok ? sender.callerId : settings.whatsappFrom;
+    if (!fromWhatsapp) return { error: sender.ok ? "No WhatsApp sender" : sender.message };
     const { sendWhatsapp } = await import("./whatsapp-send.js");
     const variablesRecord = p.variables
       ? Object.fromEntries(p.variables.map((v, i) => [`${i}`, v]))
@@ -136,7 +141,7 @@ export const toolHandlers: Record<
         namespace: NAMESPACE,
         client: result.client,
         settings,
-        fromWhatsapp: result.secrets.TWILIO_WHATSAPP_FROM,
+        fromWhatsapp,
         statusCallbackUrl: undefined,
         now: () => new Date(),
       },
@@ -218,6 +223,14 @@ const plugin = definePlugin({
       return voiceTokenAction(pluginCtx, context);
     });
 
+    // The Dialer: place a call (Twilio rings the browser, then dials the contact) and watch it.
+    pluginCtx.actions.register("voice-dial", async (params, context: PluginPerformActionContext) => {
+      return voiceDialAction(pluginCtx, params, context);
+    });
+    pluginCtx.actions.register("voice-call", async (params, context: PluginPerformActionContext) => {
+      return voiceCallLookupAction(pluginCtx, params, context);
+    });
+
     await registerTimelineHandlers(pluginCtx);
   },
 
@@ -241,7 +254,18 @@ const plugin = definePlugin({
       return;
     }
 
-    // Other endpoints: acknowledge and return
+    if (endpointKey === "call-status") {
+      await handleCallStatus(pluginCtx, pluginCtx.db, NAMESPACE, input, PLUGIN_ID);
+      return;
+    }
+
+    if (endpointKey === "voice-twiml") {
+      // The host answers with JSON, never TwiML: verify, log, and point at the REST path (voice-twiml.ts).
+      await handleVoiceTwiml(pluginCtx, input, PLUGIN_ID);
+      return;
+    }
+
+    // Other endpoints (sms-inbound): acknowledge and return
   },
 
   async onHealth() {

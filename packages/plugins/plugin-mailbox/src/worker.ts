@@ -27,6 +27,7 @@ import {
   registerDoneChecks,
   registerEraseReceiver,
   registerModuleWatch,
+  registerClientProjectWatch,
   registerRoleWatch,
   settleOutbox,
   syncAllCompanies,
@@ -48,6 +49,9 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig, type LoadedConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
+import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
+import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { prepareHandoff, recordHandoff, type HandoffDeps, type HandoffScope } from "./handoff.js";
 import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
 import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
 import { sendingDomain } from "./dns.js";
@@ -85,6 +89,9 @@ import { toMailAddress } from "./gmail/headers.js";
 import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
 import { handleDraftRequested } from "./gmail/draft.js";
+import { deleteMail, replyMode, startReply } from "./mail-actions.js";
+import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
+import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
@@ -95,6 +102,7 @@ import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
+import { taskLinks, threadContext, type MailLinksDeps } from "./mail-links.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let env: Env | null = null;
@@ -108,6 +116,8 @@ const plugin = definePlugin({
     registerCrmProjection(ctx, ctx.db.namespace);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // The CRM's client-to-project links: a reply issue opens in the client's own project.
+    registerClientProjectWatch(ctx);
     // An agent's close of a "Reply needed" issue is checked: reopened while the thread still has no reply.
     registerDoneChecks(ctx, mailboxDoneChecks(store));
     // New companies get their skills here (the kit's one company.created wiring, plus a catch-up on a rare core event).
@@ -236,8 +246,39 @@ const plugin = definePlugin({
     user("mailbox.retry-send", (companyId, _userId, params) => retrySend(requireEnv(), companyId, requiredString(params, "key")));
     user("mailbox.correct-triage", (companyId, userId, params) => correctTriageFor(companyId, requiredString(params, "messageId"), params, userId, null));
     user("mailbox.triage-stats", (companyId, _userId, params) => triageStats(ctx, companyId, params));
+    // A person works on a draft: change it, ask its agent for a new version, or delete it (with the reason the agent learns from).
+    user("mailbox.update-draft", (companyId, userId, params) => editDraft(requireEnv(), companyId, params, { kind: "user", id: userId }));
+    user("mailbox.delete-draft", (companyId, _userId, params) => deleteDraftWithReason(requireEnv(), companyId, params));
+    user("mailbox.request-rewrite", (companyId, userId, params) => requestRewrite(requireEnv(), companyId, params, userId));
+    user("mailbox.contact-search", async (companyId, _userId, params) => ({ contacts: await contactSearch(companyId, optionalString(params, "q") ?? "") }));
+    user("mailbox.gmail-signature", async (companyId, _userId, params) => {
+      const account = await requireStore().getAccount(companyId, requiredString(params, "accountId"));
+      if (!account) throw new MailboxError("Mailbox not found");
+      return mailboxSignature(requireEnv(), companyId, account);
+    });
     user("mailbox.send-draft", (companyId, _userId, params) => sendDraft(companyId, null, requiredString(params, "messageId")));
+    user("mailbox.delete-mail", (companyId, _userId, params) =>
+      deleteMail(requireEnv(), companyId, Array.isArray(params.messageIds) ? params.messageIds.map(String) : [requiredString(params, "messageId")]),
+    );
+    user("mailbox.start-reply", (companyId, userId, params) =>
+      startReply(requireEnv(), companyId, userId, requiredString(params, "messageId"), replyMode(params.mode), {
+        isPrivate: (row) => isPrivateMessage(companyId, row),
+        insertDraft: (row) => requireStore().insertDraft(row as Parameters<ReturnType<typeof requireStore>["insertDraft"]>[0]),
+      }),
+    );
     user("mailbox.get-message", (companyId, _userId, params) => getMessage(companyId, requiredString(params, "messageId"), params, null));
+    // Give to agent (PAR-8137): the New Task popup's prefill, then the link and the client re-check once the task exists.
+    user("mailbox.handoff-prepare", (companyId, _userId, params) =>
+      prepareHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), link: optionalString(params, "link") ?? null }),
+    );
+    // The thread around a mail or draft and the tasks linked to it (detail view), and one line per mail (the lists).
+    user("mailbox.thread-context", (companyId, _userId, params) => threadContext(mailLinksDeps(ctx, companyId), requiredString(params, "messageId")));
+    user("mailbox.task-links", async (companyId, _userId, params) => ({
+      links: await taskLinks(mailLinksDeps(ctx, companyId), Array.isArray(params.messageIds) ? params.messageIds.filter((id): id is string => typeof id === "string") : []),
+    }));
+    user("mailbox.handoff-record", (companyId, _userId, params) =>
+      recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
+    );
 
     ctx.jobs.register(SYNC_JOB_KEY, async () => {
       await trackJob(ctx, SYNC_JOB_KEY, async () => {
@@ -356,7 +397,13 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
   try {
     const body = objectParams(params);
     if (name === "create-draft") {
-      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null) };
+      return { content: "Draft created", data: await createDraft(run.companyId, run.agentId, body, true, run.agentId ? { kind: "agent", id: run.agentId } : null, await runIssueId(ctx, run)) };
+    }
+    if (name === "update-draft") {
+      if (!run.agentId) throw new MailboxError("Only an agent can use this tool");
+      const agentId = run.agentId;
+      const result = await editDraft(requireEnv(), run.companyId, body, { kind: "agent", id: agentId }, async (accountId) => assertMayDraft(await delegationFor(accountId, agentId)));
+      return { content: "Draft updated", data: result };
     }
     if (name === "send-draft") {
       const result = await sendDraft(run.companyId, run.agentId, requiredString(body, "messageId"));
@@ -399,7 +446,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       return { content: "Triage corrected", data };
     }
     if (name === "check-sender-domain") {
-      const data = await checkSenderDomain(run.companyId, body);
+      // An agent looking a domain up (a vendor's, a lead's) must not add it to the company's sender domains: only an explicit watch, or a domain given for a client, is kept.
+      const data = await checkSenderDomain(run.companyId, { ...body, watch: body.watch === true || (body.watch !== false && Boolean(body.clientRef)) });
       return { content: `${data.domain}: ${data.status}${data.sendReady ? ", ready to send" : ""}`, data };
     }
     if (name === "sender-domain-health") {
@@ -594,6 +642,9 @@ export function draftView(row: RecentMessageRow) {
     drafted_by: draft.by && typeof draft.by.id === "string" ? draft.by : null,
     is_reply: Boolean(draft.replyToMessageId),
     has_html: Boolean(draft.html),
+    use_signature: draft.useSignature === true,
+    files: draft.fileList ?? [],
+    rewrite_requested: draft.rewrite ? { note: draft.rewrite.note, requested_at: draft.rewrite.requestedAt } : null,
   };
 }
 
@@ -1030,7 +1081,7 @@ function drafter(context: PluginPerformActionContext): DraftExtras["by"] {
   return null;
 }
 
-async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean, by: DraftExtras["by"] = null) {
+async function createDraft(companyId: string, agentId: string | null, params: Record<string, unknown>, enforceDelegation: boolean, by: DraftExtras["by"] = null, sourceIssueId: string | null = null) {
   const accountId = requiredString(params, "accountId");
   if (enforceDelegation) {
     if (!agentId) throw new MailboxError("This agent is not allowed to draft on that mailbox");
@@ -1046,6 +1097,9 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
     threadId = original?.gmail_thread_id ?? null;
+    // A repeat create-draft for the same message (a retry seconds later) gets the first draft back, not a second copy (PAR-8030).
+    const open = reusableReplyDraft(await requireStore().replyDrafts(companyId, accountId, replyToMessageId));
+    if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
   }
   const id = randomUUID();
   await requireStore().insertDraft({
@@ -1057,7 +1111,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
+    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, sourceIssueId, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
   });
   return { id, status: "draft", to: to.map((a) => a.email) };
 }
@@ -1068,6 +1122,12 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  const replyToMessageId = row.draft?.replyToMessageId ?? null;
+  if (replyToMessageId) {
+    // A reply to this message went out after this draft was saved: this is a leftover copy, sending it would answer twice (PAR-8030).
+    const sent = newerSentReply(await s.replyDrafts(companyId, row.account_id, replyToMessageId), row);
+    if (sent) throw new MailboxError(`Not sent: this message was already answered by sent reply ${sent.id}. Delete this draft, or write a new reply if a second answer is really needed.`);
+  }
   const account = await s.getAccount(companyId, row.account_id);
   const gmailReady = Boolean(account?.token_sealed) && (account?.status === "connected" || account?.status === "needs_reconnect");
   // A send-only account of the email provider sends through the provider, under the same delegation and the same rules.
@@ -1098,10 +1158,22 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     ...(row.draft?.replyTo ? { replyTo: row.draft.replyTo } : {}),
   };
   if (!request.text && !request.html) throw new MailboxError("This draft has no body");
+  const extraAttachments = draftAttachments(row.draft);
+  if (extraAttachments.length && !gmailReady) throw new MailboxError("Files can only be sent through Gmail. Remove them, or connect Gmail for this mailbox.");
+  if (row.draft?.useSignature) {
+    if (!gmailReady) throw new MailboxError("The Gmail signature needs a connected Gmail mailbox. Untick it, or connect Gmail first.");
+    let signature;
+    try {
+      signature = await mailboxSignature(requireEnv(), companyId, account!);
+    } catch (error) {
+      throw new MailboxError(`Not sent: the Gmail signature could not be read (${errorMessage(error)}). Untick it to send without.`);
+    }
+    Object.assign(request, withSignature({ text: request.text ?? null, html: request.html ?? null }, signature));
+  }
   await s.setDraftStatus(companyId, row.id, "queued", null);
   let result;
   try {
-    result = await performSend(requireEnv(), companyId, request, { sourcePlugin: PLUGIN_ID, force: true, draftRowId: row.id });
+    result = await performSend(requireEnv(), companyId, request, { sourcePlugin: PLUGIN_ID, force: true, draftRowId: row.id, ...(extraAttachments.length ? { extraAttachments } : {}) });
   } catch (error) {
     await s.setDraftStatus(companyId, row.id, "draft", errorMessage(error));
     throw new MailboxError(`Not sent yet: ${errorMessage(error)}`);
@@ -1110,7 +1182,24 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     await s.setDraftStatus(companyId, row.id, "draft", result.error ?? "Send failed");
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
-  return { id: row.id, status: "sent" as const, gmailMessageId: result.messageId, threadId: result.threadId, sentAt: result.sentAt };
+  // The other open drafts answering the same message are now leftovers: remove them so no one sends them (PAR-8030).
+  let removedDrafts: string[] = [];
+  if (replyToMessageId) {
+    try {
+      removedDrafts = await removeSupersededDrafts(s, companyId, row.account_id, replyToMessageId, row.id);
+    } catch (error) {
+      // The mail is out; a failed clean-up must not report the send as failed. send-draft still refuses those copies.
+      requireEnv().ctx.logger.warn("mailbox: superseded reply drafts not removed", { draftId: row.id, error: errorMessage(error) });
+    }
+  }
+  return { id: row.id, status: "sent" as const, gmailMessageId: result.messageId, threadId: result.threadId, sentAt: result.sentAt, ...(removedDrafts.length ? { removedDrafts } : {}) };
+}
+
+/** CRM contacts for the recipient picker: two letters or more, a handful of hits. */
+async function contactSearch(companyId: string, q: string) {
+  const text = q.trim();
+  if (text.length < 2) return [];
+  return requireStore().searchContacts(companyId, text.slice(0, 80), 8);
 }
 
 async function findMessage(companyId: string, id: string): Promise<MessageRow | null> {
@@ -1200,6 +1289,82 @@ async function getMessage(companyId: string, messageId: string, params: Record<s
   const maxChars = params.maxChars == null ? 8000 : integer(params.maxChars, "maxChars");
   const body = await readMessageBody(e, await loadMailboxConfig(e.ctx, companyId), account, row.gmail_message_id, maxChars);
   return { ...base, ...body, triage: messageView(row) };
+}
+
+function handoffScope(value: unknown): HandoffScope {
+  return value === "thread" ? "thread" : "message";
+}
+
+/** What the thread and task links read, for one company. A task that can't be read is left out, it never fails the page. */
+function mailLinksDeps(ctx: PluginContext, companyId: string): MailLinksDeps {
+  const s = requireStore();
+  return {
+    findMessage: (id) => findMessage(companyId, id),
+    threadMessages: (threadId) => s.replyThread(companyId, threadId),
+    isPrivate: (row) => isPrivateMessage(companyId, row),
+    threadIssueId: (accountId, threadId) => s.threadIssueId(accountId, threadId),
+    handoffIssueIds: async (messageId) => {
+      const links = (await ctx.state.get({ scopeKind: "company", scopeId: companyId, namespace: "handoff", stateKey: `mail:${messageId}` }).catch(() => null)) as Array<{ issueId: string }> | null;
+      return (links ?? []).map((link) => link.issueId);
+    },
+    subtree: async (issueId, withNames) => {
+      try {
+        return await ctx.issues.getSubtree(issueId, companyId, { includeRoot: true, includeAssignees: withNames });
+      } catch {
+        const issue = await ctx.issues.get(issueId, companyId).catch(() => null);
+        return issue ? { issues: [issue] } : null;
+      }
+    },
+    linkRows: (ids) => s.messageLinkRows(companyId, ids),
+    threadIssueRows: (threadIds) => s.threadIssueRows(companyId, threadIds),
+  };
+}
+
+/** The task this agent's run is on, so a draft can point back at it. Never throws: a draft matters more than its link. */
+async function runIssueId(ctx: PluginContext, run: { companyId: string; agentId: string | null; runId?: string | null }): Promise<string | null> {
+  if (!run.agentId || !run.runId) return null;
+  try {
+    // A live run sets executionRunId on its task, which can still say "todo" (seen on the live server, 2026-11-07).
+    for (const status of ["in_progress", "todo", "in_review"] as const) {
+      const issues = await ctx.issues.list({ companyId: run.companyId, assigneeAgentId: run.agentId, status, limit: 50 });
+      const found = issues.find((issue) => issue.executionRunId === run.runId || issue.checkoutRunId === run.runId);
+      if (found) return found.id;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** What the hand-off needs from the store, Gmail, the CRM links and the host, for one company. */
+function handoffDeps(ctx: PluginContext, companyId: string): HandoffDeps {
+  const s = requireStore();
+  return {
+    findMessage: (id) => findMessage(companyId, id),
+    threadMessages: (threadId) => s.replyThread(companyId, threadId),
+    isPrivate: (row) => isPrivateMessage(companyId, row),
+    bodyOf: async (row, maxChars) => {
+      const account = await s.getAccount(companyId, row.account_id);
+      if (!row.gmail_message_id || !account?.token_sealed) return row.body ?? row.snippet ?? "";
+      const e = requireEnv();
+      const out = await readMessageBody(e, await loadMailboxConfig(e.ctx, companyId), account, row.gmail_message_id, maxChars);
+      return out.text ?? "";
+    },
+    projectFor: async (client) => (await resolveClientProjectId(ctx, companyId, client as ClientScope)).projectId,
+    clientProjects: (client) => clientProjectIds(ctx, companyId, client as ClientScope),
+    getIssue: async (id) => (await ctx.issues.get(id, companyId)) ?? null,
+    cancelIssue: async (id, description) => {
+      await ctx.issues.update(id, { description, status: "cancelled" }, companyId);
+    },
+    getAgent: async (id) => ((await ctx.agents.get(id, companyId).catch(() => null)) as { name: string; status: string; adapterType: string } | null) ?? null,
+    mayRead: async (accountId, agentId) => Boolean((await delegationFor(accountId, agentId))?.canRead),
+    saveLink: async (row, scope, issueId) => {
+      const key = { scopeKind: "company" as const, scopeId: companyId, namespace: "handoff", stateKey: `mail:${row.id}` };
+      const prior = ((await ctx.state.get(key).catch(() => null)) as Array<{ issueId: string }> | null) ?? [];
+      if (prior.some((p) => p.issueId === issueId)) return;
+      await ctx.state.set(key, [...prior, { issueId, scope, threadId: row.gmail_thread_id, at: new Date().toISOString() }].slice(-20));
+    },
+  };
 }
 
 /** True when the stored message is the sent copy of a client message (the send record, not the copy, is what says so when the sync stored it first). */

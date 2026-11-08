@@ -125,6 +125,7 @@ export interface InboxItem extends Scoped {
   body: string;
   status: string;
   permalink: string | null;
+  externalId: string | null;
   postId: string | null;
   replyDraft: string | null;
   replyBody: string | null;

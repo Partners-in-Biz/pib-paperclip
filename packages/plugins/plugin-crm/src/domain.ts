@@ -34,8 +34,11 @@ export type SequenceDelivery = (typeof SEQUENCE_DELIVERIES)[number];
 export const EMAIL_STATUSES = ["ok", "bounced", "unsubscribed"] as const;
 export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
-/** Timeline entries people and agents log. System entries (lead_captured, email_sent, deal_won…) are written by the CRM itself. */
-export const ACTIVITY_KINDS = ["note", "call", "meeting", "email", "message", "task"] as const;
+/**
+ * Timeline entries people and agents log. System entries (lead_captured, email_sent, deal_won…) are written by the CRM itself.
+ * `brief` (0.37.0) is an agent's talking points for the next call or email: the sales desk shows the newest one on the record.
+ */
+export const ACTIVITY_KINDS = ["note", "call", "meeting", "email", "message", "task", "brief"] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 export function assertActivityKind(value: unknown): ActivityKind {

@@ -170,77 +170,58 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
-async function expectPersistedBranchMismatchRejected(input: {
+async function expectPersistedBranchMismatchRepaired(input: {
   repoRoot: string;
   worktreePath: string;
   expectedBranch: string;
   actualBranch: string;
   issueId: string;
   executionWorkspaceId: string;
-  expectedAncestryVerdict: "diverged" | "unknown";
-  expectedReason?: string;
+  expectedAncestryVerdict?: string;
 }) {
-  let error: unknown = null;
-  try {
-    await ensurePersistedExecutionWorkspaceAvailable({
-      base: {
-        baseCwd: input.repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      workspace: {
-        id: input.executionWorkspaceId,
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        cwd: input.worktreePath,
-        providerRef: input.worktreePath,
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        repoUrl: null,
-        baseRef: "HEAD",
-        branchName: input.expectedBranch,
-        metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
-      },
-      issue: {
-        id: input.issueId,
-        identifier: "PAP-459",
-        title: "Reject unsafe forward branch reconciliation",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
-      },
-      enableWorkspaceBranchReconcileForward: true,
-    });
-  } catch (err) {
-    error = err;
-  }
-
-  expect(error).toMatchObject({
-    code: "workspace_validation_failed",
-    resultJson: {
-      workspaceValidation: expect.objectContaining({
-        reason: "git_worktree_branch_incoherence",
-        sourceIssueId: input.issueId,
-        executionWorkspaceId: input.executionWorkspaceId,
-        expectedBranch: input.expectedBranch,
-        actualBranch: input.actualBranch,
-        provenance: expect.objectContaining({
-          ancestryVerdict: input.expectedAncestryVerdict,
-        }),
-        safeRepair: expect.objectContaining({
-          eligible: false,
-          attempted: false,
-          succeeded: false,
-          ...(input.expectedReason ? { reason: input.expectedReason } : {}),
-        }),
-      }),
+  const actualHeadBefore = await readGit(input.repoRoot, ["rev-parse", input.actualBranch]);
+  const realized = await ensurePersistedExecutionWorkspaceAvailable({
+    base: {
+      baseCwd: input.repoRoot,
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: "HEAD",
     },
+    workspace: {
+      id: input.executionWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      cwd: input.worktreePath,
+      providerRef: input.worktreePath,
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+      repoUrl: null,
+      baseRef: "HEAD",
+      branchName: input.expectedBranch,
+      metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+    },
+    issue: {
+      id: input.issueId,
+      identifier: "PAP-459",
+      title: "Repair a worktree left on another branch",
+    },
+    agent: {
+      id: "agent-1",
+      name: "Codex Coder",
+      companyId: "company-1",
+    },
+    enableWorkspaceBranchReconcileForward: true,
   });
+
+  expect(realized?.branchName).toBe(input.expectedBranch);
+  expect(await readGit(input.worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(input.expectedBranch);
+  // The other branch is left exactly where it was.
+  expect(await readGit(input.repoRoot, ["rev-parse", input.actualBranch])).toBe(actualHeadBefore);
+  expect(realized?.warnings).toEqual(expect.arrayContaining([
+    expect.stringContaining(`checking out recorded branch "${input.expectedBranch}"`),
+  ]));
 }
 
 async function createClonedRepoWithRemote() {
@@ -815,6 +796,97 @@ describe("realizeExecutionWorkspace", () => {
     expect(workspace.baseRefSha).toBe(expectedRemoteHead);
     expect(await readGit(repoRoot, ["rev-parse", "origin/master"])).toBe(expectedRemoteHead);
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(expectedRemoteHead);
+  });
+
+  describe("a repository with no commits", () => {
+    async function createEmptyRemoteAndClone() {
+      const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-remote-"));
+      const remotePath = path.join(remoteDir, "new-project.git");
+      await execFileAsync("git", ["init", "--bare", "--initial-branch=main", remotePath]);
+      const cloneRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-clone-"));
+      const repoRoot = path.join(cloneRoot, "new-project");
+      await execFileAsync("git", ["clone", remotePath, repoRoot]);
+      return { remotePath, repoRoot };
+    }
+
+    function realizeFor(repoRoot: string, identifier: string) {
+      return realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        config: { workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" } },
+        issue: { id: `issue-${identifier}`, identifier, title: "First task" },
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      });
+    }
+
+    it("creates the first commit and bases the first task on development", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+
+      const workspace = await realizeFor(repoRoot, "PAP-1");
+
+      const development = await readGit(remotePath, ["rev-parse", "refs/heads/development"]);
+      expect(await readGit(remotePath, ["rev-parse", "refs/heads/main"])).toBe(development);
+      expect(await readGit(remotePath, ["rev-list", "--count", development])).toBe("1");
+      expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(development);
+      expect(await readGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("PAP-1");
+      expect(workspace.baseRefSha).toBe(development);
+      expect(await readGit(repoRoot, ["status", "--porcelain", "--", ":!.paperclip"])).toBe("");
+    });
+
+    it("bases later tasks on development too", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      await realizeFor(repoRoot, "PAP-1");
+      const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-empty-push-"));
+      await execFileAsync("git", ["clone", "--branch", "development", remotePath, scratch]);
+      await runGit(scratch, ["config", "user.email", "paperclip@example.com"]);
+      await runGit(scratch, ["config", "user.name", "Paperclip Test"]);
+      await fs.writeFile(path.join(scratch, "site.txt"), "merged work\n", "utf8");
+      await runGit(scratch, ["add", "site.txt"]);
+      await runGit(scratch, ["commit", "-m", "Merged work"]);
+      await runGit(scratch, ["push", "origin", "development"]);
+
+      const second = await realizeFor(repoRoot, "PAP-2");
+
+      expect(await readGit(second.cwd, ["rev-parse", "HEAD"])).toBe(await readGit(scratch, ["rev-parse", "HEAD"]));
+    });
+
+    it("seeds once when two tasks start together", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+
+      const [first, second] = await Promise.all([realizeFor(repoRoot, "PAP-1"), realizeFor(repoRoot, "PAP-2")]);
+
+      const development = await readGit(remotePath, ["rev-parse", "refs/heads/development"]);
+      expect(await readGit(first.cwd, ["rev-parse", "HEAD"])).toBe(development);
+      expect(await readGit(second.cwd, ["rev-parse", "HEAD"])).toBe(development);
+    });
+
+    it("uses commits pushed after an empty clone instead of seeding", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      const sourceRepo = await createTempRepo("trunk");
+      await runGit(sourceRepo, ["push", remotePath, "trunk"]);
+      await execFileAsync("git", ["-C", remotePath, "symbolic-ref", "HEAD", "refs/heads/trunk"]);
+      const trunk = await readGit(sourceRepo, ["rev-parse", "HEAD"]);
+
+      const workspace = await realizeFor(repoRoot, "PAP-1");
+
+      expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(trunk);
+      await expect(readGit(remotePath, ["rev-parse", "--verify", "refs/heads/development"])).rejects.toThrow();
+    });
+
+    it("explains the failure when the first commit cannot be pushed", async () => {
+      const { remotePath, repoRoot } = await createEmptyRemoteAndClone();
+      const hook = path.join(remotePath, "hooks", "pre-receive");
+      await fs.writeFile(hook, "#!/bin/sh\necho denied >&2\nexit 1\n", { mode: 0o755 });
+
+      await expect(realizeFor(repoRoot, "PAP-1")).rejects.toThrow(/has no commits.*could not create the first one/);
+      expect(await readGit(remotePath, ["for-each-ref"])).toBe("");
+    });
   });
 
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
@@ -2976,6 +3048,191 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
+  it("checks the recorded branch back out when a reviewer left the clean worktree detached at a reachable commit", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAR-7865-detached-reviewer";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", expectedBranch, worktreePath, "main"]);
+    await fs.writeFile(path.join(worktreePath, "task.txt"), "task work\n", "utf8");
+    await runGit(worktreePath, ["add", "task.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Task work"]);
+    // A reviewer detaches at the base commit to compare behaviour.
+    await runGit(worktreePath, ["checkout", "--detach", "main"]);
+
+    const realized = await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "ew-detached-reachable",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+        },
+        issue: { id: "ew-detached-reachable-issue", identifier: "PAR-7865", title: "Repair moved worktree HEAD" },
+        agent: { id: "agent-1", name: "Code Reviewer", companyId: "company-1" },
+    });
+
+    expect(realized?.branchName).toBe(expectedBranch);
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(expectedBranch);
+    expect(await fs.readFile(path.join(worktreePath, "task.txt"), "utf8")).toBe("task work\n");
+  }, 15_000);
+
+  it("keeps a clean detached HEAD fail-closed when its commit is not reachable from any ref", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAR-7865-detached-orphan";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", expectedBranch, worktreePath, "main"]);
+    await fs.writeFile(path.join(worktreePath, "task.txt"), "task work\n", "utf8");
+    await runGit(worktreePath, ["add", "task.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Task work"]);
+    await runGit(worktreePath, ["checkout", "--detach", "main"]);
+    await fs.writeFile(path.join(worktreePath, "orphan.txt"), "only on a detached commit\n", "utf8");
+    await runGit(worktreePath, ["add", "orphan.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Detached-only commit"]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "ew-detached-orphan",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+        },
+        issue: { id: "ew-detached-orphan-issue", identifier: "PAR-7865", title: "Repair moved worktree HEAD" },
+        agent: { id: "agent-1", name: "Code Reviewer", companyId: "company-1" },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          actualBranch: null,
+          cleanliness: "clean",
+          safeRepair: expect.objectContaining({ eligible: false, succeeded: false }),
+        }),
+      },
+    });
+    expect(await readGit(worktreePath, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("HEAD");
+  }, 15_000);
+
+  it("names the uncommitted files when a dirty worktree is on an unexpected branch", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAR-7865-dirty-expected";
+    const actualBranch = "PAR-7865-dirty-pr-branch";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    await fs.writeFile(path.join(worktreePath, "README.md"), "edited\n", "utf8");
+    await fs.writeFile(path.join(worktreePath, "notes.txt"), "new\n", "utf8");
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "ew-dirty-files",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+        },
+        issue: { id: "ew-dirty-files-issue", identifier: "PAR-7865", title: "Repair moved worktree HEAD" },
+        agent: { id: "agent-1", name: "Code Reviewer", companyId: "company-1" },
+      enableWorkspaceDirtyQuarantineRepair: false,
+    })).rejects.toThrow(/worktree is not clean\. Uncommitted files: (README\.md, notes\.txt|notes\.txt, README\.md)\. Commit or stash them/);
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(actualBranch);
+  }, 15_000);
+
+  it("repairs a persisted worktree whose registration was pruned from git worktree list", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAR-7865-stale-registration";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", expectedBranch, worktreePath, "main"]);
+    await fs.writeFile(path.join(worktreePath, "task.txt"), "task work\n", "utf8");
+    await runGit(worktreePath, ["add", "task.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Task work"]);
+    const adminDir = (await readGit(worktreePath, ["rev-parse", "--absolute-git-dir"]));
+    await fs.rm(adminDir, { recursive: true, force: true });
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"])).not.toContain(worktreePath);
+
+    const realized = await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "ew-stale-registration",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+          metadata: RUNTIME_OWNED_GIT_BRANCH_METADATA,
+        },
+        issue: { id: "ew-stale-registration-issue", identifier: "PAR-7865", title: "Repair moved worktree HEAD" },
+        agent: { id: "agent-1", name: "Code Reviewer", companyId: "company-1" },
+    });
+
+    expect(realized?.branchName).toBe(expectedBranch);
+    expect(realized?.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("was not registered in `git worktree list`"),
+    ]));
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"])).toContain(await fs.realpath(worktreePath));
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"])).toBe(expectedBranch);
+    expect(await fs.readFile(path.join(worktreePath, "task.txt"), "utf8")).toBe("task work\n");
+    const leftovers = await fs.readdir(path.dirname(worktreePath));
+    expect(leftovers.filter((name) => name.startsWith(`${expectedBranch}.stale-`))).toHaveLength(1);
+  }, 15_000);
+
   it("adopts an existing persisted git worktree when the checked-out branch is forward of the recorded branch", async () => {
     const repoRoot = await createTempRepo();
 
@@ -3290,7 +3547,7 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
-  it("keeps forward reconciliation fail-closed for same-content rewritten history", async () => {
+  it("checks the recorded branch back out over a clean same-content rewritten branch", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-459-recorded-content";
     const actualBranch = "PAP-459-rewritten-content";
@@ -3308,7 +3565,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(worktreePath, ["add", "same-content.txt"]);
     await runGit(worktreePath, ["commit", "-m", "Add content on rewritten branch"]);
 
-    await expectPersistedBranchMismatchRejected({
+    await expectPersistedBranchMismatchRepaired({
       repoRoot,
       worktreePath,
       expectedBranch,
@@ -3316,11 +3573,10 @@ describe("realizeExecutionWorkspace", () => {
       issueId: "issue-rewritten-history",
       executionWorkspaceId: "execution-workspace-rewritten-history",
       expectedAncestryVerdict: "diverged",
-      expectedReason: "expected branch and current HEAD differ",
     });
   }, 15_000);
 
-  it("keeps forward reconciliation fail-closed for an unrelated task branch", async () => {
+  it("checks the recorded branch back out when a clean worktree was left on an unrelated branch", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-459-recorded-task";
     const actualBranch = "PAP-999-unrelated-task";
@@ -3338,7 +3594,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(worktreePath, ["add", "unrelated-task.txt"]);
     await runGit(worktreePath, ["commit", "-m", "Add unrelated task work"]);
 
-    await expectPersistedBranchMismatchRejected({
+    await expectPersistedBranchMismatchRepaired({
       repoRoot,
       worktreePath,
       expectedBranch,
@@ -3346,11 +3602,10 @@ describe("realizeExecutionWorkspace", () => {
       issueId: "issue-unrelated-task",
       executionWorkspaceId: "execution-workspace-unrelated-task",
       expectedAncestryVerdict: "diverged",
-      expectedReason: "expected branch and current HEAD differ",
     });
   }, 15_000);
 
-  it("keeps forward reconciliation fail-closed when the live branch is behind the recorded branch", async () => {
+  it("checks the recorded branch back out when the clean live branch is behind it", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-459-recorded-ahead";
     const actualBranch = "PAP-459-live-behind";
@@ -3364,8 +3619,9 @@ describe("realizeExecutionWorkspace", () => {
     await fs.writeFile(path.join(repoRoot, "recorded-ahead.txt"), "recorded branch moved ahead\n", "utf8");
     await runGit(repoRoot, ["add", "recorded-ahead.txt"]);
     await runGit(repoRoot, ["commit", "-m", "Move recorded branch ahead"]);
+    await runGit(repoRoot, ["checkout", "main"]);
 
-    await expectPersistedBranchMismatchRejected({
+    await expectPersistedBranchMismatchRepaired({
       repoRoot,
       worktreePath,
       expectedBranch,
@@ -3373,7 +3629,6 @@ describe("realizeExecutionWorkspace", () => {
       issueId: "issue-live-behind",
       executionWorkspaceId: "execution-workspace-live-behind",
       expectedAncestryVerdict: "diverged",
-      expectedReason: "expected branch and current HEAD differ",
     });
   }, 15_000);
 

@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { TWILIO_AUTH_TOKEN } from "./secret-names.js";
 import { verifyTwilioWebhook } from "./twilio-signature.js";
 import { readHeader, type HeaderBag } from "./http-util.js";
+import { resolveTelephonySecret } from "./secrets.js";
 
 /**
  * Derive the public base URL from request headers.
@@ -66,12 +67,8 @@ async function loadTokens(ctx: PluginContext): Promise<TokenEntry[]> {
 
   const entries: TokenEntry[] = [];
   for (const companyId of ids) {
-    try {
-      const authToken = await ctx.secrets.resolve(TWILIO_AUTH_TOKEN, { companyId });
-      if (authToken) entries.push({ companyId, authToken });
-    } catch {
-      // Secret not found or not resolvable for this company; skip it
-    }
+    const authToken = await resolveTelephonySecret(ctx, companyId, TWILIO_AUTH_TOKEN);
+    if (authToken) entries.push({ companyId, authToken });
   }
   tokenCache.set(ctx, { at: Date.now(), entries });
   return entries;

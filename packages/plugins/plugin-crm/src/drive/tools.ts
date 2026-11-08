@@ -3,7 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
 import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
-import { createGoogleDriveBroker } from "./google-broker.js";
+import { createGoogleDriveBroker, CLIENTS_PATH } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
@@ -85,7 +85,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
 
   try {
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
-    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson" };
+    if (!broker) return { status: "not_configured", error: "Drive is not configured in the CRM plugin settings: set driveServiceAccountJson", ...(await notConfiguredFallback(ctx, viewer, type, id)) };
 
     // A client's project has no folder of its own: it is looked up as its company's folder.
     const target = await registryTarget(ctx, viewer, type, id);
@@ -96,6 +96,21 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
       return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
     }
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Where a person can file by hand when Drive is not configured: the company's Contracts & Quotes folder. Omitted when there is no client folder (product, book, no client) or the facts cannot be read. */
+async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<{ fallback?: { sharedDriveId: string | null; pathSegments: string[] } }> {
+  try {
+    const facts = type === "crm_company" ? await loadDriveFacts(ctx, viewer, type, id) : await loadProjectFacts(ctx, viewer, id);
+    if (!facts) return {};
+    const target = folderTarget(facts);
+    if (target.entityType !== "crm_company") return {};
+    const name = type === "crm_company" ? facts.name : facts.companyName!;
+    const sharedDriveId = await effectiveSharedDriveId(ctx, viewer.companyId, await readConfig(ctx, viewer.companyId));
+    return { fallback: { sharedDriveId: sharedDriveId || null, pathSegments: [...CLIENTS_PATH, companyFolderName(name, facts.contactName), "Contracts & Quotes"] } };
+  } catch {
+    return {};
   }
 }
 
@@ -182,13 +197,29 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
 /**
  * The project whose Drive folder a producer plugin's save lands in. A client's save goes to the
  * project linked to that client (the one of the same kind when there is one, e.g. the SEO project
- * for an SEO file, else the oldest); the company's own work goes to `drive.ownProjectId`.
+ * for an SEO file, else the oldest); the company's own work goes to `drive.ownProjectId`, but only when the producer
+ * asked for it (`ownWork`), so a save that lost its client is refused, never filed as ours (PAR-8128). A save that names
+ * a Paperclip project (`projectId`, e.g. the issue's) lands there only when that project is linked to a client or is
+ * the own project; the link decides, not the producer.
  */
 export async function resolveProducerSaveProject(
   ctx: PluginContext,
   companyId: string,
-  input: { kind?: string; clientKind?: string; clientRef?: string },
+  input: { kind?: string; clientKind?: string; clientRef?: string; ownWork?: boolean; projectId?: string },
 ): Promise<string | null> {
+  const ownProject = async (): Promise<string | null> => {
+    const cfg = await readConfig(ctx, companyId);
+    const own = (cfg.drive as { ownProjectId?: unknown } | undefined)?.ownProjectId;
+    return typeof own === "string" && own.trim() ? own.trim() : null;
+  };
+  if (input.projectId) {
+    const linked = await ctx.db.query<{ project_id: string }>(
+      `SELECT project_id FROM ${table(ctx, "client_projects")} WHERE company_id = $1 AND project_id = $2 LIMIT 1`,
+      [companyId, input.projectId],
+    );
+    if (linked.length) return input.projectId;
+    return (await ownProject()) === input.projectId ? input.projectId : null;
+  }
   if (input.clientKind && input.clientRef) {
     if (input.clientKind !== "company" && input.clientKind !== "contact") return null;
     const rows = await ctx.db.query<{ project_id: string; kind: string | null }>(
@@ -198,9 +229,7 @@ export async function resolveProducerSaveProject(
     if (!rows.length) return null;
     return (rows.find((r) => r.kind && r.kind === input.kind) ?? rows[0]).project_id;
   }
-  const cfg = await readConfig(ctx, companyId);
-  const own = (cfg.drive as { ownProjectId?: unknown } | undefined)?.ownProjectId;
-  return typeof own === "string" && own.trim() ? own.trim() : null;
+  return input.ownWork === true ? ownProject() : null;
 }
 
 /** The registry key of the folder an entity saves into: for a client's project the company's, otherwise the entity itself (also when the project is unknown). */

@@ -238,6 +238,54 @@ export function KpiCard({ label, value, tone: t, delta, deltaTone, invert = fals
   return <div style={box}>{body}</div>;
 }
 
+// ── Dashboard-style metrics and headings ────
+
+/**
+ * One big number, the same as the host Dashboard's metric row: no box, a 30px value, a muted label and a quiet icon.
+ * Use it for the page's headline numbers; `KpiCard` stays the choice for tinted tiles and grids of smaller numbers.
+ */
+export function MetricCard({ label, value, description, icon, tone: t, link }: {
+  label: ReactNode;
+  value: ReactNode;
+  description?: ReactNode;
+  icon?: LucideIcon;
+  /** Colours the number when it needs attention (`bad`, `warn`); leave it out for a plain number. */
+  tone?: ToneInput;
+  link?: LinkProps | null;
+}) {
+  usePibBaseStyles();
+  const narrow = useIsNarrow();
+  const name = toneName(t ?? "neutral");
+  const box: CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, height: "100%", padding: narrow ? "10px 12px" : "16px 20px", borderRadius: 8, color: tokens.fg, textDecoration: "none", minWidth: 0 };
+  const body = (
+    <>
+      <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+        <div style={{ fontSize: narrow ? 24 : 30, fontWeight: 600, letterSpacing: "-0.025em", lineHeight: 1.2, fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere", color: name === "neutral" ? tokens.fg : tone(name).fg }}>{value}</div>
+        <div style={{ marginTop: 4, fontSize: narrow ? 12 : 14, fontWeight: 500, color: tokens.muted, lineHeight: 1.35, overflowWrap: "anywhere" }}>{label}</div>
+        {description ? <div style={{ marginTop: 6, fontSize: 12, color: tokens.muted, opacity: 0.75, lineHeight: 1.4, overflowWrap: "anywhere" }}>{description}</div> : null}
+      </div>
+      {icon ? <Icon icon={icon} size={16} color={tokens.muted} style={{ flexShrink: 0, marginTop: 6, opacity: 0.5 }} /> : null}
+    </>
+  );
+  return link ? <a {...link} className="pib-link-card" style={box}>{body}</a> : <div style={box}>{body}</div>;
+}
+
+/** A row of `MetricCard`s: as many columns as fit, two on a phone. */
+export function MetricRow({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  const narrow = useIsNarrow();
+  return <div style={{ display: "grid", gridTemplateColumns: narrow ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(min(200px, 100%), 1fr))", gap: narrow ? 4 : 8, minWidth: 0, ...style }}>{children}</div>;
+}
+
+/** The Dashboard's section title: small, uppercase and muted, with the content below it and no box around it. */
+export function SectionHeading({ title, actions }: { title: ReactNode; actions?: ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", minWidth: 0 }}>
+      <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, letterSpacing: "0.025em", textTransform: "uppercase", color: tokens.muted, overflowWrap: "anywhere" }}>{title}</h2>
+      {actions}
+    </div>
+  );
+}
+
 // ── Timeline ────────────────────────────────────────────────────────────────
 
 export interface TimelineItem {

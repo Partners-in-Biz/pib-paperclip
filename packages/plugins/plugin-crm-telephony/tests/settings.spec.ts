@@ -183,3 +183,97 @@ describe("Telephony Settings", () => {
     expect(r3.whatsappFrom).toBeNull();
   });
 });
+
+describe("Telephony Settings: public base URL", async () => {
+  const { readSettings, saveSettings, validatePublicBaseUrl } = await import("../src/settings.js");
+  const { vi } = await import("vitest");
+
+  function ctxWith(config: Record<string, unknown>, state: Record<string, unknown> | null = null) {
+    const store = new Map<string, unknown>();
+    return {
+      config: { get: vi.fn().mockResolvedValue(config) },
+      state: {
+        get: vi.fn(async () => state ?? store.get("s") ?? null),
+        set: vi.fn(async (_k: unknown, v: unknown) => { store.set("s", v); }),
+      },
+      secrets: { resolve: vi.fn() },
+    } as any;
+  }
+
+  it("defaults to null and accepts only a plain http(s) origin", async () => {
+    expect((await readSettings(ctxWith({}), "c1")).publicBaseUrl).toBeNull();
+    expect((await readSettings(ctxWith({ publicBaseUrl: "https://paperclip.example.com/" }), "c1")).publicBaseUrl).toBe("https://paperclip.example.com");
+    expect((await readSettings(ctxWith({ publicBaseUrl: "https://paperclip.example.com/PAR" }), "c1")).publicBaseUrl).toBeNull();
+    expect(validatePublicBaseUrl("http://127.0.0.1:3100")).toBe("http://127.0.0.1:3100");
+    expect(validatePublicBaseUrl("https://user:pw@host")).toBeNull();
+    expect(validatePublicBaseUrl("https://host/?q=1")).toBeNull();
+    expect(validatePublicBaseUrl(42)).toBeNull();
+  });
+
+  it("save stores the origin, clears on empty, and refuses a path", async () => {
+    const ctx = ctxWith({});
+    const ok = await saveSettings(ctx, "c1", { publicBaseUrl: "https://paperclip.example.com/" });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.settings.publicBaseUrl).toBe("https://paperclip.example.com");
+    const cleared = await saveSettings(ctx, "c1", { publicBaseUrl: "" });
+    if (cleared.ok) expect(cleared.settings.publicBaseUrl).toBeNull();
+    const bad = await saveSettings(ctx, "c1", { publicBaseUrl: "https://paperclip.example.com/dialer" });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.publicBaseUrl).toMatch(/origin/);
+  });
+});
+
+describe("Telephony Settings: numbers list", async () => {
+  const { readSettings, saveSettings, withSeededNumbers } = await import("../src/settings.js");
+  const { vi } = await import("vitest");
+  const ZA = { e164: "+27105550100", label: "PiB Cape Town", regions: ["27"], purposes: ["voice" as const], enabled: true, isDefault: true };
+
+  function ctxWith(config: Record<string, unknown>, secrets: Record<string, string> = {}) {
+    const store = new Map<string, unknown>();
+    return {
+      config: { get: vi.fn().mockResolvedValue(config) },
+      state: { get: vi.fn(async () => store.get("s") ?? null), set: vi.fn(async (_k: unknown, v: unknown) => { store.set("s", v); }) },
+      secrets: { resolve: vi.fn(async (name: string) => { if (secrets[name]) return secrets[name]; throw new Error("not set"); }) },
+      store,
+    } as any;
+  }
+
+  it("reads a saved list as source settings", async () => {
+    const s = await readSettings(ctxWith({ numbers: [ZA] }), "c1");
+    expect(s.numbers).toEqual([ZA]);
+    expect(s.numbersSource).toBe("settings");
+  });
+
+  it("readSettings never reads secrets; withSeededNumbers fills an empty list from the old secrets", async () => {
+    const ctx = ctxWith({}, { TWILIO_US_NUMBER: "+12025550100" });
+    const plain = await readSettings(ctx, "c1");
+    expect(plain.numbers).toEqual([]);
+    expect(plain.numbersSource).toBe("none");
+    expect(ctx.secrets.resolve).not.toHaveBeenCalled();
+    const seeded = await withSeededNumbers(ctx, "c1", plain);
+    expect(seeded.numbersSource).toBe("secrets");
+    expect(seeded.numbers[0]).toMatchObject({ e164: "+12025550100", regions: ["1"], isDefault: true });
+    const none = await withSeededNumbers(ctxWith({}), "c1", plain);
+    expect(none.numbers).toEqual([]);
+    expect(none.numbersSource).toBe("none");
+    const kept = await withSeededNumbers(ctx, "c1", { ...plain, numbers: [ZA], numbersSource: "settings" });
+    expect(kept.numbers).toEqual([ZA]);
+  });
+
+  it("save validates the list, keeps one default, and stops reading the secrets afterwards", async () => {
+    const ctx = ctxWith({}, { TWILIO_US_NUMBER: "+12025550100" });
+    const bad = await saveSettings(ctx, "c1", { numbers: [{ e164: "nope", purposes: ["voice"] }] });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.numbers).toMatch(/Number 1: not an E.164/);
+    const ok = await saveSettings(ctx, "c1", { numbers: [ZA, { ...ZA, e164: "+12025550101", label: "US", regions: ["US"], isDefault: true }] });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.settings.numbers.map((n) => [n.e164, n.regions[0], n.isDefault])).toEqual([["+27105550100", "27", true], ["+12025550101", "1", false]]);
+      expect(ok.settings.numbersSource).toBe("settings");
+    }
+    expect("numbersSource" in (ctx.store.get("s") as object)).toBe(false);
+    const again = await withSeededNumbers(ctx, "c1", await readSettings(ctx, "c1"));
+    expect(again.numbersSource).toBe("settings");
+    expect(again.numbers).toHaveLength(2);
+  });
+});

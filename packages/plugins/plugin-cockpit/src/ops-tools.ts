@@ -10,7 +10,7 @@ import { openCloseoutNow } from "./closeout.js";
 import { CredentialError } from "./credentials-model.js";
 import { credentialList, recordCredential, verifyCompany } from "./credentials.js";
 import { recordEvidence } from "./evidence.js";
-import { saveEvidenceToDrive } from "./evidence-drive.js";
+import { parseEvidenceClient, saveEvidenceToDrive } from "./evidence-drive.js";
 import { getRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
@@ -121,11 +121,24 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
       if (!issueId) return fail("issueId is required");
       if (!step) return fail("step is required and must be non-empty");
       if (!pngBase64) return fail("pngBase64 is required");
+      const parsedClient = parseEvidenceClient(p.client);
+      if ("error" in parsedClient) return fail(parsedClient.error);
 
-      const result = await saveEvidenceToDrive(env.ctx, { companyId, issueId, step, pngBase64 });
+      // The folder comes from the issue's project (the CRM's client-project link), not from the agent (PAR-8128).
+      const issue = await env.ctx.issues.get(issueId, companyId).catch(() => null);
+      if (!issue) return ok("Evidence was not saved to Drive: the issue was not found, so its client is unknown. The step is not blocked.", { saved: false, reason: "issue_not_found" });
+      const result = await saveEvidenceToDrive(env.ctx, {
+        companyId,
+        issueId: issue.identifier || issueId,
+        step,
+        pngBase64,
+        projectId: issue.projectId ?? null,
+        client: parsedClient.client,
+      });
       if (result === null || result.status === "failed" || result.status === "no_ack") {
         const reason = result?.status === "failed" ? result.reason : result?.status === "no_ack" ? "no ack from Drive" : "invalid input";
-        return ok(`Evidence could not be saved to Drive (${reason}). The step is not blocked.`, { saved: false, reason });
+        const why = result?.status === "failed" && result.hint ? ` ${result.hint}` : "";
+        return ok(`Evidence could not be saved to Drive (${reason}).${why} The step is not blocked.`, { saved: false, reason });
       }
       return ok(`Evidence saved to Drive.`, { saved: true, driveFileId: result.driveFileId, url: result.url });
     }

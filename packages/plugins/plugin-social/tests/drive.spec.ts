@@ -237,3 +237,30 @@ describe("saveToDrive", () => {
     expect(calls[1][1].subfolder).toBe("02 Assets");
   });
 });
+
+describe("saveToDrive client (PAR-8123)", () => {
+  const saved = () => vi.fn(async (_ctx: any, _opts: any): Promise<DriveSaveResult> => ({ status: "saved", requestId: "r", driveFileId: "f", url: "https://drive/x" }));
+  const media = [{ assetId: null, url: "https://cdn.example.com/a.png", kind: "image", mime: "image/png", width: null, height: null, durationS: null, altText: null, bytes: null }] as SaveToDriveOptions["media"];
+
+  it("saves a client's post with that client on every file", async () => {
+    const fake = saved();
+    await saveToDrive(fakeCtx(), { companyId: "co-1", post: { id: "p-1", body: "Hi", client_kind: "crm_org", client_ref: "velox" }, platform: "x", media, driveSave: fake });
+    expect(fake).toHaveBeenCalledTimes(2);
+    for (const call of fake.mock.calls) expect(call[1].client).toEqual({ kind: "crm_org", ref: "velox" });
+  });
+
+  it("saves the company's own post without a client", async () => {
+    const fake = saved();
+    await saveToDrive(fakeCtx(), { companyId: "co-1", post: { id: "p-2", body: "Hi", client_kind: null, client_ref: null }, platform: "x", media, driveSave: fake });
+    expect(fake).toHaveBeenCalledTimes(2);
+    for (const call of fake.mock.calls) expect(call[1]).not.toHaveProperty("client");
+  });
+
+  it("logs a warning when the CRM never answers (no_ack)", async () => {
+    const log: Record<string, any> = {};
+    const fake = vi.fn(async (): Promise<DriveSaveResult> => ({ status: "no_ack", requestId: "r" }) as DriveSaveResult);
+    await saveToDrive(fakeCtx(log), { companyId: "co-1", post: { id: "p-3", body: "Hi" }, platform: "x", media, driveSave: fake });
+    expect(log.warns).toHaveLength(2);
+    expect(log.warns[0].data.status).toBe("no_ack");
+  });
+});

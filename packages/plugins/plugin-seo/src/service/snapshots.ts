@@ -12,7 +12,7 @@ import { companyInfo, num, reqStr, str, type CompanyInfo, type Env, type Params 
 import { ga4ForSnapshot } from "./analytics.js";
 import { clockFor, requireSprint } from "./context.js";
 import { geoForSnapshot } from "./geo.js";
-import { exportToDrive } from "./drive-export.js";
+import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 
 export async function captureSnapshot(
   env: Env,
@@ -61,7 +61,12 @@ export async function captureSnapshot(
     notes: input.notes ?? null,
   });
   // Save audit snapshot to Drive (non-blocking, errors only log warnings)
-  if (created && input.kind === "scheduled") {
+  // A client sprint's audit goes to that client's folder, never the company's own (PAR-8128); null = no copy.
+  const driveTarget = sprintDriveTarget(sprint);
+  if (created && input.kind === "scheduled" && !driveTarget) {
+    env.ctx.logger.warn("SEO audit not copied to Drive: the sprint names a client that is not linked in the CRM", { sprintId: sprint.id });
+  }
+  if (created && input.kind === "scheduled" && driveTarget) {
     const snapshotBody = { ...body, geo, analytics, notes: input.notes };
     const snapshotJson = JSON.stringify(snapshotBody, null, 2);
     const siteSlug = comparableUrl(sprint.siteUrl)?.replace(/[/\\:*?"<>|]/g, "").slice(0, 60) || "site";
@@ -74,6 +79,7 @@ export async function captureSnapshot(
       bytes: Buffer.from(snapshotJson),
       subfolder: "04 Reports",
       timeoutMs: 5000,
+      ...driveTarget,
     }).catch(() => {
       // Suppress errors; exportToDrive never throws but we catch any unexpected issue
     });

@@ -7,6 +7,7 @@ import { storedRates, rateFrom } from "./fx.js";
 import { billBalanceSelect, billOutstanding, type BillBalanceRow } from "./openitems.js";
 import { ageing, converterFor, expenseSummary, monthsBetween, mrrMetrics, mrrTrend, revenueByClient, revenueByMonth, type ExpenseItem, type RecurringRevenue, type RevenuePayment } from "./reports.js";
 import { allSubscriptions } from "./retainers.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 
 export async function latestRates(ctx: PluginContext, book: string, currencies: string[]): Promise<Record<string, number | null>> {
   const out: Record<string, number | null> = {};
@@ -77,7 +78,7 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
   const debtors = ageing(
     balances.map((b) => ({
       id: b.invoice.id,
-      number: b.invoice.number,
+      number: invoiceNumberLabel(b.invoice.number),
       party: String(asObject(b.invoice.customer_snapshot ?? b.invoice.customer).name ?? b.invoice.customer_ref),
       partyKey: clientKey(b.invoice.customer_kind, b.invoice.customer_ref),
       currency: b.invoice.currency,
@@ -113,11 +114,12 @@ export async function buildReports(ctx: PluginContext, companyId: string, settin
       .map((b) => ({ category: b.category ?? "other", currency: b.currency, amountMinor: Number(b.total_minor), vatMinor: Number(b.vat_minor ?? 0), vatClaimable: Number(b.vat_minor ?? 0) > 0, date: iso(b.issue_date ?? b.created_at), fxRate: b.fx_rate == null ? null : Number(b.fx_rate), source: "bill" as const })),
   ];
   const recurringItems: RecurringRevenue[] = [
-    ...subs.map((s) => ({ status: s.status as RecurringRevenue["status"], priceMinor: Number(s.price_minor), currency: s.currency, period: s.period, startedAt: iso(s.started_at) ?? now.toISOString(), cancelledAt: iso(s.cancelled_at) })),
+    ...subs.map((s) => ({ kind: "retainer" as const, status: s.status as RecurringRevenue["status"], priceMinor: Number(s.price_minor), currency: s.currency, period: s.period, startedAt: iso(s.started_at) ?? now.toISOString(), cancelledAt: iso(s.cancelled_at) })),
     ...recurring
       .map((r) => ({ r, template: byInvoice.get(r.template_invoice_id) }))
       .filter((x) => x.template)
       .map(({ r, template }) => ({
+        kind: "repeating" as const,
         // A schedule past its end date is not recurring revenue any more (the Cockpit counts the same).
         status: (r.is_active && !(r.ends_at && Date.parse(String(iso(r.ends_at))) <= now.getTime()) ? "active" : "paused") as RecurringRevenue["status"],
         priceMinor: Number(template!.invoice.subtotal_minor ?? template!.invoice.total_minor),

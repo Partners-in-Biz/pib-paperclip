@@ -30,7 +30,7 @@ import { asObject, getInvoice, getQuote, insertInvoice, insertLine, linesFor, sa
 import { dealWonKey } from "./followups.js";
 import { convertQuoteRow, customerFrom, customerNameOf, defaultDueAt, defaultTax, recomputeInvoice, senderFrom } from "./invoices.js";
 import { computeDocument } from "./money.js";
-import { invoiceNumberLabel, NO_NUMBER_YET } from "./invoice-number.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import { WORK_ORIGINS } from "./origins.js";
 import { billingPath, companyPrefix, workRoute } from "./routing.js";
 import { billingOn } from "./setup.js";
@@ -214,7 +214,7 @@ async function decideFromDeal(ctx: PluginContext, companyId: string, acc: Accept
     invoice = {
       id: invoiceId,
       company_id: companyId,
-      number: NO_NUMBER_YET,
+      number: null,
       status: "draft",
       currency,
       customer_kind: acc.clientKind,

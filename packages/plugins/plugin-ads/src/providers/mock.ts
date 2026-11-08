@@ -65,6 +65,8 @@ export class MockAdsProvider implements AdsProvider {
   accountCapsData: Record<string, AccountCaps> = {};
   disapproved: Record<string, Record<string, number>> = {};
   writes: MockWrite[] = [];
+  /** The status execute.ts put on each create request, in call order (it always sends "PAUSED", PAR-6684). */
+  createStatuses: Array<{ op: string; status: string | undefined }> = [];
   reads: string[] = [];
   /** Set to make the next call of that kind throw. */
   failNext: Partial<Record<"insights" | "listAccounts" | "listCampaigns" | "listAds" | "create" | "status" | "budget" | "refresh" | "caps" | "health" | "adGroup" | "keywords" | "responsiveSearchAd", ProviderError | AdsError>> = {};
@@ -150,6 +152,7 @@ export class MockAdsProvider implements AdsProvider {
   }
 
   async createCampaign(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateCampaignRequest) {
+    this.createStatuses.push({ op: "create", status: request.status });
     this.maybeFail("create");
     const externalId = `mock-cmp-${(this.seq += 1)}`;
     this.writes.push({ op: "create", accountExternalId: account.externalId, campaignExternalId: externalId, name: request.name, objective: request.objective, dailyBudgetMinor: request.dailyBudgetMinor, status: "paused" });
@@ -187,6 +190,7 @@ export class MockAdsProvider implements AdsProvider {
   }
 
   async createAdSet(_env: unknown, _token: TokenBundle, account: AccountRef, request: any) {
+    this.createStatuses.push({ op: "create_adset", status: request.status });
     const externalId = `mock-adset-${(this.seq += 1)}`;
     this.writes.push({ op: "create_adset", accountExternalId: account.externalId, campaignExternalId: request.campaignExternalId, name: request.name, lifetimeBudgetMinor: request.lifetimeBudgetMinor, status: "paused" });
     return { externalId, name: request.name };
@@ -199,12 +203,14 @@ export class MockAdsProvider implements AdsProvider {
   }
 
   async createAd(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdRequest) {
+    this.createStatuses.push({ op: "create_ad", status: request.status });
     const externalId = `mock-ad-${(this.seq += 1)}`;
     this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
     return { externalId, name: request.name };
   }
 
   async createAdGroup(_env: unknown, _token: TokenBundle, account: AccountRef, campaignExternalId: string, request: CreateAdGroupRequest) {
+    this.createStatuses.push({ op: "adGroup", status: request.status });
     this.maybeFail("adGroup");
     const externalId = `mock-adg-${(this.seq += 1)}`;
     this.writes.push({ op: "adGroup", accountExternalId: account.externalId, campaignExternalId, adGroupExternalId: externalId, name: request.name, cpcBidMinor: request.cpcBidMinor, status: "paused" });
@@ -212,6 +218,7 @@ export class MockAdsProvider implements AdsProvider {
   }
 
   async createResponsiveSearchAd(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: CreateResponsiveSearchAdRequest) {
+    this.createStatuses.push({ op: "responsive_search_ad", status: request.status });
     this.maybeFail("responsiveSearchAd");
     const externalId = `mock-rsa-${(this.seq += 1)}`;
     this.writes.push({ op: "responsive_search_ad", accountExternalId: account.externalId, adGroupExternalId, name: request.headlines[0], headlineCount: request.headlines.length, descriptionCount: request.descriptions.length, finalUrl: request.finalUrl, status: "paused" });
@@ -219,6 +226,7 @@ export class MockAdsProvider implements AdsProvider {
   }
 
   async addKeywords(_env: unknown, _token: TokenBundle, account: AccountRef, adGroupExternalId: string, request: AddKeywordsRequest) {
+    this.createStatuses.push({ op: "keywords", status: request.status });
     this.maybeFail("keywords");
     this.writes.push({ op: "keywords", accountExternalId: account.externalId, adGroupExternalId, keywordCount: request.keywords.length, status: "paused" });
     return { added: request.keywords.length };

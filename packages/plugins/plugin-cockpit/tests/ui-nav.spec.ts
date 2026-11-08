@@ -41,7 +41,7 @@ describe("grouped sidebar", () => {
     expect(new Set(members).size).toBe(members.length);
     expect(members.sort()).toEqual([
       "partnersinbiz.accounting", "partnersinbiz.ads", "partnersinbiz.billing", "partnersinbiz.campaigns", "partnersinbiz.crm", "partnersinbiz.mailbox",
-      "partnersinbiz.partners", "partnersinbiz.payroll", "partnersinbiz.seo", "partnersinbiz.social",
+      "partnersinbiz.partners", "partnersinbiz.payroll", "partnersinbiz.seo", "partnersinbiz.social", "partnersinbiz.studio",
     ]);
     expect(navGroupOf("partnersinbiz.payroll")?.label).toBe("Finance");
     expect(navGroupOf("partnersinbiz.seo")?.label).toBe("Marketing");
@@ -77,9 +77,17 @@ describe("grouped sidebar", () => {
     expect(visibleMembers(finance, null, { payroll: false }).map((m) => m.label)).toEqual(["Billing", "Accounting"]); // unknown installs: trust the modules
   });
 
+  it("lists Studio under Marketing and /studio-canvas also highlights it", () => {
+    const studio = NAV_GROUPS.marketing.members.find((m) => m.pluginKey === "partnersinbiz.studio")!;
+    expect(studio.route).toBe("/studio");
+    expect(studio.alsoRoutes).toEqual(["/studio-canvas"]);
+    expect(navGroupOf("partnersinbiz.studio")?.label).toBe("Marketing");
+    expect(groupedNavPresent([COCKPIT_WITH_GROUPS], "partnersinbiz.studio")).toBe(true);
+  });
+
   it("lists Paid ads under Marketing after Campaigns, and its own top-level row hides", () => {
     const marketing = NAV_GROUPS.marketing;
-    expect(marketing.members.map((m) => m.label)).toEqual(["Social", "SEO", "Campaigns", "Paid ads"]);
+    expect(marketing.members.map((m) => m.label)).toEqual(["Social", "SEO", "Campaigns", "Paid ads", "Studio"]);
     const ads = marketing.members[3]!;
     expect(ads.route).toBe("/ads"); // the page route is unchanged
     expect(memberIcon(ads)).not.toBe(memberIcon(marketing.members[2]!));

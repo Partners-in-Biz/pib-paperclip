@@ -31,6 +31,8 @@ export const OPERATOR_REFERENCE_PATHS = {
 } as const;
 
 export const OWNER_CHECKS_REFERENCE_PATH = "references/owner-checks.md";
+export const EVIDENCE_REFERENCE_PATH = "references/evidence.md";
+export const CODE_REVIEW_REFERENCE_PATH = "references/code-review.md";
 
 // ---------------------------------------------------------------------------
 // Health checks
@@ -268,6 +270,42 @@ An owner-only check is something only the company owner can do: a tap, a switch 
 PAR-200 (build) needs the owner to tap approve in Stripe. Do: open PAR-201 "Tap approve in Stripe" assigned to the owner, finish the rest of PAR-200, mention PAR-201 in the closing comment. Don't: set PAR-200 blockedByIssueIds to [PAR-201].
 `;
 
+export const EVIDENCE_REFERENCE = `# Evidence: a screenshot that shows the work was done
+
+Work that reaches the outside world (publishing a page or campaign, going live, submitting a form, paying an invoice) is closed with a screenshot of the result, not a claim. When an agent closes such an issue, the Cockpit checks that evidence was recorded and reopens the issue if not. After three reopens it goes to the owner.
+
+## When to take evidence
+
+- Before you set \`done\` on outward work: the page is live, the form was accepted, the campaign shows as published.
+- Internal work (code, docs, reports, a payroll run, a fix PR) does not need it. UI work you built still gets \`pib-shot\` (\`references/screenshots.md\`).
+
+## How
+
+1. Look at the logged-in result with \`pib-browser shot --identity <id> --issue PAR-n --expect "<text that must be on the page>" --json\`. It returns \`{path, bytes, sha256, url, identity, expected}\`. Use \`--redact-region x,y,w,h\` over anything private. The browser keeps the login; you never see or type a password, cookie or token.
+2. Upload it: \`pib-evidence <png> --issue PAR-n --step <short-name>\`. It prints \`{attachmentId, sha256}\`. If the upload fails it exits nonzero and prints no id: do not invent one.
+3. Record it: ${T(OPS_TOOL_NAMES.evidenceRecord)} with \`issueId\`, \`step\`, \`attachmentId\`, \`sha256\` and a one-line \`summary\`. Only the agent that uploaded the attachment can record it; it must be an image on that issue. Set \`notify: true\` only when the owner should see a confirmation on their phone (one push per issue and step; quiet hours defer it).
+4. Close the issue. A typed \`**Evidence:**\` line alone does not pass the check; the recorded step does.
+
+## Never in a shot
+
+Passwords, tokens, API keys, full card numbers, one-time codes, a client's private data you do not need, or another person's inbox. Redact the region, or choose a view that does not show it. The server cannot check what a picture contains: you can.
+
+## When the browser stops you
+
+- **Exit 6 (session expired):** the login needs a person. Raise it once with ${T(TOOL_NAMES.askOwner)} (kind \`grant\`, naming the identity), finish everything else on the issue, and do not retry.
+- **Exit 7 (refused by policy):** that site, identity or action is not allowed for you. Do not look for a way around it. Say so on the issue and, if the work truly needs it, ${T(TOOL_NAMES.askOwner)} (kind \`decision\`).
+- **Exit 8 (approval required):** a step with an effect (publish, submit, pay) needs a person's approval first. Raise the approval, wait for it, then run the step with \`--approval PAR-n\`. Never press the button without it.
+- **Exit 3 (no browser), 4 (expected text missing), 5 (no screenshot):** nothing is proven. Do not close as done. Read the message, fix the cause or report it.
+
+## When a shot does not apply
+
+If the issue is not really outward work (the check misread its title), comment \`Evidence: not applicable, because <reason>\` as the closing agent. That passes the check and the reason is kept for audit. Never use it to skip real outward work.
+
+## Alongside Visual QA
+
+The Visual QA overflow gate for UI changes stays as it is. For outward work, capture evidence with \`pib-evidence\`; both can apply to one issue.
+`;
+
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
 
 ${T(TOOL_NAMES.askOwner)} asks once per issue. Every question carries a link to the exact screen where the owner acts (for a plain decision, the issue itself) and, for a grant, the steps. A question without them is refused with what is missing.
@@ -401,6 +439,38 @@ Until all three are done the loop does not run: say so in the retro, once.
 - Never apply a coach's proposal to the company's copy of a plugin skill.
 - Never change a "never" rule, an approval step or a spending limit without the owner.
 - Never count a proposal as an improvement until it is in the ledger with a number.
+`;
+
+// ---------------------------------------------------------------------------
+// Code review: rounds, tags and the verdict line
+// ---------------------------------------------------------------------------
+
+export const CODE_REVIEW_REFERENCE = `# Code review: tags, rounds and the verdict line
+
+For a code pull request (the Code Reviewer's work; the Cockpit counts what you write here).
+
+## Tag every finding
+- **Important**: breaks behaviour, security, data or the acceptance criteria. Must be fixed before PASS.
+- **Nit**: style or taste. Never blocks a PASS; say it once.
+- **Pre-existing**: wrong before this change. Name it, do not block on it, and it is not the author's to fix here.
+
+## Rounds
+- The first round is a full review: report **all** findings at once, never drip-feed.
+- Never repost a finding. Link the earlier comment if you must point back.
+- Every later round is **diff-only**: read what changed since your last review, not the whole pull request again.
+- Answer every finding the author replied to: accepted, or why not.
+- After **THREE** rounds do not start a fourth. Do not write a fourth CHANGES NEEDED: comment that the round cap is reached and hand the issue to the Planner.
+
+## The verdict line
+End the review comment with exactly one line:
+
+\`REVIEW: PASS sha=<12hex> ci=<green|red>\`
+
+or
+
+\`REVIEW: CHANGES NEEDED sha=<12hex> ci=<green|red>\`
+
+\`sha\` is the first 12 characters of the commit you reviewed; \`ci\` is the state of its checks. PASS needs \`ci=green\`. One verdict line per comment; the Cockpit counts a round per CHANGES NEEDED comment, not per sha.
 `;
 
 // ---------------------------------------------------------------------------

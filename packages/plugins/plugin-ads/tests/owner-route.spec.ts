@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval, routeFromImpact } from "../src/owner-route.js";
+import { DEFAULT_OWNER_THRESHOLD_MINOR, ownerThresholdMinor, lifetimeBudgetMinor, ownerRouteOf, isOwnerDelegateApproval, routeFromImpact, isSpendRaising, asksForActive, SPEND_RAISING_KINDS } from "../src/owner-route.js";
 import type { ApprovalRow, ProposalRow } from "../src/db.js";
 import { signoffState } from "../src/signoffs.js";
 
@@ -31,7 +31,8 @@ describe("owner-route", () => {
   describe("ownerRouteOf", () => {
     const scope = (threshold: number) => ({ currency: "ZAR", owner_threshold_minor: threshold } as any);
     [
-      ["<=threshold => delegate", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01", endDate: "2026-01-10" }, "delegate"],
+      // PAR-6684: create_campaign is spend-raising, so even a small one is the owner's
+      ["<=threshold => owner (spend-raising)", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01", endDate: "2026-01-10" }, "owner_required"],
       [">threshold => owner", scope(50_000), { dailyBudgetMinor: 5_001, startDate: "2026-01-01", endDate: "2026-01-10" }, "owner_required"],
       ["null => owner", scope(50_000), { dailyBudgetMinor: 5_000, startDate: "2026-01-01" }, "owner_required"],
     ].forEach(([desc, s, payload, route]) => {
@@ -81,5 +82,40 @@ describe("routeFromImpact: rows stored before 0.3.9", () => {
 
   it("an above-threshold spend still routes to the owner", () => {
     expect(ownerRouteOf({ currency: "ZAR", owner_threshold_minor: null }, { kind: "change_budget", payload: {}, impact: { addedThisMonthMinor: 90_000 } } as any).route).toBe("owner_required");
+  });
+});
+
+describe("isSpendRaising (PAR-6684)", () => {
+  const scope = { currency: "ZAR", owner_threshold_minor: 50_000 } as any;
+  it("every Peet-only kind is spend-raising and owner_required whatever the amount", () => {
+    for (const kind of SPEND_RAISING_KINDS.filter((k) => k !== "change_budget")) {
+      expect(isSpendRaising({ kind, payload: {} } as any)).toBe(true);
+      expect(ownerRouteOf(scope, { kind, payload: { dailyBudgetMinor: 1, startDate: "2026-01-01", endDate: "2026-01-01", lifetimeBudgetMinor: 1 }, impact: { addedThisMonthMinor: 1 } } as any).route).toBe("owner_required");
+    }
+  });
+  it("pause and copy-only kinds are not spend-raising", () => {
+    for (const kind of ["pause_campaign", "create_ad_creative", "creative_check"]) expect(isSpendRaising({ kind, payload: {} } as any)).toBe(false);
+  });
+  ([
+    ["increase", 6000, 5000, undefined, true],
+    ["decrease", 4000, 5000, undefined, false],
+    ["equal", 5000, 5000, undefined, true],
+    ["null new", null, 5000, undefined, true],
+    ["null current in payload", 4000, null, undefined, true],
+    ["fresh read null overrides payload", 4000, 5000, null, true],
+    ["fresh read decides", 4000, 1000, 5000, false],
+  ] as const).forEach(([desc, next, current, fresh, expected]) => {
+    it(`change_budget ${desc}`, () => {
+      const p = { kind: "change_budget", payload: { newDailyBudgetMinor: next, currentDailyBudgetMinor: current } } as any;
+      expect(isSpendRaising(p, fresh)).toBe(expected);
+      expect(ownerRouteOf(scope, { ...p, impact: { addedThisMonthMinor: 0 } }, fresh).route).toBe(expected ? "owner_required" : "delegate");
+    });
+  });
+  it("asksForActive: only a create kind with a non-PAUSED status", () => {
+    expect(asksForActive({ kind: "create_ad", payload: { status: "ACTIVE" } } as any)).toBe(true);
+    expect(asksForActive({ kind: "create_campaign", payload: { status: "ENABLED" } } as any)).toBe(true);
+    expect(asksForActive({ kind: "create_ad", payload: { status: "PAUSED" } } as any)).toBe(false);
+    expect(asksForActive({ kind: "create_ad", payload: {} } as any)).toBe(false);
+    expect(asksForActive({ kind: "resume_campaign", payload: { status: "ACTIVE" } } as any)).toBe(false);
   });
 });

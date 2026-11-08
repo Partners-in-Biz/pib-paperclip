@@ -2,6 +2,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { isSecretRef, readConfig, secretField, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import type { R2Config } from "./r2-store.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
+import { describeVoiceReadiness, type VoiceReadiness } from "./voice-readiness.js";
+import { resolveTelephonySecret } from "./secrets.js";
+import { seedNumbersFromSecrets, validateNumbers, type NumbersSource, type TelephonyNumber } from "./numbers.js";
 
 export interface TelephonySettings {
   recordingEnabled: boolean;
@@ -18,6 +21,12 @@ export interface TelephonySettings {
   usMessagingServiceSid: string | null;
   whatsappFrom: string | null;
   smsHolidays: string[];
+  /** Where Twilio reaches this Paperclip (https://host, no path). Needed to place calls. */
+  publicBaseUrl: string | null;
+  /** The company's Twilio numbers; see numbers.ts. */
+  numbers: TelephonyNumber[];
+  /** "settings" once saved here; "secrets" while the list is seeded from the old secret names; "none" when empty. */
+  numbersSource: NumbersSource;
 }
 
 export interface SecretStatus {
@@ -124,6 +133,26 @@ function validateWhatsappFrom(value: unknown): string | null {
   return match[1];
 }
 
+/**
+ * The public address Twilio uses for status callbacks: http(s), no path beyond
+ * the origin, no query, no credentials. Trailing slashes are dropped.
+ */
+export function validatePublicBaseUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.search || url.hash || url.username || url.password) return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  return url.origin;
+}
+
 export interface StateKey {
   scopeKind: "company";
   scopeId: string;
@@ -174,6 +203,8 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     : {}) as Record<string, unknown>;
 
   const callerIdList = Array.isArray(raw.callerIds) ? raw.callerIds : [];
+  const numbers = validateNumbers(raw.numbers).numbers;
+  const numbersSource: NumbersSource = numbers.length > 0 ? "settings" : "none";
   const userIdList = Array.isArray(raw.voiceAllowedUserIds) ? raw.voiceAllowedUserIds : [];
   const holidaysList = Array.isArray(raw.smsHolidays) ? raw.smsHolidays : [];
 
@@ -196,7 +227,27 @@ export async function readSettings(ctx: PluginContext, companyId: string): Promi
     usMessagingServiceSid: validateMessagingServiceSid(raw.usMessagingServiceSid),
     whatsappFrom: validateWhatsappFrom(raw.whatsappFrom),
     smsHolidays: validateSmsHolidays(holidaysList),
+    publicBaseUrl: validatePublicBaseUrl(raw.publicBaseUrl),
+    numbers,
+    numbersSource,
   };
+}
+
+/**
+ * The settings with the Numbers list filled from the old secrets when the
+ * company has saved none. Called where a number is needed, after any access
+ * check, so an unauthorised caller never triggers a secret read.
+ */
+export async function withSeededNumbers(ctx: PluginContext, companyId: string, settings: TelephonySettings): Promise<TelephonySettings> {
+  if (settings.numbers.length > 0) return settings;
+  let seeded: TelephonyNumber[] = [];
+  try {
+    seeded = await seedNumbersFromSecrets(ctx, companyId);
+  } catch {
+    seeded = [];
+  }
+  if (seeded.length === 0) return settings;
+  return { ...settings, numbers: seeded, numbersSource: "secrets" };
 }
 
 export async function saveSettings(
@@ -347,16 +398,42 @@ export async function saveSettings(
     }
   }
 
+  if ("publicBaseUrl" in params) {
+    const val = params.publicBaseUrl;
+    if (val === null || val === "") {
+      updates.publicBaseUrl = null;
+    } else {
+      const validated = validatePublicBaseUrl(val);
+      if (validated === null) {
+        errors.publicBaseUrl = "Must be an http(s) origin like https://paperclip.example.com, with no path or query";
+      } else {
+        updates.publicBaseUrl = validated;
+      }
+    }
+  }
+
+  if ("numbers" in params) {
+    const checked = validateNumbers(params.numbers);
+    if (checked.errors.length > 0) {
+      errors.numbers = checked.errors.join(" ");
+    } else {
+      updates.numbers = checked.numbers;
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors };
   }
 
   const merged: TelephonySettings = { ...current, ...updates };
+  // The list is saved here now (an empty save means "no numbers", not "seed again").
+  const { numbersSource: _derived, ...toStore } = merged;
+  void _derived;
 
   // Write to state
-  await ctx.state.set(settingsStateKey(companyId), merged);
+  await ctx.state.set(settingsStateKey(companyId), toStore);
 
-  return { ok: true, settings: merged };
+  return { ok: true, settings: { ...merged, numbersSource: merged.numbers.length > 0 ? "settings" : "none" } };
 }
 
 export interface SettingsView {
@@ -364,10 +441,12 @@ export interface SettingsView {
   settings: TelephonySettings;
   secrets: SecretStatus;
   templateSyncRequestedAt: string | null;
+  /** What voice calling still needs; see voice-readiness.ts. */
+  voice: VoiceReadiness;
 }
 
 export async function settingsView(ctx: PluginContext, companyId: string): Promise<SettingsView> {
-  const settings = await readSettings(ctx, companyId);
+  const settings = await withSeededNumbers(ctx, companyId, await readSettings(ctx, companyId));
   const status = await secretStatus(ctx, companyId, Array.from(TELEPHONY_SECRET_NAMES));
 
   let companyName: string | null = null;
@@ -393,11 +472,20 @@ export async function settingsView(ctx: PluginContext, companyId: string): Promi
     // Tolerate errors
   }
 
+  let r2 = false;
+  try {
+    const cfg = await ctx.config.get(companyId);
+    r2 = r2Configured(cfg && typeof cfg === "object" ? (cfg as Record<string, unknown>) : {});
+  } catch {
+    r2 = false;
+  }
+
   return {
     company: { id: companyId, name: companyName },
     settings,
     secrets: status,
     templateSyncRequestedAt,
+    voice: describeVoiceReadiness(status, settings, r2),
   };
 }
 
@@ -410,12 +498,8 @@ export async function requestTemplateSync(ctx: PluginContext, companyId: string,
 export async function secretStatus(ctx: PluginContext, companyId: string, refs: string[]): Promise<SecretStatus> {
   const result: SecretStatus = {};
   for (const ref of refs) {
-    try {
-      const value = await ctx.secrets.resolve(ref, { companyId });
-      result[ref] = value ? "set" : "missing";
-    } catch {
-      result[ref] = "missing";
-    }
+    const value = await resolveTelephonySecret(ctx, companyId, ref);
+    result[ref] = value ? "set" : "missing";
   }
   return result;
 }

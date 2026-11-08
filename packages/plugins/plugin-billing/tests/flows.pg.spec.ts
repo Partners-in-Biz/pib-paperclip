@@ -303,6 +303,73 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
       expect(d.payments).toHaveLength(1);
     });
 
+    /** A proof that arrived before any invoice could match it. */
+    async function unmatchedPop(messageId: string, snippet = "Attached is the PoP") {
+      await h.deliver(MAIL_RECEIVED, COMPANY, {
+        key: `mbx:${messageId}`, accountAddress: "peet@pib.test", messageId, threadId: `th-${messageId}`, from: { email: "someone@else.test" }, to: [],
+        subject: "Payment", snippet, receivedAt: new Date().toISOString(), attachments: [],
+        triage: { category: "proof_of_payment", urgency: 0, needsReply: 0, phishing: 0, confidence: 0.9 },
+      });
+      const pops = await h.call<Array<{ id: string; invoiceId: string | null; status: string; issueId: string }>>("billing.pops", {});
+      const pop = (await h.client.query(`SELECT id FROM ${NAMESPACE}.pops WHERE mail_message_id = $1`, [messageId])).rows[0] as { id: string };
+      const found = pops.find((p) => p.id === pop.id)!;
+      expect(found).toMatchObject({ invoiceId: null, status: "pending" });
+      return found;
+    }
+
+    async function popRow(id: string) {
+      return (await h.client.query(`SELECT status, invoice_id, match_basis, payment_id FROM ${NAMESPACE}.pops WHERE id = $1`, [id])).rows[0] as { status: string; invoice_id: string | null; match_basis: string; payment_id: string | null };
+    }
+
+    it("links a proof to the payment on a paid invoice, with no new money", async () => {
+      const pop = await unmatchedPop("gm-link-1");
+      const invoice = await sentInvoice();
+      const open = await unmatchedPop("gm-link-2");
+      await expect(h.call("billing.link-pop", { popId: open.id, invoiceId: invoice.id })).rejects.toThrow(/not paid yet/);
+      const total = (await detail(invoice.id)).invoice.outstandingMinor;
+      await h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: total, paymentKey: "link-p1" });
+      const before = await detail(invoice.id);
+      expect(before.payments).toHaveLength(1);
+      const entries = (await journals()).length;
+      expect((await popRow(pop.id)).status).toBe("pending");
+
+      await expect(h.call("billing.link-pop", { popId: pop.id, invoiceId: invoice.id }, agentContext())).rejects.toThrow(/Agents may not/);
+      await h.call("billing.link-pop", { popId: pop.id, invoiceId: invoice.id });
+
+      const after = await detail(invoice.id);
+      expect(after.payments).toHaveLength(1);
+      expect(after.invoice.status).toBe("paid");
+      expect((await journals()).length).toBe(entries);
+      expect(await popRow(pop.id)).toMatchObject({ status: "confirmed", invoice_id: invoice.id, match_basis: "manual", payment_id: (after.payments[0] as unknown as { id: string }).id });
+      expect(h.issues.get(pop.issueId)!.status).toBe("done");
+
+      // Its issue closing must not settle anything again, and a second link is refused.
+      await h.deliver("issue.updated", COMPANY, {}, { entityId: pop.issueId, actorType: "user" });
+      expect((await detail(invoice.id)).payments).toHaveLength(1);
+      await expect(h.call("billing.link-pop", { popId: pop.id, invoiceId: invoice.id })).rejects.toThrow(/already been checked/);
+    });
+
+    it("closes an unmatched proof naming only this invoice once the invoice is paid in full", async () => {
+      const named = await unmatchedPop("gm-sweep-1");
+      const both = await unmatchedPop("gm-sweep-2");
+      const silent = await unmatchedPop("gm-sweep-3");
+      const invoice = await sentInvoice();
+      await h.client.query(`UPDATE ${NAMESPACE}.pops SET snippet = $2 WHERE id = $1`, [named.id, `Morning. Attached is the PoP for INV ${invoice.number}. Regards`]);
+      await h.client.query(`UPDATE ${NAMESPACE}.pops SET snippet = $2 WHERE id = $1`, [both.id, `PoP for ${invoice.number} and LUM-999`]);
+      const total = (await detail(invoice.id)).invoice.outstandingMinor;
+
+      await h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: 1_000, paymentKey: "sweep-p1" });
+      expect((await popRow(named.id)).status).toBe("pending");
+
+      await h.call("billing.record-payment", { invoiceId: invoice.id, amountMinor: total - 1_000, paymentKey: "sweep-p2" });
+      const after = await detail(invoice.id);
+      expect(after.payments).toHaveLength(2);
+      expect(await popRow(named.id)).toMatchObject({ status: "confirmed", invoice_id: invoice.id, match_basis: "number" });
+      expect(h.issues.get(named.issueId)!.status).toBe("done");
+      expect((await popRow(both.id)).status).toBe("pending");
+      expect((await popRow(silent.id)).status).toBe("pending");
+    });
+
     it("rejects a POP when its issue is cancelled", async () => {
       const invoice = await sentInvoice();
       await h.deliver(MAIL_RECEIVED, COMPANY, {
@@ -673,6 +740,8 @@ describe.skipIf(!available)("billing flows (postgres)", () => {
     const expense = await run("billing.create-expense", { description: "Taxi", amountMinor: 5_000, category: "travel", vatClaimable: false });
     await run("billing.void-expense", { expenseId: expense.id });
     await expect(run("billing.receipt-file", { expenseId: expense.id })).rejects.toThrow(/No file/);
+    const { r2: _r2, ...noR2 } = SETTINGS;
+    h.config.set(COMPANY, noR2);
     await expect(run("billing.upload-url", { purpose: "receipt", mime: "image/png", bytes: 10 })).rejects.toThrow(/private R2/);
     await expect(run("billing.correct-decision", { decisionId: "none", correctedTo: "travel" })).resolves.toEqual({ ok: false });
     const reports = await run("billing.reports", { from: "2026-01-01", to: "2026-12-31" });

@@ -196,7 +196,7 @@ describe.skipIf(!available)("a rehearsal on the canary client is harmless (postg
       expect(converted.data).toMatchObject({ quote: { status: "converted" }, invoice: { status: "draft" } });
       const invoiceId = String(converted.data.invoice.id);
 
-      const ask = await tool("request-invoice-send", { invoiceId, sendTo: "canary@canary.invalid" });
+      const ask = await tool("request-invoice-send", { invoiceId, sendTo: "ap@rehearsal.test" });
       expect(ask.error).toBeUndefined();
       expect(ask.data).toMatchObject({ pendingAction: "send" });
 

@@ -5,6 +5,12 @@ import { createEnv, type Actor } from "../src/service/common.js";
 import { assertPreviewLinksChecked, createPreview, previewLink, previewSlug, reviewPreview } from "../src/service/preview.js";
 import { ORIGIN } from "../src/constants.js";
 
+const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn(async (_ctx: unknown, _opts: Record<string, unknown>) => ({ status: "saved", requestId: "rq", driveFileId: "f1", url: "https://drive.example/f1" })) }));
+vi.mock("@partnersinbiz/pib-plugin-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@partnersinbiz/pib-plugin-kit")>();
+  return { ...actual, driveSave: fakeDriveSave };
+});
+
 type Row = Record<string, unknown>;
 const SPRINT: Row = {
   id: "sp-1", company_id: "co-1", name: "Acme", site_url: "https://acme.co.za", site_name: "Acme", client_ref: null, client_name: "Acme Ltd",
@@ -79,6 +85,34 @@ describe("create-preview", () => {
     expect(String(insert.params[7])).toContain("new intro words");
     expect(String(insert.params[7])).toContain("auction lot listing word");
   });
+
+  it("forwards a caller-supplied client to the Drive save", async () => {
+    fakeDriveSave.mockClear();
+    await createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>", client: { kind: "company", ref: "crm-co-42" } });
+    expect(fakeDriveSave).toHaveBeenCalledTimes(1);
+    expect(fakeDriveSave.mock.calls[0]![1]).toMatchObject({ kind: "seo", subfolder: "03 Deliverables", client: { kind: "company", ref: "crm-co-42" } });
+  });
+
+  it("a sprint with only a free-text client name and no caller client is not copied to Drive (PAR-8128)", async () => {
+    // The fixture sprint has client_ref null and client_name "Acme Ltd" (legacy): it could be anyone's, so no own-folder copy.
+    fakeDriveSave.mockClear();
+    const result = await createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
+    expect(result).toBeTruthy();
+    expect(fakeDriveSave).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ kind: "person", ref: "x" }, /client.kind must be company or contact/],
+    [{ kind: "contact", ref: "  " }, /client.ref must be a non-empty/],
+    [{ kind: "contact" }, /client.ref must be a non-empty/],
+    ["company:x", /client must be an object/],
+  ])("refuses a bad client %j before anything is saved", async (client, msg) => {
+    fakeDriveSave.mockClear();
+    const h = host();
+    await expect(createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>", client } as never)).rejects.toThrow(msg);
+    expect(fakeDriveSave).not.toHaveBeenCalled();
+    expect(h.executes).toHaveLength(0);
+  });
 });
 
 describe("preview links", () => {
@@ -90,8 +124,10 @@ describe("preview links", () => {
 });
 
 describe("review-preview", () => {
-  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
-  const lossy = { ...row, stats: { rendered: { keptPct: 22 } } };
+  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96, liveWords: 500 } } };
+  const lossy = { ...row, stats: { rendered: { keptPct: 22, liveWords: 500 } } };
+  const zeroLive = { ...row, stats: { rendered: { keptPct: 100, liveWords: 0 } } };
+  const noWords = { ...row, stats: { rendered: { keptPct: 100 } } };
   const unchecked = { ...row, stats: {} };
   const owner = { kind: "user", userId: "user-1" } as unknown as Actor;
   it("cannot be done by the agent that made the preview", async () => {
@@ -103,6 +139,10 @@ describe("review-preview", () => {
     await expect(reviewPreview(host(lossy).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(/only 22%/);
     expect(await reviewPreview(host(lossy).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Listings missing" })).toMatchObject({ reviewStatus: "changes_needed" });
     expect(await reviewPreview(host(lossy).env, "co-1", owner, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).toMatchObject({ reviewStatus: "passed" });
+  });
+
+  it("an agent cannot pass when the live page rendered 0 words or the count is missing", async () => {
+    for (const r of [zeroLive, noWords]) await expect(reviewPreview(host(r).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(/0 words/);
   });
 
   it("pass releases the link and wakes the SEO agent; changes needs notes and holds it", async () => {
@@ -118,7 +158,7 @@ describe("review-preview", () => {
 });
 
 describe("a page that keeps failing", () => {
-  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96 } } };
+  const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", created_by: "seo-1", stats: { rendered: { keptPct: 96, liveWords: 500 } } };
   it("goes to the owner after two rounds once the Senior Developer has had a go, instead of back to the agent", async () => {
     const h = host(row, 2, { builds: [{ issueId: "fix-0", agentId: "sen-1", at: "2026-10-02T10:00:00Z", kind: "preview-fix", level: "senior", pageUrl: "https://acme.co.za/" }] });
     const out = await reviewPreview(h.env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "changes", notes: "Claims the client's terms contradict" });

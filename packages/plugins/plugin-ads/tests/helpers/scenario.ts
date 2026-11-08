@@ -1,5 +1,6 @@
 /** Shared scenario helpers for the governance tests: a synced account with campaigns, proposals, and a person or an agent closing an issue. */
-import { getAccount, getProposal, listApprovals } from "../../src/db.js";
+import { randomUUID } from "node:crypto";
+import { getAccount, getProposal, listApprovals, table } from "../../src/db.js";
 import { createProposal } from "../../src/proposals.js";
 import { syncAccount } from "../../src/sync.js";
 import type { ProposalRow } from "../../src/db.js";
@@ -8,7 +9,7 @@ import { ADS_AGENT, COMPANY, OWNER, type World } from "./world.js";
 export const campaign = (id: string, status: "active" | "paused" = "active", daily: number | null = 10_000, channel: string = "mock") => ({ externalId: id, name: `Campaign ${id}`, status, rawStatus: status.toUpperCase(), objective: "OUTCOME_LEADS", channel, dailyBudgetMinor: daily, lifetimeBudgetMinor: null });
 
 /** An account with two campaigns, a week of spend, synced once. `spend` is per day for c1. */
-export async function syncedAccount(w: World, options: { scope?: string; externalId?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; canWrite?: boolean; spend?: number; currency?: string; platform?: "mock" | "meta" | "google"; connectionPlatform?: "mock" | "meta" | "google" } = {}) {
+export async function syncedAccount(w: World, options: { scope?: string; externalId?: string; cap?: number | null; allowWrites?: boolean; signoffs?: "owner" | "owner_client"; canWrite?: boolean; spend?: number; currency?: string; platform?: "mock" | "meta" | "google"; connectionPlatform?: "mock" | "meta" | "google"; campaignCaps?: boolean } = {}) {
   const ext = options.externalId ?? "ext-1";
   const platform = options.platform ?? "mock";
   const made = await w.account({ scope: options.scope ?? "own", externalId: ext, cap: options.cap === undefined ? 500_000 : options.cap, allowWrites: options.allowWrites ?? true, ...(options.signoffs ? { signoffs: options.signoffs } : {}), ...(options.canWrite !== undefined ? { canWrite: options.canWrite } : {}), ...(options.currency ? { currency: options.currency } : {}), ...(platform ? { platform } : {}), ...(options.connectionPlatform ? { connectionPlatform: options.connectionPlatform } : {}) });
@@ -20,7 +21,20 @@ export async function syncedAccount(w: World, options: { scope?: string; externa
     ...days.map((day) => ({ campaignExternalId: "c3", campaignName: "Campaign c3", day, spendMinor: 2000, impressions: 500, clicks: 20, conversions: 1, valueMinor: 8000 })),
   ];
   await syncAccount(w.rt(), (await getAccount(w.ctx, COMPANY, made.accountId))!);
+  if (options.campaignCaps !== false) for (const id of ["c1", "c2", "c3"]) await seedCampaignCap(w, platform, id, BIG_CAP);
   return made;
+}
+
+/** A generous cap, so tests about other rules are not refused by the per-campaign cap. */
+export const BIG_CAP = 10_000_000;
+
+/** Writes (or replaces) a campaign's cap row with a fixed start of its spend window (the row's own default is the real clock, not the test's). */
+export async function seedCampaignCap(w: World, platform: string, externalCampaignId: string, capMinor: number, createdAt = "2026-10-01T00:00:00Z"): Promise<void> {
+  await w.ctx.db.execute(
+    `INSERT INTO ${table(w.ctx, "campaign_caps")} (id, company_id, platform, external_campaign_id, cap_minor, set_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (company_id, platform, external_campaign_id) DO UPDATE SET cap_minor = EXCLUDED.cap_minor, created_at = EXCLUDED.created_at`,
+    [randomUUID(), COMPANY, platform, externalCampaignId, capMinor, `user:${OWNER}`, createdAt],
+  );
 }
 
 export const CREATE = (accountId: string, extra: Record<string, unknown> = {}) => ({ kind: "create_campaign", scopeKey: "own", accountId, name: "Spring leads", objective: "OUTCOME_LEADS", dailyBudgetMinor: 5000, reason: "The last campaign returned 3x.", ...extra });

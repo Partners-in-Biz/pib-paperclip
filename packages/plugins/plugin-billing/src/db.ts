@@ -22,7 +22,7 @@ export type InvoiceStatus =
 export interface InvoiceRow {
   id: string;
   company_id: string;
-  number: string;
+  number: string | null;
   status: InvoiceStatus;
   currency: string;
   customer_kind: string;
@@ -47,6 +47,8 @@ export interface InvoiceRow {
   paid_at?: unknown;
   fx_rate?: number | string | null;
   send_to?: unknown;
+  /** The recipients frozen when the send ticket opened (null: none frozen, resolve at send time). */
+  approval_recipients?: unknown;
   delivery_key?: string | null;
   delivery_status?: string | null;
   delivery_error?: string | null;
@@ -68,7 +70,7 @@ export interface InvoiceRow {
 export const INVOICE_COLUMNS = `id, company_id, number, status, currency, customer_kind, customer_ref, sender, customer,
             sender_snapshot, customer_snapshot, total_minor, tax_rate, due_at, approval_issue_id, pending_action, sent_at,
             created_at, updated_at, default_tax_code, prices_include_vat, notes, subtotal_minor, vat_minor, paid_at, fx_rate,
-            send_to, delivery_key, delivery_status, delivery_error, mail_seq, pdf_key, ledger_status, ledger_error, issue_journal,
+            send_to, approval_recipients, delivery_key, delivery_status, delivery_error, mail_seq, pdf_key, ledger_status, ledger_error, issue_journal,
             recurring_id, recurring_key, subscription_id, quote_id, cancelled_at, void_reason, deal_id`;
 
 /**

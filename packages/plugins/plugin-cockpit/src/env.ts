@@ -19,6 +19,8 @@ export interface Env {
   sleep?: (ms: number) => Promise<void>;
   /** Looks a file up on disk (acceptance screenshots, the Acceptance script). Tests pass a fake; null when it is not there. */
   statFile?: (path: string) => Promise<{ size: number } | null>;
+  /** Reads the pib-browser status file as text (credentials provider "browser"). Tests pass a fake; null when it is not there. */
+  readStatusFile?: (path: string) => Promise<string | null>;
 }
 
 export class CockpitError extends Error {}

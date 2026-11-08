@@ -21,10 +21,12 @@ import { invoiceBalance } from "./balances.js";
 import { emitBankMatchResult, onBankMatched, settleBankMatch } from "./bank.js";
 import { billingSettings, type BillingSettings } from "./config.js";
 import { approveBill, billByApproval, draftBillFromEmail } from "./costs.js";
-import { asObject, getQuote, invoiceByApproval, quoteByApproval, saveQuoteStatus, table } from "./db.js";
+import { asArray, asObject, getQuote, invoiceByApproval, quoteByApproval, type InvoiceRow, saveQuoteStatus, table } from "./db.js";
 import { openQuoteReplyIssue, quoteForReply } from "./followups.js";
 import { markInvoiceSent, reopenSendApproval, startInvoiceSend, startQuoteSend } from "./invoices.js";
-import { parseMailKey, settleMailResult } from "./mail.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
+import { billingPath, companyPrefix } from "./routing.js";
+import { parseAddresses, parseMailKey, settleMailResult } from "./mail.js";
 import { onLedgerResult } from "./posting.js";
 import { choosePopInvoice, closePopIssues, confirmPop, getPop, lookupSender, looksLikePop, mailText, openInvoiceCandidates, recordPop, rejectPop, threadInvoiceId } from "./pop.js";
 import { applyDecision, REQUEST_KINDS, type DecisionRow } from "./requests.js";
@@ -54,7 +56,10 @@ export async function onMailResult(ctx: PluginContext, event: PluginEvent): Prom
   }
   const settings = await billingSettings(ctx, event.companyId || done.delivery.company_id);
   if (parsed.kind === "invoice") {
-    if (done.status === "sent") await markInvoiceSent(ctx, parsed.id, result.sentAt ?? null, "sent", settings);
+    if (done.status === "sent") {
+      const sent = await markInvoiceSent(ctx, parsed.id, result.sentAt ?? null, "sent", settings);
+      if (sent) await recordInvoiceSent(ctx, sent, done.delivery.recipients, result);
+    }
     else {
       const error = String(result.error ?? "Sending failed");
       // The mail is dead: the invoice is still a draft, so the person is asked again (the next "done" mints the next key).
@@ -95,6 +100,22 @@ export async function onMailResult(ctx: PluginContext, event: PluginEvent): Prom
     );
   }
   void settings;
+}
+
+/** Keep who the invoice went to and the mail's message id on the invoice, and say so once on its approval ticket. */
+async function recordInvoiceSent(ctx: PluginContext, invoice: InvoiceRow, recipients: unknown, result: MailSendResult): Promise<void> {
+  const to = parseAddresses(asArray(recipients));
+  await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET sent_to = $2::jsonb, sent_message_id = $3 WHERE id = $1`, [invoice.id, JSON.stringify(to), result.messageId ?? null]);
+  if (!invoice.approval_issue_id) return;
+  const prefix = await companyPrefix(ctx, invoice.company_id);
+  const link = billingPath(prefix, { tab: "invoices", client: `${invoice.customer_kind === "contact" ? "contact" : "company"}:${invoice.customer_ref}` });
+  const body = [
+    `Invoice ${invoiceNumberLabel(invoice.number)} was emailed to ${to.map((r) => r.email).join(", ") || "no one"}.`,
+    `Sent at: ${String(result.sentAt ?? invoice.sent_at ?? "")}`,
+    `Message id: ${result.messageId ?? "none"}`,
+    `Open it: ${link}`,
+  ].join("\n");
+  await ctx.issues.createComment(invoice.approval_issue_id, body, invoice.company_id).catch((e: unknown) => ctx.logger.warn("Sent comment failed", { invoiceId: invoice.id, reason: errorMessage(e) }));
 }
 
 /** Deliveries the outbox gave up on: show the failure on the document. */

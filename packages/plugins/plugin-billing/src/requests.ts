@@ -133,7 +133,7 @@ export function sendReviewBrief(what: string, emailed: boolean, approver: string
 export interface SendRequestResult {
   invoiceId?: string;
   quoteId?: string;
-  number: string;
+  number: string | null;
   issueId: string;
   issue: string;
   pendingAction: "send";
@@ -166,7 +166,10 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
     await ctx.db.execute(`UPDATE ${table(ctx, "invoices")} SET send_to = $2::jsonb WHERE id = $1`, [invoice.id, JSON.stringify(parseAddresses(params.sendTo))]);
     invoice.send_to = parseAddresses(params.sendTo);
   }
-  const recipients = emailEnabled(settings) ? await recipientsFor(ctx, companyId, invoice) : [];
+  const emailOn = emailEnabled(settings);
+  const recipients = emailOn ? await recipientsFor(ctx, companyId, invoice) : [];
+  // With email on, the address on the ticket is the address the invoice goes to: no address, no ticket.
+  if (emailOn && recipients.length === 0) throw new BillingError(`Invoice for ${customerName(invoice)} has no email address. Add one to the customer in the CRM (or pass sendTo), then ask again.`);
   const amount = formatMoneyMinor(Number(invoice.total_minor), invoice.currency);
   const name = customerName(invoice);
   const link = billingPath(prefix, { tab: "invoices", client: clientParam(invoice) });
@@ -192,9 +195,9 @@ export async function requestInvoiceSend(ctx: PluginContext, context: PluginPerf
   const issue = { id: route.id };
   // Claim the invoice for this approval only if nothing changed meanwhile (never a whole-row save).
   const claim = await ctx.db.execute(
-    `UPDATE ${table(ctx, "invoices")} SET approval_issue_id = $2, pending_action = 'send', updated_at = now()
+    `UPDATE ${table(ctx, "invoices")} SET approval_issue_id = $2, pending_action = 'send', approval_recipients = $4::jsonb, updated_at = now()
       WHERE id = $1 AND status = 'draft' AND COALESCE(delivery_status, '') <> 'queued' AND (pending_action IS NULL OR approval_issue_id = $3)`,
-    [invoice.id, issue.id, staleIssue],
+    [invoice.id, issue.id, staleIssue, emailOn ? JSON.stringify(recipients) : null],
   );
   if ((claim.rowCount ?? 0) === 0) {
     await withdrawIssue(ctx, companyId, issue.id, `invoice ${invoiceNumberLabel(invoice.number)} changed while this was opened (another send request, or it was sent).`);

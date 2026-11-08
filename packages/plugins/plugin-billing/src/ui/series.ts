@@ -263,3 +263,13 @@ export function draftsToSend(snapshot: Snapshot, now = Date.now()): DraftEntry[]
   }
   return out.sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? "") || invoiceNumberLabel(a.number).localeCompare(invoiceNumberLabel(b.number)));
 }
+
+/** "1 retainer and 2 repeating invoices": what the MRR is made of, each part only when it is there. */
+export function recurringSources(mrr: { active: number; retainers?: number; repeating?: number }): string {
+  const retainers = mrr.retainers ?? mrr.active;
+  const repeating = mrr.repeating ?? 0;
+  const parts: string[] = [];
+  if (retainers > 0 || repeating === 0) parts.push(`${retainers} retainer${retainers === 1 ? "" : "s"}`);
+  if (repeating > 0) parts.push(`${repeating} repeating invoice${repeating === 1 ? "" : "s"}`);
+  return parts.join(" and ");
+}

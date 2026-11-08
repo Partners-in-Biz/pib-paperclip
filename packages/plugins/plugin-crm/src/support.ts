@@ -36,6 +36,8 @@ import {
   listCases,
   listCasesByStatus,
   listFeedback,
+  moveCaseTrail,
+  refileCase,
   saveCase,
   saveFeedback,
   type CaseSeverity,
@@ -348,6 +350,72 @@ export function caseOut(c: SupportCase, now: number) {
     sla,
     issueId: c.issueId ?? c.replyIssueId,
   };
+}
+
+const sameClient = (a: ClientKey, b: ClientKey) => a.kind === b.kind && a.id === b.id;
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The agent tool and page action: re-file a case that was filed under the wrong client, to another customer company. Answered and
+ * resolved cases move too (a mis-file is our filing error; `reason` and the move event are the record). The SDK has no transaction,
+ * so the writes run in an order a re-run with the same arguments finishes: the trail (timeline and feedback rows), then the case row
+ * (only while it is still under the old client), then the trail again (a row the reopen path wrote under the old client meanwhile),
+ * then one event on the new client's timeline. Title, status, SLA timestamps and the linked issue stay; the issue's project is never
+ * changed. The issue gets a one-line comment, best effort.
+ */
+export async function moveSupportCaseTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const id = typeof params.caseId === "string" ? params.caseId.trim() : "";
+  if (!id) throw new CrmError("caseId is required (list-support-cases shows them)");
+  const reason = clamp(params.reason, 500);
+  if (!reason) throw new CrmError("reason is required: why the case belongs to the other client");
+  const target = parseClientRef(params.client);
+  if (target.kind !== "company") throw new CrmError("client must be company:<id>: a case moves to a customer company (find it with find-records)");
+  const found = await getCase(ctx, viewer.companyId, id);
+  if (!found) throw new CrmError("That support case was not found");
+  const fromName = await requireClient(ctx, viewer, found.client);
+  const toName = await requireClient(ctx, viewer, target);
+  const info = await clientInfo(ctx, viewer.companyId, target);
+  if (info?.lifecycle !== "customer") throw new CrmError(`${toName} is not a customer (lifecycle ${info?.lifecycle ?? "unknown"}): only a customer has support cases`);
+  const now = Date.now();
+  const to = `${target.kind}:${target.id}`;
+  const rerun = "Re-run the same call to finish the move.";
+  const event = (old: ClientKey, oldName: string, issueId: string | null) =>
+    logOnClient(ctx, viewer.companyId, target, "case_moved", `Support case "${found.title}" re-filed here from ${oldName} (${old.kind}:${old.id}): ${reason}`, `care:case:${id}:moved:${old.id}:${target.id}`, issueId);
+  if (sameClient(found.client, target)) {
+    // Already there: finish the trail of a move that stopped after the case row moved (each write is idempotent). A row still under
+    // another client names the client it came from, so the move event is written too; a complete trail changes nothing.
+    const stragglers = await moveCaseTrail(ctx, viewer.companyId, id, target);
+    for (const old of stragglers) await event(old, (await clientInfo(ctx, viewer.companyId, old))?.name ?? `${old.kind}:${old.id}`, found.issueId);
+    return { moved: false, note: `Already filed under ${toName} (${to}).${stragglers.length ? " Finished the trail of an earlier move that stopped half-way." : ""}`, ...caseOut(found, now) };
+  }
+  const from = `${found.client.kind}:${found.client.id}`;
+  try {
+    await moveCaseTrail(ctx, viewer.companyId, id, target);
+  } catch (error) {
+    throw new CrmError(`The move stopped before the case itself moved (${errorText(error)}); it is still filed under ${fromName}. ${rerun}`);
+  }
+  const after = await refileCase(ctx, viewer.companyId, id, found.client, target);
+  if (!after) throw new CrmError("That support case was not found");
+  if (!sameClient(after.client, target)) {
+    throw new CrmError(`The case is now filed under ${after.client.kind}:${after.client.id}, not ${from}: another change moved it meanwhile. Nothing more was changed; check list-support-cases before you move it again.`);
+  }
+  let sweepError: string | null = null;
+  try {
+    await moveCaseTrail(ctx, viewer.companyId, id, target);
+  } catch (error) {
+    sweepError = errorText(error);
+  }
+  await event(found.client, fromName, after.issueId);
+  if (sweepError) throw new CrmError(`The case moved to ${toName}, but a timeline row may still be under ${fromName} (${sweepError}). ${rerun}`);
+  let warning: string | null = null;
+  if (after.issueId) {
+    try {
+      await ctx.issues.createComment(after.issueId, `Support case re-filed from ${fromName} to ${toName}: ${reason}`, viewer.companyId);
+    } catch (error) {
+      warning = `The case moved, but the comment on its issue failed (${errorText(error)}).`;
+    }
+  }
+  return { moved: true, ...caseOut(after, now), from, to, fromName, toName, reason, ...(warning ? { warning } : {}) };
 }
 
 export async function listSupportCasesTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

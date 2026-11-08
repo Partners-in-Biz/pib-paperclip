@@ -3,9 +3,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { claimRecordings, releaseLease } from "../src/lease.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: any;
-describe("lease management", () => {
+describe.skipIf(!available)("lease management", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

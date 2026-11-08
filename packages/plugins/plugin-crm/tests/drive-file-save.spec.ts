@@ -8,10 +8,11 @@ import { boot, CO, toolRaw, seed, company, contact } from "./helpers/crm.js";
 import { CLIENT_SUBFOLDERS, LEGACY_SUBFOLDER_ALIASES, PRODUCT_SUBFOLDERS } from "../src/drive/convention.js";
 import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
 import { saveDriveFile } from "../src/drive/save.js";
+import { reportFileName } from "../src/report-copy.js";
 import { DRIVE_ID, KEY_JSON, LAYOUT, SEEDED_CLIENT, fakeGoogle, folderAt, isFolder, seedPibDrive, uploadsOf } from "./support/fake-google-drive.js";
 
-/** The bare event the kit's driveSave emits; the SDK's event type does not list it. */
-const DRIVE_SAVE_REQUESTED = "drive.save-requested" as never;
+/** How the host delivers a producer's (here Social's) kit driveSave emit: `plugin.<producer>.drive.save-requested` (PAR-8114). */
+const DRIVE_SAVE_REQUESTED = "plugin.partnersinbiz.social.drive.save-requested" as const;
 const NATIVE = { driveServiceAccountJson: KEY_JSON, drive: { sharedDriveId: DRIVE_ID } };
 const ACME = `${LAYOUT.clients}/Acme Ltd (Primary Contact)`;
 const b64 = (text: string) => Buffer.from(text).toString("base64");
@@ -51,6 +52,14 @@ beforeEach(() => clearServiceAccountTokenCache());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("drive_file_save into a client's folder", () => {
+  it("PAR-7733: the canary dry-run report name passes the name gate and saves; a 'DRY RUN - ' prefix is refused", async () => {
+    const { saveDirect } = await setup();
+    const name = reportFileName("Acme Ltd", "2026-10", 1, { dryRun: true });
+    expect(name).toBe("2026-10-01 DRY RUN Acme Ltd v01.html");
+    expect(await saveDirect({ name, mimeType: "text/html", subfolder: "04 Reports" })).toMatchObject({ status: "saved", name });
+    expect((await saveDirect({ name: `DRY RUN - ${reportFileName("Acme Ltd", "2026-10", 1)}` })).status).toBe("invalid_name");
+  });
+
   it("(d) subfolder 'Assets/Social' lands in that folder of the client, and the stored row keeps the sub-folder and the folder id", async () => {
     const { harness, google, rows } = await setup();
     const r = await toolRaw(harness, "drive_file_save", save({ subfolder: "Assets/Social" }));

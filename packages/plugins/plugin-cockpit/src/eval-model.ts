@@ -562,6 +562,8 @@ export interface Waiver {
   reason: string;
   by: string;
   at: string;
+  /** ISO date after which the waiver no longer counts (optional). */
+  expires?: string;
 }
 
 export interface ResultsFile {
@@ -600,7 +602,7 @@ export function offlineGate(skills: Array<{ slug: string; hash: string; scenario
     const open = (status: OfflineVerdict["status"], reason: string) => v(status, !file.enforce, file.enforce ? reason : `${reason} (not enforced yet: record a baseline, then set enforce to true)`);
     if (!baseline) return open("no-baseline", `${slug} has no recorded baseline: run its scenarios, then record the baseline in evals/results.json.`);
     if (baseline.hash === hash) return v("unchanged", true, "The skill is the one the baseline was recorded for.");
-    const waiver = entry?.waivers?.find((w) => w.hash === hash);
+    const waiver = entry?.waivers?.find((w) => w.hash === hash && !(w.expires && w.expires < new Date().toISOString().slice(0, 10)));
     if (waiver) return v("waived", true, `Waived by ${waiver.by} on ${waiver.at}: ${waiver.reason}`);
     const candidate = entry?.candidates?.[hash];
     if (!candidate) return open("unmeasured", `${slug} changed (${baseline.hash} to ${hash}) and no results are recorded for the new text: run its scenarios on the candidate and add the results to evals/results.json (or a waiver, with a reason).`);

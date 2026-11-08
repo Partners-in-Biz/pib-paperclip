@@ -8,11 +8,14 @@ import {
   createMockCtx,
   buildSignedRecordingStatusInput,
 } from "./helpers/webhook-mocks.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let pgDb: PgDb;
 const COMPANY_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 
-describe("Recording status webhook handler", () => {
+describe.skipIf(!available)("Recording status webhook handler", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

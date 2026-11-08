@@ -36,11 +36,14 @@ describe("printable invoice", () => {
     expect(html).toContain("Due 2026-10-10");
   });
 
-  it("titles quotes as quotes and omits bank details", () => {
-    const html = buildInvoiceHtml({ ...base, kind: "Quote", number: "QTE-0002", payment: { bankName: "FNB" } });
+  it("titles quotes as quotes and prints the EFT block with the quote number and the notes", () => {
+    const html = buildInvoiceHtml({ ...base, kind: "Quote", number: "QTE-0002", payment: { bankName: "FNB", accountNumber: "62000000000" }, notes: "R15 000 deposit" });
     expect(html).toContain("<title>Quote QTE-0002</title>");
     expect(html).toContain("Valid until 2026-10-10");
-    expect(html).not.toContain("Payment details");
+    expect(html).toContain("Payment details (EFT)");
+    expect(html).toContain("62000000000");
+    expect(html).toContain("<th>Reference</th><td>QTE-0002</td>");
+    expect(html).toContain("R15 000 deposit");
     expect(html).not.toContain("VAT 0%");
   });
 });

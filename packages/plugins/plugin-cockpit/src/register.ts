@@ -30,6 +30,7 @@ import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
+import { REVIEW_FINDING_TOOL_SET, runReviewFindingTool } from "./review-findings.js";
 import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
 import { onAskComment, onAskIssueUpdated, onEffectResult, openAskViews } from "./asks.js";
 import { ensureSetupIssue } from "./bootstrap.js";
@@ -74,8 +75,11 @@ import { COCKPIT_TOOLS } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
+import { dismissInfoCard } from "./outward-sends.js";
 import { runPushDigest } from "./push/digest.js";
+import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
+import { registerBrowserStatus } from "./browser-status.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
@@ -214,6 +218,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   registerW1cEdge(env);
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
+  // The Browser tab: the pib-browser logins, read from the status file (owner company only).
+  registerBrowserStatus(env);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -436,6 +442,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     forgetChecks(env, companyId);
     return { confirmed: row };
   });
+  ctx.actions.register("outward-send.dismiss", async (params, context) => {
+    const companyId = requiredCompany(context);
+    if (context.actor.type !== "user") throw new CockpitError("Only a board user can dismiss an info card");
+    const done = await dismissInfoCard(env, companyId, typeof params.id === "string" ? params.id : "");
+    forgetChecks(env, companyId);
+    return done;
+  });
   ctx.actions.register("goals.confirm", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can confirm goals");
@@ -589,6 +602,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
     // Risk-tier close: auto-close LOW-tier in_review issues with required PASS verdicts (handles errors internally).
     await riskTierCloseCheck(env, event);
+    // Review rounds cap: the third CHANGES NEEDED by the Code Reviewer hands the issue to the Planner (handles errors internally).
+    await reviewRoundsCheck(env, event);
   });
   // One issue.updated handler (each extra subscription would deliver every event again):
   // an open question follows its issue, and an agent's close of an onboarding or
@@ -661,7 +676,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
                   ? await runAcceptanceTool(env, tool.name, params, run)
                   : EVAL_TOOL_SET.has(tool.name)
                     ? await runEvalTool(env, tool.name, params, run)
-                    : await runTool(env, tool.name, params, run);
+                    : REVIEW_FINDING_TOOL_SET.has(tool.name)
+                      ? await runReviewFindingTool(env, tool.name, params, run)
+                      : await runTool(env, tool.name, params, run);
       return normalizeToolResult(result);
     });
   }

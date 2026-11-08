@@ -3,6 +3,7 @@ import {
   useId,
   useRef,
   useState,
+  type AnchorHTMLAttributes,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type FormEvent,
@@ -20,6 +21,9 @@ import { PluginThemeProvider, accentVars, resolveAccent, useResolvedAccent, type
 import { tokens, tone, type ToneInput } from "./tokens.js";
 import { useUiContributions, type UiContribution } from "./nav.js";
 import { HelpBannerSlot } from "./help-banner.js";
+import { SEARCHABLE_SELECT_THRESHOLD, SearchableSelect, flattenOptions } from "./searchable-select.js";
+
+export { SEARCHABLE_SELECT_THRESHOLD, filterOptions, flattenOptions } from "./searchable-select.js";
 
 export { HELP_BANNER_TEXT } from "./help-banner.js";
 export { HELP_FALLBACKS, HELP_PAGES, HELP_PLACEHOLDERS, fillHelp, helpBackTo, helpPageFor, helpTexts, helpTo, isHelpRequested, type HelpPageContent, type HelpVars } from "./help-content.js";
@@ -139,8 +143,8 @@ export function ResponsiveGrid({ columns, narrowColumns = 1, spanFirst = false, 
 }
 
 /**
- * The page root every PiB plugin page uses (`Page` wraps it). Full width on a phone (the host already
- * pads the screen), one shrinkable grid column, and the shared base rules. `accent` gives the page its
+ * The page root every PiB plugin page uses (`Page` wraps it). Full width everywhere, like the Dashboard (the host already
+ * pads the screen, so no extra padding or width cap here), one shrinkable grid column, and the shared base rules. `accent` gives the page its
  * module colour (see `PluginThemeProvider`).
  */
 export function PageFrame({ children, style, accent }: { children: ReactNode; style?: CSSProperties; accent?: AccentInput }) {
@@ -153,8 +157,7 @@ export function PageFrame({ children, style, accent }: { children: ReactNode; st
       style={{
         fontFamily: font,
         color: tokens.fg,
-        padding: narrow ? "4px 0 calc(24px + env(safe-area-inset-bottom, 0px))" : 28,
-        maxWidth: 1160,
+        padding: narrow ? "4px 0 calc(24px + env(safe-area-inset-bottom, 0px))" : "0 0 24px",
         width: "100%",
         minWidth: 0,
         display: "grid",
@@ -671,13 +674,15 @@ export function useEscapeToClose(open: boolean, onClose: () => void, enabled = t
   }, [open, id]);
 }
 
-export function Modal({ open, title, description, children, onClose, footer }: {
+export function Modal({ open, title, description, children, onClose, footer, width = 500 }: {
   open: boolean;
   title: string;
   description?: string;
   children: ReactNode;
   onClose: () => void;
   footer?: ReactNode;
+  /** The panel's width in px on a wide screen; a phone always gets the full width. */
+  width?: number;
 }) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -720,7 +725,7 @@ export function Modal({ open, title, description, children, onClose, footer }: {
         tabIndex={-1}
         className="pib-ui"
         style={{
-          width: narrow ? "100%" : "min(500px, 100%)",
+          width: narrow ? "100%" : `min(${width}px, 100%)`,
           maxHeight: narrow ? "calc(100dvh - 8px - env(safe-area-inset-top, 0px))" : "90vh",
           overflowX: "hidden",
           overflowY: "auto",
@@ -903,7 +908,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
           </div>
           <div style={{ padding: "0 16px 8px", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: tokens.muted, flexWrap: "wrap" }}>
             <span style={{ width: 24, textAlign: "center" }}>For</span>
-            <select
+            <Select
               aria-label="Assignee"
               value={assignee}
               disabled={busy}
@@ -921,7 +926,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
                   {agents.map((a) => <option key={`agent:${a.id}`} value={`agent:${a.id}`}>{a.name}{a.detail ? ` · ${a.detail}` : ""}{a.status === "paused" ? " (paused)" : ""}</option>)}
                 </optgroup>
               ) : null}
-            </select>
+            </Select>
           </div>
           {selected?.kind === "agent" && selected.status === "paused" ? (
             <div style={{ margin: "0 16px 8px", fontSize: 12.5, borderRadius: 6, padding: "8px 10px", border: "1px solid color-mix(in oklab, orange 45%, transparent)", background: "color-mix(in oklab, orange 10%, transparent)" }}>
@@ -1099,8 +1104,16 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
+/**
+ * A native select for short lists. With more than SEARCHABLE_SELECT_THRESHOLD options it becomes a
+ * searchable list (search box on top) with the same props and `onChange(event.target.value)`.
+ */
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   usePibBaseStyles();
+  const options = props.multiple || (props.size ?? 0) > 1 ? null : flattenOptions(props.children);
+  if (options && options.length > SEARCHABLE_SELECT_THRESHOLD) {
+    return <SearchableSelect {...props} options={options} base={fieldBase} focusRing={focusRing} />;
+  }
   return (
     <select
       {...props}
@@ -1145,6 +1158,60 @@ export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   );
 }
 
+/** What the host's New Task popup takes (`useHostNewIssue().open`, plugin SDK). Kept structural so this kit needs no SDK import. */
+export interface HandoffIssueDefaults {
+  title?: string;
+  description?: string;
+  projectId?: string;
+  assigneeAgentId?: string;
+  priority?: string;
+  parentId?: string;
+}
+export interface HandoffCreatedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  projectId: string | null;
+  assigneeAgentId: string | null;
+}
+export interface HandoffNewIssue {
+  open(defaults?: HandoffIssueDefaults): Promise<HandoffCreatedIssue | null>;
+}
+
+/**
+ * Give to agent (PAR-8132): asks the module for the prefill, opens the host's New Task popup with it, and, when the
+ * person created the task, has the module record the link. Pass `useHostNewIssue()` as `newIssue`. The module's worker
+ * builds the text (buildHandoffDescription in the plugin kit) and re-checks the client on `record`.
+ */
+export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled }: {
+  newIssue: HandoffNewIssue;
+  prepare: () => Promise<HandoffIssueDefaults>;
+  record: (issue: HandoffCreatedIssue) => Promise<{ message?: string | null; warning?: string | null } | void>;
+  onDone?: (out: { issue: HandoffCreatedIssue; message: string; warning: string | null }) => void;
+  onError?: (message: string) => void;
+  label?: string;
+  variant?: "primary" | "secondary";
+  disabled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function give() {
+    setBusy(true);
+    try {
+      const defaults = await prepare();
+      const issue = await newIssue.open(defaults);
+      if (!issue) return;
+      const out = (await record(issue)) || {};
+      const name = issue.identifier ?? issue.title;
+      onDone?.({ issue, message: out.message ?? `${name} created.`, warning: out.warning ?? null });
+    } catch (error) {
+      onError?.(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <Button type="button" variant={variant} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
+}
+
 export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary";
 }) {
@@ -1179,6 +1246,56 @@ export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<H
         fontFamily: "inherit",
         cursor: props.disabled ? "not-allowed" : "pointer",
         opacity: props.disabled ? 0.55 : 1,
+        transition: "filter 120ms ease, box-shadow 120ms ease",
+        ...styles,
+        ...((props.style as CSSProperties) ?? {}),
+      }}
+    />
+  );
+}
+
+/** A link that looks like a `Button` (same height, radius and weight). Spread `nav.linkProps(path)` into it. */
+export function ButtonLink({ variant = "secondary", ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & {
+  variant?: "primary" | "secondary";
+}) {
+  const styles: CSSProperties = variant === "primary"
+    ? { background: tokens.primary, color: tokens.primaryFg, border: "1px solid transparent" }
+    : { background: tokens.secondary, color: tokens.secondaryFg, border: `1px solid ${tokens.border}` };
+  return (
+    <a
+      {...props}
+      onFocus={(event) => {
+        event.currentTarget.style.boxShadow = focusRing.boxShadow as string;
+        props.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.boxShadow = "none";
+        props.onBlur?.(event);
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.filter = "brightness(0.97)";
+        props.onMouseEnter?.(event);
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.filter = "none";
+        props.onMouseLeave?.(event);
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // Border inside the 36px, as a <button> has it, so the link is exactly as tall as the buttons beside it.
+        boxSizing: "border-box",
+        lineHeight: 1,
+        height: 36,
+        borderRadius: 9,
+        padding: "0 14px",
+        fontSize: 13,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        textDecoration: "none",
+        whiteSpace: "nowrap",
+        cursor: "pointer",
         transition: "filter 120ms ease, box-shadow 120ms ease",
         ...styles,
         ...((props.style as CSSProperties) ?? {}),

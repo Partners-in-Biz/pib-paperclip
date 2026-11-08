@@ -108,7 +108,7 @@ export type ReplyMode = "sent" | "suggested" | "draft_post";
 
 /**
  * Reply to an inbox item. People send immediately; agents only send when
- * `allowAgentReplies` is on, otherwise the reply is stored as a suggestion.
+ * `allowAgentReplies` is on (never on X), otherwise the reply is stored as a suggestion.
  * Platforms without a reply API get a draft post instead.
  */
 export async function replyToInboxItem(
@@ -123,7 +123,8 @@ export async function replyToInboxItem(
   const platform = row && isSocialPlatform(row.platform) ? row.platform : null;
   const provider = platform ? providerFor(platform) : null;
   if (row && platform && provider?.reply && item.external_id) {
-    if (input.byAgent && !config.allowAgentReplies) {
+    // On X an agent only ever drafts: a person posts the reply on X itself, whatever the agent-replies setting says.
+    if (input.byAgent && (!config.allowAgentReplies || platform === "x")) {
       await saveInboxReply(ctx, companyId, item.id, { status: item.status === "new" ? "read" : item.status, replyDraft: body, replied: false });
       return { itemId: item.id, mode: "suggested" };
     }

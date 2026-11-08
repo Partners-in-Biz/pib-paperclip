@@ -201,6 +201,7 @@ describe("runtime SQL passes the host guard", () => {
     await s.setInboxResult("k", { status: "sent" });
     await s.claimThreadIssue(c, "a", "t");
     await s.setThreadIssue("a", "t", "issue-1");
+    await s.threadIssueId("a", "t");
     await s.insertOAuthSession({ state: "st", companyId: c, createdByUserId: "u", returnTo: "/x", ttlSeconds: 900 });
     await s.getOAuthSession("st");
     await s.deleteOAuthSession("st");

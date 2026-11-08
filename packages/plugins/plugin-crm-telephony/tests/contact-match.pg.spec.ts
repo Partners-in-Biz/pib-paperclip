@@ -4,10 +4,13 @@ import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { startPg } from "./helpers/pg.js";
 import type { PgDb } from "./helpers/pg.js";
 import { createMockDbClient, seedContact } from "./helpers/test-utils.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let pgDb: PgDb;
 
-describe("Contact matching by phone", () => {
+describe.skipIf(!available)("Contact matching by phone", () => {
   beforeAll(async () => {
     pgDb = await startPg();
   }, 180_000);

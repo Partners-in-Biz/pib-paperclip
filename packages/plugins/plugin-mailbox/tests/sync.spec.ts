@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MAIL_EVENTS } from "@partnersinbiz/pib-plugin-kit";
-import { runSyncJob, syncAccount, type SyncStats } from "../src/gmail/sync.js";
+import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
+import { replyIssueClient, runSyncJob, syncAccount, type SyncStats } from "../src/gmail/sync.js";
+import type { MessageRow } from "../src/gmail/types.js";
 import { CO } from "./helpers/memory.js";
 import { jevAnswers } from "./helpers/fake-gmail.js";
 import { JEV_CONFIG, setup } from "./helpers/setup.js";
@@ -141,5 +143,201 @@ describe("sync-mailbox", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ assigneeAgentId: "agent-42", status: "todo", originKind: "plugin:partnersinbiz.mailbox", originId: "mailbox:reply:acc-1:th-1" });
     expect(host.wakeups).toEqual([issues[0]!.id]);
+    // Still open and awake: the new mail goes on the issue as a comment, no second wake.
+    expect(host.comments).toHaveLength(1);
+    expect(host.comments[0]!.body).toContain("gm_acc-1_q2");
+  });
+});
+
+describe("reply issues: follow-ups and client projects", () => {
+  const needsReply = () =>
+    jevAnswers({
+      category: { type: "choice", choice: "client", probabilities: { client: 0.92 }, confidence: 0.92 },
+      urgency: { type: "score", score: 1.4, probabilities: { "1": 0.6, "2": 0.4 }, confidence: 0.6 },
+      needs_reply: { type: "noul", noul: 0.95 },
+      phishing: { type: "noul", noul: 0.01 },
+    });
+
+  async function firstMail(sender = "ann@client.co.za") {
+    const t = setup({ ...JEV_CONFIG, triageIssueAssignee: "agent-42" });
+    t.store.crm.push({ kind: "company", id: "co-1", name: "Client Co", domain: "client.co.za", emails: [sender], accountIds: [] });
+    t.gmail.jevResponse = needsReply();
+    return t;
+  }
+  const sync = async (t: Awaited<ReturnType<typeof firstMail>>) => syncAccount(t.env, await t.loaded(), { ...t.store.accounts.get("acc-1")! }, await t.run());
+  const mail = (t: Awaited<ReturnType<typeof firstMail>>, id: string, from = "ann@client.co.za") =>
+    t.gmail.addMessage({ id, threadId: "th-1", headers: { From: from, Subject: "Please fix the site" }, snippet: "Can you look at this" });
+
+  for (const status of ["done", "cancelled"]) {
+    it(`reopens a ${status} issue and wakes the assignee on new mail`, async () => {
+      const t = await firstMail();
+      mail(t, "a1");
+      await sync(t);
+      const issue = [...t.host.issues.values()][0]!;
+      issue.status = status;
+      t.host.wakeups.length = 0;
+      mail(t, "a2");
+      await sync(t);
+      expect(t.host.issues.size).toBe(1);
+      expect(issue.status).toBe("todo");
+      expect(t.host.wakeups).toEqual([issue.id]);
+      expect(t.host.comments).toHaveLength(1);
+      expect(t.host.comments[0]!.body).toContain("reopened");
+      expect(t.host.comments[0]!.body).toContain("gm_acc-1_a2");
+    });
+  }
+
+  it("wakes a blocked issue without changing its status", async () => {
+    const t = await firstMail();
+    mail(t, "b1");
+    await sync(t);
+    const issue = [...t.host.issues.values()][0]!;
+    issue.status = "blocked";
+    t.host.wakeups.length = 0;
+    mail(t, "b2");
+    await sync(t);
+    expect(issue.status).toBe("blocked");
+    expect(t.host.wakeups).toEqual([issue.id]);
+    expect(t.host.comments).toHaveLength(1);
+  });
+
+  it("leaves a closed issue alone when the new mail does not need a reply", async () => {
+    const t = await firstMail();
+    mail(t, "c1");
+    await sync(t);
+    const issue = [...t.host.issues.values()][0]!;
+    issue.status = "done";
+    t.host.wakeups.length = 0;
+    t.gmail.jevResponse = jevAnswers({
+      category: { type: "choice", choice: "client", probabilities: { client: 0.92 }, confidence: 0.92 },
+      urgency: { type: "score", score: 1, probabilities: { "1": 1 }, confidence: 0.6 },
+      needs_reply: { type: "noul", noul: 0.1 },
+      phishing: { type: "noul", noul: 0.01 },
+    });
+    mail(t, "c2");
+    await sync(t);
+    expect(issue.status).toBe("done");
+    expect(t.host.wakeups).toEqual([]);
+    expect(t.host.comments).toEqual([]);
+  });
+
+  it("leaves a closed issue alone when the thread was answered after the new mail", async () => {
+    const t = await firstMail();
+    mail(t, "d1");
+    await sync(t);
+    const issue = [...t.host.issues.values()][0]!;
+    issue.status = "done";
+    t.host.wakeups.length = 0;
+    const receivedAt = new Date(Date.now() - 60_000);
+    t.gmail.addMessage({ id: "d2", threadId: "th-1", internalDate: receivedAt.getTime(), headers: { From: "ann@client.co.za", Subject: "Please fix the site" }, snippet: "Can you look at this" });
+    t.gmail.addMessage({ id: "d3", threadId: "th-1", labelIds: ["SENT"], headers: { From: t.gmail.email, To: "ann@client.co.za", Subject: "Re: Please fix the site" }, snippet: "Done" });
+    await sync(t);
+    expect(issue.status).toBe("done");
+    expect(t.host.comments).toEqual([]);
+  });
+
+  it("does not reopen on a backlog older than 7 days", async () => {
+    const t = await firstMail();
+    mail(t, "e1");
+    await sync(t);
+    const issue = [...t.host.issues.values()][0]!;
+    issue.status = "done";
+    t.host.wakeups.length = 0;
+    t.gmail.addMessage({ id: "e2", threadId: "th-1", internalDate: Date.now() - 8 * 86_400_000, headers: { From: "ann@client.co.za", Subject: "Old" }, snippet: "Old" });
+    await sync(t);
+    expect(issue.status).toBe("done");
+    expect(t.host.wakeups).toEqual([]);
+  });
+
+  it("opens the issue a failed create left missing", async () => {
+    const t = await firstMail();
+    t.store.threadIssues.set("acc-1:th-1", null);
+    mail(t, "f1");
+    await sync(t);
+    expect(t.host.issues.size).toBe(1);
+    expect(t.store.threadIssues.get("acc-1:th-1")).toBe([...t.host.issues.keys()][0]);
+  });
+
+  const linkWebsite = (t: Awaited<ReturnType<typeof firstMail>>) =>
+    rememberClientProjects(t.host.ctx, CO, {
+      clientKind: "company",
+      clientRef: "co-1",
+      projects: [
+        { projectId: "proj-seo", kind: "seo" },
+        { projectId: "proj-web", kind: "website" },
+      ],
+      updatedAt: new Date().toISOString(),
+    });
+
+  it("opens in the client's website project for an outside sender the CRM knows", async () => {
+    const t = await firstMail();
+    await linkWebsite(t);
+    mail(t, "g1");
+    await sync(t);
+    expect([...t.host.issues.values()][0]).toMatchObject({ projectId: "proj-web", assigneeAgentId: "agent-42" });
+  });
+
+  it("opens with no project for a client without a linked project", async () => {
+    const t = await firstMail();
+    mail(t, "h1");
+    await sync(t);
+    expect([...t.host.issues.values()][0]!.projectId).toBeUndefined();
+    expect(String([...t.host.issues.values()][0]!.description)).toContain("do not guess");
+  });
+
+  it("does not file our own staff's mail under the client their address matches", async () => {
+    const staff = `stean@${setup().gmail.email.split("@")[1]}`;
+    const t = await firstMail();
+    // Live case: a staff member's address sits on a CRM contact of one client, so every mail they send matches it.
+    t.store.crm.push({ kind: "contact", id: "c-staff", name: "Staff", domain: null, emails: [staff], accountIds: ["co-1"] });
+    await linkWebsite(t);
+    mail(t, "i1", staff);
+    await sync(t);
+    // The CRM match is really there, so this proves the guard and not a missing match.
+    expect(t.store.messages.get("gm_acc-1_i1")!.client_ref).toBe("co-1");
+    const issue = [...t.host.issues.values()][0]!;
+    expect(issue).toBeDefined();
+    expect(issue.projectId).toBeUndefined();
+  });
+
+  it("still opens the issue when the project refuses it", async () => {
+    const t = await firstMail();
+    await linkWebsite(t);
+    const create = t.host.ctx.issues.create.bind(t.host.ctx.issues);
+    (t.host.ctx.issues as { create: unknown }).create = async (input: { projectId?: string }) => {
+      if (input.projectId) throw new Error("project archived");
+      return create(input as never);
+    };
+    mail(t, "j1");
+    await sync(t);
+    expect(t.host.issues.size).toBe(1);
+    expect([...t.host.issues.values()][0]!.projectId).toBeUndefined();
+  });
+
+  describe("replyIssueClient", () => {
+    const row = (clientSource: string | null, email = "ann@client.co.za") =>
+      ({ client_kind: "company", client_ref: "co-1", from_addr: { email }, triage: { clientSource } }) as unknown as MessageRow;
+    const own = ["peet@partnersinbiz.online"];
+    const scope = { kind: "company", id: "co-1" };
+
+    it.each(["email", "domain", "reply", "mapping", "correction"])("trusts %s from an outside sender", (source) => {
+      expect(replyIssueClient(row(source), own)).toEqual(scope);
+    });
+    it("does not trust Jev's guess or a missing source", () => {
+      expect(replyIssueClient(row("jev"), own)).toBeNull();
+      expect(replyIssueClient(row(null), own)).toBeNull();
+    });
+    it("does not trust a CRM match on our own staff or the mailbox itself", () => {
+      expect(replyIssueClient(row("email", "stean@partnersinbiz.online"), own)).toBeNull();
+      expect(replyIssueClient(row("reply", "PEET@partnersinbiz.online"), own)).toBeNull();
+    });
+    it("lets a person's correction or a mapping overrule that", () => {
+      expect(replyIssueClient(row("correction", "stean@partnersinbiz.online"), own)).toEqual(scope);
+      expect(replyIssueClient(row("mapping", "stean@partnersinbiz.online"), own)).toEqual(scope);
+    });
+    it("does not treat a shared free-mail domain as our staff", () => {
+      expect(replyIssueClient(row("email", "ann@gmail.com"), ["peet@gmail.com"])).toEqual(scope);
+      expect(replyIssueClient(row("email", "peet@gmail.com"), ["peet@gmail.com"])).toBeNull();
+    });
   });
 });

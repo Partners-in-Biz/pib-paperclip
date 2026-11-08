@@ -148,6 +148,20 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
 };
 
+/**
+ * Extra env var names the operator forwards to every plugin worker, comma-separated in
+ * PAPERCLIP_PLUGIN_WORKER_ENV_PASSTHROUGH (e.g. `PIB_STUDIO_FAKE_PROVIDER` on an isolated QA server). Unset by
+ * default, so workers get nothing extra. Only the operator sets server env, so this is not plugin-controlled.
+ * Names must look like env var names; PAPERCLIP_* keys are refused so a worker can't be handed host settings.
+ */
+export function operatorWorkerEnvKeys(processEnv: NodeJS.ProcessEnv): string[] {
+  const raw = processEnv.PAPERCLIP_PLUGIN_WORKER_ENV_PASSTHROUGH ?? "";
+  return raw
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => /^[A-Z][A-Z0-9_]*$/.test(key) && !key.startsWith("PAPERCLIP_"));
+}
+
 export function buildPluginWorkerEnv(input: {
   manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
     environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
@@ -165,6 +179,10 @@ export function buildPluginWorkerEnv(input: {
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
+  for (const key of operatorWorkerEnvKeys(processEnv)) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) env[key] = value;
+  }
   const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;

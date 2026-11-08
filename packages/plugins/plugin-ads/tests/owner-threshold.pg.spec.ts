@@ -38,8 +38,11 @@ describe.skipIf(!available)("owner threshold", () => {
     expect(w.mock.writes).toHaveLength(0);
   });
 
-  it("Account Manager at threshold approved, executes once", async () => {
-    const p = await prop(5000);
+  // PAR-6684: a new campaign can raise spend, so it is the owner's alone; the delegate's own path is a budget decrease.
+  const decrease = () => propose(w, { kind: "change_budget", scopeKey: "own", accountId, campaignExternalId: "c1", newDailyBudgetMinor: 5000, reason: "Test" });
+
+  it("Account Manager approves a budget decrease, executes once", async () => {
+    const p = await decrease();
     await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: p.id, verdict: "pass" });
     const { approvalId } = await recordSignoff(w.rt(), { proposalId: p.id, userId: null, agentId: AM_AGENT, role: "owner", decision: "approved", via: "tool" });
     expect((await approvalsOf(w, p.id))[0]!.decided_by).toBe(`agent:${AM_AGENT}`);
@@ -72,20 +75,19 @@ describe.skipIf(!available)("owner threshold", () => {
     ).rejects.toMatchObject({ code: "not_a_person" });
   });
 
-  it("lowered threshold stops the Account Manager's approval", async () => {
+  it("a new campaign under even a raised threshold is owner_required (spend-raising, PAR-6684)", async () => {
+    await updateScope(w.ctx, COMPANY, "own", { ownerThresholdMinor: 10_000_000 });
     const p = await prop(3000);
     await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: p.id, verdict: "pass" });
-    const { approvalId } = await recordSignoff(w.rt(), { proposalId: p.id, userId: null, agentId: AM_AGENT, role: "owner", decision: "approved", via: "tool" });
-    await updateScope(w.ctx, COMPANY, "own", { ownerThresholdMinor: 10000 });
     await expect(
-      executeProposal(w.rt(), { agentId: ADS_AGENT }, { proposalId: p.id, approvalId })
+      recordSignoff(w.rt(), { proposalId: p.id, userId: null, agentId: AM_AGENT, role: "owner", decision: "approved", via: "tool" })
     ).rejects.toMatchObject({ code: "owner_required" });
-    expect((await approvalsOf(w, p.id))[0]!.consumed_at).toBeNull();
+    expect(await approvalsOf(w, p.id)).toHaveLength(0);
     expect(w.mock.writes).toHaveLength(0);
   });
 
   it("the delegate's approval stops covering the change once the agent is no longer the Account Manager", async () => {
-    const p = await prop(3000);
+    const p = await decrease();
     await recordReview(w.rt(), { agentId: REVIEWER }, { proposalId: p.id, verdict: "pass" });
     const { approvalId } = await recordSignoff(w.rt(), { proposalId: p.id, userId: null, agentId: AM_AGENT, role: "owner", decision: "approved", via: "tool" });
     await w.ctx.state.set(

@@ -21,7 +21,7 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
 8. Make sure today's important work has an agent and is not blocked.
 9. Look at \`improvements\` (overdue first) and any close-out review or business review issue assigned to you: do them, or hand the change to the agent that owns it.
-10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan. Short.
+10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan, and **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count). Short.
 11. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
@@ -48,6 +48,14 @@ const instanceConfigSchema: JsonSchema = {
       properties: {
         enabled: { type: "boolean", title: "Escalate stuck blocked issues", description: "Turn off to stop the ladder creating Unblock issues.", default: true },
         cooAgentId: { type: "string", title: "COO agent (optional)", description: "The agent for the last level. Left blank, the company's active agent with role COO is used." },
+      },
+    },
+    clientSends: {
+      type: "object",
+      title: "Client sends (Tier A)",
+      description: "PiB marks each routine client send with a comment starting OUTWARD SEND (Tier A):. The brief lists them, and for the first 14 days each one also shows as a dismissable info card.",
+      properties: {
+        infoCardsUntil: { type: "string", title: "Info cards until (ISO date)", description: "Tier A sends show as info cards in the owner's queue until this date. Left blank: 14 days after the Cockpit first saw this feature." },
       },
     },
     healthIssue: {
@@ -245,7 +253,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.dashboardWidget.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs", "issue_relations", "projects"] },
+  database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "issue_comments", "heartbeat_runs", "issue_relations", "projects"] },
   tools: COCKPIT_TOOLS,
   webhooks: [
     {

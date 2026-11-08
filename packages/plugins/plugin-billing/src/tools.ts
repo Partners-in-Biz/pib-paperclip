@@ -109,6 +109,12 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "invoice-pdf",
+    displayName: "Invoice PDF",
+    description: "The PDF of a sent or paid invoice as { filename, mime, base64, sha256, bytes }; returns base64 for scripts; call it from the pib-drive-saving script, not from chat. Drafts are refused.",
+    parametersSchema: schema(["invoiceId"], { invoiceId }),
+  },
+  {
     name: "invoice-detail",
     displayName: "Invoice detail",
     description: "One invoice: status, what is owed, its lines, payments, payment links and recipients (compact), with a count of credits, credit notes, proofs of payment, emails, reminders and follow-ups. Add sections for those, or compact false for everything (large).",
@@ -530,5 +536,19 @@ export const BILLING_TOOLS: PluginToolDeclaration[] = [
     displayName: "Billing reports",
     description: "Revenue by month and client, aged debtors and creditors (0-30/31-60/61-90/90+ days), expenses by category and MRR/churn, in the reporting currency.",
     parametersSchema: schema([], { from: date("First day. Default: the start of the month 11 months ago"), to: date("Last day. Default today") }),
+  },
+
+  // ── Numbering and settings (read-only; seeding the sequence stays with a person) ──
+  {
+    name: "get-numbering",
+    displayName: "Get invoice numbering",
+    description: "Read-only. Without client: the INV sequence, { mode, prefix, next, highestExisting }. With client: that client's { prefix, nextNumber, next } (prefix null until its first invoice). Changing numbers is for a person on the Billing page.",
+    parametersSchema: schema([], { client: str("Optional. company:<crm company id> or contact:<crm contact id> for that client's numbering. Leave out for the INV sequence.") }),
+  },
+  {
+    name: "billing-settings",
+    displayName: "Billing settings",
+    description: "Read-only. The Billing plugin version and numbering settings: { version, numbering: { mode, digits, fallbackPrefix } }.",
+    parametersSchema: schema([], {}),
   },
 ];

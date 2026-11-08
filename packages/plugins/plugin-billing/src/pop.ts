@@ -17,34 +17,12 @@ import { emitInvoiceItem } from "./openitems.js";
 import { APPROVAL_ORIGINS } from "./origins.js";
 import { clientScope, openBillingApproval } from "./approvals.js";
 import { settle, type SettleResult } from "./settle.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
+import { matchByNumber } from "./pop-references.js";
 
 export type MatchBasis = "thread" | "number" | "sender" | "upload" | "agent" | "none";
 
-/** "LUM-001" / "lum 1" / "LUM001" → "LUM-1"; null when it is not a document number. */
-export function referenceKey(value: string): string | null {
-  const match = /^([A-Za-z]{2,4})[\s_-]*0*(\d{1,6})$/.exec(String(value ?? "").trim());
-  return match ? `${match[1]!.toUpperCase()}-${Number(match[2])}` : null;
-}
-
-/** Invoice-number-like references in free text (quote and credit-note numbers are skipped). */
-export function findReferences(text: string): string[] {
-  const out = new Set<string>();
-  const re = /(?<![A-Za-z0-9]-)(?<![A-Za-z0-9])([A-Za-z]{2,4})[\s_-]?(\d{2,6})(?![0-9])/g;
-  for (const match of String(text ?? "").matchAll(re)) {
-    out.add(`${match[1]!.toUpperCase()}-${Number(match[2])}`);
-  }
-  return [...out];
-}
-
-/** Open invoices whose number appears in the text. */
-export function matchByNumber<T extends { number: string }>(text: string, invoices: T[]): T[] {
-  const refs = new Set(findReferences(text));
-  if (refs.size === 0) return [];
-  return invoices.filter((invoice) => {
-    const key = referenceKey(invoice.number);
-    return key != null && refs.has(key);
-  });
-}
+export { findReferences, matchByNumber, referenceKey } from "./pop-references.js";
 
 export interface PopMatch {
   invoiceId: string | null;
@@ -308,6 +286,42 @@ export async function confirmPop(
   }, settings);
 }
 
+/**
+ * The money is already recorded and the invoice is paid: tie the proof to that
+ * payment. No new money, no journal, nothing owed changes. Only a paid invoice:
+ * confirmPop() on one would record the amount again as customer credit.
+ */
+export async function linkPopToPayment(
+  ctx: PluginContext,
+  input: { companyId: string; popId: string; invoiceId: string; reviewedBy?: string | null },
+): Promise<{ paymentId: string; invoiceId: string; invoiceNumber: string }> {
+  const pop = await getPop(ctx, input.popId);
+  if (!pop || pop.company_id !== input.companyId) throw new BillingError("Proof of payment was not found");
+  if (pop.status !== "pending") throw new BillingError("This proof of payment has already been checked");
+  const balance = await invoiceBalance(ctx, input.invoiceId);
+  if (!balance || balance.invoice.company_id !== input.companyId) throw new BillingError("Invoice was not found");
+  if (balance.invoice.status !== "paid") throw new BillingError("This invoice is not paid yet: confirm the money instead");
+  // Prefer a payment no other proof already backs, then the latest.
+  const [payment] = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "payments")} WHERE invoice_id = $1 ORDER BY (pop_id IS NULL) DESC, paid_at DESC, created_at DESC LIMIT 1`,
+    [input.invoiceId],
+  );
+  if (!payment) throw new BillingError("This invoice has no payment to link the proof to");
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "pops")} SET status = 'confirmed', invoice_id = $2, match_basis = 'manual', payment_id = $3, reviewed_by = $4, reviewed_at = now()
+      WHERE id = $1 AND status = 'pending'`,
+    [pop.id, input.invoiceId, payment.id, input.reviewedBy ?? null],
+  );
+  if ((res.rowCount ?? 0) === 0) throw new BillingError("This proof of payment has already been checked");
+  await ctx.db.execute(`UPDATE ${table(ctx, "payments")} SET pop_id = $2 WHERE id = $1 AND pop_id IS NULL`, [payment.id, pop.id]);
+  // It may have held another invoice on "checking payment".
+  if (pop.invoice_id && pop.invoice_id !== input.invoiceId) {
+    await refreshInvoiceStatus(ctx, pop.invoice_id);
+    await emitInvoiceItem(ctx, pop.invoice_id);
+  }
+  return { paymentId: payment.id, invoiceId: input.invoiceId, invoiceNumber: invoiceNumberLabel(balance.invoice.number) };
+}
+
 export async function rejectPop(ctx: PluginContext, input: { companyId: string; popId: string; reason?: string | null; reviewedBy?: string | null }): Promise<{ status: string | null }> {
   const pop = await getPop(ctx, input.popId);
   if (!pop || pop.company_id !== input.companyId) throw new BillingError("Proof of payment was not found");
@@ -380,5 +394,5 @@ export async function openInvoiceCandidates(ctx: PluginContext, companyId: strin
   const open = await invoiceBalances(ctx, companyId, { openOnly: true });
   return open
     .filter((b) => isOpenStatus(b.invoice.status))
-    .map((b) => ({ id: b.invoice.id, number: b.invoice.number, customerKind: b.invoice.customer_kind, customerRef: b.invoice.customer_ref, customerName: String(asObject(b.invoice.customer).name ?? "") }));
+    .map((b) => ({ id: b.invoice.id, number: invoiceNumberLabel(b.invoice.number), customerKind: b.invoice.customer_kind, customerRef: b.invoice.customer_ref, customerName: String(asObject(b.invoice.customer).name ?? "") }));
 }

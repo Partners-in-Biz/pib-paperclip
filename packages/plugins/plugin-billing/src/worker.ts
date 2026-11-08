@@ -51,6 +51,7 @@ import { shapeToolResult } from "./tool-results.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { asAtDate, customerCredit, invoiceBalance, invoiceBalances, iso, refreshAsAtStatuses, statusAsAtToday, type InvoiceBalance } from "./balances.js";
 import { BANK_MATCHED_EVENT } from "./bank.js";
+import { driveCatchup } from "./drive-catchup.js";
 import {
   billingSettings,
   emailEnabled,
@@ -128,6 +129,7 @@ import {
   customerDetails,
   customerNameOf,
   documentPdf,
+  invoicePdf,
   invoiceHtmlOf,
   invoiceView,
   markSentAction,
@@ -154,10 +156,10 @@ import { registerCanaryCleanup } from "./canary-cleanup.js";
 import { deleteDraftInvoice, deleteDraftQuote } from "./draft-delete.js";
 import { deliveriesFor, failStaleDeliveries } from "./mail.js";
 import { followUpsFor, logFollowUp } from "./notes.js";
-import { clientNumbering, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
-import { NO_NUMBER_YET } from "./invoice-number.js";
+import manifest from "./manifest.js";
+import { clientNumbering, numberingSettings, sequenceNumbering, setClientNumbering, setSequenceNumbering } from "./numbering.js";
 import { emitOpenItems } from "./openitems.js";
-import { closePopIssues, confirmPop, getPop, listPops, recordPop, rejectPop } from "./pop.js";
+import { closePopIssues, confirmPop, getPop, linkPopToPayment, listPops, recordPop, rejectPop } from "./pop.js";
 import { LEDGER_RESULT_EVENT } from "./posting.js";
 import { buildReports } from "./reporting.js";
 import {
@@ -182,6 +184,7 @@ import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
 import {
   actorLabel,
   errorMessage,
@@ -223,6 +226,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.cancel-invoice": cancelInvoice,
   "billing.delete-draft-invoice": deleteDraftInvoice,
   "billing.document-pdf": documentPdf,
+  "billing.invoice-pdf": invoicePdf,
   "billing.create-quote": createQuote,
   "billing.add-quote-line": addQuoteLine,
   "billing.update-quote-line": updateQuoteLine,
@@ -302,6 +306,14 @@ const ACTIONS: Record<string, Handler> = {
     await closePopIssues(ctx, companyId, [requiredString(params, "popId")]);
     return result;
   },
+  "billing.link-pop": async (ctx, context, params) => {
+    const reviewedBy = requirePerson(context, "linking a proof of payment");
+    const companyId = requiredCompany(context);
+    const popId = requiredString(params, "popId");
+    const result = await linkPopToPayment(ctx, { companyId, popId, invoiceId: requiredString(params, "invoiceId"), reviewedBy });
+    await closePopIssues(ctx, companyId, [popId]);
+    return result;
+  },
   "billing.reject-pop": async (ctx, context, params) => {
     const reviewedBy = requirePerson(context, "rejecting a proof of payment");
     const companyId = requiredCompany(context);
@@ -354,6 +366,10 @@ const ACTIONS: Record<string, Handler> = {
     if (!scope) return sequenceNumbering(ctx, companyId, await billingSettings(ctx, companyId));
     return clientNumbering(ctx, companyId, { kind: scope.kind, ref: scope.id }, await billingSettings(ctx, companyId));
   },
+  "billing.numbering-settings": async (ctx, context) => {
+    const settings = await billingSettings(ctx, requiredCompany(context));
+    return { version: manifest.version, numbering: numberingSettings(settings) };
+  },
   "billing.set-numbering": async (ctx, context, params) => {
     const companyId = requiredCompany(context);
     const scope = readClientScope(params);
@@ -384,6 +400,14 @@ const ACTIONS: Record<string, Handler> = {
   "billing.correct-decision": async (ctx, context, params) => {
     const userId = requirePerson(context, "correcting a decision");
     return { ok: await correctDecision(ctx, requiredCompany(context), requiredString(params, "decisionId"), requiredString(params, "correctedTo"), userId) };
+  },
+  // PAR-8130: copy sent PDFs to Drive for a date range. A dry run (the default) only lists; saving needs a person.
+  // PAR-8121: a saving call does `limit` saves and returns `nextAfterId` for the next call (`afterId`).
+  "billing.drive-catchup": async (ctx, context, params) => {
+    const companyId = requiredCompany(context);
+    const dryRun = params.dryRun !== false;
+    if (!dryRun) requirePerson(context, "the Drive catch-up");
+    return driveCatchup(ctx, companyId, { from: params.from, to: params.to, dryRun, delayMs: typeof params.delayMs === "number" ? params.delayMs : undefined, limit: params.limit, afterId: params.afterId });
   },
 };
 
@@ -486,6 +510,7 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "remove-line": { action: "billing.remove-line", message: "Invoice line removed" },
   "update-invoice": { action: "billing.update-invoice", message: "Invoice changed" },
   "invoice-detail": { action: "billing.invoice-detail", message: "Invoice loaded" },
+  "invoice-pdf": { action: "billing.invoice-pdf", message: "Invoice PDF built" },
   "list-open-invoices": { action: "billing.open-invoices", message: "Open invoices listed" },
   "request-invoice-send": { action: "billing.request-send", message: (d) => (d.already ? "A send approval is already open for this invoice" : "Send approval issue opened for a person") },
   "invoice-html": { action: "billing.invoice-html", message: "Invoice HTML generated" },
@@ -531,6 +556,8 @@ const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "list-time-entries": { action: "billing.list-time", message: "Time entries listed" },
   "bill-time": { action: "billing.bill-time", message: "Time added to the invoice" },
   "billing-report": { action: "billing.reports", message: "Billing reports built" },
+  "get-numbering": { action: "billing.get-numbering", message: (d) => (d.next == null ? "This client has no prefix yet; its first invoice assigns one" : `Next invoice number: ${String(d.next)}`) },
+  "billing-settings": { action: "billing.numbering-settings", message: (d) => `Billing ${String(d.version)} settings read` },
 };
 
 ACTIONS["billing.open-invoices"] = async (ctx, context, params) => {
@@ -624,7 +651,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
       visible.push({ ...publicInvoice(invoice), paidMinor: 0, creditedMinor: 0, writtenOffMinor: 0, outstandingMinor: 0, pendingPops: 0, shared: true });
     }
   }
-  const numbers = new Map(own.map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map(own.map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   const quotes = await listQuotes(ctx, companyId, scope);
   const expenses = scope ? [] : await listExpenses(ctx, companyId);
   const recurring = await listRecurring(ctx, companyId, scope);
@@ -906,6 +933,8 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
       lines: view.lines.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: line.unitAmountMinor })),
       taxRate: view.legacy ? Number(quote.tax_rate ?? 0) : 0,
       totals: view.legacy ? undefined : { subtotalMinor: view.subtotalMinor, vatMinor: view.vatMinor, totalMinor: view.totalMinor },
+      payment: view.payment ?? null,
+      notes: view.notes ?? null,
       dueAt: iso(quote.valid_until),
     }),
   };
@@ -955,9 +984,11 @@ async function updateRecurring(ctx: PluginContext, context: PluginPerformActionC
   if (!row || row.company_id !== companyId) throw new BillingError("Recurring schedule was not found");
   const autoSend = optionalBoolean(params, "autoSend");
   if (autoSend) requirePerson(context, "turning on automatic sending");
+  // A schedule can be moved to another of the company's invoices (say, when its template was cancelled as a duplicate).
+  const template = optionalString(params, "templateInvoiceId") ? await requireOwnInvoice(ctx, companyId, requiredString(params, "templateInvoiceId")) : null;
   await ctx.db.execute(
-    `UPDATE ${table(ctx, "recurring_invoices")} SET auto_send = $2, ends_at = $3, frequency = $4, updated_at = now() WHERE id = $1`,
-    [row.id, autoSend ?? Boolean(row.auto_send), "endsAt" in params ? optionalDate(params, "endsAt") ?? null : row.ends_at ?? null, params.frequency ? assertFrequency(String(params.frequency)) : row.frequency],
+    `UPDATE ${table(ctx, "recurring_invoices")} SET auto_send = $2, ends_at = $3, frequency = $4, template_invoice_id = $5, updated_at = now() WHERE id = $1`,
+    [row.id, autoSend ?? Boolean(row.auto_send), "endsAt" in params ? optionalDate(params, "endsAt") ?? null : row.ends_at ?? null, params.frequency ? assertFrequency(String(params.frequency)) : row.frequency, template?.id ?? row.template_invoice_id],
   );
   return publicRecurring((await getRecurring(ctx, row.id))!);
 }
@@ -1004,7 +1035,7 @@ async function runRecurring(ctx: PluginContext) {
         const customer = asObject(template.customer);
         const invoice: InvoiceRow = copyInvoiceFields(template, {
           id: randomUUID(),
-          number: NO_NUMBER_YET,
+          number: null,
           recurring_id: schedule.id,
           recurring_key: key,
         });
@@ -1084,7 +1115,7 @@ async function dunningStatus(ctx: PluginContext, context: PluginPerformActionCon
     `SELECT r.invoice_id, r.stage, r.status, r.created_at, r.error FROM ${table(ctx, "reminders")} r WHERE r.company_id = $1 ORDER BY r.created_at DESC LIMIT 100`,
     [companyId],
   );
-  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, b.invoice.number]));
+  const numbers = new Map((await invoiceBalances(ctx, companyId)).map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
   void params;
   return {
     enabled: settings.dunning?.enabled === true,

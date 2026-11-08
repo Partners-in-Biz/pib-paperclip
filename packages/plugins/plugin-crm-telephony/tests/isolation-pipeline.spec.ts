@@ -6,6 +6,9 @@ import { makeSummariseStep } from "../src/summarise.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { startHostDb } from "./helpers/host-db.js";
 import { createSecretsRecorder } from "./helpers/test-utils.js";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 interface TestDb {
   db: { execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>; query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> };
@@ -43,7 +46,7 @@ async function seedTranscript(rid: string, callSid: string) {
   );
 }
 
-describe("credential isolation pipeline", () => {
+describe.skipIf(!available)("credential isolation pipeline", () => {
   beforeAll(async () => {
     db = await startHostDb();
   }, 180_000);

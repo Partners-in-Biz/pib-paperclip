@@ -22,6 +22,8 @@ import { getInvoice, PAYMENT_COLUMNS, table, type InvoiceRow, type PaymentRow } 
 import { assertPaymentAmount, BillingError, isOpenStatus } from "./domain.js";
 import { emitBillItem, emitInvoiceItem } from "./openitems.js";
 import { postBillPayment, postCreditNote, postPayment, postWriteOff, repostPaymentOnBank, type BillForPosting } from "./posting.js";
+import { invoiceNumberLabel } from "./invoice-number.js";
+import { namesOnlyInvoice, popSearchText } from "./pop-references.js";
 
 /** `gateway`: a payment provider (Stripe, PayFast) confirmed the money with a signed webhook. */
 export type SettleSource = "manual" | "pop" | "bank" | "approval" | "gateway";
@@ -184,6 +186,7 @@ export async function settle(ctx: PluginContext, input: SettleInput, settings: B
   let refreshed = await refreshInvoiceStatus(ctx, invoice.id, now);
   // Paid in full another way (recorded, approved): proofs still waiting are settled by this money.
   if (refreshed && refreshed.balance.outstandingMinor <= 0 && !input.popId) {
+    await claimUnmatchedPops(ctx, invoice);
     for (const popId of await pendingPopIds(ctx, invoice.id)) {
       const res = await ctx.db.execute(
         `UPDATE ${table(ctx, "pops")} SET status = 'confirmed', payment_id = $2, reviewed_by = $3, reviewed_at = now() WHERE id = $1 AND status = 'pending'`,
@@ -200,7 +203,7 @@ export async function settle(ctx: PluginContext, input: SettleInput, settings: B
   return {
     paymentId: payment.id,
     invoiceId: invoice.id,
-    invoiceNumber: invoice.number,
+    invoiceNumber: invoiceNumberLabel(invoice.number),
     repeat,
     reconciled,
     amountMinor: Number(payment.amount_minor),
@@ -210,6 +213,26 @@ export async function settle(ctx: PluginContext, input: SettleInput, settings: B
     status: refreshed?.status ?? invoice.status,
     confirmedPopIds,
   };
+}
+
+/**
+ * A proof can arrive before its invoice exists, so it stays unmatched. Once the
+ * invoice is paid in full, one that names this invoice and no other belongs to it.
+ */
+async function claimUnmatchedPops(ctx: PluginContext, invoice: InvoiceRow): Promise<void> {
+  if (!invoice.number) return;
+  const number = invoiceNumberLabel(invoice.number);
+  const rows = await ctx.db.query<{ id: string; subject: string | null; snippet: string | null; file_name: string | null; attachments: unknown }>(
+    `SELECT id, subject, snippet, file_name, attachments FROM ${table(ctx, "pops")} WHERE company_id = $1 AND invoice_id IS NULL AND status = 'pending'`,
+    [invoice.company_id],
+  );
+  for (const row of rows) {
+    if (!namesOnlyInvoice(popSearchText(row), number)) continue;
+    await ctx.db.execute(
+      `UPDATE ${table(ctx, "pops")} SET invoice_id = $2, match_basis = 'number' WHERE id = $1 AND invoice_id IS NULL AND status = 'pending'`,
+      [row.id, invoice.id],
+    );
+  }
 }
 
 async function pendingPopIds(ctx: PluginContext, invoiceId: string): Promise<string[]> {

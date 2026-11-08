@@ -14,7 +14,7 @@ import { monitorViews, setSiteMonitoringTool } from "./monitor.js";
 import { exportPersonDataTool, recordConsentTool, requestErasureTool } from "./privacy.js";
 import { listDataProcessingTool, sensitivityOf, setClientSensitivityTool } from "./register.js";
 import { buildClientReportTool, listClientReportsTool, reportViews, sendClientReportTool, setReportNarrativeTool, skipClientReportTool } from "./report.js";
-import { caseViews, feedbackViews, listSupportCasesTool, openSupportCaseTool, recordFeedbackTool, requestFeedbackTool, updateSupportCaseTool } from "./support.js";
+import { caseViews, feedbackViews, listSupportCasesTool, moveSupportCaseTool, openSupportCaseTool, recordFeedbackTool, requestFeedbackTool, updateSupportCaseTool } from "./support.js";
 import { parseClientRef, requireClient } from "./lookup.js";
 
 type Source = "agent" | "human";
@@ -30,6 +30,7 @@ const HANDLERS: Record<string, Handler> = {
   "list-client-reports": (ctx, viewer, params) => listClientReportsTool(ctx, viewer, params),
   "open-support-case": (ctx, viewer, params) => openSupportCaseTool(ctx, viewer, params),
   "update-support-case": (ctx, viewer, params) => updateSupportCaseTool(ctx, viewer, params),
+  "move-support-case": (ctx, viewer, params) => moveSupportCaseTool(ctx, viewer, params),
   "list-support-cases": (ctx, viewer, params) => listSupportCasesTool(ctx, viewer, params),
   "request-feedback": (ctx, viewer, params) => requestFeedbackTool(ctx, viewer, params),
   "record-feedback": (ctx, viewer, params) => recordFeedbackTool(ctx, viewer, params),

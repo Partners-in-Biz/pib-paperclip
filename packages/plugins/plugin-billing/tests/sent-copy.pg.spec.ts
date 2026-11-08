@@ -64,7 +64,8 @@ describe.skipIf(!available)("sent-copy flows (postgres)", () => {
   });
 
   it("no R2: no driveSave call", async () => {
-    h.config.set(COMPANY, { ...SETTINGS });
+    const { r2: _r2, ...noR2 } = SETTINGS;
+    h.config.set(COMPANY, noR2);
     const doc = await createDoc("invoice", "ct-lumen");
     const { issueId } = await h.call<{ issueId: string }>("billing.request-send", { invoiceId: doc.id });
     h.issues.get(issueId)!.status = "done";

@@ -123,8 +123,27 @@ export interface DraftExtras {
   /** Reply-To and display name the draft is sent with. */
   replyTo?: MailAddress | null;
   fromName?: string | null;
+  /** The task the agent's run was working on when it saved this draft. */
+  sourceIssueId?: string | null;
   /** Who saved the draft: an agent (tool or action) or a person on the Mailbox page. */
   by?: { kind: "agent" | "user"; id: string } | null;
+  /** Append the Gmail signature of the sending mailbox when the draft is sent. */
+  useSignature?: boolean;
+  /** Files a person added on the page (base64, kept with the draft until it is sent or deleted). */
+  files?: DraftFile[];
+  /** Added by the page's list query in place of `files`: names and sizes only. */
+  fileList?: Array<{ id: string; name: string; mime: string; bytes: number }>;
+  /** A person asked the drafting agent for a new version. Cleared when the agent saves one. */
+  rewrite?: { note: string; requestedAt: string; issueId: string | null } | null;
+}
+
+export interface DraftFile {
+  id: string;
+  name: string;
+  mime: string;
+  bytes: number;
+  /** Base64 of the file. */
+  data: string;
 }
 
 export interface NewGmailMessage {

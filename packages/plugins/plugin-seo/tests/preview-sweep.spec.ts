@@ -139,7 +139,7 @@ describe("how Chromium is run", () => {
     const shot = shotArgs(dir, "https://x.test/", "/tmp/s/t-live.png");
     const dom = domArgs(dir, "https://x.test/");
     for (const args of [shot, dom]) {
-      expect(args).toEqual(expect.arrayContaining(["--headless=new", "--no-sandbox", "--incognito", "--no-first-run", `--user-data-dir=${dir}`, "--virtual-time-budget=9000"]));
+      expect(args).toEqual(expect.arrayContaining(["--headless=new", "--no-sandbox", "--incognito", "--no-first-run", `--user-data-dir=${dir}`, "--virtual-time-budget=9000", "--timeout=9000"]));
       expect(args.at(-1)).toBe("https://x.test/");
     }
     expect(shot).toEqual(expect.arrayContaining(["--window-size=1280,3200", "--hide-scrollbars", "--screenshot=/tmp/s/t-live.png"]));

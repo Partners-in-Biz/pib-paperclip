@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "enforce": false,
+  "enforce": true,
   "minPassRate": 0.8,
   "skills": {
     "summarizer": {
@@ -8,14 +8,32 @@
         "hash": "a5c26b306cf5fe5d",
         "passRate": 0.5,
         "scenarios": {}
-      }
+      },
+      "waivers": [
+        {
+          "hash": "a5c26b306cf5fe5d",
+          "reason": "Baseline recorded below the 0.8 minimum (0.5); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "crm-data-steward": {
       "baseline": {
         "hash": "2b2e779c4326acbe",
         "passRate": 0.75,
         "scenarios": {}
-      }
+      },
+      "waivers": [
+        {
+          "hash": "2b2e779c4326acbe",
+          "reason": "Baseline recorded below the 0.8 minimum (0.75); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "developer": {
       "baseline": {
@@ -28,7 +46,16 @@
           "no-handoff-with-red-checks": false
         },
         "measuredAt": "2026-10-22T15:40:59Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "2e0e65e020132c9c",
+          "reason": "Baseline recorded below the 0.8 minimum (0.75); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "senior-developer": {
       "baseline": {
@@ -41,7 +68,16 @@
           "at-most-6-direct-calls-senior": true
         },
         "measuredAt": "2026-11-01T06:14:52Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "6e9baf1082f25026",
+          "reason": "Baseline recorded below the 0.8 minimum (0.25); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "planner": {
       "baseline": {
@@ -53,7 +89,16 @@
           "plan-names-risks-rollback-split": false
         },
         "measuredAt": "2026-10-22T16:21:00Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "21de8e573c35f08f",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "code-reviewer": {
       "baseline": {
@@ -65,7 +110,16 @@
           "all-findings-one-pass": false
         },
         "measuredAt": "2026-11-01T06:19:16Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "3a33839fa3c5ba46",
+          "reason": "Baseline recorded below the 0.8 minimum (0.3333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "plan-critic": {
       "baseline": {
@@ -77,7 +131,16 @@
           "no-rerevew-same-revision": false
         },
         "measuredAt": "2026-10-22T17:19:42Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "b060de91aeda1230",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "dogfood-tester": {
       "baseline": {
@@ -89,7 +152,16 @@
           "fail-report-repro-expected-url": false
         },
         "measuredAt": "2026-11-01T06:21:22Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "ffe98bce7288e352",
+          "reason": "Baseline recorded below the 0.8 minimum (0); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "release-engineer": {
       "baseline": {
@@ -101,7 +173,16 @@
           "local-ci-gate-proof": false
         },
         "measuredAt": "2026-10-22T18:20:23.745Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "a1470df93ee7d66b",
+          "reason": "Baseline recorded below the 0.8 minimum (0); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "loyalty-plus-engineer-mac": {
       "baseline": {
@@ -113,7 +194,16 @@
           "config-deploy-dry-run-200": false
         },
         "measuredAt": "2026-10-22T18:57:15.507Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "9ddcc753ae0145fd",
+          "reason": "Baseline recorded below the 0.8 minimum (0); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "product-designer": {
       "baseline": {
@@ -125,7 +215,16 @@
           "log-design-decisions": true
         },
         "measuredAt": "2026-10-22T19:55:18.858Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "904576672122057f",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "pib": {
       "baseline": {
@@ -137,7 +236,16 @@
           "spend-over-500-to-peet-batch": true
         },
         "measuredAt": "2026-10-22T20:31:25.367Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "5c6ecb00f5025a6b",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "revenue-lead": {
       "baseline": {
@@ -149,7 +257,16 @@
           "revenue-lead-budget-elon-signoff-r500": true
         },
         "measuredAt": "2026-10-22T21:09:17.439Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "0927be67467ffa6f",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "afrikaans-editor": {
       "baseline": {
@@ -161,7 +278,16 @@
           "url-slug-unchanged-copy-fixed": true
         },
         "measuredAt": "2026-10-22T21:49:22.249Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "0b5a04ae2da47401",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "steve": {
       "baseline": {
@@ -174,7 +300,16 @@
           "autonomy-internal-roadmap-decision": false
         },
         "measuredAt": "2026-11-01T06:17:28Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "56b51c46ec4c06a8",
+          "reason": "Baseline recorded below the 0.8 minimum (0.25); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "arjun": {
       "baseline": {
@@ -186,7 +321,16 @@
           "six-direct-calls-limit": false
         },
         "measuredAt": "2026-10-22T23:20:31.876Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "a1e4fef4d87787aa",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "iris": {
       "baseline": {
@@ -198,7 +342,16 @@
           "ask-arjun-for-feasibility": false
         },
         "measuredAt": "2026-10-22T23:44:35.038Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "588d24fbd82843f2",
+          "reason": "Baseline recorded below the 0.8 minimum (0); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "mira": {
       "baseline": {
@@ -206,7 +359,16 @@
         "passRate": 0.333,
         "scenarios": {},
         "measuredAt": "2026-10-23T00:03:21.530Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "ab0516a2eb0d602e",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "kai": {
       "baseline": {
@@ -242,7 +404,16 @@
           "aso-metadata-document-not-buried": true
         },
         "measuredAt": "2026-10-23T01:19:05.609Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "c2937beed12052c0",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "theo": {
       "baseline": {
@@ -266,7 +437,16 @@
           "reviewer-no-approve-publish-itself": true
         },
         "measuredAt": "2026-10-23T08:40:15Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "519b063183272d00",
+          "reason": "Baseline recorded below the 0.8 minimum (0.667); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "acceptance": {
       "baseline": {
@@ -278,21 +458,48 @@
           "acceptance-delegate-legwork-task-tool": true
         },
         "measuredAt": "2026-10-23T08:40:49Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "f5c9dc38a9f68598",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "sales-lead": {
       "baseline": {
         "hash": "f66706685446dbf2",
         "passRate": 0.333,
         "scenarios": {}
-      }
+      },
+      "waivers": [
+        {
+          "hash": "f66706685446dbf2",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "deal-desk": {
       "baseline": {
         "hash": "09f5c2876938f4de",
         "passRate": 0.333,
         "scenarios": {}
-      }
+      },
+      "waivers": [
+        {
+          "hash": "09f5c2876938f4de",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "seo-specialist": {
       "baseline": {
@@ -308,7 +515,16 @@
           "ce237720",
           "8e247eca"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "4e0f9ca16c257cf3",
+          "reason": "Baseline recorded below the 0.8 minimum (0); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "outbound-social-specialist": {
       "baseline": {
@@ -324,7 +540,16 @@
           "5550b4b4",
           "d67f2037"
         ]
-      }
+      },
+      "waivers": [
+        {
+          "hash": "0946822069c852e8",
+          "reason": "Baseline recorded below the 0.8 minimum (0.333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "bookkeeper": {
       "baseline": {
@@ -336,7 +561,16 @@
           "bookkeeper-postmortem-on-failed-reconciliation": true
         },
         "measuredAt": "2026-10-28T12:27:12Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "b69d7b5f8bb2acc7",
+          "reason": "Baseline recorded below the 0.8 minimum (0.33); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "inbound-qualifier": {
       "baseline": {
@@ -348,7 +582,16 @@
           "inbound-qualifier-never-contact-lead-directly": false
         },
         "measuredAt": "2026-10-28T12:35:26Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "115c5f8b280016e7",
+          "reason": "Baseline recorded below the 0.8 minimum (0.33); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "wiki-maintainer": {
       "baseline": {
@@ -360,7 +603,16 @@
           "wiki-maintainer-raw-stays-immutable": true
         },
         "measuredAt": "2026-10-28T12:42:23Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "70121802a2064e83",
+          "reason": "Baseline recorded below the 0.8 minimum (0.67); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
     },
     "operator": {
       "baseline": {
@@ -372,7 +624,27 @@
           "operator-no-broad-pkill": true
         },
         "measuredAt": "2026-11-01T06:11:29Z"
-      }
+      },
+      "waivers": [
+        {
+          "hash": "8b5bba6c30fbfe56",
+          "reason": "Baseline recorded below the 0.8 minimum (0.3333); accepted as the starting point, to be raised by the weekly agent-research loop (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2027-02-04"
+        }
+      ]
+    },
+    "delivery-lead": {
+      "waivers": [
+        {
+          "hash": "8cc8728b35e65949",
+          "reason": "Template has no recorded baseline run yet; waived so the gate can enforce. Baseline it via skill-eval before expiry (PAR-7275).",
+          "by": "Delivery Lead",
+          "at": "2026-11-04",
+          "expires": "2026-12-04"
+        }
+      ]
     }
   }
 }

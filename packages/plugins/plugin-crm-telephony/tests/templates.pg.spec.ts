@@ -3,6 +3,9 @@ import { NAMESPACE } from "../src/namespace.js";
 import { startPg, type PgDb } from "./helpers/pg.js";
 import { syncTemplates, listPickerTemplates, type TwilioClient } from "../src/templates.js";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
+import { embeddedAvailable } from "./helpers/pg.js";
+
+const available = await embeddedAvailable();
 
 let db: PgDb;
 
@@ -30,7 +33,7 @@ function createMockClient(
   };
 }
 
-describe("Template sync and picker", () => {
+describe.skipIf(!available)("Template sync and picker", () => {
   beforeAll(async () => {
     db = await startPg();
   }, 180_000);

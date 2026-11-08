@@ -104,7 +104,7 @@ describe("connect Gmail", () => {
       new Response(JSON.stringify({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 3599, scope: "openid https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send email" }), { status: 200 });
     const start = await connectStart(env, CO, "user-7", { returnTo: "/PIB/mailbox?connected=gmail" });
     const url = new URL(start.authorizeUrl);
-    expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send openid email");
+    expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.modify openid email");
     expect(url.searchParams.get("access_type")).toBe("offline");
     expect(url.searchParams.get("prompt")).toBe("consent");
     expect(start.redirectUri).toBe("https://paperclip.example.com/_plugins/11111111-2222-3333-4444-555555555555/ui/oauth-callback.html");
@@ -135,13 +135,13 @@ describe("connect Gmail", () => {
     expect(host.issues.get("issue-9")!.status).toBe("done");
   });
 
-  it("refuses a grant without refresh token or without both Gmail scopes", async () => {
+  it("refuses a grant without refresh token or without the gmail.modify scope", async () => {
     const { env, gmail } = setup();
     gmail.tokenResponse = () => new Response(JSON.stringify({ access_token: "a", expires_in: 3599, scope: "https://www.googleapis.com/auth/gmail.modify" }), { status: 200 });
     const noRefresh = await oauthComplete(env, completeInput((await connectStart(env, CO, "user-7", {})).state));
     expect(noRefresh).toMatchObject({ status: 400, body: { error: expect.stringMatching(/refresh token/) } });
-    gmail.tokenResponse = () => new Response(JSON.stringify({ access_token: "a", refresh_token: "r", expires_in: 3599, scope: "https://www.googleapis.com/auth/gmail.modify" }), { status: 200 });
+    gmail.tokenResponse = () => new Response(JSON.stringify({ access_token: "a", refresh_token: "r", expires_in: 3599, scope: "openid email" }), { status: 200 });
     const noSend = await oauthComplete(env, completeInput((await connectStart(env, CO, "user-7", {})).state));
-    expect(noSend).toMatchObject({ status: 400, body: { error: expect.stringMatching(/read and send/) } });
+    expect(noSend).toMatchObject({ status: 400, body: { error: expect.stringMatching(/Gmail access was not granted/) } });
   });
 });
