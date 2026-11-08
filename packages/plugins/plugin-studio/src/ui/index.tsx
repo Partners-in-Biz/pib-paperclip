@@ -571,6 +571,24 @@ function AssetDetail({
                 }}
               />
             ) : null}
+            {/* A reference image can go to an agent with a brief for JSON prompts (PAR-8389). No auto-send: the popup is the host's. */}
+            {canReview && d && kind === "image" ? (
+              <GiveButton
+                companyId={companyId}
+                assetId={assetId}
+                purpose="paired_prompts"
+                label="Ask an agent for JSON prompts"
+                onGiven={(out) => {
+                  setMessage(out.warning);
+                  setNotice(out.message);
+                  setV((n) => n + 1);
+                }}
+                onError={(err) => {
+                  setNotice(null);
+                  setMessage(err);
+                }}
+              />
+            ) : null}
             <Button variant="secondary" onClick={close}>
               Close
             </Button>

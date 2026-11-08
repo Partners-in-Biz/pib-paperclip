@@ -14,7 +14,7 @@ export function issuePath(issue: { id: string; identifier: string | null }): str
 }
 
 /** Give to agent for one asset. Each instance owns its own request; the popup is the host's, so it can sit anywhere. */
-export function GiveButton({ companyId, assetId, onGiven, onError }: { companyId: string; assetId: string; onGiven?: (out: { message: string; warning: string | null }) => void; onError?: (message: string) => void }) {
+export function GiveButton({ companyId, assetId, purpose, label, onGiven, onError }: { companyId: string; assetId: string; /** Adds a brief to the task (give.ts GIVE_PURPOSES). */ purpose?: string; label?: string; onGiven?: (out: { message: string; warning: string | null }) => void; onError?: (message: string) => void }) {
   const host = useHostNewIssue();
   const prepare = useStudioAction("give-prepare");
   const record = useStudioAction("give-record");
@@ -28,9 +28,10 @@ export function GiveButton({ companyId, assetId, onGiven, onError }: { companyId
   return (
     <GiveToAgentButton
       newIssue={newIssue}
+      {...(label ? { label } : {})}
       prepare={async () => {
         slot.giveId = null;
-        const out = (await prepare({ companyId, assetId })) as GivePrefill;
+        const out = (await prepare({ companyId, assetId, ...(purpose ? { purpose } : {}) })) as GivePrefill;
         slot.giveId = out.giveId;
         return popupDefaults(out);
       }}
