@@ -48,7 +48,7 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   }, [store, editId, companyId]);
 
   if (!companyId) return <Page accent="studio" title="Video editor" description="Pick a company first.">{null}</Page>;
-  const title = state.edit?.name || "Video editor";
+  const title = state.edit?.title || "Video editor";
   const remove = async () => {
     if (!editId || !window.confirm(`Delete "${title}"? Its timeline and saved versions are removed for everyone. Videos it already rendered stay in the library. This can't be undone.`)) return;
     setDeleting(true);
