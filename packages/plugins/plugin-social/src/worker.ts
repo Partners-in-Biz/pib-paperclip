@@ -86,6 +86,7 @@ import {
   createTemplateRecord,
   deletePostRecord,
   detachDestination,
+  deleteAccountRecord,
   disconnectAccountRecord,
   getApprovalPolicyRecord,
   getPostDetail,
@@ -421,6 +422,7 @@ const ACTIONS: Record<string, ActionHandler> = {
       personal: spaceOf(p) === "me",
     }),
   "social.disconnect-account": (ctx, v, p) => disconnectAccountRecord(ctx, v, requiredString(p, "accountId")),
+  "social.delete-account": (ctx, v, p) => deleteAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.update-account": (ctx, v, p) => updateAccountRecord(ctx, v, p),
   "social.refresh-account": (ctx, v, p) => refreshAccountRecord(ctx, v, requiredString(p, "accountId")),
   "social.media-presign": (ctx, v, p) =>

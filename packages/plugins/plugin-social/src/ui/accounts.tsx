@@ -481,7 +481,17 @@ export function AccountsTab({ snapshot, companyId, run }: {
                     >
                       Disconnect
                     </SmallButton>
-                  ) : null}
+                  ) : (
+                    <SmallButton
+                      onClick={() => {
+                        if (window.confirm(`Delete ${account.displayName}? It is removed from Social with its inbox items and post results; posts stay but no longer list it. This cannot be undone.`)) {
+                          run("social.delete-account", { accountId: account.id }, "Account deleted").catch(ignore);
+                        }
+                      }}
+                    >
+                      Delete
+                    </SmallButton>
+                  )}
                 </Row>
               </Card>
             );

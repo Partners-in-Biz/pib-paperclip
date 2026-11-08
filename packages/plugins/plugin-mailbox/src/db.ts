@@ -161,6 +161,11 @@ export interface GmailStore {
   /** Moves the account to needs_reconnect; true only for the call that changed it. */
   markNeedsReconnect(companyId: string, id: string, error: string): Promise<boolean>;
   setDefaultAccount(companyId: string, id: string): Promise<void>;
+  /**
+   * Removes a mailbox for good: its stored mail and drafts (and their sorting decisions), agent access, Reply-needed thread links and its place on
+   * CRM contacts. Unsent sends from it end as failed; sent records stay for history and duplicate checks. Gmail itself is never touched.
+   */
+  deleteAccount(companyId: string, id: string): Promise<{ messages: number }>;
   /** Binds a mailbox to a client (or back to the company's own with nulls). A client's mailbox is never the default sender. */
   setAccountClient(companyId: string, id: string, patch: { clientKind: string | null; clientRef: string | null; fromName?: string | null }): Promise<void>;
   tryLockSync(accountId: string, seconds: number): Promise<boolean>;
@@ -535,6 +540,28 @@ export class SqlStore implements GmailStore {
       `INSERT INTO ${this.t("accounts")} (id, company_id, provider, address, owner_user_id, is_default) VALUES ($1, $2, $3, $4, $5, $6)`,
       [row.id, row.companyId, row.provider, row.address, row.ownerUserId, row.isDefault],
     );
+  }
+
+  async deleteAccount(companyId: string, id: string): Promise<{ messages: number }> {
+    const params = [companyId, id];
+    await this.db.execute(
+      `DELETE FROM ${this.t("decisions")} WHERE company_id = $1 AND subject_kind = 'message'
+         AND subject_id IN (SELECT id FROM ${this.t("messages")} WHERE company_id = $1 AND account_id = $2)`,
+      params,
+    );
+    const messages = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND account_id = $2`, params);
+    await this.db.execute(`DELETE FROM ${this.t("delegations")} WHERE company_id = $1 AND account_id = $2`, params);
+    await this.db.execute(`DELETE FROM ${this.t("delegation_removals")} WHERE account_id = $1`, [id]);
+    await this.db.execute(`DELETE FROM ${this.t("thread_issues")} WHERE account_id = $1`, [id]);
+    await this.db.execute(
+      `UPDATE ${this.t("send_requests")} SET status = 'failed', permanent = true, error = 'The mailbox was removed', updated_at = now()
+        WHERE company_id = $1 AND account_id = $2 AND status IN ('sending', 'retrying')`,
+      params,
+    );
+    await this.db.execute(`UPDATE ${this.t("esp_domains")} SET account_id = NULL WHERE company_id = $1 AND account_id = $2`, params);
+    await this.db.execute(`UPDATE ${this.t("crm_contacts")} SET account_ids = array_remove(account_ids, $2) WHERE company_id = $1 AND $2 = ANY(account_ids)`, params);
+    await this.db.execute(`DELETE FROM ${this.t("accounts")} WHERE company_id = $1 AND id = $2`, params);
+    return { messages: messages.rowCount ?? 0 };
   }
 
   async updateAccount(companyId: string, id: string, patch: AccountPatch): Promise<void> {

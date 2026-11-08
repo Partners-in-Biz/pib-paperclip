@@ -76,6 +76,21 @@ export class MemoryStore implements GmailStore {
     });
     this.removals.delete(key);
   }
+  async deleteAccount(companyId: string, id: string) {
+    const ids = [...this.messages.values()].filter((m) => m.company_id === companyId && m.account_id === id).map((m) => m.id);
+    await this.deleteDecisionsFor(companyId, ids);
+    const messages = await this.deleteMessages(companyId, ids);
+    for (const key of [...this.delegations.keys()]) if (key.startsWith(`${id}:`)) this.delegations.delete(key);
+    for (const key of [...this.removals]) if (key.startsWith(`${id}:`)) this.removals.delete(key);
+    for (const key of [...this.threadIssues.keys()]) if (key.startsWith(`${id}:`)) this.threadIssues.delete(key);
+    for (const send of this.sends.values()) {
+      if (send.company_id === companyId && send.account_id === id && (send.status === "sending" || send.status === "retrying")) {
+        Object.assign(send, { status: "failed", permanent: true, error: "The mailbox was removed" });
+      }
+    }
+    if (this.accounts.get(id)?.company_id === companyId) this.accounts.delete(id);
+    return { messages };
+  }
   async deleteDefaultDelegations(_companyId: string, accountId: string) {
     void _companyId;
     let n = 0;

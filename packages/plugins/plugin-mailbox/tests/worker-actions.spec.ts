@@ -168,3 +168,36 @@ describe("drafting for a client", () => {
     expect(bad.error).toBe("Invalid replyTo address");
   });
 });
+
+describe("deleting a mailbox", () => {
+  const off = account("acc-off", "wrong@gmail.com", { status: "disconnected", token_sealed: null });
+
+  it("a person deletes a disconnected mailbox: its mail, agent access and thread links go, then the account row last", async () => {
+    const { act, executed } = await boot({ accounts: [own, off] });
+    expect(await act("mailbox.delete-account", { accountId: "acc-off" })).toMatchObject({ id: "acc-off", deleted: true, address: "wrong@gmail.com" });
+    const sqls = executed.map((e) => e.sql);
+    const at = (needle: string) => sqls.findIndex((s) => s.includes(needle));
+    for (const needle of [
+      `DELETE FROM ${NAMESPACE}.decisions`,
+      `DELETE FROM ${NAMESPACE}.messages`,
+      `DELETE FROM ${NAMESPACE}.delegations`,
+      `DELETE FROM ${NAMESPACE}.delegation_removals`,
+      `DELETE FROM ${NAMESPACE}.thread_issues`,
+      `UPDATE ${NAMESPACE}.send_requests`,
+      `UPDATE ${NAMESPACE}.crm_contacts`,
+    ]) {
+      expect(at(needle), needle).toBeGreaterThanOrEqual(0);
+      expect(at(needle), needle).toBeLessThan(at(`DELETE FROM ${NAMESPACE}.accounts`));
+    }
+    expect(executed.find((e) => e.sql.includes(`DELETE FROM ${NAMESPACE}.accounts`))!.params).toEqual([CO, "acc-off"]);
+    expect(executed.find((e) => e.sql.includes(`DELETE FROM ${NAMESPACE}.messages`))!.params).toEqual([CO, "acc-off"]);
+  });
+
+  it("a connected mailbox is refused until it is disconnected; agents and other companies' mailboxes are refused", async () => {
+    const { act, executed } = await boot({ accounts: [own, off] });
+    await expect(act("mailbox.delete-account", { accountId: "acc-1" })).rejects.toThrow(/Disconnect peet@partnersinbiz\.online first/);
+    await expect(act("mailbox.delete-account", { accountId: "acc-off" }, { type: "agent", agentId: "agent-op" })).rejects.toThrow(/board users/);
+    await expect(act("mailbox.delete-account", { accountId: "acc-other" })).rejects.toThrow(/Mailbox not found/);
+    expect(executed.some((e) => e.sql.includes(`DELETE FROM ${NAMESPACE}.accounts`))).toBe(false);
+  });
+});

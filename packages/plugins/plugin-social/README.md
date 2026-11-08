@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.10.23: delete a disconnected account
+
+Accounts → **Delete** (shown once an account is disconnected) removes it for good: its inbox items, metrics and RSS feed links go, and its destinations on posts (with their scores) go by cascade, so posts stay but no longer list it. A connected account is refused: disconnect it first. Action `social.delete-account` (a person only; a personal account only by its owner). No migration.
+
 ## 0.9.21: X replies and quotes, draft note (PAR-4452)
 
 `create-post`, `update-post` and `create-personal-draft` take `replyToUrl` or `quoteUrl` (an x.com / twitter.com post link, not both) and an internal `note` (max 500 characters, never published; for example "HOLD until PAR-1234"). On publish X gets `reply.in_reply_to_tweet_id` or `quote_tweet_id`. Other platforms refuse a reply or quote draft in `validate-post` instead of posting it plain; Threads and Bluesky are not supported yet. The Posts list, the post sheet and the composer (Social and My Social) show "Replying to @handle" / "Quoting @handle" with the link, and the note. Changing the target changes the approval fingerprint; the note does not.

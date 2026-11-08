@@ -102,6 +102,7 @@ describe("runtime SQL passes the host guard", () => {
       () => db.setAccountState(ctx, "a1", { status: "needs_reconnect", lastError: "x", reconnectIssueId: "i" }),
       () => db.updateAccountSettings(ctx, "co", "a1", { meta: { boardId: "b" }, status: "disabled" }),
       () => db.disconnectAccount(ctx, "co", "a1", "note"),
+      () => db.deleteDisabledAccount(ctx, "co", "a1"),
       () => db.lockAccountRefresh(ctx, "a1"),
       () => db.unlockAccountRefresh(ctx, "a1"),
       () => db.deleteJunkAccounts(ctx, "co"),
