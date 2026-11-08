@@ -232,7 +232,7 @@ export function StudioPage({ context }: PluginPageProps) {
 function Preview({ kind, name, url, height = 160 }: { kind: string; name: string; url: string | undefined; height?: number }) {
   const box = { width: "100%", height, objectFit: "cover" as const, borderRadius: 8, background: "rgba(127,127,127,0.12)", display: "block" };
   if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>{kind}</div>;
-  if (kind === "video") return <video src={url} style={box} muted playsInline controls preload="metadata" />;
+  if (kind === "video") return <video src={url} style={{ ...box, objectFit: "contain" }} muted playsInline controls preload="metadata" />;
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
