@@ -188,7 +188,7 @@ vi.mock("../services/budgets.js", async () => {
         ...service,
         getInvocationBlock: async (...blockArgs: Parameters<typeof service.getInvocationBlock>) =>
           mockBudgetInvocationBlocked.value
-            ? ({ scopeType: "agent", reason: "test budget block" } as never)
+            ? ({ scopeType: "agent", scopeId: blockArgs[1], scopeName: "test agent", reason: "test budget block" } as never)
             : service.getInvocationBlock(...blockArgs),
       };
     },
@@ -9610,13 +9610,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     } finally {
       releaseResult();
     }
-    // Stop timing is unchanged: the run is cancelled before usage exists.
+    // Stop timing is unchanged: the run is cancelled before token usage exists
+    // (upstream already keeps accounting bookkeeping in usageJson at this point).
     expect(cancelled?.status).toBe("cancelled");
-    expect(cancelled?.usageJson ?? null).toBeNull();
+    expect((cancelled?.usageJson as Record<string, unknown> | null)?.inputTokens ?? null).toBeNull();
 
     const finalized = await waitForValue(async () => {
       const run = await heartbeat.getRun(runId);
-      return run?.usageJson ? run : null;
+      return (run?.usageJson as Record<string, unknown> | null)?.inputTokens ? run : null;
     });
     expect(finalized?.status).toBe("cancelled");
     expect(finalized?.errorCode).toBe("issue_reassigned");
@@ -17013,8 +17014,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     it("leaves budget-blocked agents to the existing over-budget path, at the cap and below it", async () => {
       // The sweeper's over-budget check runs before the continuation lane, so a
-      // budget-blocked issue never reaches the cap: it is blocked as before and no
-      // wake is queued.
+      // budget-blocked issue never reaches the cap and no wake is queued.
       mockBudgetInvocationBlocked.value = true;
       const heartbeat = heartbeatService(db);
       for (const length of [3, 2]) {
@@ -17022,7 +17022,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         const result = await heartbeat.reconcileStrandedAssignedIssues();
         expect(result).toMatchObject({ automaticWakeCapEscalated: 0, continuationRequeued: 0 });
         const state = await readState(seeded.issueId, seeded.agentId);
-        expect(state.issue.status).toBe("blocked");
+        // Upstream: a budget block with no blocking policy is a temporary hold, so the
+        // task is left as it is and nothing is queued (settling accounting wakes it).
+        expect(state.issue.status).toBe("in_progress");
         expect(state.runs).toHaveLength(length + 1);
       }
     });
