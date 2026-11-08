@@ -167,7 +167,7 @@ pnpm test:release-smoke
 
 Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
 
-Agent test rule (PAR-7244): on the shared VPS agents run `pnpm --filter <pkg> test` or changed files only (`pnpm exec vitest run --changed origin/development`), never the whole repo suite. Every vitest config caps `maxWorkers` at 4 (8 only when `CI` is set on the self-hosted runner); `scripts/run-vitest-stable.mjs` adds `NODE_OPTIONS=--max-old-space-size=2048`. Export the same `NODE_OPTIONS` for direct `vitest` calls. Do not raise the cap or remove it.
+Agent test rule (PAR-7244): on the shared VPS agents run `pnpm --filter <pkg> test` or changed files only (`pnpm exec vitest run --changed origin/development`), never the whole repo suite. Every vitest config caps `maxWorkers` at 4 (8 only when `CI` is set on the self-hosted runner; GitHub-hosted runners keep vitest's default of cores - 1); `scripts/run-vitest-stable.mjs` adds `NODE_OPTIONS=--max-old-space-size=2048`. Export the same `NODE_OPTIONS` for direct `vitest` calls. Do not raise the cap or remove it.
 
 For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
 

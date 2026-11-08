@@ -1,14 +1,21 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
-// Model a future Core release without changing the operator's policy.
-vi.mock("./feature-catalog.js", async (importOriginal) => {
-  const catalog = await importOriginal<typeof import("./feature-catalog.js")>();
-  return { ...catalog, INSTANCE_FEATURE_KEYS: [...catalog.INSTANCE_FEATURE_KEYS, "enableFutureFeature"] };
+// This package runs with isolate:false, so workers share modules between test files: the real catalog may already
+// be loaded, and a mocked one would reach the next file. Mock and import inside the test, then undo both.
+afterEach(() => {
+  vi.doUnmock("./feature-catalog.js");
+  vi.resetModules();
 });
 
-import { parseHiddenSettingsList } from "./settings-visibility.js";
+it("hides an added catalog feature without an operator configuration change", async () => {
+  vi.resetModules();
+  // Model a future Core release without changing the operator's policy.
+  vi.doMock("./feature-catalog.js", async (importOriginal) => {
+    const catalog = await importOriginal<typeof import("./feature-catalog.js")>();
+    return { ...catalog, INSTANCE_FEATURE_KEYS: [...catalog.INSTANCE_FEATURE_KEYS, "enableFutureFeature"] };
+  });
+  const { parseHiddenSettingsList } = await import("./settings-visibility.js");
 
-it("hides an added catalog feature without an operator configuration change", () => {
   const parsed = parseHiddenSettingsList("instance.plugins,instance.experimental.*,!instance.experimental.enableEnvironments");
   expect(parsed.unknown).toEqual([]);
   expect(parsed.hidden).toContain("instance.experimental.enableFutureFeature");

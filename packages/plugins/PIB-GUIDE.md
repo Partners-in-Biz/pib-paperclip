@@ -39,6 +39,7 @@ Any run (unit/integration/acceptance/canary/manual QA) that creates data in a sh
 
 ## What a release needs
 
+- A dependency change commits `pnpm-lock.yaml` in the same PR, whatever `doc/DEVELOPING.md` says. Our CI and deploys install with `--frozen-lockfile`.
 - Bump the plugin's version in its `package.json` and everywhere its manifest takes it from: a `version:` literal in `src/manifest.ts` or a `VERSION` constant it imports (it differs per plugin, so run `grep -rn "<old version>" packages/plugins/<pkg>/src`). The deploy refuses a build whose manifest version differs from `package.json`, or a version that is already live.
 - Migrations are additive. Add the next numbered file in `<plugin>/migrations/`. Never edit or delete one that has been applied: a rolled-back deploy keeps its migrations, so the old code must run on the newer schema.
 - A new migration file, or a changed `capabilities` or `coreReadTables` list, makes the release stop-first: it waits for a quiet moment, stops Paperclip and restarts it. Say so in the PR title or description. Anything else ships src-only with no restart.
