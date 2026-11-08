@@ -32,6 +32,8 @@ const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
   text: { label: "label", text: "text", brief: "text", requested: "label" },
   // assetId: the finished page once saved to the library. The rest are the page's settings (layout.ts).
   layout: { label: "label", size: "label", part: "label", position: "label", align: "label", scale: "label", style: "label", font: "label", colour: "label", assetId: "id" },
+  // editId: the video edit the card opens; renderId: the render still running for it; assetId: the last rendered video.
+  edit: { label: "label", editId: "id", renderId: "id", assetId: "id" },
 };
 
 function bad(message: string): never {

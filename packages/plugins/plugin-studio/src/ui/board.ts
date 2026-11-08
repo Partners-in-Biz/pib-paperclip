@@ -21,7 +21,36 @@ export const CARD_LABELS: Record<NodeType, string> = {
   output: "Output",
   text: "Text",
   layout: "Layout",
+  edit: "Edit",
 };
+
+/** Cards whose file an Edit card can put on its timeline. */
+const EDIT_INPUT_TYPES: readonly string[] = ["source", "image", "video", "output"] satisfies NodeType[];
+/** The most files a new video edit takes (createEditAction refuses more). */
+export const MAX_EDIT_INPUTS = 20;
+
+/**
+ * The files an Edit card starts a video edit from: its wired-in cards top to bottom, then left to right (the order
+ * the clips play), each file once, at most MAX_EDIT_INPUTS. `missing` names wired cards that have no file yet.
+ */
+export function editInputs(nodes: ReadonlyArray<{ id: string; type?: string; position?: { x: number; y: number }; data?: Record<string, string | undefined> }>, edges: ReadonlyArray<{ source: string; target: string }>, cardId: string): { assetIds: string[]; missing: string[] } {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const pos = (n: { position?: { x: number; y: number } }) => n.position ?? { x: 0, y: 0 };
+  const incoming = [...new Set(edges.filter((e) => e.target === cardId).map((e) => e.source))]
+    .map((id) => byId.get(id))
+    .filter((n): n is NonNullable<typeof n> => Boolean(n) && EDIT_INPUT_TYPES.includes(n!.type ?? ""))
+    .sort((a, b) => pos(a).y - pos(b).y || pos(a).x - pos(b).x);
+  const assetIds: string[] = [];
+  const missing: string[] = [];
+  for (const n of incoming) {
+    const assetId = n.data?.assetId;
+    const label = n.data?.label?.trim();
+    if (!assetId) missing.push(`${label ? `"${label}"` : `The ${n.type} card`} has no file yet`);
+    else if (!assetIds.includes(assetId)) assetIds.push(assetId);
+  }
+  if (assetIds.length > MAX_EDIT_INPUTS) missing.push(`Only the first ${MAX_EDIT_INPUTS} files go into the edit`);
+  return { assetIds: assetIds.slice(0, MAX_EDIT_INPUTS), missing };
+}
 
 export function isNodeType(value: unknown): value is NodeType {
   return typeof value === "string" && (NODE_TYPES as readonly string[]).includes(value);
