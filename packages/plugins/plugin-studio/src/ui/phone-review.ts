@@ -15,7 +15,7 @@ export interface ReviewItem {
 }
 
 /** Cards whose file is a generation result. Source cards hold library inputs and prompt cards hold text, so they're left out. */
-const RESULT_CARDS = new Set(["image", "video", "output", "layout"]);
+const RESULT_CARDS = new Set(["image", "video", "output", "layout", "edit"]);
 
 /**
  * The board's results to review: one item per file (an image card and the output card it fills share one), drafts

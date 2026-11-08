@@ -1,4 +1,5 @@
 /** What the page and the tools share: who is asking, and the usage and cap views. */
+import { balanceView } from "./balance.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
@@ -51,7 +52,7 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
 /** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
-  const [caps, history, clients, assets, companyUsed, projects, agents] = await Promise.all([
+  const [caps, history, clients, assets, companyUsed, projects, agents, balance] = await Promise.all([
     listCaps(ctx, companyId),
     capHistory(ctx, companyId),
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
@@ -59,6 +60,7 @@ export async function overview(ctx: PluginContext, companyId: string) {
     usage(ctx, companyId, period),
     ctx.projects.list({ companyId, limit: 200 }).catch(() => []),
     ctx.agents.list({ companyId, limit: 500 }).catch(() => []),
+    balanceView(ctx, companyId).catch(() => null),
   ]);
   const clientUsage = await Promise.all(
     caps
@@ -71,6 +73,7 @@ export async function overview(ctx: PluginContext, companyId: string) {
   return {
     period,
     companyUsed,
+    balance,
     caps,
     clientUsage,
     history,

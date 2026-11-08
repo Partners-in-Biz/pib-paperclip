@@ -26,7 +26,27 @@ export interface PromptTemplate {
   resolution?: string | null;
   assetId?: string | null;
   createdAt?: string | null;
+  /** Paired templates: the form the person fills in, and the structured image + video prompts it builds. */
+  fields?: TemplateField[];
+  spec?: PairedSpec;
 }
+
+export interface TemplateField {
+  name: string;
+  label: string;
+  example: string;
+  /** When set, the form offers these instead of free text. */
+  choices?: string[];
+}
+
+/** Keys: shot_type, subject, outfit, setting, lighting, camera, mood, sequence[], negative_guidance. String values may hold `{{field}}`. */
+export interface PairedSpec {
+  image: Record<string, unknown>;
+  video: Record<string, unknown>;
+}
+
+/** The longest prompt the Generate box accepts. */
+export const PROMPT_MAX = 4000;
 
 export const TEMPLATE_CATEGORIES: ReadonlyArray<{ id: TemplateCategory; label: string }> = [
   { id: "product", label: "Product" },
@@ -41,7 +61,7 @@ const NO_TEXT = "No text, lettering, logos or watermarks anywhere, including on 
 const PRODUCT = { product: "a matte black insulated coffee flask" };
 const PERSON = { person: "a woman in her thirties in a navy blazer" };
 
-export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
+const CORE_TEMPLATES: readonly PromptTemplate[] = [
   // Product
   {
     id: "packshot", category: "product", kind: "image", ratio: "1:1", title: "Clean packshot", tagline: "White background, ready for a shop",
@@ -158,6 +178,32 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     prompt: `Close-up of {{dish}} from a 45-degree angle, with fresh texture and glistening detail in sharp focus and the background softly blurred. Warm side light, dark moody surface, shot on a 100mm macro lens. ${NO_TEXT}`,
     examples: { dish: "a stacked burger with melted cheddar" },
   },
+  // Paired image + video
+  {
+    id: "ugc-pair", category: "social", kind: "image", ratio: "9:16", title: "UGC photo + clip pair", tagline: "Matching still and video prompts as JSON",
+    prompt: `Selfie-style photo of {{subject}} wearing {{outfit}} in {{setting}}, holding {{product}}. ${NO_TEXT}`,
+    examples: { subject: "a woman in her thirties", outfit: "a navy blazer", setting: "a sunlit kitchen", product: "a matte black coffee flask", mood: "warm and authentic" },
+    fields: [
+      { name: "subject", label: "Person", example: "a woman in her thirties" },
+      { name: "outfit", label: "Outfit", example: "a navy blazer" },
+      { name: "setting", label: "Setting", example: "a sunlit kitchen" },
+      { name: "product", label: "Product", example: "a matte black coffee flask" },
+      { name: "mood", label: "Mood", example: "warm and authentic", choices: ["warm and authentic", "bright and energetic", "calm and premium"] },
+    ],
+    spec: {
+      image: {
+        shot_type: "handheld selfie, vertical, chest up", subject: "{{subject}} holding {{product}} toward the camera", outfit: "{{outfit}}",
+        setting: "{{setting}}", lighting: "natural daylight, soft shadows", camera: "phone front camera, slight wide angle, sharp focus on the product", mood: "{{mood}}",
+        negative_guidance: "no text, lettering, logos or watermarks; no extra fingers; no distorted product",
+      },
+      video: {
+        shot_type: "handheld selfie video, vertical", subject: "{{subject}} showing {{product}} to the camera", outfit: "{{outfit}}",
+        setting: "{{setting}}", lighting: "natural daylight", camera: "slight natural handheld shake, locked focus on the face and product", mood: "{{mood}}",
+        sequence: ["They look into the camera and smile", "They lift {{product}} into frame and turn it slowly", "They nod and give a small relaxed laugh"],
+        negative_guidance: "no text, lettering, logos or watermarks; no jump cuts; no warping of the product",
+      },
+    },
+  },
   // Video
   {
     id: "video-orbit", category: "product", kind: "video", ratio: "1:1", title: "Slow product orbit", tagline: "A simple turn for any product",
@@ -196,6 +242,73 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
   },
 ];
 
+interface StyleDef {
+  id: string; title: string; tagline: string;
+  shot: string; look: string; light: string; camera: string; mood: string;
+  seq: [string, string, string]; avoid: string; ex: { subject: string; setting: string; product: string };
+}
+
+/** One style of the nine-style pack as a paired template. Plain descriptors only: no brand, studio or franchise names. */
+function styleTemplate(d: StyleDef): PromptTemplate {
+  const NEG = "no text, lettering, logos or watermarks";
+  return {
+    id: d.id, category: "social", kind: "video", ratio: "9:16", title: d.title, tagline: d.tagline,
+    prompt: `${d.shot}: {{subject}} with {{product}} in {{setting}}. ${d.look}. Camera: ${d.camera}. ${NO_TEXT}`,
+    examples: { ...d.ex, mood: d.mood },
+    fields: [
+      { name: "subject", label: "Subject", example: d.ex.subject },
+      { name: "product", label: "Product", example: d.ex.product },
+      { name: "setting", label: "Setting", example: d.ex.setting },
+      { name: "mood", label: "Mood", example: d.mood, choices: [d.mood, "bright and energetic", "calm and premium"] },
+    ],
+    spec: {
+      image: { shot_type: `${d.shot}, vertical`, subject: `{{subject}} with {{product}}`, setting: "{{setting}}", style: d.look, lighting: d.light, camera: d.camera, mood: "{{mood}}", negative_guidance: `${NEG}; ${d.avoid}` },
+      video: { shot_type: `${d.shot}, vertical video`, subject: `{{subject}} with {{product}}`, setting: "{{setting}}", style: d.look, lighting: d.light, camera: d.camera, mood: "{{mood}}", sequence: d.seq, negative_guidance: `${NEG}; no jump cuts; the same look in every frame` },
+    },
+  };
+}
+
+const STYLE_PACK: readonly PromptTemplate[] = ([
+  { id: "style-ugc", title: "Realistic UGC pair", tagline: "Looks filmed on a phone",
+    shot: "Handheld phone selfie", look: "Realistic user-generated look, natural skin texture, unpolished and authentic", light: "natural daylight, soft shadows", camera: "phone front camera, slight wide angle, slight handheld shake", mood: "warm and authentic",
+    seq: ["They look into the camera and smile", "They lift {{product}} into frame and turn it slowly", "They nod and give a small relaxed laugh"], avoid: "no extra fingers; no distorted product",
+    ex: { subject: "a woman in her thirties", setting: "a sunlit kitchen", product: "a matte black coffee flask" } },
+  { id: "style-toy-brick", title: "Toy-brick figures pair", tagline: "Plastic building-block world",
+    shot: "Macro shot of interlocking toy-brick figures", look: "Everything built from glossy plastic toy bricks, blocky figures with round studs and simple painted faces, miniature set", light: "bright softbox light with small specular highlights on the plastic", camera: "low macro lens, shallow depth of field, tilt-shift feel", mood: "playful and bright",
+    seq: ["The brick figure turns toward the camera", "It raises {{product}} built from bricks", "It hops in place and the studs catch the light"], avoid: "no real human skin; no smooth organic shapes",
+    ex: { subject: "a smiling brick figure in a chef hat", setting: "a toy-brick kitchen", product: "a brick-built coffee cup" } },
+  { id: "style-3d-animated", title: "3D animated feature pair", tagline: "Warm family-film animation",
+    shot: "Cinematic medium shot", look: "Polished 3D animated feature film look, expressive oversized eyes, soft rounded shapes, detailed textures, rich colour", light: "warm cinematic key light with soft rim light and gentle bounce", camera: "35mm virtual lens, shallow depth of field, slow dolly", mood: "warm and cheerful",
+    seq: ["The character looks up with wide curious eyes", "They pick up {{product}} and smile", "The camera drifts back to reveal the whole scene"], avoid: "no photorealistic humans; no flat shading",
+    ex: { subject: "a small fox in a yellow raincoat", setting: "a cosy forest cottage", product: "a glowing lantern" } },
+  { id: "style-cartoon", title: "Cartoon pair", tagline: "Bold outlines, bright flat colour",
+    shot: "Clean cartoon frame", look: "Hand-drawn cartoon style, bold outlines, bright flat colours, exaggerated expressions, simple painted backgrounds", light: "flat even lighting with simple cel shadows", camera: "static framing with a small snappy zoom", mood: "bright and energetic",
+    seq: ["The character bounces into frame", "They hold up {{product}} with a huge grin", "They wink and give a thumbs up"], avoid: "no photorealism; no 3D rendering",
+    ex: { subject: "a cheerful delivery cyclist", setting: "a colourful city street", product: "a parcel tied with string" } },
+  { id: "style-sitcom-cartoon", title: "Yellow 2D sitcom cartoon pair", tagline: "Flat yellow family-sitcom look",
+    shot: "Wide living-room sitcom frame", look: "Flat 2D animated sitcom style, yellow-skinned characters with large round eyes and overbites, thick simple outlines, suburban sets", light: "flat bright lighting with no gradients", camera: "locked-off wide shot, theatrical staging", mood: "light and comedic",
+    seq: ["The character sits on the couch and stares at the screen", "They notice {{product}} and gasp", "They grin and hold it up proudly"], avoid: "no 3D rendering; no realistic shading",
+    ex: { subject: "a dad in a white shirt", setting: "a cluttered suburban living room", product: "a giant sandwich" } },
+  { id: "style-unboxing", title: "Unboxing pair", tagline: "Hands open the box, first reveal",
+    shot: "Top-down tabletop unboxing", look: "Realistic unboxing video look, plain unbranded box and tissue paper, satisfying reveal", light: "soft overhead daylight, clean shadows", camera: "fixed overhead phone camera, hands only enter the frame", mood: "excited and curious",
+    seq: ["Hands slide the lid off the box", "They lift {{product}} out of the tissue paper", "They turn it to show every side"], avoid: "no faces; no clutter",
+    ex: { subject: "a pair of hands with short nails", setting: "a clean light wooden table", product: "a ceramic candle jar" } },
+  { id: "style-asmr", title: "ASMR pair", tagline: "Close, slow and satisfying",
+    shot: "Extreme close-up", look: "Calm ASMR look, macro texture detail, slow deliberate movement, quiet cosy feel", light: "soft warm low-key light", camera: "macro lens, locked off, very shallow depth of field", mood: "calm and premium",
+    seq: ["A fingertip slowly taps {{product}}", "It drags gently across the surface", "It rests, with the texture in sharp focus"], avoid: "no sudden movement; no faces",
+    ex: { subject: "a fingertip with a soft manicure", setting: "a dim, quiet studio", product: "a glass jar of body butter" } },
+  { id: "style-fooh", title: "FOOH pair", tagline: "Giant product in a real street",
+    shot: "Wide street shot with a giant product", look: "Fake out-of-home look: a photoreal giant 3D product towering over a real city scene, believable scale, shadows and reflections matched to the street", light: "real overcast daylight matched on the product", camera: "static phone shot from the pavement, slight handheld drift", mood: "bright and energetic",
+    seq: ["Passers-by walk through the street", "A giant {{product}} rises over the buildings", "People stop, look up and film it on their phones"], avoid: "no cartoon look; no mismatched shadows",
+    ex: { subject: "a crowd of pedestrians", setting: "a busy city crossing", product: "a huge matte black coffee flask" } },
+  { id: "style-game-trailer", title: "Game trailer pair", tagline: "Cinematic action-game reveal",
+    shot: "Cinematic game-trailer frame", look: "High-end video game cinematic look, dramatic composition, detailed real-time-render textures, volumetric haze", light: "dramatic backlight with coloured rim light and glowing particles", camera: "wide anamorphic lens, slow push-in, shallow depth of field", mood: "epic and intense",
+    seq: ["The hero stands still as dust drifts past", "They raise {{product}} and it begins to glow", "The camera pushes in on their determined face"], avoid: "no photographic realism; no on-screen interface",
+    ex: { subject: "an armoured explorer", setting: "ruins at sunset", product: "a glowing crystal blade" } },
+] as Array<StyleDef>).map(styleTemplate);
+
+export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [...CORE_TEMPLATES, ...STYLE_PACK];
+
 const FIELD = /\{\{\s*([a-z][a-z0-9 _-]*?)\s*\}\}/gi;
 
 /** The fields in a prompt, once each, in the order they first appear. */
@@ -227,4 +340,18 @@ export function filterTemplates(list: readonly PromptTemplate[], filter: { q?: s
     if (filter.kind && t.kind !== filter.kind) return false;
     return !q || `${t.title} ${t.tagline} ${t.prompt}`.toLowerCase().includes(q);
   });
+}
+
+function fillValue(value: unknown, values: Record<string, string>): unknown {
+  if (typeof value === "string") return fillPrompt(value, values);
+  if (Array.isArray(value)) return value.map((v) => fillValue(v, values));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillValue(v, values)]));
+  return value;
+}
+
+/** The paired image and video prompts as pretty JSON. Fields are filled into the parsed string values, so quotes and newlines stay valid JSON; a blank field keeps its `{{name}}`. */
+export function buildPairedPrompts(template: Pick<PromptTemplate, "spec">, values: Record<string, string>): { image_prompt: string; video_prompt: string } {
+  if (!template.spec) throw new Error("This template has no paired prompts.");
+  const make = (part: object) => JSON.stringify(fillValue(part, values), null, 2);
+  return { image_prompt: make(template.spec.image), video_prompt: make(template.spec.video) };
 }

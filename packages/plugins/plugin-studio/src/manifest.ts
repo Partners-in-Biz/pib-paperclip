@@ -6,7 +6,7 @@ import { STUDIO_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.40",
+  version: "0.1.46",
   displayName: "Studio",
   description: "Creative assets and image and video generation for people and agents. Every file is saved to private storage and tied to a company, client, project and task. Credits are tracked per client, under monthly caps a company owner sets.",
   author: "Partners in Biz",
@@ -51,6 +51,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "* * * * *",
     },
     {
+      jobKey: "process-renders",
+      displayName: "Process video renders",
+      description: "Starts the next queued video render, keeps the running one alive and recovers renders a stopped worker left behind.",
+      schedule: "* * * * *",
+    },
+    {
       jobKey: "sweep-local-files",
       displayName: "Remove local copies",
       description: "Removes the local copies of assets that agents opened more than a day ago.",
@@ -61,6 +67,7 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "studio-page", displayName: "Studio", exportName: "StudioPage", routePath: "studio" },
       { type: "page", id: "studio-canvas", displayName: "Studio canvas", exportName: "StudioCanvasPage", routePath: "studio-canvas" },
+      { type: "page", id: "studio-editor", displayName: "Studio video editor", exportName: "StudioEditorPage", routePath: "studio-editor" },
       { type: "sidebar", id: "studio-sidebar", displayName: "Studio", exportName: "StudioSidebar", order: 42 },
     ],
   },

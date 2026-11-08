@@ -12,11 +12,13 @@
 
 export const ASPECT_CHIPS = ["1:1", "9:16", "16:9", "4:5", "3:2"] as const;
 export const RESOLUTION_CHIPS = ["1k", "2k", "4k"] as const;
+/** Lengths always shown for a video model; others the model lists follow. */
+export const DURATION_CHIPS = ["5", "10", "15"] as const;
 export const QUALITY_CHIPS = ["Draft", "Standard", "High"] as const;
 /** Same as MAX_BATCH in generation.ts (a test keeps them equal). */
 export const BATCH_MAX = 8;
 
-export interface SettingsModel { id: string; label: string; ratios: readonly string[]; resolutions: readonly string[]; qualities?: readonly string[] }
+export interface SettingsModel { id: string; label: string; ratios: readonly string[]; resolutions: readonly string[]; qualities?: readonly string[]; durations?: readonly number[]; defaultDuration?: number | null }
 export interface Chip { value: string; disabled: string | null }
 
 function chips(wanted: readonly string[], offered: readonly string[], extras: boolean, field: string, model: SettingsModel | undefined): Chip[] {
@@ -40,6 +42,19 @@ export function aspectChips(model: SettingsModel | undefined): Chip[] {
 /** Resolution chips: 1k, 2k, 4k, then others the model offers (Soul takes 720p and 1080p). */
 export function resolutionChips(model: SettingsModel | undefined): Chip[] {
   return chips(RESOLUTION_CHIPS, model?.resolutions ?? [], true, "resolution", model);
+}
+
+/** Duration chips (seconds): 5, 10, 15, then others the model lists. Off, with the reason, for a model with no duration. */
+export function durationChips(model: SettingsModel | undefined): Chip[] {
+  return chips(DURATION_CHIPS, (model?.durations ?? []).map(String), true, "duration", model);
+}
+
+/** The duration to send: the picked one if the model lists it, else the model's default. Undefined when it takes none. */
+export function effectiveDuration(picked: string | number | undefined, model: SettingsModel | undefined): number | undefined {
+  const list = model?.durations ?? [];
+  const n = Number(picked);
+  if (picked !== undefined && picked !== "" && list.includes(n)) return n;
+  return list.length ? (model?.defaultDuration ?? list[0]) ?? undefined : undefined;
 }
 
 /** Quality chips: disabled for every model until one of them lists `qualities`. */

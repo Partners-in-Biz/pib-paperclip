@@ -11,6 +11,7 @@
  * - A submission that got no answer may have started. It's never sent again, and its credits stay spent.
  * - A worker restart can't double-spend: a row left in `submitting` is failed with its credits kept, never resubmitted.
  */
+import { markOutOfFunds } from "./balance.js";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
@@ -23,9 +24,10 @@ import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { adjust, assertFits, assertRunFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
-import { assertReferenceCount, findModel, referenceIds } from "./models.js";
+import { assertJobCeiling, assertReferenceCount, findModel, referenceIds } from "./models.js";
 import { assertModel, FAKE_OUTPUT_PNG_BASE64, fakeProvider, fakeProviderOn, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
 import { assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
+import { isTablePriced, localCredits } from "./seedance-price.js";
 import { MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
 
 export const MAX_BATCH = 8;
@@ -237,6 +239,24 @@ export interface Actor {
   projectId?: string | null;
 }
 
+/** The one duration check: the model's own field, a listed whole number of seconds, else the model's default. */
+function applyDuration(model: string, body: Record<string, unknown>): void {
+  const known = findModel(model);
+  const field = known?.durationField ?? null;
+  if (!field) {
+    if ("duration" in body || "duration_seconds" in body) throw new StudioError(`${known?.label ?? model} takes no duration in Studio.`, "no_duration");
+    return;
+  }
+  if (body[field] === undefined || body[field] === null) {
+    body[field] = known!.defaultDuration;
+    return;
+  }
+  if (typeof body[field] !== "number" || !known!.durations.includes(body[field] as number)) {
+    const list = known!.durations.length > 4 ? `${known!.durations[0]} to ${known!.durations[known!.durations.length - 1]}` : known!.durations.join(" or ");
+    throw new StudioError(`${known!.label} takes a duration of ${list} seconds (a number).`, "bad_duration");
+  }
+}
+
 export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown>; references: string[] } {
   const presetId = params.preset === undefined || params.preset === null || params.preset === "" ? null : params.preset;
   const preset = presetId === null ? null : getPhotoPreset(presetId);
@@ -250,6 +270,7 @@ export function requestBody(params: Record<string, unknown>): { model: string; p
   if (typeof extra !== "object" || Array.isArray(extra) || extra === null) throw new StudioError("params must be an object of the model's own fields.", "bad_request");
   const defaults = preset ? { aspect_ratio: DEFAULT_PRESET_RATIO } : {};
   const body = { ...defaults, ...(extra as Record<string, unknown>), prompt };
+  applyDuration(model, body);
   if (JSON.stringify(body).length > MAX_PARAMS_BYTES) throw new StudioError("The request is too long.", "bad_request");
   const references = referenceIds(params.referenceAssetIds);
   const field = findModel(model)?.refField;
@@ -259,13 +280,24 @@ export function requestBody(params: Record<string, unknown>): { model: string; p
   return { model, prompt, body, references };
 }
 
+/**
+ * The one price read: Studio's own table for table-priced models (Seedance), else the provider's `/estimate`. A price
+ * must be a finite number above zero; anything else is "no price", never a free job.
+ */
+export async function estimateEach(provider: GenerationProvider, model: string, body: Record<string, unknown>): Promise<number> {
+  const each = localCredits(model, body) ?? (await provider.estimate(model, body));
+  if (typeof each !== "number" || !Number.isFinite(each) || each <= 0) throw new StudioError(`Studio has no price for ${model}, so nothing was started.`, "no_price");
+  return each;
+}
+
 export async function estimateGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
   const { model, body, references } = requestBody(params);
   const batch = batchSize(params);
   const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
   const config = new StudioConfig(ctx, companyId);
   const refs = await referenceRows(ctx, companyId, where.scope, references);
-  const each = await (await runtime.provider(config)).estimate(model, await withReferences(config, companyId, model, body, refs));
+  const each = await estimateEach(await runtime.provider(config), model, await withReferences(config, companyId, model, body, refs));
+  assertJobCeiling(model, each);
   const check = await capCheck(ctx, companyId, where.scope);
   return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining };
 }
@@ -292,7 +324,9 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const config = new StudioConfig(ctx, companyId);
   const refs = await referenceRows(ctx, companyId, where.scope, references);
   const provider = await runtime.provider(config);
-  const each = await provider.estimate(model, await withReferences(config, companyId, model, body, refs));
+  const each = await estimateEach(provider, model, await withReferences(config, companyId, model, body, refs));
+  // Before the lock: an over-ceiling job writes no row and no reserve.
+  assertJobCeiling(model, each);
   const total = credits(each * batch);
   const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : (presetName(params, prompt));
   const groupId = randomUUID();
@@ -464,6 +498,17 @@ const REFERENCE_ERRORS = ["unknown_asset", "wrong_client", "bad_request"];
 async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, provider: GenerationProvider, config: StudioConfig): Promise<"submitted" | "failed" | "waiting" | "skipped"> {
   // Survives a restart between the insert and its ledger row.
   await reserve(ctx, target(row), num(row.estimated_credits));
+  // A row priced over its model's ceiling (written before the ceiling, or by hand) is never sent: claimed, failed and
+  // refunded, like a reference problem. The reserve above is idempotent, so the refund always nets to zero.
+  try {
+    assertJobCeiling(row.model, num(row.estimated_credits));
+  } catch (error) {
+    if (!(error instanceof StudioError)) throw error;
+    const claimed = await ctx.db.execute(`UPDATE ${table(ctx, "generations")} SET status = 'submitting', updated_at = now() WHERE id = $1 AND status = 'queued'`, [row.id]);
+    if (!claimed.rowCount) return "skipped";
+    await fail(ctx, runtime, row, error.code, error.message, { refund: true });
+    return "failed";
+  }
   let body = typeof row.params === "string" ? (JSON.parse(row.params) as Record<string, unknown>) : (row.params as Record<string, unknown>);
   const references = storedReferenceIds(row.reference_asset_ids);
   if (references.length > 0) {
@@ -492,7 +537,10 @@ async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, 
       await update(ctx, row, { status: "queued", attempts: num(row.attempts) + 1, error_message: error.message });
       return "waiting";
     }
-    if (error.code === "out_of_credits") pausedUntil.set(row.company_id, runtime.now() + OUT_OF_CREDITS_PAUSE_MS);
+    if (error.code === "out_of_credits") {
+      pausedUntil.set(row.company_id, runtime.now() + OUT_OF_CREDITS_PAUSE_MS);
+      await markOutOfFunds(ctx, row.company_id, new Date(runtime.now()));
+    }
     if (error.code === "unknown") {
       await fail(ctx, runtime, row, "unknown_submission", "The provider didn't answer, so this may have started. It wasn't sent again, and its credits stay spent.", { refund: false });
     } else {
@@ -540,6 +588,21 @@ async function poll(ctx: PluginContext, runtime: Runtime, row: GenerationRow, pr
   return true;
 }
 
+/**
+ * What a finished job costs in the ledger: the provider's actual credits, else the estimate (null). For table-priced
+ * models the actual is checked against the table, with one warn event `studio.seedance_price_check`:
+ * no actual or under half the table keeps the table (`no_actual`, `unit_suspect`); 0.5x to 0.9x settles (`under`);
+ * 0.9x to 1.1x settles quietly; over 1.1x settles (`drift`). The job already ran, so the ledger takes the real cost.
+ */
+export function settledCredits(ctx: PluginContext, row: Pick<GenerationRow, "id" | "model" | "estimated_credits" | "actual_credits">): number | null {
+  const actual = row.actual_credits == null ? null : num(row.actual_credits);
+  if (!isTablePriced(row.model)) return actual;
+  const estimated = num(row.estimated_credits);
+  const kind = actual === null ? "no_actual" : actual < 0.5 * estimated ? "unit_suspect" : actual < 0.9 * estimated ? "under" : actual > 1.1 * estimated ? "drift" : null;
+  if (kind) ctx.logger.warn("studio.seedance_price_check", { kind, generationId: row.id, model: row.model, estimatedCredits: estimated, actualCredits: actual });
+  return kind === "no_actual" || kind === "unit_suspect" ? null : actual;
+}
+
 async function store(ctx: PluginContext, runtime: Runtime, row: GenerationRow, config: StudioConfig): Promise<boolean> {
   try {
     const bytes = await runtime.download(String(row.output_url));
@@ -563,7 +626,7 @@ async function store(ctx: PluginContext, runtime: Runtime, row: GenerationRow, c
       bytes,
       mime,
     });
-    const actual = row.actual_credits == null ? null : num(row.actual_credits);
+    const actual = settledCredits(ctx, row);
     if (actual !== null && actual !== num(row.estimated_credits)) await adjust(ctx, target(row), credits(actual - num(row.estimated_credits)));
     await update(ctx, row, { status: "succeeded", asset_id: row.id, finished_at: new Date(runtime.now()).toISOString(), error_message: null, error_code: null });
     await reportIfGroupDone(ctx, row);

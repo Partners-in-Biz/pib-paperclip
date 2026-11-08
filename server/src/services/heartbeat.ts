@@ -671,6 +671,10 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+/** Blocker cause from getConversationOwnershipBlocker: the previous run is still exiting. */
+const OWNER_EXIT_BLOCKER_CAUSE = "execution_owner_active";
+const OWNER_EXIT_REDELIVERY_WINDOW_MS = 6 * 60 * 60 * 1000;
+const OWNER_EXIT_REDELIVERY_MAX_ATTEMPTS = 5;
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
@@ -19891,9 +19895,96 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  /**
+   * PAR-8293: a run that hands its issue on (developer to reviewer and back) is
+   * cancelled in the same instant the next owner is woken. Admission still sees the
+   * exiting owner's process or environment lease and records that wake as skipped.
+   * Replay it through ordinary admission once the blocker is gone, so every gate
+   * (pauses, holds, scope, run caps) still applies. One replay per receipt; a replay
+   * that races again leaves a fresh receipt, up to OWNER_EXIT_REDELIVERY_MAX_ATTEMPTS.
+   */
+  async function redeliverOwnerExitWaits() {
+    const since = new Date(Date.now() - OWNER_EXIT_REDELIVERY_WINDOW_MS);
+    const waits = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(
+        eq(agentWakeupRequests.status, "skipped"),
+        eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+        sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`,
+        sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`,
+        gte(agentWakeupRequests.createdAt, since),
+        inArray(issues.status, ["todo", "in_progress", "in_review"]),
+        isNull(issues.assigneeUserId),
+        isNull(issues.executionRunId),
+        isNull(issues.hiddenAt)))
+      .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id)).limit(50);
+    const markRedelivered = async (wakeId: string, outcome: string) => {
+      const [claimed] = await db.update(agentWakeupRequests).set({
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{executionWait}',
+          (${agentWakeupRequests.payload}->'executionWait') || ${JSON.stringify({ redeliveredAt: new Date().toISOString(), redeliveryOutcome: outcome })}::jsonb)`,
+        updatedAt: new Date(),
+      }).where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.status, "skipped"),
+        sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`))
+        .returning({ id: agentWakeupRequests.id });
+      return Boolean(claimed);
+    };
+    const seen = new Set<string>();
+    for (const { wake } of waits) {
+      const issueId = String(wake.payload?.issueId);
+      const key = `${wake.agentId}:${issueId}`;
+      // Newest receipt per agent and issue wins; older ones are superseded by it.
+      if (seen.has(key)) { await markRedelivered(wake.id, "superseded"); continue; }
+      const [later] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, wake.companyId), eq(heartbeatRuns.agentId, wake.agentId),
+        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+        gt(heartbeatRuns.createdAt, wake.createdAt))).limit(1);
+      if (later) { seen.add(key); await markRedelivered(wake.id, "already_ran"); continue; }
+      // Still exiting: leave the receipt for the next tick.
+      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      seen.add(key);
+      const payload = { ...parseObject(wake.payload) };
+      const wait = parseObject(payload.executionWait);
+      const ownerExit = parseObject(wait.ownerExit);
+      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      const attempt = Number(parseObject(payload.ownerExitRedelivery).attempt ?? 0) + 1;
+      if (!await markRedelivered(wake.id, attempt > OWNER_EXIT_REDELIVERY_MAX_ATTEMPTS ? "gave_up" : "replayed")) continue;
+      if (attempt > OWNER_EXIT_REDELIVERY_MAX_ATTEMPTS) {
+        logger.warn({ wakeId: wake.id, issueId, agentId: wake.agentId }, "hand-off wake still blocked after redelivery attempts");
+        continue;
+      }
+      delete payload.executionWait;
+      delete payload[DEFERRED_WAKE_CONTEXT_KEY];
+      payload.ownerExitRedelivery = { sourceWakeId: wake.id, attempt };
+      const source = (["timer", "assignment", "on_demand", "automation"] as const)
+        .find(s => s === wake.source) ?? "automation";
+      const triggerDetail = (["manual", "ping", "callback", "system"] as const)
+        .find(t => t === wake.triggerDetail);
+      const actorType = (["user", "agent", "system"] as const)
+        .find(t => t === wake.requestedByActorType) ?? "system";
+      await enqueueWakeup(wake.agentId, {
+        source, triggerDetail,
+        reason: readNonEmptyString(ownerExit.reason) ?? null,
+        payload,
+        contextSnapshot: context,
+        requestedByActorType: actorType,
+        requestedByActorId: wake.requestedByActorId ?? null,
+        idempotencyKey: `owner-exit-redelivery:${wake.id}`,
+      }).catch(err => {
+        logger.warn({ err, wakeId: wake.id, issueId }, "failed to redeliver hand-off wake");
+      });
+    }
+  }
+
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
+    await redeliverOwnerExitWaits().catch(err => {
+      logger.warn({ err }, "hand-off wake redelivery sweep failed");
+    });
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
@@ -27849,14 +27940,26 @@ export function heartbeatService(
                 idempotencyKey: opts.idempotencyKey ?? null,
               });
             } else {
+              // PAR-8293: the previous owner is still exiting (its process or lease
+              // outlives the hand-off by about a second). Keep the original reason and
+              // context so redeliverOwnerExitWaits can replay this wake once it is gone.
+              const ownerExit = executionBlocker.cause === OWNER_EXIT_BLOCKER_CAUSE && !executionBlocker.recoveryActionId
+                ? { runId: executionBlocker.runId, reason: reason ?? null }
+                : null;
               await recordExecutionWait(tx as unknown as Db, {
-                issueId: issue.id, condition, coalesce: coalesceExecutionWait,
+                issueId: issue.id,
+                condition: ownerExit ? { ...condition, ownerExit } : condition,
+                // Each dropped hand-off keeps its own receipt; a coalesced one could
+                // already be redelivered and would hide the newer wake.
+                coalesce: coalesceExecutionWait && !ownerExit,
                 request: {
                   ...durableReceiptFields,
                   companyId: agent.companyId, agentId, source, triggerDetail,
                   reason: "execution_reconciliation_required",
                   error: executionBlocker.nextAction,
-                  payload,
+                  payload: ownerExit
+                    ? { ...(payload ?? {}), [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot }
+                    : payload,
                   requestedByActorType: opts.requestedByActorType ?? null,
                   requestedByActorId: opts.requestedByActorId ?? null,
                   idempotencyKey: opts.idempotencyKey ?? null,

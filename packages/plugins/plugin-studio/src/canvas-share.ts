@@ -206,7 +206,7 @@ export async function refreshShares(ctx: PluginContext, sign: Signer = defaultSi
 const CARD_W = 240;
 const CARD_H = 210;
 const PAD = 32;
-const TYPE_LABELS: Record<string, string> = { prompt: "Prompt", image: "Image", video: "Video", source: "Source", output: "Output" };
+const TYPE_LABELS: Record<string, string> = { prompt: "Prompt", image: "Image", video: "Video", source: "Source", output: "Output", text: "Text", layout: "Layout", edit: "Edit" };
 
 function esc(value: unknown): string {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);

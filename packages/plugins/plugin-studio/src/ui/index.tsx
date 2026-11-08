@@ -14,8 +14,10 @@ import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
 export { StudioCanvasPage } from "./CanvasPage.js";
+export { StudioEditorPage } from "./editor/EditorPage.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
+import { disabledNote, durationChips } from "../canvas-settings.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX } from "../presets.js";
 
 interface Cap {
@@ -31,6 +33,8 @@ interface Model {
   ratios: string[];
   resolutions: string[];
   minRefs?: number;
+  durations?: number[];
+  defaultDuration?: number | null;
 }
 
 interface Asset {
@@ -50,9 +54,22 @@ interface Asset {
   credits?: number | null;
 }
 
+interface Balance {
+  enteredUsd: number | null;
+  enteredAt: string | null;
+  spentCreditsSince: number;
+  spentUsdSince: number;
+  estimatedUsd: number | null;
+  estimatedCredits: number | null;
+  usdPerCredit: number;
+  low: boolean;
+  outOfFundsAt: string | null;
+}
+
 interface Overview {
   period: string;
   companyUsed: number;
+  balance?: Balance | null;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
@@ -228,7 +245,7 @@ export function StudioPage({ context }: PluginPageProps) {
 function Preview({ kind, name, url, height = 160 }: { kind: string; name: string; url: string | undefined; height?: number }) {
   const box = { width: "100%", height, objectFit: "cover" as const, borderRadius: 8, background: "rgba(127,127,127,0.12)", display: "block" };
   if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>{kind}</div>;
-  if (kind === "video") return <video src={url} style={box} muted playsInline controls preload="metadata" />;
+  if (kind === "video") return <video src={url} style={{ ...box, objectFit: "contain" }} muted playsInline controls preload="metadata" />;
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
@@ -405,6 +422,8 @@ function AssetDetail({
   const assetUrl = useStudioAction("asset-url");
   const reviewAction = useStudioAction("review");
   const saveTemplateAction = useStudioAction("save-prompt-template");
+  const createEditAction = useStudioAction("video-edit-create");
+  const editNav = useHostNavigation();
   const [message, setMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -460,6 +479,20 @@ function AssetDetail({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  async function editVideo() {
+    setMessage(null);
+    setBusy(true);
+    try {
+      const out = (await createEditAction({ companyId, assetIds: [assetId] })) as { id?: string };
+      if (!out?.id) throw new Error("The video edit could not be created. Try again.");
+      editNav.navigate(`/studio-editor?edit=${encodeURIComponent(out.id)}`);
+    } catch (err) {
+      setMessage(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function download() {
     setMessage(null);
     try {
@@ -509,6 +542,11 @@ function AssetDetail({
               </Button>
             ) : null}
             <Button onClick={() => void download()}>Download</Button>
+            {canReview && kind === "video" ? (
+              <Button variant="secondary" disabled={busy} onClick={() => void editVideo()}>
+                Edit video
+              </Button>
+            ) : null}
             {canReview && d ? (
               <SaveToDrive companyId={companyId} assetId={assetId} bytes={d.asset.bytes} savedUrl={(d as { drive?: { url: string }[] }).drive?.[0]?.url ?? null} />
             ) : null}
@@ -588,6 +626,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const preset = getPhotoPreset(presetId);
   const [ratio, setRatio] = useState(model?.ratios[0] ?? "");
   const [resolution, setResolution] = useState(model?.resolutions[0] ?? "");
+  const [duration, setDuration] = useState(String(model?.defaultDuration ?? ""));
   const [batchSize, setBatchSize] = useState("1");
   const [client, setClient] = useState("own");
   const [estimate, setEstimate] = useState<Estimate | null>(null);
@@ -622,12 +661,13 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     if (!model) return;
     if (!model.ratios.includes(ratio)) setRatio(model.ratios[0] ?? "");
     if (!model.resolutions.includes(resolution)) setResolution(model.resolutions[0] ?? "");
+    if (!(model.durations ?? []).includes(Number(duration))) setDuration(String(model.defaultDuration ?? ""));
   }, [model?.id]);
   const finalPrompt = preset ? prompt : fillPrompt(prompt, fields);
   const blanks = preset ? [] : missingFields(prompt, fields);
   const fieldNames = preset ? [] : placeholdersOf(prompt);
   // Any change to the request makes the shown price stale.
-  useEffect(() => setEstimate(null), [modelId, finalPrompt, presetId, ratio, resolution, batchSize, client]);
+  useEffect(() => setEstimate(null), [modelId, finalPrompt, presetId, ratio, resolution, duration, batchSize, client]);
 
   /** Bring the composer into view when picking wrapped it out of sight (a phone or a narrow window). */
   const showComposer = () => composerRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
@@ -705,7 +745,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     }
   }
 
-  const request = () => ({ companyId, model: model?.id, prompt: finalPrompt, preset: presetId || undefined, ratio, resolution, batchSize: Number(batchSize), client });
+  const request = () => ({ companyId, model: model?.id, prompt: finalPrompt, preset: presetId || undefined, ratio, resolution, ...(model?.durations?.length ? { duration: Number(duration) } : {}), batchSize: Number(batchSize), client });
 
   async function runEstimate() {
     setBusy(true);
@@ -743,7 +783,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", minWidth: 0 }}>
         <div style={{ flex: "999 1 520px", minWidth: 0, maxWidth: "100%", order: narrow ? 1 : 0 }}>
-          <TemplateGallery companyId={companyId} saved={saved} selectedId={template?.id ?? ""} presetId={presetId} onPick={pickTemplate} onPickPreset={pickPreset} problem={savedProblem} />
+          <TemplateGallery companyId={companyId} saved={saved} selectedId={template?.id ?? ""} presetId={presetId} onPick={pickTemplate} onPickPreset={pickPreset} onUsePrompt={setPrompt} problem={savedProblem} />
         </div>
         <section
           ref={composerRef}
@@ -818,6 +858,18 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
                 ))}
               </Select>
             </Field>
+            {model?.kind === "video" ? (
+              <Field label="Duration (seconds)">
+                <div role="group" aria-label="Duration" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {durationChips(model).map((c) => (
+                    <Button key={c.value} variant={duration === c.value && !c.disabled ? "primary" : "secondary"} aria-pressed={duration === c.value} disabled={c.disabled !== null} title={c.disabled ?? undefined} onClick={() => setDuration(c.value)}>
+                      {c.value}
+                    </Button>
+                  ))}
+                </div>
+                {disabledNote(durationChips(model), model) ? <span role="note">{disabledNote(durationChips(model), model)}</span> : null}
+              </Field>
+            ) : null}
             <Field label="Batch size">
               <Select aria-label="Batch size" value={batchSize} onChange={(e) => setBatchSize(e.target.value)}>
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
@@ -958,6 +1010,60 @@ function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable, unit =
   );
 }
 
+const money = (value: number) => `$${value.toFixed(2)}`;
+const shortDate = (value: string) => new Date(value).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** The Higgsfield balance: typed by an owner from Higgsfield's billing page, less what Studio spent since (PAR-8388). */
+function BalanceSection({ companyId, balance, owner, refresh }: { companyId: string; balance: Balance | null | undefined; owner: boolean; refresh: () => void }) {
+  const setBalance = useStudioAction("set-balance");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
+  async function save() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await setBalance({ companyId, usd: value });
+      setValue("");
+      refresh();
+      setMessage({ text: "Balance saved. Studio counts its spend from now.", tone: "success" });
+    } catch (err) {
+      setMessage({ text: errorText(err), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const b = balance ?? null;
+  const warning = b?.outOfFundsAt
+    ? { tone: "danger" as const, text: `Higgsfield refused a job for an empty balance on ${shortDate(b.outOfFundsAt)}. Add funds on Higgsfield, then enter the new balance here.` }
+    : b?.low && b.estimatedUsd !== null
+      ? { tone: "warning" as const, text: `About ${money(b.estimatedUsd)} left on Higgsfield. Add funds there before it runs out.` }
+      : null;
+  return (
+    <Section title="Higgsfield balance">
+      {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
+      {warning ? <PageMessage tone={warning.tone} message={warning.text} /> : null}
+      <p style={{ ...muted, marginBottom: 8 }}>
+        {b && b.enteredUsd !== null && b.enteredAt
+          ? `${money(b.enteredUsd)} entered ${shortDate(b.enteredAt)}, less ${money(b.spentUsdSince)} Studio spent since (${roundCredits(b.spentCreditsSince)} credits at ${money(b.usdPerCredit)} each). Higgsfield has no balance API, so this is an estimate: spend outside Studio is not counted. Enter the balance again after a top-up.`
+          : "Higgsfield has no balance API. Enter the balance shown on Higgsfield's billing page and Studio keeps an estimate from its own spend."}
+      </p>
+      {owner ? (
+        <div style={{ ...row, paddingTop: 4 }}>
+          <div style={{ width: 160 }}>
+            <Input aria-label="Higgsfield balance in dollars" type="number" min={0} step="0.01" placeholder="e.g. 87.50" value={value} onChange={(event) => setValue(event.target.value)} />
+          </div>
+          <Button disabled={busy || value.trim() === ""} onClick={() => void save()}>
+            Save balance
+          </Button>
+        </div>
+      ) : (
+        <p style={muted}>Only a company owner can enter the balance.</p>
+      )}
+    </Section>
+  );
+}
+
 function Usage({ companyId, data, me, refresh }: { companyId: string; data: Overview; me: Me | null; refresh: () => void }) {
   const setCap = useStudioAction("set-cap");
   const setAgentLimit = useStudioAction("set-agent-limit");
@@ -1015,7 +1121,17 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
         {effectiveCap(data) ? <CreditsMetric data={data} /> : null}
         <MetricCard icon={Gauge} value={effectiveCap(data)?.monthlyCredits ?? "–"} label="Monthly cap" description={data.caps.some((c) => c.scopeKey === COMPANY_SCOPE) ? "Company cap" : effectiveCap(data) ? "Default cap" : "Not set"} />
         <MetricCard icon={Building2} value={data.clientUsage.filter((c) => c.used > 0).length} label="Clients with spend" description="This month" />
+        {data.balance && data.balance.estimatedUsd !== null ? (
+          <MetricCard
+            icon={Coins}
+            value={money(data.balance.estimatedUsd)}
+            label="Higgsfield balance (est.)"
+            description={`About ${roundCredits(data.balance.estimatedCredits ?? 0)} credits`}
+            tone={data.balance.outOfFundsAt || data.balance.estimatedUsd <= 0 ? "bad" : data.balance.low ? "warn" : undefined}
+          />
+        ) : null}
       </MetricRow>
+      <BalanceSection companyId={companyId} balance={data.balance} owner={owner} refresh={refresh} />
       {data.clientUsage.some((c) => c.used > 0) ? (
         <Section title="Credits by client">
           <BarList
