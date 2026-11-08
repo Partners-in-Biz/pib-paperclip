@@ -36,7 +36,7 @@ import {
   type SocialProvider,
   type TokenBundle,
 } from "../types.js";
-import { bestEffort, count, guard, images, optionalCount, requireCode, videos, withLink } from "./common.js";
+import { bestEffort, count, guard, images, optionalCount, perPostInbox, requireCode, videos, withLink } from "./common.js";
 
 const DAY = 24 * 3600_000;
 
@@ -332,14 +332,15 @@ export const facebookProvider: SocialProvider = {
     }
     return snapshot;
   },
-  async inbox(env, account, published): Promise<InboxCandidate[]> {
+  async inbox(env, account, published, onSkip): Promise<InboxCandidate[]> {
     const base = graph(env);
     const pageId = str(account.meta.pageId) ?? account.externalId;
-    const out: InboxCandidate[] = [];
-    for (const post of published) {
+    // Each post is read on its own: a deleted or hidden post answers 400/403/404 and is skipped.
+    return perPostInbox(published, async (postId) => {
+      const out: InboxCandidate[] = [];
       const data = await metaGet<{
         data?: Array<{ id: string; message?: string; created_time?: string; permalink_url?: string; from?: { id?: string; name?: string } }>;
-      }>(`${base}/${post.externalId}/comments`, {
+      }>(`${base}/${postId}/comments`, {
         fields: "id,message,created_time,permalink_url,from{id,name}",
         order: "reverse_chronological",
         filter: "stream",
@@ -350,17 +351,17 @@ export const facebookProvider: SocialProvider = {
         if (!c.message || c.from?.id === pageId) continue;
         out.push({
           externalId: c.id,
-          parentExternalId: post.externalId,
+          parentExternalId: postId,
           kind: "comment",
           author: c.from?.name ?? "Facebook user",
           body: c.message,
           permalink: c.permalink_url ?? null,
           receivedAt: c.created_time ?? null,
-          destinationExternalId: post.externalId,
+          destinationExternalId: postId,
         });
       }
-    }
-    return out;
+      return out;
+    }, onSkip);
   },
   reply: (env, account, target, text) =>
     guard(async () => {
@@ -547,11 +548,12 @@ export const instagramProvider: SocialProvider = {
     }
     return snapshot;
   },
-  async inbox(env, account, published): Promise<InboxCandidate[]> {
+  async inbox(env, account, published, onSkip): Promise<InboxCandidate[]> {
     const base = graph(env, igHost(account));
-    const out: InboxCandidate[] = [];
-    for (const post of published) {
-      const data = await metaGet<{ data?: Array<{ id: string; text?: string; username?: string; timestamp?: string }> }>(`${base}/${post.externalId}/comments`, {
+    // Each post is read on its own: a deleted or hidden post answers 400/403/404 and is skipped.
+    return perPostInbox(published, async (postId) => {
+      const out: InboxCandidate[] = [];
+      const data = await metaGet<{ data?: Array<{ id: string; text?: string; username?: string; timestamp?: string }> }>(`${base}/${postId}/comments`, {
         fields: "id,text,username,timestamp",
         limit: 25,
         access_token: account.token.accessToken,
@@ -560,17 +562,17 @@ export const instagramProvider: SocialProvider = {
         if (!c.text || (account.handle && c.username === account.handle)) continue;
         out.push({
           externalId: c.id,
-          parentExternalId: post.externalId,
+          parentExternalId: postId,
           kind: "comment",
           author: c.username ? `@${c.username}` : "Instagram user",
           body: c.text,
           permalink: null,
           receivedAt: c.timestamp ?? null,
-          destinationExternalId: post.externalId,
+          destinationExternalId: postId,
         });
       }
-    }
-    return out;
+      return out;
+    }, onSkip);
   },
   reply: (env, account, target, text) =>
     guard(async () => {
@@ -746,11 +748,12 @@ export const threadsProvider: SocialProvider = {
       raw: { data: data.data ?? [] },
     };
   },
-  async inbox(env, account, published): Promise<InboxCandidate[]> {
-    const out: InboxCandidate[] = [];
-    for (const post of published) {
+  async inbox(env, account, published, onSkip): Promise<InboxCandidate[]> {
+    // Each post is read on its own: a deleted or hidden post answers 400/403/404 and is skipped.
+    return perPostInbox(published, async (postId) => {
+      const out: InboxCandidate[] = [];
       const data = await metaGet<{ data?: Array<{ id: string; text?: string; username?: string; timestamp?: string; permalink?: string }> }>(
-        `${threadsBase(env)}/${post.externalId}/replies`,
+        `${threadsBase(env)}/${postId}/replies`,
         { fields: "id,text,username,timestamp,permalink", access_token: account.token.accessToken },
         "Threads replies",
       );
@@ -758,17 +761,17 @@ export const threadsProvider: SocialProvider = {
         if (!r.text || (account.handle && r.username === account.handle)) continue;
         out.push({
           externalId: r.id,
-          parentExternalId: post.externalId,
+          parentExternalId: postId,
           kind: "comment",
           author: r.username ? `@${r.username}` : "Threads user",
           body: r.text,
           permalink: r.permalink ?? null,
           receivedAt: r.timestamp ?? null,
-          destinationExternalId: post.externalId,
+          destinationExternalId: postId,
         });
       }
-    }
-    return out;
+      return out;
+    }, onSkip);
   },
   reply: (env, account, target, text) =>
     guard(async () => {

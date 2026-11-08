@@ -126,6 +126,9 @@ export interface InboxCandidate {
   destinationExternalId?: string | null;
 }
 
+/** Called once per post an inbox read skipped, with the provider's error message. */
+export type InboxSkip = (externalId: string, reason: string) => void;
+
 export interface ReplyTarget {
   externalId: string;
   parentExternalId: string | null;
@@ -145,7 +148,11 @@ export interface SocialProvider {
   refresh?(env: ProviderEnv, account: ProviderAccount): Promise<{ token: TokenBundle; expiresAt: string | null; meta?: Record<string, unknown> }>;
   publish(env: ProviderEnv, account: ProviderAccount, request: PublishRequest): Promise<PublishOutcome>;
   metrics?(env: ProviderEnv, account: ProviderAccount, externalId: string): Promise<MetricsSnapshot | null>;
-  inbox?(env: ProviderEnv, account: ProviderAccount, published: Array<{ externalId: string }>): Promise<InboxCandidate[]>;
+  /**
+   * Per-post platforms read each published post on its own: a post that only it can fail (private, deleted,
+   * comments off) is skipped and reported through `onSkip`, so the other posts still bring their comments.
+   */
+  inbox?(env: ProviderEnv, account: ProviderAccount, published: Array<{ externalId: string }>, onSkip?: InboxSkip): Promise<InboxCandidate[]>;
   reply?(env: ProviderEnv, account: ProviderAccount, target: ReplyTarget, text: string): Promise<PublishOutcome>;
 }
 
