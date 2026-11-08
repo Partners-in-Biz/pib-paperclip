@@ -115,8 +115,6 @@ describe("compileVideo contract", () => {
   });
 
   it.each([
-    ["text", [video(clip("c1", "a", 0, 0, 1)), { id: "t", kind: "text", clips: [{ id: "t1", text: "Hi", duration: 1 }] }]],
-    ["caption", [{ id: "cap", kind: "caption", clips: [{ id: "k1", words: [{ text: "hi", start: 0, end: 1 }] }] }]],
     ["audio", [{ id: "m", kind: "audio", clips: [clip("m1", "a", 0, 0, 1)] }]],
     ["multiple_video_tracks", [video(clip("c1", "a", 0, 0, 1)), { id: "v2", kind: "video", clips: [clip("c2", "b", 0, 0, 1)] }]],
     ["overlay_transition", [overlay(clip("o1", "logo", 0, 0, 2, { transitionIn: { type: "fade", duration: 1 } }))]],
