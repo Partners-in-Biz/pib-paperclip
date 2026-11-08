@@ -22,6 +22,23 @@ describe("the starter boards", () => {
     expect(new Set(t.doc.nodes.map((n) => JSON.stringify(n.position))).size, "cards on top of each other").toBe(t.doc.nodes.length);
   });
 
+  it("has the nine style boards: reference -> picture -> 9:16 video -> cover, in the video category", () => {
+    const boards = CANVAS_TEMPLATES.filter((t) => t.id.startsWith("style-"));
+    expect(boards).toHaveLength(9);
+    for (const t of boards) {
+      expect(t.category).toBe("video");
+      expect(t.doc.nodes.filter((n) => n.type !== "text").map((n) => n.type)).toEqual(["source", "image", "video", "layout"]);
+      expect(t.doc.edges.map((e) => `${e.source}>${e.target}`)).toEqual(["reference>frame", "frame>clip", "frame>cover", "words>cover"]);
+      const filled = fillBoard(t.doc, t.examples);
+      const video = filled.nodes.find((n) => n.type === "video")!;
+      expect(video.data.ratio).toBe("9:16");
+      expect(video.data.duration, "model default length applies").toBeUndefined();
+      expect(() => JSON.parse(video.data.prompt!)).not.toThrow();
+      expect(() => JSON.parse(filled.nodes.find((n) => n.type === "image")!.data.prompt!)).not.toThrow();
+      expect(JSON.stringify(filled.nodes)).not.toContain("{{");
+    }
+  });
+
   it("gives every field an example, and every category has a template", () => {
     expect(new Set(CANVAS_TEMPLATES.map((t) => t.id)).size).toBe(CANVAS_TEMPLATES.length);
     for (const t of CANVAS_TEMPLATES) for (const field of boardFields(t.doc)) expect(t.examples[field], `${t.id}: ${field}`).toBeTruthy();
