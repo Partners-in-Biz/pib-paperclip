@@ -12,7 +12,10 @@ const problems = [];
 if (size > BUDGET) problems.push(`dist/ui/index.js is ${size} bytes, over the ${BUDGET} budget`);
 if (/data:(font|application\/(font|x-font|octet-stream))[^"']{0,40}base64/i.test(src) || /AAEAAAA[A-Za-z0-9+/]{200}/.test(src)) problems.push("a font looks inlined into dist/ui/index.js (data URL / base64 TTF)");
 const files = readdirSync(fontsDir).filter((f) => f.endsWith(".ttf"));
-if (files.length !== 6) problems.push(`dist/ui/fonts has ${files.length} TTFs, expected 6`);
+// The six names UI_FONTS (src/ui/font-names.ts) loads: a wrong or missing file fails here, not in a user's browser.
+const expected = [...readFileSync(new URL("../src/ui/font-names.ts", import.meta.url), "utf8").matchAll(/"([\w-]+\.ttf)"/g)].map((m) => m[1]).sort();
+if (expected.length !== 6) problems.push(`found ${expected.length} font names in src/ui/font-names.ts, expected 6`);
+if (JSON.stringify([...files].sort()) !== JSON.stringify(expected)) problems.push(`dist/ui/fonts has [${files}], expected [${expected}]`);
 if (problems.length) {
   console.error(`BUNDLE-SIZE-CHECK: FAIL\n- ${problems.join("\n- ")}`);
   process.exit(1);
