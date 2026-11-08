@@ -173,6 +173,10 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
         PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
+        // PiB fork (PAR-7750): the single-server lock keeps its own connection open and
+        // re-checks it every 10 s, which these measured quiet windows would count. Each
+        // case owns its database, so the lock has nothing to guard here.
+        PAPERCLIP_ALLOW_SHARED_DATABASE: "true",
         DATABASE_URL: proxy.url, DATABASE_POOL_MAX: options.databasePoolMax === undefined ? (configuration ? "4" : "6") : String(options.databasePoolMax), DATABASE_APPLICATION_NAME: "maintenance-integration-test",
         PAPERCLIP_AGENT_JWT_SECRET: runtimeSecrets?.PAPERCLIP_AGENT_JWT_SECRET ?? randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_DECISION_SIGNING_SECRET ?? randomUUID(),
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET ?? randomUUID(), BETTER_AUTH_SECRET: runtimeSecrets?.BETTER_AUTH_SECRET ?? randomUUID(),

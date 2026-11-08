@@ -57,7 +57,8 @@ export const PROGRAMS = [
 ];
 
 // server/scripts/typecheck-layers.mjs reads this tree. Everything else must be in a program.
-export const CHECKED_ELSEWHERE = ["server/src/"];
+// PiB fork: the plugin kit's contract specs run in "PiB plugins CI" (vitest.contract.config.ts).
+export const CHECKED_ELSEWHERE = ["server/src/", "packages/plugins/pib-plugin-kit/contract/"];
 
 const PREPARE_STEPS = [
   ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],

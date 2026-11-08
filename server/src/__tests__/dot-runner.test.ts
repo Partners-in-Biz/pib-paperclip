@@ -52,13 +52,17 @@ function uploadGrantUrl(grant: { url: string } | { attachment: unknown }) {
   return new URL(grant.url);
 }
 
+// PiB fork CI: a cold release build of the runner takes longer than 5 minutes on a 4-vCPU
+// GitHub-hosted runner (upstream builds on larger AWS runners).
+const DOT_RUNNER_CARGO_TIMEOUT_MS = process.env.RUNNER_ENVIRONMENT === "github-hosted" ? 1_200_000 : 300_000;
+
 describe("durable Dot Runner integration", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let root: string;
   beforeAll(async () => {
     const runnerRoot = fileURLToPath(new URL("../../../packages/paperclip-runner/", import.meta.url));
-    execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
+    execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: DOT_RUNNER_CARGO_TIMEOUT_MS });
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
     db = createDb(externalUrl ?? temporary.connectionString);
@@ -68,7 +72,7 @@ describe("durable Dot Runner integration", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(root, "runner-state"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false });
-  }, 360000);
+  }, DOT_RUNNER_CARGO_TIMEOUT_MS + 60_000);
   afterEach(async () => {
     const { heartbeatService } = await import("../services/heartbeat.js");
     dotRunnerBroker(db, { heartbeat: heartbeatService(db) });
@@ -1240,7 +1244,7 @@ describe("durable Dot Runner integration", () => {
         throw error;
       } finally { if (provider === "openai_dot") await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop(); server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
     } finally { await remote?.close(); }
-  }, 360000);
+  }, DOT_RUNNER_CARGO_TIMEOUT_MS + 60_000);
 
   it.each(["failed", "cancelled", "timed_out"])("reports %s admission without creating another wake or waiting for a nonexistent assignment", async status => {
     const f = await fixture();

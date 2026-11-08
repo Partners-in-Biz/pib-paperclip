@@ -117,6 +117,9 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     { mode: "isolated_workspace" },
     { workspaceStrategy: { type: "git_worktree", branchTemplate: "work" } },
   ])("keeps a default-attached repository policy stable through binding with settings %j and retains the provider on policy changes", async (settings) => {
+    // PiB fork (PAR-6202): this case starts four manual runs on one ticket inside an
+    // hour; the per-ticket hourly cap (default 3) would skip the fourth.
+    vi.stubEnv("PIB_TICKET_RUNS_PER_HOUR_CAP", "10");
     const f = await seed();
     const storage = await createPluginWorkspaceFixture(db, f.companyId);
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
@@ -168,6 +171,7 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
       await heartbeat.drainActiveRunExecutions();
       heartbeat = originalHeartbeat;
       realization.mockRestore();
+      vi.unstubAllEnvs();
       await rm(cwd, { recursive: true, force: true });
       await db.delete(plugins).where(eq(plugins.id, storage.pluginId));
       await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableIsolatedWorkspacesByDefault: false });

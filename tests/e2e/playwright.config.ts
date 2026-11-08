@@ -76,6 +76,9 @@ export default defineConfig({
     stdout: "pipe",
     stderr: "pipe",
     env: {
+      // PiB fork (PAR-6202): signoff journeys run more than three runs on one ticket within an
+      // hour; the per-ticket hourly cap is covered by unit and integration tests instead.
+      PIB_TICKET_RUNS_PER_HOUR_CAP: "20",
       ...process.env,
       NODE_ENV: "test",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "false",

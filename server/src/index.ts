@@ -1621,11 +1621,12 @@ async function startServerWithDatabaseTeardown(
     await terminalWorkspaceWorker.ready;
     // PiB (PAR-5960): move long-blocked issues with no real blocker back to todo and
     // wake the assignee. Upstream's scheduler has no periodic tick any more, so this is a
-    // delivery-work duty (like upstream's own retention sweeps) that runs every 5 minutes,
-    // only while the scheduler runs and never during idle drain or warm standby.
+    // delivery-work duty (like upstream's own retention sweeps), only while the scheduler
+    // runs and never during idle drain or warm standby. It is deadline driven: it runs when
+    // the oldest blocked issue reaches the sweep age, every 5 minutes while an overdue
+    // blocked issue remains, and not at all while no issue is blocked (an issue moving to
+    // blocked notifies this queue), so an idle server stays quiet.
     const blockedIssueSweep = blockedIssueSweeper(db as any, heartbeat);
-    const blockedIssueSweepIntervalMs = 5 * 60 * 1000;
-    let nextBlockedIssueSweepAt = Date.now() + blockedIssueSweepIntervalMs;
     registerExecutionControlWork(deliveryWork, [
       {
         queue: DELIVERY_QUEUES.pibBlockedIssueSweep,
@@ -1635,11 +1636,9 @@ async function startServerWithDatabaseTeardown(
             if (result.moved > 0) logger.info(result, "blocked issue sweeper moved issues to todo");
           } catch (err) {
             logger.error({ err }, "blocked issue sweeper failed");
-          } finally {
-            nextBlockedIssueSweepAt = Date.now() + blockedIssueSweepIntervalMs;
           }
         },
-        next: async () => nextBlockedIssueSweepAt,
+        next: () => blockedIssueSweep.nextDueAt(new Date()),
       },
     ], () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
 

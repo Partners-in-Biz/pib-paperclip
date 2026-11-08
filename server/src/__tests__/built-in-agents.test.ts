@@ -1500,13 +1500,17 @@ describeEmbeddedPostgres("built-in agents", () => {
   });
 
   it("keeps a built-in routine task while the agent prepares", async () => {
+    // PiB: the stock coach routine is the fork's `nightly-dreaming` (PAR-6228),
+    // which runs only with the flag on.
+    const previousDreaming = process.env.PAPERCLIP_NIGHTLY_DREAMING;
+    process.env.PAPERCLIP_NIGHTLY_DREAMING = "1";
     const companyId = await seedCompany({ requireApproval: false });
     const builtIns = createBuiltInAgentService(db);
     const created = await builtIns.ensure(companyId, "reflection-coach");
     await lifecycleWorker.stop();
     lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "pending" });
     try {
-      const result = await builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", { userId: "responsible-user" });
+      const result = await builtIns.runRoutine(companyId, "reflection-coach", "nightly-dreaming", { userId: "responsible-user" });
       expect(result.status).toBe("issue_created");
       const tasks = await db.select().from(issues).where(eq(issues.companyId, companyId));
       expect(tasks).toHaveLength(1);
@@ -1514,7 +1518,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
         .toEqual([expect.objectContaining({ status: "queued", agentId: created.agentId })]);
       // A second request during setup must not try to resume an already preparing agent.
-      await expect(builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", { userId: "responsible-user" }))
+      await expect(builtIns.runRoutine(companyId, "reflection-coach", "nightly-dreaming", { userId: "responsible-user" }))
         .resolves.toHaveProperty("id");
     } finally {
       await lifecycleWorker.stop();
@@ -1522,6 +1526,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
       await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+      if (previousDreaming === undefined) delete process.env.PAPERCLIP_NIGHTLY_DREAMING;
+      else process.env.PAPERCLIP_NIGHTLY_DREAMING = previousDreaming;
     }
   });
 

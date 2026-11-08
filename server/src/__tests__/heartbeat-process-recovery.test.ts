@@ -6636,8 +6636,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(validationComment).toBeTruthy();
   });
 
+  // PiB fork (PAR-5960): the first workspace-validation failure in the 6 h retry
+  // window queues one automatic retry instead of blocking. Upstream cases that
+  // expect the board block seed one earlier failure so the run under test is the
+  // second one (two hours back keeps it outside the hourly run-cap window). The
+  // fixture's run is dated in the past, so it is moved into the window too.
+  async function seedEarlierWorkspaceValidationFailure(input: { companyId: string; agentId: string; issueId: string; runId: string }) {
+    await db.update(heartbeatRuns).set({ createdAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    const at = new Date(Date.now() - 2 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({
+      companyId: input.companyId, agentId: input.agentId, invocationSource: "assignment", triggerDetail: "system",
+      status: "failed", error: "workspace validation failed before dispatch", errorCode: "workspace_validation_failed",
+      contextSnapshot: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_assigned" },
+      createdAt: at, updatedAt: at, finishedAt: at,
+    });
+  }
+
   it("keeps an explicit local-path/worktree conflict blocked with a board action and no Sentry event", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await seedEarlierWorkspaceValidationFailure({ companyId, agentId, issueId, runId });
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-workspace-policy-"));
     const projectId = randomUUID();
     const workspaceId = randomUUID();
@@ -6694,6 +6711,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     { name: "unknown clone failure", failures: ["unknown"], report: true },
   ])("preserves failed workspace recovery while classifying managed Git connections: $name", async ({ failures, report }) => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await seedEarlierWorkspaceValidationFailure({ companyId, agentId, issueId, runId });
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-connection-lifecycle-"));
     const bin = path.join(home, "bin");
     const callsPath = path.join(home, "git-calls.jsonl");

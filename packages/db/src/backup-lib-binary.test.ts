@@ -46,7 +46,7 @@ describe("JavaScript backup binary SQL", () => {
     ];
     transport.end.mockClear();
     try {
-      const archive = await runDatabaseBackup({ connectionString: "postgres://unused/binary_test", backupDir: directory,
+      const archive = await runDatabaseBackup({ connectionString: "postgres://unused.invalid/binary_test" /* PiB fork CI: .invalid fails fast on hosted runners (bare "unused" gave EAI_AGAIN) */, backupDir: directory,
         backupEngine: "javascript", retention: { dailyDays: 1, weeklyWeeks: 1, monthlyMonths: 1 },
         nullifyColumns: { binary_fixture: ["redacted"] } });
       const body = gunzipSync(await readFile(archive.backupFile)).toString("utf8");

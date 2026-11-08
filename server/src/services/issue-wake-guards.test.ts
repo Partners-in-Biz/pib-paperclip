@@ -95,6 +95,25 @@ describe("shouldWakeBlockedTicket", () => {
       }),
     ).toEqual({ wake: true, reason: "not_blocked" });
   });
+
+  it("wakes a blocked chat conversation for its completion outbox", () => {
+    expect(
+      shouldWakeBlockedTicket({
+        issueStatus: "blocked",
+        wakeReason: "chat_task_completed",
+        requestedByActorType: "system",
+        chatConversation: true,
+      }),
+    ).toEqual({ wake: true, reason: "chat_conversation" });
+    expect(
+      shouldWakeBlockedTicket({
+        issueStatus: "blocked",
+        wakeReason: "chat_task_completed",
+        requestedByActorType: "system",
+        chatConversation: false,
+      }).wake,
+    ).toBe(false);
+  });
 });
 
 describe("evaluateTicketHourlyRunCap", () => {
@@ -294,6 +313,12 @@ describe("shouldStartQueuedIssueRun", () => {
     expect(
       shouldStartQueuedIssueRun({ ...base, issueStatus: "blocked" }),
     ).toEqual({ start: false, reason: "blocked" });
+  });
+
+  it("starts a blocked chat conversation (upstream's dependency gate still applies)", () => {
+    expect(
+      shouldStartQueuedIssueRun({ ...base, issueStatus: "blocked", chatConversation: true }),
+    ).toEqual({ start: true, reason: "ok" });
   });
 
   it("starts a blocked ticket for a human wake or a cleared blocker", () => {

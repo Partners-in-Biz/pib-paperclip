@@ -60,6 +60,13 @@ test("execute renders prompt API base from adapter env PAPERCLIP_API_URL", async
       [
         "#!/bin/sh",
         `printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}`,
+        // PiB (PAR-6886 2/3): the prompt arrives via --query-file (removed after
+        // the run), so append its text to the capture.
+        "prev=''",
+        "for arg in \"$@\"; do",
+        `  if [ "$prev" = "--query-file" ]; then cat "$arg" >> ${JSON.stringify(argvPath)}; fi`,
+        "  prev=\"$arg\"",
+        "done",
         "printf 'done\\n\\nsession_id: test-session\\n'",
         "",
       ].join("\n"),

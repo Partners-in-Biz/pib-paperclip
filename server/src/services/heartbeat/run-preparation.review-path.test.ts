@@ -7,7 +7,16 @@ import { decideIssueReviewPathRecovery, REVIEW_PATH_RECOVERY_INSTRUCTION } from 
 const issueSummary = { id: "task-1", identifier: "TEST-1", title: "Finish the pull request review", description: "Check CI and the external review.", status: "in_review", priority: "medium", workMode: "standard" };
 
 async function buildWake(contextSnapshot: Record<string, unknown>) {
-  const db = { select: vi.fn(() => ({ from: () => ({ where: () => Promise.resolve([]) }) })) } as unknown as Db;
+  // PiB fork: buildPaperclipWakePayload also reads task-level attachments
+  // (select().from().innerJoin().where().orderBy().limit()), so the mock query
+  // chain is thenable at every step and always resolves to no rows.
+  const chain = (): Record<string, unknown> => {
+    const node: Record<string, unknown> = {};
+    for (const step of ["from", "innerJoin", "leftJoin", "where", "orderBy", "limit"]) node[step] = () => chain();
+    node.then = (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) => Promise.resolve([]).then(resolve, reject);
+    return node;
+  };
+  const db = { select: vi.fn(() => chain()) } as unknown as Db;
   return buildPaperclipWakePayload({ db, companyId: "company-1", issueSummary, contextSnapshot });
 }
 

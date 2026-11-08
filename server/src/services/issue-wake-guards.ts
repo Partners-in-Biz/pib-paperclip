@@ -62,12 +62,21 @@ export function shouldWakeBlockedTicket(input: {
   issueStatus: string | null | undefined;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
+  /** The issue is a chat conversation (its own conversationAgentId column). */
+  chatConversation?: boolean | null;
 }): {
   wake: boolean;
-  reason: "not_blocked" | "blocker_cleared" | "human" | "system_recovery" | "blocked_suppressed";
+  reason: "not_blocked" | "blocker_cleared" | "human" | "system_recovery" | "chat_conversation" | "blocked_suppressed";
 } {
   if (input.issueStatus !== "blocked") {
     return { wake: true, reason: "not_blocked" };
+  }
+  // A chat conversation waits in `blocked` on the tasks it delegated, and the
+  // chat completion outbox wakes it when they finish (upstream's dependency gate
+  // still holds the wake while a blocker is open). Like the hourly cap (PAR-6862),
+  // the blocked-ticket guard does not apply to chat: it is user-driven, not a loop.
+  if (input.chatConversation) {
+    return { wake: true, reason: "chat_conversation" };
   }
   if (input.wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
     return { wake: true, reason: "blocker_cleared" };
@@ -174,6 +183,8 @@ export function shouldStartQueuedIssueRun(input: {
   humanWake: boolean;
   blockerClearedWake: boolean;
   assigneeMismatchExempt?: boolean;
+  /** Chat conversation issue: exempt from the blocked check (see shouldWakeBlockedTicket). */
+  chatConversation?: boolean;
 }): {
   start: boolean;
   reason: "ok" | "paused" | "cancelled" | "blocked" | "reassigning";
@@ -183,6 +194,7 @@ export function shouldStartQueuedIssueRun(input: {
   }
   if (
     input.issueStatus === "blocked" &&
+    !input.chatConversation &&
     !input.humanWake &&
     !input.blockerClearedWake &&
     !(
