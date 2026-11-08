@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "../src/prompt-template-store.js";
-import { fieldLabel, fillPrompt, filterTemplates, missingFields, placeholdersOf, PROMPT_TEMPLATES, TEMPLATE_CATEGORIES } from "../src/prompt-templates.js";
+import { buildPairedPrompts, PROMPT_MAX, fieldLabel, fillPrompt, filterTemplates, missingFields, placeholdersOf, PROMPT_TEMPLATES, TEMPLATE_CATEGORIES } from "../src/prompt-templates.js";
 
 function fakeCtx() {
   const data = new Map<string, unknown>();
@@ -104,5 +104,43 @@ describe("saved templates", () => {
     const ctx = fakeCtx();
     for (let i = 0; i < 200; i++) await saveTemplate(ctx, "c", { title: `t${i}`, prompt: "p" });
     await expect(saveTemplate(ctx, "c", { title: "one more", prompt: "p" })).rejects.toThrow("Delete one first");
+  });
+});
+
+describe("paired image + video prompts", () => {
+  const t = PROMPT_TEMPLATES.find((x) => x.id === "ugc-pair")!;
+  const all = { subject: "a woman", outfit: "a blazer", setting: "a kitchen", product: "a flask", mood: "warm and authentic" };
+
+  it("fills every field into both prompts as valid JSON", () => {
+    const { image_prompt, video_prompt } = buildPairedPrompts(t, all);
+    const img = JSON.parse(image_prompt);
+    const vid = JSON.parse(video_prompt);
+    expect(img.outfit).toBe("a blazer");
+    expect(vid.sequence[1]).toContain("a flask");
+    expect(image_prompt + video_prompt).not.toContain("{{");
+    expect(image_prompt).toContain("\n  ");
+  });
+
+  it("keeps the placeholder for a missing field", () => {
+    const { image_prompt } = buildPairedPrompts(t, { ...all, outfit: " " });
+    expect(JSON.parse(image_prompt).outfit).toBe("{{outfit}}");
+  });
+
+  it("stays valid JSON when a value has quotes, backslashes and newlines", () => {
+    const nasty = 'a "bold" \\ one\nwith a second line';
+    const { image_prompt, video_prompt } = buildPairedPrompts(t, { ...all, subject: nasty });
+    expect(JSON.parse(image_prompt).subject).toContain(nasty);
+    expect(() => JSON.parse(video_prompt)).not.toThrow();
+  });
+
+  it("stays under the prompt box limit, even with long values", () => {
+    const long = Object.fromEntries(Object.keys(all).map((k) => [k, "x".repeat(300)]));
+    const { image_prompt, video_prompt } = buildPairedPrompts(t, long);
+    expect(image_prompt.length).toBeLessThan(PROMPT_MAX);
+    expect(video_prompt.length).toBeLessThan(PROMPT_MAX);
+  });
+
+  it("declares an example for every field its spec uses", () => {
+    for (const name of placeholdersOf(JSON.stringify(t.spec))) expect(t.fields?.some((f) => f.name === name && f.example), name).toBe(true);
   });
 });
