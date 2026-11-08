@@ -29,7 +29,7 @@ export function relativeAge(at: string | null | undefined, now: number = Date.no
 }
 
 export function kindLabel(kind: string): string {
-  return kind === "video" ? "Video" : kind === "image" ? "Image" : kind;
+  return kind === "video" ? "Video" : kind === "image" ? "Image" : kind === "audio" ? "Audio" : kind;
 }
 
 /** One meta line: kind, model, cost, age. `short` (phone) keeps kind and age only. */
