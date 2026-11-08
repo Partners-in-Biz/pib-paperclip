@@ -56,6 +56,10 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    # PiB fork: skipped here. `ghcr.io/${{ github.repository }}` isn't a valid image name for this repo (it has capital
+    # letters), so this has never built, and nothing pulls a fork image: production runs from the fork-core overlay.
+    # merge-and-push needs this job, so it skips too.
+    if: github.repository == 'paperclipai/paperclip'
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
