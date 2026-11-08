@@ -5,6 +5,7 @@ import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsFor
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
+import { applyOpsAction, cancelRenderAction, createEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -24,6 +25,10 @@ import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
+import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
+import { createRenderExecutor } from "./video-edit/render-pipeline.js";
+import { createRenderRunner } from "./video-edit/runner.js";
+import { isVideoEditTool, runVideoEditTool } from "./video-edit/tools.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
@@ -72,6 +77,7 @@ async function createFromBrief(ctx: PluginContext, params: Record<string, unknow
 
 async function runTool(ctx: PluginContext, name: string, params: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
+  if (isVideoEditTool(name)) return runVideoEditTool(ctx, name, params, run, await workOf(ctx, run, params));
   switch (name) {
     case "studio-usage": {
       const work = await workOf(ctx, run, params);
@@ -395,6 +401,31 @@ const plugin = definePlugin({
       const me = await canvasEditor(context);
       return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
     });
+    // Video edits (video-edit/actions.ts, PAR-8276 A8a): anyone in the company reads them; only editors change or render.
+    async function videoEditor(context: Parameters<typeof person>[0]) {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at video edits but can't change or render them.", "forbidden");
+      return me;
+    }
+    action("video-edit-list", async (params, context) => listEditsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-get", async (params, context) => getEditAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-render-status", async (params, context) => renderStatusAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-create", async (params, context) => {
+      const me = await videoEditor(context);
+      return createEditAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-apply-ops", async (params, context) => {
+      const me = await videoEditor(context);
+      return applyOpsAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-render", async (params, context) => {
+      const me = await videoEditor(context);
+      return renderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-cancel-render", async (params, context) => {
+      const me = await videoEditor(context);
+      return cancelRenderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
     // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
     pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
     pageData("canvas-comments", (companyId, p) => listComments(ctx, companyId, String(p.canvasId ?? ""), p.cardId).then((comments) => ({ comments })));
@@ -435,8 +466,16 @@ const plugin = definePlugin({
         await publishShares();
       }
     });
+    // Video renders (PAR-8276 A7a/A7b): one runner per worker. It recovers renders a dead worker left behind now and on
+    // every tick, then claims the oldest queued render and runs the pipeline (download, compile, run, verify, upload).
+    const renders = createRenderRunner(ctx, { executor: createRenderExecutor() });
+    runDetached(() => void renders.recover().catch((error) => ctx.logger.warn("Studio render recovery failed", { error: errorText(error) })));
+    ctx.jobs.register("process-renders", async () => {
+      await renders.tick();
+    });
     ctx.jobs.register("sweep-local-files", async () => {
       await sweepLocalCopies();
+      await sweepRenderWorkdirs();
     });
   },
 

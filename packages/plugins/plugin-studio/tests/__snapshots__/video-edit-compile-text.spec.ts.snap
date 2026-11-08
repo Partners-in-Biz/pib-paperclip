@@ -1,0 +1,136 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`compile text snapshots > caption track: one ASS file with all three styles, drawn with fontsdir after the text track 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "4",
+    "-i",
+    "file:in/a.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "4",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=4[seg0];
+[seg0]drawtext=fontfile=/opt/studio/fonts/Inter-Bold.ttf:textfile=text-h1.txt:expansion=none:fontsize=64:fontcolor=0xFFFFFF:line_spacing=13:text_align=C:borderw=3:bordercolor=0x000000@0.6:x=(w-text_w)/2+0:y=(h-text_h)/2+0:enable='between(t,0,1)'[tx0];
+[tx0]ass=filename=captions-cap.ass:fontsdir=/opt/studio/fonts[tx1];
+[tx1]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+    {
+      "content": "Hi",
+      "name": "text-h1.txt",
+    },
+    {
+      "content": "[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: plain,Inter,59,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,2,2,86,86,230,1
+Style: bold,Inter,81,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,0,2,86,86,538,1
+Style: karaoke,Inter,81,&H0000E0FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,0,2,86,86,538,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:00.80,plain,,0,0,0,,plain words
+Dialogue: 0,0:00:01.00,0:00:02.00,bold,,0,0,0,,BOLD tiktok
+Dialogue: 0,0:00:02.50,0:00:03.70,karaoke,,0,0,0,,{\\k50}sing {\\k70}along
+",
+      "name": "captions-cap.ass",
+    },
+  ],
+}
+`;
+
+exports[`compile text snapshots > text clip: drawtext via textfile + bundled bold fontfile, centred, timed, faded 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "4",
+    "-i",
+    "file:in/a.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "4",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=4[seg0];
+[seg0]drawtext=fontfile=/opt/studio/fonts/Lora-Bold.ttf:textfile=text-h1.txt:expansion=none:fontsize=120:fontcolor=0xFFCC00:line_spacing=24:text_align=C:borderw=5:bordercolor=0x000000@0.6:x=(w-text_w)/2+0:y=(h-text_h)/2-400:enable='between(t,0.5,2.5)':alpha='if(lt(t,0.8),(t-0.5)/0.3,if(gt(t,2),(2.5-t)/0.5,1))'[tx0];
+[tx0]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+    {
+      "content": "Big sale
+Today only",
+      "name": "text-h1.txt",
+    },
+  ],
+}
+`;

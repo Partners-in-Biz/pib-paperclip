@@ -6,7 +6,7 @@ import { STUDIO_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.40",
+  version: "0.1.41",
   displayName: "Studio",
   description: "Creative assets and image and video generation for people and agents. Every file is saved to private storage and tied to a company, client, project and task. Credits are tracked per client, under monthly caps a company owner sets.",
   author: "Partners in Biz",
@@ -48,6 +48,12 @@ const manifest: PaperclipPluginManifestV1 = {
       jobKey: "process-queue",
       displayName: "Process generations",
       description: "Submits queued generations, checks running ones and saves finished files.",
+      schedule: "* * * * *",
+    },
+    {
+      jobKey: "process-renders",
+      displayName: "Process video renders",
+      description: "Starts the next queued video render, keeps the running one alive and recovers renders a stopped worker left behind.",
       schedule: "* * * * *",
     },
     {
