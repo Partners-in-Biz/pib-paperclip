@@ -97,6 +97,7 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
       clipId: text("The video or sound clip to caption"),
       trackId: text("Optional caption track to use; default the first caption track, or a new one"),
       style: { type: "string", enum: [...CAPTION_STYLES], description: "Caption look; default plain" } as JsonSchema,
+      provider: text("Optional speech to text provider key, e.g. xai; default: the company's setting"),
       language: text("Optional spoken language code, e.g. en or af; default: detect"),
     }),
   },
