@@ -115,14 +115,12 @@ describe("LiveSession reconnect", () => {
     for (let n = 0; n < 25; n += 1) {
       say(first, { type: "conversation.item.input_audio_transcription.completed", item_id: `u${n}`, transcript: `turn ${String(n).padStart(2, "0")}` });
     }
-    const clearPending = vi.spyOn((session as unknown as { tools: { clearPending(): void } }).tools, "clearPending");
 
     first.emit("close", { code: 1000, reason: "session time limit", wasClean: true });
     expect(states).toContain("disconnected");
     await vi.waitFor(() => expect(FakeSocket.all).toHaveLength(2));
 
     expect(refreshInfo).toHaveBeenCalledTimes(1);
-    expect(clearPending).toHaveBeenCalled();
     const second = FakeSocket.all[1]!;
     expect(second.protocols).toEqual(["xai-client-secret.secret-2"]);
     second.open();

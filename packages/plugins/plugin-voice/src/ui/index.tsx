@@ -14,8 +14,9 @@ import {
 } from "./composers.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
+import { agentRefFromPath } from "./agent-chat.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
-import type { ApiClient } from "./live-tools.js";
+import type { ApiClient } from "./agent-chat.js";
 import { failureMessage, showSaveNotice } from "./save-notice.js";
 import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type SaveTarget } from "./transcript-report.js";
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
@@ -412,6 +413,7 @@ function LivePanel({
           companyId,
           userId,
           pageIssueRef,
+          agentRef: agentRefFromPath(window.location.pathname),
           audioContext,
           wakeLock: wakeLock ?? undefined,
           refreshInfo: () => startLive({}) as Promise<LiveSessionInfo>,
