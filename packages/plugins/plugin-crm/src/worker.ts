@@ -556,7 +556,10 @@ const plugin = definePlugin({
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
-    await syncKnownCompanies(ctx);
+    // Skill sync runs in the background so start-up never waits on it (a core upgrade that changes every
+    // managed skill made it outlast the host's 15 s initialize limit, 2026-11-08). Actions, tools and
+    // events still wait for their company's sync through skillSync.ensure.
+    void syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
     // Emit client projects for all companies at startup (never blocks start).
