@@ -67,7 +67,7 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
     const source = sources[key];
     if (!source) throw new CompileError("missing_input", key);
     if (source.kind === "image") throw new CompileError("unsupported_feature", "audio_from_image");
-    if (source.kind === "video" && source.hasAudio === false) throw new CompileError("unsupported_feature", "audio_clip_without_audio");
+    if (source.hasAudio === false) throw new CompileError("unsupported_feature", "audio_clip_without_audio");
     const index = firstInput + labels.length;
     const span = clip.out - clip.in;
     inputArgs.push("-ss", num(clip.in), "-t", num(span), "-i", filePath(source.path));

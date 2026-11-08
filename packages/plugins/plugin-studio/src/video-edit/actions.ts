@@ -92,10 +92,11 @@ async function timelineFrom(assets: StartAsset[], probe: (asset: StartAsset) => 
     let length: number;
     let onAudio = false;
     if (asset.kind === "image") length = IMAGE_SECONDS;
-    else if (asset.kind === "video") {
+    else if (asset.kind === "video" || asset.kind === "audio") {
       const p = await probe(asset);
-      if (!p.hasVideo && !p.hasAudio) bad(`Asset ${asset.id} has no picture or sound Studio can use.`);
-      onAudio = !p.hasVideo;
+      if (asset.kind === "audio" ? !p.hasAudio : !p.hasVideo && !p.hasAudio) bad(`Asset ${asset.id} has no picture or sound Studio can use.`);
+      // A sound file (MP3, WAV) always goes on the audio track, even if ffprobe reports cover art as a video stream.
+      onAudio = asset.kind === "audio" || !p.hasVideo;
       length = Math.floor(p.durationSec * 1000) / 1000;
       if (!(length > 0)) bad(`Asset ${asset.id} has no length.`);
     } else bad(`Asset ${asset.id} is a ${asset.kind}; a video edit takes pictures, videos and sound.`);

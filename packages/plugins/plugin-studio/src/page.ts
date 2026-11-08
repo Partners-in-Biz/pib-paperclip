@@ -98,7 +98,7 @@ export const ASSET_STATUSES = ["draft", "approved", "rejected", "archived"] as c
 export async function pageAssets(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const kind = str(params.kind);
-  if (kind && kind !== "image" && kind !== "video") throw new StudioError("kind is image or video.", "bad_request");
+  if (kind && kind !== "image" && kind !== "video" && kind !== "audio") throw new StudioError("kind is image, video or audio.", "bad_request");
   const filter = {
     scope: clientFilter(params.client),
     projectId: str(params.projectId),
