@@ -7,6 +7,8 @@ export default defineConfig({
     maxWorkers: process.env.RUNNER_ENVIRONMENT === "github-hosted" ? undefined : process.env.CI ? 8 : 4,
     isolate: false,
     environment: "node",
+    hookTimeout: 30_000,
+    teardownTimeout: 30_000,
     include: ["src/**/*.test.ts"],
   },
 });

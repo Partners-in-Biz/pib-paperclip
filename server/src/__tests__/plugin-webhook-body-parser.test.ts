@@ -1,7 +1,8 @@
 import express, { type Request, type Response } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
+// Mirrors the 10 MB default JSON body limit in middleware/plugin-webhook-body.ts.
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 import { pluginWebhookBodyParser } from "../middleware/plugin-webhook-body.js";
 import { errorHandler } from "../middleware/index.js";
 

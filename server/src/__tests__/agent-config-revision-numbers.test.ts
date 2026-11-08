@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { companies, createDb } from "@paperclipai/db";
@@ -21,8 +22,8 @@ describe("agent config revision numbers", () => {
 
   it("numbers revisions 1..n per agent, independently of other agents", async () => {
     const service = agentService(db);
-    const a = await service.create(companyId, { name: "A", role: "engineer", adapterType: "process" });
-    const b = await service.create(companyId, { name: "B", role: "engineer", adapterType: "process" });
+    const a = await createAgentLifecycle(db).requestHire(companyId, { name: "A", role: "engineer", adapterType: "process" });
+    const b = await createAgentLifecycle(db).requestHire(companyId, { name: "B", role: "engineer", adapterType: "process" });
     await service.update(a.id, { name: "A1" }, { recordRevision: { source: "test" } });
     await service.update(a.id, { name: "A2" }, { recordRevision: { source: "test" } });
     await service.update(b.id, { name: "B1" }, { recordRevision: { source: "test" } });
@@ -32,7 +33,7 @@ describe("agent config revision numbers", () => {
 
   it("gives concurrent patches on one agent distinct numbers", async () => {
     const service = agentService(db);
-    const agent = await service.create(companyId, { name: "C", role: "engineer", adapterType: "process" });
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "C", role: "engineer", adapterType: "process" });
     await Promise.all(
       Array.from({ length: 6 }, (_, i) =>
         service.update(agent.id, { title: `t${i}` }, { recordRevision: { source: "test" } }),
@@ -43,7 +44,7 @@ describe("agent config revision numbers", () => {
 
   it("rollback records a new numbered revision pointing at the restored one", async () => {
     const service = agentService(db);
-    const agent = await service.create(companyId, { name: "D", role: "engineer", adapterType: "process" });
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "D", role: "engineer", adapterType: "process" });
     await service.update(agent.id, { name: "D1" }, { recordRevision: { source: "test" } });
     await service.update(agent.id, { name: "D2" }, { recordRevision: { source: "test" } });
     const first = (await service.listConfigRevisions(agent.id)).find((r) => r.revisionNumber === 1)!;
@@ -56,7 +57,7 @@ describe("agent config revision numbers", () => {
 
   it("records an instruction file delete as its own revision", async () => {
     const service = agentService(db);
-    const agent = await service.create(companyId, { name: "E", role: "engineer", adapterType: "process" });
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "E", role: "engineer", adapterType: "process" });
     await service.recordInstructionsRevision(agent, {
       source: "instructions_file_delete",
       changedKeys: ["instructionsFile:notes.md"],
@@ -68,7 +69,7 @@ describe("agent config revision numbers", () => {
 
   it("refuses to roll back an instruction-file revision", async () => {
     const service = agentService(db);
-    const agent = await service.create(companyId, { name: "F", role: "engineer", adapterType: "process" });
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "F", role: "engineer", adapterType: "process" });
     await service.recordInstructionsRevision(agent, {
       source: "instructions_file_delete",
       changedKeys: ["instructionsFile:notes.md"],
@@ -88,8 +89,8 @@ describe("agent config revision numbers", () => {
     const { sql } = await import("drizzle-orm");
     const { agentConfigRevisions } = await import("@paperclipai/db");
     const service = agentService(db);
-    const a = await service.create(companyId, { name: "G1", role: "engineer", adapterType: "process" });
-    const b = await service.create(companyId, { name: "G2", role: "engineer", adapterType: "process" });
+    const a = await createAgentLifecycle(db).requestHire(companyId, { name: "G1", role: "engineer", adapterType: "process" });
+    const b = await createAgentLifecycle(db).requestHire(companyId, { name: "G2", role: "engineer", adapterType: "process" });
     await db.execute(sql`DROP INDEX IF EXISTS agent_config_revisions_agent_number_uq`);
     const base = Date.parse("2026-01-01T00:00:00Z");
     const rows = [[a, 3], [b, 2], [a, 1], [b, 1], [a, 2]] as const;
