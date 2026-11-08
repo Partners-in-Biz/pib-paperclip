@@ -26,7 +26,27 @@ export interface PromptTemplate {
   resolution?: string | null;
   assetId?: string | null;
   createdAt?: string | null;
+  /** Paired templates: the form the person fills in, and the structured image + video prompts it builds. */
+  fields?: TemplateField[];
+  spec?: PairedSpec;
 }
+
+export interface TemplateField {
+  name: string;
+  label: string;
+  example: string;
+  /** When set, the form offers these instead of free text. */
+  choices?: string[];
+}
+
+/** Keys: shot_type, subject, outfit, setting, lighting, camera, mood, sequence[], negative_guidance. String values may hold `{{field}}`. */
+export interface PairedSpec {
+  image: Record<string, unknown>;
+  video: Record<string, unknown>;
+}
+
+/** The longest prompt the Generate box accepts. */
+export const PROMPT_MAX = 4000;
 
 export const TEMPLATE_CATEGORIES: ReadonlyArray<{ id: TemplateCategory; label: string }> = [
   { id: "product", label: "Product" },
@@ -158,6 +178,32 @@ export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
     prompt: `Close-up of {{dish}} from a 45-degree angle, with fresh texture and glistening detail in sharp focus and the background softly blurred. Warm side light, dark moody surface, shot on a 100mm macro lens. ${NO_TEXT}`,
     examples: { dish: "a stacked burger with melted cheddar" },
   },
+  // Paired image + video
+  {
+    id: "ugc-pair", category: "social", kind: "image", ratio: "9:16", title: "UGC photo + clip pair", tagline: "Matching still and video prompts as JSON",
+    prompt: `Selfie-style photo of {{subject}} wearing {{outfit}} in {{setting}}, holding {{product}}. ${NO_TEXT}`,
+    examples: { subject: "a woman in her thirties", outfit: "a navy blazer", setting: "a sunlit kitchen", product: "a matte black coffee flask", mood: "warm and authentic" },
+    fields: [
+      { name: "subject", label: "Person", example: "a woman in her thirties" },
+      { name: "outfit", label: "Outfit", example: "a navy blazer" },
+      { name: "setting", label: "Setting", example: "a sunlit kitchen" },
+      { name: "product", label: "Product", example: "a matte black coffee flask" },
+      { name: "mood", label: "Mood", example: "warm and authentic", choices: ["warm and authentic", "bright and energetic", "calm and premium"] },
+    ],
+    spec: {
+      image: {
+        shot_type: "handheld selfie, vertical, chest up", subject: "{{subject}} holding {{product}} toward the camera", outfit: "{{outfit}}",
+        setting: "{{setting}}", lighting: "natural daylight, soft shadows", camera: "phone front camera, slight wide angle, sharp focus on the product", mood: "{{mood}}",
+        negative_guidance: "no text, lettering, logos or watermarks; no extra fingers; no distorted product",
+      },
+      video: {
+        shot_type: "handheld selfie video, vertical", subject: "{{subject}} showing {{product}} to the camera", outfit: "{{outfit}}",
+        setting: "{{setting}}", lighting: "natural daylight", camera: "slight natural handheld shake, locked focus on the face and product", mood: "{{mood}}",
+        sequence: ["They look into the camera and smile", "They lift {{product}} into frame and turn it slowly", "They nod and give a small relaxed laugh"],
+        negative_guidance: "no text, lettering, logos or watermarks; no jump cuts; no warping of the product",
+      },
+    },
+  },
   // Video
   {
     id: "video-orbit", category: "product", kind: "video", ratio: "1:1", title: "Slow product orbit", tagline: "A simple turn for any product",
@@ -227,4 +273,18 @@ export function filterTemplates(list: readonly PromptTemplate[], filter: { q?: s
     if (filter.kind && t.kind !== filter.kind) return false;
     return !q || `${t.title} ${t.tagline} ${t.prompt}`.toLowerCase().includes(q);
   });
+}
+
+function fillValue(value: unknown, values: Record<string, string>): unknown {
+  if (typeof value === "string") return fillPrompt(value, values);
+  if (Array.isArray(value)) return value.map((v) => fillValue(v, values));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillValue(v, values)]));
+  return value;
+}
+
+/** The paired image and video prompts as pretty JSON. Fields are filled into the parsed string values, so quotes and newlines stay valid JSON; a blank field keeps its `{{name}}`. */
+export function buildPairedPrompts(template: Pick<PromptTemplate, "spec">, values: Record<string, string>): { image_prompt: string; video_prompt: string } {
+  if (!template.spec) throw new Error("This template has no paired prompts.");
+  const make = (part: object) => JSON.stringify(fillValue(part, values), null, 2);
+  return { image_prompt: make(template.spec.image), video_prompt: make(template.spec.video) };
 }

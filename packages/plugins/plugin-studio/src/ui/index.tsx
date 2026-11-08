@@ -743,7 +743,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", minWidth: 0 }}>
         <div style={{ flex: "999 1 520px", minWidth: 0, maxWidth: "100%", order: narrow ? 1 : 0 }}>
-          <TemplateGallery companyId={companyId} saved={saved} selectedId={template?.id ?? ""} presetId={presetId} onPick={pickTemplate} onPickPreset={pickPreset} problem={savedProblem} />
+          <TemplateGallery companyId={companyId} saved={saved} selectedId={template?.id ?? ""} presetId={presetId} onPick={pickTemplate} onPickPreset={pickPreset} onUsePrompt={setPrompt} problem={savedProblem} />
         </div>
         <section
           ref={composerRef}
