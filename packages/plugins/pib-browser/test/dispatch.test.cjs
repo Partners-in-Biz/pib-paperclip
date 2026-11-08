@@ -241,3 +241,26 @@ test('fill refusal closes context on fill check failure', async () => {
   assert.equal(r.exit, EXIT.REFUSED_BY_POLICY);
   assert.equal(ctx._closeCount(), 1, 'Context should be closed on fill check failure');
 });
+
+test('dispatch passes apiBase to authenticate (PAR-8357)', async () => {
+  let seen;
+  const { dispatch } = createDispatcher({
+    apiBase: 'http://127.0.0.1:3100',
+    authenticate: async (req, opts) => { seen = opts; return { ok: false, exit: EXIT.USAGE, reason: 'x' }; }
+  });
+  await dispatch({ cmd: 'open', token: 't', issue: 'PAR-1', identity: 'pib:search-console' });
+  assert.equal(seen.apiBase, 'http://127.0.0.1:3100');
+});
+
+test('real authenticate via dispatcher hits <apiBase>/api/agents/me (PAR-8357)', async () => {
+  const { authenticate } = require('../src/auth.cjs');
+  const urls = [];
+  const fakeFetch = async (u) => { urls.push(u); return { ok: false, status: 401, json: async () => ({}) }; };
+  const { dispatch } = createDispatcher({
+    apiBase: 'http://api.test',
+    authenticate: (req, opts) => authenticate(req, { ...opts, fetch: fakeFetch })
+  });
+  const r = await dispatch({ cmd: 'open', token: 't', issue: 'PAR-1', identity: 'pib:search-console' });
+  assert.equal(urls[0], 'http://api.test/api/agents/me');
+  assert.notEqual(r.reason, 'fetch_error');
+});
