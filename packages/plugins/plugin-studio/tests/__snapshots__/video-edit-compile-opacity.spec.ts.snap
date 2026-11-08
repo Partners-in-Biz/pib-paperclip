@@ -1,16 +1,16 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`opacity keyframes: compiled graph > identity main clip with opacity keys leaves the letterbox path for alpha over its black frame, fades after 1`] = `
-"[0:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,geq=r='r(X,Y)':a='alpha(X,Y)*(if(lt(T,0),1,if(lt(T,3),1+(-0.8)*((T-0)/3),0.2)))'[shp1];
+"[0:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,sendcmd=c=0-3 \\[expr\\] colorchannelmixer@op0 aa \\\\\\'clip(if(lt((TI*3)\\,0)\\,1\\,if(lt((TI*3)\\,3)\\,1+(-0.8)*(((TI*3)-0)/3)\\,0.2))\\,0\\,1)\\\\\\',colorchannelmixer@op0[shp1];
 color=c=black:s=1080x1920:r=30:d=3,format=yuv420p,setsar=1[blk2];
 [blk2][shp1]overlay=x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass,format=yuv420p,setsar=1,fade=t=out:st=2:d=1,trim=duration=3[seg0];
 [seg0]format=yuv420p,setsar=1[vout]
 "
 `;
 
-exports[`opacity keyframes: compiled graph > overlay clip: geq scales the alpha after the alpha fades, on the timeline clock 1`] = `
+exports[`opacity keyframes: compiled graph > overlay clip: sendcmd drives colorchannelmixer aa after the alpha fades, over the clip's timeline interval 1`] = `
 "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=4[seg0];
-[1:v]setpts=PTS-STARTPTS+1.5/TB,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in:st=1.5:d=0.5:alpha=1,format=rgba,geq=r='r(X,Y)':a='alpha(X,Y)*(if(lt(T,1.5),0,if(lt(T,3.5),0+1*((T-1.5)/2),1)))'[ov1];
+[1:v]setpts=PTS-STARTPTS+1.5/TB,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in:st=1.5:d=0.5:alpha=1,format=rgba,sendcmd=c=1.5-3.5 \\[expr\\] colorchannelmixer@op0 aa \\\\\\'clip(if(lt((TI*2)\\,0)\\,0\\,if(lt((TI*2)\\,2)\\,0+1*(((TI*2)-0)/2)\\,1))\\,0\\,1)\\\\\\',colorchannelmixer@op0[ov1];
 [seg0][ov1]overlay=x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass[base2];
 [base2]format=yuv420p,setsar=1[vout]
 "
