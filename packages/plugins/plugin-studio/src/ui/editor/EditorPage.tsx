@@ -2,7 +2,7 @@
  * The `studio-editor` page (PAR-8313): `?edit=<id>` loads a video edit and shows the player, timeline and render
  * panel around one editor store. Later tickets fill the three panels and never touch this file.
  */
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useHostContext, useHostLocation, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Page, PageMessage } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "../action.js";
@@ -18,13 +18,16 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const editId = new URLSearchParams(search).get("edit");
   const getAction = useStudioAction("video-edit-get");
   const opsAction = useStudioAction("video-edit-apply-ops");
+  // Actions go through refs so the store is built once per company, not once per render.
+  const actions = useRef({ getAction, opsAction });
+  actions.current = { getAction, opsAction };
   const store = useMemo(() => {
     const api: EditorApi = {
-      get: (id) => getAction({ companyId, editId: id }),
-      applyOps: (p) => opsAction({ companyId, ...p }),
+      get: (id) => actions.current.getAction({ companyId, editId: id }),
+      applyOps: (p) => actions.current.opsAction({ companyId, ...p }),
     };
     return createEditorStore(api);
-  }, [getAction, opsAction, companyId]);
+  }, [companyId]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   useEffect(() => {
     if (companyId) void store.load(editId);
