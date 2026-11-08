@@ -20,10 +20,12 @@ const overlay = (...clips: unknown[]) => ({ id: "o", kind: "overlay", clips });
 const graphOf = (d: EditDoc) => compileVideo(d, inputs, "out.mp4").files[0].content;
 
 describe("opacity keyframes: compiled graph", () => {
-  it("overlay clip: geq scales the alpha after the alpha fades, on the timeline clock", () => {
+  it("overlay clip: sendcmd drives colorchannelmixer aa after the alpha fades, over the clip's timeline interval", () => {
     const g = graphOf(doc([video(clip("b", "blk", 0, 4)), overlay(clip("o1", "box", 1.5, 2, { fadeIn: 0.5, keyframes: { opacity: [k(0, 0), k(2, 1, "easeIn")] } }))]));
     expect(g).toMatchSnapshot();
-    expect(g).toContain(":alpha=1,format=rgba,geq=r='r(X,Y)':a='alpha(X,Y)*(if(lt(T,1.5),0,");
+    // Escaped for filtergraph + option parsing; sendcmd then sees: 1.5-3.5 [expr] colorchannelmixer@op0 aa 'clip(if(lt((TI*2),0),0,...),0,1)'
+    expect(g).toContain(":alpha=1,format=rgba,sendcmd=c=1.5-3.5 \\[expr\\] colorchannelmixer@op0 aa \\\\\\'clip(if(lt((TI*2)\\,0)\\,0\\,");
+    expect(g).toContain("\\,0\\,1)\\\\\\',colorchannelmixer@op0[ov");
     expect(g).toContain("x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass"); // position stays static
   });
 
@@ -31,14 +33,25 @@ describe("opacity keyframes: compiled graph", () => {
     const g = graphOf(doc([video(clip("c1", "box", 0, 3, { fadeOut: 1, keyframes: { opacity: [k(0, 1), k(3, 0.2)] } }))]));
     expect(g).toMatchSnapshot();
     expect(g).not.toContain("pad=");
-    expect(g).toMatch(/geq=r='r\(X,Y\)':a='alpha\(X,Y\)\*\(if\(lt\(T,0\),1,[^\n]*\[shp\d+\]/);
+    expect(g).toMatch(/format=rgba,sendcmd=c=0-3 \\\[expr\\\] colorchannelmixer@op0 aa [^\n]*,colorchannelmixer@op0\[shp\d+\]/);
     expect(g).toContain(":eof_action=pass,format=yuv420p,setsar=1,fade=t=out:st=2:d=1,trim=duration=3");
+  });
+
+  it("each keyed clip gets its own mixer name; time is TI, never T or PTS; no geq", () => {
+    const op = { keyframes: { opacity: [k(0, 0), k(1, 1)] } };
+    const g = graphOf(doc([video(clip("c1", "box", 0, 2, op), clip("c2", "box", 2, 2, op)), overlay(clip("o1", "box", 0.5, 1, op))]));
+    for (const n of [0, 1, 2]) expect(g.match(new RegExp(`colorchannelmixer@op${n}\\b`, "g"))).toHaveLength(2);
+    expect(g).not.toContain("colorchannelmixer@op3");
+    const cmds = g.match(/sendcmd=c=[^\n]*?colorchannelmixer@op\d+(?=\[)/g)!;
+    expect(cmds).toHaveLength(3);
+    for (const c of cmds) expect(c).not.toMatch(/\bT\b|PTS/);
+    expect(g).not.toContain("geq");
   });
 
   it("opacity keys alone keep today's thread count and static overlay position", () => {
     const args = compileVideo(doc([video(clip("c1", "box", 0, 3, { keyframes: { opacity: [k(0, 0), k(3, 1)] } }))]), inputs, "out.mp4").args;
     expect(args).not.toContain("-filter_complex_threads");
-    expect(graphOf(doc([video(clip("c1", "box", 0, 3))]))).not.toContain("geq=");
+    expect(graphOf(doc([video(clip("c1", "box", 0, 3))]))).not.toContain("sendcmd");
   });
 });
 

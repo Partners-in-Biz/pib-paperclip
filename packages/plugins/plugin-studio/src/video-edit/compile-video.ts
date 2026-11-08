@@ -9,7 +9,7 @@
  * `overlay` track is then laid over that base in track order, each clip at its centre offset x/y and fit scale.
  * Keyframes (schema v2, D1d1): x/y/scale/rotate keys on a main or overlay clip are evaluated per frame from the shared
  * `keyframes.ts` curve, in clip-local time (from the clip's `start`, transition overlap included), before xfade/overlay.
- * Opacity keys (D1d2) scale the clip's alpha per pixel with `geq`, times the alpha its fades leave.
+ * Opacity keys (D1d2) scale the clip's alpha per frame (`sendcmd` driving `colorchannelmixer aa`), times its fade alpha.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
@@ -77,6 +77,7 @@ class Graph {
   filters: string[] = [];
   private inputs = 0;
   private labels = 0;
+  private opacities = 0;
   constructor(readonly doc: EditDoc, readonly sources: CompileInputs) {}
 
   label(prefix: string) {
@@ -148,14 +149,22 @@ class Graph {
   }
 
   /**
-   * Opacity keys (D1d2): scales the alpha already on the frame per pixel, so final alpha = keyframe opacity x the alpha the
-   * overlay fades left there. geq's frame time is `T`; `r` is given because geq needs a luma or RGB expression (g/b
-   * default to their own pixel). Base opacity is 1 (no static opacity field).
+   * Opacity keys (D1d2): `colorchannelmixer aa` scales the alpha already on the frame, so final alpha = keyframe opacity x
+   * the alpha the fades left there. One `sendcmd` [expr] command sets `aa` on every frame of the clip's interval
+   * `[offset, offset+length)`. Inside sendcmd `T` is undefined and `PTS` is in time-base units, so clip-local time is
+   * `TI*length` (TI runs 0..1 over the interval). Clamped to 0..1 (`aa` takes -2..2). Each mixer gets its own `@op<n>`
+   * name so the command reaches only it. Base opacity is 1 (no static opacity field).
    */
   private opacity(clip: MediaClip, offset: number): string[] {
     const kfs = clip.keyframes?.opacity;
     if (!kfs) return [];
-    return ["format=rgba", `geq=r='r(X,Y)':a='alpha(X,Y)*(${toFfmpegExpr(kfs, 1, offset, "T")})'`];
+    const length = clipDuration(clip);
+    const expr = toFfmpegExpr(kfs, 1, 0, "LT").replace(/\bLT\b/g, `(TI*${num(length)})`);
+    const target = `colorchannelmixer@op${this.opacities++}`;
+    const cmd = `${num(offset)}-${num(offset + length)} [expr] ${target} aa 'clip(${expr},0,1)'`;
+    // Three parsers unquote in turn: filtergraph (`[],;`), filter options (`:`), then sendcmd's own argument token.
+    const opt = cmd.replace(/[\\':]/g, "\\$&");
+    return ["format=rgba", `sendcmd=c=${opt.replace(/[\\'[\],;]/g, "\\$&")}`, target];
   }
 
   private overlayAt(clip: MediaClip, offset: number) {
