@@ -11,7 +11,7 @@ import { Button, errorText, usePibBaseStyles } from "@partnersinbiz/pib-plugin-u
 import { useStudioAction } from "./action.js";
 import { awaitTransfer, percent } from "./drive-transfer.js";
 import { useNarrow } from "./narrow.js";
-import { ALL_FOLDERS, NO_FOLDER, blockedReason, createThumbQueue, fileSize, folderLabel, folderTabs, shortDate, thumbFallback, visibleFiles, type DriveFile, type ThumbState } from "./drive-picker.js";
+import { ALL_FOLDERS, NO_FOLDER, blockedReason, createThumbQueue, fileSize, folderLabel, folderPath, folderTabs, shortDate, thumbFallback, visibleFiles, type DriveFile, type ThumbState } from "./drive-picker.js";
 
 export interface ImportedAsset {
   id: string;
@@ -224,8 +224,8 @@ function DrivePicker({ companyId, client, variant, onImported, onClose }: { comp
             <h2 style={{ margin: 0, fontSize: 17, fontWeight: 650, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{preview ? preview.name : "Add from Drive"}</h2>
             <p style={{ ...muted, margin: "2px 0 0" }}>
               {preview
-                ? [folderLabel(preview.folder), fileSize(preview.size), shortDate(preview.modifiedTime)].filter(Boolean).join(" · ")
-                : "This client's Drive Assets folders, newest first. Tick files, then add them to the library."}
+                ? [folderPath(preview.folder), fileSize(preview.size), shortDate(preview.modifiedTime)].filter(Boolean).join(" · ")
+                : "Files from all of this client's Drive Assets folders (the tabs pick one folder), newest first. Tick files, then add them to the library."}
             </p>
           </div>
           {preview ? (
@@ -270,6 +270,11 @@ function DrivePicker({ companyId, client, variant, onImported, onClose }: { comp
                 </div>
               ) : null}
             </div>
+            {files && files.length > 0 ? (
+              <p style={{ ...muted, margin: 0, padding: `0 ${pad}px 8px` }} role="status">
+                Showing {folder === ALL_FOLDERS ? `all ${files.length} files across this client's Drive folders` : `${shown.length} of ${tabs.find((t) => t[0] === folder)?.[2] ?? 0} files in ${folderPath(folder === NO_FOLDER ? null : folder)}`}.
+              </p>
+            ) : null}
 
             <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: `0 ${pad}px 16px` }}>
               {loadError ? (
@@ -416,6 +421,7 @@ function FileCard({ file: f, thumb, ticked, progress, blocked, disabled, watch, 
         <div title={f.name} style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {f.name}
         </div>
+        <div title={folderPath(f.folder)} style={{ ...muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{folderPath(f.folder)}</div>
         <div style={{ ...muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
         {blocked ? <div style={{ fontSize: 12, color: "var(--destructive)", marginTop: 4, overflowWrap: "anywhere" }}>{blocked}</div> : null}
         {progress?.state === "failed" ? (

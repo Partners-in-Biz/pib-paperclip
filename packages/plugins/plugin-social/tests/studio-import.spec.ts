@@ -24,13 +24,13 @@ describe("Studio hand-off into Social", () => {
     const importer = vi.fn(async () => ({ id: "m1" }));
     const out = await importStudioAsset(fakeCtx(), "c1", payload, importer);
     expect(out).toEqual({ status: "imported", mediaAssetId: "m1" });
-    expect(importer).toHaveBeenCalledWith(expect.anything(), "c1", { url: payload.url, name: "Hero", altText: "A chair", client: "company:acme" });
+    expect(importer).toHaveBeenCalledWith(expect.anything(), "c1", { url: payload.url, noAnnounce: true, name: "Hero", altText: "A chair", client: "company:acme" });
   });
 
   it("imports own work without a client", async () => {
     const importer = vi.fn(async () => ({ id: "m2" }));
     await importStudioAsset(fakeCtx(), "c1", { ...payload, client: null }, importer);
-    expect(importer).toHaveBeenCalledWith(expect.anything(), "c1", { url: payload.url, name: "Hero", altText: "A chair" });
+    expect(importer).toHaveBeenCalledWith(expect.anything(), "c1", { url: payload.url, noAnnounce: true, name: "Hero", altText: "A chair" });
   });
 
   it("imports a replayed event once", async () => {

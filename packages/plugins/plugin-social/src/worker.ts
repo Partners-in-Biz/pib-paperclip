@@ -65,6 +65,7 @@ import {
 import { spaceOf } from "./space.js";
 import { registerStudioImport } from "./studio-import.js";
 import { storeRenderedAsset } from "./asset-path.js";
+import { announceExistingMedia } from "./media-announce.js";
 import { importFromAttachment, importFromUrl, listIssueAttachments, presignUpload, registerAsset } from "./media.js";
 import { knownCompanies, MODULE_OFF_MESSAGE, socialOn } from "./modules.js";
 import { collectMetricsJob, recollectPostMetrics } from "./metrics.js";
@@ -425,6 +426,7 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.media-presign": (ctx, v, p) =>
     presignUpload(ctx, v.companyId, { fileName: requiredString(p, "fileName"), mime: requiredString(p, "mime"), bytes: Number(p.bytes) }),
   "social.create-media-asset": (ctx, v, p) => registerAsset(ctx, v.companyId, p, undefined, personalOwner(v, p)),
+  "social.announce-media": (ctx, v) => announceExistingMedia(ctx, v.companyId),
   "social.import-media": (ctx, v, p) => importFromUrl(ctx, v.companyId, p, personalOwner(v, p)),
   "social.create-rss-feed": (ctx, v, p) => createRssFeedRecord(ctx, v, p),
   "social.set-rss-active": (ctx, v, p) => setRssActiveRecord(ctx, v, requiredString(p, "feedId"), p.active === true),

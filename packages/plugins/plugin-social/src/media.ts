@@ -16,6 +16,7 @@ import { mediaKindFromMime, SocialError } from "./domain.js";
 import { isSocialProject } from "./issues.js";
 import { describeUnsupported, mediaInfo, mimeFromName, shapeNotes, sniffMime } from "./media-info.js";
 import { downloadMedia } from "./oauth/http.js";
+import { announceMedia } from "./media-announce.js";
 import { MEDIA_MAX_BYTES, SOCIAL_MEDIA_MIME } from "./platforms.js";
 
 export const R2_PREFIX = "social";
@@ -114,6 +115,7 @@ export async function registerAsset(
     source_url: typeof params.sourceUrl === "string" ? params.sourceUrl : null,
   };
   await insertMediaAsset(ctx, row);
+  if (params.noAnnounce !== true) await announceMedia(ctx, companyId, row);
   return assetOut(row);
 }
 

@@ -1,4 +1,5 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { registerSocialMediaSync } from "./social-media-sync.js";
 import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
@@ -147,6 +148,7 @@ const plugin = definePlugin({
     const action = (key: string, handler: ActionHandler) => ctx.actions.register.call(ctx.actions, key, guardAction(handler));
     registerCrmProjection(ctx, ctx.db.namespace);
     registerClientProjectWatch(ctx);
+    registerSocialMediaSync(ctx);
 
     for (const tool of STUDIO_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {

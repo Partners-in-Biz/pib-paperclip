@@ -44,7 +44,7 @@ export async function importStudioAsset(ctx: PluginContext, companyId: string, p
   const key = stateKey(companyId, approved.assetId);
   const seen = (await ctx.state.get(key)) as { mediaAssetId?: string | null } | null | undefined;
   if (seen) return { status: "duplicate" as const, mediaAssetId: seen.mediaAssetId ?? null };
-  const params: Record<string, unknown> = { url: approved.url };
+  const params: Record<string, unknown> = { url: approved.url, noAnnounce: true };
   if (approved.name) params.name = approved.name;
   if (approved.altText) params.altText = approved.altText;
   if (approved.client) params.client = `${approved.client.kind}:${approved.client.id}`;

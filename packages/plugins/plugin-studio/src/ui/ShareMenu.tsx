@@ -3,9 +3,11 @@
  * writes into this bundle's own folder (`s/<id>.html`), so the full URL is built from where this bundle is served.
  * Only editors get this menu: the list comes from an editor-only action because each entry carries the secret path.
  */
+import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { useCallback, useEffect, useState } from "react";
 import { Button, errorText } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "./action.js";
+import { shareUrl } from "./share-url.js";
 
 interface Share {
   id: string;
@@ -13,9 +15,9 @@ interface Share {
   expiresAt: string | null;
 }
 
-export function shareUrl(path: string, base: string = import.meta.url): string {
-  return new URL(path, base).href;
-}
+
+// Not imported from namespace.ts: that file uses node:crypto, which a browser bundle can't have.
+const PLUGIN_KEY = "partnersinbiz.studio";
 
 /** Open state can come from the page, so opening this menu closes the Versions one (PAR-8102). */
 export function ShareMenu({ companyId, canvasId, open: shown, onOpenChange }: { companyId: string; canvasId: string; open?: boolean; onOpenChange?: (open: boolean) => void }) {
@@ -25,6 +27,16 @@ export function ShareMenu({ companyId, canvasId, open: shown, onOpenChange }: { 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [list, setList] = useState<Share[] | null>(null);
+  const [uiBase, setUiBase] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void resolvePluginUiBase(PLUGIN_KEY, import.meta.url).then((base) => {
+      if (live) setUiBase(base);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   const load = useStudioAction("canvas-share-list");
   const create = useStudioAction("canvas-share-create");
   const revoke = useStudioAction("canvas-share-revoke");
@@ -84,7 +96,7 @@ export function ShareMenu({ companyId, canvasId, open: shown, onOpenChange }: { 
               <span style={{ flex: "1 1 8rem", minWidth: 0, fontSize: 13, overflowWrap: "anywhere" }}>
                 Expires {share.expiresAt ? new Date(share.expiresAt).toLocaleDateString() : "—"}
               </span>
-              <Button variant="secondary" onClick={() => void copy(shareUrl(share.path))}>Copy link</Button>
+              <Button variant="secondary" disabled={!uiBase} title={uiBase ? undefined : "Finding this page's address…"} onClick={() => uiBase && void copy(shareUrl(share.path, uiBase, window.location.origin))}>Copy link</Button>
               <Button variant="secondary" disabled={busy} onClick={() => void run(() => revoke({ companyId, shareId: share.id }), "Link revoked. It no longer opens.")}>
                 Revoke
               </Button>
