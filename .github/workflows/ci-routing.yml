@@ -380,10 +380,13 @@ jobs:
           STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_SHA: ${{ github.sha }}
+          PIB_FORK_FULL_SUITE: ${{ github.repository != 'paperclipai/paperclip' }}
         run: |
           set -euo pipefail
           fallback() { echo 'plan=' >> "$GITHUB_OUTPUT"; exit 0; }
           [[ "$FULL_CI" == 'true' ]] || fallback
+          # PiB fork: no incremental plan here (an upstream merge's plan exceeds the 1 MB job-output limit); run everything.
+          [[ "${PIB_FORK_FULL_SUITE:-false}" != 'true' ]] || fallback
           [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
           trusted="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" || fallback
           [[ "$trusted" =~ ^[0-9a-f]{40}$ ]] || fallback
