@@ -15,7 +15,7 @@ import { objectUrl } from "../storage.js";
 import { applyOps } from "./ops.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
 import { cancelRender, enqueueRender, getRender, type RenderJob } from "./render-queue.js";
-import { assertAssets, createVideoEdit, editAssetIds, getVideoEdit, listVideoEdits, saveVideoEdit, type EditActor } from "./store.js";
+import { assertAssets, createVideoEdit, editAssetIds, getVideoEdit, listVideoEdits, MAX_EDIT_TITLE, saveVideoEdit, type EditActor } from "./store.js";
 import { editDuration, LIMITS, normalizeEdit } from "./timeline.js";
 
 /** At most this many assets in one "create from assets" call. */
@@ -34,6 +34,8 @@ export interface StartAsset {
   r2Key: string;
   clientKind: string | null;
   clientRef: string | null;
+  /** The library name, used as the edit's title when the caller gives none. */
+  name: string | null;
 }
 
 export interface ActionDeps {
@@ -66,8 +68,8 @@ function assetIdList(value: unknown): string[] {
 /** The assets in this company, in the order asked for. A missing one (or one of another company) is refused. */
 async function startAssets(ctx: PluginContext, companyId: string, ids: string[]): Promise<StartAsset[]> {
   const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
-  const rows = await ctx.db.query<{ id: string; kind: string; current_version: unknown; r2_key: string; client_kind: string | null; client_ref: string | null }>(
-    `SELECT a.id, a.kind, a.current_version, a.client_kind, a.client_ref, v.r2_key
+  const rows = await ctx.db.query<{ id: string; kind: string; current_version: unknown; r2_key: string; client_kind: string | null; client_ref: string | null; name: string | null }>(
+    `SELECT a.id, a.kind, a.current_version, a.client_kind, a.client_ref, a.name, v.r2_key
      FROM ${table(ctx, "assets")} a JOIN ${table(ctx, "asset_versions")} v ON v.asset_id = a.id AND v.version = a.current_version
      WHERE a.company_id = $1 AND a.id IN (${marks})`,
     [companyId, ...ids],
@@ -76,7 +78,7 @@ async function startAssets(ctx: PluginContext, companyId: string, ids: string[])
   return ids.map((assetId) => {
     const r = found.get(assetId);
     if (!r) bad(`Asset ${assetId} is not in this company's Studio library.`);
-    return { id: r.id, kind: r.kind, version: num(r.current_version), r2Key: r.r2_key, clientKind: r.client_kind, clientRef: r.client_ref };
+    return { id: r.id, kind: r.kind, version: num(r.current_version), r2Key: r.r2_key, clientKind: r.client_kind, clientRef: r.client_ref, name: r.name };
   });
 }
 
@@ -128,7 +130,9 @@ export async function createEditAction(ctx: PluginContext, companyId: string, pa
     if (!sameClient(scopeOfRow({ client_kind: a.clientKind, client_ref: a.clientRef }), where.scope)) bad(`Asset ${a.id} belongs to another client than this video edit.`);
   }
   const doc = await timelineFrom(assets, deps.probe ?? defaultProbe(ctx, companyId), params.project);
-  const edit = await createVideoEdit(ctx, companyId, { ...params, doc, sourceAssetId: params.sourceAssetId ?? ids[0] }, actor);
+  // The Library's "Edit video" button sends no title: name the edit after its first asset.
+  const title = typeof params.title === "string" && params.title.trim() ? params.title : `${(assets[0].name ?? "").trim() || "Video"} edit`.slice(0, MAX_EDIT_TITLE);
+  const edit = await createVideoEdit(ctx, companyId, { ...params, title, doc, sourceAssetId: params.sourceAssetId ?? ids[0] }, actor);
   ctx.logger.info("Studio video edit created from assets", { companyId, editId: edit.id, assets: ids.length, by: actor.agentId ?? actor.userId ?? null });
   return edit;
 }
