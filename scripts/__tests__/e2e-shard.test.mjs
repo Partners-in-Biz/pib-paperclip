@@ -229,7 +229,8 @@ test("runner authorization uses reserved capacity and executes metadata checks o
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
-  assert.match(jobs.get("gate"), /uses: paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master/);
+  // PiB fork: the gate calls this repository's own ci-routing.yml copy.
+  assert.match(jobs.get("gate"), /uses: (?:paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master|\.\/\.github\/workflows\/ci-routing\.yml)\n/);
   const gate = readWorkflowJobs(readFileSync(routingWorkflow, "utf8")).get("gate");
 
   assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
