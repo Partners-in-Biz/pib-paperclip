@@ -54,9 +54,22 @@ interface Asset {
   credits?: number | null;
 }
 
+interface Balance {
+  enteredUsd: number | null;
+  enteredAt: string | null;
+  spentCreditsSince: number;
+  spentUsdSince: number;
+  estimatedUsd: number | null;
+  estimatedCredits: number | null;
+  usdPerCredit: number;
+  low: boolean;
+  outOfFundsAt: string | null;
+}
+
 interface Overview {
   period: string;
   companyUsed: number;
+  balance?: Balance | null;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
@@ -997,6 +1010,60 @@ function CapRow({ label, hint, scopeKey, cap, used, save, busy, editable, unit =
   );
 }
 
+const money = (value: number) => `$${value.toFixed(2)}`;
+const shortDate = (value: string) => new Date(value).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** The Higgsfield balance: typed by an owner from Higgsfield's billing page, less what Studio spent since (PAR-8388). */
+function BalanceSection({ companyId, balance, owner, refresh }: { companyId: string; balance: Balance | null | undefined; owner: boolean; refresh: () => void }) {
+  const setBalance = useStudioAction("set-balance");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ text: string; tone: "danger" | "success" } | null>(null);
+  async function save() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await setBalance({ companyId, usd: value });
+      setValue("");
+      refresh();
+      setMessage({ text: "Balance saved. Studio counts its spend from now.", tone: "success" });
+    } catch (err) {
+      setMessage({ text: errorText(err), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const b = balance ?? null;
+  const warning = b?.outOfFundsAt
+    ? { tone: "danger" as const, text: `Higgsfield refused a job for an empty balance on ${shortDate(b.outOfFundsAt)}. Add funds on Higgsfield, then enter the new balance here.` }
+    : b?.low && b.estimatedUsd !== null
+      ? { tone: "warning" as const, text: `About ${money(b.estimatedUsd)} left on Higgsfield. Add funds there before it runs out.` }
+      : null;
+  return (
+    <Section title="Higgsfield balance">
+      {message ? <PageMessage tone={message.tone} message={message.text} /> : null}
+      {warning ? <PageMessage tone={warning.tone} message={warning.text} /> : null}
+      <p style={{ ...muted, marginBottom: 8 }}>
+        {b && b.enteredUsd !== null && b.enteredAt
+          ? `${money(b.enteredUsd)} entered ${shortDate(b.enteredAt)}, less ${money(b.spentUsdSince)} Studio spent since (${roundCredits(b.spentCreditsSince)} credits at ${money(b.usdPerCredit)} each). Higgsfield has no balance API, so this is an estimate: spend outside Studio is not counted. Enter the balance again after a top-up.`
+          : "Higgsfield has no balance API. Enter the balance shown on Higgsfield's billing page and Studio keeps an estimate from its own spend."}
+      </p>
+      {owner ? (
+        <div style={{ ...row, paddingTop: 4 }}>
+          <div style={{ width: 160 }}>
+            <Input aria-label="Higgsfield balance in dollars" type="number" min={0} step="0.01" placeholder="e.g. 87.50" value={value} onChange={(event) => setValue(event.target.value)} />
+          </div>
+          <Button disabled={busy || value.trim() === ""} onClick={() => void save()}>
+            Save balance
+          </Button>
+        </div>
+      ) : (
+        <p style={muted}>Only a company owner can enter the balance.</p>
+      )}
+    </Section>
+  );
+}
+
 function Usage({ companyId, data, me, refresh }: { companyId: string; data: Overview; me: Me | null; refresh: () => void }) {
   const setCap = useStudioAction("set-cap");
   const setAgentLimit = useStudioAction("set-agent-limit");
@@ -1054,7 +1121,17 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
         {effectiveCap(data) ? <CreditsMetric data={data} /> : null}
         <MetricCard icon={Gauge} value={effectiveCap(data)?.monthlyCredits ?? "–"} label="Monthly cap" description={data.caps.some((c) => c.scopeKey === COMPANY_SCOPE) ? "Company cap" : effectiveCap(data) ? "Default cap" : "Not set"} />
         <MetricCard icon={Building2} value={data.clientUsage.filter((c) => c.used > 0).length} label="Clients with spend" description="This month" />
+        {data.balance && data.balance.estimatedUsd !== null ? (
+          <MetricCard
+            icon={Coins}
+            value={money(data.balance.estimatedUsd)}
+            label="Higgsfield balance (est.)"
+            description={`About ${roundCredits(data.balance.estimatedCredits ?? 0)} credits`}
+            tone={data.balance.outOfFundsAt || data.balance.estimatedUsd <= 0 ? "bad" : data.balance.low ? "warn" : undefined}
+          />
+        ) : null}
       </MetricRow>
+      <BalanceSection companyId={companyId} balance={data.balance} owner={owner} refresh={refresh} />
       {data.clientUsage.some((c) => c.used > 0) ? (
         <Section title="Credits by client">
           <BarList

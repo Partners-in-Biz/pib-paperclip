@@ -5,6 +5,7 @@
  * The API, as verified live by hf.py (2026-10-22, 2026-10-26): v2 routes use `Authorization: Key <id>:<secret>`;
  * bodies are flat JSON; there is no balance endpoint, `estimate` is free, and HTTP 402 means really out of credits.
  */
+import { USD_PER_CREDIT } from "./seedance-price.js";
 import { randomUUID } from "node:crypto";
 import { StudioError } from "./errors.js";
 
@@ -47,6 +48,12 @@ export function creditsIn(body: unknown): number | null {
     const value = (body as Record<string, unknown>)[key];
     if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
     if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) > 0) return Number(value);
+  }
+  // Higgsfield's billing docs show /estimate answering { "usd": "0.094" } (2026-11-08). Convert at the credit rate so
+  // a dollar-only answer is still a price, not "no price".
+  const dollars = Number((body as Record<string, unknown>).usd);
+  if ((typeof (body as Record<string, unknown>).usd === "number" || typeof (body as Record<string, unknown>).usd === "string") && Number.isFinite(dollars) && dollars > 0) {
+    return Math.round((dollars / USD_PER_CREDIT) * 10_000) / 10_000;
   }
   return null;
 }

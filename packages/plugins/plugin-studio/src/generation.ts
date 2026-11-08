@@ -11,6 +11,7 @@
  * - A submission that got no answer may have started. It's never sent again, and its credits stay spent.
  * - A worker restart can't double-spend: a row left in `submitting` is failed with its credits kept, never resubmitted.
  */
+import { markOutOfFunds } from "./balance.js";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
@@ -536,7 +537,10 @@ async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, 
       await update(ctx, row, { status: "queued", attempts: num(row.attempts) + 1, error_message: error.message });
       return "waiting";
     }
-    if (error.code === "out_of_credits") pausedUntil.set(row.company_id, runtime.now() + OUT_OF_CREDITS_PAUSE_MS);
+    if (error.code === "out_of_credits") {
+      pausedUntil.set(row.company_id, runtime.now() + OUT_OF_CREDITS_PAUSE_MS);
+      await markOutOfFunds(ctx, row.company_id, new Date(runtime.now()));
+    }
     if (error.code === "unknown") {
       await fail(ctx, runtime, row, "unknown_submission", "The provider didn't answer, so this may have started. It wasn't sent again, and its credits stay spent.", { refund: false });
     } else {

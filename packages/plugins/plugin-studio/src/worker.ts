@@ -23,6 +23,7 @@ import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
+import { setBalance } from "./balance.js";
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
@@ -184,6 +185,15 @@ const plugin = definePlugin({
       const p = objectParams(params);
       const value = p.monthlyCredits === null || p.monthlyCredits === "" || p.monthlyCredits === undefined ? null : Number(p.monthlyCredits);
       await setCap(ctx, companyId, String(p.scopeKey ?? ""), value, String(context.actor.userId));
+      return overview(ctx, companyId);
+    });
+
+    // The Higgsfield balance as shown on its billing page (PAR-8388): owner only, like a cap.
+    action("set-balance", async (params, context) => {
+      const companyId = context.companyId ?? context.actor.companyId;
+      if (!companyId) throw new StudioError("Company is required");
+      if (!(await isCompanyOwner(ctx, companyId, context.actor))) throw new StudioError("Only a company owner can enter the Higgsfield balance.", "forbidden");
+      await setBalance(ctx, companyId, objectParams(params).usd, String(context.actor.userId));
       return overview(ctx, companyId);
     });
 
