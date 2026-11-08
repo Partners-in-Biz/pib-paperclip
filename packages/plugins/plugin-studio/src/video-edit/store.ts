@@ -240,3 +240,35 @@ export async function listEditVersions(ctx: PluginContext, companyId: string, id
   );
   return rows.map(versionView);
 }
+
+/**
+ * Restores a saved version: its timeline is saved as a NEW revision (history is never rewritten), only if nobody saved
+ * since `baseRevision` (else `edit_conflict`). The timeline being replaced is first kept as a version named
+ * "Before restore", unless the edit is already at MAX_EDIT_VERSIONS (then the restore still goes ahead).
+ */
+export async function restoreEditVersion(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
+  const id = editId(params.editId);
+  const base = Number(params.baseRevision);
+  if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision this restore starts from.");
+  const versionId = String(params.versionId ?? "").trim();
+  const edit = await getVideoEdit(ctx, companyId, id);
+  const [version] = await ctx.db.query<{ id: string; name: string; doc: unknown }>(
+    `SELECT id, name, doc FROM ${table(ctx, "video_edit_versions")} WHERE id = $1 AND company_id = $2 AND edit_id = $3`,
+    [versionId, companyId, edit.id],
+  );
+  if (!version) throw new StudioError("That version was not found for this video edit.", "unknown_version");
+  if (edit.revision !== base) {
+    throw new StudioError(`Someone saved this video edit since you opened it (now revision ${edit.revision}). Reload to see their changes.`, "edit_conflict");
+  }
+  const restored = normalizeEdit(parse(version.doc));
+  const [count] = await ctx.db.query<{ n: number | string }>(`SELECT count(*) AS n FROM ${table(ctx, "video_edit_versions")} WHERE company_id = $1 AND edit_id = $2`, [companyId, id]);
+  const keepCurrent = num(count?.n) < MAX_EDIT_VERSIONS;
+  const saved = await saveVideoEdit(ctx, companyId, { editId: id, baseRevision: base, doc: restored }, actor);
+  if (keepCurrent) {
+    await ctx.db.execute(
+      `INSERT INTO ${table(ctx, "video_edit_versions")} (id, company_id, edit_id, name, doc, revision, created_by_user_id, created_by_agent_id) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+      [randomUUID(), companyId, id, `Before restore (revision ${base})`, JSON.stringify(edit.doc), base, actor.userId ?? null, actor.agentId ?? null],
+    );
+  }
+  return { id, revision: saved.revision, restoredVersionId: version.id, keptPrevious: keepCurrent };
+}

@@ -5,7 +5,7 @@ import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsFor
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
-import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
+import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, listVersionsAction, renderAction, restoreVersionAction, saveVersionAction, renderStatusAction } from "./video-edit/actions.js";
 import { captionClipAction } from "./video-edit/auto-caption.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
@@ -440,6 +440,15 @@ const plugin = definePlugin({
     action("video-edit-cancel-render", async (params, context) => {
       const me = await videoEditor(context);
       return cancelRenderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-versions-list", async (params, context) => listVersionsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-version-save", async (params, context) => {
+      const me = await videoEditor(context);
+      return saveVersionAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-restore", async (params, context) => {
+      const me = await videoEditor(context);
+      return restoreVersionAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-delete", async (params, context) => {
       const me = await videoEditor(context);
