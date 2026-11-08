@@ -1,6 +1,6 @@
 {
-  "inputSha256": "5e2b012b50bb8b198384da4f5427c27acd948af405f89cde15bfa48bb10c0ad4",
-  "outputSha256": "2360d5e93876ce3cb6e810257d92d669ac2b109027b0e01af36f2048861648c0",
-  "patchSha256": "024c83574cedd67700979c11a36eb89a135fe22f90ac9890c28aaa059418e0a6",
-  "basis": "Generated with the trusted master lockfile refresh. Review this offline correction and its hashes with the dependency changes."
+  "inputSha256": "b6e056c6563411359973609f4997c9fa789e58410af8c5040ef9fef6b9f0da4d",
+  "outputSha256": "b6e056c6563411359973609f4997c9fa789e58410af8c5040ef9fef6b9f0da4d",
+  "patchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "basis": "PiB fork: admitted the fork lockfile (pnpm 9.15.4, upstream lock plus the PiB plugin packages) with prepare-report-lock.mjs --refresh --trusted-lock-sha256 at the 2026-11 upstream merge. No correction is needed. Refresh again in any master PR that changes pnpm-lock.yaml."
 }

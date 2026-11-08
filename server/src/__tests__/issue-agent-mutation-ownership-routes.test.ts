@@ -1453,6 +1453,9 @@ describe("agent issue mutation checkout ownership", () => {
 
   it("does not inject run workspace inheritance for agent-created sub-tickets with a parentId", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+    mockProjectService.getById.mockResolvedValue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", companyId, visibility: "open",
+    } as never);
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
