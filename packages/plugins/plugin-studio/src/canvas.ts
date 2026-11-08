@@ -17,14 +17,17 @@ import { canConnect, emptyDoc, hasCycle, MAX_EDGES, MAX_LABEL, MAX_NODES, MAX_TE
 export { canConnect, emptyDoc, hasCycle, MAX_EDGES, MAX_NODES, MAX_TEXT, NODE_TYPES };
 export type { CanvasDoc, CanvasEdge, CanvasNode, NodeType };
 
+/** Longest clip length a card may hold; the model's own list still decides what is sent. */
+const MAX_SECONDS = 120;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Per card type, the data fields kept and their kind. Anything else is dropped. */
-const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id">> = {
+const FIELDS: Record<NodeType, Record<string, "text" | "label" | "id" | "seconds">> = {
   prompt: { label: "label", text: "text" },
   // assetId: the card's last result; groupId: the generation still running for it (cleared when it finishes).
   image: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
-  video: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", assetId: "id", groupId: "id" },
+  // duration: clip length in seconds, kept as digits (a number or digit text is accepted).
+  video: { label: "label", prompt: "text", model: "label", ratio: "label", resolution: "label", duration: "seconds", assetId: "id", groupId: "id" },
   source: { label: "label", assetId: "id" },
   // generated: set on output cards the canvas made for a finished generation (a wired output card is refilled, these are kept).
   output: { label: "label", assetId: "id", generated: "label" },
@@ -71,6 +74,12 @@ export function normalizeDoc(input: unknown): CanvasDoc {
     for (const [key, kind] of Object.entries(FIELDS[type])) {
       const v = dataIn[key];
       if (v === undefined || v === null || v === "") continue;
+      if (kind === "seconds") {
+        const n = typeof v === "number" ? v : typeof v === "string" && /^\d{1,3}$/.test(v) ? Number(v) : NaN;
+        if (!Number.isInteger(n) || n < 1 || n > MAX_SECONDS) bad(`Card ${id}: ${key} must be a whole number of seconds from 1 to ${MAX_SECONDS}.`);
+        data[key] = String(n);
+        continue;
+      }
       if (typeof v !== "string") bad(`Card ${id}: ${key} must be text.`);
       const max = kind === "text" ? MAX_TEXT : kind === "label" ? MAX_LABEL : 64;
       if (v.length > max) bad(`Card ${id}: ${key} is longer than ${max} characters.`);
