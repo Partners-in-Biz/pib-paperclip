@@ -15,9 +15,9 @@
 # checks is what gets deployed.
 name: PiB plugins CI
 
-# No paths filter on purpose: the aggregate check "PiB plugins CI" below is meant to be a required branch check, and a
+# No paths filter on purpose: the check "PiB plugins CI" below is meant to be a required branch check, and a
 # required check that is skipped by a paths filter never reports, which blocks the pull request forever. The scope is
-# picked inside the run instead (job `changes`); the aggregate job always runs and reports.
+# picked inside the run instead (step `Pick the scope`); the job always runs and reports.
 on:
   push:
     branches: [development]
@@ -41,27 +41,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  # Cheap first job: which PiB packages does this change touch? Outputs:
-  #   scope     full | some | none
-  #   seeds     changed packages (their declared dependents are checked too)
-  #   extras    packages checked as-is: the kit (its contract tests read every plugin's sources) and packages whose
-  #             tests or build read another plugin's files by relative path (not a declared dependency)
-  #   connector run the PHP connector step; telephony run the telephony secret guard
-  changes:
-    name: Changed PiB packages
-    runs-on: [self-hosted, pib-vps]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    timeout-minutes: 5
+  # One job, so a run waits for a runner once (PAR-7886, 2026-11-08). It used to be four jobs (scope, packages,
+  # telephony guard, aggregate) on the same self-hosted lane: each one queued again behind every other pull request's
+  # jobs, so a 6-minute check took 10-17 minutes. The steps are the same, in the same order:
+  #   1. pick the scope: full | some | none, the changed packages (their declared dependents are checked too) and the
+  #      extras checked as-is (the kit, whose contract tests read every plugin's sources, and packages whose tests or
+  #      build read another plugin's files by relative path)
+  #   2. the telephony secret guard, when telephony is in scope
+  #   3. typecheck, test and build the packages in scope, then the PHP connector when it is in scope
+  # The job is named "PiB plugins CI" (the one check name to watch or require) and always reports, also for a change
+  # outside the PiB packages (scope none: only steps 1-2 run, about 20 s).
+  # A pull request from a fork never runs on the self-hosted runner: it gets a GitHub-hosted runner that only fails
+  # the check with a message, so a fork pull request can't be merged on a skipped check either.
+  pib-plugins-ci:
+    name: PiB plugins CI
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","pib-vps"]') }}
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
-    outputs:
-      scope: ${{ steps.scope.outputs.scope }}
-      seeds: ${{ steps.scope.outputs.seeds }}
-      extras: ${{ steps.scope.outputs.extras }}
-      connector: ${{ steps.scope.outputs.connector }}
-      telephony: ${{ steps.scope.outputs.telephony }}
+    env:
+      FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
+      - name: Refuse a fork pull request
+        if: env.FORK == 'true'
+        run: |
+          echo "Pull requests from forks are not checked here (self-hosted runner). Push the branch to ${{ github.repository }}." >&2
+          exit 1
+
+      - name: Root disk before
+        run: df -h /
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -142,46 +152,44 @@ jobs:
           out "connector=${connector}"
           out "telephony=${telephony}"
 
-  package:
-    name: Plugins typecheck, test, build
-    needs: changes
-    runs-on: [self-hosted, pib-vps]
-    if: needs.changes.result == 'success' && needs.changes.outputs.scope != 'none'
-    timeout-minutes: 25
-    steps:
-      - name: Root disk before
-        run: df -h /
+      - name: Telephony secret guard
+        if: steps.scope.outputs.telephony == 'true'
+        run: |
+          set -euo pipefail
+          if grep -rEln '\b(AC|SK)[0-9a-f]{32}\b' packages/plugins/plugin-crm-telephony --exclude-dir=node_modules --exclude-dir=dist; then
+            echo "Twilio SID-shaped value found in plugin-crm-telephony: secrets are Paperclip secrets only" >&2
+            exit 1
+          fi
 
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
-        with:
-          persist-credentials: false
-
-      # No `version:` here: the action reads it from package.json "packageManager" (pnpm@9.15.4).
       - name: Set up pnpm
+        if: steps.scope.outputs.scope != 'none'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - name: Set up Node 24
+        if: steps.scope.outputs.scope != 'none'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install (frozen lockfile)
+        if: steps.scope.outputs.scope != 'none'
         run: pnpm install --frozen-lockfile --prefer-offline
 
       # The workspace plugin SDK is consumed through its built declarations (dist/ is not committed): without this
       # step every package that imports it fails to typecheck on a fresh runner (the kit was red on every run).
       - name: Build the plugin SDK
+        if: steps.scope.outputs.scope != 'none'
         run: pnpm --filter @paperclipai/plugin-sdk run build
 
       # Full: every PiB package (@partnersinbiz/*, under packages/plugins/, plus pib-browser). Otherwise: the changed
       # packages, their declared dependents and the extras from `changes`, kept to PiB packages.
       - name: Pick the packages to check
+        if: steps.scope.outputs.scope != 'none'
         env:
-          SCOPE: ${{ needs.changes.outputs.scope }}
-          SEEDS: ${{ needs.changes.outputs.seeds }}
-          EXTRAS: ${{ needs.changes.outputs.extras }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          SEEDS: ${{ steps.scope.outputs.seeds }}
+          EXTRAS: ${{ steps.scope.outputs.extras }}
         run: |
           set -euo pipefail
           if [ "$SCOPE" = "full" ]; then
@@ -200,16 +208,19 @@ jobs:
       # `test` also runs the cross-plugin contract tests (skill text against registered tools) that read every PiB
       # plugin's sources. `read -ra` splits the filter list without glob expansion.
       - name: Typecheck
+        if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
           pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run typecheck
 
       - name: Test
+        if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
           pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run test
 
       - name: Build
+        if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
           pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run build
@@ -217,7 +228,7 @@ jobs:
       # The connector is PHP. Its own tests run on the runner's PHP; the zip it ships (inside the CRM bundle) must be
       # byte-for-byte the same on every build, because the CRM hands its sha256 to the sites that self-update.
       - name: Connector tests and reproducible zip
-        if: needs.changes.outputs.connector == 'true'
+        if: steps.scope.outputs.connector == 'true'
         run: |
           php --version
           php packages/plugins/pib-wp-connector/tests/run.php
@@ -228,63 +239,12 @@ jobs:
           test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
 
       - name: Prune pnpm store
-        if: always()
+        if: always() && env.FORK != 'true'
         run: pnpm store prune || true
 
       - name: Root disk after (must stay under 80%)
-        if: always()
+        if: always() && env.FORK != 'true'
         run: |
           df -h /
           use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
           test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }
-
-  telephony-secret-guard:
-    name: Telephony secret guard
-    needs: changes
-    runs-on: [self-hosted, pib-vps]
-    if: needs.changes.result == 'success' && needs.changes.outputs.telephony == 'true'
-    timeout-minutes: 5
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
-        with:
-          persist-credentials: false
-
-      - name: Guard against Twilio SID patterns
-        run: |
-          set -euo pipefail
-          if grep -rEln '\b(AC|SK)[0-9a-f]{32}\b' packages/plugins/plugin-crm-telephony --exclude-dir=node_modules --exclude-dir=dist; then
-            echo "Twilio SID-shaped value found in plugin-crm-telephony: secrets are Paperclip secrets only" >&2
-            exit 1
-          fi
-
-  # One stable name for a branch rule. It always runs and reports: the scope job must have passed, and each job after
-  # it must have passed, or have been skipped because the scope did not need it (a change outside the PiB packages
-  # runs only `changes` and this job).
-  pib-plugins-ci:
-    name: PiB plugins CI
-    needs: [changes, package, telephony-secret-guard]
-    if: always()
-    runs-on: [self-hosted, pib-vps]
-    timeout-minutes: 5
-    steps:
-      - name: All needed packages and guards passed
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          SCOPE: ${{ needs.changes.outputs.scope }}
-          TELEPHONY: ${{ needs.changes.outputs.telephony }}
-          PACKAGE: ${{ needs.package.result }}
-          GUARD: ${{ needs.telephony-secret-guard.result }}
-        run: |
-          echo "changes=${CHANGES} scope=${SCOPE} package=${PACKAGE} telephony=${TELEPHONY} guard=${GUARD}"
-          test "$CHANGES" = "success" || { echo "scope job failed: ${CHANGES}"; exit 1; }
-          if [ "$SCOPE" = "none" ]; then
-            test "$PACKAGE" = "skipped" || { echo "package job: ${PACKAGE}"; exit 1; }
-          else
-            test "$PACKAGE" = "success" || { echo "a package failed: ${PACKAGE}"; exit 1; }
-          fi
-          if [ "$TELEPHONY" = "true" ]; then
-            test "$GUARD" = "success" || { echo "telephony secret guard failed: ${GUARD}"; exit 1; }
-          else
-            test "$GUARD" = "skipped" || { echo "telephony secret guard: ${GUARD}"; exit 1; }
-          fi
