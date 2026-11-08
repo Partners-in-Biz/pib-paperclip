@@ -6,6 +6,8 @@ import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime, type PrivateBucket } from "./storage.js";
+import { cutPoster, ensurePoster, POSTER_MIME } from "./video-edit/poster.js";
+import { downloadObjectToWorkdir, withRenderWorkdir } from "./video-edit/workdir.js";
 import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
 
 export const LINK_TARGETS = ["issue", "goal", "project", "campaign", "social_post", "ad", "seo_page", "video", "book"] as const;
@@ -217,9 +219,24 @@ const MAX_LAYOUT_SOURCE_BYTES = 25 * 1024 * 1024;
 
 export async function assetBytesForPerson(ctx: PluginContext, companyId: string, assetId: string): Promise<{ mime: string; base64: string }> {
   const row = await getAssetRow(ctx, companyId, assetId);
-  if (!row.mime.startsWith("image/")) throw new StudioError("Only pictures can go on a Layout card, and this file isn't one.", "bad_asset");
+  const isVideo = row.mime.startsWith("video/");
+  if (!isVideo && !row.mime.startsWith("image/")) throw new StudioError("Only pictures and videos can go on a Layout card, and this file isn't one.", "bad_asset");
   assertOwnKey(companyId, row.r2_key);
-  const bytes = await getObject(await new StudioConfig(ctx, companyId).bucket(), companyId, row.r2_key);
+  const bucket = await new StudioConfig(ctx, companyId).bucket();
+  // A video is drawn as its first frame (PAR-8364), made once per asset version.
+  if (isVideo) {
+    const poster = await ensurePoster(companyId, row.r2_key, num(row.current_version), {
+      read: (key) => getObject(bucket, companyId, key).catch(() => null),
+      make: () => withRenderWorkdir(`poster-${row.id}`, MAX_ASSET_BYTES, async (dir) => {
+        await downloadObjectToWorkdir(bucket, companyId, row.r2_key, dir, "input.bin");
+        return cutPoster(dir, "input.bin");
+      }),
+      write: (key, bytes) => putObject(bucket, companyId, key, bytes as Uint8Array<ArrayBuffer>, POSTER_MIME),
+    });
+    if (poster.length > MAX_LAYOUT_SOURCE_BYTES) throw new StudioError("That picture is too large to lay out here.", "bad_asset");
+    return { mime: POSTER_MIME, base64: Buffer.from(poster).toString("base64") };
+  }
+  const bytes = await getObject(bucket, companyId, row.r2_key);
   if (bytes.length > MAX_LAYOUT_SOURCE_BYTES) throw new StudioError("That picture is too large to lay out here.", "bad_asset");
   return { mime: row.mime, base64: Buffer.from(bytes).toString("base64") };
 }
