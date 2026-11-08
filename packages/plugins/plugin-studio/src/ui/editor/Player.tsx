@@ -11,6 +11,7 @@ import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
 import { assignSlots, buildPreviewPlan, frameAt, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
+import { Overlay } from "./Overlay.js";
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 /** Seconds the playing video may drift from the clock before it is re-seeked. */
@@ -142,6 +143,7 @@ export function Player({ store }: { store: EditorStore }) {
             />
           ) : null;
         })}
+        <Overlay store={store} />
         {message ? <div style={{ position: "relative", padding: 12, textAlign: "center", opacity: 0.7, color: hasClips ? "white" : undefined }}>{message}</div> : null}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
