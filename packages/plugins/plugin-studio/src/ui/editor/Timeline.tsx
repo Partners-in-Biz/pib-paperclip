@@ -10,6 +10,7 @@ import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { Clip, TrackKind } from "../../video-edit/timeline.js";
 import { clipCount, type EditorStore } from "./editor-store.js";
 import { AddClipDialog } from "./AddClipDialog.js";
+import { TextTrack } from "./TextTrack.js";
 import { addClipOps, clipEnd, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
 
 const LABEL_W = 104;
@@ -152,6 +153,7 @@ export function Timeline({ store }: { store: EditorStore }) {
           Delete clip
         </button>
       </div>
+      <TextTrack store={store} />
       <div ref={scrollRef} style={{ overflowX: "auto", overflowY: "hidden", minWidth: 0 }}>
         {tracks.length === 0 ? (
           <div style={{ padding: 16, opacity: 0.75 }}>No tracks yet. Add a clip to start.</div>
