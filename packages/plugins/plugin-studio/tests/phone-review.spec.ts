@@ -39,6 +39,11 @@ describe("phone board review strip (PAR-8094)", () => {
     expect(items[1]).toMatchObject({ kind: "image", title: "A tidy desk in a small…", model: null, credits: null });
   });
 
+  it("keeps an audio asset as kind audio in the review queue", () => {
+    const items = reviewQueue([card("c1", "output", 0, 0, { assetId: "a1" })], [asset("a1", "draft", { kind: "audio", name: "voice.mp3" })]);
+    expect(items.map((i) => i.kind)).toEqual(["audio"]);
+  });
+
   it("counts drafts against all results", () => {
     const items = reviewQueue(
       ["a", "b", "c", "d"].map((id, n) => card(id, "output", n * 300, 0, { assetId: id })),

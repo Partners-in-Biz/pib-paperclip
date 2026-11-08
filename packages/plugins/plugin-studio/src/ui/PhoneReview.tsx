@@ -152,6 +152,7 @@ function Thumb({ item, url, big, previewError = null }: { item: ReviewItem; url:
   return (
     <div className="studio-media">
       {!url ? <div className="studio-media-empty" title={previewError ?? undefined} style={{ height: "100%", border: 0 }}>{previewPlaceholder(previewError)}</div>
+        : item.kind === "audio" ? <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}><audio src={url} controls preload="metadata" aria-label={item.title} style={{ width: "100%" }} /></div>
         : item.kind === "video" ? <video src={big ? url : posterFrameUrl(url)} muted playsInline controls={big} preload="metadata" />
         : <img src={url} alt={item.title} />}
       {big ? <div className="studio-overlay" style={{ left: "0.5rem", top: "0.5rem" }}><span className={`studio-pill studio-tone-${tone}`} aria-label="Review status">{reviewPill(item.status)}</span></div> : null}

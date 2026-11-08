@@ -247,6 +247,7 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   const box = { width: "100%", height, objectFit: "cover" as const, borderRadius: 8, background: "rgba(127,127,127,0.12)", display: "block" };
   if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>{kind}</div>;
   if (kind === "video") return <video src={url} style={{ ...box, objectFit: "contain" }} muted playsInline controls preload="metadata" />;
+  if (kind === "audio") return <div style={{ ...box, display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}><audio src={url} controls preload="metadata" aria-label={name} style={{ width: "100%", maxWidth: "100%" }} /></div>;
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
@@ -262,6 +263,7 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
   const t = tone(statusTone(asset.status));
   const media = { width: "100%", height: "100%", objectFit: "cover" as const, display: "block" };
   const isVideo = asset.kind === "video";
+  const isAudio = asset.kind === "audio";
   return (
     <button
       type="button"
@@ -272,7 +274,11 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
       style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
     >
       <div style={{ position: "relative", aspectRatio: "4 / 3", background: "var(--muted)", width: "100%" }}>
-        {!url ? null : isVideo ? (
+        {!url ? null : isAudio ? (
+          <div style={{ ...media, display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}>
+            <audio src={url} controls preload="metadata" aria-label={asset.name} style={{ width: "100%", maxWidth: "100%" }} onClick={(e) => e.stopPropagation()} />
+          </div>
+        ) : isVideo ? (
           <video src={posterFrameUrl(url)} style={media} muted playsInline preload="metadata" aria-label={asset.name} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)} />
         ) : (
           <img src={url} alt={asset.altText ?? asset.name} style={media} loading="lazy" />
@@ -352,7 +358,7 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
             onChange={setStatus}
             options={[["", "All", counts.all], ["draft", "Draft", counts.draft], ["approved", "Approved", counts.approved], ["rejected", "Rejected", counts.rejected]]}
           />
-          <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"]]} />
+          <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"], ["audio", "Audio"]]} />
           {narrow ? null : clientSelect}
           {narrow ? null : projectSelect}
           <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value === "oldest" ? "oldest" : "newest")} style={{ width: "auto", marginLeft: narrow ? undefined : "auto" }}>
