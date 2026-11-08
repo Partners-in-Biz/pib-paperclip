@@ -4,6 +4,9 @@ import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
 import { PHOTO_PRESETS } from "./presets.js";
+import { MAX_START_ASSETS } from "./video-edit/actions.js";
+import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
+import { SIZES } from "./video-edit/timeline.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const CLIENT = text('"company:<id>" or "contact:<id>". Omit it to use the client of the issue\'s project, or own work if it has none.');
@@ -28,6 +31,81 @@ const GENERATE_FIELDS = {
   client: CLIENT,
   issueId: ISSUE,
 };
+
+
+const EDIT_ID = text("The video edit, from video-edit-create or video-edit-list");
+const RENDER_ID = text("The render, from video-edit-render");
+
+/** The video edit tools (PAR-8276 A8b). Granted to no agent yet: an agent needs an explicit grant, and render time is the company's machine. */
+const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
+  {
+    name: "video-edit-create",
+    displayName: "Create a video edit",
+    description:
+      "Start a video edit (a timeline of clips, text, captions and sound). Give assetIds (Studio library videos, pictures or sound, same client, up to " + MAX_START_ASSETS + ") to lay them end to end, or give a doc, or neither for an empty timeline. Free: nothing renders until video-edit-render. Returns the edit with its revision.",
+    parametersSchema: schema(["title"], {
+      title: text("Name of the edit, up to 200 characters"),
+      assetIds: { type: "array", items: { type: "string" }, maxItems: MAX_START_ASSETS, description: "Library assets to start from, in order. Not with doc." } as JsonSchema,
+      doc: { type: "object", description: "A whole timeline document. Not with assetIds." } as JsonSchema,
+      project: { type: "object", description: `Optional project settings for assetIds: {"size": ${Object.keys(SIZES).join(" | ")}, "fps": number}` } as JsonSchema,
+      projectId: text("Optional project. Defaults to the project of the issue."),
+      client: CLIENT,
+      issueId: ISSUE,
+    }),
+  },
+  {
+    name: "video-edit-get",
+    displayName: "Open a video edit",
+    description: "A video edit with its timeline document, duration and current revision. Read-only.",
+    parametersSchema: schema(["editId"], { editId: EDIT_ID }),
+  },
+  {
+    name: "video-edit-list",
+    displayName: "List video edits",
+    description: "Video edits for a client (or own work), newest first. Read-only.",
+    parametersSchema: schema([], {
+      client: CLIENT,
+      projectId: text("Only this project's edits"),
+      limit: { type: "integer", minimum: 1, maximum: 200, description: "At most this many (default 50)" } as JsonSchema,
+    }),
+  },
+  {
+    name: "video-edit-apply-ops",
+    displayName: "Change a video edit",
+    description:
+      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). Free.",
+    parametersSchema: schema(["editId", "baseRevision", "ops"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      ops: {
+        type: "array",
+        minItems: 1,
+        maxItems: MAX_OPS,
+        items: { type: "object", required: ["op"], properties: { op: { type: "string", enum: [...OP_NAMES] } } },
+        description: "Operations, applied in order",
+      } as JsonSchema,
+    }),
+  },
+  {
+    name: "video-edit-render",
+    displayName: "Render a video edit",
+    description:
+      "Queue a render of the edit as saved now. It takes the company's render machine (one at a time, a few waiting at most) and, when done, saves an mp4 as a Studio asset. Returns a render id: don't poll in a loop; check video-edit-render-status later. Pass baseRevision to render only if nobody saved since.",
+    parametersSchema: schema(["editId"], { editId: EDIT_ID, baseRevision: { type: "integer", minimum: 1, description: "Render only if the edit is still at this revision" } as JsonSchema }),
+  },
+  {
+    name: "video-edit-render-status",
+    displayName: "Video render status",
+    description: "Where a render is: queued, running, succeeded, failed or cancelled, with the result asset id once it has succeeded. Read-only.",
+    parametersSchema: schema(["renderId"], { renderId: RENDER_ID }),
+  },
+  {
+    name: "video-edit-cancel-render",
+    displayName: "Cancel a video render",
+    description: "Drop a queued render, or stop a running one.",
+    parametersSchema: schema(["renderId"], { renderId: RENDER_ID }),
+  },
+];
 
 export const STUDIO_TOOLS: PluginToolDeclaration[] = [
   {
@@ -154,4 +232,5 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
       issueId: ISSUE,
     }),
   },
+  ...VIDEO_EDIT_TOOLS,
 ];

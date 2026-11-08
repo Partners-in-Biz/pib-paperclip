@@ -28,6 +28,7 @@ import { sweepLocalCopies } from "./storage.js";
 import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
 import { createRenderExecutor } from "./video-edit/render-pipeline.js";
 import { createRenderRunner } from "./video-edit/runner.js";
+import { isVideoEditTool, runVideoEditTool } from "./video-edit/tools.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
@@ -76,6 +77,7 @@ async function createFromBrief(ctx: PluginContext, params: Record<string, unknow
 
 async function runTool(ctx: PluginContext, name: string, params: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
+  if (isVideoEditTool(name)) return runVideoEditTool(ctx, name, params, run, await workOf(ctx, run, params));
   switch (name) {
     case "studio-usage": {
       const work = await workOf(ctx, run, params);
