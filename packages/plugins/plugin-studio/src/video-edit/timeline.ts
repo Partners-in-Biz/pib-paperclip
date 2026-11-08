@@ -52,7 +52,7 @@ export type Track =
 export interface EditProject { size: SizePreset; width: number; height: number; fps: Fps }
 export interface EditDoc { schemaVersion: 1; project: EditProject; tracks: Track[] }
 
-export type EditErrorReason = "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version";
+export type EditErrorReason = "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
