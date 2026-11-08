@@ -12,6 +12,7 @@ import {
   taskDialogEditable,
   trackFieldFocus,
 } from "./composers.js";
+import { keepFieldVisible } from "./keyboard.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
 import { agentRefFromPath } from "./agent-chat.js";
@@ -672,6 +673,9 @@ export function VoiceOverlay() {
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [enabled]);
+
+  // Phone keyboard: scroll the focused field above it (works on every page, configured or not).
+  useEffect(() => keepFieldVisible(document), []);
 
   useEffect(() => {
     if (!toast) return;
