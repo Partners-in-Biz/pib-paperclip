@@ -90,7 +90,10 @@ describe("which cap applies", () => {
 
 describe("what agents are given", () => {
   it("offers no tool that changes a cap", () => {
-    expect(STUDIO_TOOLS.map((t) => t.name).filter((n) => /cap|limit/.test(n))).toEqual([]);
+    // Whole name parts only: "video-edit-caption" (PAR-8360) is not a spending cap.
+    const capLike = /(^|-)caps?(-|$)|limit/;
+    expect(["studio-set-cap", "credit-caps", "set-limit"].every((n) => capLike.test(n))).toBe(true);
+    expect(STUDIO_TOOLS.map((t) => t.name).filter((n) => capLike.test(n))).toEqual([]);
   });
 
   it("declares every tool in the manifest and a read-only smoke tool", () => {
