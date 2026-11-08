@@ -27,6 +27,15 @@ Per company, in the plugin's settings:
 - `r2.accountId`, `r2.bucket`, `r2.accessKeyId`, `r2.secretAccessKey`: the private bucket, and the same token as Mailbox and Billing. The `studio/` folder is fixed in code, not a setting.
 - `higgsfield.apiKey`: a secret reference.
 
+## Host ffmpeg (video editor)
+
+The video engine (`src/video-edit/`) runs the host's ffmpeg; nothing is bundled. The host needs:
+
+- `apt install ffmpeg` at 6.1 or later, built with libass and libfreetype (subtitles and text). Check: `ffmpeg -version` and `ffmpeg -filters | grep -E 'subtitles|drawtext'`.
+- `/usr/bin/timeout`, `/usr/bin/prlimit` (util-linux) and `/usr/bin/nice` (coreutils).
+
+Every run is `timeout -k 30 1200 prlimit --as=<6 GiB> --fsize=200 MB -- nice -n 10 ffmpeg -threads 4 ...`, spawned as an args array in its own process group. Cancel kills only that group. Render folders live in `<studio-files>/renders`; a render needs 8 GB free and 4x its input bytes. The `sweep-local-files` job removes folders left behind.
+
 ## Installing
 
 First install is stop-first, from `deploy-plugins.sh --first-install studio`. Add `studio` to `ALL_NAMES` and `studio-usage` to the `SMOKE` table first. Then bind the settings above and resync the CRM so Studio learns the clients.
