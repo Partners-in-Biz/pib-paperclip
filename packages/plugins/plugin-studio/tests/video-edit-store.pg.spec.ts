@@ -92,6 +92,52 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     await expect(saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: { tracks: "x" } }, USER)).rejects.toMatchObject({ code: "bad_edit" });
   });
 
+  // Schema v2 writer paths (PAR-8442): what lands in the database, read raw.
+  const rawDoc = async (sql: string, id: string) => {
+    const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(sql.replace("$T", pg.db.namespace), [id]);
+    return typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
+  };
+  const editDoc = (id: string) => rawDoc("SELECT doc FROM $T.video_edits WHERE id = $1", id);
+  const v2 = (assetId: string) => {
+    const doc = timeline(assetId);
+    return { ...doc, schemaVersion: 2, tracks: [{ ...doc.tracks[0], clips: [{ ...doc.tracks[0].clips[0], keyframes: { x: [{ t: 0, value: 0 }, { t: 2, value: 40, ease: "easeIn" }] } }] }] };
+  };
+
+  it("v2 writer: create and save store v1 for a plain doc (empty keyframes dropped) and v2 for keyframes", async () => {
+    await addAsset("asset-own", CO, null);
+    const plain = await createVideoEdit(ctx, CO, { title: "Plain", doc: { ...timeline("asset-own"), schemaVersion: 2, tracks: [{ ...timeline("asset-own").tracks[0], clips: [{ ...timeline("asset-own").tracks[0].clips[0], keyframes: {} }] }] } }, USER);
+    expect(await editDoc(plain.id)).toMatchObject({ schemaVersion: 1 });
+    expect(JSON.stringify(await editDoc(plain.id))).not.toContain("keyframes");
+    const animated = await createVideoEdit(ctx, CO, { title: "Animated", doc: v2("asset-own") }, USER);
+    expect(await editDoc(animated.id)).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { x: [{ t: 0 }, { t: 2, value: 40, ease: "easeIn" }] } }] }] });
+    await saveVideoEdit(ctx, CO, { editId: animated.id, baseRevision: 1, doc: timeline("asset-own") }, USER);
+    expect(await editDoc(animated.id)).toMatchObject({ schemaVersion: 1 });
+    await saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 1, doc: v2("asset-own") }, USER);
+    expect(await editDoc(plain.id)).toMatchObject({ schemaVersion: 2 });
+    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 3 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
+  });
+
+  it("v2 writer: volume keyframes on a picture are refused with no_audio", async () => {
+    await pg.db.execute(`INSERT INTO ${pg.db.namespace}.assets (id, company_id, name, kind, source) VALUES ('pic-1', $1, 'x.png', 'image', 'upload')`, [CO]);
+    const doc = timeline("pic-1");
+    const vol = { ...doc, tracks: [{ ...doc.tracks[0], clips: [{ ...doc.tracks[0].clips[0], keyframes: { volume: [{ t: 0, value: 0 }] } }] }] };
+    await expect(createVideoEdit(ctx, CO, { title: "Pic", doc: vol }, USER)).rejects.toMatchObject({ reason: "no_audio", code: "bad_edit" });
+    expect((await createVideoEdit(ctx, CO, { title: "Pic", doc }, USER)).revision).toBe(1);
+  });
+
+  it("v2 writer: a version snapshot keeps v2, and restoring a v2 version saves v2", async () => {
+    await addAsset("asset-own", CO, null);
+    const made = await createVideoEdit(ctx, CO, { title: "Versions", doc: v2("asset-own") }, USER);
+    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "animated" }, USER);
+    expect(await rawDoc("SELECT doc FROM $T.video_edit_versions WHERE id = $1", version.id)).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { x: [{}, {}] } }] }] });
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: timeline("asset-own") }, USER);
+    expect(await editDoc(made.id)).toMatchObject({ schemaVersion: 1 });
+    const restored = await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 2, versionId: version.id }, USER);
+    expect(restored).toMatchObject({ revision: 3, keptPrevious: true });
+    expect(await editDoc(made.id)).toEqual(await rawDoc("SELECT doc FROM $T.video_edit_versions WHERE id = $1", version.id));
+    expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(2);
+  });
+
   it("keeps companies apart", async () => {
     await addAsset("asset-other-co", OTHER_CO, null);
     const made = await createVideoEdit(ctx, CO, { title: "Mine" }, USER);
