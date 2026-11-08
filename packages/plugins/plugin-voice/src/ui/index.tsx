@@ -15,12 +15,18 @@ import {
 import { keepFieldVisible } from "./keyboard.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
-import { agentRefFromPath } from "./agent-chat.js";
+import { agentForCall, agentRefFromPath, type AgentRow } from "./agent-chat.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./agent-chat.js";
 import { failureMessage, showSaveNotice } from "./save-notice.js";
 import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type SaveTarget } from "./transcript-report.js";
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
+
+interface AgentVoiceData {
+  voices: string[];
+  companyVoice: string;
+  agentVoice: string | null;
+}
 
 interface VoiceStatus {
   configured: boolean;
@@ -370,6 +376,44 @@ function createAudioContext(): AudioContext {
   return context;
 }
 
+/** Picks the Grok voice one agent speaks with. It applies to the next call; "Company default" clears it. */
+function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id: string; name: string } }) {
+  const { data, refresh } = usePluginData<AgentVoiceData>("agent-voice", { companyId, agentId: agent.id });
+  const save = usePluginAction("set-agent-voice");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (!data) return null;
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted-foreground)", minWidth: 0, maxWidth: "100%" }}>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name} voice</span>
+      <select
+        aria-label={`Voice for ${agent.name}, used on the next call`}
+        value={data.agentVoice ?? ""}
+        disabled={busy}
+        onChange={async (event) => {
+          setBusy(true);
+          setErr(null);
+          try {
+            await save({ agentId: agent.id, voice: event.target.value || null });
+            refresh();
+          } catch (e) {
+            setErr(errorText(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+        style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
+      >
+        <option value="">Company default ({data.companyVoice})</option>
+        {data.voices.map((v) => (
+          <option key={v} value={v}>{v}</option>
+        ))}
+      </select>
+      {err ? <span role="alert" style={{ color: "var(--destructive)" }}>{err}</span> : null}
+    </label>
+  );
+}
+
 function LivePanel({
   companyId,
   userId,
@@ -386,6 +430,7 @@ function LivePanel({
   onClose: () => void;
 }) {
   const startLive = usePluginAction("live-session");
+  const [callAgent, setCallAgent] = useState<{ id: string; name: string } | null>(null);
   const [state, setState] = useState<LiveState>("connecting");
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -399,7 +444,19 @@ function LivePanel({
     let cancelled = false;
     (async () => {
       try {
-        const info = (await startLive({})) as LiveSessionInfo;
+        // The call's agent decides the voice. A failed lookup just means the company voice.
+        let agentId: string | null = null;
+        try {
+          const agents = await paperclipApi.get<AgentRow[]>(`/companies/${companyId}/agents`);
+          const agent = agentForCall(agents, agentRefFromPath(window.location.pathname));
+          if (agent) {
+            agentId = agent.id;
+            if (!cancelled) setCallAgent({ id: agent.id, name: agent.name });
+          }
+        } catch {
+          // Voice falls back to the company default.
+        }
+        const info = (await startLive({ agentId })) as LiveSessionInfo;
         let companyName: string | null = null;
         try {
           companyName = (await paperclipApi.get<{ name?: string }>(`/companies/${companyId}`)).name ?? null;
@@ -417,7 +474,7 @@ function LivePanel({
           agentRef: agentRefFromPath(window.location.pathname),
           audioContext,
           wakeLock: wakeLock ?? undefined,
-          refreshInfo: () => startLive({}) as Promise<LiveSessionInfo>,
+          refreshInfo: () => startLive({ agentId }) as Promise<LiveSessionInfo>,
           onState: (next) => {
             setState(next);
             // The banner belongs to the outage; a recovered call clears it.
@@ -500,11 +557,11 @@ function LivePanel({
         paddingBottom: "env(safe-area-inset-bottom)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px" }}>
         <span style={{ fontSize: 13, color: "var(--muted-foreground)" }}>
           {pageIssueRef ? `Talking about ${pageIssueRef}` : "Live voice"}
         </span>
-        <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Grok voice</span>
+        {callAgent ? <AgentVoicePicker companyId={companyId} agent={callAgent} /> : <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Grok voice</span>}
       </div>
 
       <div style={{ flex: "0 0 auto", display: "grid", placeItems: "center", padding: "24px 0 8px" }}>

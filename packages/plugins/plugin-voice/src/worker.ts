@@ -1,5 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { liveSessionAction, statusAction, transcribeAction } from "./actions.js";
+import { agentVoiceData, liveSessionAction, setAgentVoiceAction, statusAction, transcribeAction } from "./actions.js";
 import { outboundFetch } from "./outbound.js";
 
 const plugin = definePlugin({
@@ -9,7 +9,11 @@ const plugin = definePlugin({
       statusAction(ctx, typeof params.companyId === "string" ? params.companyId : null),
     );
     ctx.actions.register("transcribe", (params, context) => transcribeAction(ctx, params, context, outboundFetch(ctx)));
-    ctx.actions.register("live-session", (_params, context) => liveSessionAction(ctx, context, outboundFetch(ctx)));
+    ctx.data.register("agent-voice", async (params) =>
+      agentVoiceData(ctx, typeof params.companyId === "string" ? params.companyId : null, params.agentId),
+    );
+    ctx.actions.register("live-session", (params, context) => liveSessionAction(ctx, context, outboundFetch(ctx), params));
+    ctx.actions.register("set-agent-voice", (params, context) => setAgentVoiceAction(ctx, params, context));
   },
 
   async onHealth() {

@@ -29,3 +29,7 @@ Two buttons in every Paperclip chat box (board chat, task threads, task chat), o
 - Voice notes: up to 10 minutes, recorded at 48 kbps (the upload cap is 7 MB).
 - Live talk hangs up after 4 quiet minutes.
 - It needs HTTPS and microphone permission for the Paperclip site.
+
+## Per-agent voice
+
+In a live call, the header has a voice picker for the agent you are talking to (the chat page's agent, else the CEO). It lists the built-in Grok voices (eve, ara, rex, sal, leo; see https://docs.x.ai/docs/guides/voice/agent) and takes effect on the next call. "Company default" clears it and uses the `Live voice` setting. The choice is stored in plugin state on the agent; unknown ids are refused by the worker and fall back to the company voice.

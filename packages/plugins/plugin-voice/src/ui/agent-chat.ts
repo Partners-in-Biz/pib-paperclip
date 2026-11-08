@@ -25,9 +25,10 @@ export interface ChatTarget {
   agentName: string;
 }
 
-interface AgentRow {
+export interface AgentRow {
   id: string;
   name: string;
+  urlKey?: string | null;
   role?: string | null;
   status?: string | null;
 }
@@ -56,6 +57,16 @@ export function agentRefFromPath(pathname: string): string | null {
 export function defaultAgent(agents: AgentRow[]): AgentRow | null {
   const active = agents.filter((a) => !INACTIVE.has(String(a.status ?? "").toLowerCase()));
   return active.find((a) => String(a.role ?? "").toLowerCase() === "ceo") ?? active[0] ?? null;
+}
+
+/** The agent a call is with: the one named by the page (id, url key or name), else the default. */
+export function agentForCall(agents: AgentRow[], ref: string | null): AgentRow | null {
+  if (ref) {
+    const r = ref.toLowerCase();
+    const hit = agents.find((a) => a.id === ref || String(a.urlKey ?? "").toLowerCase() === r || a.name.toLowerCase() === r);
+    if (hit) return hit;
+  }
+  return defaultAgent(agents);
 }
 
 /** What the agent sees: the words as spoken, plus where they came from. */
