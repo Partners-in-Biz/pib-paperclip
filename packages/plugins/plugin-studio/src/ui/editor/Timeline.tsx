@@ -5,7 +5,8 @@
  * selected clip. PAR-8317: drag a clip's body along its lane to reorder it, "Split at playhead" (or S) cuts the clip
  * under the playhead, "Add clip" joins a Library video or picture onto the end of the video track. PAR-8450: the button on a
  * join between two main-track clips opens the transition picker (15 xfade types + length; None removes it); "Undo
- * transition" (or Ctrl/Cmd+Z) puts the last picker change back. Each gesture sends exactly one `video-edit-apply-ops` batch through the store; the lanes always draw
+ * transition" (or Ctrl/Cmd+Z) puts the last picker change back. PAR-8451: a ◆ marker on a clip per keyframe time; drag it
+ * along the clip to move those keys (one `setProps`, undone with the ClipInspector's shared `KeyHistory`). Each gesture sends exactly one `video-edit-apply-ops` batch through the store; the lanes always draw
  * the doc the server returned (a drag only previews locally until that answer arrives). No snapping in v1.
  */
 import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from "react";
@@ -16,7 +17,8 @@ import { AddClipDialog } from "./AddClipDialog.js";
 import { AudioTrack } from "./AudioTrack.js";
 import { CaptionTrack } from "./CaptionTrack.js";
 import { TextTrack } from "./TextTrack.js";
-import { addClipOps, clipEnd, clipJoins, DEFAULT_TRANSITION_SECONDS, TRANSITION_LABELS, TRANSITION_TYPES, transitionOps, type Join, type TransitionKind, type TransitionPick, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, rippleBox, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
+import { applyKeyEdit, undoKeyChange } from "./ClipInspector.js";
+import { addClipOps, clipEnd, createKeyHistory, keyMarkers, moveKeysOps, type KeyHistory, clipJoins, DEFAULT_TRANSITION_SECONDS, TRANSITION_LABELS, TRANSITION_TYPES, transitionOps, type Join, type TransitionKind, type TransitionPick, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, rippleBox, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
 
 const LABEL_W = 104;
 const LANE_H = 40;
@@ -33,11 +35,14 @@ interface Drag { clipId: string; edge: TrimEdge | "move"; trackId: string; origi
 interface Picking { toId: string; type: TransitionKind | null; duration: string }
 /** One picker change to undo: the transition the join had before it. */
 interface UndoEntry { toId: string; before: TransitionPick | null }
+/** A keyframe marker drag: the keys at clip time `from` move by `delta` s. */
+interface KeyDrag { clipId: string; from: number; originX: number; pointerId: number; delta: number }
+const MARKER_PX = 10;
 const JOIN_PX = 18;
 
 const ellipsis = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } as const;
 
-export function Timeline({ store }: { store: EditorStore }) {
+export function Timeline({ store, keyHistory }: { store: EditorStore; keyHistory?: KeyHistory }) {
   const { doc, edit, playhead, selectedClipId, busy } = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const companyId = useHostContext().companyId ?? "";
   const [adding, setAdding] = useState(false);
@@ -48,6 +53,15 @@ export function Timeline({ store }: { store: EditorStore }) {
   const dragRef = useRef<Drag | null>(null);
   const [picking, setPicking] = useState<Picking | null>(null);
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const [ownHistory] = useState(createKeyHistory);
+  const history = keyHistory ?? ownHistory;
+  const [keyDrag, setKeyDrag] = useState<KeyDrag | null>(null);
+  const keyDragRef = useRef<KeyDrag | null>(null);
+  const [keyNote, setKeyNote] = useState<string | null>(null);
+  const setLiveKeyDrag = (d: KeyDrag | null) => {
+    keyDragRef.current = d;
+    setKeyDrag(d);
+  };
   const editId = edit?.id ?? null;
   useEffect(() => {
     setPicking(null);
@@ -124,6 +138,30 @@ export function Timeline({ store }: { store: EditorStore }) {
   function onLaneCancel(e: PointerEvent<HTMLDivElement>) {
     if (dragRef.current?.pointerId === e.pointerId) setLiveDrag(null);
   }
+  function onMarkerDown(clipId: string, from: number, e: PointerEvent<HTMLElement>) {
+    e.stopPropagation();
+    if (busy || dragRef.current || keyDragRef.current || e.button !== 0) return;
+    e.preventDefault();
+    store.selectClip(clipId);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setLiveKeyDrag({ clipId, from, originX: e.clientX, pointerId: e.pointerId, delta: 0 });
+  }
+  function onMarkerMove(e: PointerEvent<HTMLElement>) {
+    const d = keyDragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    e.stopPropagation();
+    setLiveKeyDrag({ ...d, delta: (e.clientX - d.originX) / pps });
+  }
+  function onMarkerUp(e: PointerEvent<HTMLElement>) {
+    const d = keyDragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    e.stopPropagation();
+    keyDragRef.current = null; // one gesture, one batch
+    const clip = findClip(d.clipId);
+    const edit = clip ? moveKeysOps(clip, d.from, d.from + (e.clientX - d.originX) / pps) : null;
+    if (!clip || !edit) return setKeyDrag(null);
+    void applyKeyEdit(store, history, clip.id, edit).then((note) => setKeyNote(note)).finally(() => setKeyDrag(null));
+  }
   const deleteSelected = () => {
     if (selectedClipId && !busy) void store.applyOps([{ op: "delete", clipId: selectedClipId }]);
   };
@@ -151,7 +189,11 @@ export function Timeline({ store }: { store: EditorStore }) {
     } else if ((e.key === "z" || e.key === "Z") && (e.metaKey || e.ctrlKey) && !e.shiftKey && undoStack.length) {
       e.preventDefault();
       void undoTransition();
-    } else if (e.key === "Escape" && dragRef.current) setLiveDrag(null);
+    } else if ((e.key === "z" || e.key === "Z") && (e.metaKey || e.ctrlKey) && !e.shiftKey && history.size()) {
+      e.preventDefault();
+      void undoKeyChange(store, history).then(setKeyNote);
+    } else if (e.key === "Escape" && keyDragRef.current) setLiveKeyDrag(null);
+    else if (e.key === "Escape" && dragRef.current) setLiveDrag(null);
     else if (e.key === "Escape" && picking) setPicking(null);
   }
 
@@ -277,6 +319,16 @@ export function Timeline({ store }: { store: EditorStore }) {
                           {handle}
                           <span style={{ ...ellipsis, flex: 1, padding: "0 4px", fontSize: 12 }}>{label}</span>
                           {handle}
+                          {drag?.clipId === clip.id ? null : keyMarkers(clip).map((m) => {
+                            const live = keyDrag && keyDrag.clipId === clip.id && keyDrag.from === m.t;
+                            const t = live ? Math.min(Math.max(0, m.t + keyDrag.delta), clipLength(clip)) : m.t;
+                            const left = Math.min(Math.max(0, secondsToPx(t, pps) - MARKER_PX / 2), Math.max(0, secondsToPx(clipLength(clip), pps) - MARKER_PX));
+                            return (
+                              <span key={`key-${m.t}`} role="button" data-key-marker={`${clip.id}@${m.t}`} aria-label={`Key at ${formatTime(t)} (${m.props.join(", ")}): drag to move`} title={`Key at ${formatTime(t)}: ${m.props.join(", ")}. Drag to move.`}
+                                onPointerDown={(e) => onMarkerDown(clip.id, m.t, e)} onPointerMove={onMarkerMove} onPointerUp={onMarkerUp} onPointerCancel={(e) => keyDragRef.current?.pointerId === e.pointerId && setLiveKeyDrag(null)}
+                                style={{ position: "absolute", bottom: 3, left, width: MARKER_PX, height: MARKER_PX, boxSizing: "border-box", transform: "rotate(45deg)", background: live ? "#fff" : "#ffd54a", border: "1px solid #0008", cursor: "ew-resize", touchAction: "none", zIndex: 2 }} />
+                            );
+                          })}
                         </div>
                       );
                     })}
@@ -303,7 +355,8 @@ export function Timeline({ store }: { store: EditorStore }) {
           </div>
         )}
       </div>
-      {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap</div> : null}
+      {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap · drag a ◆ to move a key</div> : null}
+      {keyNote ? <div role="alert" data-key-note style={{ padding: "0 12px 6px", fontSize: 12, color: "#c2410c", overflowWrap: "anywhere" }}>{keyNote}</div> : null}
       {adding ? <AddClipDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onClose={() => setAdding(false)} /> : null}
     </section>
   );
