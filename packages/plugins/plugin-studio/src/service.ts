@@ -4,6 +4,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, isAgentLimitKey, listCaps, usage } from "./ledger.js";
+import { StudioConfig } from "./config.js";
+import { providerOptions, providerStatus } from "./providers/registry.js";
 import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
@@ -52,7 +54,7 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
 /** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
-  const [caps, history, clients, assets, companyUsed, projects, agents, balance] = await Promise.all([
+  const [caps, history, clients, assets, companyUsed, projects, agents, balance, providers] = await Promise.all([
     listCaps(ctx, companyId),
     capHistory(ctx, companyId),
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
@@ -61,7 +63,10 @@ export async function overview(ctx: PluginContext, companyId: string) {
     ctx.projects.list({ companyId, limit: 200 }).catch(() => []),
     ctx.agents.list({ companyId, limit: 500 }).catch(() => []),
     balanceView(ctx, companyId).catch(() => null),
+    providerStatus(new StudioConfig(ctx, companyId)).catch(() => []),
   ]);
+  // Every option per capability (stt, tts, lipsync) with its price, quality note and default flag (PAR-8436).
+  const providerChoices = await providerOptions(new StudioConfig(ctx, companyId));
   const clientUsage = await Promise.all(
     caps
       .filter((c) => c.scopeKey.includes(":") && !isAgentLimitKey(c.scopeKey))
@@ -74,6 +79,8 @@ export async function overview(ctx: PluginContext, companyId: string) {
     period,
     companyUsed,
     balance,
+    providers,
+    providerOptions: providerChoices,
     caps,
     clientUsage,
     history,

@@ -46,6 +46,13 @@ export function CaptionTrack({ store }: { store: EditorStore }) {
   const setWord = (i: number, key: "start" | "end", value: string) =>
     setForm((f) => (f ? { ...f, words: f.words.map((w, j) => (j === i ? { ...w, [key]: value } : w)) } : f));
   const count = captionClips(doc).length;
+  // Auto-captions (PAR-8360): the selected video or sound clip's speech becomes captions on the worker.
+  const media = doc?.tracks.some((t) => t.kind !== "caption" && t.kind !== "text" && t.clips.some((c) => c.id === selectedClipId)) ? selectedClipId : null;
+  const auto = async () => {
+    if (!media || busy) return;
+    setError(null);
+    await store.autoCaption({ clipId: media, style });
+  };
 
   return (
     <div data-caption-track style={{ display: "grid", gap: 8, padding: "8px 12px", borderBottom: "1px solid #8883", minWidth: 0 }}>
@@ -64,7 +71,8 @@ export function CaptionTrack({ store }: { store: EditorStore }) {
             {CAPTION_STYLE_IDS.map((s) => <option key={s} value={s}>{STYLE_LABELS[s]}</option>)}
           </select>
         </label>
-        <div style={{ display: "flex", alignItems: "end" }}>
+        <div style={{ display: "flex", alignItems: "end", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" onClick={auto} disabled={busy || !media} title={media ? "Transcribe the selected clip's speech into timed captions" : "Select a video or sound clip on the timeline first"} style={btn(!busy && Boolean(media))}>{busy && media ? "Captioning…" : "Auto-caption clip"}</button>
           <button type="button" onClick={add} disabled={busy || !doc || !draft.trim()} title={`Add captions at ${formatTime(playhead)}`} style={btn(!busy && Boolean(doc) && Boolean(draft.trim()))}>Add captions</button>
         </div>
       </div>

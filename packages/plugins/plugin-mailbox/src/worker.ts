@@ -86,7 +86,7 @@ import { mailboxDoneChecks } from "./done-checks.js";
 import { assertMayDraft, assertMayRead, assertMaySend, createEmailTemplate, defaultDelegation, MailboxError, type Delegation } from "./domain.js";
 import { createEnv, errorMessage, type Env } from "./gmail/env.js";
 import { toMailAddress } from "./gmail/headers.js";
-import { connectStart, disconnect, oauthComplete } from "./gmail/oauth.js";
+import { connectStart, disconnect, oauthComplete, removeAccount } from "./gmail/oauth.js";
 import { correctTriage, markReadInGmail, readMessageBody, searchMail, type TriageCorrection } from "./gmail/read.js";
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
@@ -164,6 +164,7 @@ const plugin = definePlugin({
 
     user("mailbox.connect-start", (companyId, userId, params) => connectStart(requireEnv(), companyId, userId, params));
     user("mailbox.disconnect", (companyId, _userId, params) => disconnect(requireEnv(), companyId, requiredString(params, "accountId")));
+    user("mailbox.delete-account", (companyId, _userId, params) => removeAccount(requireEnv(), companyId, requiredString(params, "accountId")));
     user("mailbox.set-default", async (companyId, _userId, params) => {
       const account = await requireStore().getAccount(companyId, requiredString(params, "accountId"));
       if (!account || account.status !== "connected") throw new MailboxError("Only a connected Gmail account can be the default");

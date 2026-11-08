@@ -15,7 +15,7 @@ import { objectUrl } from "../storage.js";
 import { applyOps } from "./ops.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
 import { cancelRender, enqueueRender, getRender, type RenderJob } from "./render-queue.js";
-import { assertAssets, createVideoEdit, deleteVideoEdit, editAssetIds, getVideoEdit, listVideoEdits, saveVideoEdit, type EditActor } from "./store.js";
+import { assertAssets, createVideoEdit, deleteVideoEdit, editAssetIds, getVideoEdit, listEditVersions, listVideoEdits, restoreEditVersion, saveEditVersion, saveVideoEdit, type EditActor } from "./store.js";
 import { editDuration, LIMITS, normalizeEdit } from "./timeline.js";
 
 /** At most this many assets in one "create from assets" call. */
@@ -92,10 +92,11 @@ async function timelineFrom(assets: StartAsset[], probe: (asset: StartAsset) => 
     let length: number;
     let onAudio = false;
     if (asset.kind === "image") length = IMAGE_SECONDS;
-    else if (asset.kind === "video") {
+    else if (asset.kind === "video" || asset.kind === "audio") {
       const p = await probe(asset);
-      if (!p.hasVideo && !p.hasAudio) bad(`Asset ${asset.id} has no picture or sound Studio can use.`);
-      onAudio = !p.hasVideo;
+      if (asset.kind === "audio" ? !p.hasAudio : !p.hasVideo && !p.hasAudio) bad(`Asset ${asset.id} has no picture or sound Studio can use.`);
+      // A sound file (MP3, WAV) always goes on the audio track, even if ffprobe reports cover art as a video stream.
+      onAudio = asset.kind === "audio" || !p.hasVideo;
       length = Math.floor(p.durationSec * 1000) / 1000;
       if (!(length > 0)) bad(`Asset ${asset.id} has no length.`);
     } else bad(`Asset ${asset.id} is a ${asset.kind}; a video edit takes pictures, videos and sound.`);
@@ -223,4 +224,22 @@ export async function deleteEditAction(ctx: PluginContext, companyId: string, pa
   const result = await deleteVideoEdit(ctx, companyId, id(params.editId), params.client);
   ctx.logger.info("Studio video edit deleted", { companyId, editId: result.id, by: actor.agentId ?? actor.userId ?? null });
   return result;
+}
+
+/** `video-edit-versions-list`: saved versions of the edit, newest first. */
+export async function listVersionsAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  return { versions: await listEditVersions(ctx, companyId, id(params.editId)) };
+}
+
+/** `video-edit-version-save`: keeps the timeline as saved now under a name. */
+export async function saveVersionAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
+  return saveEditVersion(ctx, companyId, params, actor);
+}
+
+/** `video-edit-restore`: saves an earlier version as a new revision (optimistic `edit_conflict` check) and returns the edit. */
+export async function restoreVersionAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
+  const result = await restoreEditVersion(ctx, companyId, params, actor);
+  ctx.logger.info("Studio video edit version restored", { companyId, editId: result.id, versionId: result.restoredVersionId, revision: result.revision, by: actor.agentId ?? actor.userId ?? null });
+  const edit = await getVideoEdit(ctx, companyId, result.id);
+  return { ...result, doc: edit.doc, duration: edit.duration };
 }

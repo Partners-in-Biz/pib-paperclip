@@ -24,14 +24,17 @@ import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { adjust, assertFits, assertRunFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
-import { assertJobCeiling, assertReferenceCount, findModel, referenceIds } from "./models.js";
+import { assertAudioCount, assertJobCeiling, assertReferenceCount, findModel, referenceIds } from "./models.js";
 import { assertModel, FAKE_OUTPUT_PNG_BASE64, fakeProvider, fakeProviderOn, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
 import { assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
 import { isTablePriced, localCredits } from "./seedance-price.js";
 import { MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
 
 export const MAX_BATCH = 8;
-/** How long the provider may fetch a reference image. Built just before the send, never stored or logged. */
+/**
+ * How long the provider may fetch a reference image or audio file. Signed in `submit`, just before the send (never at
+ * insert, never stored or logged), so a job that waited in the queue still sends a fresh link.
+ */
 const REFERENCE_LINK_SEC = 30 * 60;
 const MAX_PARAMS_BYTES = 16 * 1024;
 const MAX_IN_FLIGHT = 4;
@@ -194,28 +197,53 @@ export const defaultRuntime: Runtime = {
 
 type ReferenceRow = Awaited<ReturnType<typeof getAssetRow>>;
 
-/** Each reference must be an image in this company, filed under the request's own client (or own work). */
-async function referenceRows(ctx: PluginContext, companyId: string, scope: ClientScope, ids: string[]): Promise<ReferenceRow[]> {
+/**
+ * Each reference must be in this company, filed under the request's own client (or own work), and of the asked kind:
+ * an image, audio, or (at send time, where image and audio ids share one stored list) either.
+ */
+async function referenceRows(ctx: PluginContext, companyId: string, scope: ClientScope, ids: string[], kind: "image" | "audio" | null): Promise<ReferenceRow[]> {
   const rows: ReferenceRow[] = [];
   for (const id of ids) {
     const row = await getAssetRow(ctx, companyId, id);
     if ((row.client_kind ?? null) !== (scope?.kind ?? null) || (row.client_ref ?? null) !== (scope?.id ?? null)) {
       throw new StudioError(`Asset ${id} is filed under another client, so it can't be a reference here.`, "wrong_client");
     }
-    if (row.kind !== "image") throw new StudioError(`Asset ${id} is not an image, so it can't be a reference.`, "bad_request");
+    if (kind === "audio" ? row.kind !== "audio" : row.kind !== "image" && !(kind === null && row.kind === "audio")) {
+      throw new StudioError(kind === "audio" ? `Asset ${id} is not audio, so it can't be an audio reference.` : `Asset ${id} is not an image, so it can't be a reference.`, "bad_request");
+    }
     rows.push(row);
   }
   return rows;
 }
 
-/** The provider body with short-lived signed links to the references, in the model's own field. Never stored. */
+/**
+ * The provider body with short-lived signed links to the references, images in the model's image field and audio in
+ * its audio field (a string for `*_url`, a list for `*_urls`). Never stored. Image-only bodies are as before PAR-8435.
+ */
 async function withReferences(config: StudioConfig, companyId: string, model: string, body: Record<string, unknown>, rows: ReferenceRow[]): Promise<Record<string, unknown>> {
   if (rows.length === 0) return body;
-  const field = findModel(model)?.refField;
-  if (!field) throw new StudioError(`${model} takes no reference images in Studio.`, "bad_request");
+  const images = rows.filter((row) => row.kind !== "audio");
+  const audio = rows.filter((row) => row.kind === "audio");
+  const known = findModel(model);
+  const field = known?.refField;
+  if (images.length > 0 && !field) throw new StudioError(`${model} takes no reference images in Studio.`, "bad_request");
+  const audioField = known?.audioRefField;
+  if (audio.length > 0) {
+    if (!audioField) throw new StudioError(`${model} takes no audio in Studio.`, "bad_request");
+    assertAudioCount(model, audio.length);
+  }
   const bucket = await config.bucket();
-  const urls = rows.map((row) => objectUrl(bucket, companyId, "GET", row.r2_key, REFERENCE_LINK_SEC));
-  return { ...body, [field]: field === "image_url" ? urls[0] : urls };
+  const sign = (list: ReferenceRow[]) => list.map((row) => objectUrl(bucket, companyId, "GET", row.r2_key, REFERENCE_LINK_SEC));
+  let out = body;
+  if (images.length > 0) {
+    const urls = sign(images);
+    out = { ...out, [field!]: field === "image_url" ? urls[0] : urls };
+  }
+  if (audio.length > 0) {
+    const urls = sign(audio);
+    out = { ...out, [audioField!]: audioField === "audio_url" ? urls[0] : urls };
+  }
+  return out;
 }
 
 function storedReferenceIds(value: unknown): string[] {
@@ -257,7 +285,7 @@ function applyDuration(model: string, body: Record<string, unknown>): void {
   }
 }
 
-export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown>; references: string[] } {
+export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown>; references: string[]; audio: string[] } {
   const presetId = params.preset === undefined || params.preset === null || params.preset === "" ? null : params.preset;
   const preset = presetId === null ? null : getPhotoPreset(presetId);
   if (presetId !== null && !preset) throw new StudioError(`Unknown preset ${String(presetId)}. Known presets: ${PHOTO_PRESETS.map((p) => p.id).join(", ")}.`, "unknown_preset");
@@ -269,15 +297,25 @@ export function requestBody(params: Record<string, unknown>): { model: string; p
   const extra = params.params ?? {};
   if (typeof extra !== "object" || Array.isArray(extra) || extra === null) throw new StudioError("params must be an object of the model's own fields.", "bad_request");
   const defaults = preset ? { aspect_ratio: DEFAULT_PRESET_RATIO } : {};
-  const body = { ...defaults, ...(extra as Record<string, unknown>), prompt };
+  const body: Record<string, unknown> = { ...defaults, ...(extra as Record<string, unknown>), prompt };
   applyDuration(model, body);
+  const known = findModel(model);
+  // Native dialogue: the line is in the prompt and the model makes the sound, so audio is always on.
+  if (known?.nativeDialogue) {
+    if (body.generate_audio !== undefined && body.generate_audio !== true) throw new StudioError(`${known.label} speaks the line in the prompt, so generate_audio is always true.`, "bad_request");
+    body.generate_audio = true;
+  }
   if (JSON.stringify(body).length > MAX_PARAMS_BYTES) throw new StudioError("The request is too long.", "bad_request");
   const references = referenceIds(params.referenceAssetIds);
   const field = findModel(model)?.refField;
   if (references.length > 0 && field && field in body) throw new StudioError(`Pass reference images as referenceAssetIds, not as ${field}.`, "bad_request");
   // A caller may still give its own public link in the model's field; then the minimum is met without library assets.
   if (!(field && field in body)) assertReferenceCount(model, references.length);
-  return { model, prompt, body, references };
+  const audio = referenceIds(params.audioAssetIds, "audioAssetIds");
+  const audioField = known?.audioRefField;
+  if (audio.length > 0 && audioField && audioField in body) throw new StudioError(`Pass audio as audioAssetIds, not as ${audioField}.`, "bad_request");
+  if (!(audioField && audioField in body)) assertAudioCount(model, audio.length);
+  return { model, prompt, body, references, audio };
 }
 
 /**
@@ -291,13 +329,13 @@ export async function estimateEach(provider: GenerationProvider, model: string, 
 }
 
 export async function estimateGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
-  const { model, body, references } = requestBody(params);
+  const { model, body, references, audio } = requestBody(params);
   const batch = batchSize(params);
   const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
   const config = new StudioConfig(ctx, companyId);
-  const refs = await referenceRows(ctx, companyId, where.scope, references);
+  const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const each = await estimateEach(await runtime.provider(config), model, await withReferences(config, companyId, model, body, refs));
-  assertJobCeiling(model, each);
+  assertJobCeiling(model, each, audio.length > 0);
   const check = await capCheck(ctx, companyId, where.scope);
   return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining };
 }
@@ -317,16 +355,18 @@ function presetName(params: Record<string, unknown>, prompt: string): string {
 }
 
 export async function requestGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
-  const { model, prompt, body, references } = requestBody(params);
+  const { model, prompt, body, references, audio } = requestBody(params);
   const batch = batchSize(params);
   const projectId = actor.projectId ?? null;
   const where: ResolvedScope = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
   const config = new StudioConfig(ctx, companyId);
-  const refs = await referenceRows(ctx, companyId, where.scope, references);
+  const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const provider = await runtime.provider(config);
   const each = await estimateEach(provider, model, await withReferences(config, companyId, model, body, refs));
   // Before the lock: an over-ceiling job writes no row and no reserve.
-  assertJobCeiling(model, each);
+  assertJobCeiling(model, each, audio.length > 0);
+  // Image and audio ids share the one stored list (no migration); `submit` splits them by asset kind.
+  const stored = [...references, ...audio];
   const total = credits(each * batch);
   const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : (presetName(params, prompt));
   const groupId = randomUUID();
@@ -342,7 +382,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
       await ctx.db.execute(
         `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, 'queued', $17, $18, $19::jsonb)`,
-        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each, JSON.stringify(references)],
+        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each, JSON.stringify(stored)],
       );
       await reserve(ctx, { generationId: id, companyId, clientKind: where.scope?.kind ?? null, clientRef: where.scope?.id ?? null, period }, each);
     }
@@ -425,6 +465,28 @@ export function resetQueueStateForTests(): void {
   running = false;
 }
 
+/** A voiceover (video-edit/voiceover.ts) still `synthesizing` after this long lost its run. */
+export const SYNTH_LOST_AFTER_MS = 10 * 60 * 1000;
+
+/** Fails stale `synthesizing` rows without a refund: the provider may have charged. Conditional, so it never races the action's own settle. */
+async function sweepSynthesizing(ctx: PluginContext, runtime: Runtime): Promise<number> {
+  const cutoff = new Date(runtime.now() - SYNTH_LOST_AFTER_MS).toISOString();
+  const rows = await ctx.db.query<GenerationRow>(`SELECT * FROM ${table(ctx, "generations")} WHERE status = 'synthesizing' AND updated_at < $1 ORDER BY created_at LIMIT 200`, [cutoff]);
+  const message = "Studio stopped while making this voiceover. It wasn't sent again, and its credits stay spent.";
+  let failed = 0;
+  for (const row of rows) {
+    const finished = new Date(runtime.now()).toISOString();
+    const moved = await ctx.db.execute(
+      `UPDATE ${table(ctx, "generations")} SET status = 'failed', error_code = 'lost_submission', error_message = $2, finished_at = $3, updated_at = now() WHERE id = $1 AND status = 'synthesizing'`,
+      [row.id, message, finished],
+    );
+    if (!moved.rowCount) continue;
+    failed += 1;
+    await reportIfGroupDone(ctx, Object.assign(row, { status: "failed", error_code: "lost_submission", error_message: message, finished_at: finished }));
+  }
+  return failed;
+}
+
 export async function processQueue(ctx: PluginContext, runtime: Runtime = defaultRuntime): Promise<{ submitted: number; stored: number; failed: number }> {
   const totals = { submitted: 0, stored: 0, failed: 0 };
   if (running) return totals;
@@ -440,6 +502,7 @@ export async function processQueue(ctx: PluginContext, runtime: Runtime = defaul
     return found;
   };
   try {
+    totals.failed += await sweepSynthesizing(ctx, runtime);
     const open = await ctx.db.query<GenerationRow>(
       `SELECT * FROM ${table(ctx, "generations")} WHERE status IN ('queued', 'submitting', 'submitted', 'storing') ORDER BY created_at LIMIT 200`,
     );
@@ -512,10 +575,19 @@ async function submit(ctx: PluginContext, runtime: Runtime, row: GenerationRow, 
   let body = typeof row.params === "string" ? (JSON.parse(row.params) as Record<string, unknown>) : (row.params as Record<string, unknown>);
   const references = storedReferenceIds(row.reference_asset_ids);
   if (references.length > 0) {
-    // Checked again and signed only now, before the claim: a missing setting leaves the row queued, as below.
+    // Checked again and signed only now, before the claim: a missing setting leaves the row queued, as below. The
+    // links live 30 min from here; the provider fetches them after this one submit call, however long the row queued.
     try {
-      body = await withReferences(config, row.company_id, row.model, body, await referenceRows(ctx, row.company_id, rowScope(row), references));
+      const refs = await referenceRows(ctx, row.company_id, rowScope(row), references, null);
+      body = await withReferences(config, row.company_id, row.model, body, refs);
+      if (refs.some((ref) => ref.kind === "audio")) assertJobCeiling(row.model, num(row.estimated_credits), true);
     } catch (error) {
+      if (error instanceof StudioError && error.code === "over_job_ceiling") {
+        const claimed = await ctx.db.execute(`UPDATE ${table(ctx, "generations")} SET status = 'submitting', updated_at = now() WHERE id = $1 AND status = 'queued'`, [row.id]);
+        if (!claimed.rowCount) return "skipped";
+        await fail(ctx, runtime, row, error.code, error.message, { refund: true });
+        return "failed";
+      }
       if (!(error instanceof StudioError) || !REFERENCE_ERRORS.includes(error.code)) throw error;
       // Claim first, so two workers can't both fail (and refund) the same row.
       const claimed = await ctx.db.execute(`UPDATE ${table(ctx, "generations")} SET status = 'submitting', updated_at = now() WHERE id = $1 AND status = 'queued'`, [row.id]);

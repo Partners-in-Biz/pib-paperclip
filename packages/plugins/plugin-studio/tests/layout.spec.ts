@@ -204,3 +204,15 @@ describe("the files", () => {
     offsets.forEach((offset, i) => expect(pdf.slice(offset).startsWith(`${i + 1} 0 obj`), `object ${i + 1}`).toBe(true));
   });
 });
+
+describe("video input (PAR-8364)", () => {
+  it("takes an Edit card's render as the picture", () => {
+    const nodes = [
+      { id: "e", type: "edit", position: { x: 0, y: 0 }, data: { assetId: "vid1" } },
+      { id: "t", type: "text", position: { x: 0, y: 10 }, data: { text: "Hi" } },
+      { id: "l", type: "layout", position: { x: 5, y: 5 }, data: {} },
+    ];
+    const edges = [{ source: "e", target: "l" }, { source: "t", target: "l" }];
+    expect(layoutInputs(nodes as never, edges, "l")).toMatchObject({ imageAssetId: "vid1", text: "Hi", missing: [] });
+  });
+});

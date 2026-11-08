@@ -470,6 +470,7 @@ function MailboxPageMain({ context }: PluginPageProps) {
   const load = usePluginAction("mailbox.load");
   const connectStart = usePluginAction("mailbox.connect-start");
   const disconnect = usePluginAction("mailbox.disconnect");
+  const deleteAccount = usePluginAction("mailbox.delete-account");
   const setDefault = usePluginAction("mailbox.set-default");
   const syncNow = usePluginAction("mailbox.sync-now");
   const loadInbox = usePluginAction("mailbox.inbox");
@@ -893,6 +894,17 @@ function MailboxPageMain({ context }: PluginPageProps) {
                           onSelect: () => {
                             if (window.confirm(`Disconnect ${account.address}? Plugins will not be able to send from it until it is connected again.`)) {
                               void run(() => disconnect({ accountId: account.id }), `${account.address} disconnected`);
+                            }
+                          },
+                        }]
+                        : []),
+                      ...(account.status === "disconnected" || account.status === "manual"
+                        ? [{
+                          label: "Delete",
+                          danger: true,
+                          onSelect: () => {
+                            if (window.confirm(`Delete ${account.address} from the Mailbox? Its synced mail, drafts and agent access are removed from Paperclip. Gmail itself is not touched. This cannot be undone.`)) {
+                              void run(() => deleteAccount({ accountId: account.id }), `${account.address} deleted`);
                             }
                           },
                         }]

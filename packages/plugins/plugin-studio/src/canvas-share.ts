@@ -216,6 +216,7 @@ function cardBody(node: CanvasNode, previews: Record<string, Preview>): string {
   const preview = node.data.assetId ? previews[node.data.assetId] : undefined;
   if (preview) {
     const alt = esc(node.data.label || TYPE_LABELS[node.type]);
+    if (preview.kind === "audio") return `<div class="media audio-tile"><audio src="${esc(preview.url)}" controls preload="metadata"></audio></div>`;
     return preview.kind === "video" ? `<video class="media" src="${esc(preview.url)}" controls muted playsinline preload="metadata"></video>` : `<img class="media" src="${esc(preview.url)}" alt="${alt}" loading="lazy">`;
   }
   const text = node.type === "prompt" ? node.data.text : node.data.prompt;
@@ -281,6 +282,7 @@ header{display:flex;gap:6px;align-items:center;min-width:0}.label{font-weight:60
 footer{display:flex;gap:4px;flex-wrap:wrap}.chip{font-size:11px;padding:1px 6px;border:1px solid #d3d8e0;border-radius:999px;color:#5b6475}
 .feeds{margin:0;font-size:12px;color:#5b6475;overflow-wrap:anywhere}.list{display:none;padding:12px;gap:12px;flex-direction:column}
 .list .media{max-height:60vh}
+.audio-tile{display:grid;place-items:center;padding:8px;box-sizing:border-box;min-height:64px}.audio-tile audio{width:100%}
 @media (max-width:720px){.wrap{display:none}.list{display:flex}}
 </style></head><body>
 <div class="top"><h1>${esc(input.title)}</h1><p>View-only Studio board${expires ? ` · link expires ${esc(expires)}` : ""}</p></div>

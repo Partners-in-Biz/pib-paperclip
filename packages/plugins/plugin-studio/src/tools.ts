@@ -3,10 +3,14 @@ import { LINK_TARGETS } from "./assets.js";
 import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
+import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
+import { LIPSYNC } from "./providers/registry.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
-import { SIZES } from "./video-edit/timeline.js";
+import { CAPTION_STYLES, EASES, LIMITS, SIZES, TRANSITIONS } from "./video-edit/timeline.js";
+import { DEFAULT_VOICE, XAI_VOICES } from "./video-edit/tts.js";
+import { MAX_SCRIPT_CHARS, ttsCredits } from "./video-edit/tts-price.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const CLIENT = text('"company:<id>" or "contact:<id>". Omit it to use the client of the issue\'s project, or own work if it has none.');
@@ -73,7 +77,7 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     name: "video-edit-apply-ops",
     displayName: "Change a video edit",
     description:
-      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). Free.",
+      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). setProps props can hold transitionIn {type,duration} (type one of " + TRANSITIONS.join(", ") + "; only fade on text clips, and only main video track clips render the others) and keyframes {x,y,scale,rotate,opacity,volume: [{t,value,ease}]} (t = seconds from the clip's start, ease one of " + EASES.join(", ") + ", at most " + LIMITS.maxKeyframes + " per property; a list replaces that property's keys, [] removes them, keyframes:null removes all). split and trim keep keyframes on the same frames and add a key at each cut; going over the limit is refused with keyframe_limit. Free.",
     parametersSchema: schema(["editId", "baseRevision", "ops"], {
       editId: EDIT_ID,
       baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
@@ -84,6 +88,38 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
         items: { type: "object", required: ["op"], properties: { op: { type: "string", enum: [...OP_NAMES] } } },
         description: "Operations, applied in order",
       } as JsonSchema,
+    }),
+  },
+  {
+    name: "video-edit-caption",
+    displayName: "Auto-caption a video clip",
+    description:
+      "Transcribe the speech in one video or sound clip (its in..out range) and add it as timed captions on a caption track (the first one, or a new one), at the revision you read. The captions are normal caption clips: change them later with video-edit-apply-ops. Refused if captions already cover the clip on that track. Sends the clip's sound to xAI speech to text (a few cents a minute).",
+    parametersSchema: schema(["editId", "baseRevision", "clipId"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      clipId: text("The video or sound clip to caption"),
+      trackId: text("Optional caption track to use; default the first caption track, or a new one"),
+      style: { type: "string", enum: [...CAPTION_STYLES], description: "Caption look; default plain" } as JsonSchema,
+      provider: text("Optional speech to text provider key, e.g. xai; default: the company's setting"),
+      language: text("Optional spoken language code, e.g. en or af; default: detect"),
+    }),
+  },
+  {
+    name: "video-edit-voiceover",
+    displayName: "Add a voiceover to a video edit",
+    description:
+      `Speak a script (up to ${MAX_SCRIPT_CHARS} characters) with xAI Grok voice, save it as a sound asset in the Library and put it on the edit's audio track at \`at\` seconds, at the revision you read. Charged: ${ttsCredits(1000)} credits per 1,000 characters, counted against the monthly cap and your run's limit; nothing is charged if it fails before the sound is saved.`,
+    parametersSchema: schema(["editId", "baseRevision", "script"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      script: { type: "string", minLength: 1, maxLength: MAX_SCRIPT_CHARS, description: "The words to speak" } as JsonSchema,
+      voice: { type: "string", enum: [...XAI_VOICES], description: `Voice; default ${DEFAULT_VOICE}` } as JsonSchema,
+      language: text("Optional language code, e.g. en, af or pt-BR, or auto; default en"),
+      at: { type: "number", minimum: 0, description: "Where on the timeline it starts, in seconds; default 0 (moved past any sound already there)" } as JsonSchema,
+      name: text("Optional Library name for the sound"),
+      provider: text("Optional text to speech provider key, e.g. xai; default: the company's setting"),
+      issueId: ISSUE,
     }),
   },
   {
@@ -142,6 +178,23 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     displayName: "Generate images or video",
     description: "Queue an image or video. Credits are reserved against the monthly cap, and it's refused if they don't fit. The result is saved as a Studio asset linked to the issue, and a comment on the issue reports it and wakes you. Don't poll or sit waiting. Before ending your run, set an issue monitor as a fallback (kind external_service, about 15 minutes), as for any wait on a machine: an in-progress issue with nothing watching it gets sent for repair. Check the cost with studio-estimate first, because it counts against the company's monthly cap.",
     parametersSchema: schema([], { ...GENERATE_FIELDS, name: text("File name for the result (default: the start of the prompt)") }),
+  },
+  {
+    name: "studio-lipsync",
+    displayName: "Lip-sync a portrait",
+    description: `Make a talking video from one portrait: give audioAssetId (a Studio sound asset, e.g. a voiceover) for the face to lip-sync to, or line (up to ${MAX_LINE_CHARS} characters) for the model to say. provider picks the option (${LIPSYNC.map((e) => `${e.key}: ${e.qualityNote}`).join("; ")}); default: the company's setting, else ${LIPSYNC.filter((e) => e.isDefaultFor).map((e) => `${e.key} for ${e.isDefaultFor}`).join(", ")}. Queued like studio-generate and charged the same way; a job is 5 to 30 credits, so at the default run limit an agent run is refused (run_limit): ask a person to use the Studio page, or for a higher run limit.`,
+    parametersSchema: schema(["portraitAssetId"], {
+      portraitAssetId: text("Studio image asset id of the person who speaks, same client"),
+      audioAssetId: text("Studio sound asset id to lip-sync to. Not with line."),
+      line: { type: "string", minLength: 1, maxLength: MAX_LINE_CHARS, description: "Words the person says. Not with audioAssetId." } as JsonSchema,
+      provider: { type: "string", enum: LIPSYNC.map((e) => e.key), description: "Optional lip-sync option; it must fit the input (audio or line)" } as JsonSchema,
+      prompt: text("Optional note on the scene or expression"),
+      resolution: text("Optional; default the option's lowest"),
+      duration: { type: "integer", minimum: 1, maximum: 30, description: "Seconds; default 5" } as JsonSchema,
+      name: text("File name for the result"),
+      client: CLIENT,
+      issueId: ISSUE,
+    }),
   },
   {
     name: "studio-generation-status",

@@ -56,7 +56,7 @@ export interface ResolvedInput {
   version: number;
   key: string;
   mime: string;
-  kind: "video" | "image";
+  kind: "video" | "image" | "audio";
   bytes: number;
 }
 
@@ -103,7 +103,7 @@ export async function resolveInputs(ctx: PluginContext, companyId: string, scope
     } catch {
       throw deterministic(`Asset ${assetId} has a storage key outside this company's Studio folder.`, "unsafe_key");
     }
-    if (row.kind !== "video" && row.kind !== "image") throw deterministic(`Asset ${assetId} is not a video or picture.`, "unsupported_codec");
+    if (row.kind !== "video" && row.kind !== "image" && row.kind !== "audio") throw deterministic(`Asset ${assetId} is not a video, picture or sound file.`, "unsupported_codec");
     out.push({ assetId, version, key: row.r2_key, mime: row.mime, kind: row.kind, bytes: dbNum(row.bytes) });
   }
   return out;
@@ -175,6 +175,10 @@ export function createRenderExecutor(options: PipelineOptions = {}): RenderExecu
             const probe = await probeMedia(path, runOpts);
             if (!probe.hasVideo) throw deterministic(`Asset ${input.assetId} has no video stream.`, "probe_failed");
             hasAudio = probe.hasAudio;
+          } else if (input.kind === "audio") {
+            const probe = await probeMedia(path, runOpts);
+            if (!probe.hasAudio) throw deterministic(`Asset ${input.assetId} has no sound Studio can read.`, "probe_failed");
+            hasAudio = true;
           }
           sources[inputKey(input.assetId, input.version)] = { path, kind: input.kind, hasAudio };
         }

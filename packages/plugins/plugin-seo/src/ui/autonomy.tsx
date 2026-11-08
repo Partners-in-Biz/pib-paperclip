@@ -32,6 +32,8 @@ export type NeedsYouItem = {
   status: "open" | "done";
   check: string;
   doneAt: string | null;
+  /** Set when the SEO agent can do this item itself: the card shows Give to agent. */
+  agent?: "content" | "review" | "retry" | "theme" | null;
 };
 
 export type NeedsYouView = { weekStart: string; issueId: string | null; issueIdentifier: string | null; open: NeedsYouItem[]; done: NeedsYouItem[] };
@@ -141,6 +143,14 @@ export function SetupChecklist({ title, items, note }: { title: string; items: S
   );
 }
 
+const GIVE_ALL = "__give_all";
+const AGENT_ROUTE_TEXT: Record<NonNullable<NeedsYouItem["agent"]>, string> = {
+  content: "A page change: the agent makes it (through a client preview when the client signs off)",
+  review: "A stuck preview review: the agent finds the cause and gets it checked again",
+  retry: "A dropped page: the agent reads why it failed and tries a fresh preview",
+  theme: "Template markup: the agent edits it over SFTP with a backup",
+};
+
 export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId: string; view: NeedsYouView | null; call: CallFn; issueLink?: ReactNode }) {
   const [busy, setBusy] = useState<string | null>(null);
   if (!view) return null;
@@ -152,6 +162,15 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
       setBusy(null);
     }
   };
+  const give = async (key: string | null) => {
+    setBusy(key ? `give:${key}` : GIVE_ALL);
+    try {
+      await call("needs-you-give", key ? { sprintId, key } : { sprintId, all: true }, key ? "Given to the SEO Specialist." : "Given to the SEO Specialist. What only a person can do stays here.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const agentCount = view.open.filter((item) => item.agent).length;
   return (
     <SectionCard
       title={`Needs you${view.open.length ? ` (${view.open.length})` : ""}`}
@@ -159,7 +178,18 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
       icon={UserRound}
       tone={view.open.length ? "warn" : "ok"}
       strip={view.open.length > 0}
-      actions={issueLink ?? null}
+      actions={
+        agentCount > 1 || issueLink ? (
+          <span style={{ display: "inline-flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            {agentCount > 1 ? (
+              <Button type="button" variant="primary" style={small} disabled={busy !== null} title="Hands every item the agent can do back to the SEO Specialist; the rest stay here" onClick={() => void give(null)}>
+                {busy === GIVE_ALL ? "Giving…" : `Give ${agentCount} to agent`}
+              </Button>
+            ) : null}
+            {issueLink ?? null}
+          </span>
+        ) : null
+      }
     >
       {view.open.length === 0 ? (
         <span style={{ fontSize: 13, color: tokens.muted }}>Nothing needs you. The SEO agent runs this sprint on its own.</span>
@@ -172,9 +202,16 @@ export function NeedsYouSection({ sprintId, view, call, issueLink }: { sprintId:
                   <Pill size="sm" tone={item.optional ? "neutral" : "warn"}>{index + 1}</Pill>{item.title}
                   {item.optional ? <span style={{ color: tokens.muted, fontWeight: 400 }}> (optional)</span> : null}
                 </strong>
-                <Button type="button" variant="secondary" style={small} disabled={busy === item.key} onClick={() => void done(item.key)}>
-                  {busy === item.key ? "Checking…" : "Done"}
-                </Button>
+                <span style={{ display: "inline-flex", gap: 6 }}>
+                  {item.agent ? (
+                    <Button type="button" variant="secondary" style={small} disabled={busy !== null} title={AGENT_ROUTE_TEXT[item.agent]} onClick={() => void give(item.key)}>
+                      {busy === `give:${item.key}` ? "Giving…" : "Give to agent"}
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="secondary" style={small} disabled={busy !== null} onClick={() => void done(item.key)}>
+                    {busy === item.key ? "Checking…" : "Done"}
+                  </Button>
+                </span>
               </div>
               <span style={{ fontSize: 12.5, color: tokens.muted }}><Rich text={item.why} /></span>
               <Steps steps={item.steps} />

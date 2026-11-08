@@ -4,21 +4,19 @@
  * The track mute is a preview-only switch (the edit document has no track mute; a render always includes the clips,
  * so silence a clip for good with volume 0). Preview volume is capped at 1 because an `<audio>` element cannot go louder.
  */
+import { audioLength } from "../../video-edit/audio-ops.js";
 import type { AudioClip, EditDoc } from "../../video-edit/timeline.js";
-import { freeId } from "./timeline-view.js";
+
+// The op builder is shared with the server voiceover action (PAR-8407 T3).
+export { addAudioOps, audioLength, type AudioPick } from "../../video-edit/audio-ops.js";
 
 export const VOLUME_RANGE = [0, 2] as const;
-const MAX_SECONDS = 180;
-const MIN_SECONDS = 0.1;
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 /** Seconds ahead of the playhead an audio clip gets its element and starts loading. */
 export const AUDIO_LOOKAHEAD = 5;
 
-export interface AudioPick { id: string; version: number; /** Length of the source in seconds. */ seconds: number }
 export interface AudioForm { volume: string; fadeIn: string; fadeOut: string }
 type Ops = { ops: Record<string, unknown>[] };
-
-export const audioLength = (c: AudioClip) => Math.max(0, (c.out - c.in) / (c.speed || 1));
 
 export function audioClips(doc: EditDoc | null): { trackId: string; clip: AudioClip }[] {
   const out: { trackId: string; clip: AudioClip }[] = [];
@@ -30,28 +28,6 @@ export function findAudioClip(doc: EditDoc | null, clipId: string | null): { tra
   return (clipId && audioClips(doc).find((c) => c.clip.id === clipId)) || null;
 }
 
-/**
- * The batch that puts a Library asset's sound on the first audio track at `at` (creating the track when there is
- * none). The clip plays the whole source, cut to fit the edit's 180 s limit and before the next clip on the track.
- */
-export function addAudioOps(doc: EditDoc | null, pick: AudioPick, at: number): (Ops & { clipId: string; start: number }) | { error: string } {
-  if (!doc) return { error: "The edit isn't loaded yet." };
-  const length = Math.floor(pick.seconds * 1000) / 1000;
-  if (!(length > 0)) return { error: "Studio couldn't read how long this sound is." };
-  const track = doc.tracks.find((t) => t.kind === "audio");
-  const trackId = track ? track.id : freeId(doc, "audio");
-  const clips = [...((track?.clips ?? []) as AudioClip[])].sort((a, b) => a.start - b.start);
-  let start = ms(Math.max(0, at));
-  for (const c of clips) if (c.start <= start && start < ms(c.start + audioLength(c))) start = ms(c.start + audioLength(c));
-  const next = clips.find((c) => c.start >= start);
-  const room = ms(Math.min(next ? next.start - start : Infinity, MAX_SECONDS - start));
-  if (room < MIN_SECONDS) return { error: "There is no room for sound here. Move the playhead to a free spot on the audio track." };
-  const clipId = freeId(doc, "aud");
-  const clip = { id: clipId, assetId: pick.id, version: pick.version, in: 0, out: Math.min(length, room), start, volume: 1 };
-  const ops: Record<string, unknown>[] = track ? [] : [{ op: "addTrack", track: { id: trackId, kind: "audio" } }];
-  ops.push({ op: "addClip", trackId, clip });
-  return { ops, clipId, start };
-}
 
 export const formOf = (c: AudioClip): AudioForm => ({ volume: String(c.volume), fadeIn: String(c.fadeIn), fadeOut: String(c.fadeOut) });
 
@@ -117,3 +93,19 @@ export const audioMute = {
     listeners.forEach((fn) => fn());
   },
 };
+
+/** Voiceover from a script (PAR-8418). Mirrors video-edit/tts.ts and tts-price.ts (a test keeps them equal); not imported, they pull server code. */
+export const VOICEOVER_MAX_CHARS = 4000;
+export const VOICEOVER_VOICES = ["eve", "ara", "rex", "sal", "leo"] as const;
+export const VOICEOVER_CREDITS_PER_CHAR = 0.00024;
+
+/** Credits for a script of `chars` characters, rounded to 4 places like the server (4,000 chars is 0.96). */
+export const voiceoverCredits = (chars: number): number => Math.round(Math.max(0, chars) * VOICEOVER_CREDITS_PER_CHAR * 1e4) / 1e4;
+
+/** The `video-edit-voiceover` arguments for the form, or the reason it can't be sent. The server trims the script, so the count does too. */
+export function voiceoverParams(text: string, voice: string, at: number): { script: string; voice: string; at: number } | { error: string } {
+  const script = text.trim();
+  if (!script) return { error: "Type the words to speak." };
+  if (script.length > VOICEOVER_MAX_CHARS) return { error: `A voiceover takes at most ${VOICEOVER_MAX_CHARS} characters; this is ${script.length}.` };
+  return { script, voice: (VOICEOVER_VOICES as readonly string[]).includes(voice) ? voice : VOICEOVER_VOICES[0], at: Math.max(0, at) };
+}

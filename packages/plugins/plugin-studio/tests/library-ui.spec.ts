@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, humanTitle, metaLine, posterFrameUrl, relativeAge, statusTone } from "../src/ui/library.js";
+import { kindLabel, formatDuration, humanTitle, metaLine, posterFrameUrl, relativeAge, statusTone } from "../src/ui/library.js";
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 
@@ -44,5 +44,10 @@ describe("library card helpers (PAR-8047)", () => {
     expect(formatDuration(75)).toBe("1:15");
     expect(formatDuration(Number.NaN)).toBe("");
     expect(posterFrameUrl("https://x/a.mp4?sig=1")).toBe("https://x/a.mp4?sig=1#t=0.1");
+  });
+
+  it("labels audio assets", () => {
+    expect(kindLabel("audio")).toBe("Audio");
+    expect(metaLine({ kind: "audio", createdAt: null }, (id) => id, true, NOW)).toBe("Audio");
   });
 });

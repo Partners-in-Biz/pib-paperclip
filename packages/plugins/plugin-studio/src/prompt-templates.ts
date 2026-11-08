@@ -355,3 +355,43 @@ export function buildPairedPrompts(template: Pick<PromptTemplate, "spec">, value
   const make = (part: object) => JSON.stringify(fillValue(part, values), null, 2);
   return { image_prompt: make(template.spec.image), video_prompt: make(template.spec.video) };
 }
+
+/** The longest pasted agent answer the parser reads. */
+export const PASTE_MAX = 20_000;
+
+export type PasteCode = "paste_blocks" | "paste_json" | "paste_shape" | "paste_too_long" | "paste_placeholder";
+export type PasteResult = { ok: true; image_prompt: string; video_prompt: string } | { ok: false; code: PasteCode; message: string };
+
+const JSON_FENCE = /^[ \t]*```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*$/gim;
+const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * An agent's answer to the paired-prompts brief (PAR-8389). Pure; the text is data and only ever fills a prompt box.
+ * Rules in order: size cap, exactly one json block, valid JSON, exactly {image_prompt, video_prompt} as objects,
+ * pretty-print each (these exact strings fill the box), each within PROMPT_MAX, and no `{{...}}` left.
+ */
+export function parsePairedPrompts(input: string): PasteResult {
+  const fail = (code: PasteCode, message: string): PasteResult => ({ ok: false, code, message });
+  const text = typeof input === "string" ? input : "";
+  if (text.length > PASTE_MAX) return fail("paste_too_long", `That paste is ${text.length.toLocaleString("en-US")} characters; the limit is ${PASTE_MAX.toLocaleString("en-US")}. Paste only the agent's answer.`);
+  const blocks = [...text.matchAll(JSON_FENCE)];
+  if (blocks.length !== 1) return fail("paste_blocks", blocks.length === 0 ? "No json code block found. The answer must hold exactly one block marked json." : `Found ${blocks.length} json code blocks. Keep only the one with the final prompts.`);
+  let value: unknown;
+  try {
+    value = JSON.parse(blocks[0]![1]!);
+  } catch (error) {
+    return fail("paste_json", `The json block isn't valid JSON: ${(error as Error).message}`);
+  }
+  if (!isPlain(value) || Object.keys(value).sort().join(",") !== "image_prompt,video_prompt" || !isPlain(value.image_prompt) || !isPlain(value.video_prompt)) {
+    return fail("paste_shape", "The block must be one object with exactly two keys, image_prompt and video_prompt, each an object.");
+  }
+  const image_prompt = JSON.stringify(value.image_prompt, null, 2);
+  const video_prompt = JSON.stringify(value.video_prompt, null, 2);
+  for (const [name, out] of [["image_prompt", image_prompt], ["video_prompt", video_prompt]] as const) {
+    if (out.length > PROMPT_MAX) return fail("paste_too_long", `${name} is ${out.length.toLocaleString("en-US")} characters; the prompt box takes at most ${PROMPT_MAX.toLocaleString("en-US")}.`);
+  }
+  for (const [name, out] of [["image_prompt", image_prompt], ["video_prompt", video_prompt]] as const) {
+    if (/\{\{[\s\S]*?\}\}/.test(out)) return fail("paste_placeholder", `${name} still has a {{placeholder}}. Ask the agent for real values.`);
+  }
+  return { ok: true, image_prompt, video_prompt };
+}

@@ -6,16 +6,20 @@
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
+import { captionClipAction, type CaptionDeps } from "./auto-caption.js";
+import { voiceoverAction, type VoiceoverDeps } from "./voiceover.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-create",
   "video-edit-get",
   "video-edit-list",
   "video-edit-apply-ops",
+  "video-edit-caption",
   "video-edit-render",
   "video-edit-render-status",
   "video-edit-cancel-render",
   "video-edit-delete",
+  "video-edit-voiceover",
 ] as const;
 
 export const isVideoEditTool = (name: string): boolean => (VIDEO_EDIT_TOOL_NAMES as readonly string[]).includes(name);
@@ -25,9 +29,9 @@ export async function runVideoEditTool(
   ctx: PluginContext,
   name: string,
   params: Record<string, unknown>,
-  run: Pick<ToolRunContext, "companyId" | "agentId">,
-  work: { projectId: string | null },
-  deps: ActionDeps = {},
+  run: Pick<ToolRunContext, "companyId" | "agentId"> & { runId?: string },
+  work: { projectId: string | null; issueId?: string | null },
+  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps } = {},
 ): Promise<unknown> {
   const companyId = run.companyId;
   const actor = { agentId: run.agentId };
@@ -42,6 +46,8 @@ export async function runVideoEditTool(
       return listEditsAction(ctx, companyId, params);
     case "video-edit-apply-ops":
       return applyOpsAction(ctx, companyId, params, actor);
+    case "video-edit-caption":
+      return captionClipAction(ctx, companyId, params, actor, deps);
     case "video-edit-render":
       return renderAction(ctx, companyId, params, actor);
     case "video-edit-render-status":
@@ -50,6 +56,9 @@ export async function runVideoEditTool(
       return cancelRenderAction(ctx, companyId, params, actor);
     case "video-edit-delete":
       return deleteEditAction(ctx, companyId, params, actor);
+    case "video-edit-voiceover":
+      // The run id lets the per-run spend limit apply, like studio-generate.
+      return voiceoverAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId ?? null, issueId: work.issueId ?? null }, deps.voiceover);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }

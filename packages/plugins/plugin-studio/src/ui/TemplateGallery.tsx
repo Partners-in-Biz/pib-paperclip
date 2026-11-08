@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { Building2, Flame, Icon, Input, Megaphone, Package, SectionHeading, Share2, Sparkles, Stamp, UserRound, seriesColor, tone, type LucideIcon } from "@partnersinbiz/pib-plugin-ui";
 import { PHOTO_PRESETS } from "../presets.js";
-import { TEMPLATE_CATEGORIES, buildPairedPrompts, fieldLabel, filterTemplates, PROMPT_TEMPLATES, type PromptTemplate } from "../prompt-templates.js";
+import { TEMPLATE_CATEGORIES, buildPairedPrompts, fieldLabel, filterTemplates, parsePairedPrompts, PROMPT_TEMPLATES, type PromptTemplate } from "../prompt-templates.js";
 import { aspectCss } from "./card-look.js";
 import { posterFrameUrl } from "./library.js";
 import { ChipGroup } from "./ChipGroup.js";
@@ -95,6 +95,29 @@ function PairedForm({ template, onUsePrompt }: { template: PromptTemplate; onUse
   );
 }
 
+/** Where an agent's answer to the "Ask an agent for JSON prompts" task is pasted. Parsing is pure; the buttons only fill the prompt box. */
+function PasteAgentPrompts({ onUsePrompt }: { onUsePrompt: (text: string) => void }) {
+  const [text, setText] = useState("");
+  const [shown, setShown] = useState(false);
+  const result = text.trim() ? parsePairedPrompts(text) : null;
+  const btn = { padding: "6px 12px", borderRadius: 8, border: `1px solid ${tone("accent").solid}`, background: "transparent", color: "inherit", font: "inherit", fontSize: 13, cursor: "pointer" } as const;
+  return (
+    <section aria-label="Paste agent prompts" style={{ display: "grid", gap: 8, minWidth: 0, padding: 12, borderRadius: 12, border: "1px solid var(--border)" }}>
+      <SectionHeading title="Paste agent prompts" />
+      <label style={{ display: "grid", gap: 4, fontSize: 12, color: MUTED, minWidth: 0 }}>
+        Paste the agent's answer (one json block with image_prompt and video_prompt)
+        <textarea aria-label="Agent answer" rows={5} value={text} onChange={(e) => { setText(e.target.value); setShown(false); }} style={{ minWidth: 0, font: "inherit", padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "inherit", resize: "vertical" }} />
+      </label>
+      {result && !result.ok ? <div role="alert" style={{ fontSize: 13, color: tone("danger").solid, overflowWrap: "anywhere" }}>{result.message}</div> : null}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <button type="button" disabled={!result?.ok} style={btn} onClick={() => { if (result?.ok) { onUsePrompt(result.image_prompt); setShown(true); } }}>Use image prompt</button>
+        <button type="button" disabled={!result?.ok} style={btn} onClick={() => { if (result?.ok) { onUsePrompt(result.video_prompt); setShown(true); } }}>Use video prompt</button>
+      </div>
+      <div style={{ fontSize: 12, color: MUTED }}>{shown ? "Filled the prompt box. " : ""}Fills the prompt box only. Pick the model yourself; generating still asks for a price first.</div>
+    </section>
+  );
+}
+
 /** Ready-made templates, the company's saved ones and the photo styles, with search and filters. Picking one fills the composer. */
 export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick, onPickPreset, onUsePrompt, problem }: {
   companyId: string;
@@ -143,6 +166,7 @@ export function TemplateGallery({ companyId, saved, selectedId, presetId, onPick
         onChange={setCategory}
         options={[["", "All"], ...(saved.length ? [["saved", "Yours", saved.length] as [string, string, number]] : []), ...TEMPLATE_CATEGORIES.map((c): [string, string] => [c.id, c.label]), ["styles", "Photo styles"]]}
       />
+      {onUsePrompt ? <PasteAgentPrompts onUsePrompt={onUsePrompt} /> : null}
       {onUsePrompt && selectedPaired ? <PairedForm template={selectedPaired} onUsePrompt={onUsePrompt} /> : null}
       {problem ? <div style={{ fontSize: 13, color: MUTED }}>Your saved templates could not load: {problem}</div> : null}
       {nothing ? <div style={{ fontSize: 13, color: MUTED }}>No templates match. Clear the search, or write your own prompt and save it.</div> : null}

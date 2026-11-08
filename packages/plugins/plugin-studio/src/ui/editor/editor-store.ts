@@ -8,7 +8,8 @@ import type { EditDoc } from "../../video-edit/timeline.js";
 
 export interface EditorEdit {
   id: string;
-  name?: string;
+  /** The edit's title, as video-edit-get returns it. */
+  title?: string;
   revision: number;
   duration?: number;
   doc: EditDoc;
@@ -17,6 +18,8 @@ export interface EditorEdit {
 export interface EditorApi {
   get(editId: string): Promise<unknown>;
   applyOps(params: { editId: string; baseRevision: number; ops: unknown[] }): Promise<unknown>;
+  voiceover?(params: { editId: string; baseRevision: number; script: string; voice: string; at: number }): Promise<unknown>;
+  caption?(params: { editId: string; baseRevision: number; clipId: string; style?: string }): Promise<unknown>;
 }
 
 export type EditorStatus = "idle" | "loading" | "ready" | "error";
@@ -46,6 +49,8 @@ export function isEditConflict(err: unknown): boolean {
 
 function messageOf(err: unknown): string {
   const text = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  // A missing xAI key (PAR-8418): always name the setting, whatever the server worded.
+  if ((err as { code?: unknown } | null)?.code === "not_configured" && !text.includes("xAI voice")) return `Voiceover needs an xAI key: set it under "xAI voice" in Studio's plugin settings.`;
   return text.trim() || "Something went wrong. Try again.";
 }
 
@@ -64,6 +69,10 @@ export interface EditorStore {
   subscribe(listener: () => void): () => void;
   load(editId: string | null): Promise<void>;
   applyOps(ops: unknown[]): Promise<boolean>;
+  /** `video-edit-voiceover`: script to speech on the audio track; the new clip id, or null on failure. */
+  voiceover(params: { script: string; voice: string; at: number }): Promise<string | null>;
+  /** `video-edit-caption`: speech in a video/sound clip becomes captions (PAR-8360). False when the page has no such action. */
+  autoCaption(params: { clipId: string; style?: string }): Promise<boolean>;
   setPlayhead(seconds: number): void;
   selectClip(clipId: string | null): void;
   dismissToast(): void;
@@ -106,11 +115,12 @@ export function createEditorStore(api: EditorApi): EditorStore {
     }
   }
 
-  async function applyOps(ops: unknown[]): Promise<boolean> {
+  /** One server change at the page's revision: the answer (a saved edit) is adopted, a conflict reloads. */
+  async function save(call: (p: { editId: string; baseRevision: number }) => Promise<unknown>): Promise<boolean> {
     if (!editId || state.revision === null || state.busy) return false;
     set({ busy: true, toast: null });
     try {
-      const saved = (await api.applyOps({ editId, baseRevision: state.revision, ops })) as { revision?: number; doc?: EditDoc; duration?: number };
+      const saved = (await call({ editId, baseRevision: state.revision })) as { revision?: number; doc?: EditDoc; duration?: number };
       if (!saved || typeof saved.revision !== "number" || !saved.doc) throw new Error("The editor got an unexpected answer. Reload and try again.");
       adopt({ ...(state.edit as EditorEdit), revision: saved.revision, doc: saved.doc, duration: saved.duration }, { busy: false });
       return true;
@@ -126,6 +136,21 @@ export function createEditorStore(api: EditorApi): EditorStore {
     }
   }
 
+  const applyOps = (ops: unknown[]) => save((p) => api.applyOps({ ...p, ops }));
+  /** `video-edit-voiceover` (PAR-8418): speaks a script onto the audio track; resolves the new clip's id, or null when it failed (the toast says why). */
+  const voiceover = async (params: { script: string; voice: string; at: number }): Promise<string | null> => {
+    if (!api.voiceover) return null;
+    let clipId: string | null = null;
+    const ok = await save(async (p) => {
+      const saved = (await api.voiceover!({ ...p, ...params })) as { clipId?: unknown };
+      clipId = typeof saved?.clipId === "string" ? saved.clipId : null;
+      return saved;
+    });
+    return ok ? clipId : null;
+  };
+  const autoCaption = (params: { clipId: string; style?: string }) =>
+    api.caption ? save((p) => api.caption!({ ...p, ...params })) : Promise.resolve(false);
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -134,6 +159,8 @@ export function createEditorStore(api: EditorApi): EditorStore {
     },
     load,
     applyOps,
+    autoCaption,
+    voiceover,
     setPlayhead: (seconds) => set({ playhead: Number.isFinite(seconds) ? Math.max(0, seconds) : 0 }),
     selectClip: (clipId) => set({ selectedClipId: clipId }),
     dismissToast: () => set({ toast: null }),

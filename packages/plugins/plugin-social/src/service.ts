@@ -43,6 +43,7 @@ import {
   deletePost,
   destinationsForPost,
   destinationsForScope,
+  deleteDisabledAccount,
   disconnectAccount,
   getAccount,
   getAccountsByIds,
@@ -887,6 +888,15 @@ export async function disconnectAccountRecord(ctx: PluginContext, viewer: Viewer
   const account = await requireAccount(ctx, viewer, accountId);
   await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
   return { accountId: account.id, status: "disabled" };
+}
+
+export async function deleteAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
+  requireUser(viewer, "delete an account");
+  const account = await requireAccount(ctx, viewer, accountId);
+  if (account.status !== "disabled") throw new SocialError(`Disconnect ${account.display_name} first, then delete it`);
+  const removed = await deleteDisabledAccount(ctx, viewer.companyId, account.id);
+  if (!removed) throw new SocialError(`${account.display_name} was not deleted: it is no longer disconnected`);
+  return { accountId: account.id, deleted: true };
 }
 
 export async function refreshAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {

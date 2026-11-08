@@ -201,6 +201,30 @@ describe("pdf", () => {
     expect(pdfSafe("a – b “c” … €5")).toBe('a - b "c" ... €5');
     expect(formatMoneyMinor(-1_50, "ZAR")).toBe("-R 1.50");
   });
+
+  it("renders the same bytes for the same document at different times", async () => {
+    const spec = {
+      title: "Tax invoice",
+      number: "LUM-002",
+      details: [["Date", "2026-09-26"]] as Array<[string, string]>,
+      parties: [{ heading: "From", lines: ["Partners in Biz"] }],
+      columns: [{ key: "d", label: "Description", width: 5 }],
+      rows: [{ d: "Work" }],
+      totals: [{ label: "Total", value: "R 1.00", bold: true }],
+    };
+    // Only Date is faked: pdf-lib's save() yields with setTimeout, which must keep running.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-08T10:00:00Z"));
+      const a = await renderDocumentPdf(spec);
+      vi.setSystemTime(new Date("2026-11-09T11:30:07Z"));
+      const b = await renderDocumentPdf(spec);
+      expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
+      expect(new TextDecoder("latin1").decode(a)).not.toMatch(/CreationDate|ModDate/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 import { moduleOfPlugin, setupProgress, settingsItem, isModuleEnabled } from "../src/setup.js";

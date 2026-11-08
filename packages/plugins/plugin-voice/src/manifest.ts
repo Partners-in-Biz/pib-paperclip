@@ -15,6 +15,8 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "agents.read",
     "http.outbound",
+    "plugin.state.read",
+    "plugin.state.write",
     "secrets.read-ref",
     "ui.action.register",
   ],

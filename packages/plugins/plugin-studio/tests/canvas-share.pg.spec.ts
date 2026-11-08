@@ -58,6 +58,17 @@ describe("renderSharePage", () => {
     expect(html).toContain("default-src 'none'");
     expect(html).toContain("link expires Fri, 13 Nov 2026 10:00 UTC");
   });
+
+  it("shows an audio asset as a player tile, not an image", () => {
+    const html = renderSharePage({
+      title: "Voice",
+      doc: { nodes: [{ id: "v", type: "output", position: { x: 0, y: 0 }, data: { assetId: "a1", label: "Voiceover" } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 } },
+      previews: { a1: { url: "https://x.test/a.mp3?s=1&t=2", kind: "audio" } },
+      expiresAt: null,
+    });
+    expect(html).toContain('<audio src="https://x.test/a.mp3?s=1&amp;t=2" controls');
+    expect(html).not.toContain("<img");
+  });
 });
 
 const available = await embeddedAvailable();

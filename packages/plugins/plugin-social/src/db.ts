@@ -394,6 +394,24 @@ export async function disconnectAccount(ctx: PluginContext, companyId: string, i
   return result.rowCount;
 }
 
+/**
+ * Delete a disconnected account for good (a wrong account connected by mistake). Its inbox items, metrics and RSS feed links go; its
+ * destinations on posts (and their scores) go by cascade, so the posts stay but no longer list it. Only a disabled row is removed.
+ */
+export async function deleteDisabledAccount(ctx: PluginContext, companyId: string, id: string): Promise<number> {
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "rss_feeds")}
+        SET account_ids = array_remove(account_ids, $2),
+            account_id = CASE WHEN account_id = $2 THEN NULL ELSE account_id END
+      WHERE company_id = $1 AND ($2 = ANY(account_ids) OR account_id = $2)`,
+    [companyId, id],
+  );
+  const result = await ctx.db.execute(`DELETE FROM ${table(ctx, "accounts")} WHERE company_id = $1 AND id = $2 AND status = 'disabled'`, [companyId, id]);
+  return result.rowCount;
+}
+
 /** Take a short lock before refreshing (refresh tokens may rotate). */
 export async function lockAccountRefresh(ctx: PluginContext, id: string, seconds = 120): Promise<boolean> {
   const result = await ctx.db.execute(

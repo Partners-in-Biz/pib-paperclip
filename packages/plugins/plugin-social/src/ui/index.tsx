@@ -75,6 +75,7 @@ const ACTION_KEYS = [
   "social.oauth-confirm",
   "social.connect-bluesky",
   "social.disconnect-account",
+  "social.delete-account",
   "social.update-account",
   "social.refresh-account",
   "social.media-presign",

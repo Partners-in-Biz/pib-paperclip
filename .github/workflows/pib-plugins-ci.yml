@@ -32,7 +32,7 @@ on:
 permissions:
   contents: read
 
-# A newer push replaces the older run, on pull requests and on `development` alike (PAR-7886: one self-hosted runner,
+# A newer push replaces the older run, on pull requests and on `development` alike (PAR-7886: on the one VPS runner,
 # bursts of merges queued for hours). A push run checks everything changed since the last green `development` push
 # run, so a cancelled run's changes are checked by the run that replaced it. Scheduled and manual runs have their own
 # group and are never cancelled.
@@ -41,37 +41,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  # One job, so a run waits for a runner once (PAR-7886, 2026-11-08). It used to be four jobs (scope, packages,
-  # telephony guard, aggregate) on the same self-hosted lane: each one queued again behind every other pull request's
-  # jobs, so a 6-minute check took 10-17 minutes. The steps are the same, in the same order:
+  # One job (PAR-7886, 2026-11-08): scope, telephony guard, typecheck/test/build, connector. It used to be four jobs
+  # that each queued again for the runner. The steps, in order:
   #   1. pick the scope: full | some | none, the changed packages (their declared dependents are checked too) and the
   #      extras checked as-is (the kit, whose contract tests read every plugin's sources, and packages whose tests or
   #      build read another plugin's files by relative path)
   #   2. the telephony secret guard, when telephony is in scope
   #   3. typecheck, test and build the packages in scope, then the PHP connector when it is in scope
   # The job is named "PiB plugins CI" (the one check name to watch or require) and always reports, also for a change
-  # outside the PiB packages (scope none: only steps 1-2 run, about 20 s).
-  # A pull request from a fork never runs on the self-hosted runner: it gets a GitHub-hosted runner that only fails
-  # the check with a message, so a fork pull request can't be merged on a skipped check either.
+  # outside the PiB packages (scope none: only steps 1-2 run).
+  # GitHub-hosted since 2026-11-08: this repo is public, so standard hosted minutes are free, every run gets a clean
+  # 4-CPU / 16 GB machine and runs don't queue behind each other. It used to run on the VPS runner (pib-vps), where it
+  # shared disk and memory with production: the disk guard stopped CI at 80% and a cancelled job's leftovers took a
+  # runner offline. A fork pull request is safe here too (no VPS, read-only token).
   pib-plugins-ci:
     name: PiB plugins CI
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","pib-vps"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       actions: read
-    env:
-      FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
-      - name: Refuse a fork pull request
-        if: env.FORK == 'true'
-        run: |
-          echo "Pull requests from forks are not checked here (self-hosted runner). Push the branch to ${{ github.repository }}." >&2
-          exit 1
-
-      - name: Root disk before
-        run: df -h /
-
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -204,26 +194,26 @@ jobs:
           echo "PIB_FILTERS=${filters}" >> "$GITHUB_ENV"
           echo "packages: ${filters}"
 
-      # Two at a time at most (one runner). The scripts a package does not have are skipped (--if-present). The kit's
+      # Three at a time (a hosted runner has 4 CPUs, 16 GB). The scripts a package does not have are skipped (--if-present). The kit's
       # `test` also runs the cross-plugin contract tests (skill text against registered tools) that read every PiB
       # plugin's sources. `read -ra` splits the filter list without glob expansion.
       - name: Typecheck
         if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
-          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run typecheck
+          pnpm -r --workspace-concurrency=3 "${f[@]}" --if-present run typecheck
 
       - name: Test
         if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
-          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run test
+          pnpm -r --workspace-concurrency=3 "${f[@]}" --if-present run test
 
       - name: Build
         if: steps.scope.outputs.scope != 'none'
         run: |
           read -ra f <<< "$PIB_FILTERS"
-          pnpm -r --workspace-concurrency=2 "${f[@]}" --if-present run build
+          pnpm -r --workspace-concurrency=3 "${f[@]}" --if-present run build
 
       # The connector is PHP. Its own tests run on the runner's PHP; the zip it ships (inside the CRM bundle) must be
       # byte-for-byte the same on every build, because the CRM hands its sha256 to the sites that self-update.
@@ -237,14 +227,3 @@ jobs:
           pnpm --filter "@partnersinbiz/pib-wp-connector" run build
           second="$(sha256sum packages/plugins/pib-wp-connector/dist/pib-connector.zip | cut -d' ' -f1)"
           test "$first" = "$second" || { echo "pib-connector.zip is not reproducible: $first vs $second"; exit 1; }
-
-      - name: Prune pnpm store
-        if: always() && env.FORK != 'true'
-        run: pnpm store prune || true
-
-      - name: Root disk after (must stay under 80%)
-        if: always() && env.FORK != 'true'
-        run: |
-          df -h /
-          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
-          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }

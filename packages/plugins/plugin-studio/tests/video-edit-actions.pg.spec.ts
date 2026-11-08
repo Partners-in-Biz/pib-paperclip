@@ -12,6 +12,7 @@ import {
   renderStatusAction,
   type StartAsset,
 } from "../src/video-edit/actions.js";
+import { captionClipAction } from "../src/video-edit/auto-caption.js";
 import type { ProbeResult } from "../src/video-edit/probe.js";
 import { getRender } from "../src/video-edit/render-queue.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
@@ -98,6 +99,16 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
     expect(audio).toMatchObject({ id: "audio", kind: "audio", clips: [{ assetId: "song", start: 0, out: 30 }] });
     expect((await listEditsAction(ctx, CO, {})).edits.map((e) => e.id)).toEqual([edit.id]);
     expect(await getEditAction(ctx, CO, { editId: edit.id })).toMatchObject({ id: edit.id, revision: 1 });
+  });
+
+  it("start-from-assets stores a schema v1 doc with no v2 fields (PAR-8442)", async () => {
+    await addAsset("vid", CO, null);
+    const { probe } = fakeProbe({ vid: probeResult(3) });
+    const edit = await createEditAction(ctx, CO, { title: "Plain", assetIds: ["vid"] }, USER, { probe });
+    const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(`SELECT doc FROM ${pg.db.namespace}.video_edits WHERE id = $1`, [edit.id]);
+    const stored = typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
+    expect(stored).toMatchObject({ schemaVersion: 1 });
+    expect(JSON.stringify(stored)).not.toMatch(/keyframes|transitionIn":\{/);
   });
 
   it("caps a start-from-assets timeline at 180 s and refuses assets that do not fit at all", async () => {
@@ -202,5 +213,32 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
     const edit = await createEditAction(ctx, CO, { title: "Cut", assetIds: ["v"] }, USER, fakeProbe({}));
     for (let i = 0; i < MAX_QUEUED_RENDERS; i++) await renderAction(ctx, CO, { editId: edit.id }, USER);
     await expect(renderAction(ctx, CO, { editId: edit.id }, USER)).rejects.toMatchObject({ code: "render_busy" });
+  });
+  it("a sound file (kind audio) goes on the audio track by its probed length, even with cover art", async () => {
+    await addAsset("vo", CO, null, "audio");
+    const { probe, probed } = fakeProbe({ vo: probeResult(7.5, true, true) });
+    const edit = await createEditAction(ctx, CO, { title: "Voiceover", assetIds: ["vo"] }, USER, { probe });
+    expect(probed).toEqual(["vo"]);
+    expect(edit.doc.tracks.find((tr) => tr.kind === "audio")).toMatchObject({ clips: [{ assetId: "vo", out: 7.5 }] });
+    await addAsset("silent", CO, null, "audio");
+    await expect(createEditAction(ctx, CO, { title: "x", assetIds: ["silent"] }, USER, fakeProbe({ silent: probeResult(3, false, false) }))).rejects.toThrow(/no picture or sound/);
+  });
+
+  it("captions an audio clip with a fake speech-to-text", async () => {
+    await addAsset("vo", CO, null, "audio");
+    const edit = await createEditAction(ctx, CO, { title: "Voiceover", assetIds: ["vo"] }, USER, fakeProbe({ vo: probeResult(4, false, true) }));
+    const clipId = edit.doc.tracks.find((tr) => tr.kind === "audio")!.clips[0]!.id;
+    const extracted: string[] = [];
+    const out = await captionClipAction(ctx, CO, { editId: edit.id, baseRevision: edit.revision, clipId }, USER, {
+      extract: async (_ctx, _co, input) => {
+        extracted.push(`${input.assetId}:${input.kind}`);
+        return new Uint8Array([1]);
+      },
+      stt: async () => ({ key: "fake", transcribe: async () => ({ words: [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "there", start: 0.7, end: 1 }], duration: 4 }) }),
+    });
+    expect(extracted).toEqual(["vo:audio"]);
+    expect(out).toMatchObject({ revision: edit.revision + 1, captions: { cues: 1, words: 2 } });
+    const caption = out.doc.tracks.find((tr) => tr.kind === "caption")!;
+    expect(caption.clips).toHaveLength(1);
   });
 });
