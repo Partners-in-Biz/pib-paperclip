@@ -72,7 +72,7 @@ export function Player({ store }: { store: EditorStore }) {
     <section aria-label="Player" data-editor-panel="player" style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <div style={{ width: "100%", maxWidth: 480, maxHeight: "60vh", aspectRatio: aspect, margin: "0 auto", borderRadius: 8, overflow: "hidden", background: "rgba(127,127,127,0.12)", display: "grid", placeItems: "center", minWidth: 0 }}>
         {clip && url ? (
-          <video ref={ref} src={url} muted={false} playsInline preload="auto" onTimeUpdate={onTime} onPause={() => setPlaying(false)} onPlay={() => setPlaying(true)} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+          <video ref={ref} src={url} playsInline preload="auto" onTimeUpdate={onTime} onPause={() => setPlaying(false)} onPlay={() => setPlaying(true)} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
         ) : (
           <div style={{ padding: 12, textAlign: "center", opacity: 0.7 }}>
             {clips.length === 0 ? "Nothing to play yet." : clip ? (previews.error ?? "Loading the video…") : "No video at this point."}
