@@ -40,7 +40,10 @@ describe("editor store", () => {
     await store.load("e1");
     api.applyOps.mockRejectedValueOnce(Object.assign(new Error("Someone saved this video edit"), { code: "edit_conflict" }));
     api.get.mockResolvedValueOnce(edit(5, ["z"]));
+    const statuses: string[] = [];
+    store.subscribe(() => statuses.push(store.getState().status));
     expect(await store.applyOps([])).toBe(false);
+    expect(statuses).not.toContain("loading"); // the panels stay mounted during the reload
     expect(store.getState()).toMatchObject({ revision: 5, status: "ready", busy: false });
     expect(store.getState().toast).toMatch(/Someone else/);
     expect(isEditConflict(new Error("edit_conflict"))).toBe(true);

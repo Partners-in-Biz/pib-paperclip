@@ -92,7 +92,9 @@ export function createEditorStore(api: EditorApi): EditorStore {
       set({ status: "error", error: "No video edit was chosen. Open one from the Studio library." });
       return;
     }
-    set({ status: "loading", error: null, toast: null });
+    // First load shows "loading"; a reload of the same edit keeps the current doc on screen until the new one arrives.
+    const reload = state.status === "ready" && state.edit?.id === editId;
+    set(reload ? { error: null } : { status: "loading", error: null, toast: null });
     try {
       const edit = toEdit(await api.get(editId));
       if (seq !== loadSeq) return;
