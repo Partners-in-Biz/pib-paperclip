@@ -197,7 +197,8 @@ function buildDaemon(env = process.env, deps = {}) {
 
   const { createDispatcher } = require('./dispatch.cjs');
   const { dispatch } = createDispatcher({
-    authenticate: (req) => authFn(req, { fetch: deps.fetch || globalThis.fetch }),
+    authenticate: (req) => authFn(req, { fetch: deps.fetch || globalThis.fetch, apiBase: config.apiBase }),
+    apiBase: config.apiBase,
     browser,
     policy: policyResult.policy,
     sites,
