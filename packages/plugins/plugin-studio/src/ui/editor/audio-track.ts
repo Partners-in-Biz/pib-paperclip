@@ -93,3 +93,19 @@ export const audioMute = {
     listeners.forEach((fn) => fn());
   },
 };
+
+/** Voiceover from a script (PAR-8418). Mirrors video-edit/tts.ts and tts-price.ts (a test keeps them equal); not imported, they pull server code. */
+export const VOICEOVER_MAX_CHARS = 4000;
+export const VOICEOVER_VOICES = ["eve", "ara", "rex", "sal", "leo"] as const;
+export const VOICEOVER_CREDITS_PER_CHAR = 0.00024;
+
+/** Credits for a script of `chars` characters, rounded to 4 places like the server (4,000 chars is 0.96). */
+export const voiceoverCredits = (chars: number): number => Math.round(Math.max(0, chars) * VOICEOVER_CREDITS_PER_CHAR * 1e4) / 1e4;
+
+/** The `video-edit-voiceover` arguments for the form, or the reason it can't be sent. The server trims the script, so the count does too. */
+export function voiceoverParams(text: string, voice: string, at: number): { script: string; voice: string; at: number } | { error: string } {
+  const script = text.trim();
+  if (!script) return { error: "Type the words to speak." };
+  if (script.length > VOICEOVER_MAX_CHARS) return { error: `A voiceover takes at most ${VOICEOVER_MAX_CHARS} characters; this is ${script.length}.` };
+  return { script, voice: (VOICEOVER_VOICES as readonly string[]).includes(voice) ? voice : VOICEOVER_VOICES[0], at: Math.max(0, at) };
+}
