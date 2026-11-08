@@ -65,7 +65,7 @@ describe("canvas card model choice", () => {
     expect(two.find((o) => o.label.startsWith("Nano Banana 2"))?.disabled).toMatch(/Not on the Higgsfield REST API/);
     const video = modelOptions("video", 0, PAGE_MODELS, UNAVAILABLE_MODELS);
     expect(video.find((o) => o.id === "kling-video/v3.0-turbo/image-to-video")?.disabled).toBe("needs 1 reference image connected");
-    expect(video.find((o) => o.label.startsWith("Seedance 2.0"))?.disabled).toMatch(/Not priced/);
+    expect(video.find((o) => o.label.startsWith("Seedance 2.0"))?.disabled).toBeNull();
     expect(video.every((o) => !o.label.includes("(image)"))).toBe(true);
     const one = modelOptions("video", 1, PAGE_MODELS, UNAVAILABLE_MODELS);
     expect(one.find((o) => o.id === "kling-video/v3.0-turbo/image-to-video")?.disabled).toBeNull();

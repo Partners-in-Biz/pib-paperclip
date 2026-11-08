@@ -38,6 +38,11 @@ function own<T>(table: Readonly<Record<string, T>>, key: unknown): T | undefined
   return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
 }
 
+/** True when Studio prices this model from the table above, not from the provider's `/estimate`. */
+export function isTablePriced(modelId: string): boolean {
+  return own(SEEDANCE_RATES, modelId) !== undefined;
+}
+
 /**
  * Credits for one job on a table-priced model, ceiled to 3 decimals. null: the model is not table-priced (ask the
  * provider). A table-priced model with any setting the table cannot price throws `no_price`; there are no defaults.

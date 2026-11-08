@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
 import { assetFileForAgent, assetOut, getAssetRow, importFromAttachment, linkAsset, listAssets } from "../src/assets.js";
-import { processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
+import { estimateGeneration, processQueue, requestGeneration, generationStatus, resetQueueStateForTests, type Runtime } from "../src/generation.js";
 import { capHistory, setCap, usage, currentPeriod, DEFAULT_RUN_LIMIT, runLimitOf, runUsage, agentLimitKey } from "../src/ledger.js";
 import { ProviderError, type GenerationProvider, type JobState } from "../src/provider.js";
 import { isCompanyOwner, usageView } from "../src/service.js";
@@ -328,6 +328,73 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       expect(await ok({ type: "user", userId: "former-owner" })).toBe(false);
       expect(await ok({ type: "user", userId: "stranger" })).toBe(false);
       expect(await ok({ type: "agent", agentId: "agent-1", userId: "owner-1" })).toBe(false);
+    });
+  });
+
+  describe("Seedance table price and per-job ceiling (PAR-8309)", () => {
+    const V20 = "bytedance/seedance-2.0/text-to-video";
+    const V25 = "bytedance/seedance-2.5/text-to-video";
+    const PERSON = { userId: "user-1", issueId: "issue-acme", projectId: "project-acme" };
+    const seedance = (model: string, duration: number, resolution: string) => ({ model, prompt: "waves at sunset", params: { duration, resolution, aspect_ratio: "16:9" } });
+    const ledgerRows = async () => (await rows(world, `SELECT COUNT(*)::int AS n FROM ${T("credit_ledger")}`))[0].n as number;
+    let warns: Array<Record<string, unknown>>;
+
+    beforeEach(async () => {
+      await setCap(world.ctx, CO, "company", 500, "owner-1");
+      warns = [];
+      (world.ctx.logger as unknown as { warn: (msg: string, meta?: Record<string, unknown>) => void }).warn = (msg, meta) => void warns.push({ msg, ...meta });
+    });
+
+    it("prices from the table, not the provider's /estimate", async () => {
+      const out = await requestGeneration(world.ctx, CO, seedance(V20, 5, "480p"), PERSON, runtime);
+      expect(out.creditsReserved).toBe(10.761);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(10.761);
+      expect((await estimateGeneration(world.ctx, CO, seedance(V25, 5, "480p"), PERSON, runtime)).creditsEach).toBe(16.449);
+    });
+
+    it("refuses a job over the ceiling with no row and no reserve", async () => {
+      await expect(requestGeneration(world.ctx, CO, seedance(V25, 15, "720p"), PERSON, runtime)).rejects.toMatchObject({ code: "over_job_ceiling" });
+      await expect(estimateGeneration(world.ctx, CO, seedance(V20, 15, "1080p"), PERSON, runtime)).rejects.toMatchObject({ code: "over_job_ceiling" });
+      expect(await rows(world, `SELECT id FROM ${T("generations")}`)).toHaveLength(0);
+      expect(await ledgerRows()).toBe(0);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0);
+    });
+
+    it("never sends a queued row priced over the ceiling, and refunds it", async () => {
+      const out = await requestGeneration(world.ctx, CO, seedance(V20, 5, "480p"), PERSON, runtime);
+      // A row from before the ceiling: priced 70, its reserve not yet written.
+      await pg.client.query(`UPDATE ${T("generations")} SET estimated_credits = 70 WHERE id = $1`, [out.generationIds[0]]);
+      await pg.client.query(`DELETE FROM ${T("credit_ledger")}`);
+      await processQueue(world.ctx, runtime);
+      expect(provider.submits).toHaveLength(0);
+      expect((await rows(world, `SELECT status, error_code FROM ${T("generations")}`))[0]).toEqual({ status: "failed", error_code: "over_job_ceiling" });
+      expect(await rows(world, `SELECT kind FROM ${T("credit_ledger")} ORDER BY kind`)).toEqual([{ kind: "refund" }, { kind: "reserve" }]);
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(0);
+    });
+
+    it.each([
+      [null, "no_actual", 10.761],
+      [5, "unit_suspect", 10.761],
+      [8, "under", 8],
+      [10.761, null, 10.761],
+      [11.5, null, 11.5],
+      [12, "drift", 12],
+    ] as const)("settles actual %s credits as %s, ledger total %s", async (actual, kind, total) => {
+      provider.state = { state: "done", urls: ["https://cdn.example.com/out.png"], credits: actual };
+      await requestGeneration(world.ctx, CO, seedance(V20, 5, "480p"), PERSON, runtime);
+      await processQueue(world.ctx, runtime);
+      await processQueue(world.ctx, runtime);
+      expect((await rows(world, `SELECT status FROM ${T("generations")}`))[0].status).toBe("succeeded");
+      expect(await usage(world.ctx, CO, currentPeriod())).toBe(total);
+      const checks = warns.filter((w) => w.msg === "studio.seedance_price_check");
+      expect(checks.map((w) => w.kind)).toEqual(kind ? [kind] : []);
+    });
+
+    it.each([0, -1, Number.NaN])("refuses a provider price of %s as no_price, for any model", async (price) => {
+      provider.price = price;
+      await expect(requestGeneration(world.ctx, CO, REQUEST, PERSON, runtime)).rejects.toMatchObject({ code: "no_price" });
+      await expect(estimateGeneration(world.ctx, CO, REQUEST, PERSON, runtime)).rejects.toMatchObject({ code: "no_price" });
+      expect(await ledgerRows()).toBe(0);
     });
   });
 
