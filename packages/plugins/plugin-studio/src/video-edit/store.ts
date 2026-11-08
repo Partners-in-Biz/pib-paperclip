@@ -108,7 +108,7 @@ export function editAssetIds(doc: EditDoc): string[] {
 }
 
 /** Every asset must be in this company's library and belong to the edit's client (or be own work for own work). */
-async function assertAssets(ctx: PluginContext, companyId: string, scope: ClientScope, ids: string[]): Promise<void> {
+export async function assertAssets(ctx: PluginContext, companyId: string, scope: ClientScope, ids: string[]): Promise<void> {
   if (!ids.length) return;
   const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
   const rows = await ctx.db.query<{ id: string; client_kind: string | null; client_ref: string | null }>(
