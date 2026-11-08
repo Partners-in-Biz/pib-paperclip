@@ -7,10 +7,13 @@
  * `transitionIn` that overlaps the clip before it is joined with `xfade=fade` over the overlap (no overlap: it fades in from
  * black); gaps, the lead-in before the first clip and the tail up to the edit's end are black `color` segments. Every
  * `overlay` track is then laid over that base in track order, each clip at its centre offset x/y and fit scale.
- * Text and captions (A5a) and audio (A5b) are not compiled here yet: they and anything else outside this model throw
- * `CompileError` with `unsupported_feature:<name>`. The output has no audio stream (`-an`) until A5b.
+ * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Audio (A5b) is not compiled here
+ * yet: it and anything else outside this model throw `CompileError` with `unsupported_feature:<name>`. The output has no
+ * audio stream (`-an`) until A5b.
  */
 import { StudioError } from "../errors.js";
+import { buildTextLayers } from "./compile-text.js";
+import { fontsDir } from "./fonts.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform } from "./timeline.js";
 
 /** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
@@ -19,8 +22,10 @@ export interface CompileInput { path: string; kind: "video" | "image" }
 export type CompileInputs = Record<string, CompileInput>;
 export interface CompileFile { name: string; content: string }
 export interface CompiledVideo { args: string[]; files: CompileFile[] }
-/** The video half of a render, for the text/audio compilers to extend: input args, graph lines, and the final label. */
-export interface VideoGraph { inputArgs: string[]; filters: string[]; outLabel: string; inputCount: number; duration: number }
+/** The video half of a render, for the audio compiler to extend: input args, graph lines, the final label, work-dir files. */
+export interface VideoGraph { inputArgs: string[]; filters: string[]; outLabel: string; inputCount: number; duration: number; files: CompileFile[] }
+/** `fontsDir`: where the bundled TTFs are (default: beside the worker); only read when the edit has text or captions. */
+export interface CompileOptions { fontsDir?: string }
 
 export const GRAPH_FILE = "video.graph";
 /** H.264 High, CRF 20 capped at 6 Mbit/s: a 180 s 1080x1920 render stays near 140 MB (plan PAR-8276, Critic 2d). */
@@ -192,10 +197,10 @@ class Graph {
 }
 
 /** Builds the picture graph. Throws `CompileError` for what Phase A can't render. */
-export function buildVideoGraph(doc: EditDoc, sources: CompileInputs): VideoGraph {
+export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: CompileOptions = {}): VideoGraph {
   for (const track of doc.tracks) {
     if (track.clips.length === 0) continue;
-    if (track.kind === "text" || track.kind === "caption" || track.kind === "audio") unsupported(track.kind);
+    if (track.kind === "audio") unsupported(track.kind);
   }
   const videoTracks = doc.tracks.filter((t) => t.kind === "video" && t.clips.length > 0);
   if (videoTracks.length > 1) unsupported("multiple_video_tracks");
@@ -226,14 +231,16 @@ export function buildVideoGraph(doc: EditDoc, sources: CompileInputs): VideoGrap
     if (track.kind !== "overlay") continue;
     for (const clip of [...track.clips].sort((a, b) => a.start - b.start)) base = g.overlayClip(base, clip);
   }
+  const text = buildTextLayers(doc, base, () => options.fontsDir ?? fontsDir());
+  g.filters.push(...text.filters);
   const outLabel = "vout";
-  g.filters.push(`[${base}]format=yuv420p,setsar=1[${outLabel}]`);
-  return { inputArgs: g.inputArgs, filters: g.filters, outLabel, inputCount: g.inputArgs.filter((a) => a === "-i").length, duration };
+  g.filters.push(`[${text.outLabel}]format=yuv420p,setsar=1[${outLabel}]`);
+  return { inputArgs: g.inputArgs, filters: g.filters, outLabel, inputCount: g.inputArgs.filter((a) => a === "-i").length, duration, files: text.files };
 }
 
 /** Full ffmpeg args for a picture-only render to `outputPath` (relative to the work dir, or absolute). */
-export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: string): CompiledVideo {
-  const graph = buildVideoGraph(doc, sources);
+export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: string, options: CompileOptions = {}): CompiledVideo {
+  const graph = buildVideoGraph(doc, sources, options);
   const args = [
     "-hide_banner", "-nostdin", "-y",
     ...graph.inputArgs,
@@ -246,5 +253,5 @@ export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: s
     "-movflags", "+faststart",
     filePath(outputPath),
   ];
-  return { args, files: [{ name: GRAPH_FILE, content: `${graph.filters.join(";\n")}\n` }] };
+  return { args, files: [{ name: GRAPH_FILE, content: `${graph.filters.join(";\n")}\n` }, ...graph.files] };
 }
