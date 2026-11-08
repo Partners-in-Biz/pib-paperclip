@@ -46,6 +46,20 @@ async function activeCount(): Promise<number> {
 }
 
 describe.skipIf(!available)("Render queue against real Postgres", () => {
+  it("enqueueRender stores the normalized doc: v1 stays v1, v2 stays v2, an unreadable doc is refused (PAR-8442)", async () => {
+    const ctx = ctxs[0];
+    const stored = async (doc: unknown) => {
+      const job = await enqueueRender(ctx, { companyId: CO, editId: `e-${Math.random()}`, editRevision: 1, doc, preset: "9:16" });
+      const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(`SELECT doc FROM ${pg.db.namespace}.video_renders WHERE id = $1`, [job.id]);
+      await cancelRender(ctx, CO, job.id);
+      return typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
+    };
+    expect(await stored({ project: { size: "1:1" }, tracks: [], junk: true })).toEqual({ schemaVersion: 1, project: { size: "1:1", width: 1080, height: 1080, fps: 30 }, tracks: [] });
+    const clip = { id: "c", assetId: "a", version: 1, in: 0, out: 2, start: 0, keyframes: { scale: [{ t: 0, value: 1 }, { t: 2, value: 2 }] } };
+    expect(await stored({ ...DOC, schemaVersion: 2, tracks: [{ id: "v", kind: "video", clips: [clip] }] })).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { scale: [{}, {}] } }] }] });
+    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 3 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
+  });
+
   let ctx: PluginContext;
   beforeEach(async () => {
     await pg.reset();
