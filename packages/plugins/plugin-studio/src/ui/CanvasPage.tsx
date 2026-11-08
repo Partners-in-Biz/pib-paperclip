@@ -31,6 +31,7 @@ import { Button, ButtonLink, EmptyState, errorText, Field, Input, Modal, Page, P
 import { relativeAge } from "./library.js";
 import { CanvasTemplateGallery } from "./CanvasTemplates.js";
 import { ExportBoard, LayoutBody, TextBody } from "./LayoutCard.js";
+import { EditBody } from "./EditCard.js";
 import { splitParts } from "../layout.js";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
@@ -88,7 +89,7 @@ const boardCss = `
 .studio-card-head > .studio-pill { flex: none; }
 .studio-kind { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 0.375rem; font-size: var(--text-micro, 11px); font-weight: 700; color: var(--background); background: var(--kind); flex: none; }
 .studio-kind-prompt { --kind: var(--status-task-in_review); } .studio-kind-source { --kind: var(--status-task-in_progress); } .studio-kind-image { --kind: var(--status-task-todo); }
-.studio-kind-text { --kind: var(--status-task-todo); } .studio-kind-layout { --kind: var(--status-task-in_review); } .studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); }
+.studio-kind-text { --kind: var(--status-task-todo); } .studio-kind-layout { --kind: var(--status-task-in_review); } .studio-kind-video { --kind: color-mix(in oklab, var(--status-task-todo), var(--status-task-blocked)); } .studio-kind-output { --kind: var(--status-task-done); } .studio-kind-edit { --kind: color-mix(in oklab, var(--status-task-done), var(--status-task-blocked)); }
 .studio-media { position: relative; width: 100%; overflow: hidden; border-radius: 0.5rem; background: var(--muted); }
 .studio-media > img, .studio-media > video { display: block; width: 100%; height: 100%; object-fit: contain; }
 .studio-media-empty { display: grid; place-items: center; padding: 0.5rem; box-sizing: border-box; border: 1px dashed var(--border); background: none; color: var(--muted-foreground); font-size: var(--text-micro, 11px); text-align: center; }
@@ -776,7 +777,7 @@ function BoardEditor({ companyId, canvasId }: { companyId: string; canvasId: str
   );
 }
 
-const KIND_LETTER: Record<NodeType, string> = { prompt: "P", text: "T", source: "S", image: "I", video: "V", output: "O", layout: "L" };
+const KIND_LETTER: Record<NodeType, string> = { prompt: "P", text: "T", source: "S", image: "I", video: "V", output: "O", layout: "L", edit: "E" };
 
 function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
   const { beforeEdit, library, dim, companyId, client, canGenerate, refreshLibrary, removeCard, canvasId: boardCanvasId } = useContext(BoardCtx);
@@ -804,6 +805,11 @@ function Card({ id, type, data, selected }: NodeProps<FlowNode>) {
       ) : null}
       {kind === "image" || kind === "video" ? <GenerateSummary id={id} kind={kind} data={data} /> : null}
       {kind === "text" ? <TextBody data={data} beforeEdit={beforeEdit} set={set} /> : null}
+      {kind === "edit" ? (
+        <EditBody id={id} data={data} companyId={companyId} client={client} canEdit={canGenerate === true} set={set}>
+          <Media assetId={data.assetId} name={data.label || CARD_LABELS.edit} video ratio="9:16" empty="Wire in videos or pictures, then open the editor" />
+        </EditBody>
+      ) : null}
       {kind === "layout" ? <LayoutBody id={id} data={data} companyId={companyId} canvasId={boardCanvasId} canEdit={canGenerate === true} set={set} /> : null}
       {kind === "source" ? (
         <>

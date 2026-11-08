@@ -2,7 +2,7 @@
  * The canvas rules that both the worker and the page need: card types, limits, which card may feed which, and the
  * loop check. No Node or database imports here, so the page bundle can use the same rules the worker enforces.
  */
-export const NODE_TYPES = ["prompt", "text", "source", "image", "video", "output", "layout"] as const;
+export const NODE_TYPES = ["prompt", "text", "source", "image", "video", "output", "layout", "edit"] as const;
 export type NodeType = (typeof NODE_TYPES)[number];
 
 export const MAX_NODES = 300;
@@ -16,11 +16,13 @@ const FEEDS: Record<NodeType, readonly NodeType[]> = {
   prompt: ["image", "video"],
   // Words only go to a Layout card, which sets them as real text. Image models garble lettering.
   text: ["layout"],
-  source: ["image", "video", "layout"],
-  image: ["image", "video", "output", "layout"],
-  video: ["output"],
-  output: ["image", "video", "layout"],
+  source: ["image", "video", "layout", "edit"],
+  image: ["image", "video", "output", "layout", "edit"],
+  video: ["output", "edit"],
+  output: ["image", "video", "layout", "edit"],
   layout: [],
+  // A video edit (PAR-8323) takes pictures and videos in and sends its rendered video on, like any asset card.
+  edit: ["layout"],
 };
 
 export interface CanvasNode {
