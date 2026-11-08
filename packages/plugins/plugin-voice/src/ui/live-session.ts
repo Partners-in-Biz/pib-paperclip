@@ -1,7 +1,8 @@
 import { base64ToArrayBuffer, LIVE_SAMPLE_RATE, MicCapture, Player } from "./audio.js";
-import { clip, LiveTools, TOOL_DEFINITIONS, type ApiClient } from "./live-tools.js";
+import { AgentChat, clip, type ApiClient } from "./agent-chat.js";
 import { pruneBuffers, readBuffer, writeBuffer } from "./transcript-buffer.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
+import { newUuid } from "./uuid.js";
 import type { WakeGuard } from "./wake-lock.js";
 
 /** `disconnected` and `reconnecting` are recoverable; `ended` and `error` are final. */
@@ -29,6 +30,8 @@ export interface LiveSessionOptions {
   companyId: string;
   userId: string | null;
   pageIssueRef: string | null;
+  /** Agent whose Agent Chat gets every turn (id, url key or name). Null: the company's CEO. */
+  agentRef?: string | null;
   /** Created inside the tap handler so iOS lets it play. */
   audioContext: AudioContext;
   onState: (state: LiveState) => void;
@@ -46,6 +49,10 @@ export interface LiveSessionOptions {
   refreshInfo?: () => Promise<LiveSessionInfo>;
   /** How often watched tasks are checked for agent replies. */
   replyPollMs?: number;
+  /** Quiet time after a finished utterance before it is sent, so one request split by a pause is one message. */
+  sendDelayMs?: number;
+  /** With no reply after this long, the voice says once that the agent is still working on it. */
+  workingNoticeMs?: number;
   /**
    * Called about every `autosaveMs` while the call has new lines, with the call so far. The host writes the
    * document only (never a comment); `onEnd` stays the one place the recap comment is posted.
@@ -54,10 +61,9 @@ export interface LiveSessionOptions {
   autosaveMs?: number;
 }
 
-interface PendingCall {
-  callId: string;
-  name: string;
-  args: string;
+interface Turn {
+  itemId: string;
+  text: string;
 }
 
 interface Watched {
@@ -74,15 +80,25 @@ const REPLAY_TURNS = 20;
 const STABLE_MS = 10_000;
 /** How often the call so far is written to the task document. */
 const AUTOSAVE_MS = 30_000;
+const SEND_DELAY_MS = 1_200;
+const WORKING_NOTICE_MS = 40_000;
+const SEND_ATTEMPTS = 3;
 
 export class LiveSession {
   private ws: WebSocket | null = null;
   private mic: MicCapture | null = null;
   private player: Player;
-  private tools: LiveTools;
+  private chat: AgentChat;
   private transcript: TranscriptEntry[] = [];
   private state: LiveState = "connecting";
-  private pendingCalls: PendingCall[] = [];
+  /** Finished utterances not yet sent to the agent. */
+  private turns: Turn[] = [];
+  private sendTimer: number | null = null;
+  /** Agent Chat issues this call posted to: their replies are spoken, but the recap is not posted there. */
+  private chatIssues = new Set<string>();
+  /** When the oldest unanswered send went out; null when the agent has replied since. */
+  private awaitingSince: number | null = null;
+  private workingSaid = false;
   private responseActive = false;
   private queuedUpdates: string[] = [];
   private watched = new Map<string, Watched>();
@@ -93,7 +109,6 @@ export class LiveSession {
   private idleTimer: number | null = null;
   private voiceLevel = 0;
   private closed = false;
-  private userTurns = 0;
   private readonly startedAt = Date.now();
   private readonly fullLog = new Map<string, LogEntry>();
   private ended = false;
@@ -115,14 +130,7 @@ export class LiveSession {
       this.voiceLevel = lvl;
       if (lvl === 0 && this.state === "speaking" && !this.responseActive) this.setState("listening");
     };
-    this.tools = new LiveTools({
-      api: opts.api,
-      companyId: opts.companyId,
-      userId: opts.userId,
-      pageIssueRef: opts.pageIssueRef,
-      watch: (issueId, ref) => this.watch(issueId, ref),
-      userTurn: () => this.userTurns,
-    });
+    this.chat = new AgentChat({ api: opts.api, companyId: opts.companyId, agentRef: opts.agentRef ?? null, pageIssueRef: opts.pageIssueRef });
   }
 
   get muted(): boolean {
@@ -139,6 +147,8 @@ export class LiveSession {
     this.mic = this.makeMic();
     const micReady = this.mic.start();
     this.openSocket(this.info);
+    // Warm the chat issue so the first turn goes out at once; a failure is retried on that send.
+    void this.chat.resolve().catch(() => undefined);
     if (this.opts.refreshInfo) document.addEventListener("visibilitychange", this.onVisibility);
 
     try {
@@ -219,8 +229,6 @@ export class LiveSession {
     this.connectedAt = 0;
     this.droppedHidden = this.droppedHidden || document.visibilityState === "hidden";
     this.responseActive = false;
-    this.pendingCalls = [];
-    this.tools.clearPending();
     this.player.flush();
     try {
       this.ws?.close();
@@ -290,6 +298,7 @@ export class LiveSession {
     this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
+    this.flushTurns();
     this.mic?.stop();
     this.player.flush();
     try {
@@ -307,7 +316,10 @@ export class LiveSession {
     if (this.ended) return;
     this.ended = true;
     if (this.autosaveTimer !== null) window.clearInterval(this.autosaveTimer);
-    const targets: SaveTarget[] = [...this.watched].map(([issueId, w]) => ({ issueId, ref: w.ref }));
+    // The turns are already in the agent chat; a recap comment there would wake the agent again.
+    const targets: SaveTarget[] = [...this.watched]
+      .filter(([issueId]) => !this.chatIssues.has(issueId))
+      .map(([issueId, w]) => ({ issueId, ref: w.ref }));
     try {
       this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now() }, targets);
     } catch {
@@ -329,6 +341,7 @@ export class LiveSession {
     this.opts.wakeLock?.release();
     if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
+    this.flushTurns();
     this.mic?.stop();
     this.player.flush();
     try {
@@ -371,7 +384,6 @@ export class LiveSession {
         voice: info.voice,
         instructions: this.opts.instructions,
         turn_detection: { type: "server_vad" },
-        tools: TOOL_DEFINITIONS,
         audio: {
           input: {
             format: { type: "audio/pcm", rate: LIVE_SAMPLE_RATE },
@@ -395,14 +407,14 @@ export class LiveSession {
         type: "response.create",
         response: {
           instructions:
-            "The connection dropped and is back. Say in a few words that you are back and carry on from the earlier turns. Do not repeat earlier answers or call tools yet.",
+            "The connection dropped and is back. Say in a few words that you are back. Do not repeat earlier answers.",
         },
       });
     } else {
       // Open with a one-line greeting so the person knows it is listening.
       this.send({
         type: "response.create",
-        response: { instructions: "Greet them in one short sentence and ask what they need. Do not call tools yet." },
+        response: { instructions: "Greet them in one short sentence and ask what they need." },
       });
     }
     this.setState("thinking");
@@ -439,16 +451,23 @@ export class LiveSession {
         this.player.flush();
         this.setState("listening");
         this.bumpIdle();
+        // They are still talking: hold what they said so far and send it with the rest.
+        if (this.sendTimer !== null) window.clearTimeout(this.sendTimer);
+        this.sendTimer = null;
         break;
       case "input_audio_buffer.speech_stopped":
         this.setState("thinking");
+        // Noise can start speech without a transcript; held words still go out once it is quiet again.
+        if (this.turns.length > 0 && this.sendTimer === null) {
+          this.sendTimer = window.setTimeout(() => this.flushTurns(), 3 * (this.opts.sendDelayMs ?? SEND_DELAY_MS));
+        }
         break;
       case "conversation.item.input_audio_transcription.completed":
       case "conversation.item.input_audio_transcription.updated": {
         const text = typeof msg.transcript === "string" ? msg.transcript : "";
         const itemId = typeof msg.item_id === "string" ? msg.item_id : `you-${Date.now()}`;
         if (text.trim()) this.upsert(itemId, "you", text, type.endsWith("completed"));
-        if (type.endsWith("completed") && text.trim()) this.userTurns++;
+        if (type.endsWith("completed") && text.trim()) this.queueTurn(itemId, text.trim());
         break;
       }
       case "response.created":
@@ -476,13 +495,6 @@ export class LiveSession {
         if (typeof msg.transcript === "string") this.upsert(id, "voice", msg.transcript, true);
         break;
       }
-      case "response.function_call_arguments.done":
-        this.pendingCalls.push({
-          callId: String(msg.call_id ?? ""),
-          name: String(msg.name ?? ""),
-          args: typeof msg.arguments === "string" ? msg.arguments : "{}",
-        });
-        break;
       case "response.done":
         this.responseActive = false;
         void this.afterResponse();
@@ -499,23 +511,8 @@ export class LiveSession {
     }
   }
 
-  /** Runs every tool call of the turn, then asks for one follow-up response. */
+  /** Speaks replies that arrived while the voice was talking. */
   private async afterResponse(): Promise<void> {
-    if (this.pendingCalls.length > 0) {
-      const calls = this.pendingCalls.splice(0);
-      this.setState("thinking");
-      const outputs = await Promise.all(calls.map((call) => this.runTool(call)));
-      calls.forEach((call, i) => {
-        this.send({
-          type: "conversation.item.create",
-          item: { type: "function_call_output", call_id: call.callId, output: JSON.stringify(outputs[i]) },
-        });
-      });
-      // Avoid talking over itself: let the current sentence finish first.
-      await this.player.idle();
-      if (!this.closed) this.send({ type: "response.create" });
-      return;
-    }
     if (this.queuedUpdates.length > 0) {
       await this.player.idle();
       this.deliverUpdates();
@@ -524,22 +521,48 @@ export class LiveSession {
     if (!this.player.playing) this.setState("listening");
   }
 
-  private async runTool(call: PendingCall): Promise<unknown> {
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(call.args || "{}") as Record<string, unknown>;
-    } catch {
-      return { error: "The tool arguments were not valid JSON." };
+  /** Code, not the model, sends every finished utterance; a short quiet window joins a sentence split by a pause. */
+  private queueTurn(itemId: string, text: string): void {
+    if (this.closed) return;
+    const existing = this.turns.find((t) => t.itemId === itemId);
+    if (existing) existing.text = text;
+    else this.turns.push({ itemId, text });
+    if (this.sendTimer !== null) window.clearTimeout(this.sendTimer);
+    this.sendTimer = window.setTimeout(() => this.flushTurns(), this.opts.sendDelayMs ?? SEND_DELAY_MS);
+  }
+
+  /** Sends what is queued as one message. Also runs on hang-up, so the last thing said is never lost. */
+  private flushTurns(): void {
+    if (this.sendTimer !== null) window.clearTimeout(this.sendTimer);
+    this.sendTimer = null;
+    const turns = this.turns.splice(0);
+    if (turns.length === 0) return;
+    void this.sendTurn(turns.map((t) => t.text).join(" "));
+  }
+
+  private async sendTurn(text: string): Promise<void> {
+    const requestId = newUuid();
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < SEND_ATTEMPTS; attempt++) {
+      try {
+        const target = await this.chat.submit(text, requestId);
+        this.chatIssues.add(target.issueId);
+        this.watch(target.issueId, target.ref);
+        if (this.awaitingSince === null) {
+          this.awaitingSince = Date.now();
+          this.workingSaid = false;
+        }
+        this.addNote(`Sent to ${target.agentName}.`);
+        return;
+      } catch (err) {
+        lastError = err;
+      }
     }
-    try {
-      if (call.name === "check_replies") return await this.checkReplies();
-      const result = await this.tools.run(call.name, args);
-      if (call.name === "post_message" && (result as { posted?: boolean }).posted) this.addNote(`Posted to ${(result as { task?: string }).task}.`);
-      if (call.name === "create_task" && (result as { created?: boolean }).created) this.addNote(`Created ${(result as { task?: string }).task}.`);
-      return result;
-    } catch (err) {
-      return { error: err instanceof Error ? clip(err.message, 240) : "The tool failed." };
-    }
+    const reason = lastError instanceof Error && lastError.message ? clip(lastError.message, 160) : "unknown error";
+    this.addNote(`Not sent: ${reason}`);
+    if (this.closed) return;
+    this.queuedUpdates.push(`[Status] That last request did not reach the agent (${reason}). Tell the person in one sentence and ask them to say it again.`);
+    if (!this.responseActive && !this.player.playing) this.deliverUpdates();
   }
 
   private watch(issueId: string, ref: string): void {
@@ -578,12 +601,6 @@ export class LiveSession {
     return this.agentNames.get(agentId) ?? "An agent";
   }
 
-  private async checkReplies(): Promise<unknown> {
-    if (this.watched.size === 0) return { replies: [], note: "Nothing posted in this conversation yet." };
-    const replies = await this.collectReplies();
-    return { replies };
-  }
-
   private async pollReplies(): Promise<void> {
     if (this.closed || this.watched.size === 0) return;
     let replies: Array<{ ref: string; from: string; text: string }>;
@@ -592,11 +609,24 @@ export class LiveSession {
     } catch {
       return; // A missed poll is retried on the next tick.
     }
-    if (replies.length === 0) return;
+    if (replies.length === 0) {
+      this.noteStillWorking();
+      return;
+    }
+    this.awaitingSince = null;
     for (const r of replies) {
       this.queuedUpdates.push(`[Update] ${r.from} replied on ${r.ref}: ${r.text}`);
       this.addNote(`${r.from} replied on ${r.ref}.`);
     }
+    if (!this.responseActive && !this.player.playing) this.deliverUpdates();
+  }
+
+  /** Long runs: once per wait, the voice says the agent is still on it (the reply is spoken when it lands). */
+  private noteStillWorking(): void {
+    if (this.awaitingSince === null || this.workingSaid) return;
+    if (Date.now() - this.awaitingSince < (this.opts.workingNoticeMs ?? WORKING_NOTICE_MS)) return;
+    this.workingSaid = true;
+    this.queuedUpdates.push("[Status] The agent is still working on it. Say so in a few words; you will tell them when it replies.");
     if (!this.responseActive && !this.player.playing) this.deliverUpdates();
   }
 
