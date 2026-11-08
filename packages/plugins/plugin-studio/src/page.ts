@@ -23,6 +23,9 @@ export interface PageModel {
   resolutions: string[];
   minRefs: number;
   maxRefs: number;
+  durations: number[];
+  durationField: string | null;
+  defaultDuration: number | null;
 }
 
 /**
@@ -30,7 +33,7 @@ export interface PageModel {
  * the real cost of the request as sent. Seedance (billed by tokens) and Veo (not on REST) are listed in
  * UNAVAILABLE_MODELS with the reason instead; agents keep the full tool surface.
  */
-export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectable).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs }) => ({
+export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectable).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs, durations, durationField, defaultDuration }) => ({
   id,
   label,
   kind,
@@ -38,6 +41,9 @@ export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectab
   resolutions,
   minRefs,
   maxRefs,
+  durations,
+  durationField,
+  defaultDuration,
 }));
 
 /** Shown on the page as not offered or not priced, never hidden. */

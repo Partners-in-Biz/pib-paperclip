@@ -237,6 +237,24 @@ export interface Actor {
   projectId?: string | null;
 }
 
+/** The one duration check: the model's own field, a listed whole number of seconds, else the model's default. */
+function applyDuration(model: string, body: Record<string, unknown>): void {
+  const known = findModel(model);
+  const field = known?.durationField ?? null;
+  if (!field) {
+    if ("duration" in body || "duration_seconds" in body) throw new StudioError(`${known?.label ?? model} takes no duration in Studio.`, "no_duration");
+    return;
+  }
+  if (body[field] === undefined || body[field] === null) {
+    body[field] = known!.defaultDuration;
+    return;
+  }
+  if (typeof body[field] !== "number" || !known!.durations.includes(body[field] as number)) {
+    const list = known!.durations.length > 4 ? `${known!.durations[0]} to ${known!.durations[known!.durations.length - 1]}` : known!.durations.join(" or ");
+    throw new StudioError(`${known!.label} takes a duration of ${list} seconds (a number).`, "bad_duration");
+  }
+}
+
 export function requestBody(params: Record<string, unknown>): { model: string; prompt: string; body: Record<string, unknown>; references: string[] } {
   const presetId = params.preset === undefined || params.preset === null || params.preset === "" ? null : params.preset;
   const preset = presetId === null ? null : getPhotoPreset(presetId);
@@ -250,6 +268,7 @@ export function requestBody(params: Record<string, unknown>): { model: string; p
   if (typeof extra !== "object" || Array.isArray(extra) || extra === null) throw new StudioError("params must be an object of the model's own fields.", "bad_request");
   const defaults = preset ? { aspect_ratio: DEFAULT_PRESET_RATIO } : {};
   const body = { ...defaults, ...(extra as Record<string, unknown>), prompt };
+  applyDuration(model, body);
   if (JSON.stringify(body).length > MAX_PARAMS_BYTES) throw new StudioError("The request is too long.", "bad_request");
   const references = referenceIds(params.referenceAssetIds);
   const field = findModel(model)?.refField;
