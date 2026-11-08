@@ -17,6 +17,7 @@ export { StudioCanvasPage } from "./CanvasPage.js";
 export { StudioEditorPage } from "./editor/EditorPage.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
+import { disabledNote, durationChips } from "../canvas-settings.js";
 import { buildPhotoPresetPrompt, DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, getPhotoPreset, PHOTO_NOTE_MAX } from "../presets.js";
 
 interface Cap {
@@ -32,6 +33,8 @@ interface Model {
   ratios: string[];
   resolutions: string[];
   minRefs?: number;
+  durations?: number[];
+  defaultDuration?: number | null;
 }
 
 interface Asset {
@@ -610,6 +613,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const preset = getPhotoPreset(presetId);
   const [ratio, setRatio] = useState(model?.ratios[0] ?? "");
   const [resolution, setResolution] = useState(model?.resolutions[0] ?? "");
+  const [duration, setDuration] = useState(String(model?.defaultDuration ?? ""));
   const [batchSize, setBatchSize] = useState("1");
   const [client, setClient] = useState("own");
   const [estimate, setEstimate] = useState<Estimate | null>(null);
@@ -644,12 +648,13 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     if (!model) return;
     if (!model.ratios.includes(ratio)) setRatio(model.ratios[0] ?? "");
     if (!model.resolutions.includes(resolution)) setResolution(model.resolutions[0] ?? "");
+    if (!(model.durations ?? []).includes(Number(duration))) setDuration(String(model.defaultDuration ?? ""));
   }, [model?.id]);
   const finalPrompt = preset ? prompt : fillPrompt(prompt, fields);
   const blanks = preset ? [] : missingFields(prompt, fields);
   const fieldNames = preset ? [] : placeholdersOf(prompt);
   // Any change to the request makes the shown price stale.
-  useEffect(() => setEstimate(null), [modelId, finalPrompt, presetId, ratio, resolution, batchSize, client]);
+  useEffect(() => setEstimate(null), [modelId, finalPrompt, presetId, ratio, resolution, duration, batchSize, client]);
 
   /** Bring the composer into view when picking wrapped it out of sight (a phone or a narrow window). */
   const showComposer = () => composerRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
@@ -727,7 +732,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
     }
   }
 
-  const request = () => ({ companyId, model: model?.id, prompt: finalPrompt, preset: presetId || undefined, ratio, resolution, batchSize: Number(batchSize), client });
+  const request = () => ({ companyId, model: model?.id, prompt: finalPrompt, preset: presetId || undefined, ratio, resolution, ...(model?.durations?.length ? { duration: Number(duration) } : {}), batchSize: Number(batchSize), client });
 
   async function runEstimate() {
     setBusy(true);
@@ -840,6 +845,18 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
                 ))}
               </Select>
             </Field>
+            {model?.kind === "video" ? (
+              <Field label="Duration (seconds)">
+                <div role="group" aria-label="Duration" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {durationChips(model).map((c) => (
+                    <Button key={c.value} variant={duration === c.value && !c.disabled ? "primary" : "secondary"} aria-pressed={duration === c.value} disabled={c.disabled !== null} title={c.disabled ?? undefined} onClick={() => setDuration(c.value)}>
+                      {c.value}
+                    </Button>
+                  ))}
+                </div>
+                {disabledNote(durationChips(model), model) ? <span role="note">{disabledNote(durationChips(model), model)}</span> : null}
+              </Field>
+            ) : null}
             <Field label="Batch size">
               <Select aria-label="Batch size" value={batchSize} onChange={(e) => setBatchSize(e.target.value)}>
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (

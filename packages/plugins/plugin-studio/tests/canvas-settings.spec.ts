@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_BATCH } from "../src/generation.js";
 import { PAGE_MODELS } from "../src/page.js";
-import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, headerCredits, qualityChips, resolutionChips } from "../src/canvas-settings.js";
+import { aspectChips, BATCH_MAX, clampBatch, disabledNote, durationChips, effectiveDuration, effectiveValue, headerCredits, qualityChips, resolutionChips } from "../src/canvas-settings.js";
 
 const model = (id: string) => PAGE_MODELS.find((m) => m.id === id)!;
 const off = (chips: Array<{ value: string; disabled: string | null }>) => chips.filter((c) => c.disabled).map((c) => c.value);
@@ -40,6 +40,26 @@ describe("canvas settings chips", () => {
     expect(disabledNote(chips, kling)).toBe("Kling 3.0 (video) takes no resolution setting");
     const hailuo = model("minimax/hailuo-2.3/standard/text-to-video");
     expect(off(aspectChips(hailuo)).length).toBe(5);
+  });
+
+  it("lists a video model's durations after 5, 10, 15, and disables the rest with a note", () => {
+    const hailuo = model("minimax/hailuo-2.3/standard/text-to-video");
+    expect(durationChips(hailuo).map((c) => c.value)).toEqual(["5", "10", "15", "6"]);
+    expect(on(durationChips(hailuo))).toEqual(["10", "6"]);
+    const kling = model("kling-video/v3.0/std/text-to-video");
+    expect(on(durationChips(kling))).toEqual(["5", "10", "15", ...[3, 4, 6, 7, 8, 9, 11, 12, 13, 14].map(String)]);
+    expect(disabledNote(durationChips(hailuo), hailuo)).toBe("Hailuo 2.3 (video) doesn't offer 5, 15");
+  });
+
+  it("says an image model takes no duration, and picks the default when the pick is not offered", () => {
+    const img = model("z-image/turbo");
+    expect(on(durationChips(img))).toEqual([]);
+    expect(disabledNote(durationChips(img), img)).toBe(`${img.label} takes no duration setting`);
+    expect(effectiveDuration("10", img)).toBeUndefined();
+    const hailuo = model("minimax/hailuo-2.3/standard/text-to-video");
+    expect(effectiveDuration("10", hailuo)).toBe(10);
+    expect(effectiveDuration("5", hailuo)).toBe(6);
+    expect(effectiveDuration(undefined, hailuo)).toBe(6);
   });
 
   it("disables quality for every catalog model, never faking a value", () => {

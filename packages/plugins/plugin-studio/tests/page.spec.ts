@@ -24,6 +24,14 @@ describe("Studio page form", () => {
     expect(ids.size).toBe(23);
   });
 
+  it("writes the chosen duration to the model's own field and refuses one it lacks", () => {
+    const hailuo = "minimax/hailuo-2.3/standard/text-to-video";
+    expect(pageRequest({ model: hailuo, prompt: "x", duration: 10 })).toMatchObject({ params: { duration: 10 } });
+    expect((pageRequest({ model: hailuo, prompt: "x" }).params as Record<string, unknown>).duration).toBeUndefined();
+    expect(() => pageRequest({ model: hailuo, prompt: "x", duration: 5 })).toThrow(/doesn't offer 5 seconds/);
+    expect(() => pageRequest({ model: soul.id, prompt: "x", duration: 5 })).toThrow(/takes no duration/);
+  });
+
   it("passes reference asset ids through and checks the count against the model", () => {
     const grok = PAGE_MODELS.find((m) => m.id === "xai/grok-imagine-image-2.0")!;
     expect(pageRequest({ model: grok.id, prompt: "x", referenceAssetIds: ["a1", "a2", "a1"] })).toMatchObject({ referenceAssetIds: ["a1", "a2"] });

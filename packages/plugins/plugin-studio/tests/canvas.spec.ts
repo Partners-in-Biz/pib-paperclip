@@ -21,6 +21,16 @@ describe("canvas document", () => {
     expect(doc.nodes[0]).toEqual({ id: "s", type: "source", position: { x: 10, y: 20 }, data: { assetId: "abc-1" } });
   });
 
+  it("keeps a video card's duration through save and load", () => {
+    const saved = normalizeDoc({ nodes: [card("v", "video", { model: "kling-video/v3.0/std/text-to-video", duration: 10 })], edges: [] });
+    expect(saved.nodes[0].data.duration).toBe("10");
+    const loaded = normalizeDoc(JSON.parse(JSON.stringify(saved)));
+    expect(loaded.nodes[0].data).toEqual({ model: "kling-video/v3.0/std/text-to-video", duration: "10" });
+    expect(() => normalizeDoc({ nodes: [card("v", "video", { duration: 0 })], edges: [] })).toThrow(/whole number of seconds/);
+    expect(() => normalizeDoc({ nodes: [card("v", "video", { duration: "ten" })], edges: [] })).toThrow(/whole number of seconds/);
+    expect(normalizeDoc({ nodes: [card("i", "image", { duration: 10 })], edges: [] }).nodes[0].data).toEqual({});
+  });
+
   it("follows the connection rules", () => {
     expect(canConnect("prompt", "image")).toBe(true);
     expect(canConnect("video", "output")).toBe(true);

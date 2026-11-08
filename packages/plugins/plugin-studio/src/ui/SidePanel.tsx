@@ -16,9 +16,9 @@ import { SaveToDrive } from "./SaveToDrive.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { BrandKitBox } from "./BrandKit.js";
 import { LayoutConfigure, TextConfigure } from "./LayoutCard.js";
-import { aspectChips, BATCH_MAX, clampBatch, disabledNote, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
+import { aspectChips, BATCH_MAX, clampBatch, disabledNote, durationChips, effectiveDuration, effectiveValue, qualityChips, resolutionChips, type Chip } from "../canvas-settings.js";
 
-export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
+export interface PanelModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number; durations?: number[]; defaultDuration?: number | null }
 export interface PanelUnavailable { id: string; label: string; kind: "image" | "video"; note: string }
 export interface Estimate { creditsEach: number; creditsTotal: number; monthlyCap: number | null; remaining: number }
 export interface PanelCard { id: string; type: string; data: Record<string, string> }
@@ -148,11 +148,13 @@ function GenerateConfigure({ card, companyId, client, canGenerate, models, unava
   const model = models.find((m) => m.id === (options.find((o) => o.id === data.model && !o.disabled) ?? options.find((o) => !o.disabled))?.id);
   const ratio = effectiveValue(data.ratio, model?.ratios ?? []);
   const resolution = effectiveValue(data.resolution, model?.resolutions ?? []);
+  const duration = kind === "video" ? effectiveDuration(data.duration, model) : undefined;
+  const durations = durationChips(model);
   const batch = clampBatch(data.batch);
   const ratios = aspectChips(model);
   const resolutions = resolutionChips(model);
   const qualities = qualityChips(model);
-  const request = { companyId, model: model?.id, prompt: inputs.prompt, ratio, resolution, batchSize: batch, client, ...(refs.length ? { referenceAssetIds: refs } : {}) };
+  const request = { companyId, model: model?.id, prompt: inputs.prompt, ratio, resolution, ...(duration === undefined ? {} : { duration }), batchSize: batch, client, ...(refs.length ? { referenceAssetIds: refs } : {}) };
   const key = JSON.stringify(request);
   // Any change to what would be sent makes the shown price stale.
   useEffect(() => setEstimate(null), [key]);
@@ -191,6 +193,7 @@ function GenerateConfigure({ card, companyId, client, canGenerate, models, unava
       </div>
       <ChipGroup label="Aspect ratio" chips={ratios} value={ratio} note={disabledNote(ratios, model)} onPick={(v) => edit({ ratio: v })} />
       <ChipGroup label="Resolution" chips={resolutions} value={resolution} note={disabledNote(resolutions, model)} onPick={(v) => edit({ resolution: v })} />
+      {kind === "video" ? <ChipGroup label="Duration (seconds)" chips={durations} value={duration === undefined ? undefined : String(duration)} note={disabledNote(durations, model)} onPick={(v) => edit({ duration: v })} /> : null}
       <ChipGroup label="Quality" chips={qualities} value={undefined} note={disabledNote(qualities, model)} onPick={(v) => edit({ quality: v })} />
       <div style={group}>
         <span style={muted}>Batch (each one is charged)</span>

@@ -35,7 +35,7 @@ import { EditBody } from "./EditCard.js";
 import { splitParts } from "../layout.js";
 import { acceptsInput, MAX_NODES, MAX_TEXT, NODE_TYPES, sendsOutput, type CanvasDoc, type NodeType } from "../canvas-rules.js";
 import { cardInputs, modelOptions, type CardInputs } from "../canvas-inputs.js";
-import { effectiveValue, headerCredits } from "../canvas-settings.js";
+import { effectiveDuration, effectiveValue, headerCredits } from "../canvas-settings.js";
 import { aspectCss, cardStatus, creditsLeft, markRunning } from "./card-look.js";
 import { pickerCss } from "./ModelPicker.js";
 import { GiveButton } from "./GiveToAgent.js";
@@ -53,7 +53,7 @@ import { CARD_LABELS, DELETE_KEYS, deleteConfirmText, isTypingTarget, cascadePos
 interface Summary { id: string; title: string; client: { kind: string; id: string; name: string } | null; revision: number; cards: number; updatedAt: string }
 interface Board extends Summary { doc: CanvasDoc; projectId?: string | null }
 interface LibraryAsset { id: string; name: string; kind: string; status?: string; prompt?: string | null; model?: string | null; credits?: number | null }
-interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number }
+interface PageModel { id: string; label: string; kind: "image" | "video"; ratios: string[]; resolutions: string[]; minRefs?: number; maxRefs?: number; durations?: number[]; defaultDuration?: number | null }
 interface Unavailable { id: string; label: string; kind: "image" | "video"; note: string }
 interface GenRow { id: string; groupId: string; status: string; assetId: string | null; error: string | null }
 
@@ -903,6 +903,7 @@ function GenerateSummary({ id, kind, data }: { id: string; kind: "image" | "vide
   const model = models.find((m) => m.id === pick?.id);
   const ratio = effectiveValue(data.ratio, model?.ratios ?? []);
   const resolution = effectiveValue(data.resolution, model?.resolutions ?? []);
+  const duration = kind === "video" ? effectiveDuration(data.duration, model) : undefined;
   const prompt = inputs.prompt || data.prompt || "";
   const ref = inputs.referenceAssetIds[0];
   const refUrl = ref ? urls[ref] : undefined;
@@ -919,6 +920,7 @@ function GenerateSummary({ id, kind, data }: { id: string; kind: "image" | "vide
           <div className="studio-overlay" style={{ left: "0.5rem", bottom: "0.5rem" }}>
             {ratio ? <span className="studio-pill">{ratio}</span> : null}
             {resolution ? <span className="studio-pill">{resolution}</span> : null}
+            {duration !== undefined ? <span className="studio-pill">{duration}s</span> : null}
           </div>
         </Media>
       )}

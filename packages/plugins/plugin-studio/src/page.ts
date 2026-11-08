@@ -62,13 +62,18 @@ export function pageRequest(input: Record<string, unknown>): Record<string, unkn
   const resolution = model.resolutions.length ? String(input.resolution ?? model.resolutions[0]) : null;
   if (ratio !== null && !model.ratios.includes(ratio)) throw new StudioError(`${model.label} doesn't offer the ratio ${ratio}.`, "bad_request");
   if (resolution !== null && !model.resolutions.includes(resolution)) throw new StudioError(`${model.label} doesn't offer ${resolution}.`, "bad_request");
+  // Only a model with a duration field gets one; a request naming a length the model lacks is refused by requestBody.
+  const durationKey = model.durationField;
+  const duration = input.duration === undefined || input.duration === null || input.duration === "" ? null : Number(input.duration);
+  if (duration !== null && !durationKey) throw new StudioError(`${model.label} takes no duration in Studio.`, "no_duration");
+  if (duration !== null && !model.durations.includes(duration)) throw new StudioError(`${model.label} doesn't offer ${String(input.duration)} seconds.`, "bad_duration");
   const references = referenceIds(input.referenceAssetIds);
   assertReferenceCount(model.id, references.length);
   const out: Record<string, unknown> = {
     model: model.id,
     prompt: input.prompt,
     ...(preset ? { preset: preset.id } : {}),
-    params: { ...(ratio === null ? {} : { aspect_ratio: ratio }), ...(resolution === null ? {} : { resolution }) },
+    params: { ...(ratio === null ? {} : { aspect_ratio: ratio }), ...(resolution === null ? {} : { resolution }), ...(duration === null || !durationKey ? {} : { [durationKey]: duration }) },
     batchSize: input.batchSize === undefined || input.batchSize === "" ? 1 : Number(input.batchSize),
     ...(references.length ? { referenceAssetIds: references } : {}),
   };
