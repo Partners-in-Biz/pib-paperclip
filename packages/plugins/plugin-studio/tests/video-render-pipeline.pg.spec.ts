@@ -9,13 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { MAX_ASSET_BYTES, type PrivateBucket } from "../src/storage.js";
+import { assertOwnKey, MAX_ASSET_BYTES, type PrivateBucket } from "../src/storage.js";
 import { AUDIO_ENCODER_ARGS } from "../src/video-edit/compile-audio.js";
 import { ENCODER_ARGS } from "../src/video-edit/compile-video.js";
 import { createRenderExecutor, verifyOutput } from "../src/video-edit/render-pipeline.js";
 import { enqueueRender, getRender } from "../src/video-edit/render-queue.js";
 import { createRenderRunner } from "../src/video-edit/runner.js";
 import type { ProbeResult } from "../src/video-edit/probe.js";
+import { PREVIEW_FILE, previewKeyFor, proxyArgs } from "../src/video-edit/proxy.js";
 import { LIMITS } from "../src/video-edit/timeline.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 
@@ -35,13 +36,16 @@ let bins: { ffmpeg: string; ffprobe: string };
 let r2: Map<string, Uint8Array<ArrayBuffer>>;
 let puts: string[];
 let gets: string[];
+/** PUTs to keys that match answer HTTP 500. */
+let failPuts: RegExp | null;
+let warns: Array<{ msg: string; meta: unknown }>;
 
 const keyOf = (url: string) => decodeURIComponent(new URL(url).pathname).replace(/^\/b\//, "");
 
 beforeAll(async () => {
   if (!available) return;
   pg = await startPg();
-  ctx = { db: pg.db, logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined } } as unknown as PluginContext;
+  ctx = { db: pg.db, logger: { info: () => undefined, warn: (msg: string, meta: unknown) => warns.push({ msg, meta }), error: () => undefined, debug: () => undefined } } as unknown as PluginContext;
 }, 120_000);
 
 afterAll(async () => {
@@ -55,9 +59,12 @@ beforeEach(async () => {
   r2 = new Map();
   puts = [];
   gets = [];
+  failPuts = null;
+  warns = [];
   vi.stubGlobal("fetch", async (url: string, init?: { method?: string; body?: Uint8Array }) => {
     const key = keyOf(url);
     if (init?.method === "PUT") {
+      if (failPuts?.test(key)) return new Response(null, { status: 500 });
       puts.push(key);
       r2.set(key, new Uint8Array(init.body!));
       return new Response(null, { status: 200 });
@@ -67,6 +74,7 @@ beforeEach(async () => {
     return body ? new Response(body, { status: 200, headers: { "content-length": String(body.length) } }) : new Response(null, { status: 404 });
   });
   // Fake tools. Inputs and outputs are JSON: {probe: <ffprobe json>, render?: <probe json of what ffmpeg will write>}.
+  // The render run has a filter script; the preview run (no script) copies the render's probe, or fails on `failProxy`.
   const node = `#!${process.execPath}`;
   const ffmpeg = join(scratch, "fake-ffmpeg");
   const ffprobe = join(scratch, "fake-ffprobe");
@@ -78,7 +86,8 @@ const args = process.argv.slice(2);
 const inputs = args.flatMap((a, i) => (args[i - 1] === "-i" ? [a.replace(/^file:/, "")] : []));
 const first = JSON.parse(fs.readFileSync(inputs[0], "utf8"));
 if (!fs.existsSync("video.graph")) { process.stderr.write("no graph"); process.exit(1); }
-fs.writeFileSync(args[args.length - 1].replace(/^file:/, ""), JSON.stringify({ probe: first.render, args, graph: fs.readFileSync("video.graph", "utf8") }));
+if (first.failProxy && !args.includes("-filter_complex_script")) { process.stderr.write("proxy broke"); process.exit(1); }
+fs.writeFileSync(args[args.length - 1].replace(/^file:/, ""), JSON.stringify({ probe: first.render ?? first.probe, failProxy: first.failProxy, args, graph: fs.readFileSync("video.graph", "utf8") }));
 `,
   );
   await writeFile(ffprobe, `${node}\nconst fs = require("fs");\nconst a = process.argv[process.argv.length - 1].replace(/^file:/, "");\nprocess.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(a, "utf8")).probe));\n`);
@@ -114,8 +123,8 @@ async function addAsset(id: string, opts: { companyId?: string; client?: { kind:
 }
 
 /** A source whose fake probe says `source` and whose fake render will probe as `render`. */
-const fakeSource = (source: { duration: number; audio: boolean }, render: { duration: number; audio: boolean }) =>
-  new TextEncoder().encode(JSON.stringify({ probe: probeJson(source.duration, source.audio), render: probeJson(render.duration, render.audio) }));
+const fakeSource = (source: { duration: number; audio: boolean }, render: { duration: number; audio: boolean }, failProxy = false) =>
+  new TextEncoder().encode(JSON.stringify({ probe: probeJson(source.duration, source.audio), render: probeJson(render.duration, render.audio), failProxy }));
 
 const doc = (assetId: string, out = 4) => ({ schemaVersion: 1, project: { size: "9:16", fps: 30 }, tracks: [{ id: "v", kind: "video", clips: [{ id: "c", assetId, version: 1, in: 0, out, start: 0 }] }] });
 
@@ -160,10 +169,16 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
   it("downloads inputs by their rows, compiles, runs, verifies, uploads and records the asset", async () => {
     await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4.05, audio: true }) });
     const done = await render(doc("src-a"));
-    expect(done).toMatchObject({ status: "succeeded", assetId: done.id, errorKind: null });
     const key = `studio/${CO}/own/${done.id}/v1.mp4`;
+    const preview = `studio/${CO}/own/${done.id}/${PREVIEW_FILE}`;
+    expect(done).toMatchObject({ status: "succeeded", assetId: done.id, errorKind: null, previewR2Key: preview });
     expect(gets).toEqual([`studio/${CO}/own/src-a/v1.mp4`]);
-    expect(puts).toEqual([key]);
+    expect(puts).toEqual([key, preview]);
+    expect(() => assertOwnKey(CO, done.previewR2Key!)).not.toThrow();
+    const proxy = JSON.parse(new TextDecoder().decode(r2.get(preview)));
+    expect(proxy.args).not.toContain("-filter_complex_script");
+    expect(proxy.args).toEqual(expect.arrayContaining(["libx264", "file:out.mp4", `file:${PREVIEW_FILE}`]));
+    expect(warns).toEqual([]);
     const out = JSON.parse(new TextDecoder().decode(r2.get(key)));
     expect(out.args).toContain("-filter_complex_script");
     expect(out.args).toContain("[aout]");
@@ -219,7 +234,39 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
     await addAsset("src-c", { client, key: `studio/${CO}/company-acme/src-c/v1.mp4`, content: fakeSource({ duration: 10, audio: true }, { duration: 4, audio: true }) });
     const done = await render(doc("src-c"), client);
     expect(done.status).toBe("succeeded");
-    expect(puts).toEqual([`studio/${CO}/company-acme/${done.id}/v1.mp4`]);
+    expect(puts).toEqual([`studio/${CO}/company-acme/${done.id}/v1.mp4`, `studio/${CO}/company-acme/${done.id}/${PREVIEW_FILE}`]);
+    expect(done.previewR2Key).toBe(`studio/${CO}/company-acme/${done.id}/${PREVIEW_FILE}`);
+  });
+
+  it("a failed preview proxy is logged and the render still succeeds with no preview key", async () => {
+    await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4, audio: true }, true) });
+    const done = await render(doc("src-a"));
+    expect(done).toMatchObject({ status: "succeeded", assetId: done.id, errorKind: null, error: null, previewR2Key: null, attempts: 1 });
+    expect(puts).toEqual([`studio/${CO}/own/${done.id}/v1.mp4`]);
+    expect((await assetRows())[0]).toMatchObject({ id: done.id, source: "edit" });
+    expect(warns).toEqual([{ msg: "Studio render preview failed", meta: expect.objectContaining({ renderId: done.id }) }]);
+    expect(await workFolders()).toEqual([]);
+  });
+
+  it("a failed preview upload is logged and the render still succeeds with no preview key", async () => {
+    await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4, audio: true }) });
+    failPuts = /\/preview-720p\.mp4$/;
+    const done = await render(doc("src-a"));
+    expect(done).toMatchObject({ status: "succeeded", assetId: done.id, error: null, previewR2Key: null });
+    expect(r2.has(`studio/${CO}/own/${done.id}/v1.mp4`)).toBe(true);
+    expect(warns).toEqual([{ msg: "Studio render preview upload failed", meta: expect.objectContaining({ renderId: done.id, error: expect.stringMatching(/HTTP 500/) }) }]);
+  });
+
+  it("the preview key sits in the render's own asset folder and passes assertOwnKey; ffmpeg gets an args array", () => {
+    const key = `studio/${CO}/company-acme/r-1/v1.mp4`;
+    expect(previewKeyFor(CO, key)).toBe(`studio/${CO}/company-acme/r-1/${PREVIEW_FILE}`);
+    expect(() => assertOwnKey(CO, previewKeyFor(CO, key))).not.toThrow();
+    expect(() => previewKeyFor(CO, `billing/${CO}/x/r-1/v1.mp4`)).toThrow(/outside/);
+    expect(() => previewKeyFor(OTHER, key)).toThrow(/outside/);
+    const args = proxyArgs("out.mp4", PREVIEW_FILE);
+    expect(args.slice(0, 2)).toEqual(["-i", "file:out.mp4"]);
+    expect(args.at(-1)).toBe(`file:${PREVIEW_FILE}`);
+    expect(args).toEqual(expect.arrayContaining(["-map", "0:a?", "libx264", "+faststart"]));
   });
 
   it("a retry after the asset was recorded does not render again", async () => {
@@ -252,5 +299,13 @@ describe.skipIf(!available || !hasFfmpeg)("Render pipeline with real ffmpeg", ()
     expect(Math.abs(Number(probe.format.duration) - LIMITS.maxDuration)).toBeLessThanOrEqual(0.1);
     expect(out.length).toBeLessThan(MAX_ASSET_BYTES);
     expect((await assetRows())[0]).toMatchObject({ id: done.id, source: "edit", source_ref: done.id });
+    // The 720p proxy: short side 720, H.264, with the sound.
+    expect(done.previewR2Key).toBe(`studio/${CO}/own/${done.id}/${PREVIEW_FILE}`);
+    const pfile = join(scratch, "preview.mp4");
+    await writeFile(pfile, r2.get(done.previewR2Key!)!);
+    const pprobe = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", pfile]).stdout.toString());
+    expect(pprobe.streams.find((s: { codec_type: string }) => s.codec_type === "video")).toMatchObject({ width: 720, height: 1280, codec_name: "h264" });
+    expect(pprobe.streams.some((s: { codec_type: string }) => s.codec_type === "audio")).toBe(true);
+    expect(Math.abs(Number(pprobe.format.duration) - LIMITS.maxDuration)).toBeLessThanOrEqual(0.1);
   }, 300_000);
 });
