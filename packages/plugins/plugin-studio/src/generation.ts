@@ -425,6 +425,28 @@ export function resetQueueStateForTests(): void {
   running = false;
 }
 
+/** A voiceover (video-edit/voiceover.ts) still `synthesizing` after this long lost its run. */
+export const SYNTH_LOST_AFTER_MS = 10 * 60 * 1000;
+
+/** Fails stale `synthesizing` rows without a refund: the provider may have charged. Conditional, so it never races the action's own settle. */
+async function sweepSynthesizing(ctx: PluginContext, runtime: Runtime): Promise<number> {
+  const cutoff = new Date(runtime.now() - SYNTH_LOST_AFTER_MS).toISOString();
+  const rows = await ctx.db.query<GenerationRow>(`SELECT * FROM ${table(ctx, "generations")} WHERE status = 'synthesizing' AND updated_at < $1 ORDER BY created_at LIMIT 200`, [cutoff]);
+  const message = "Studio stopped while making this voiceover. It wasn't sent again, and its credits stay spent.";
+  let failed = 0;
+  for (const row of rows) {
+    const finished = new Date(runtime.now()).toISOString();
+    const moved = await ctx.db.execute(
+      `UPDATE ${table(ctx, "generations")} SET status = 'failed', error_code = 'lost_submission', error_message = $2, finished_at = $3, updated_at = now() WHERE id = $1 AND status = 'synthesizing'`,
+      [row.id, message, finished],
+    );
+    if (!moved.rowCount) continue;
+    failed += 1;
+    await reportIfGroupDone(ctx, Object.assign(row, { status: "failed", error_code: "lost_submission", error_message: message, finished_at: finished }));
+  }
+  return failed;
+}
+
 export async function processQueue(ctx: PluginContext, runtime: Runtime = defaultRuntime): Promise<{ submitted: number; stored: number; failed: number }> {
   const totals = { submitted: 0, stored: 0, failed: 0 };
   if (running) return totals;
@@ -440,6 +462,7 @@ export async function processQueue(ctx: PluginContext, runtime: Runtime = defaul
     return found;
   };
   try {
+    totals.failed += await sweepSynthesizing(ctx, runtime);
     const open = await ctx.db.query<GenerationRow>(
       `SELECT * FROM ${table(ctx, "generations")} WHERE status IN ('queued', 'submitting', 'submitted', 'storing') ORDER BY created_at LIMIT 200`,
     );
