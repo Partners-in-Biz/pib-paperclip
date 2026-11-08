@@ -11781,6 +11781,11 @@ export function issueService(db: Db) {
         if (patch.status === "done" || patch.status === "cancelled") {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
         }
+        // PiB fork (PAR-5960): the long-blocked sweep sleeps while nothing is blocked;
+        // a move to blocked re-arms it for when the issue reaches the sweep age.
+        if (patch.status === "blocked" && receiptExisting.status !== "blocked") {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.pibBlockedIssueSweep);
+        }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status) ||
             (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId) ||
             (patch.executionState !== undefined && parseObject(receiptExisting.executionState).status === "pending" &&

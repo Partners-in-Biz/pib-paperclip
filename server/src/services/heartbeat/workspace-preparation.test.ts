@@ -1279,6 +1279,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (scenario.includes("warning")) await db.insert(companyObservability).values({ companyId: input.agent.companyId, revision: randomUUID(), enabled: true,
       destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
       capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
+    // PiB fork (PAR-5960): the first workspace-validation failure in a 6 h window
+    // queues one automatic retry, which would make the operator Retry below stale.
+    // Seed an earlier failure (outside the hourly run-cap window) so the canonical
+    // failure is the second one and waits for the operator, as upstream expects.
+    if (scenario.startsWith("canonical_")) await db.insert(heartbeatRuns).values({ companyId: input.agent.companyId, agentId: input.agent.id,
+      invocationSource: "assignment", triggerDetail: "system", status: "failed", errorCode: "workspace_validation_failed",
+      error: "earlier workspace validation failure", contextSnapshot: { issueId: issue.id, taskId: issue.id },
+      createdAt: new Date(Date.now() - 2 * 60 * 60_000), updatedAt: new Date(Date.now() - 2 * 60 * 60_000), finishedAt: new Date(Date.now() - 2 * 60 * 60_000) });
     const heartbeat = heartbeatService(db);
     try {
       const next = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",

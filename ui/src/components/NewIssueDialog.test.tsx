@@ -31,6 +31,8 @@ const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
   newIssueDefaults: {} as Record<string, unknown>,
   closeNewIssue: vi.fn(),
+  // PAR-8132: the dialog hands the created issue back to a useHostNewIssue opener.
+  notifyNewIssueCreated: vi.fn(),
 }));
 
 const dialogContentState = vi.hoisted(() => ({
@@ -384,6 +386,7 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogState.notifyNewIssueCreated.mockReset();
     dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
@@ -1587,6 +1590,9 @@ describe("NewIssueDialog", () => {
       .find((button) => button.getAttribute("aria-label") === "Create task")!;
     act(() => submit.click());
     await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    expect(dialogState.notifyNewIssueCreated).toHaveBeenCalledTimes(1);
+    expect(dialogState.notifyNewIssueCreated.mock.invocationCallOrder[0])
+      .toBeLessThan(dialogState.closeNewIssue.mock.invocationCallOrder[0]);
     expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("navigateOnCreate");
     if (navigateOnCreate) {
       expect(navigateMock).toHaveBeenCalledExactlyOnceWith("/PAP/issues/PAP-2");

@@ -1075,6 +1075,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         humanWake,
         blockerClearedWake:
           startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+        chatConversation: Boolean(startIssue?.conversationAgentId),
         requestedByActorType: wakeRequest?.requestedByActorType ?? null,
         assigneeMismatchExempt:
           isNonAssigneeWorkspaceBusyRetry(
@@ -3705,6 +3706,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issueStatus: issue.status,
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
+            chatConversation: Boolean(issue.conversationAgentId),
           });
           if (
             !caseRequest &&

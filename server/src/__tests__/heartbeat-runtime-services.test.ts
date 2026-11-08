@@ -87,6 +87,10 @@ describePostgres("heartbeat runtime services through adapter dispatch", () => {
   }
 
   async function execute(f: Awaited<ReturnType<typeof seed>>) {
+    // PiB fork (PAR-6202): a blocked ticket only wakes for a human (board) actor or
+    // a cleared blocker. This actor-less manual wake follows a run whose review-path
+    // recovery may leave the ticket blocked, so reopen it first.
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
     const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();

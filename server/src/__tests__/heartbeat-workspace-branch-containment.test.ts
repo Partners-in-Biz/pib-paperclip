@@ -1087,6 +1087,11 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   it.each(["explicit_conflict", "foreign_project", "foreign_company", "unproven"] as const)(
     "does not dispatch or rebind a retained source with %s authority", async (kind) => {
       const seeded = await seedRetainedSourceRun(kind);
+      // PiB fork (PAR-5960): the blocking kinds need this to be the second
+      // workspace-validation failure in the window; the first queues a retry.
+      if (kind === "explicit_conflict" || kind === "unproven") {
+        await seedEarlierWorkspaceValidationFailure(db, { ...seeded, sourceIssueId: seeded.issueId });
+      }
       const heartbeat = heartbeatService(db);
       await heartbeat.resumeQueuedRuns();
       const run = await waitForRunToFinish(heartbeat, seeded.runId);

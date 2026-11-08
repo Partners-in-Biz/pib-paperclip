@@ -66249,6 +66249,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it("retries the saved board-message turn in a connected task after environment qualification failed before provider startup", async () => {
+    // PiB fork (PAR-6202): the second board Retry is the fourth run on this ticket
+    // inside an hour, which the per-ticket hourly cap (default 3) would skip.
+    vi.stubEnv("PIB_TICKET_RUNS_PER_HOUR_CAP", "10");
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     const f = await failedChatRetryFixture("github", "42", true, false, true);
     try {
       const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
