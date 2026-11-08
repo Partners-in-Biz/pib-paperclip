@@ -10,7 +10,8 @@
  */
 import { CompileError, type CompileFile } from "./compile-video.js";
 import { FONTS, fontFile, fontId } from "./fonts.js";
-import type { CaptionClip, CaptionStyle, CaptionWord, EditDoc, TextClip } from "./timeline.js";
+import { toFfmpegExpr } from "./keyframes.js";
+import type { CaptionClip, CaptionStyle, CaptionWord, EditDoc, Keyframe, TextClip } from "./timeline.js";
 
 export interface TextLayers { filters: string[]; files: CompileFile[]; outLabel: string }
 
@@ -71,8 +72,12 @@ function drawtext(clip: TextClip, fontsDir: string): string {
   const id = fontId(clip.font);
   if (!id) throw new CompileError("unsupported_feature", "text_font");
   const t = clip.transform;
-  if (t.rotate !== 0) throw new CompileError("unsupported_feature", "text_rotate");
+  const keys = clip.keyframes ?? {};
+  if (t.rotate !== 0 || keys.rotate) throw new CompileError("unsupported_feature", "text_rotate");
+  if (keys.scale) throw new CompileError("unsupported_feature", "text_scale");
   if (t.crop.left + t.crop.top + t.crop.right + t.crop.bottom > 0) throw new CompileError("unsupported_feature", "text_crop");
+  // Keyframe `t` counts from the clip's start; drawtext's `t` is timeline time, so the curve is offset by `clip.start`.
+  const keyed = (kfs: Keyframe[]) => toFfmpegExpr(kfs, 0, clip.start);
   const size = Math.max(1, Math.round(clip.fontSize * t.scale));
   const end = clip.start + clip.duration;
   const fadeIn = Math.max(clip.fadeIn, clip.transitionIn?.duration ?? 0);
@@ -86,11 +91,13 @@ function drawtext(clip: TextClip, fontsDir: string): string {
     "text_align=C",
     `borderw=${Math.max(1, Math.round(size / 24))}`,
     "bordercolor=0x000000@0.6",
-    `x=(w-text_w)/2${signed(t.x)}`,
-    `y=(h-text_h)/2${signed(t.y)}`,
+    keys.x ? `x='(w-text_w)/2+(${keyed(keys.x)})'` : `x=(w-text_w)/2${signed(t.x)}`,
+    keys.y ? `y='(h-text_h)/2+(${keyed(keys.y)})'` : `y=(h-text_h)/2${signed(t.y)}`,
     `enable='between(t,${num(clip.start)},${num(end)})'`,
   ];
-  const alpha = fadeAlpha(clip.start, end, fadeIn, clip.fadeOut);
+  // Plan Q13: alpha = keyframe opacity x fade alpha (base opacity 1).
+  const fade = fadeAlpha(clip.start, end, fadeIn, clip.fadeOut);
+  const alpha = keys.opacity ? (fade ? `(${keyed(keys.opacity)})*(${fade})` : keyed(keys.opacity)) : fade;
   if (alpha) opts.push(`alpha='${alpha}'`);
   return `drawtext=${opts.join(":")}`;
 }
