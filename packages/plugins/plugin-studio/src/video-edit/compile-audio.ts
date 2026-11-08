@@ -11,6 +11,7 @@
  * An edit with no sound has no segments: the output then has no audio stream at all (`-an`).
  */
 import { CompileError, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import { toFfmpegExpr } from "./keyframes.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip } from "./timeline.js";
 
 export interface AudioOptions { loudnorm?: boolean }
@@ -83,7 +84,11 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
       ...atempoChain(clip.speed).map((f) => `atempo=${num(f)}`),
       `atrim=duration=${num(length)}`,
     ];
-    if (clip.volume !== 1) steps.push(`volume=${num(clip.volume)}`);
+    // Volume keyframes replace the static volume. The chain's clock starts at the clip's start (offset 0), the same
+    // origin as keyframe `t`; `eval=frame` re-reads the curve once per audio frame.
+    const volumeKeys = clip.keyframes?.volume;
+    if (volumeKeys) steps.push(`volume=eval=frame:volume='${toFfmpegExpr(volumeKeys, clip.volume, 0)}'`);
+    else if (clip.volume !== 1) steps.push(`volume=${num(clip.volume)}`);
     if (fadeIn > 0) steps.push(`afade=t=in:st=0:d=${num(fadeIn)}`);
     if (clip.fadeOut > 0) steps.push(`afade=t=out:st=${num(length - clip.fadeOut)}:d=${num(clip.fadeOut)}`);
     const delay = Math.round(clip.start * 1000);
