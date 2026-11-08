@@ -1255,7 +1255,6 @@ async function startServerWithDatabaseTeardown(
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
-  let blockedIssueSweepTimer: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     const finishIdleWork = beginIdleTrackedWork();
@@ -1621,32 +1620,28 @@ async function startServerWithDatabaseTeardown(
     unregisterTerminalWorkspaceProbe = registerIdleLocalWorkProbe(() => terminalWorkspaceWorker.hasUnrecoveredWork() ? "present" : "none");
     await terminalWorkspaceWorker.ready;
     // PiB (PAR-5960): move long-blocked issues with no real blocker back to todo and
-    // wake the assignee. Upstream's scheduler no longer has a periodic tick, so this
-    // keeps its own 5-minute timer; the in-flight flag keeps a slow sweep from
-    // overlapping the next run. Cleared at shutdown.
+    // wake the assignee. Upstream's scheduler has no periodic tick any more, so this is a
+    // delivery-work duty (like upstream's own retention sweeps) that runs every 5 minutes,
+    // only while the scheduler runs and never during idle drain or warm standby.
     const blockedIssueSweep = blockedIssueSweeper(db as any, heartbeat);
-    let blockedIssueSweepInFlight = false;
     const blockedIssueSweepIntervalMs = 5 * 60 * 1000;
-    const scheduleBlockedIssueSweep = () => {
-      if (heartbeatSchedulerStopped || blockedIssueSweepInFlight) return;
-      if (isIdleTaskDrainActive() || isWarmStandby()) return;
-      blockedIssueSweepInFlight = true;
-      trackHeartbeatSchedulerWork(blockedIssueSweep
-        .sweep(new Date())
-        .then((result) => {
-          if (result.moved > 0) {
-            logger.info(result, "blocked issue sweeper moved issues to todo");
+    let nextBlockedIssueSweepAt = Date.now() + blockedIssueSweepIntervalMs;
+    registerExecutionControlWork(deliveryWork, [
+      {
+        queue: DELIVERY_QUEUES.pibBlockedIssueSweep,
+        run: async () => {
+          try {
+            const result = await blockedIssueSweep.sweep(new Date());
+            if (result.moved > 0) logger.info(result, "blocked issue sweeper moved issues to todo");
+          } catch (err) {
+            logger.error({ err }, "blocked issue sweeper failed");
+          } finally {
+            nextBlockedIssueSweepAt = Date.now() + blockedIssueSweepIntervalMs;
           }
-        })
-        .catch((err) => {
-          logger.error({ err }, "blocked issue sweeper failed");
-        })
-        .finally(() => {
-          blockedIssueSweepInFlight = false;
-        }));
-    };
-    blockedIssueSweepTimer = setInterval(scheduleBlockedIssueSweep, blockedIssueSweepIntervalMs);
-    blockedIssueSweepTimer.unref?.();
+        },
+        next: async () => nextBlockedIssueSweepAt,
+      },
+    ], () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
 
     const adapterLoginReaper = createDeviceLoginReaper({
       store: createDbAdapterAuthSessionStore(db as any),
@@ -2087,7 +2082,6 @@ async function startServerWithDatabaseTeardown(
     await preDrain.run("systemd_notify", () =>
       systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;
-    if (blockedIssueSweepTimer) clearInterval(blockedIssueSweepTimer);
     skillVersionRetentionWorker?.unsubscribe();
     await preDrain.run("task_drain_expiry_stop", () => taskDrainExpiryWork.stop());
     nativeRunnerEvidenceRetentionWorker?.unsubscribe();

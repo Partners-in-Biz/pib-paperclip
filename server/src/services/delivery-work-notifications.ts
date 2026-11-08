@@ -2,6 +2,8 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  // PiB fork (PAR-5960): periodic long-blocked issue sweep.
+  pibBlockedIssueSweep: "pib-blocked-issue-sweep",
   mcpClientMirror: "mcp-client-mirror",
   mcpIngressHandoffs: "mcp-ingress-handoffs",
   mcpRevocationIndex: "mcp-revocation-index",
