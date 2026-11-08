@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyOps } from "../src/video-edit/ops.js";
-import type { Clip, EditDoc } from "../src/video-edit/timeline.js";
+import { normalizeEdit, type Clip, type EditDoc } from "../src/video-edit/timeline.js";
 import {
   clipLabel,
   clipUnderPlayhead,
@@ -14,6 +14,7 @@ import {
   pxToSeconds,
   secondsToPx,
   tickStep,
+  rippleBox,
   trimResult,
 } from "../src/ui/editor/timeline-view.js";
 
@@ -99,18 +100,25 @@ describe("clipUnderPlayhead", () => {
 describe("trimResult", () => {
   it("trims the out edge with one trim op", () => {
     const r = trimResult(media("a", 0, 0, 4), "out", -1.5);
-    expect(r).toEqual({ start: 0, end: 2.5, ops: [{ op: "trim", clipId: "a", out: 2.5 }] });
-    expect(trimResult(media("a", 0, 0, 4, 2), "out", 1)?.ops).toEqual([{ op: "trim", clipId: "a", out: 6 }]);
+    expect(r).toEqual({ start: 0, end: 2.5, shift: -1.5, ops: [{ op: "trim", clipId: "a", out: 2.5, ripple: true }] });
+    expect(trimResult(media("a", 0, 0, 4, 2), "out", 1)?.ops).toEqual([{ op: "trim", clipId: "a", out: 6, ripple: true }]);
+    // Alt held: a free trim, the later clips stay put.
+    expect(trimResult(media("a", 0, 0, 4), "out", -1.5, true)).toEqual({ start: 0, end: 2.5, shift: 0, ops: [{ op: "trim", clipId: "a", out: 2.5, ripple: false }] });
   });
-  it("keeps the end still on the in edge: shrink is trim then move, grow is move then trim", () => {
-    expect(trimResult(media("b", 4, 2, 8), "in", 1)).toEqual({ start: 5, end: 10, ops: [{ op: "trim", clipId: "b", in: 3 }, { op: "move", clipId: "b", start: 5 }] });
-    expect(trimResult(media("b", 4, 2, 8), "in", -1)).toEqual({ start: 3, end: 10, ops: [{ op: "move", clipId: "b", start: 3 }, { op: "trim", clipId: "b", in: 1 }] });
+  it("ripples the in edge by default: one trim, start kept, later clips shift by the change in length", () => {
+    expect(trimResult(media("b", 4, 2, 8), "in", 1)).toEqual({ start: 4, end: 9, shift: -1, ops: [{ op: "trim", clipId: "b", in: 3, ripple: true }] });
+    expect(trimResult(media("b", 4, 2, 8), "in", -1)).toEqual({ start: 4, end: 11, shift: 1, ops: [{ op: "trim", clipId: "b", in: 1, ripple: true }] });
+    expect(trimResult(media("x", 1, 5, 8), "in", -10)).toMatchObject({ start: 1, end: 9 }); // only in >= 0 limits a ripple
+  });
+  it("free (Alt) keeps the end still on the in edge: shrink is trim then move, grow is move then trim", () => {
+    expect(trimResult(media("b", 4, 2, 8), "in", 1, true)).toEqual({ start: 5, end: 10, shift: 0, ops: [{ op: "trim", clipId: "b", in: 3, ripple: false }, { op: "move", clipId: "b", start: 5 }] });
+    expect(trimResult(media("b", 4, 2, 8), "in", -1, true)).toEqual({ start: 3, end: 10, shift: 0, ops: [{ op: "move", clipId: "b", start: 3 }, { op: "trim", clipId: "b", in: 1, ripple: false }] });
   });
   it("clamps at the source start, the timeline start and the shortest clip", () => {
-    expect(trimResult(media("b", 4, 2, 8), "in", -10)?.start).toBe(2); // in can't go below 0
-    expect(trimResult(media("x", 1, 5, 8), "in", -10)?.start).toBe(0); // start can't go below 0
+    expect(trimResult(media("b", 4, 2, 8), "in", -10, true)?.start).toBe(2); // in can't go below 0
+    expect(trimResult(media("x", 1, 5, 8), "in", -10, true)?.start).toBe(0); // start can't go below 0
     expect(trimResult(media("a", 0, 0, 4), "out", -10)?.end).toBe(MIN_CLIP_SECONDS);
-    expect(trimResult(media("b", 4, 2, 8), "in", 99)?.start).toBe(ms(10 - MIN_CLIP_SECONDS));
+    expect(trimResult(media("b", 4, 2, 8), "in", 99, true)?.start).toBe(ms(10 - MIN_CLIP_SECONDS));
   });
   it("is null for no change or an untrimmable clip", () => {
     expect(trimResult(media("a", 0, 0, 4), "out", 0)).toBeNull();
@@ -121,15 +129,49 @@ describe("trimResult", () => {
   it("produces batches the worker accepts, with neighbours touching", () => {
     // b sits right after a; growing b's in edge into the gap and a's out edge to meet it must not overlap at any step.
     const base = doc();
-    const shrinkIn = trimResult(media("b", 4, 2, 8), "in", 1)!;
+    const shrinkIn = trimResult(media("b", 4, 2, 8), "in", 1, true)!;
     const afterShrink = applyOps(base, shrinkIn.ops);
     const b = (afterShrink.tracks[0].clips as Clip[]).find((c) => c.id === "b")!;
     expect(b).toMatchObject({ start: 5, in: 3, out: 8 });
-    const growIn = trimResult(b, "in", -1)!;
+    const growIn = trimResult(b, "in", -1, true)!;
     const back = applyOps(afterShrink, growIn.ops);
     expect((back.tracks[0].clips as Clip[]).find((c) => c.id === "b")).toMatchObject({ start: 4, in: 2, out: 8 });
-    const growA = trimResult(media("a", 0, 0, 4), "out", 0.5)!;
+    const growA = trimResult(media("a", 0, 0, 4), "out", 0.5, true)!;
     expect(() => applyOps(base, growA.ops)).toThrow(); // would overlap b: the worker refuses, nothing applies
+  });
+});
+
+describe("ripple trim (PAR-8324)", () => {
+  // Three clips back to back on one track, a gap before the third, and a clip on another track.
+  const three = (): EditDoc => normalizeEdit({
+    schemaVersion: 1,
+    project: { size: "9:16", fps: 30 },
+    tracks: [
+      { id: "v", kind: "video", clips: [media("c1", 0, 0, 4), media("c2", 4, 0, 4), media("c3", 9, 0, 4)] },
+      { id: "m", kind: "audio", clips: [media("music", 4, 0, 6)] },
+    ],
+  });
+  const starts = (doc: EditDoc, id: string) => (doc.tracks.find((t) => t.id === id)!.clips as Clip[]).map((c) => c.start);
+
+  it("one ops batch per gesture; after a reload clips 2 and 3 start earlier with no new gap", () => {
+    const doc = three();
+    const r = trimResult((doc.tracks[0].clips as Clip[])[0], "out", -1)!;
+    expect(r.ops).toHaveLength(1);
+    const reloaded = normalizeEdit(JSON.parse(JSON.stringify(applyOps(doc, r.ops))));
+    expect(starts(reloaded, "v")).toEqual([0, 3, 8]); // c2 touches c1, c3 keeps its 1 s gap
+    expect(starts(reloaded, "m")).toEqual([4]);
+  });
+  it("Alt (free) leaves the gap", () => {
+    const doc = three();
+    const r = trimResult((doc.tracks[0].clips as Clip[])[0], "out", -1, true)!;
+    expect(starts(applyOps(doc, r.ops), "v")).toEqual([0, 4, 9]);
+  });
+  it("rippleBox previews the later clips moving, and nothing else", () => {
+    const clips = three().tracks[0].clips as Clip[];
+    const r = trimResult(clips[0], "out", -1)!;
+    expect(clips.map((c) => rippleBox(c, clips[0], r))).toEqual([{ start: 0, end: 4 }, { start: 3, end: 7 }, { start: 8, end: 12 }]);
+    const free = trimResult(clips[0], "out", -1, true)!;
+    expect(rippleBox(clips[1], clips[0], free)).toEqual({ start: 4, end: 8 });
   });
 });
 

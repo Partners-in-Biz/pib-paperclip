@@ -4,7 +4,10 @@
  * The edit is run through `normalizeEdit` after every op, so an op that breaks a limit (overlap, range, length) is
  * refused at that op. Times are timeline seconds, rounded to milliseconds.
  *
- * - `trim` changes a media/audio clip's source in/out and keeps its start (use `move` to shift it).
+ * - `trim` changes a media/audio clip's source in/out and keeps its start (use `move` to shift it). Args: `clipId`,
+ *   `in?`, `out?`, `ripple?` (default false). With `ripple: true` every later clip on the same track (start >= the
+ *   clip's old end) shifts by the change in the clip's length, so no gap opens (or the clips make room); other tracks
+ *   never move. Without it the later clips stay put: a shorter clip leaves a gap, a longer one may overlap (refused).
  * - `split` and `trim` shorten fades and the fade-in transition to fit the new length; `split` leaves no fade at the cut.
  * - `reorder` sets the track order (first track is the bottom layer); `removeTrack` removes the track with its clips.
  */
@@ -17,7 +20,7 @@ export type OpName = (typeof OP_NAMES)[number];
 export type EditOp =
   | { op: "addClip"; trackId: string; clip: Record<string, unknown> }
   | { op: "split"; clipId: string; at: number; newId?: string }
-  | { op: "trim"; clipId: string; in?: number; out?: number }
+  | { op: "trim"; clipId: string; in?: number; out?: number; ripple?: boolean }
   | { op: "move"; clipId: string; start?: number; trackId?: string }
   | { op: "delete"; clipId: string }
   | { op: "reorder"; trackIds: string[] }
@@ -159,7 +162,17 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       const next = { ...clip, in: inPoint ?? clip.in, out: out ?? clip.out };
       if (next.in < 0) fail(i, "out_of_range", "in", "can't be before the start of the source.");
       if (next.out <= next.in) fail(i, "out_of_range", out === undefined ? "in" : "out", "out must be after in.");
-      clipsOf(track)[index] = fitFades(next, ms((next.out - next.in) / next.speed));
+      if (o.ripple !== undefined && typeof o.ripple !== "boolean") fail(i, "invalid", "ripple", "must be true or false.");
+      const length = ms((next.out - next.in) / next.speed);
+      const oldEnd = ms(clip.start + clipDuration(clip));
+      const shift = o.ripple ? ms(clip.start + length - oldEnd) : 0;
+      if (shift) {
+        // Later clips move as one block, so their gaps keep their size; normalizeEdit still checks range and length.
+        clipsOf(track).forEach((c, j) => {
+          if (j !== index && c.start >= oldEnd) clipsOf(track)[j] = { ...c, start: ms(c.start + shift) };
+        });
+      }
+      clipsOf(track)[index] = fitFades(next, length);
       return;
     }
     case "move": {

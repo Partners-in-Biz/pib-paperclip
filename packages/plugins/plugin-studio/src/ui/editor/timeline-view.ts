@@ -87,30 +87,46 @@ export function clipUnderPlayhead(doc: EditDoc | null, seconds: number, kinds: r
   return null;
 }
 
-export interface TrimResult { start: number; end: number; ops: Record<string, unknown>[] }
+/** `shift`: how far the clips after this one on its lane move (ripple; 0 for a free trim). */
+export interface TrimResult { start: number; end: number; shift: number; ops: Record<string, unknown>[] }
 
 /**
  * Dragging a trimmable clip's edge by `deltaSeconds` of timeline: the clip box to preview and the one ops batch to send.
- * The `out` edge is a `trim` of `out`. The `in` edge keeps the clip's end still, so it is a `trim` of `in` plus a `move`
+ * Default is a ripple trim (PAR-8324): one `trim` with `ripple: true`; the clip keeps its start and the later clips on
+ * its lane shift by the change in length (`shift`), so no gap opens. `free` (Alt held) is a trim with `ripple: false`:
+ * the `out` edge is a `trim` of `out`; the `in` edge keeps the clip's end still, so it is a `trim` of `in` plus a `move`
  * of `start`, ordered so no step overlaps a neighbour (shrink: trim then move; grow: move then trim). Null when the
  * clamped drag changes nothing or the clip can't be trimmed. Clamps: start >= 0, in >= 0, length >= MIN_CLIP_SECONDS.
  */
-export function trimResult(clip: Clip, edge: TrimEdge, deltaSeconds: number): TrimResult | null {
+export function trimResult(clip: Clip, edge: TrimEdge, deltaSeconds: number, free = false): TrimResult | null {
   if (!isTrimmable(clip) || !Number.isFinite(deltaSeconds)) return null;
   const length = clipLength(clip);
+  const oldEnd = clipEnd(clip);
   if (edge === "out") {
     const delta = Math.max(deltaSeconds, MIN_CLIP_SECONDS - length);
     const out = ms(clip.out + delta * clip.speed);
     if (out === clip.out || out <= clip.in) return null;
-    return { start: clip.start, end: ms(clip.start + (out - clip.in) / clip.speed), ops: [{ op: "trim", clipId: clip.id, out }] };
+    const end = ms(clip.start + (out - clip.in) / clip.speed);
+    return { start: clip.start, end, shift: free ? 0 : ms(end - oldEnd), ops: [{ op: "trim", clipId: clip.id, out, ripple: !free }] };
   }
-  const delta = Math.min(Math.max(deltaSeconds, -clip.start, -clip.in / clip.speed), length - MIN_CLIP_SECONDS);
-  const start = ms(clip.start + delta);
+  const delta = Math.min(Math.max(deltaSeconds, -clip.in / clip.speed, free ? -clip.start : -Infinity), length - MIN_CLIP_SECONDS);
   const inPoint = Math.max(0, ms(clip.in + delta * clip.speed));
-  if (start === clip.start || inPoint === clip.in || inPoint >= clip.out) return null;
-  const trim = { op: "trim", clipId: clip.id, in: inPoint };
+  if (inPoint === clip.in || inPoint >= clip.out) return null;
+  if (!free) {
+    const end = ms(clip.start + (clip.out - inPoint) / clip.speed);
+    return { start: clip.start, end, shift: ms(end - oldEnd), ops: [{ op: "trim", clipId: clip.id, in: inPoint, ripple: true }] };
+  }
+  const start = ms(clip.start + delta);
+  if (start === clip.start) return null;
+  const trim = { op: "trim", clipId: clip.id, in: inPoint, ripple: false };
   const move = { op: "move", clipId: clip.id, start };
-  return { start, end: clipEnd(clip), ops: delta > 0 ? [trim, move] : [move, trim] };
+  return { start, end: oldEnd, shift: 0, ops: delta > 0 ? [trim, move] : [move, trim] };
+}
+
+/** Where a clip on the dragged lane draws while a ripple trim previews: clips after the trimmed one shift with it. */
+export function rippleBox(clip: Clip, trimmed: Clip, result: TrimResult): { start: number; end: number } {
+  const start = clip.id !== trimmed.id && result.shift && clip.start >= clipEnd(trimmed) ? ms(clip.start + result.shift) : clip.start;
+  return { start, end: ms(start + clipLength(clip)) };
 }
 
 /**
