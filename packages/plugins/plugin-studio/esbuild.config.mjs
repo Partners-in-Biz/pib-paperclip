@@ -36,4 +36,8 @@ if (watch) {
   await Promise.all([workerCtx.dispose(), manifestCtx.dispose(), uiCtx.dispose()]);
   // The prompt template gallery's example pictures, served from beside the page.
   cpSync(new URL("./assets/template-samples", import.meta.url), new URL("./dist/ui/template-samples", import.meta.url), { recursive: true });
+  // The video renderer's OFL fonts (+ OFL.txt) beside dist/worker.js, where src/video-edit/fonts.ts looks for them;
+  // dist/ui/fonts is the same set for the browser editor (Phase B) to load with FontFace.
+  cpSync(new URL("./fonts", import.meta.url), new URL("./dist/fonts", import.meta.url), { recursive: true });
+  cpSync(new URL("./fonts", import.meta.url), new URL("./dist/ui/fonts", import.meta.url), { recursive: true });
 }
