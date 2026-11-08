@@ -7,6 +7,7 @@
 import { useSyncExternalStore } from "react";
 import type { EditDoc } from "../../video-edit/timeline.js";
 import type { EditorStore } from "./editor-store.js";
+import { captionStyle, STYLE_LOOK, visibleCaptions, captionClips } from "./caption-timing.js";
 import { overlayStyle, PREVIEW_NOTE, textClips, visibleText } from "./text-track.js";
 
 export function Overlay({ store }: { store: EditorStore }) {
@@ -15,11 +16,12 @@ export function Overlay({ store }: { store: EditorStore }) {
 }
 
 export function OverlayView({ doc, playhead }: { doc: EditDoc | null; playhead: number }) {
-  if (!doc || !textClips(doc).length) return null;
+  if (!doc || (!textClips(doc).length && !captionClips(doc).length)) return null;
   const { width, height } = doc.project;
   const shown = visibleText(doc, playhead);
+  const captions = visibleCaptions(doc, playhead);
   return (
-    <div data-text-overlay aria-hidden={shown.length ? undefined : true} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", containerType: "size" }}>
+    <div data-text-overlay aria-hidden={shown.length || captions.length ? undefined : true} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", containerType: "size" }}>
       {shown.map(({ clip, opacity }) => (
         <div
           key={clip.id}
@@ -27,6 +29,13 @@ export function OverlayView({ doc, playhead }: { doc: EditDoc | null; playhead: 
           style={overlayStyle(clip, { width, height }, opacity)}
         >
           {clip.text}
+        </div>
+      ))}
+      {captions.map(({ clip, words }) => (
+        <div key={clip.id} data-overlay-caption={clip.id} data-caption-style={clip.style} style={captionStyle(clip.style, { width, height })}>
+          {words.map((w, i) => (
+            <span key={i} data-word-active={w.active ? "" : undefined} style={{ color: w.spoken ? STYLE_LOOK[clip.style].spoken : STYLE_LOOK[clip.style].unspoken }}>{i ? " " : ""}{w.text}</span>
+          ))}
         </div>
       ))}
       <span data-overlay-note style={{ position: "absolute", left: 6, bottom: 6, padding: "1px 6px", borderRadius: 4, background: "#000a", color: "#fff", fontSize: 11 }}>{PREVIEW_NOTE}</span>
