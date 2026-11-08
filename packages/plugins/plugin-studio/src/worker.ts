@@ -5,6 +5,7 @@ import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsFor
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
+import { applyOpsAction, cancelRenderAction, createEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -396,6 +397,31 @@ const plugin = definePlugin({
     action("canvas-archive", async (params, context) => {
       const me = await canvasEditor(context);
       return archiveCanvas(ctx, me.companyId, String(objectParams(params).canvasId ?? "").trim());
+    });
+    // Video edits (video-edit/actions.ts, PAR-8276 A8a): anyone in the company reads them; only editors change or render.
+    async function videoEditor(context: Parameters<typeof person>[0]) {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at video edits but can't change or render them.", "forbidden");
+      return me;
+    }
+    action("video-edit-list", async (params, context) => listEditsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-get", async (params, context) => getEditAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-render-status", async (params, context) => renderStatusAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-create", async (params, context) => {
+      const me = await videoEditor(context);
+      return createEditAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-apply-ops", async (params, context) => {
+      const me = await videoEditor(context);
+      return applyOpsAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-render", async (params, context) => {
+      const me = await videoEditor(context);
+      return renderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-cancel-render", async (params, context) => {
+      const me = await videoEditor(context);
+      return cancelRenderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
     pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
