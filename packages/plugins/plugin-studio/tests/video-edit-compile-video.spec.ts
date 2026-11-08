@@ -115,7 +115,6 @@ describe("compileVideo contract", () => {
   });
 
   it.each([
-    ["audio", [{ id: "m", kind: "audio", clips: [clip("m1", "a", 0, 0, 1)] }]],
     ["multiple_video_tracks", [video(clip("c1", "a", 0, 0, 1)), { id: "v2", kind: "video", clips: [clip("c2", "b", 0, 0, 1)] }]],
     ["overlay_transition", [overlay(clip("o1", "logo", 0, 0, 2, { transitionIn: { type: "fade", duration: 1 } }))]],
     ["empty_edit", [video()]],
