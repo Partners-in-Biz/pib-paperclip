@@ -123,6 +123,22 @@ export async function assertAssets(ctx: PluginContext, companyId: string, scope:
   }
 }
 
+/**
+ * `normalizeEdit` for a write. Volume keyframes need sound: a picture asset has none, so a doc that animates a picture's
+ * volume is refused here with `no_audio` (a video without an audio stream is only known after probing; the compiler
+ * refuses that one). Docs without volume keyframes cost no extra query.
+ */
+export async function normalizeForWrite(ctx: PluginContext, companyId: string, input: unknown): Promise<EditDoc> {
+  const doc = normalizeEdit(input);
+  const animated = doc.tracks.flatMap((t) => (t.kind === "video" || t.kind === "overlay" ? t.clips.filter((c) => c.keyframes?.volume) : []));
+  if (!animated.length) return doc;
+  const ids = [...new Set(animated.map((c) => c.assetId))];
+  const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
+  const rows = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND kind = 'image' AND id IN (${marks})`, [companyId, ...ids]);
+  const pictures = new Set(rows.map((r) => r.id));
+  return pictures.size ? normalizeEdit(input, { hasAudio: (assetId) => !pictures.has(assetId) }) : doc;
+}
+
 export async function createVideoEdit(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
   const name = text(params.title, "video edit", MAX_EDIT_TITLE);
   const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
@@ -131,7 +147,7 @@ export async function createVideoEdit(ctx: PluginContext, companyId: string, par
     if (!project) throw new StudioError(`Project ${projectId} was not found in this company.`, "unknown_project");
   }
   const where = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
-  const doc = normalizeEdit(params.doc === undefined ? { tracks: [] } : params.doc);
+  const doc = await normalizeForWrite(ctx, companyId, params.doc === undefined ? { tracks: [] } : params.doc);
   const sourceAssetId = typeof params.sourceAssetId === "string" && params.sourceAssetId.trim() ? params.sourceAssetId.trim() : null;
   await assertAssets(ctx, companyId, where.scope, [...new Set([...editAssetIds(doc), ...(sourceAssetId ? [sourceAssetId] : [])])]);
   const id = randomUUID();
@@ -172,7 +188,7 @@ export async function saveVideoEdit(ctx: PluginContext, companyId: string, param
   const base = Number(params.baseRevision);
   if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision this save starts from.");
   const row = await getRow(ctx, companyId, id);
-  const doc = normalizeEdit(params.doc);
+  const doc = await normalizeForWrite(ctx, companyId, params.doc);
   await assertAssets(ctx, companyId, scopeOfRow(row), editAssetIds(doc));
   const name = params.title === undefined ? row.title : text(params.title, "video edit", MAX_EDIT_TITLE);
   const out = await ctx.db.execute(
