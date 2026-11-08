@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyOps } from "../src/video-edit/ops.js";
 import { FONT_IDS, FONTS } from "../src/video-edit/fonts.js";
@@ -9,6 +9,20 @@ const media = { id: "v1", assetId: "a1", version: 1, start: 0, in: 0, out: 10 };
 const text = (id: string, start: number, duration: number, extra: Record<string, unknown> = {}) => ({ id, start, duration, text: `T ${id}`, ...extra });
 const docOf = (texts: unknown[] | null): EditDoc =>
   normalizeEdit({ tracks: [{ id: "video", kind: "video", clips: [media] }, ...(texts ? [{ id: "titles", kind: "text", clips: texts }] : [])] });
+
+describe("preview fonts (B12)", () => {
+  it("name the same TTFs the render uses, and the TTFs exist", async () => {
+    const { UI_FONTS, fontStack } = await import("../src/ui/font-names.js");
+    expect(UI_FONTS).toEqual(Object.fromEntries(Object.entries(FONTS)));
+    for (const f of Object.values(FONTS)) for (const file of [f.regular, f.bold]) expect(existsSync(new URL(`../fonts/${file}`, import.meta.url))).toBe(true);
+    expect(fontStack("serif")).toBe('"Studio Lora", Georgia, serif');
+  });
+  it("loads them by URL, never inlined into the bundle", () => {
+    const src = readFileSync(new URL("../src/ui/fonts.ts", import.meta.url), "utf8");
+    expect(src).toContain("fonts/");
+    expect(src).not.toMatch(/data:font|base64|\.ttf"\s*;?\s*$|import .*\.ttf/m);
+  });
+});
 
 describe("font list", () => {
   it("matches A5a's fonts.ts ids and families", () => {
@@ -100,10 +114,10 @@ describe("Overlay", () => {
     expect(a.text).toBe(evil); // stored as plain text
     expect(overlayStyle(a, doc.project, 0.5)).toMatchObject({ left: "55%", top: "45%", opacity: 0.5, color: "#FFFFFF", fontSize: "3.333cqh" }); // 1080x1920
   });
-  it("renders text only as React text children, never as HTML, with the preview note", () => {
+  it("renders text only as React text children, never as HTML, with no generic-font note", () => {
     const src = readFileSync(new URL("../src/ui/editor/Overlay.tsx", import.meta.url), "utf8");
-    expect(src).not.toMatch(/dangerouslySetInnerHTML|innerHTML|FontFace|@font-face/);
+    expect(src).not.toMatch(/dangerouslySetInnerHTML|innerHTML|FontFace|@font-face|PREVIEW_NOTE|data-overlay-note/);
     expect(src).toContain("{clip.text}");
-    expect(src).toContain("{PREVIEW_NOTE}");
+    expect(src).toContain("useStudioFonts");
   });
 });

@@ -5,6 +5,7 @@
  */
 import type { CaptionClip, CaptionStyle, CaptionWord, EditDoc } from "../../video-edit/timeline.js";
 import { freeId } from "./timeline-view.js";
+import { fontStack } from "../font-names.js";
 
 /** A5a's caption styles (`timeline.ts` CAPTION_STYLES; a test keeps them equal). Copied so the UI bundle stays small. */
 export const CAPTION_STYLE_IDS = ["plain", "bold", "karaoke"] as const satisfies readonly CaptionStyle[];
@@ -187,7 +188,7 @@ export function captionStyle(style: CaptionStyle, project: { width: number; heig
     transform: "translateX(-50%)",
     width: "90%",
     textAlign: "center",
-    fontFamily: "system-ui, sans-serif",
+    fontFamily: fontStack("sans"), // the render draws captions in Inter (compile-text.ts)
     fontWeight: look.bold ? 800 : 400,
     fontSize: `${ms(((Math.min(project.width, project.height) * look.size) / project.height) * 100)}cqh`,
     lineHeight: 1.2,
