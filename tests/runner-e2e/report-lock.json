@@ -1,0 +1,6 @@
+{
+  "inputSha256": "0e9ac64dc1b8320c33bbd2fd4f786d645ceb5aa2dcaa84b357e1ade9a9fa844a",
+  "outputSha256": "b6e056c6563411359973609f4997c9fa789e58410af8c5040ef9fef6b9f0da4d",
+  "patchSha256": "024c83574cedd67700979c11a36eb89a135fe22f90ac9890c28aaa059418e0a6",
+  "basis": "PiB fork: the fork lockfile (pnpm 9.15.4, upstream lock plus the PiB plugin packages) already carries upstream's reviewed acpx patch-hash correction; input is that lock with the correction reversed. Recompute in any master PR that changes pnpm-lock.yaml."
+}

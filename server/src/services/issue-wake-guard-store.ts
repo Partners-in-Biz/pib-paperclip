@@ -2,8 +2,9 @@ import { and, eq, gt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
 import {
+  readTicketRunsPerHourCap,
   TICKET_RUN_CAP_WINDOW_MS,
-  WAKE_LOOP_FLAG_BODY,
+  wakeLoopFlagBody,
   WAKE_LOOP_GUARD_ACTION,
 } from "./issue-wake-guards.js";
 
@@ -87,6 +88,7 @@ export async function recordWakeLoopFlag(
     .limit(1);
   if (existing) return;
 
+  const maxRuns = readTicketRunsPerHourCap();
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: "system",
@@ -97,7 +99,7 @@ export async function recordWakeLoopFlag(
     agentId: input.agentId ?? null,
     details: {
       runsStartedInWindow: input.runsStartedInWindow,
-      maxRuns: 3,
+      maxRuns,
       windowMs: TICKET_RUN_CAP_WINDOW_MS,
     },
     createdAt: now,
@@ -106,7 +108,7 @@ export async function recordWakeLoopFlag(
     companyId: input.companyId,
     issueId: input.issueId,
     authorType: "system",
-    body: WAKE_LOOP_FLAG_BODY,
+    body: wakeLoopFlagBody(maxRuns),
     createdAt: now,
     updatedAt: now,
   });

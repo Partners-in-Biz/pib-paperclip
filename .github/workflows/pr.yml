@@ -1,4 +1,6 @@
 name: PR
+run-name: >-
+  ${{ contains(github.event.pull_request.labels.*.name, 'profile-ci') && (github.event.action != 'labeled' || github.event.label.name == 'profile-ci') && format('CI profile · PR #{0}', github.event.pull_request.number) || '' }}
 
 # Actions-minutes slim (2026-10-11, approved by Peet): this calls upstream's
 # full trusted PR suite (~40 jobs: 12 server shards, 9 serialized shards, 8 e2e
