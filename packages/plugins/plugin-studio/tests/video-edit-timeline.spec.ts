@@ -171,7 +171,7 @@ describe("video edit timeline", () => {
   });
 
   it("refuses other schema versions with a typed error", () => {
-    expect(refused({ schemaVersion: 2 })).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
+    expect(refused({ schemaVersion: 3 })).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
     expect(normalizeEdit({ project: {} }).schemaVersion).toBe(1);
   });
 });
