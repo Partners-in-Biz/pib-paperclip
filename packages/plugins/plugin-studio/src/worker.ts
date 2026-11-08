@@ -24,6 +24,7 @@ import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
+import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
@@ -437,6 +438,7 @@ const plugin = definePlugin({
     });
     ctx.jobs.register("sweep-local-files", async () => {
       await sweepLocalCopies();
+      await sweepRenderWorkdirs();
     });
   },
 
