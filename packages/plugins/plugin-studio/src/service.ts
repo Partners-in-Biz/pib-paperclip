@@ -5,7 +5,7 @@ import { formatClientParam, listCrmClients, type ClientScope } from "@partnersin
 import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, isAgentLimitKey, listCaps, usage } from "./ledger.js";
 import { StudioConfig } from "./config.js";
-import { providerStatus } from "./providers/registry.js";
+import { providerOptions, providerStatus } from "./providers/registry.js";
 import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
@@ -65,6 +65,8 @@ export async function overview(ctx: PluginContext, companyId: string) {
     balanceView(ctx, companyId).catch(() => null),
     providerStatus(new StudioConfig(ctx, companyId)).catch(() => []),
   ]);
+  // Every option per capability (stt, tts, lipsync) with its price, quality note and default flag (PAR-8436).
+  const providerChoices = await providerOptions(new StudioConfig(ctx, companyId));
   const clientUsage = await Promise.all(
     caps
       .filter((c) => c.scopeKey.includes(":") && !isAgentLimitKey(c.scopeKey))
@@ -78,6 +80,7 @@ export async function overview(ctx: PluginContext, companyId: string) {
     companyUsed,
     balance,
     providers,
+    providerOptions: providerChoices,
     caps,
     clientUsage,
     history,

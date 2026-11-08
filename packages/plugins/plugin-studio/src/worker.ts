@@ -23,6 +23,7 @@ import { guardAction } from "./refusal.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
+import { lipsyncAction } from "./lipsync.js";
 import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js";
 import { setBalance } from "./balance.js";
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
@@ -95,6 +96,13 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
       const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId });
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
+      return out;
+    }
+    case "studio-lipsync": {
+      const work = await workOf(ctx, run, params);
+      if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
+      const out = await lipsyncAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     }
@@ -388,6 +396,18 @@ const plugin = definePlugin({
     action("generate", async (params, context) => {
       const { me, request, actor } = await generator(context, params);
       const out = await requestGeneration(ctx, me.companyId, request, actor);
+      runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
+      return out;
+    });
+
+    // Lip-sync on the generate page (PAR-8436): a portrait plus an audio asset or a typed line; same generate path.
+    action("studio-lipsync", async (params, context) => {
+      const me = await person(context);
+      if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't generate. Ask a company owner for member access.", "forbidden");
+      const p = objectParams(params);
+      const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
+      const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
+      const out = await lipsyncAction(ctx, me.companyId, p, { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     });

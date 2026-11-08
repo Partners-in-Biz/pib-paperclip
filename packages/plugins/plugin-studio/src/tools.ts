@@ -3,7 +3,9 @@ import { LINK_TARGETS } from "./assets.js";
 import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
+import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
+import { LIPSYNC } from "./providers/registry.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
 import { CAPTION_STYLES, SIZES } from "./video-edit/timeline.js";
@@ -176,6 +178,23 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     displayName: "Generate images or video",
     description: "Queue an image or video. Credits are reserved against the monthly cap, and it's refused if they don't fit. The result is saved as a Studio asset linked to the issue, and a comment on the issue reports it and wakes you. Don't poll or sit waiting. Before ending your run, set an issue monitor as a fallback (kind external_service, about 15 minutes), as for any wait on a machine: an in-progress issue with nothing watching it gets sent for repair. Check the cost with studio-estimate first, because it counts against the company's monthly cap.",
     parametersSchema: schema([], { ...GENERATE_FIELDS, name: text("File name for the result (default: the start of the prompt)") }),
+  },
+  {
+    name: "studio-lipsync",
+    displayName: "Lip-sync a portrait",
+    description: `Make a talking video from one portrait: give audioAssetId (a Studio sound asset, e.g. a voiceover) for the face to lip-sync to, or line (up to ${MAX_LINE_CHARS} characters) for the model to say. provider picks the option (${LIPSYNC.map((e) => `${e.key}: ${e.qualityNote}`).join("; ")}); default: the company's setting, else ${LIPSYNC.filter((e) => e.isDefaultFor).map((e) => `${e.key} for ${e.isDefaultFor}`).join(", ")}. Queued like studio-generate and charged the same way; a job is 5 to 30 credits, so at the default run limit an agent run is refused (run_limit): ask a person to use the Studio page, or for a higher run limit.`,
+    parametersSchema: schema(["portraitAssetId"], {
+      portraitAssetId: text("Studio image asset id of the person who speaks, same client"),
+      audioAssetId: text("Studio sound asset id to lip-sync to. Not with line."),
+      line: { type: "string", minLength: 1, maxLength: MAX_LINE_CHARS, description: "Words the person says. Not with audioAssetId." } as JsonSchema,
+      provider: { type: "string", enum: LIPSYNC.map((e) => e.key), description: "Optional lip-sync option; it must fit the input (audio or line)" } as JsonSchema,
+      prompt: text("Optional note on the scene or expression"),
+      resolution: text("Optional; default the option's lowest"),
+      duration: { type: "integer", minimum: 1, maximum: 30, description: "Seconds; default 5" } as JsonSchema,
+      name: text("File name for the result"),
+      client: CLIENT,
+      issueId: ISSUE,
+    }),
   },
   {
     name: "studio-generation-status",

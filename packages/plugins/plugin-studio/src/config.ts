@@ -8,6 +8,9 @@ import { SecretResolver, secretField } from "@partnersinbiz/pib-plugin-kit";
 import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
+/** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine";
+
 export function instanceConfigSchema(): JsonSchema {
   return {
     type: "object",
@@ -39,6 +42,9 @@ export function instanceConfigSchema(): JsonSchema {
         properties: {
           stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
           tts: { type: "string", title: "Text to speech", enum: ["xai"], default: "xai" },
+          // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
+          lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
+          lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
         },
       },
     },
@@ -82,7 +88,7 @@ export class StudioConfig {
   }
 
   /** The company default provider key for a capability, as set in the plugin settings (undefined when unset). */
-  async providerDefault(cap: "stt" | "tts"): Promise<string | undefined> {
+  async providerDefault(cap: ProviderSetting): Promise<string | undefined> {
     const providers = ((await this.raw).providers ?? {}) as Record<string, unknown>;
     const v = providers[cap];
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
