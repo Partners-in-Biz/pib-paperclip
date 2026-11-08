@@ -7,6 +7,7 @@ import type { StudioConfig } from "../config.js";
 import { StudioError } from "../errors.js";
 import { fakeProviderOn } from "../provider.js";
 import { fakeSpeechToText, xaiSpeechToText, type SpeechToText } from "../video-edit/stt.js";
+import { fakeTextToSpeech, xaiTextToSpeech, type TextToSpeech } from "../video-edit/tts.js";
 
 export type Capability = "stt" | "tts";
 
@@ -61,4 +62,14 @@ export async function sttFor(override: unknown, config: StudioConfig): Promise<S
   }
 }
 
-// TODO(PAR-8407 T3): export `ttsFor(override, config)` here, same shape as sttFor, with a `case "xai"`.
+/** Text to speech for `override` (or the company default). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
+export async function ttsFor(override: unknown, config: StudioConfig): Promise<TextToSpeech> {
+  const entry = resolveProvider("tts", override, await config.providerDefault("tts"));
+  if (fakeProviderOn()) return fakeTextToSpeech();
+  switch (entry.key) {
+    case "xai":
+      return xaiTextToSpeech(await config.xaiKey());
+    default:
+      throw new StudioError(`Unknown provider "${entry.key}".`, "bad_request");
+  }
+}
