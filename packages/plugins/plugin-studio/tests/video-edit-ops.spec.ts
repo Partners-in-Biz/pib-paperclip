@@ -104,6 +104,42 @@ describe("video edit ops", () => {
     expect(clip(doc, "music")).toMatchObject({ in: 0, out: 5, fadeOut: 1 });
   });
 
+  describe("trim with ripple (PAR-8324)", () => {
+    const rip = () => ({
+      schemaVersion: 1,
+      project: { size: "9:16", fps: 30 },
+      tracks: [
+        { id: "v", kind: "video", clips: [media("a"), media("b", { start: 4 }), media("c", { start: 10 })] }, // 2 s gap before c
+        { id: "o", kind: "overlay", clips: [media("x", { start: 5 })] },
+      ],
+    });
+    const at = (doc: EditDoc, id: string) => (track(doc, id).clips as { start: number }[]).map((c) => c.start);
+    it("shortening the out edge pulls the later clips on the track earlier; the gap before c keeps its size", () => {
+      const doc = apply([{ op: "trim", clipId: "a", out: 3, ripple: true }], rip());
+      expect(at(doc, "v")).toEqual([0, 3, 9]);
+      expect(at(doc, "o")).toEqual([5]); // other tracks never move
+    });
+    it("shortening the in edge keeps the clip's start and pulls the later clips earlier", () => {
+      const doc = apply([{ op: "trim", clipId: "a", in: 1, ripple: true }], rip());
+      expect(clip(doc, "a")).toMatchObject({ start: 0, in: 1, out: 4 });
+      expect(at(doc, "v")).toEqual([0, 3, 9]);
+    });
+    it("lengthening pushes the later clips later; clips before the trimmed one stay", () => {
+      const doc = apply([{ op: "trim", clipId: "b", out: 7, ripple: true }], rip());
+      expect(at(doc, "v")).toEqual([0, 4, 13]);
+      expect(at(doc, "o")).toEqual([5]);
+    });
+    it("without ripple (or ripple: false) the old behaviour is unchanged", () => {
+      expect(at(apply([{ op: "trim", clipId: "a", out: 3 }], rip()), "v")).toEqual([0, 4, 10]);
+      expect(at(apply([{ op: "trim", clipId: "a", out: 3, ripple: false }], rip()), "v")).toEqual([0, 4, 10]);
+      expect(refused([{ op: "trim", clipId: "b", out: 7 }], rip()).reason).toBe("overlap");
+    });
+    it("a ripple that breaks a limit fails the whole batch and applies nothing", () => {
+      const error = refused([{ op: "trim", clipId: "a", out: 3, ripple: true }, { op: "trim", clipId: "a", out: LIMITS.maxDuration, ripple: true }], rip());
+      expect(error.opIndex).toBe(1);
+      expect(refused([{ op: "trim", clipId: "a", out: 3, ripple: "yes" }], rip())).toMatchObject({ reason: "invalid", path: "ops[0].ripple" });
+    });
+  });
   it("trim refuses out before in, negative in, clips without a source and an empty trim", () => {
     expect(refused([{ op: "trim", clipId: "a", out: 0 }])).toMatchObject({ reason: "out_of_range", path: "ops[0].out" });
     expect(refused([{ op: "trim", clipId: "a", in: 5 }])).toMatchObject({ reason: "out_of_range", path: "ops[0].in" });

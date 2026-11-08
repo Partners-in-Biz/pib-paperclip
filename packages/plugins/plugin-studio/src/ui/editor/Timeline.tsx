@@ -1,6 +1,7 @@
 /**
  * Timeline (PAR-8315): one lane per track, a ruler and the playhead. Click a clip to select it, click empty space or
- * the ruler to move the playhead, drag a video/overlay/audio clip's edge to trim it, Delete (key or button) removes the
+ * the ruler to move the playhead, drag a video/overlay/audio clip's edge to trim it (PAR-8324: a ripple trim, the later
+ * clips on the lane close up or make room; hold Alt/Option at release for a free trim that keeps the gap), Delete (key or button) removes the
  * selected clip. PAR-8317: drag a clip's body along its lane to reorder it, "Split at playhead" (or S) cuts the clip
  * under the playhead, "Add clip" joins a Library video or picture onto the end of the video track. Each gesture sends exactly one `video-edit-apply-ops` batch through the store; the lanes always draw
  * the doc the server returned (a drag only previews locally until that answer arrives). No snapping in v1.
@@ -10,7 +11,10 @@ import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { Clip, TrackKind } from "../../video-edit/timeline.js";
 import { clipCount, type EditorStore } from "./editor-store.js";
 import { AddClipDialog } from "./AddClipDialog.js";
-import { addClipOps, clipEnd, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
+import { AudioTrack } from "./AudioTrack.js";
+import { CaptionTrack } from "./CaptionTrack.js";
+import { TextTrack } from "./TextTrack.js";
+import { addClipOps, clipEnd, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, rippleBox, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
 
 const LABEL_W = 104;
 const LANE_H = 40;
@@ -20,8 +24,8 @@ const EDGE_PX = 8;
 const MOVE_SLOP_PX = 4;
 const KIND_COLOR: Record<TrackKind, string> = { video: "#3b6fd9", overlay: "#7a4fd1", text: "#c2782a", caption: "#2f9a6b", audio: "#2a8fa8" };
 
-/** `edge` is a trim drag; `move` is a body drag that reorders the clip on its lane (`trackId`) once `moved`. */
-interface Drag { clipId: string; edge: TrimEdge | "move"; trackId: string; originX: number; pointerId: number; delta: number; moved: boolean }
+/** `edge` is a trim drag; `move` is a body drag that reorders the clip on its lane (`trackId`) once `moved`. `free`: Alt is held (trim without ripple). */
+interface Drag { clipId: string; edge: TrimEdge | "move"; trackId: string; originX: number; pointerId: number; delta: number; moved: boolean; free: boolean }
 
 const ellipsis = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 } as const;
 
@@ -65,7 +69,8 @@ export function Timeline({ store }: { store: EditorStore }) {
   const dragClip = drag ? findClip(drag.clipId) : null;
   const preview = !drag || !dragClip ? null
     : drag.edge === "move" ? (drag.moved ? { start: Math.max(0, dragClip.start + drag.delta), end: Math.max(0, dragClip.start + drag.delta) + clipLength(dragClip) } : null)
-    : trimResult(dragClip, drag.edge, drag.delta);
+    : trimResult(dragClip, drag.edge, drag.delta, drag.free);
+  const ripple = drag && dragClip && preview && "shift" in preview && preview.shift ? { trackId: drag.trackId, clip: dragClip, result: preview } : null;
 
   const secondsAt = (e: PointerEvent<HTMLElement>) => pxToSeconds(e.clientX - e.currentTarget.getBoundingClientRect().left, pps);
   const movePlayhead = (e: PointerEvent<HTMLElement>) => store.setPlayhead(Math.min(Math.max(0, secondsAt(e)), duration));
@@ -81,13 +86,13 @@ export function Timeline({ store }: { store: EditorStore }) {
     store.selectClip(hit.clipId);
     e.preventDefault();
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    setLiveDrag({ clipId: hit.clipId, edge: hit.part === "body" ? "move" : hit.part, trackId, originX: e.clientX, pointerId: e.pointerId, delta: 0, moved: hit.part !== "body" });
+    setLiveDrag({ clipId: hit.clipId, edge: hit.part === "body" ? "move" : hit.part, trackId, originX: e.clientX, pointerId: e.pointerId, delta: 0, moved: hit.part !== "body", free: e.altKey });
   }
   function onLaneMove(e: PointerEvent<HTMLDivElement>) {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
     const dx = e.clientX - d.originX;
-    setLiveDrag({ ...d, delta: dx / pps, moved: d.moved || Math.abs(dx) > MOVE_SLOP_PX });
+    setLiveDrag({ ...d, delta: dx / pps, moved: d.moved || Math.abs(dx) > MOVE_SLOP_PX, free: e.altKey });
   }
   function onLaneUp(e: PointerEvent<HTMLDivElement>) {
     const d = dragRef.current;
@@ -97,7 +102,7 @@ export function Timeline({ store }: { store: EditorStore }) {
     const delta = (e.clientX - d.originX) / pps;
     const moved = d.moved || Math.abs(e.clientX - d.originX) > MOVE_SLOP_PX;
     const lane = tracks.find((t) => t.id === d.trackId);
-    const result = !clip ? null : d.edge === "move" ? (moved && lane ? reorderResult(lane.id, lane.clips as Clip[], clip.id, delta) : null) : trimResult(clip, d.edge, delta);
+    const result = !clip ? null : d.edge === "move" ? (moved && lane ? reorderResult(lane.id, lane.clips as Clip[], clip.id, delta) : null) : trimResult(clip, d.edge, delta, e.altKey); // Alt at release: free trim
     if (!result) return setDrag(null);
     void store.applyOps(result.ops).finally(() => setDrag(null));
   }
@@ -152,6 +157,9 @@ export function Timeline({ store }: { store: EditorStore }) {
           Delete clip
         </button>
       </div>
+      <TextTrack store={store} />
+      <CaptionTrack store={store} />
+      <AudioTrack store={store} />
       <div ref={scrollRef} style={{ overflowX: "auto", overflowY: "hidden", minWidth: 0 }}>
         {tracks.length === 0 ? (
           <div style={{ padding: 16, opacity: 0.75 }}>No tracks yet. Add a clip to start.</div>
@@ -174,7 +182,9 @@ export function Timeline({ store }: { store: EditorStore }) {
                   </div>
                   <div onPointerDown={(e) => onLaneDown(track.id, clips, e)} onPointerMove={onLaneMove} onPointerUp={onLaneUp} onPointerCancel={onLaneCancel} style={{ position: "relative", width: laneW, touchAction: "pan-y" }}>
                     {clips.map((clip) => {
-                      const box = preview && drag?.clipId === clip.id ? preview : { start: clip.start, end: clipEnd(clip) };
+                      const box = preview && drag?.clipId === clip.id ? preview
+                        : ripple && ripple.trackId === track.id ? rippleBox(clip, ripple.clip, ripple.result)
+                        : { start: clip.start, end: clipEnd(clip) };
                       const isSel = clip.id === selectedClipId;
                       const label = clipLabel(clip);
                       const handle = isTrimmable(clip) ? <span aria-hidden style={{ width: 6, alignSelf: "stretch", flex: "none", background: "#0004", cursor: "ew-resize" }} /> : null;
@@ -195,6 +205,7 @@ export function Timeline({ store }: { store: EditorStore }) {
           </div>
         )}
       </div>
+      {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap</div> : null}
       {adding ? <AddClipDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onClose={() => setAdding(false)} /> : null}
     </section>
   );
