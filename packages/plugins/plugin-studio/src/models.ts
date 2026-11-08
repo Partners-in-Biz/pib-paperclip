@@ -4,7 +4,8 @@
  * (`text2image_soul_v2`); REST endpoint ids differ (`higgsfield-ai/soul/v2/standard`).
  *
  * - `offered`: the model is on the REST API, so Studio can send it.
- * - `priced`: `POST /estimate` gives the real cost of the request as sent. Seedance bills by tokens, so it is not.
+ * - `priced`: Studio knows the real cost of the request as sent: from `POST /estimate`, or for Seedance (billed by
+ *   tokens; `/estimate` gives no credits) from the local table in `seedance-price.ts`.
  * People pick only offered and priced models; the others are still listed, with the reason, never hidden.
  * - `refField` / `minRefs` / `maxRefs`: where reference images go and how many the endpoint takes. The worker fills
  *   that field with short-lived signed links to library assets; agents and people only ever name asset ids.
@@ -34,7 +35,15 @@ export interface StudioModel {
   offered: boolean;
   priced: boolean;
   note: string | null;
+  /** Most Higgsfield credits one job may cost; a dearer job is refused before anything is reserved. null: no ceiling. */
+  maxCreditsPerJob: number | null;
 }
+
+/**
+ * Per-job ceiling for Seedance, in Higgsfield credits (PAR-8309). 60 x $0.0625 = $3.75, under R250 at any rate up to
+ * R66/$. Never raise it without PiB sign-off.
+ */
+export const SEEDANCE_MAX_CREDITS_PER_JOB = 60;
 
 const NOT_ON_REST = "Not on the Higgsfield REST API";
 const SOUL_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"];
@@ -50,6 +59,10 @@ const KLING_DURATION: VideoDuration = { durations: range(3, 15), field: "duratio
 const HAILUO_DURATION: VideoDuration = { durations: [6, 10], field: "duration", default: 6 };
 const GROK_DURATION: VideoDuration = { durations: range(1, 15), field: "duration", default: 5 };
 const SEEDANCE_DURATION: VideoDuration = { durations: range(4, 15), field: "duration", default: 5 };
+/** Seedance 2.5: integer 4-30 (docs.higgsfield.ai/docs/models/seedance-2-5/text-to-video). */
+const SEEDANCE_25_DURATION: VideoDuration = { durations: range(4, 30), field: "duration", default: 5 };
+/** Only 16:9 has cited pixel sizes, so only 16:9 has a price (src/seedance-price.ts). */
+const SEEDANCE_RATIOS = ["16:9"];
 
 function durationFields(d: VideoDuration | null): Pick<StudioModel, "durations" | "durationField" | "defaultDuration"> {
   return { durations: d?.durations ?? [], durationField: d?.field ?? null, defaultDuration: d?.default ?? null };
@@ -65,11 +78,16 @@ function live(
   refs: { field: RefField; min?: number; max: number } | null = null,
   duration: VideoDuration | null = null,
 ): StudioModel {
-  return { id, registryId, label, kind, ratios, resolutions, refField: refs?.field ?? null, minRefs: refs?.min ?? 0, maxRefs: refs?.max ?? 0, ...durationFields(duration), offered: true, priced: true, note: null };
+  return { id, registryId, label, kind, ratios, resolutions, refField: refs?.field ?? null, minRefs: refs?.min ?? 0, maxRefs: refs?.max ?? 0, ...durationFields(duration), offered: true, priced: true, note: null, maxCreditsPerJob: null };
+}
+
+/** A Seedance text-to-video endpoint: priced from Studio's own table, with the per-job ceiling. */
+function seedance(id: string, registryId: string, label: string, resolutions: string[], duration: VideoDuration): StudioModel {
+  return { ...live(id, registryId, label, "video", SEEDANCE_RATIOS, resolutions, null, duration), maxCreditsPerJob: SEEDANCE_MAX_CREDITS_PER_JOB };
 }
 
 function unavailable(registryId: string, label: string, kind: StudioModel["kind"], note: string, rest?: string, duration: VideoDuration | null = null): StudioModel {
-  return { id: rest ?? registryId, registryId, label, kind, ratios: [], resolutions: [], refField: null, minRefs: 0, maxRefs: 0, ...durationFields(duration), offered: rest !== undefined, priced: false, note };
+  return { id: rest ?? registryId, registryId, label, kind, ratios: [], resolutions: [], refField: null, minRefs: 0, maxRefs: 0, ...durationFields(duration), offered: rest !== undefined, priced: false, note, maxCreditsPerJob: null };
 }
 
 export const MODEL_CATALOG: readonly StudioModel[] = [
@@ -83,7 +101,8 @@ export const MODEL_CATALOG: readonly StudioModel[] = [
   live("kling-video/v3.0-turbo/image-to-video", "kling3_0_turbo", "Kling 3.0 Turbo (image to video, 1 reference)", "video", [], ["720p", "1080p"], { field: "image_url", min: 1, max: 1 }, KLING_DURATION),
   live("minimax/hailuo-2.3/standard/text-to-video", "minimax_hailuo", "Hailuo 2.3 (video)", "video", [], [], null, HAILUO_DURATION),
   live("xai/grok-imagine-video/v1.5/reference-to-video", "grok_video_v15", "Grok Video 1.5 (video, up to 7 references)", "video", ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], ["480p", "720p", "1080p"], { field: "image_urls", max: 7 }, GROK_DURATION),
-  unavailable("seedance_2_0", "Seedance 2.0 (video)", "video", "Not priced: billed by tokens, so Studio can't quote it", "bytedance/seedance-2.0/text-to-video", SEEDANCE_DURATION),
+  seedance("bytedance/seedance-2.0/text-to-video", "seedance_2_0", "Seedance 2.0 (video)", ["480p", "720p", "1080p"], SEEDANCE_DURATION),
+  seedance("bytedance/seedance-2.5/text-to-video", "seedance_2_5", "Seedance 2.5 (video)", ["480p", "720p"], SEEDANCE_25_DURATION),
   unavailable("seedance1_5", "Seedance 1.5 (video)", "video", `${NOT_ON_REST} (REST has Seedance 2.0 and 2.5 only)`),
   unavailable("veo3_1", "Veo 3.1 (video)", "video", NOT_ON_REST),
   unavailable("veo3_1_lite", "Veo 3.1 Lite (video)", "video", NOT_ON_REST),
@@ -105,6 +124,14 @@ export function isSelectable(model: StudioModel): boolean {
 
 export function findModel(id: string): StudioModel | undefined {
   return MODEL_CATALOG.find((m) => m.offered && m.id === id);
+}
+
+/** Refuses one job priced over its model's ceiling. Called before any row or reserve, and again before a send. */
+export function assertJobCeiling(model: string, each: number): void {
+  const known = findModel(model);
+  const max = known?.maxCreditsPerJob ?? null;
+  if (max === null || each <= max) return;
+  throw new StudioError(`${known!.label} costs ${each} credits for this job, over its limit of ${max} per job. Pick a shorter clip or a lower resolution.`, "over_job_ceiling");
 }
 
 const ASSET_ID = /^[A-Za-z0-9_-]{1,64}$/;

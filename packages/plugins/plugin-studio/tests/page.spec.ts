@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MODEL_CATALOG } from "../src/models.js";
+import { findModel, MODEL_CATALOG } from "../src/models.js";
 import { clientFilter, PAGE_MODELS, pageRequest, UNAVAILABLE_MODELS } from "../src/page.js";
 import { fakeProvider, scrubLinks } from "../src/provider.js";
 import { canGenerate } from "../src/service.js";
@@ -7,9 +7,16 @@ import { canGenerate } from "../src/service.js";
 describe("Studio page form", () => {
   const soul = PAGE_MODELS[0]!;
 
-  it("offers only fixed-price models: no Veo, no Seedance", () => {
+  it("offers only priced models: no Veo; Seedance only with its per-job ceiling", () => {
     expect(PAGE_MODELS.length).toBeGreaterThan(0);
-    for (const m of PAGE_MODELS) expect(m.id).not.toMatch(/veo|seedance/i);
+    for (const m of PAGE_MODELS) expect(m.id).not.toMatch(/veo/i);
+    const seedance = PAGE_MODELS.filter((m) => /seedance/i.test(m.id));
+    expect(seedance.map((m) => [m.id, m.resolutions, m.ratios, findModel(m.id)?.maxCreditsPerJob])).toEqual([
+      ["bytedance/seedance-2.0/text-to-video", ["480p", "720p", "1080p"], ["16:9"], 60],
+      ["bytedance/seedance-2.5/text-to-video", ["480p", "720p"], ["16:9"], 60],
+    ]);
+    expect(seedance.map((m) => [m.durations[0], m.durations.at(-1)])).toEqual([[4, 15], [4, 30]]);
+    for (const m of PAGE_MODELS.filter((p) => !/seedance/i.test(p.id))) expect(findModel(m.id)?.maxCreditsPerJob).toBeNull();
   });
 
   it("offers more than Soul v2 and lists Veo and Seedance as not offered / not priced instead of hiding them", () => {
@@ -17,11 +24,12 @@ describe("Studio page form", () => {
     expect(soul.id).toBe("higgsfield-ai/soul/v2/standard");
     const notes = Object.fromEntries(UNAVAILABLE_MODELS.map((m) => [m.label, m.note]));
     expect(notes["Veo 3.1 (video)"]).toMatch(/Not on the Higgsfield REST API/);
-    expect(notes["Seedance 2.0 (video)"]).toMatch(/Not priced/);
-    expect(MODEL_CATALOG.find((m) => m.registryId === "seedance_2_0")).toMatchObject({ offered: true, priced: false });
+    expect(notes["Seedance 2.0 (video)"]).toBeUndefined();
+    expect(MODEL_CATALOG.find((m) => m.registryId === "seedance_2_0")).toMatchObject({ offered: true, priced: true });
+    expect(MODEL_CATALOG.find((m) => m.registryId === "seedance_2_5")).toMatchObject({ offered: true, priced: true });
     // Every registry model is accounted for, once as offered or listed.
     const ids = new Set(MODEL_CATALOG.map((m) => m.registryId));
-    expect(ids.size).toBe(23);
+    expect(ids.size).toBe(24);
   });
 
   it("writes the chosen duration to the model's own field and refuses one it lacks", () => {
