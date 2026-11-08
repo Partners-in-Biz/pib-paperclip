@@ -694,6 +694,142 @@ describe.skipIf(!available)("Studio against real Postgres", () => {
       const row = (await rows(world, `SELECT status, error_code FROM ${T("generations")} WHERE id = $1`, [out.generationIds[0]]))[0];
       expect(row).toEqual({ status: "failed", error_code: "reference_unavailable" });
     });
+
+    describe("audio references and lip-sync models (PAR-8435)", () => {
+      const WAN3 = "alibaba/wan-3.0-prime/reference-to-video";
+      const SD_REF = "bytedance/seedance-2.5/reference-to-video";
+      const SD_I2V = "bytedance/seedance-2.5/image-to-video";
+      const GROK15 = "xai/grok-imagine-video/v1.5/reference-to-video";
+      const WAN27 = "wan/v2.7/image-to-video";
+      const PERSON = { userId: "user-1", issueId: "issue-acme", projectId: "project-acme" };
+
+      /** A library asset of kind audio (the kind is what Studio checks; T2a stores real MP3s as audio). */
+      async function libraryAudio() {
+        const id = await libraryImage("issue-acme", "project-acme");
+        await pg.client.query(`UPDATE ${T("assets")} SET kind = 'audio' WHERE id = $1`, [id]);
+        return id;
+      }
+
+      /** A sent body as JSON (key order kept), each signed link swapped for the asset id it points at. */
+      function shape(body: Record<string, unknown>, ids: string[]): string {
+        return JSON.stringify(body, (_key, v: unknown) => (typeof v === "string" && v.includes("X-Amz-") ? `<${ids.find((id) => v.includes(`/${id}/`)) ?? "?"}>` : v));
+      }
+
+      async function submitted(params: Record<string, unknown>) {
+        const { bodies, runtime: rec } = recordingRuntime();
+        const out = await requestGeneration(world.ctx, CO, params, PERSON, rec);
+        await processQueue(world.ctx, rec);
+        return { out, body: bodies.find((b) => b.kind === "submit")!.body, bodies };
+      }
+
+      it.each([
+        [WAN3, "480p", (i: string, a: string) => `{"prompt":"She says hello","duration":5,"resolution":"480p","image_urls":["<${i}>"],"audio_urls":["<${a}>"]}`],
+        [SD_REF, "480p", (i: string, a: string) => `{"prompt":"She says hello","duration":5,"resolution":"480p","image_urls":["<${i}>"],"audio_urls":["<${a}>"]}`],
+        [GROK15, "480p", (i: string, a: string) => `{"prompt":"She says hello","duration":5,"resolution":"480p","image_urls":["<${i}>"],"audio_url":"<${a}>"}`],
+        [WAN27, "720p", (i: string, a: string) => `{"prompt":"She says hello","duration":5,"resolution":"720p","image_url":"<${i}>","audio_url":"<${a}>"}`],
+      ] as const)("%s sends the portrait and our audio in its own fields and shapes", async (model, resolution, expected) => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const { out, body } = await submitted({ model, prompt: "She says hello", params: { duration: 5, resolution }, referenceAssetIds: [image], audioAssetIds: [audio] });
+        expect(shape(body, [image, audio])).toBe(expected(image, audio));
+        const stored = (await rows(world, `SELECT params, reference_asset_ids FROM ${T("generations")} WHERE id = $1`, [out.generationIds[0]]))[0]!;
+        expect(stored.reference_asset_ids).toEqual([image, audio]);
+        expect(JSON.stringify(stored.params)).not.toMatch(/X-Amz|audio_url|image_url/);
+      });
+
+      it("prices Wan 3.0 Prime per second from the table", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const { out } = await submitted({ model: WAN3, prompt: "hi", params: { duration: 5, resolution: "480p" }, referenceAssetIds: [image], audioAssetIds: [audio] });
+        expect(out.creditsReserved).toBe(5.44);
+      });
+
+      it("refuses audio as an image, an image as audio, and a wrong count per field, before any cost", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const audio2 = await libraryAudio();
+        const { bodies, runtime: rec } = recordingRuntime();
+        const ask = (model: string, referenceAssetIds: string[], audioAssetIds: string[]) =>
+          expect(requestGeneration(world.ctx, CO, { model, prompt: "x", params: model === REQUEST.model ? {} : { duration: 5, resolution: "480p" }, referenceAssetIds, audioAssetIds }, PERSON, rec)).rejects.toMatchObject({ code: "bad_request" });
+        await ask(WAN3, [audio], [audio2]);
+        await ask(WAN3, [image], [image]);
+        await ask(WAN3, [image], []);
+        await ask(WAN27, [image], [audio, audio2]);
+        await ask(GROK15, [image], [audio, audio2]);
+        await ask(SD_I2V, [image], [audio]);
+        await ask(REQUEST.model, [], [audio]);
+        expect(bodies).toHaveLength(0);
+        expect(await rows(world, `SELECT id FROM ${T("generations")} WHERE model <> $1`, [REQUEST.model])).toHaveLength(0);
+      });
+
+      it.each([
+        ["xai/grok-imagine-image-2.0", (i: string) => `{"prompt":"x","image_urls":["<${i}>"]}`],
+        ["kling-video/v3.0-turbo/image-to-video", (i: string) => `{"prompt":"x","duration":5,"image_url":"<${i}>"}`],
+        [GROK15, (i: string) => `{"prompt":"x","duration":5,"image_urls":["<${i}>"]}`],
+      ] as const)("keeps the image-only body of %s byte-identical at estimate, request and submit", async (model, expected) => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const { bodies, runtime: rec } = recordingRuntime();
+        await estimateGeneration(world.ctx, CO, { model, prompt: "x", referenceAssetIds: [image] }, PERSON, rec);
+        await requestGeneration(world.ctx, CO, { model, prompt: "x", referenceAssetIds: [image] }, PERSON, rec);
+        await processQueue(world.ctx, rec);
+        expect(bodies.map((b) => `${b.kind} ${shape(b.body, [image])}`)).toEqual(["estimate", "estimate", "submit"].map((kind) => `${kind} ${expected(image)}`));
+      });
+
+      it("refuses a lip-sync job over 30 credits before any row or reserve; audio puts Grok under the same ceiling", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const before = (await rows(world, `SELECT COUNT(*)::int AS n FROM ${T("credit_ledger")}`))[0].n;
+        await expect(requestGeneration(world.ctx, CO, { model: SD_I2V, prompt: "x", params: { duration: 10, resolution: "480p" }, referenceAssetIds: [image] }, PERSON, runtime)).rejects.toMatchObject({ code: "over_job_ceiling" });
+        provider.price = 31;
+        const grok = { model: GROK15, prompt: "x", params: { duration: 5, resolution: "480p" }, referenceAssetIds: [image] };
+        await expect(requestGeneration(world.ctx, CO, { ...grok, audioAssetIds: [audio] }, PERSON, runtime)).rejects.toMatchObject({ code: "over_job_ceiling" });
+        await expect(estimateGeneration(world.ctx, CO, { ...grok, audioAssetIds: [audio] }, PERSON, runtime)).rejects.toMatchObject({ code: "over_job_ceiling" });
+        expect(await rows(world, `SELECT id FROM ${T("generations")} WHERE model <> $1`, [REQUEST.model])).toHaveLength(0);
+        expect((await rows(world, `SELECT COUNT(*)::int AS n FROM ${T("credit_ledger")}`))[0].n).toBe(before);
+        await expect(requestGeneration(world.ctx, CO, grok, PERSON, runtime)).resolves.toMatchObject({ creditsReserved: 31 });
+      });
+
+      it("never sends a queued audio row priced over 30, and refunds it", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const { bodies, runtime: rec } = recordingRuntime();
+        const out = await requestGeneration(world.ctx, CO, { model: GROK15, prompt: "x", referenceAssetIds: [image], audioAssetIds: [audio] }, PERSON, rec);
+        await pg.client.query(`UPDATE ${T("generations")} SET estimated_credits = 31 WHERE id = $1`, [out.generationIds[0]]);
+        await processQueue(world.ctx, rec);
+        expect(bodies.filter((b) => b.kind === "submit")).toHaveLength(0);
+        expect((await rows(world, `SELECT status, error_code FROM ${T("generations")} WHERE id = $1`, [out.generationIds[0]]))[0]).toEqual({ status: "failed", error_code: "over_job_ceiling" });
+      });
+
+      it("native dialogue sends generate_audio true and the line in the prompt, with no audio field", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const line = 'She smiles and says: "Welcome to Acme."';
+        const { out, body } = await submitted({ model: SD_I2V, prompt: line, params: { duration: 5, resolution: "480p" }, referenceAssetIds: [image] });
+        expect(shape(body, [image])).toBe(`{"prompt":${JSON.stringify(line)},"duration":5,"resolution":"480p","generate_audio":true,"image_url":"<${image}>"}`);
+        expect(out.creditsReserved).toBe(16.448);
+        const { runtime: rec } = recordingRuntime();
+        await expect(requestGeneration(world.ctx, CO, { model: SD_I2V, prompt: line, params: { duration: 5, resolution: "480p", generate_audio: false }, referenceAssetIds: [image] }, PERSON, rec)).rejects.toMatchObject({ code: "bad_request" });
+      });
+
+      it("signs links at submit, not at insert: a job queued 45 min still sends a fresh 30 min link", async () => {
+        const image = await libraryImage("issue-acme", "project-acme");
+        const audio = await libraryAudio();
+        const { bodies, runtime: rec } = recordingRuntime();
+        const insertedAt = Date.now();
+        await requestGeneration(world.ctx, CO, { model: WAN3, prompt: "hi", params: { duration: 5, resolution: "480p" }, referenceAssetIds: [image], audioAssetIds: [audio] }, PERSON, rec);
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try {
+          vi.setSystemTime(insertedAt + 45 * 60_000);
+          await processQueue(world.ctx, rec);
+        } finally {
+          vi.useRealTimers();
+        }
+        const link = (bodies.find((b) => b.kind === "submit")!.body.audio_urls as string[])[0]!;
+        expect(link).toMatch(/X-Amz-Expires=1800/);
+        const [, d] = /X-Amz-Date=(\d{8}T\d{6}Z)/.exec(link)!;
+        const signedAt = Date.parse(`${d!.slice(0, 4)}-${d!.slice(4, 6)}-${d!.slice(6, 8)}T${d!.slice(9, 11)}:${d!.slice(11, 13)}:${d!.slice(13, 15)}Z`);
+        expect(signedAt - insertedAt).toBeGreaterThanOrEqual(45 * 60_000 - 1_000);
+      });
+    });
   });
 
   describe("isolation", () => {

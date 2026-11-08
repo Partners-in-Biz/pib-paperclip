@@ -12,7 +12,7 @@ import { DRIVE_LINK_TYPE, driveCopies } from "./drive.js";
 import { driveProvenance } from "./drive-import.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
-import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
+import { assertReferenceCount, isLipsyncOnly, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
 import type { GenerationRow } from "./generation.js";
 
 export interface PageModel {
@@ -33,7 +33,7 @@ export interface PageModel {
  * the real cost of the request as sent. Seedance (billed by tokens) and Veo (not on REST) are listed in
  * UNAVAILABLE_MODELS with the reason instead; agents keep the full tool surface.
  */
-export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectable).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs, durations, durationField, defaultDuration }) => ({
+export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter((m) => isSelectable(m) && !isLipsyncOnly(m)).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs, durations, durationField, defaultDuration }) => ({
   id,
   label,
   kind,
