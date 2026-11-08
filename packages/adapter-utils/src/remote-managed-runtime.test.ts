@@ -50,7 +50,8 @@ describe("remote managed runtime", () => {
     await prepared.restoreWorkspace();
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       restoreGitHistory: false, baselineSnapshot: expect.objectContaining({
-        exclude: [".paperclip-runtime", "explicitly-excluded"],
+        // PiB fork (PAR-3341): .paperclip (local worktrees, GBs) never syncs, so it stays out of the baseline.
+        exclude: [".paperclip-runtime", ".paperclip", "explicitly-excluded"],
         entries: expect.any(Map),
       }),
     }));

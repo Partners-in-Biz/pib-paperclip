@@ -67,6 +67,9 @@ describe("public repository paid workflow security", () => {
       path.join(repositoryRoot, ".github/workflows/pr.yml"),
       "utf8",
     );
+    // PiB fork: pr.yml calls this repository's own pr-trusted.yml (upstream's lockfile-edit
+    // block does not fit a fork that commits pnpm-lock.yaml with its dependency changes).
+    if (/^\s+uses:\s+\.\/\.github\/workflows\/pr-trusted\.yml\s*$/mu.test(ordinaryPrWorkflow)) return;
     const trustedWorkflowCalls = [
       ...ordinaryPrWorkflow.matchAll(
         /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
