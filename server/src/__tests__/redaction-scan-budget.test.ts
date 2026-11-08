@@ -26,6 +26,12 @@ function timed<T>(fn: () => T): { result: T; ms: number } {
   return { result, ms: performance.now() - start };
 }
 
+async function timedAsync<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }> {
+  const start = performance.now();
+  const result = await fn();
+  return { result, ms: performance.now() - start };
+}
+
 // Sizes are kept small enough that the old quadratic code fails these in
 // seconds instead of hanging the test run (old: about 4s at 128K identifier
 // run, 2.7s for 1M quote-newline text; new: under 50ms each). Vitest cannot
@@ -122,10 +128,10 @@ describe("redaction scan budget (PAR-8028)", () => {
     expect(ms).toBeLessThan(50);
   });
 
-  it("bounds a tool result with a huge inline attachment body", () => {
+  it("bounds a tool result with a huge inline attachment body", async () => {
     const secret = fakeSecret();
     const body = `${randomBytes(3 * 1024 * 1024).toString("base64")}\n"password": "${secret}"`;
-    const { result, ms } = timed(() =>
+    const { result, ms } = await timedAsync(() =>
       validateToolContent({
         value: { filename: "statement.pdf", contentBase64: body, items: [body] },
         direction: "result",
@@ -142,9 +148,9 @@ describe("redaction scan budget (PAR-8028)", () => {
     expect(result.findings).toContain("oversized_text_withheld");
   });
 
-  it("leaves tool results under the limit untouched apart from redaction", () => {
+  it("leaves tool results under the limit untouched apart from redaction", async () => {
     const secret = fakeSecret();
-    const result = validateToolContent({
+    const result = await validateToolContent({
       value: { text: repeatTo("hello ", 10_000), apiKey: secret },
       direction: "result",
       promptInjectionMode: "ignore",

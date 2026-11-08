@@ -51,10 +51,8 @@ import {
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -108,6 +106,14 @@ function cfgStringArray(v: unknown): string[] | undefined {
     ? (v as string[])
     : undefined;
 }
+function cfgEnvString(v: unknown): string | undefined {
+  if (typeof v === "string" && v.length > 0) return v;
+  if (v && typeof v === "object" && "value" in v) {
+    const value = (v as { value?: unknown }).value;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+  return undefined;
+}
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
@@ -117,7 +123,7 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
 
-const HERMES_DEFAULT_PROMPT_TEMPLATE = [
+const HERMES_RUNTIME_IDENTITY_TEMPLATE = [
   'You are "{{agent.name}}", an AI agent employee in a Paperclip-managed company.',
   "",
   "Paperclip runtime identity:",
@@ -125,7 +131,11 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Company ID: {{agent.companyId}}",
   "- Run ID: {{run.id}}",
   "- API base: {{paperclipApiUrl}}",
-  "",
+].join("\n");
+
+// Hermes applies this overlay at each API call, including after compaction,
+// without storing it in conversation history. Keep run/task deltas in -q.
+const HERMES_SYSTEM_PROMPT_TEMPLATE = [
   "Paperclip API guidance:",
   "- Use `curl` from the terminal for Paperclip API calls; browser/web extraction tools may not reach localhost.",
   "- Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`; do not hard-code local ports or copy secrets into comments.",
@@ -147,7 +157,7 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "MD",
   ")",
   "jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
-  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
+  "  curl -sS -X PATCH \"$api/issues/$PAPERCLIP_TASK_ID\" \\",
   "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
   "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
   "    -H \"Content-Type: application/json\" \\",
@@ -176,9 +186,7 @@ export function buildPrompt(
   options: { resumedSession?: boolean } = {},
 ): string {
   const context = (ctx as any).context || {};
-  const template = cfgString(config.promptTemplate) || (context.conversationMode === true
-    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
-    : HERMES_DEFAULT_PROMPT_TEMPLATE);
+  const template = cfgString(config.promptTemplate);
   const taskId = cfgString(context.taskId) || cfgString(context.issueId) || cfgString(ctx.config?.taskId);
   const taskTitle = cfgString(context.taskTitle) || cfgString(ctx.config?.taskTitle) || "";
   const taskBody = cfgString(context.taskBody) || cfgString(ctx.config?.taskBody) || "";
@@ -198,16 +206,13 @@ export function buildPrompt(
     paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
   }
 
-  const paperclipTaskMarkdown = selectPaperclipTaskMarkdown(context, {
+  const { taskContextNote: taskContextMarkdown, wakePrompt } = selectPaperclipPromptSections(context, {
     resumedSession: options.resumedSession === true,
+    includeCommunicationGuidance: true,
   });
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    conversationMode: context.conversationMode === true,
-    resumedSession: options.resumedSession === true,
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: paperclipTaskMarkdown.length > 0,
-  });
+  // Keep the historical variable available to custom templates. Automatic
+  // assembly uses the ownership-aware assignment variant below.
+  const paperclipTaskMarkdown = cfgString(context.paperclipTaskMarkdown)?.trim() || "";
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
 
@@ -231,19 +236,21 @@ export function buildPrompt(
     paperclipWakePrompt: wakePrompt,
     paperclipTaskMarkdown,
     taskContext: paperclipTaskMarkdown,
+    taskContextMarkdown,
     paperclipWakeJson: wakePayloadJson,
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(renderConditionalSections(template, vars), vars);
+  const rendered = template && !isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? renderTemplate(renderConditionalSections(template, vars), vars)
+    : "";
   return joinPromptSections([
+    renderTemplate(HERMES_RUNTIME_IDENTITY_TEMPLATE, vars),
     wakePrompt,
     sessionHandoffMarkdown,
-    paperclipTaskMarkdown,
+    taskContextMarkdown,
     rendered,
   ]);
 }
@@ -426,7 +433,11 @@ async function executeRemote(
 ): Promise<AdapterExecutionResult> {
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
-  const localCwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  const workspace = ctx.context?.paperclipWorkspace;
+  const workspaceCwd = workspace && typeof workspace === "object"
+    ? cfgString((workspace as Record<string, unknown>).cwd)
+    : undefined;
+  const localCwd = cfgString(config.cwd) || workspaceCwd || cfgString(ctx.config?.workspaceDir) || ".";
   const where = describeAdapterExecutionTarget(executionTarget);
 
   await ctx.onLog("stdout", `[hermes] Syncing workspace to ${where}.\n`);
@@ -573,7 +584,7 @@ async function executeHermes(
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
   // Paperclip can materialize managed instructions into instructionsFilePath;
-  // when present, inject that bundle into the Hermes prompt.
+  // when present, reapply that bundle through Hermes's native system overlay.
   const instructionsFilePath = cfgString(config.instructionsFilePath);
   let agentInstructions = "";
   if (instructionsFilePath) {
@@ -628,17 +639,28 @@ async function executeHermes(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
+  const userEnvForPrompt = config.env as Record<string, unknown> | undefined;
+  const promptConfig: Record<string, unknown> = { ...config };
+  if (!cfgString(promptConfig.paperclipApiUrl) && userEnvForPrompt && typeof userEnvForPrompt === "object") {
+    const configuredPaperclipApiUrl = cfgEnvString(userEnvForPrompt.PAPERCLIP_API_URL);
+    if (configuredPaperclipApiUrl) {
+      promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
+    }
+  }
+
+  // resumeSessionId is prevSessionId unless Hermes' state.db no longer has the
+  // session (PAR-6886 3/3), so a pruned session starts fresh instead of failing.
+  const sessionId = persistSession ? resumeSessionId : undefined;
+  // PAR-6227: a flagged checkpoint resume (rotation with a handoff) takes the
+  // resume-delta prompt even without a saved Hermes session.
   const checkpointEnabled = sessionCheckpointResumeEnabled();
   const checkpointResume =
-    Boolean(resumeSessionId) ||
+    Boolean(sessionId) ||
     (checkpointEnabled &&
       (ctx as { context?: Record<string, unknown> }).context?.paperclipCheckpointResume === true);
-  let prompt = buildPrompt(ctx, config, { resumedSession: checkpointResume });
-  // The transcript already has the instructions. Re-sending them on every
-  // wake is a full rerun in token cost even when --resume is set.
-  if (agentInstructions && !(checkpointEnabled && resumeSessionId)) {
-    prompt = agentInstructions + "\n\n---\n\n" + prompt;
-  }
+  // Agent instructions travel in HERMES_EPHEMERAL_SYSTEM_PROMPT (upstream), so
+  // they are no longer prepended to the query on fresh sessions.
+  const prompt = buildPrompt(ctx, promptConfig, { resumedSession: checkpointResume });
 
   // ── Build command args ─────────────────────────────────────────────────
   // -Q is always used (see file header): quiet mode, response + session_id only.
@@ -690,21 +712,19 @@ async function executeHermes(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  if (persistSession && resumeSessionId) {
-    args.push("--resume", resumeSessionId);
+  // Failed resumes remain failures. Do not infer a safe restart from CLI text.
+  if (sessionId) {
+    args.push("--resume", sessionId);
     // Without this, Hermes changes into the directory the old session recorded
     // instead of staying in the run's workspace.
     args.push("--no-restore-cwd");
   }
   // Init event carries session_id before any model work, so a kill still
-  // leaves a checkpoint the next wake can resume.
-  if (persistSession && sessionCheckpointResumeEnabled() && !extraArgs?.includes("--format")) {
+  // leaves a checkpoint the next wake can resume (PAR-6227).
+  if (persistSession && checkpointEnabled && !extraArgs?.includes("--format")) {
     args.push("--format", "stream-json");
   }
-
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
-  }
+  if (extraArgs?.length) args.push(...extraArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
@@ -712,9 +732,20 @@ async function executeHermes(
     // Remote: never hand the server's environment (PATH, HOME, keys) to another host.
     ...(remote ? {} : (process.env as Record<string, string>)),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent),
+    ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
+
+  // Scope the overlay to this child process. Read the current bundle on every
+  // invocation; never infer its availability from a persisted session ID.
+  // Preserve an operator's explicit overlay before Paperclip's instructions.
+  env.HERMES_EPHEMERAL_SYSTEM_PROMPT = joinPromptSections([
+    env.HERMES_EPHEMERAL_SYSTEM_PROMPT,
+    agentInstructions,
+    renderTemplate(HERMES_SYSTEM_PROMPT_TEMPLATE, {
+      agent: ctx.agent,
+    }),
+  ]);
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
@@ -737,9 +768,13 @@ async function executeHermes(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
 
   // ── Resolve working directory ──────────────────────────────────────────
+  const workspace = ctx.context?.paperclipWorkspace;
+  const workspaceCwd = workspace && typeof workspace === "object"
+    ? cfgString((workspace as Record<string, unknown>).cwd)
+    : undefined;
   const cwd = remote
     ? remote.cwd
-    : cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+    : cfgString(config.cwd) || workspaceCwd || cfgString(ctx.config?.workspaceDir) || ".";
   if (!remote) {
     try {
       await ensureAbsoluteDirectory(cwd);
@@ -753,10 +788,10 @@ async function executeHermes(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
-  if (resumeSessionId) {
+  if (sessionId) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Resuming session: ${resumeSessionId}\n`,
+      `[hermes] Resuming session: ${sessionId}\n`,
     );
   }
 

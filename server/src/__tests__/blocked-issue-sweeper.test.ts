@@ -17,6 +17,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   BLOCKED_ISSUE_SWEEP_MAX_PER_TICK,
+  BLOCKED_ISSUE_SWEEP_MIN_AGE_MS,
   blockedIssueSweeper,
 } from "../services/blocked-issue-sweeper.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
@@ -337,4 +338,15 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
 
     expect(await statusOf(readyId)).toBe("todo");
   }, 60_000);
+  it("schedules itself from the oldest blocked issue and sleeps while nothing is blocked", async () => {
+    const { sweeper } = makeSweeper();
+    expect(await sweeper.nextDueAt(now)).toBeNull();
+    const ctx = await seedCompany();
+    await seedIssue(ctx, { blockedTransitionAt: blockedJustNow });
+    expect(await sweeper.nextDueAt(now)).toBe(blockedJustNow.getTime() + BLOCKED_ISSUE_SWEEP_MIN_AGE_MS);
+    await seedIssue(ctx, { blockedTransitionAt: blockedLongAgo });
+    expect(await sweeper.nextDueAt(now, 12345)).toBe(12345);
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.companyId, ctx.companyId));
+    expect(await sweeper.nextDueAt(now)).toBeNull();
+  });
 });

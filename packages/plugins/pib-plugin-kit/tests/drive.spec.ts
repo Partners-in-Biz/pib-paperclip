@@ -53,12 +53,12 @@ describe("drive save", () => {
   });
 
   it("(4) never throws: emit failures + invalid inputs", async () => {
-    let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")) } },
+    let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")), listLifecycle: vi.fn(), acknowledgeLifecycle: vi.fn() } },
       { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.reason).toBe("emit_failed");
 
-    result = await driveSave({ events: { on: vi.fn(), emit: vi.fn(() => { throw new Error("E"); }) } },
+    result = await driveSave({ events: { on: vi.fn(), emit: vi.fn(() => { throw new Error("E"); }), listLifecycle: vi.fn(), acknowledgeLifecycle: vi.fn() } },
       { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
     if (result.status === "failed") expect(result.reason).toBe("emit_failed");
 

@@ -303,6 +303,15 @@ describe("decideQueuedRunStaleness", () => {
       errorCode: "issue_not_in_progress",
     },
     {
+      name: "issue_not_in_progress (resolved-interaction continuation, unstarted answer on a non-todo task)",
+      overrides: {
+        isResolvedInteractionContinuation: true,
+        isUnstartedTaskQuestionAnswer: true,
+        issueStatus: "backlog",
+      } satisfies Partial<QueuedRunFacts>,
+      errorCode: "issue_not_in_progress",
+    },
+    {
       name: "issue_not_in_progress (max-turn continuation)",
       overrides: {
         retryReasonKind: "max_turn_continuation",
@@ -399,6 +408,15 @@ describe("decideQueuedRunStaleness", () => {
     }, NOW)).toEqual({ stale: false });
   });
 
+  it("allows an answer to a question no run asked to start a todo task that has never started", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      isResolvedInteractionContinuation: true,
+      isUnstartedTaskQuestionAnswer: true,
+      issueStatus: "todo",
+    }, NOW)).toEqual({ stale: false });
+  });
+
   it("does not cancel a parked continuation summary when the classifier says it does not park the executor", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
@@ -434,6 +452,28 @@ describe("decideQueuedRunStaleness", () => {
       resumeIntent: true,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  describe("completed onboarding handoff report", () => {
+    const reportingFacts = (): QueuedRunFacts => ({
+      ...baseStalenessFacts(), issueStatus: "done", wakeReason: "issue_children_completed",
+      isCompletedOnboardingHandoffWake: true,
+    });
+
+    it("allows a verified child-completion report without reopening the parent", () => {
+      expect(decideQueuedRunStaleness(reportingFacts(), NOW)).toEqual({ stale: false });
+    });
+
+    it.each([
+      { overrides: { isCompletedOnboardingHandoffWake: false }, errorCode: "issue_terminal_status" },
+      { overrides: { wakeReason: "issue_assigned" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueStatus: "cancelled" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueAssigneeAgentId: "agent-2" }, errorCode: "issue_assignee_changed" },
+      { overrides: { retryReasonKind: "max_turn_continuation" as const }, errorCode: "issue_not_in_progress" },
+    ])("preserves $errorCode guard with $overrides", ({ overrides, errorCode }) => {
+      expect(decideQueuedRunStaleness({ ...reportingFacts(), ...overrides }, NOW))
+        .toMatchObject({ stale: true, errorCode });
+    });
   });
 
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {

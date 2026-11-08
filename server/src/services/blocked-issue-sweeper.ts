@@ -10,6 +10,8 @@ import { issueService } from "./issues.js";
 
 export const BLOCKED_ISSUE_SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
 export const BLOCKED_ISSUE_SWEEP_MAX_PER_TICK = 50;
+// How soon an overdue blocked issue the sweep left alone is looked at again.
+export const BLOCKED_ISSUE_SWEEP_RETRY_MS = 5 * 60 * 1000;
 // Candidates are scanned in age order. The scan window is wider than the move
 // cap so issues that stay blocked on purpose cannot starve the ones behind them.
 const BLOCKED_ISSUE_SWEEP_SCAN_LIMIT = 500;
@@ -292,5 +294,31 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
     return { checked: candidates.length, moved, skipped };
   }
 
-  return { sweep };
+  /**
+   * When the sweep next has something to look at: the moment the oldest blocked,
+   * agent-assigned issue reaches the minimum age, `retryAt` when such an issue is
+   * already past it (it was skipped for a reason that may clear), or null when no
+   * issue is blocked. Null keeps the server quiet; an issue moving to blocked
+   * notifies the sweep queue again (issues.ts).
+   */
+  async function nextDueAt(now = new Date(), retryAt = now.getTime() + BLOCKED_ISSUE_SWEEP_RETRY_MS) {
+    const [row] = await db
+      .select({ oldest: sql<string | null>`min(coalesce(${issues.blockedTransitionAt}, ${issues.updatedAt}))` })
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          eq(issues.status, "blocked"),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          isNull(issues.executionRunId),
+        ),
+      );
+    if (!row?.oldest) return null;
+    const dueAt = new Date(row.oldest).getTime() + BLOCKED_ISSUE_SWEEP_MIN_AGE_MS;
+    return dueAt > now.getTime() ? dueAt : retryAt;
+  }
+
+  return { sweep, nextDueAt };
 }
