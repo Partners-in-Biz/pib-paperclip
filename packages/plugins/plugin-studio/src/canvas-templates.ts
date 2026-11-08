@@ -7,6 +7,7 @@
  * image models garble lettering, so a Text card holds the words and a Layout card sets them as real text at the exact
  * size a store or printer asks for. Nothing here generates or costs anything by itself.
  */
+import { PROMPT_TEMPLATES } from "./prompt-templates.js";
 import { MAX_LABEL, MAX_TEXT, type CanvasDoc, type CanvasEdge, type CanvasNode, type NodeType } from "./canvas-rules.js";
 
 export type CanvasTemplateCategory = "apps" | "books" | "social" | "ads" | "products" | "places" | "food" | "brand" | "video" | "saved";
@@ -136,7 +137,7 @@ const pages = (scenes: Array<[string, string]>, ratio: string, from: string[]): 
 const finished = (pictures: string[], words: string, labels: string[], settings: Record<string, string>): Step[] =>
   pictures.map((picture, i) => ({ id: `done${i + 1}`, type: "layout" as const, label: labels[i] ?? `Page ${i + 1}`, from: [picture, words], data: { ...settings, part: String(i + 1) } }));
 
-export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
+const CORE_BOARDS: readonly CanvasTemplate[] = [
   template("app-store-set", "apps", "App store screenshots", "Five finished screenshots at Apple's exact size, from your real screen", { app: "a budgeting app", audience: "young families", outcome: "Know where every rand went" }, [
     { id: "look", type: "prompt", label: "Look of the set", text: `App store screenshot artwork for {{app}}, for {{audience}}. A modern phone shown at a slight angle with the attached screen displayed on it, exactly as it is. Bold single-colour background, soft studio light, the top third left completely empty. ${NO_TEXT}` },
     { id: "screen", type: "source", label: "Your app screen (pick a file)" },
@@ -252,6 +253,23 @@ export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [
     { id: "d", type: "image", label: "Partnership", prompt: "Two hands completing something together, seen close up.", ratio: "1:1", from: ["style"] },
   ]),
 ];
+
+/**
+ * The nine-style pack as boards: reference image -> picture (the style's image JSON prompt) -> video 9:16 (its video JSON
+ * prompt) -> a Layout cover set from the picture. The video card sets no duration, so Generate uses the chosen model's
+ * own defaultDuration (generation.ts applyDuration).
+ */
+const STYLE_BOARDS: readonly CanvasTemplate[] = PROMPT_TEMPLATES.filter((t) => t.id.startsWith("style-") && t.spec).map((t) =>
+  template(`${t.id}-board`, "video", t.title.replace(/ pair$/, ""), `${t.tagline}: reference, picture, video and cover`, t.examples ?? {}, [
+    { id: "reference", type: "source", label: "Reference image (pick a file)" },
+    { id: "frame", type: "image", label: "1. Picture", prompt: JSON.stringify(t.spec!.image, null, 2), ratio: "9:16", from: ["reference"] },
+    { id: "clip", type: "video", label: "2. Video", prompt: JSON.stringify(t.spec!.video, null, 2), ratio: "9:16", from: ["frame"] },
+    { id: "words", type: "text", label: "Cover title", text: "{{product}}", data: { brief: "A cover title for a short video about {{product}}: three to five punchy words." } },
+    { id: "cover", type: "layout", label: "3. Cover", from: ["frame", "words"], data: { size: "social-story", position: "middle", style: "headline", scale: "l", colour: "light" } },
+  ]),
+);
+
+export const CANVAS_TEMPLATES: readonly CanvasTemplate[] = [...CORE_BOARDS, ...STYLE_BOARDS];
 
 /** Templates for the gallery's filters. An empty filter matches everything. */
 export function filterCanvasTemplates(list: readonly CanvasTemplate[], filter: { q?: string; category?: string }): CanvasTemplate[] {
