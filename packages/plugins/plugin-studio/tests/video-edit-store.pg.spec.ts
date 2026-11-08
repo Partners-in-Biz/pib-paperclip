@@ -160,7 +160,7 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect(await pg.db.query(`SELECT id FROM ${ns}.video_edit_versions WHERE edit_id = $1`, [own.id])).toEqual([]);
     await expect(getVideoEdit(ctx, CO, own.id)).rejects.toThrow(/not found/);
     await expect(deleteVideoEdit(ctx, CO, own.id)).rejects.toMatchObject({ code: "unknown_edit" });
-    const kept = await pg.db.query<{ id: string }>(`SELECT id FROM ${ns}.assets WHERE id = 'asset-rendered'`);
+    const kept = await pg.db.query(`SELECT id FROM ${ns}.assets WHERE id = 'asset-rendered'`);
     expect(kept).toHaveLength(1);
     expect((await listVideoEdits(ctx, CO, {})).map((e) => e.title)).toEqual(["Acme ad"]);
     expect(await deleteVideoEdit(ctx, CO, acme.id, "company:acme")).toMatchObject({ deleted: true });
