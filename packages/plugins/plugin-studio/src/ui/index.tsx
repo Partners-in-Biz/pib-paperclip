@@ -264,38 +264,39 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
   const media = { width: "100%", height: "100%", objectFit: "cover" as const, display: "block" };
   const isVideo = asset.kind === "video";
   const isAudio = asset.kind === "audio";
+  const openLabel = `Open ${humanTitle(asset.prompt, asset.name)}`;
+  const resetBtn = { background: "none", border: 0, padding: 0, margin: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" as const };
+  // A div, not a button: the audio player must not sit inside interactive button content.
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label={`Open ${humanTitle(asset.prompt, asset.name)}`}
+    <div
       title={asset.prompt ?? asset.name}
       className="pib-link-card"
-      style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
+      style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", color: "inherit", display: "flex", flexDirection: "column" }}
     >
       <div style={{ position: "relative", aspectRatio: "4 / 3", background: "var(--muted)", width: "100%" }}>
         {!url ? null : isAudio ? (
           <div style={{ ...media, display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}>
-            <audio src={url} controls preload="metadata" aria-label={asset.name} style={{ width: "100%", maxWidth: "100%" }} onClick={(e) => e.stopPropagation()} />
+            <audio src={url} controls preload="metadata" aria-label={asset.name} style={{ width: "100%", maxWidth: "100%" }} />
           </div>
         ) : isVideo ? (
           <video src={posterFrameUrl(url)} style={media} muted playsInline preload="metadata" aria-label={asset.name} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)} />
         ) : (
           <img src={url} alt={asset.altText ?? asset.name} style={media} loading="lazy" />
         )}
-        <span style={{ position: "absolute", top: 8, left: 8, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: `color-mix(in srgb, ${t.solid} 30%, ${scrim})`, border: `1px solid ${t.border}`, color: "var(--foreground)" }}>{statusLabel(asset.status)}</span>
+        {isAudio ? null : <button type="button" onClick={onOpen} aria-label={openLabel} style={{ ...resetBtn, position: "absolute", inset: 0, width: "100%", height: "100%" }} />}
+        <span style={{ position: "absolute", top: 8, left: 8, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: `color-mix(in srgb, ${t.solid} 30%, ${scrim})`, border: `1px solid ${t.border}`, color: "var(--foreground)", pointerEvents: "none", whiteSpace: "nowrap" }}>{statusLabel(asset.status)}</span>
         {isVideo ? (
-          <span aria-hidden="true" style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 36, height: 36, borderRadius: 999, display: "grid", placeItems: "center", background: scrim, color: "var(--foreground)", fontSize: 14 }}>
+          <span aria-hidden="true" style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 36, height: 36, borderRadius: 999, display: "grid", placeItems: "center", background: scrim, color: "var(--foreground)", fontSize: 14, pointerEvents: "none" }}>
             ▶
           </span>
         ) : null}
-        {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{formatDuration(duration)}</span> : null}
+        {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums", pointerEvents: "none" }}>{formatDuration(duration)}</span> : null}
       </div>
-      <div style={{ padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
+      <button type="button" onClick={onOpen} aria-label={isAudio ? openLabel : undefined} tabIndex={isAudio ? 0 : -1} style={{ ...resetBtn, padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box", display: "block" }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{humanTitle(asset.prompt, asset.name)}</div>
         <div style={{ ...muted, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 

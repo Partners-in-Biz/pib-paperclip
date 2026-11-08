@@ -32,7 +32,7 @@ export function ClientCards({ companyId, version, onOpenLibrary }: { companyId: 
               {c.recentApproved.map((a) => {
                 const box = { width: "100%", aspectRatio: "1 / 1", objectFit: "cover" as const, borderRadius: 6, background: "rgba(127,127,127,0.12)", display: "block" };
                 const url = urls[a.id];
-                if (url && a.kind === "audio") return <div key={a.id} title={a.name} style={{ ...box, display: "grid", placeItems: "center", padding: 4, boxSizing: "border-box" }}><audio src={url} controls preload="metadata" aria-label={a.name} style={{ width: "100%" }} /></div>;
+                if (url && a.kind === "audio") return <div key={a.id} title={a.name} style={{ ...box, gridColumn: "1 / -1", aspectRatio: "auto", display: "grid", placeItems: "center", padding: 4, boxSizing: "border-box" }}><audio src={url} controls preload="metadata" aria-label={a.name} style={{ width: "100%" }} /></div>;
                 return url && a.kind !== "video" ? <img key={a.id} src={url} alt={a.name} style={box} loading="lazy" /> : <div key={a.id} title={a.name} style={{ ...box, display: "grid", placeItems: "center", ...muted }}>{a.kind}</div>;
               })}
             </div>
