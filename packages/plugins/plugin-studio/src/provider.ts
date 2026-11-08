@@ -40,12 +40,13 @@ export function assertModel(model: string): void {
   }
 }
 
-function creditsIn(body: unknown): number | null {
+/** A price must be a finite number above zero: 0, a negative or NaN is "no price", never a free job. */
+export function creditsIn(body: unknown): number | null {
   if (!body || typeof body !== "object") return null;
   for (const key of ["credits", "estimated_credits", "cost", "total_credits"]) {
     const value = (body as Record<string, unknown>)[key];
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0) return Number(value);
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) > 0) return Number(value);
   }
   return null;
 }
