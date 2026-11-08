@@ -68,7 +68,7 @@ export interface StoreInput {
   issueId: string | null;
   name: string;
   altText?: string | null;
-  source: "generated" | "attachment" | "drive" | "layout" | "social";
+  source: "generated" | "attachment" | "drive" | "layout" | "social" | "edit";
   sourceRef: string | null;
   generationId?: string | null;
   agentId?: string | null;

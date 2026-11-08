@@ -26,6 +26,7 @@ import { assetDetail, pageAssets, pageGenerations, pageRequest } from "./page.js
 import { canGenerate, isCompanyOwner, isOwnerOrAdmin, memberRole, overview, usageView } from "./service.js";
 import { sweepLocalCopies } from "./storage.js";
 import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
+import { createRenderExecutor } from "./video-edit/render-pipeline.js";
 import { createRenderRunner } from "./video-edit/runner.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
@@ -463,9 +464,9 @@ const plugin = definePlugin({
         await publishShares();
       }
     });
-    // Video renders (PAR-8276 A7a): one runner per worker. It recovers renders a dead worker left behind now and on
-    // every tick; it claims nothing until the render pipeline (A7b) passes it an executor.
-    const renders = createRenderRunner(ctx);
+    // Video renders (PAR-8276 A7a/A7b): one runner per worker. It recovers renders a dead worker left behind now and on
+    // every tick, then claims the oldest queued render and runs the pipeline (download, compile, run, verify, upload).
+    const renders = createRenderRunner(ctx, { executor: createRenderExecutor() });
     runDetached(() => void renders.recover().catch((error) => ctx.logger.warn("Studio render recovery failed", { error: errorText(error) })));
     ctx.jobs.register("process-renders", async () => {
       await renders.tick();
