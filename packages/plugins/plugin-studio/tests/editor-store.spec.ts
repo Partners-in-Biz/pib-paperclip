@@ -6,7 +6,7 @@ const doc = (clips: string[] = ["c1"]) => ({
   project: { size: "9:16", width: 1080, height: 1920, fps: 30 },
   tracks: [{ id: "v1", kind: "video", clips: clips.map((id) => ({ id })) }],
 });
-const edit = (revision: number, clips?: string[]) => ({ id: "e1", name: "Ad", revision, doc: doc(clips) });
+const edit = (revision: number, clips?: string[]) => ({ id: "e1", title: "Ad", revision, doc: doc(clips) });
 
 function make(over: Partial<EditorApi> = {}) {
   const api = { get: vi.fn(async () => edit(1)), applyOps: vi.fn(async () => ({ id: "e1", revision: 2, doc: doc(["c1", "c2"]), duration: 5 })), ...over } as unknown as EditorApi & { get: ReturnType<typeof vi.fn>; applyOps: ReturnType<typeof vi.fn> };

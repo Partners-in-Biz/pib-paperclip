@@ -8,7 +8,8 @@ import type { EditDoc } from "../../video-edit/timeline.js";
 
 export interface EditorEdit {
   id: string;
-  name?: string;
+  /** The edit's title, as video-edit-get returns it. */
+  title?: string;
   revision: number;
   duration?: number;
   doc: EditDoc;
