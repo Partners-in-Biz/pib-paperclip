@@ -8,6 +8,7 @@ import {
   listEditVersions,
   listVideoEdits,
   MAX_EDIT_VERSIONS,
+  restoreEditVersion,
   saveEditVersion,
   saveVideoEdit,
 } from "../src/video-edit/store.js";
@@ -202,5 +203,38 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     await expect(insert("r5", "bogus")).rejects.toThrow(/check/i);
     await pg.db.execute(`UPDATE ${pg.db.namespace}.video_renders SET status = 'failed' WHERE id = 'r1'`, []);
     await expect(insert("r6", "uploading")).resolves.toBeTruthy();
+  });
+
+  it("restores a version as a new revision, refuses a stale base, and stays inside company and client", async () => {
+    await addAsset("asset-own", CO, null);
+    const made = await createVideoEdit(ctx, CO, { title: "Cut" }, USER);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: timeline("asset-own", 4) }, USER);
+    const v = await saveEditVersion(ctx, CO, { editId: made.id, name: "Four seconds" }, USER); // at revision 2
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 2, doc: timeline("asset-own", 2) }, AGENT);
+
+    // Stale base: refused, nothing changes.
+    await expect(restoreEditVersion(ctx, CO, { editId: made.id, versionId: v.id, baseRevision: 2 }, USER)).rejects.toMatchObject({ code: "edit_conflict" });
+    expect((await getVideoEdit(ctx, CO, made.id)).revision).toBe(3);
+
+    const out = await restoreEditVersion(ctx, CO, { editId: made.id, versionId: v.id, baseRevision: 3 }, USER);
+    expect(out).toMatchObject({ revision: 4, restoredVersionId: v.id, keptPrevious: true });
+    const back = await getVideoEdit(ctx, CO, made.id);
+    expect(back.revision).toBe(4);
+    expect(back.duration).toBe(4);
+    const names = (await listEditVersions(ctx, CO, made.id)).map((x) => x.name);
+    expect(names).toContain("Four seconds");
+    expect(names).toContain("Before restore (revision 3)");
+
+    await expect(restoreEditVersion(ctx, CO, { editId: made.id, versionId: "nope", baseRevision: 4 }, USER)).rejects.toMatchObject({ code: "unknown_version" });
+    await expect(restoreEditVersion(ctx, CO, { editId: made.id, versionId: v.id }, USER)).rejects.toThrow(/baseRevision/);
+    // Another company can't restore it; a version of another edit isn't found.
+    await expect(restoreEditVersion(ctx, OTHER_CO, { editId: made.id, versionId: v.id, baseRevision: 4 }, USER)).rejects.toThrow(/not found/);
+    const other = await createVideoEdit(ctx, CO, { title: "Other" }, USER);
+    await expect(restoreEditVersion(ctx, CO, { editId: other.id, versionId: v.id, baseRevision: 1 }, USER)).rejects.toMatchObject({ code: "unknown_version" });
+
+    // Client scope: an asset that moved to another client blocks the restore.
+    await setClient(made.id, { kind: "company", id: "acme" });
+    await expect(restoreEditVersion(ctx, CO, { editId: made.id, versionId: v.id, baseRevision: 4 }, USER)).rejects.toThrow(/another client/);
+    expect((await getVideoEdit(ctx, CO, made.id)).revision).toBe(4);
   });
 });

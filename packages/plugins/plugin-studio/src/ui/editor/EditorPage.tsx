@@ -10,6 +10,7 @@ import { clipCount, createEditorStore, type EditorApi } from "./editor-store.js"
 import { Player } from "./Player.js";
 import { Timeline } from "./Timeline.js";
 import { RenderPanel } from "./RenderPanel.js";
+import { VersionsPanel } from "./VersionsPanel.js";
 
 export function StudioEditorPage({ context }: PluginPageProps) {
   const host = useHostContext();
@@ -65,6 +66,7 @@ export function StudioEditorPage({ context }: PluginPageProps) {
           <Player store={store} />
           <Timeline store={store} />
           <RenderPanel store={store} />
+          <VersionsPanel store={store} />
         </div>
       ) : null}
     </Page>
