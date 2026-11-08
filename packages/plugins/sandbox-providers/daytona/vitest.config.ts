@@ -14,7 +14,7 @@ export default defineConfig({
   },
   test: {
     // PAR-7244: hard cap for local/agent runs on the shared VPS; larger only on the CI runner
-    maxWorkers: process.env.CI ? 8 : 4,
+    maxWorkers: process.env.RUNNER_ENVIRONMENT === "github-hosted" ? undefined : process.env.CI ? 8 : 4, // GitHub-hosted runners keep the default (cores - 1)
     include: [path.join(dirname, "src/**/*.test.ts")],
     environment: "node",
   },
