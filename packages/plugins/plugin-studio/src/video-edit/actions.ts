@@ -6,7 +6,7 @@
  * A render snapshots the saved document into `video_renders`; later saves do not change a queued render.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { formatClientParam, sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "../config.js";
 import { num, table } from "../db.js";
 import { StudioError } from "../errors.js";
@@ -34,6 +34,8 @@ export interface StartAsset {
   r2Key: string;
   clientKind: string | null;
   clientRef: string | null;
+  /** The library name, used as the edit's title when the caller gives none. */
+  name: string;
 }
 
 export interface ActionDeps {
@@ -66,8 +68,8 @@ function assetIdList(value: unknown): string[] {
 /** The assets in this company, in the order asked for. A missing one (or one of another company) is refused. */
 async function startAssets(ctx: PluginContext, companyId: string, ids: string[]): Promise<StartAsset[]> {
   const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
-  const rows = await ctx.db.query<{ id: string; kind: string; current_version: unknown; r2_key: string; client_kind: string | null; client_ref: string | null }>(
-    `SELECT a.id, a.kind, a.current_version, a.client_kind, a.client_ref, v.r2_key
+  const rows = await ctx.db.query<{ id: string; kind: string; name: string | null; current_version: unknown; r2_key: string; client_kind: string | null; client_ref: string | null }>(
+    `SELECT a.id, a.kind, a.name, a.current_version, a.client_kind, a.client_ref, v.r2_key
      FROM ${table(ctx, "assets")} a JOIN ${table(ctx, "asset_versions")} v ON v.asset_id = a.id AND v.version = a.current_version
      WHERE a.company_id = $1 AND a.id IN (${marks})`,
     [companyId, ...ids],
@@ -76,7 +78,7 @@ async function startAssets(ctx: PluginContext, companyId: string, ids: string[])
   return ids.map((assetId) => {
     const r = found.get(assetId);
     if (!r) bad(`Asset ${assetId} is not in this company's Studio library.`);
-    return { id: r.id, kind: r.kind, version: num(r.current_version), r2Key: r.r2_key, clientKind: r.client_kind, clientRef: r.client_ref };
+    return { id: r.id, kind: r.kind, version: num(r.current_version), r2Key: r.r2_key, clientKind: r.client_kind, clientRef: r.client_ref, name: r.name ?? "" };
   });
 }
 
@@ -115,6 +117,12 @@ async function timelineFrom(assets: StartAsset[], probe: (asset: StartAsset) => 
   return normalizeEdit({ project: project ?? undefined, tracks });
 }
 
+/** The title for an edit started from library assets without one: the first asset's name, else a dated fallback. */
+function defaultTitle(assets: StartAsset[]): string {
+  const name = assets.find((a) => a.name.trim())?.name.trim();
+  return (name || `Video edit ${new Date().toISOString().slice(0, 10)}`).slice(0, 200);
+}
+
 /** `video-edit-create`: an empty edit, a given `doc`, or one built from `assetIds` (their lengths are probed). */
 export async function createEditAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor, deps: ActionDeps = {}) {
   const ids = assetIdList(params.assetIds);
@@ -123,12 +131,19 @@ export async function createEditAction(ctx: PluginContext, companyId: string, pa
   // Check company and client before probing anything: a foreign asset is never opened.
   const assets = await startAssets(ctx, companyId, ids);
   const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
-  const where = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
+  // The library's "Edit video" sends only the asset ids (PAR-8368): the edit takes the first asset's name, and, outside
+  // a project and with no client given, the first asset's client, so a client's video opens in that client's edit.
+  const firstScope = scopeOfRow({ client_kind: assets[0].clientKind, client_ref: assets[0].clientRef });
+  const given = scopeInput(params);
+  const requested = given !== undefined || projectId ? given : firstScope;
+  const where = await scopeForWork(ctx, companyId, requested, projectId);
   for (const a of assets) {
     if (!sameClient(scopeOfRow({ client_kind: a.clientKind, client_ref: a.clientRef }), where.scope)) bad(`Asset ${a.id} belongs to another client than this video edit.`);
   }
   const doc = await timelineFrom(assets, deps.probe ?? defaultProbe(ctx, companyId), params.project);
-  const edit = await createVideoEdit(ctx, companyId, { ...params, doc, sourceAssetId: params.sourceAssetId ?? ids[0] }, actor);
+  const title = typeof params.title === "string" && params.title.trim() ? params.title : defaultTitle(assets);
+  const client = where.scope ? formatClientParam(where.scope) : null;
+  const edit = await createVideoEdit(ctx, companyId, { ...params, title, client, doc, sourceAssetId: params.sourceAssetId ?? ids[0] }, actor);
   ctx.logger.info("Studio video edit created from assets", { companyId, editId: edit.id, assets: ids.length, by: actor.agentId ?? actor.userId ?? null });
   return edit;
 }

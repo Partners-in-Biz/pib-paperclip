@@ -123,8 +123,27 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
   it("refuses a client's asset in own work before probing it", async () => {
     await addAsset("acme-clip", CO, ACME);
     const { probe, probed } = fakeProbe({});
-    await expect(createEditAction(ctx, CO, { title: "X", assetIds: ["acme-clip"] }, USER, { probe })).rejects.toMatchObject({ message: expect.stringContaining("another client") });
+    await expect(createEditAction(ctx, CO, { title: "X", client: "own", assetIds: ["acme-clip"] }, USER, { probe })).rejects.toMatchObject({ message: expect.stringContaining("another client") });
     expect(probed).toEqual([]);
+  });
+
+  it("library Edit video (only assetIds): the title is the first asset's name (PAR-8368)", async () => {
+    await addAsset("clip", CO, null);
+    const { probe } = fakeProbe({});
+    const edit = await createEditAction(ctx, CO, { assetIds: ["clip"] }, USER, { probe });
+    expect(edit).toMatchObject({ title: "clip.bin", sourceAssetId: "clip", clips: 1 });
+    const blank = await createEditAction(ctx, CO, { title: "  ", assetIds: ["clip"] }, USER, { probe });
+    expect(blank.title).toBe("clip.bin");
+    const named = await createEditAction(ctx, CO, { title: "My cut", assetIds: ["clip"] }, USER, { probe });
+    expect(named.title).toBe("My cut");
+  });
+
+  it("library Edit video on a client's asset uses that client, not own work (PAR-8368)", async () => {
+    await addAsset("acme-clip", CO, ACME);
+    const { probe } = fakeProbe({});
+    // The harness has no CRM, so resolving the client fails: the point is that it asks for ACME instead of refusing
+    // the asset as another client's.
+    await expect(createEditAction(ctx, CO, { assetIds: ["acme-clip"] }, USER, { probe })).rejects.toMatchObject({ code: "unknown_client", message: expect.stringContaining("company:acme") });
   });
 
   it("apply-ops: saves all ops at once, refuses other-company and other-client assets, and a stale revision is edit_conflict", async () => {
