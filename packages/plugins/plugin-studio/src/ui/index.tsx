@@ -10,6 +10,8 @@ import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { GiveButton, GivenList } from "./GiveToAgent.js";
 import { FromDrive } from "./FromDrive.js";
+import { LipsyncForm } from "./LipsyncForm.js";
+import type { LipsyncOption } from "./lipsync-form.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
@@ -66,10 +68,19 @@ interface Balance {
   outOfFundsAt: string | null;
 }
 
+interface ProviderChoice {
+  key: string;
+  label: string;
+  price: string;
+  qualityNote: string;
+  isDefault: boolean;
+}
+
 interface Overview {
   period: string;
   companyUsed: number;
   balance?: Balance | null;
+  providerOptions?: { stt: ProviderChoice[]; tts: ProviderChoice[]; lipsync: LipsyncOption[] };
   providers?: Array<{ capability: "stt" | "tts"; provider: string; label: string; configured: boolean }>;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
@@ -664,6 +675,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const [template, setTemplate] = useState<PromptTemplate | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [naming, setNaming] = useState<string | null>(null);
+  const [mode, setMode] = useState<"generate" | "lipsync">("generate");
   const composerRef = useRef<HTMLElement | null>(null);
   const estimateAction = useStudioAction("estimate");
   const generateAction = useStudioAction("generate");
@@ -805,6 +817,22 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const cap = effectiveCap(data);
   const heading = preset ? preset.label : template ? template.title : "Your own prompt";
 
+  const lipsyncOptions = data.providerOptions?.lipsync ?? [];
+  if (mode === "lipsync" && lipsyncOptions.length) {
+    return (
+      <>
+        <section aria-label="Lip-sync" style={{ display: "grid", gap: 12, maxWidth: 560, padding: 16, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+          <div style={{ ...row, justifyContent: "space-between" }}>
+            <strong style={{ fontSize: 15 }}>Lip-sync</strong>
+            <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setMode("generate")}>Back to Generate</Button>
+          </div>
+          <LipsyncForm companyId={companyId} options={lipsyncOptions} canGenerate={!viewer} onQueued={(id) => { if (id) setGroups((g) => [id, ...g].slice(0, 10)); }} />
+        </section>
+        {groups.length > 0 ? <Progress companyId={companyId} groups={groups} onStored={onStored} /> : null}
+      </>
+    );
+  }
+
   return (
     <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", minWidth: 0 }}>
@@ -819,6 +847,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
           <div style={{ ...row, justifyContent: "space-between", gap: 8 }}>
             <strong style={{ fontSize: 15, minWidth: 0, overflowWrap: "anywhere" }}>{heading}</strong>
             {preset || template ? <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={startBlank}>Start blank</Button> : null}
+            {lipsyncOptions.length ? <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setMode("lipsync")}>Lip-sync</Button> : null}
           </div>
           {cap ? <ProgressBar done={roundCredits(data.companyUsed)} total={cap.monthlyCredits} tone="budget" label="Credits this month" size="sm" /> : null}
           {viewer ? <PageMessage tone="warning" message="Viewers can look at Studio but can't generate. Ask a company owner for member access." /> : null}
@@ -1176,6 +1205,20 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
               </span>
             </div>
           ))}
+          {data.providerOptions?.lipsync?.length ? (
+            <>
+              {(["audio", "line"] as const).map((input) => {
+                const def = data.providerOptions?.lipsync.find((o) => o.input === input && o.isDefault);
+                return def ? (
+                  <div key={input} style={{ ...row, padding: "4px 0" }}>
+                    <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                      {input === "audio" ? "Lip-sync to your audio" : "Lip-sync a typed line"}: {def.label} - {def.price}
+                    </span>
+                  </div>
+                ) : null;
+              })}
+            </>
+          ) : null}
           <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
         </Section>
       ) : null}
