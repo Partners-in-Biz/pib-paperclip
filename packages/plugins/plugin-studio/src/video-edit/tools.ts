@@ -6,12 +6,14 @@
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
+import { captionClipAction, type CaptionDeps } from "./auto-caption.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-create",
   "video-edit-get",
   "video-edit-list",
   "video-edit-apply-ops",
+  "video-edit-caption",
   "video-edit-render",
   "video-edit-render-status",
   "video-edit-cancel-render",
@@ -27,7 +29,7 @@ export async function runVideoEditTool(
   params: Record<string, unknown>,
   run: Pick<ToolRunContext, "companyId" | "agentId">,
   work: { projectId: string | null },
-  deps: ActionDeps = {},
+  deps: ActionDeps & CaptionDeps = {},
 ): Promise<unknown> {
   const companyId = run.companyId;
   const actor = { agentId: run.agentId };
@@ -42,6 +44,8 @@ export async function runVideoEditTool(
       return listEditsAction(ctx, companyId, params);
     case "video-edit-apply-ops":
       return applyOpsAction(ctx, companyId, params, actor);
+    case "video-edit-caption":
+      return captionClipAction(ctx, companyId, params, actor, deps);
     case "video-edit-render":
       return renderAction(ctx, companyId, params, actor);
     case "video-edit-render-status":
