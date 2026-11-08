@@ -16,6 +16,7 @@ import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { num, table } from "./db.js";
 import { StudioError } from "./errors.js";
+import { PROMPT_TEMPLATES } from "./prompt-templates.js";
 import { clientOfProject, projectsOfClient } from "./scope.js";
 import { canGenerate } from "./service.js";
 import { assertOwnKey, extFor, getObject, GIVEN_KEEP_DAYS, givenCopy, removeGivenCopy } from "./storage.js";
@@ -80,9 +81,35 @@ export interface GiveFile {
   path: string;
 }
 
+/** Why the person is giving the file. Absent means a plain give. */
+export const GIVE_PURPOSES = ["paired_prompts"] as const;
+export type GivePurpose = (typeof GIVE_PURPOSES)[number];
+
+/** Keys the brief asks for, as a plain list (never a code fence, so quoting the brief adds no ```json block to an answer). */
+export const PAIRED_KEYS = ["shot_type", "subject", "outfit", "setting", "lighting", "camera", "mood", "sequence (a list of steps)", "negative_guidance"] as const;
+
+/** The brief for `paired_prompts`: written by Studio, so not data. It must hold no triple-backtick run (test). */
+export const PAIRED_BRIEF: readonly string[] = [
+  "**What to do:** write a JSON prompt pair from the reference image above, for an image model and a video model.",
+  "",
+  "Answer with exactly one code block marked json, holding one object with exactly two keys: image_prompt and video_prompt. Each is an object.",
+  "Use these keys inside each prompt, leaving out any that don't fit:",
+  ...PAIRED_KEYS.map((k) => `- ${k}`),
+  "Write real values. Do not leave {{placeholders}} in any value. Do not add a second code block or quote an example block.",
+];
+
+export function givePurpose(value: unknown): GivePurpose | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string" && (GIVE_PURPOSES as readonly string[]).includes(value)) return value as GivePurpose;
+  throw new StudioError(`purpose must be one of: ${GIVE_PURPOSES.join(", ")}.`, "bad_purpose");
+}
+
 /** The popup's description: a line for the person's words, the asset's facts and prompt as fenced data, then the path. */
-export function giveDescription(file: GiveFile): string {
+export function giveDescription(file: GiveFile, purpose: GivePurpose | null = null, templateSpec: string | null = null): string {
   const gen = file.generation;
+  const basePrompt = gen ? gen.prompt : "(Imported, so there is no prompt.)";
+  // The style template's spec is received data: it goes inside the same fence as the prompt, never into the brief.
+  const receivedText = purpose && templateSpec ? `${basePrompt}\n\nStyle template spec:\n${templateSpec}` : basePrompt;
   return buildHandoffDescription({
     source: {
       kind: GIVE_KIND,
@@ -99,9 +126,10 @@ export function giveDescription(file: GiveFile): string {
         ["Prompt", gen ? "in the block below" : "none (imported)"],
       ],
     },
-    receivedText: gen ? gen.prompt : "(Imported, so there is no prompt.)",
+    receivedText,
     readMore: "the Studio library (asset id above)",
     extra: [
+      ...(purpose === "paired_prompts" ? [...PAIRED_BRIEF, ""] : []),
       `File on this server (kept ${GIVEN_KEEP_DAYS} days): \`${file.path}\``,
       "",
       "Open the file at that path with your file tools. Only agents that run on this server can open it.",
@@ -142,7 +170,10 @@ async function checkedRow(ctx: PluginContext, companyId: string, params: Record<
 
 /** Step 1, on click: every check, a copy of the file, and the popup prefill. */
 export async function prepareGive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, giver: Giver) {
+  const purpose = givePurpose(params.purpose);
   const row = await checkedRow(ctx, companyId, params, giver);
+  // A built-in style template's spec, only for the paired-prompts brief. An unknown id is ignored, not trusted.
+  const spec = purpose ? PROMPT_TEMPLATES.find((t) => t.id === text(params.templateId))?.spec : undefined;
   // A client's file often has no project of its own, which is fine here: the task's project is what must fit, and the
   // person picks that in the popup (recordGive checks it). So prefill the client's project, and refuse now only if
   // the file's own project is someone else's, or the client has no project for a task to go in.
@@ -192,7 +223,7 @@ export async function prepareGive(ctx: PluginContext, companyId: string, params:
       project: project?.name ?? (projectId ? "Unknown project" : null),
       generation,
       path,
-    }),
+    }, purpose, spec ? JSON.stringify(spec, null, 2) : null),
     projectId,
   };
 }

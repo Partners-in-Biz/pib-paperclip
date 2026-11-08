@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "../src/prompt-template-store.js";
-import { buildPairedPrompts, PROMPT_MAX, fieldLabel, fillPrompt, filterTemplates, missingFields, placeholdersOf, PROMPT_TEMPLATES, TEMPLATE_CATEGORIES } from "../src/prompt-templates.js";
+import { buildPairedPrompts, parsePairedPrompts, PASTE_MAX, PROMPT_MAX, fieldLabel, fillPrompt, filterTemplates, missingFields, placeholdersOf, PROMPT_TEMPLATES, TEMPLATE_CATEGORIES } from "../src/prompt-templates.js";
 
 function fakeCtx() {
   const data = new Map<string, unknown>();
@@ -167,5 +167,61 @@ describe("nine-style paired prompt pack", () => {
   });
   it("uses no brand words in titles or prompt text", () => {
     for (const t of pack) expect(JSON.stringify([t.title, t.tagline, t.prompt, t.spec, t.examples, t.fields]), t.id).not.toMatch(/lego|pixar|simpsons|disney/i);
+  });
+});
+
+describe("parsePairedPrompts (agent paste-back, PAR-8389)", () => {
+  const FENCE = "```";
+  const block = (body: unknown) => `${FENCE}json\n${typeof body === "string" ? body : JSON.stringify(body, null, 2)}\n${FENCE}`;
+  const good = { image_prompt: { shot_type: "Close-up", subject: "a red car" }, video_prompt: { shot_type: "Dolly", sequence: ["a", "b"] } };
+  const code = (text: string) => {
+    const r = parsePairedPrompts(text);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.message.length).toBeGreaterThan(10);
+    return r.code;
+  };
+
+  it("reads one valid json block, with talk around it", () => {
+    const r = parsePairedPrompts(`Here you go:\n\n${block(good)}\n\nHope that helps.`);
+    expect(r).toEqual({ ok: true, image_prompt: JSON.stringify(good.image_prompt, null, 2), video_prompt: JSON.stringify(good.video_prompt, null, 2) });
+  });
+  it("refuses 0 and 2 json blocks, never picking one", () => {
+    expect(code("no block here")).toBe("paste_blocks");
+    expect(code(`${FENCE}\n{}\n${FENCE}`)).toBe("paste_blocks");
+    expect(code(`Example:\n${block(good)}\nMine:\n${block(good)}`)).toBe("paste_blocks");
+  });
+  it("refuses invalid JSON", () => expect(code(block("{ nope"))).toBe("paste_json"));
+  it("refuses the wrong shape", () => {
+    expect(code(block({ image_prompt: {} }))).toBe("paste_shape");
+    expect(code(block({ ...good, extra: {} }))).toBe("paste_shape");
+    expect(code(block({ image_prompt: {}, prompt: {} }))).toBe("paste_shape");
+    expect(code(block([good]))).toBe("paste_shape");
+    expect(code(block({ image_prompt: "text", video_prompt: {} }))).toBe("paste_shape");
+    expect(code(block({ image_prompt: {}, video_prompt: [1] }))).toBe("paste_shape");
+    expect(code(block({ image_prompt: {}, video_prompt: null }))).toBe("paste_shape");
+  });
+  it("refuses an output over PROMPT_MAX and an input over 20,000", () => {
+    expect(code(block({ image_prompt: { subject: "x".repeat(PROMPT_MAX) }, video_prompt: {} }))).toBe("paste_too_long");
+    expect(code(block({ image_prompt: {}, video_prompt: { subject: "x".repeat(PROMPT_MAX) } }))).toBe("paste_too_long");
+    expect(code(`${"x".repeat(PASTE_MAX + 1)}\n${block(good)}`)).toBe("paste_too_long");
+  });
+  it("refuses {{placeholder}} left in either prompt", () => {
+    expect(code(block({ image_prompt: { subject: "{{subject}}" }, video_prompt: {} }))).toBe("paste_placeholder");
+    expect(code(block({ image_prompt: {}, video_prompt: { sequence: ["a {{ product }} b"] } }))).toBe("paste_placeholder");
+  });
+  it("keeps </script>, quotes and newlines as text", () => {
+    const hostile = { image_prompt: { subject: 'a "quoted" </script><b>x</b>\nline two' }, video_prompt: { mood: "it's \\ fine" } };
+    const r = parsePairedPrompts(block(hostile));
+    if (!r.ok) throw new Error(r.message);
+    expect(JSON.parse(r.image_prompt)).toEqual(hostile.image_prompt);
+    expect(JSON.parse(r.video_prompt)).toEqual(hostile.video_prompt);
+    expect(r.image_prompt).toContain("</script>");
+  });
+  it("gives exactly the strings the Generate box is filled with (what the template form builds parses back unchanged)", () => {
+    const t = PROMPT_TEMPLATES.find((x) => x.spec)!;
+    const built = buildPairedPrompts(t, Object.fromEntries((t.fields ?? []).map((f) => [f.name, f.example])));
+    const r = parsePairedPrompts(block({ image_prompt: JSON.parse(built.image_prompt), video_prompt: JSON.parse(built.video_prompt) }));
+    expect(r).toEqual({ ok: true, image_prompt: built.image_prompt, video_prompt: built.video_prompt });
   });
 });
