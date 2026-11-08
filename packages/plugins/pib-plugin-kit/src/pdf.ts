@@ -86,7 +86,10 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
 }
 
 export async function renderDocumentPdf(spec: PdfDocumentSpec): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create();
+  // No time-stamped metadata: pdf-lib would write CreationDate/ModDate as "now" (to the second), so the same document
+  // rendered twice could hash differently, and the Drive filing relies on the same invoice giving the same sha256
+  // (plugin-billing filing.pg.spec flaked on it, 2026-11-08). Title and producer are still set below.
+  const pdf = await PDFDocument.create({ updateMetadata: false });
   pdf.setTitle(pdfSafe(`${spec.title}${spec.number ? ` ${spec.number}` : ""}`));
   pdf.setProducer("Partners in Biz · Paperclip");
   const regular = await pdf.embedFont(StandardFonts.Helvetica);

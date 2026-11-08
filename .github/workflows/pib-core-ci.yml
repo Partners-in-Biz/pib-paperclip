@@ -32,13 +32,11 @@ concurrency:
 jobs:
   core:
     name: PiB core CI
-    runs-on: [self-hosted, pib-vps]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # GitHub-hosted since 2026-11-08 (public repo: free, a clean 4-CPU / 16 GB machine, no queue behind other runs; it
+    # used to share the VPS with production).
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Root disk before
-        run: df -h /
-
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -83,7 +81,7 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
-          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` runs
+          # No Rust step here (written for the pib-vps runner, which had no cargo). paperclip-runner's `typecheck` runs
           # `typecheck:rust` (cargo fmt/check) and server's `typecheck` first runs the runner's full `build`
           # (cargo build --release). On this runner both run only their TypeScript halves: the runner's
           # `typecheck:typescript`, and for server `build:typescript` of the runner (emits the d.ts server
@@ -137,14 +135,3 @@ jobs:
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
           timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || true
-
-      - name: Prune pnpm store
-        if: always()
-        run: pnpm store prune || true
-
-      - name: Root disk after (must stay under 80%)
-        if: always()
-        run: |
-          df -h /
-          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
-          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }
