@@ -201,6 +201,29 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
     expect(await workFolders()).toEqual([]);
   });
 
+  it("an audio-kind clip on the audio track is downloaded, probed and mixed in: the edit has sound", async () => {
+    await addAsset("mute", { content: fakeSource({ duration: 10, audio: false }, { duration: 4, audio: true }) });
+    await addAsset("vo", { kind: "audio", mime: "audio/mpeg", key: `studio/${CO}/own/vo/v1.mp3`, content: fakeSource({ duration: 6, audio: true }, { duration: 4, audio: true }) });
+    const d = { ...doc("mute"), tracks: [...doc("mute").tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 4, start: 0 }] }] };
+    const done = await render(d);
+    expect(done).toMatchObject({ status: "succeeded", errorKind: null });
+    expect(gets).toEqual([`studio/${CO}/own/mute/v1.mp4`, `studio/${CO}/own/vo/v1.mp3`]);
+    const out = JSON.parse(new TextDecoder().decode(r2.get(`studio/${CO}/own/${done.id}/v1.mp4`)));
+    expect(out.args).toContain("[aout]");
+    expect(out.args.some((a: string) => a.endsWith("in-1.mp3"))).toBe(true);
+    expect(out.args).not.toContain("-an");
+  });
+
+  it("an audio-kind asset with no readable sound fails deterministic before ffmpeg runs", async () => {
+    await addAsset("mute", { content: fakeSource({ duration: 10, audio: false }, { duration: 4, audio: false }) });
+    await addAsset("vo", { kind: "audio", mime: "audio/wav", key: `studio/${CO}/own/vo/v1.wav`, content: fakeSource({ duration: 6, audio: false }, { duration: 4, audio: false }) });
+    const d = { ...doc("mute"), tracks: [...doc("mute").tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 4, start: 0 }] }] };
+    const done = await render(d);
+    expect(done).toMatchObject({ status: "failed", errorKind: "deterministic" });
+    expect(done.error).toMatch(/no sound Studio can read/);
+    expect(puts).toEqual([]);
+  });
+
   it("a silent edit must render silent", async () => {
     await addAsset("mute", { content: fakeSource({ duration: 10, audio: false }, { duration: 4, audio: true }) });
     const done = await render(doc("mute"));
@@ -281,6 +304,22 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
 });
 
 describe.skipIf(!available || !hasFfmpeg)("Render pipeline with real ffmpeg", () => {
+  it("a silent video plus the MP3 fixture on the audio track renders with sound", async () => {
+    const src = join(scratch, "mute.mp4");
+    const made = spawnSync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30", "-t", "1", "-c:v", "libx264", "-preset", "ultrafast", "-an", src]);
+    expect(made.status).toBe(0);
+    await addAsset("mute", { content: new Uint8Array(await readFile(src)) });
+    const mp3 = new Uint8Array(await readFile(join(import.meta.dirname, "fixtures", "tone.mp3")));
+    await addAsset("vo", { kind: "audio", mime: "audio/mpeg", key: `studio/${CO}/own/vo/v1.mp3`, content: mp3 });
+    const d = { ...doc("mute", 0.5), tracks: [...doc("mute", 0.5).tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 0.5, start: 0 }] }] };
+    const done = await render(d, null, { run: {} });
+    expect(done).toMatchObject({ status: "succeeded", errorKind: null });
+    const file = join(scratch, "out-vo.mp4");
+    await writeFile(file, r2.get(`studio/${CO}/own/${done.id}/v1.mp4`)!);
+    const probe = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", file]).stdout.toString());
+    expect(probe.streams.some((s: { codec_type: string }) => s.codec_type === "audio")).toBe(true);
+  }, 120_000);
+
   // The longest edit (180 s) at 1080x1920 through the whole pipeline: ~30 s on pib-vps (4 threads), well under 200 MB.
   it("renders a 180 s testsrc+sine edit into a verified 1080x1920 MP4 with sound, under 200 MB", async () => {
     const src = join(scratch, "src.mp4");

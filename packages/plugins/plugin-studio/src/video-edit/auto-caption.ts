@@ -155,7 +155,7 @@ async function extractClipAudio(ctx: PluginContext, companyId: string, input: Re
     const src = await downloadObjectToWorkdir(bucket, companyId, input.key, dir, "source.bin");
     const out = join(dir, "audio.wav");
     const res = await runContained(audioExtractArgs(src.path, from, span, out), { cwd: dir, timeoutSec: 300, killAfterSec: 10 }).done;
-    if (res.outcome !== "ok") bad(`Studio could not read this clip's sound (${res.outcome}). Check that the video has sound.`, "no_audio");
+    if (res.outcome !== "ok") bad(`Studio could not read this clip's sound (${res.outcome}). Check that the clip has sound.`, "no_audio");
     return new Uint8Array(await readFile(out));
   });
 }
@@ -197,7 +197,7 @@ export async function captionClipAction(ctx: PluginContext, companyId: string, p
   } catch (e) {
     bad(e instanceof Error ? e.message : String(e), "unknown_asset");
   }
-  if (input.kind !== "video") bad("A picture has no sound to caption; pick a video or sound clip.");
+  if (input.kind === "image") bad("A picture has no sound to caption; pick a video or sound clip.");
   const span = ms(clip.out - clip.in);
   const audio = await (deps.extract ?? extractClipAudio)(ctx, companyId, input, clip.in, span);
   const stt = await (deps.stt ?? defaultStt)(ctx, companyId, provider);
