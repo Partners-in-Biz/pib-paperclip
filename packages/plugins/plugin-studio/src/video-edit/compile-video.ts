@@ -9,6 +9,7 @@
  * `overlay` track is then laid over that base in track order, each clip at its centre offset x/y and fit scale.
  * Keyframes (schema v2, D1d1): x/y/scale/rotate keys on a main or overlay clip are evaluated per frame from the shared
  * `keyframes.ts` curve, in clip-local time (from the clip's `start`, transition overlap included), before xfade/overlay.
+ * Opacity keys (D1d2) scale the clip's alpha per pixel with `geq`, times the alpha its fades leave.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
@@ -69,6 +70,7 @@ const keysOf = (clip: MediaClip, prop: "x" | "y" | "scale" | "rotate") => clip.k
 const reshapes = (clip: MediaClip) => Boolean(keysOf(clip, "scale") || keysOf(clip, "rotate"));
 /** Any motion keys: the overlay position is evaluated per frame. */
 const animated = (clip: MediaClip) => reshapes(clip) || Boolean(keysOf(clip, "x") || keysOf(clip, "y"));
+const fadesOpacity = (clip: MediaClip) => Boolean(clip.keyframes?.opacity);
 
 class Graph {
   inputArgs: string[] = [];
@@ -145,6 +147,17 @@ class Graph {
     ];
   }
 
+  /**
+   * Opacity keys (D1d2): scales the alpha already on the frame per pixel, so final alpha = keyframe opacity x the alpha the
+   * overlay fades left there. geq's frame time is `T`; `r` is given because geq needs a luma or RGB expression (g/b
+   * default to their own pixel). Base opacity is 1 (no static opacity field).
+   */
+  private opacity(clip: MediaClip, offset: number): string[] {
+    const kfs = clip.keyframes?.opacity;
+    if (!kfs) return [];
+    return ["format=rgba", `geq=r='r(X,Y)':a='alpha(X,Y)*(${toFfmpegExpr(kfs, 1, offset, "T")})'`];
+  }
+
   private overlayAt(clip: MediaClip, offset: number) {
     const t = clip.transform;
     if (!animated(clip)) return `x=(W-w)/2+${num(t.x)}:y=(H-h)/2+${num(t.y)}`;
@@ -165,7 +178,7 @@ class Graph {
     const out = this.label("seg");
     const tail = ["format=yuv420p", "setsar=1", ...fades, `trim=duration=${num(length)}`];
     const t = clip.transform;
-    if (isIdentity(t) && !animated(clip)) {
+    if (isIdentity(t) && !animated(clip) && !fadesOpacity(clip)) {
       // The common case: fit inside the frame, letterbox with black.
       const steps = [
         ...this.timing(clip, kind, 0),
@@ -178,10 +191,11 @@ class Graph {
       return out;
     }
     // Moved, scaled, rotated or keyframed: lay it on its own black frame so any part outside the frame is clipped.
-    // The segment starts at the clip's own 0, so keyframe offset is 0 (xfade later shifts the whole segment).
+    // The segment starts at the clip's own 0, so keyframe offset is 0 (xfade later shifts the whole segment). Opacity is
+    // alpha over that black frame; the fades after it then darken to black, so the picture is opacity x fade.
     const shaped = this.label("shp");
     const shape = reshapes(clip) ? this.keyedShape(clip, 0) : this.shape(t);
-    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...shape].join(",")}[${shaped}]`);
+    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...shape, ...this.opacity(clip, 0)].join(",")}[${shaped}]`);
     const bg = this.black(length);
     this.filters.push(`[${bg}][${shaped}]overlay=${this.overlayAt(clip, 0)}:eof_action=pass,${tail.join(",")}[${out}]`);
     return out;
@@ -197,6 +211,7 @@ class Graph {
     const steps = [...this.timing(clip, kind, clip.start), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
+    steps.push(...this.opacity(clip, clip.start));
     const shaped = this.label("ov");
     this.filters.push(`[${index}:v]${steps.join(",")}[${shaped}]`);
     const out = this.label("base");
