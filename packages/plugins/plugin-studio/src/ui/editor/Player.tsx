@@ -4,12 +4,14 @@
  * `<video>` slots take turns: one shows the current clip (playbackRate = speed, volume and fades applied) while the
  * other preloads the next clip at its in point, so a hand-over is a swap, not a load. A gap shows black. While playing,
  * a clock drives the playhead (so gaps play too); the showing video is re-seeked only when it drifts.
+ * Transitions and keyframes (PAR-8449): inside a transition window both slots play, each in a layer styled by the plan
+ * (`PreviewLayers`); the clip inside each layer is placed by its keyframes.
  */
 import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
-import { assignSlots, buildPreviewPlan, frameAt, type PreviewSlots } from "./preview-plan.js";
+import { assignSlots, buildPreviewPlan, clipTransform, frameAt, type PreviewFrame, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
@@ -42,7 +44,9 @@ export function Player({ store }: { store: EditorStore }) {
   const videos = useRef<[HTMLVideoElement | null, HTMLVideoElement | null]>([null, null]);
   const slotRef = useRef<PreviewSlots>({ slots: [null, null], active: 0 });
   // assignSlots is idempotent, so a repeated render (StrictMode) lands on the same slots.
-  slotRef.current = assignSlots(slotRef.current, frame.segment, frame.next);
+  // Inside a transition the outgoing clip still shows, so it keeps the other slot instead of the next clip.
+  const outgoing = frame.layers.find((l) => l.segment !== frame.segment)?.segment ?? null;
+  slotRef.current = assignSlots(slotRef.current, frame.segment, outgoing ?? frame.next);
   const { slots, active } = slotRef.current;
   const live = useRef({ plan, error: previews.error });
   live.current = { plan, error: previews.error };
@@ -50,7 +54,7 @@ export function Player({ store }: { store: EditorStore }) {
   // A slot's new src resets its position when the load starts, so seeks wait for metadata; this re-syncs then.
   const [, resync] = useReducer((n: number) => n + 1, 0);
 
-  // After every render: the showing slot plays (or holds) its frame; the other is paused and muted on its clip's in point.
+  // After every render: each showing slot plays (or holds) its frame; an idle slot is paused and muted on its in point.
   useEffect(() => {
     for (const i of [0, 1] as const) {
       const v = videos.current[i];
@@ -58,10 +62,11 @@ export function Player({ store }: { store: EditorStore }) {
       if (!v || !seg) continue;
       if (v.playbackRate !== seg.speed) v.playbackRate = seg.speed;
       const ready = v.readyState >= 1 && !v.seeking;
-      if (i === active && frame.segment?.clipId === seg.clipId) {
+      const layer = frame.layers.find((l) => l.segment.clipId === seg.clipId);
+      if (layer) {
         v.muted = false;
-        v.volume = frame.volume;
-        if (ready && Math.abs(v.currentTime - frame.sourceTime) > (playing ? DRIFT : STILL)) v.currentTime = frame.sourceTime;
+        v.volume = layer.volume;
+        if (ready && Math.abs(v.currentTime - layer.sourceTime) > (playing ? DRIFT : STILL)) v.currentTime = layer.sourceTime;
         if (playing && v.paused) void v.play().catch(() => undefined);
         if (!playing && !v.paused) v.pause();
       } else {
@@ -147,28 +152,7 @@ export function Player({ store }: { store: EditorStore }) {
   return (
     <section aria-label="Player" data-editor-panel="player" data-preview-clip={frame.segment?.clipId ?? frame.kind} style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <div style={{ position: "relative", width: "100%", maxWidth: 480, maxHeight: "60vh", aspectRatio: aspect, margin: "0 auto", borderRadius: 8, overflow: "hidden", background: hasClips ? "black" : "rgba(127,127,127,0.12)", display: "grid", placeItems: "center", minWidth: 0 }}>
-        {([0, 1] as const).map((i) => {
-          const src = urlOf(i);
-          const showing = i === active && !!frame.segment && slots[i] === frame.segment.clipId;
-          return src ? (
-            <video
-              key={i}
-              ref={(el) => {
-                videos.current[i] = el;
-              }}
-              src={src}
-              data-preview-slot={i}
-              data-clip-id={slots[i] ?? ""}
-              data-showing={showing ? "true" : "false"}
-              playsInline
-              muted={!showing}
-              preload="auto"
-              onLoadedMetadata={resync}
-              onSeeked={resync}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: showing ? frame.opacity : 0 }}
-            />
-          ) : null;
-        })}
+        <PreviewLayers frame={frame} slots={slots} urls={[urlOf(0), urlOf(1)]} project={doc?.project ?? { width: 16, height: 9 }} setVideo={(i, el) => { videos.current[i] = el; }} onLoaded={resync} />
         {audioNear.map(({ clip }) => {
           const src = previews.urls[clip.assetId];
           return src ? (
@@ -176,7 +160,7 @@ export function Player({ store }: { store: EditorStore }) {
           ) : null;
         })}
         <Overlay store={store} />
-        {message ? <div style={{ position: "relative", padding: 12, textAlign: "center", opacity: 0.7, color: hasClips ? "white" : undefined }}>{message}</div> : null}
+        {message ? <div style={{ position: "relative", zIndex: 6, padding: 12, textAlign: "center", opacity: 0.7, color: hasClips ? "white" : undefined }}>{message}</div> : null}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <Button onClick={toggle} disabled={end <= 0}>{playing ? "Pause" : "Play"}</Button>
@@ -194,5 +178,46 @@ export function Player({ store }: { store: EditorStore }) {
         <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmt(playhead)} / {fmt(end)}</span>
       </div>
     </section>
+  );
+}
+
+/**
+ * The picture (PAR-8449): per slot a frame-sized layer carrying the transition look (opacity, clip-path, transform), the
+ * clip inside it placed by its keyframes (offset, scale, rotation, opacity x fade); the fadeblack/fadewhite matte sits
+ * between the two layers. Stacked with z-index in the plan's paint order, below the text overlay.
+ */
+export function PreviewLayers({ frame, slots, urls, project, setVideo, onLoaded }: {
+  frame: PreviewFrame;
+  slots: readonly (string | null)[];
+  urls: readonly (string | undefined)[];
+  project: { width: number; height: number };
+  setVideo?: (i: 0 | 1, el: HTMLVideoElement | null) => void;
+  onLoaded?: () => void;
+}) {
+  return (
+    <>
+      {([0, 1] as const).map((i) => {
+        const at = frame.layers.findIndex((l) => l.segment.clipId === slots[i]);
+        const layer = at >= 0 ? frame.layers[at] : null;
+        return urls[i] ? (
+          <div key={i} data-preview-layer={i} style={{ position: "absolute", inset: 0, overflow: "hidden", zIndex: layer ? 1 + 2 * at : 0, opacity: layer ? layer.opacity : 0, clipPath: layer?.clipPath ?? undefined, transform: layer?.transform ?? undefined }}>
+            <video
+              ref={(el) => setVideo?.(i, el)}
+              src={urls[i]}
+              data-preview-slot={i}
+              data-clip-id={slots[i] ?? ""}
+              data-showing={layer ? "true" : "false"}
+              playsInline
+              muted={!layer}
+              preload="auto"
+              onLoadedMetadata={onLoaded}
+              onSeeked={onLoaded}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: layer ? layer.alpha : 0, transform: layer ? clipTransform(layer, project) : undefined }}
+            />
+          </div>
+        ) : null;
+      })}
+      {frame.matte ? <div data-preview-matte={frame.matte.color} style={{ position: "absolute", inset: 0, zIndex: 2, background: frame.matte.color, opacity: frame.matte.opacity }} /> : null}
+    </>
   );
 }
