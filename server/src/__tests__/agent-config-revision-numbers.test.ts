@@ -101,7 +101,7 @@ describe("agent config revision numbers", () => {
       });
     }
     const migration = await (await import("node:fs/promises")).readFile(
-      new URL("../../../packages/db/src/migrations/0306_agent_config_revision_numbers.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0448_agent_config_revision_numbers.sql", import.meta.url),
       "utf8",
     );
     for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
