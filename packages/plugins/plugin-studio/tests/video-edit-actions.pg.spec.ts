@@ -100,6 +100,13 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
     expect(await getEditAction(ctx, CO, { editId: edit.id })).toMatchObject({ id: edit.id, revision: 1 });
   });
 
+  it("names the edit after the first asset when no title is given", async () => {
+    await addAsset("named", CO, null);
+    const { probe } = fakeProbe({ named: probeResult(3) });
+    const edit = await createEditAction(ctx, CO, { assetIds: ["named"] }, USER, { probe });
+    expect(edit.title).toBe("named");
+  });
+
   it("caps a start-from-assets timeline at 180 s and refuses assets that do not fit at all", async () => {
     await addAsset("long", CO, null);
     await addAsset("more", CO, null);
