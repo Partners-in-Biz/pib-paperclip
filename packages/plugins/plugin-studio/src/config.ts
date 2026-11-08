@@ -27,6 +27,11 @@ export function instanceConfigSchema(): JsonSchema {
         title: "Higgsfield",
         properties: { apiKey: secretField("API key", "platform.higgsfield.ai key, as <key-id>:<key-secret>.") },
       },
+      xai: {
+        type: "object",
+        title: "xAI speech to text",
+        properties: { apiKey: secretField("API key", "console.x.ai key for auto-captions (grok-voice-transcribe). The Voice plugin's key works here too.") },
+      },
     },
   };
 }
@@ -58,6 +63,12 @@ export class StudioConfig {
   async higgsfieldKey(): Promise<string> {
     const key = await (await this.secrets).get("higgsfield.apiKey");
     if (!key) throw new StudioError("Studio's Higgsfield key is not set up in this company's plugin settings.", "not_configured");
+    return key;
+  }
+
+  async xaiKey(): Promise<string> {
+    const key = await (await this.secrets).get("xai.apiKey");
+    if (!key) throw new StudioError("Auto-captions need an xAI key in Studio's plugin settings.", "not_configured");
     return key;
   }
 }

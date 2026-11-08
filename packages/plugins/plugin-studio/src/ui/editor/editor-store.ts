@@ -17,6 +17,7 @@ export interface EditorEdit {
 export interface EditorApi {
   get(editId: string): Promise<unknown>;
   applyOps(params: { editId: string; baseRevision: number; ops: unknown[] }): Promise<unknown>;
+  caption?(params: { editId: string; baseRevision: number; clipId: string; style?: string }): Promise<unknown>;
 }
 
 export type EditorStatus = "idle" | "loading" | "ready" | "error";
@@ -64,6 +65,8 @@ export interface EditorStore {
   subscribe(listener: () => void): () => void;
   load(editId: string | null): Promise<void>;
   applyOps(ops: unknown[]): Promise<boolean>;
+  /** `video-edit-caption`: speech in a video/sound clip becomes captions (PAR-8360). False when the page has no such action. */
+  autoCaption(params: { clipId: string; style?: string }): Promise<boolean>;
   setPlayhead(seconds: number): void;
   selectClip(clipId: string | null): void;
   dismissToast(): void;
@@ -106,11 +109,12 @@ export function createEditorStore(api: EditorApi): EditorStore {
     }
   }
 
-  async function applyOps(ops: unknown[]): Promise<boolean> {
+  /** One server change at the page's revision: the answer (a saved edit) is adopted, a conflict reloads. */
+  async function save(call: (p: { editId: string; baseRevision: number }) => Promise<unknown>): Promise<boolean> {
     if (!editId || state.revision === null || state.busy) return false;
     set({ busy: true, toast: null });
     try {
-      const saved = (await api.applyOps({ editId, baseRevision: state.revision, ops })) as { revision?: number; doc?: EditDoc; duration?: number };
+      const saved = (await call({ editId, baseRevision: state.revision })) as { revision?: number; doc?: EditDoc; duration?: number };
       if (!saved || typeof saved.revision !== "number" || !saved.doc) throw new Error("The editor got an unexpected answer. Reload and try again.");
       adopt({ ...(state.edit as EditorEdit), revision: saved.revision, doc: saved.doc, duration: saved.duration }, { busy: false });
       return true;
@@ -126,6 +130,10 @@ export function createEditorStore(api: EditorApi): EditorStore {
     }
   }
 
+  const applyOps = (ops: unknown[]) => save((p) => api.applyOps({ ...p, ops }));
+  const autoCaption = (params: { clipId: string; style?: string }) =>
+    api.caption ? save((p) => api.caption!({ ...p, ...params })) : Promise.resolve(false);
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -134,6 +142,7 @@ export function createEditorStore(api: EditorApi): EditorStore {
     },
     load,
     applyOps,
+    autoCaption,
     setPlayhead: (seconds) => set({ playhead: Number.isFinite(seconds) ? Math.max(0, seconds) : 0 }),
     selectClip: (clipId) => set({ selectedClipId: clipId }),
     dismissToast: () => set({ toast: null }),

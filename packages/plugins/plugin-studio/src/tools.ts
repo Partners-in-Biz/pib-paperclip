@@ -6,7 +6,7 @@ import { MAX_BATCH } from "./generation.js";
 import { PHOTO_PRESETS } from "./presets.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
-import { SIZES } from "./video-edit/timeline.js";
+import { CAPTION_STYLES, SIZES } from "./video-edit/timeline.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const CLIENT = text('"company:<id>" or "contact:<id>". Omit it to use the client of the issue\'s project, or own work if it has none.');
@@ -84,6 +84,20 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
         items: { type: "object", required: ["op"], properties: { op: { type: "string", enum: [...OP_NAMES] } } },
         description: "Operations, applied in order",
       } as JsonSchema,
+    }),
+  },
+  {
+    name: "video-edit-caption",
+    displayName: "Auto-caption a video clip",
+    description:
+      "Transcribe the speech in one video or sound clip (its in..out range) and add it as timed captions on a caption track (the first one, or a new one), at the revision you read. The captions are normal caption clips: change them later with video-edit-apply-ops. Refused if captions already cover the clip on that track. Sends the clip's sound to xAI speech to text (a few cents a minute).",
+    parametersSchema: schema(["editId", "baseRevision", "clipId"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      clipId: text("The video or sound clip to caption"),
+      trackId: text("Optional caption track to use; default the first caption track, or a new one"),
+      style: { type: "string", enum: [...CAPTION_STYLES], description: "Caption look; default plain" } as JsonSchema,
+      language: text("Optional spoken language code, e.g. en or af; default: detect"),
     }),
   },
   {

@@ -22,13 +22,15 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const opsAction = useStudioAction("video-edit-apply-ops");
+  const captionAction = useStudioAction("video-edit-caption");
   // Actions go through refs so the store is built once per company, not once per render.
-  const actions = useRef({ getAction, opsAction });
-  actions.current = { getAction, opsAction };
+  const actions = useRef({ getAction, opsAction, captionAction });
+  actions.current = { getAction, opsAction, captionAction };
   const store = useMemo(() => {
     const api: EditorApi = {
       get: (id) => actions.current.getAction({ companyId, editId: id }),
       applyOps: (p) => actions.current.opsAction({ companyId, ...p }),
+      caption: (p) => actions.current.captionAction({ companyId, ...p }),
     };
     return createEditorStore(api);
   }, [companyId]);

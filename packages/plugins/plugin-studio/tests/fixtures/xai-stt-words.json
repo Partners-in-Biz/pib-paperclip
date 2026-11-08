@@ -1,0 +1,18 @@
+{
+  "text": "Hi there, this is Studio. Captions now write themselves.",
+  "language": "en",
+  "duration": 6.2,
+  "words": [
+    { "text": "Hi", "start": 0.32, "end": 0.5 },
+    { "text": "there,", "start": 0.52, "end": 0.86 },
+    { "text": "this", "start": 0.9, "end": 1.04 },
+    { "text": "is", "start": 1.06, "end": 1.18 },
+    { "text": "Studio.", "start": 1.2, "end": 1.74 },
+    { "text": "Captions", "start": 3.1, "end": 3.62 },
+    { "text": "now", "start": 3.64, "end": 3.84 },
+    { "text": "write", "start": 3.86, "end": 4.1 },
+    { "text": "themselves.", "start": 4.12, "end": 4.9 },
+    { "text": "", "start": 5.0, "end": 5.1 },
+    { "text": "late", "start": 5.9, "end": 6.4 }
+  ]
+}

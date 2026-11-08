@@ -6,6 +6,7 @@ import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
+import { captionClipAction } from "./video-edit/auto-caption.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -427,6 +428,10 @@ const plugin = definePlugin({
     action("video-edit-apply-ops", async (params, context) => {
       const me = await videoEditor(context);
       return applyOpsAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-caption", async (params, context) => {
+      const me = await videoEditor(context);
+      return captionClipAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-render", async (params, context) => {
       const me = await videoEditor(context);
