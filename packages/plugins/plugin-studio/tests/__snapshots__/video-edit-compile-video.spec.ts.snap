@@ -1,0 +1,371 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`compileVideo snapshots > gaps: black lead-in, gap and tail up to the overlay's end 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "1",
+    "-i",
+    "file:in/b.mp4",
+    "-loop",
+    "1",
+    "-framerate",
+    "30",
+    "-t",
+    "7",
+    "-i",
+    "file:in/logo.png",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "7",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "color=c=black:s=1080x1920:r=30:d=1,format=yuv420p,setsar=1[blk0];
+[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg1];
+color=c=black:s=1080x1920:r=30:d=1,format=yuv420p,setsar=1[blk2];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=1[seg3];
+color=c=black:s=1080x1920:r=30:d=2,format=yuv420p,setsar=1[blk4];
+[blk0][seg1][blk2][seg3][blk4]concat=n=5:v=1:a=0,settb=1/30[cat5];
+[2:v]setpts=PTS-STARTPTS,fps=30,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2[ov6];
+[cat5][ov6]overlay=x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass[base7];
+[base7]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileVideo snapshots > one clip: trim on input, fit + pad, H.264 High encoder, faststart 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "2",
+    "-t",
+    "5",
+    "-i",
+    "file:in/a.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "5",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=5[seg0];
+[seg0]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileVideo snapshots > overlay: image at x/y/scale with crop, rotation and alpha fades over the main track 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "6",
+    "-i",
+    "file:in/a.mp4",
+    "-loop",
+    "1",
+    "-framerate",
+    "30",
+    "-t",
+    "3",
+    "-i",
+    "file:in/logo.png",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "6",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=6[seg0];
+[1:v]setpts=PTS-STARTPTS+1/TB,fps=30,format=yuva420p,crop=w=iw*0.8:h=ih*1:x=iw*0.1:y=ih*0,rotate=a=15*PI/180:ow=rotw(15*PI/180):oh=roth(15*PI/180):c=none,scale=w=270:h=480:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in:st=1:d=0.5:alpha=1,fade=t=out:st=3.75:d=0.25:alpha=1[ov1];
+[seg0][ov1]overlay=x=(W-w)/2+-200:y=(H-h)/2+300:eof_action=pass[base2];
+[base2]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileVideo snapshots > speed 0.5 and 2: setpts divides, source length on input, timeline length trimmed 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "4",
+    "-i",
+    "file:in/b.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "6",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=(PTS-STARTPTS)/0.5,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=4[seg0];
+[1:v]setpts=(PTS-STARTPTS)/2,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg1];
+[seg0][seg1]concat=n=2:v=1:a=0,settb=1/30[cat2];
+[cat2]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileVideo snapshots > three clips back to back: one concat 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "1",
+    "-t",
+    "3",
+    "-i",
+    "file:in/b.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "1",
+    "-i",
+    "file:in/c.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "6",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[2:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=1[seg2];
+[seg0][seg1][seg2]concat=n=3:v=1:a=0,settb=1/30[cat3];
+[cat3]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileVideo snapshots > xfade: a fade transition over the overlap 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "3",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "3",
+    "-i",
+    "file:in/b.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "1",
+    "-i",
+    "file:in/c.mp4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-profile:v",
+    "high",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-maxrate",
+    "6M",
+    "-bufsize",
+    "12M",
+    "-pix_fmt",
+    "yuv420p",
+    "-r",
+    "30",
+    "-t",
+    "6",
+    "-movflags",
+    "+faststart",
+    "file:out.mp4",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=3[seg1];
+[2:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=1[seg2];
+[seg0][seg1]xfade=transition=fade:duration=1:offset=2[xf3];
+[xf3][seg2]concat=n=2:v=1:a=0,settb=1/30[cat4];
+[cat4]format=yuv420p,setsar=1[vout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
