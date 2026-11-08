@@ -12,6 +12,9 @@
  *  4. Upload to `studio/<company>/<scope>/<assetId>/v1.mp4` and record it as an asset with `source = 'edit'` and
  *     `source_ref = <render id>`. The asset id is the render id, so a retry after a crash writes the same key and rows;
  *     a render whose asset is already recorded returns it without rendering again.
+ *  5. Best effort (A7c): a 720p H.264 preview proxy of the verified output, stored as `.../<assetId>/preview-720p.mp4`
+ *     and returned as `previewR2Key`. A proxy failure (ffmpeg, check or upload) is logged and the render still
+ *     succeeds with no preview. A retry that finds the asset already recorded returns no preview key.
  */
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,6 +28,7 @@ import { assertOwnKey, assetKey, extFor, MAX_ASSET_BYTES, putObject, sha256Hex, 
 import { compileVideo, inputKey, type CompileInputs } from "./compile-video.js";
 import { runContained, type RunOptions } from "./ffmpeg.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
+import { makeProxy, PREVIEW_MIME, previewKeyFor } from "./proxy.js";
 import type { ClaimedRender } from "./render-queue.js";
 import { failureFromRun, RenderFailure, type RenderExecutor } from "./runner.js";
 import { editDuration, normalizeEdit, type EditDoc } from "./timeline.js";
@@ -213,8 +217,16 @@ export function createRenderExecutor(options: PipelineOptions = {}): RenderExecu
           throw deterministic(why, "verify_failed");
         }
         checkpoint();
+        let preview: Awaited<ReturnType<typeof makeProxy>> | null = null;
+        try {
+          preview = await makeProxy(dir, OUTPUT_FILE, control, runOpts);
+        } catch (e) {
+          checkpoint();
+          ctx.logger.warn("Studio render preview failed", { renderId: job.id, error: e instanceof Error ? e.message : String(e) });
+        }
+        checkpoint();
         if (!(await control.uploading())) throw new RenderFailure("The render claim was lost.", "infra", "cancelled");
-        return { bytes: new Uint8Array(await readFile(outPath)) as Uint8Array<ArrayBuffer>, size };
+        return { bytes: new Uint8Array(await readFile(outPath)) as Uint8Array<ArrayBuffer>, size, preview };
       },
       options.statfs,
     );
@@ -243,6 +255,17 @@ export function createRenderExecutor(options: PipelineOptions = {}): RenderExecu
       size: output.size,
       sha256: sha256Hex(output.bytes),
     });
-    return { assetId };
+    // The asset is recorded: from here nothing fails the render.
+    let previewR2Key: string | null = null;
+    if (output.preview) {
+      try {
+        const previewKey = previewKeyFor(job.companyId, key);
+        await putObject(cfg, job.companyId, previewKey, output.preview.bytes, PREVIEW_MIME);
+        previewR2Key = previewKey;
+      } catch (e) {
+        ctx.logger.warn("Studio render preview upload failed", { renderId: job.id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { assetId, previewR2Key };
   };
 }
