@@ -7,6 +7,8 @@
  * `transitionIn` that overlaps the clip before it is joined with `xfade=fade` over the overlap (no overlap: it fades in from
  * black); gaps, the lead-in before the first clip and the tail up to the edit's end are black `color` segments. Every
  * `overlay` track is then laid over that base in track order, each clip at its centre offset x/y and fit scale.
+ * Keyframes (schema v2, D1d1): x/y/scale/rotate keys on a main or overlay clip are evaluated per frame from the shared
+ * `keyframes.ts` curve, in clip-local time (from the clip's `start`, transition overlap included), before xfade/overlay.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
@@ -15,6 +17,7 @@ import { StudioError } from "../errors.js";
 import { AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
+import { toFfmpegExpr } from "./keyframes.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform, type TransitionType } from "./timeline.js";
 
 /** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
@@ -61,6 +64,11 @@ export function filePath(path: string): string {
 
 const isIdentity = (t: Transform) => t.x === 0 && t.y === 0 && t.scale === 1 && t.rotate === 0;
 const hasCrop = (t: Transform) => t.crop.left + t.crop.top + t.crop.right + t.crop.bottom > 0;
+const keysOf = (clip: MediaClip, prop: "x" | "y" | "scale" | "rotate") => clip.keyframes?.[prop];
+/** Scale or rotate keys: the clip's size changes per frame. */
+const reshapes = (clip: MediaClip) => Boolean(keysOf(clip, "scale") || keysOf(clip, "rotate"));
+/** Any motion keys: the overlay position is evaluated per frame. */
+const animated = (clip: MediaClip) => reshapes(clip) || Boolean(keysOf(clip, "x") || keysOf(clip, "y"));
 
 class Graph {
   inputArgs: string[] = [];
@@ -105,18 +113,44 @@ class Graph {
   }
 
   /** User crop (fractions), rotation (canvas grows to fit, transparent corners) and fit-inside scale times `scale`. */
-  private shape(t: Transform): string[] {
+  private shape(t: Transform, fill = "none"): string[] {
     const { width, height } = this.doc.project;
     const out: string[] = ["format=yuva420p", ...this.crop(t)];
     // rotw()/roth() take the angle itself: `a` is not a variable inside ow/oh.
     const angle = `${num(t.rotate)}*PI/180`;
-    if (t.rotate !== 0) out.push(`rotate=a=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=none`);
+    if (t.rotate !== 0) out.push(`rotate=a=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=${fill}`);
     out.push(`scale=w=${num(width * t.scale)}:h=${num(height * t.scale)}:force_original_aspect_ratio=decrease:force_divisible_by=2`);
     return out;
   }
 
-  private overlayAt(t: Transform) {
-    return `x=(W-w)/2+${num(t.x)}:y=(H-h)/2+${num(t.y)}`;
+  /**
+   * Shape of a clip with scale/rotate keys; `offset` is the clip's local 0 on the filter clock (`t`). Only the last step
+   * changes size per frame. Rotate keys: fit the unrotated clip, turn it on a fixed diagonal canvas about its centre (so
+   * corners may leave the frame), then scale. Scale keys only: today's static shape at scale 1 (a static rotation keeps
+   * its rotated-box fit), then scale. Fill is `black@0`: `c=none` leaves the canvas corners undefined.
+   */
+  private keyedShape(clip: MediaClip, offset: number): string[] {
+    const { width, height } = this.doc.project;
+    const t = clip.transform;
+    const s = toFfmpegExpr(keysOf(clip, "scale"), t.scale, offset);
+    const scale = `scale=w='max(2,iw*(${s}))':h='max(2,ih*(${s}))':eval=frame`;
+    if (!keysOf(clip, "rotate")) return [...this.shape({ ...t, scale: 1 }, "black@0"), scale];
+    const r = toFfmpegExpr(keysOf(clip, "rotate"), t.rotate, offset);
+    return [
+      "format=yuva420p",
+      ...this.crop(t),
+      `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+      `rotate=a='(${r})*PI/180':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=black@0`,
+      scale,
+    ];
+  }
+
+  private overlayAt(clip: MediaClip, offset: number) {
+    const t = clip.transform;
+    if (!animated(clip)) return `x=(W-w)/2+${num(t.x)}:y=(H-h)/2+${num(t.y)}`;
+    const x = toFfmpegExpr(keysOf(clip, "x"), t.x, offset);
+    const y = toFfmpegExpr(keysOf(clip, "y"), t.y, offset);
+    return `x='(W-w)/2+${x}':y='(H-h)/2+${y}':eval=frame`;
   }
 
   /** One main-track clip as a full-frame yuv420p segment of exactly its timeline length. */
@@ -131,7 +165,7 @@ class Graph {
     const out = this.label("seg");
     const tail = ["format=yuv420p", "setsar=1", ...fades, `trim=duration=${num(length)}`];
     const t = clip.transform;
-    if (isIdentity(t)) {
+    if (isIdentity(t) && !animated(clip)) {
       // The common case: fit inside the frame, letterbox with black.
       const steps = [
         ...this.timing(clip, kind, 0),
@@ -143,11 +177,13 @@ class Graph {
       this.filters.push(`[${index}:v]${steps.join(",")}[${out}]`);
       return out;
     }
-    // Moved, scaled or rotated: lay it on its own black frame so any part outside the frame is clipped.
+    // Moved, scaled, rotated or keyframed: lay it on its own black frame so any part outside the frame is clipped.
+    // The segment starts at the clip's own 0, so keyframe offset is 0 (xfade later shifts the whole segment).
     const shaped = this.label("shp");
-    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...this.shape(t)].join(",")}[${shaped}]`);
+    const shape = reshapes(clip) ? this.keyedShape(clip, 0) : this.shape(t);
+    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...shape].join(",")}[${shaped}]`);
     const bg = this.black(length);
-    this.filters.push(`[${bg}][${shaped}]overlay=${this.overlayAt(t)}:eof_action=pass,${tail.join(",")}[${out}]`);
+    this.filters.push(`[${bg}][${shaped}]overlay=${this.overlayAt(clip, 0)}:eof_action=pass,${tail.join(",")}[${out}]`);
     return out;
   }
 
@@ -156,13 +192,15 @@ class Graph {
     if (clip.transitionIn) unsupported("overlay_transition");
     const { index, kind } = this.input(clip);
     const length = clipDuration(clip);
-    const steps = [...this.timing(clip, kind, clip.start), ...this.shape(clip.transform)];
+    // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
+    const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : this.shape(clip.transform);
+    const steps = [...this.timing(clip, kind, clip.start), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
     const shaped = this.label("ov");
     this.filters.push(`[${index}:v]${steps.join(",")}[${shaped}]`);
     const out = this.label("base");
-    this.filters.push(`[${base}][${shaped}]overlay=${this.overlayAt(clip.transform)}:eof_action=pass[${out}]`);
+    this.filters.push(`[${base}][${shaped}]overlay=${this.overlayAt(clip, clip.start)}:eof_action=pass[${out}]`);
     return out;
   }
 
@@ -240,10 +278,14 @@ export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: s
   const graph = buildVideoGraph(doc, sources, options);
   const audio = buildAudioGraph(doc, sources, graph.inputCount, { loudnorm: options.loudnorm });
   const filters = [...graph.filters, ...audio.filters];
+  // Per-frame shapes add filter threads; on a 16-core host the default (one per core) pushes the address space past the
+  // 6 GiB `--as` cap in ffmpeg.ts. Capped for keyframed edits only, so plain edits keep their argv byte-identical.
+  const keyed = doc.tracks.some((track) => (track.kind === "video" || track.kind === "overlay") && (track.clips as MediaClip[]).some(animated));
   const args = [
     "-hide_banner", "-nostdin", "-y",
     ...graph.inputArgs,
     ...audio.inputArgs,
+    ...(keyed ? ["-filter_complex_threads", "4"] : []),
     "-filter_complex_script", GRAPH_FILE,
     "-map", `[${graph.outLabel}]`,
     ...(audio.outLabel ? ["-map", `[${audio.outLabel}]`, ...AUDIO_ENCODER_ARGS] : ["-an"]),
