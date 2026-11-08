@@ -3,6 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   archiveVideoEdit,
   createVideoEdit,
+  deleteVideoEdit,
   getVideoEdit,
   listEditVersions,
   listVideoEdits,
@@ -129,6 +130,40 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect(await listVideoEdits(ctx, CO, { client: "company:acme" })).toEqual([]);
     await expect(getVideoEdit(ctx, CO, acme.id)).rejects.toThrow(/not found/);
     await expect(saveVideoEdit(ctx, CO, { editId: acme.id, baseRevision: 2, doc: { tracks: [] } }, USER)).rejects.toThrow(/not found/);
+  });
+
+  it("deletes an edit and its versions; refuses while a render is active or for another client/company; keeps rendered assets", async () => {
+    await addAsset("asset-own", CO, null);
+    await addAsset("asset-rendered", CO, null);
+    const own = await createVideoEdit(ctx, CO, { title: "Own work" }, USER);
+    const acme = await createVideoEdit(ctx, CO, { title: "Acme ad" }, USER);
+    await setClient(acme.id, { kind: "company", id: "acme" });
+    await saveEditVersion(ctx, CO, { editId: own.id, name: "v1" }, USER);
+    const ns = pg.db.namespace;
+    const addRender = (id: string, editId: string, status: string, assetId: string | null = null) =>
+      pg.db.execute(`INSERT INTO ${ns}.video_renders (id, company_id, edit_id, edit_revision, doc, preset, status, asset_id) VALUES ($1, $2, $3, 1, '{}'::jsonb, '9:16', $4, $5)`, [id, CO, editId, status, assetId]);
+
+    await expect(deleteVideoEdit(ctx, OTHER_CO, own.id)).rejects.toMatchObject({ code: "unknown_edit" });
+    await expect(deleteVideoEdit(ctx, CO, acme.id, "own")).rejects.toMatchObject({ code: "wrong_client" });
+    await expect(deleteVideoEdit(ctx, CO, own.id, "company:acme")).rejects.toMatchObject({ code: "wrong_client" });
+    expect(await listVideoEdits(ctx, CO, {})).toHaveLength(2);
+
+    for (const [i, status] of ["queued", "rendering", "uploading"].entries()) {
+      await addRender(`r${i}`, own.id, status);
+      await expect(deleteVideoEdit(ctx, CO, own.id)).rejects.toMatchObject({ code: "render_active" });
+      await pg.db.execute(`UPDATE ${ns}.video_renders SET status = 'cancelled' WHERE id = $1`, [`r${i}`]);
+    }
+    expect(await listEditVersions(ctx, CO, own.id)).toHaveLength(1);
+
+    await addRender("done", own.id, "succeeded", "asset-rendered");
+    expect(await deleteVideoEdit(ctx, CO, own.id, "own")).toEqual({ id: own.id, deleted: true });
+    expect(await pg.db.query(`SELECT id FROM ${ns}.video_edit_versions WHERE edit_id = $1`, [own.id])).toEqual([]);
+    await expect(getVideoEdit(ctx, CO, own.id)).rejects.toThrow(/not found/);
+    await expect(deleteVideoEdit(ctx, CO, own.id)).rejects.toMatchObject({ code: "unknown_edit" });
+    const kept = await pg.db.query(`SELECT id FROM ${ns}.assets WHERE id = 'asset-rendered'`);
+    expect(kept).toHaveLength(1);
+    expect((await listVideoEdits(ctx, CO, {})).map((e) => e.title)).toEqual(["Acme ad"]);
+    expect(await deleteVideoEdit(ctx, CO, acme.id, "company:acme")).toMatchObject({ deleted: true });
   });
 
   it("saves versions of the saved timeline, at most MAX_EDIT_VERSIONS per edit", async () => {

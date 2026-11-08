@@ -15,7 +15,7 @@ import { objectUrl } from "../storage.js";
 import { applyOps } from "./ops.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
 import { cancelRender, enqueueRender, getRender, type RenderJob } from "./render-queue.js";
-import { assertAssets, createVideoEdit, editAssetIds, getVideoEdit, listVideoEdits, saveVideoEdit, type EditActor } from "./store.js";
+import { assertAssets, createVideoEdit, deleteVideoEdit, editAssetIds, getVideoEdit, listVideoEdits, saveVideoEdit, type EditActor } from "./store.js";
 import { editDuration, LIMITS, normalizeEdit } from "./timeline.js";
 
 /** At most this many assets in one "create from assets" call. */
@@ -216,4 +216,11 @@ export async function cancelRenderAction(ctx: PluginContext, companyId: string, 
   const result = await cancelRender(ctx, companyId, id(params.renderId));
   if (result.cancelled) ctx.logger.info("Studio video render cancelled", { companyId, renderId: result.render.id, wasRunning: Boolean(result.running), by: actor.agentId ?? actor.userId ?? null });
   return { render: renderOut(result.render), cancelled: result.cancelled };
+}
+
+/** `video-edit-delete`: removes the edit and its saved versions; refused while a render of it is queued or running. Rendered assets stay. */
+export async function deleteEditAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
+  const result = await deleteVideoEdit(ctx, companyId, id(params.editId), params.client);
+  ctx.logger.info("Studio video edit deleted", { companyId, editId: result.id, by: actor.agentId ?? actor.userId ?? null });
+  return result;
 }

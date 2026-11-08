@@ -5,7 +5,7 @@
  */
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
-import { applyOpsAction, cancelRenderAction, createEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
+import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-create",
@@ -15,6 +15,7 @@ export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-render",
   "video-edit-render-status",
   "video-edit-cancel-render",
+  "video-edit-delete",
 ] as const;
 
 export const isVideoEditTool = (name: string): boolean => (VIDEO_EDIT_TOOL_NAMES as readonly string[]).includes(name);
@@ -47,6 +48,8 @@ export async function runVideoEditTool(
       return renderStatusAction(ctx, companyId, params);
     case "video-edit-cancel-render":
       return cancelRenderAction(ctx, companyId, params, actor);
+    case "video-edit-delete":
+      return deleteEditAction(ctx, companyId, params, actor);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }

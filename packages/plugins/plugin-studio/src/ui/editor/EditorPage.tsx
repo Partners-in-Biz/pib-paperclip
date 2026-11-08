@@ -2,9 +2,9 @@
  * The `studio-editor` page (PAR-8313): `?edit=<id>` loads a video edit and shows the player, timeline and render
  * panel around one editor store. Later tickets fill the three panels and never touch this file.
  */
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { useHostContext, useHostLocation, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Page, PageMessage } from "@partnersinbiz/pib-plugin-ui";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useHostContext, useHostLocation, useHostNavigation, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import { Button, EmptyState, errorText, Page, PageMessage } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "../action.js";
 import { clipCount, createEditorStore, type EditorApi } from "./editor-store.js";
 import { Player } from "./Player.js";
@@ -16,7 +16,11 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? host.companyId ?? null;
   const { search } = useHostLocation();
   const editId = new URLSearchParams(search).get("edit");
+  const nav = useHostNavigation();
   const getAction = useStudioAction("video-edit-get");
+  const deleteAction = useStudioAction("video-edit-delete");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const opsAction = useStudioAction("video-edit-apply-ops");
   // Actions go through refs so the store is built once per company, not once per render.
   const actions = useRef({ getAction, opsAction });
@@ -35,8 +39,22 @@ export function StudioEditorPage({ context }: PluginPageProps) {
 
   if (!companyId) return <Page accent="studio" title="Video editor" description="Pick a company first.">{null}</Page>;
   const title = state.edit?.name || "Video editor";
+  const remove = async () => {
+    if (!editId || !window.confirm(`Delete "${title}"? Its timeline and saved versions are removed for everyone. Videos it already rendered stay in the library. This can't be undone.`)) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAction({ companyId, editId });
+      nav.navigate("/studio");
+    } catch (err) {
+      setDeleteError(errorText(err));
+      setDeleting(false);
+    }
+  };
+  const message = deleteError ?? state.toast ?? undefined;
+  const deleteButton = state.status === "ready" ? <Button disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete"}</Button> : null;
   return (
-    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={state.toast ?? undefined} messageTone="warning" actions={state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : undefined}>
+    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={message} messageTone="warning" actions={<>{state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : null}{deleteButton}</>}>
       {state.status === "idle" || state.status === "loading" ? <PageMessage message="Loading the video…" /> : null}
       {state.status === "error" ? <EmptyState title="This video can't be opened" description={state.error ?? "Try again."} /> : null}
       {state.status === "ready" ? (

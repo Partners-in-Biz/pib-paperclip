@@ -5,7 +5,7 @@ import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsFor
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
-import { applyOpsAction, cancelRenderAction, createEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
+import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction } from "./video-edit/actions.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -425,6 +425,10 @@ const plugin = definePlugin({
     action("video-edit-cancel-render", async (params, context) => {
       const me = await videoEditor(context);
       return cancelRenderAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-delete", async (params, context) => {
+      const me = await videoEditor(context);
+      return deleteEditAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     // Versions and card comments: anyone in the company reads them; only editors save, restore or comment.
     pageData("canvas-versions", (companyId, p) => listVersions(ctx, companyId, String(p.canvasId ?? "")).then((versions) => ({ versions })));
