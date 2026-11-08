@@ -144,3 +144,28 @@ describe("paired image + video prompts", () => {
     for (const name of placeholdersOf(JSON.stringify(t.spec))) expect(t.fields?.some((f) => f.name === name && f.example), name).toBe(true);
   });
 });
+
+describe("nine-style paired prompt pack", () => {
+  const pack = PROMPT_TEMPLATES.filter((x) => x.id.startsWith("style-"));
+  it("has the nine styles, 9:16, in a category the gallery shows", () => {
+    expect(pack).toHaveLength(9);
+    for (const t of pack) {
+      expect(t.ratio).toBe("9:16");
+      expect(TEMPLATE_CATEGORIES.some((c) => c.id === t.category), t.id).toBe(true);
+    }
+  });
+  it("fills from its examples to valid JSON for both prompts", () => {
+    for (const t of pack) {
+      const values = Object.fromEntries((t.fields ?? []).map((f) => [f.name, f.example]));
+      const { image_prompt, video_prompt } = buildPairedPrompts(t, values);
+      expect(() => JSON.parse(image_prompt), t.id).not.toThrow();
+      expect(() => JSON.parse(video_prompt), t.id).not.toThrow();
+      expect(image_prompt + video_prompt, t.id).not.toContain("{{");
+      expect(Array.isArray(JSON.parse(video_prompt).sequence)).toBe(true);
+      for (const name of placeholdersOf(JSON.stringify(t.spec))) expect(t.fields?.some((f) => f.name === name), `${t.id} ${name}`).toBe(true);
+    }
+  });
+  it("uses no brand words in titles or prompt text", () => {
+    for (const t of pack) expect(JSON.stringify([t.title, t.tagline, t.prompt, t.spec, t.examples, t.fields]), t.id).not.toMatch(/lego|pixar|simpsons|disney/i);
+  });
+});
