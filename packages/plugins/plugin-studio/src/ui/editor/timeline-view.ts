@@ -113,6 +113,103 @@ export function trimResult(clip: Clip, edge: TrimEdge, deltaSeconds: number): Tr
   return { start, end: clipEnd(clip), ops: delta > 0 ? [trim, move] : [move, trim] };
 }
 
+/**
+ * What "Split at playhead" cuts (PAR-8317): the selected clip when the playhead is inside it, else the top picture clip
+ * under the playhead. Null when no clip is there or a part would be shorter than MIN_CLIP_SECONDS.
+ */
+export function splitTarget(doc: EditDoc | null, selectedClipId: string | null, playhead: number): { clipId: string; at: number } | null {
+  const at = ms(playhead);
+  let clip: Clip | null = null;
+  if (selectedClipId) {
+    for (const track of doc?.tracks ?? []) for (const c of track.clips as Clip[]) if (c.id === selectedClipId && at > c.start && at < clipEnd(c)) clip = c;
+  }
+  clip ??= clipUnderPlayhead(doc, at)?.clip ?? null;
+  if (!clip || at - clip.start < MIN_CLIP_SECONDS || clipEnd(clip) - at < MIN_CLIP_SECONDS) return null;
+  return { clipId: clip.id, at };
+}
+
+export interface ReorderResult { start: number; ops: Record<string, unknown>[] }
+
+/**
+ * Dragging a clip's body by `deltaSeconds` on its lane moves it to a new place in the track's order (PAR-8317). The
+ * drop slot is where the dragged clip's centre lands among the other clips' centres. The clips it passes shift by its
+ * length (gaps between them are kept) and it takes the freed slot, so the track's total length is unchanged.
+ * The worker checks every op on its own, so one batch: `delete` the dragged clip (frees its space), `move` the passed
+ * clips in an order where no step overlaps a neighbour, then `addClip` the same clip (same id and props) at its new
+ * start. Null when the order is unchanged.
+ */
+export function reorderResult(trackId: string, clips: readonly Clip[], clipId: string, deltaSeconds: number): ReorderResult | null {
+  const sorted = [...clips].sort((a, b) => a.start - b.start);
+  const i = sorted.findIndex((c) => c.id === clipId);
+  if (i < 0 || !Number.isFinite(deltaSeconds)) return null;
+  const dragged = sorted[i];
+  const len = clipLength(dragged);
+  const others = sorted.filter((c) => c.id !== clipId);
+  const centre = dragged.start + deltaSeconds + len / 2;
+  const k = others.filter((c) => c.start + clipLength(c) / 2 < centre).length;
+  if (k === i) return null;
+  const moves: Record<string, unknown>[] = [];
+  let start: number;
+  if (k < i) {
+    // Moving earlier: others[k..i-1] shift right, last first, into the space the dragged clip left.
+    start = others[k].start;
+    for (let j = i - 1; j >= k; j--) moves.push({ op: "move", clipId: others[j].id, start: ms(others[j].start + len) });
+  } else {
+    // Moving later: others[i..k-1] shift left, first first.
+    for (let j = i; j < k; j++) moves.push({ op: "move", clipId: others[j].id, start: ms(others[j].start - len) });
+    start = ms(clipEnd(others[k - 1]) - len);
+  }
+  return { start, ops: [{ op: "delete", clipId }, ...moves, { op: "addClip", trackId, clip: { ...dragged, start } }] };
+}
+
+/** How long a still image added from the Library shows: the same as the worker's IMAGE_SECONDS (video-edit/actions.ts). */
+export const IMAGE_SECONDS = 3;
+/** The worker's LIMITS.maxDuration and LIMITS.maxClipsPerTrack (video-edit/timeline.ts), copied so no server code loads. */
+export const MAX_EDIT_SECONDS = 180;
+export const MAX_CLIPS_PER_TRACK = 200;
+
+/** `<base>-1`, `<base>-2`, ...: the first id no track or clip uses. */
+export function freeId(doc: EditDoc | null, base: string): string {
+  const used = new Set<string>();
+  for (const t of doc?.tracks ?? []) {
+    used.add(t.id);
+    for (const c of t.clips as Clip[]) used.add(c.id);
+  }
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n++) if (!used.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+export interface LibraryPick { id: string; kind: string; version: number; /** Video length in seconds; ignored for images. */ seconds?: number }
+
+/**
+ * "Add clip" (join, PAR-8317): the ops batch that puts a Library video or image at the end of the first video track,
+ * creating that track first when the edit has none. Images show IMAGE_SECONDS; a video is used whole, cut to fit the
+ * edit's 180 s limit. Returns `{ error }` when it can't be added.
+ */
+export function addClipOps(doc: EditDoc | null, pick: LibraryPick): { ops: Record<string, unknown>[]; clipId: string; start: number } | { error: string } {
+  if (pick.kind !== "image" && pick.kind !== "video") return { error: "Only videos and pictures can go on the video track." };
+  const length = pick.kind === "image" ? IMAGE_SECONDS : Math.floor((pick.seconds ?? 0) * 1000) / 1000;
+  if (!(length > 0)) return { error: "Studio couldn't read how long this video is." };
+  const track = doc?.tracks.find((t) => t.kind === "video") ?? null;
+  const ops: Record<string, unknown>[] = [];
+  let trackId: string;
+  let start = 0;
+  if (track) {
+    trackId = track.id;
+    if (track.clips.length >= MAX_CLIPS_PER_TRACK) return { error: `A track holds at most ${MAX_CLIPS_PER_TRACK} clips.` };
+    for (const c of track.clips as Clip[]) start = Math.max(start, clipEnd(c));
+  } else {
+    trackId = freeId(doc, "video");
+    ops.push({ op: "addTrack", track: { id: trackId, kind: "video" }, index: 0 });
+  }
+  const room = ms(MAX_EDIT_SECONDS - start);
+  if (room < MIN_CLIP_SECONDS) return { error: `The video track is full: an edit is at most ${MAX_EDIT_SECONDS} s.` };
+  const clipId = freeId(doc, `clip-${clipCountOf(doc) + 1}`);
+  ops.push({ op: "addClip", trackId, clip: { id: clipId, assetId: pick.id, version: pick.version, in: 0, out: Math.min(length, room), start } });
+  return { ops, clipId, start };
+}
+const clipCountOf = (doc: EditDoc | null) => (doc?.tracks ?? []).reduce((n, t) => n + t.clips.length, 0);
+
 /** Ruler step: the smallest of 1, 2, 5, 10, 15, 30, 60 s that puts ticks at least `minGapPx` apart. */
 export function tickStep(pxPerSecond: number, minGapPx = 60): number {
   for (const step of [1, 2, 5, 10, 15, 30, 60]) if (step * pxPerSecond >= minGapPx) return step;
