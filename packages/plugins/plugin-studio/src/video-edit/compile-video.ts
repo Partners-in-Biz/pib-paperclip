@@ -15,7 +15,7 @@ import { StudioError } from "../errors.js";
 import { AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
-import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform } from "./timeline.js";
+import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform, type TransitionType } from "./timeline.js";
 
 /** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
 export interface CompileInput { path: string; kind: "video" | "image" | "audio"; hasAudio?: boolean }
@@ -167,7 +167,7 @@ class Graph {
   }
 
   /** Joins segments in order; `pending` collects a concat run until an xfade (or the end) closes it. */
-  join(parts: { label: string; xfade: null | { offset: number; duration: number } }[]): string {
+  join(parts: { label: string; xfade: null | { type: TransitionType; offset: number; duration: number } }[]): string {
     let acc: string | null = null;
     let pending: string[] = [];
     const flush = () => {
@@ -188,7 +188,7 @@ class Graph {
       }
       flush();
       const out = this.label("xf");
-      this.filters.push(`[${acc}][${part.label}]xfade=transition=fade:duration=${num(part.xfade.duration)}:offset=${num(part.xfade.offset)}[${out}]`);
+      this.filters.push(`[${acc}][${part.label}]xfade=transition=${part.xfade.type}:duration=${num(part.xfade.duration)}:offset=${num(part.xfade.offset)}[${out}]`);
       acc = out;
     }
     flush();
@@ -210,7 +210,7 @@ export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: C
   let end = 0; // timeline end of what is joined so far
   for (const clip of main) {
     const overlap = ms(end - clip.start);
-    const xfade = clip.transitionIn && overlap > EPS ? { offset: clip.start, duration: overlap } : null;
+    const xfade = clip.transitionIn && overlap > EPS ? { type: clip.transitionIn.type, offset: clip.start, duration: overlap } : null;
     if (overlap > EPS && !xfade) unsupported("overlapping_clips");
     if (clip.start - end > EPS) {
       parts.push({ label: g.black(clip.start - end), xfade: null });
