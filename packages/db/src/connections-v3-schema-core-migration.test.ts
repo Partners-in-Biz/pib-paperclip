@@ -34,42 +34,38 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     `;
     expect(chatForeignKey?.definition).toBeTruthy();
     await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
-
-    // Later migrations (0290 browser-use, 0295/0296 app snapshots and syncs, 0299
-    // AI pools) add FKs on connection_grants and on the composite
-    // tool_connections key that 0182 recreates. Rewind them by discovery, so a
-    // new dependent table never needs a CASCADE here, and restore them after.
-    // The two-column filter may match FKs unrelated to the 0182 key. That is
-    // harmless: every FK is restored verbatim.
-    const laterForeignKeys = await sql<{ table: string; name: string; definition: string }[]>`
-      SELECT conrelid::regclass::text AS "table", conname AS name, pg_get_constraintdef(oid) AS definition
-      FROM pg_constraint
-      WHERE contype = 'f'
-        AND (confrelid = 'connection_grants'::regclass
-          OR (confrelid = 'tool_connections'::regclass AND array_length(conkey, 1) = 2))
-        AND conrelid::regclass::text NOT IN (
-          'connection_grants', 'connection_grant_members', 'connection_grant_delegations',
-          'ai_provider_defaults', 'ai_connection_defaults', 'chat_endpoints'
-        )
-      ORDER BY conrelid::regclass::text, conname
+    // Project consent is another later grant consumer; rewind only its known FK.
+    const [projectForeignKey] = await sql<{ definition: string }[]>`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid = 'projects'::regclass
+        AND conname = 'projects_git_authorization_grant_id_connection_grants_id_fk'
     `;
-    expect(laterForeignKeys.map((fk) => fk.name)).toEqual(
-      expect.arrayContaining([
-        "browser_use_sessions_grant_id_connection_grants_id_fk",
-        "browser_use_settings_grant_id_connection_grants_id_fk",
-      ]),
-    );
-    for (const { table, name } of laterForeignKeys) {
-      await sql.unsafe(`ALTER TABLE ${table} DROP CONSTRAINT "${name}"`);
-    }
+    expect(projectForeignKey?.definition).toBeTruthy();
+    await sql`ALTER TABLE "projects" DROP CONSTRAINT "projects_git_authorization_grant_id_connection_grants_id_fk"`;
 
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     // AI defaults arrive in 0273/0277 and depend on the composite grant key
     // from 0232. Rewind those tables before recreating the 0182 grant schema.
+    // Router pins/cursors depend on pools, whose composite connection FK also
+    // arrives after 0182. Rewind these empty fixture tables in dependency order.
+    await sql`DROP TABLE IF EXISTS "ai_connection_task_pins"`;
+    await sql`DROP TABLE IF EXISTS "ai_connection_router_cursors"`;
+    await sql`DROP TABLE IF EXISTS "ai_connection_pools"`;
     await sql`DROP TABLE IF EXISTS "ai_provider_defaults"`;
     await sql`DROP TABLE IF EXISTS "ai_connection_defaults"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
+    // Browser Use is a later grant consumer; rewind its empty fixture tables too.
+    await sql`DROP TABLE IF EXISTS "browser_use_browsers"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_runs"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_sessions"`;
+    await sql`DROP TABLE IF EXISTS "browser_use_settings"`;
+    // Managed-account observations are later consumers of the same connection key.
+    await sql`DROP TABLE IF EXISTS "tool_connection_app_syncs"`;
+    await sql`DROP TABLE IF EXISTS "tool_connection_app_snapshots"`;
+    // Subscription reporting adds a later grant binding; rewind the empty
+    // fixture table before recreating grants, preserving production FK checks.
+    await sql`DROP TABLE IF EXISTS "ai_subscription_connections"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;
@@ -95,9 +91,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql.unsafe(
       `ALTER TABLE "chat_endpoints" ADD CONSTRAINT "chat_endpoints_company_connection_fk" ${chatForeignKey!.definition}`,
     );
-    for (const { table, name, definition } of laterForeignKeys) {
-      await sql.unsafe(`ALTER TABLE ${table} ADD CONSTRAINT "${name}" ${definition}`);
-    }
+    await sql.unsafe(
+      `ALTER TABLE "projects" ADD CONSTRAINT "projects_git_authorization_grant_id_connection_grants_id_fk" ${projectForeignKey!.definition}`,
+    );
 
     const [connection] = await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
       SELECT "uid", "ownership", "transport", "auth_kind" FROM "tool_connections" WHERE "id" = ${connectionId}
@@ -123,9 +119,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     `).rejects.toMatchObject({ code: "23514" });
 
     await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
-    for (const { table, name } of laterForeignKeys) {
-      await sql.unsafe(`ALTER TABLE ${table} DROP CONSTRAINT "${name}"`);
-    }
+    await sql`ALTER TABLE "projects" DROP CONSTRAINT "projects_git_authorization_grant_id_connection_grants_id_fk"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;

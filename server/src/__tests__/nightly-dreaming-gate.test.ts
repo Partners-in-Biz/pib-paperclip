@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
@@ -59,7 +60,7 @@ describeEmbeddedPostgres("nightly dreaming generic gates", () => {
         defaultResponsibleUserId: "responsible-user",
         requireBoardApprovalForNewAgents: false,
       });
-      await agentService(db).create(companyId, {
+      await createAgentLifecycle(db).requestHire(companyId, {
         name: "CEO",
         role: "ceo",
         status: "idle",

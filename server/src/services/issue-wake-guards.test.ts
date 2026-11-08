@@ -5,7 +5,9 @@ import {
   isTicketRunCapExempt,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
+  readTicketRunsPerHourCap,
   TICKET_RUNS_PER_HOUR_CAP,
+  wakeLoopFlagBody,
 } from "./issue-wake-guards.js";
 
 const assignee = "agent-assignee";
@@ -136,6 +138,25 @@ describe("evaluateTicketHourlyRunCap", () => {
         alreadyFlaggedInWindow: false,
       }).allow,
     ).toBe(true);
+  });
+});
+
+describe("readTicketRunsPerHourCap", () => {
+  it("defaults to 3 and reads PIB_TICKET_RUNS_PER_HOUR_CAP (integer 1..100)", () => {
+    expect(readTicketRunsPerHourCap({})).toBe(TICKET_RUNS_PER_HOUR_CAP);
+    expect(readTicketRunsPerHourCap({ PIB_TICKET_RUNS_PER_HOUR_CAP: "6" })).toBe(6);
+    expect(readTicketRunsPerHourCap({ PIB_TICKET_RUNS_PER_HOUR_CAP: " 100 " })).toBe(100);
+    for (const bad of ["0", "101", "-1", "2.5", "six", ""]) {
+      expect(readTicketRunsPerHourCap({ PIB_TICKET_RUNS_PER_HOUR_CAP: bad })).toBe(3);
+    }
+  });
+
+  it("caps at the env value", () => {
+    const maxRuns = readTicketRunsPerHourCap({ PIB_TICKET_RUNS_PER_HOUR_CAP: "6" });
+    expect(evaluateTicketHourlyRunCap({ runsStartedInWindow: 5, alreadyFlaggedInWindow: false, maxRuns }).allow).toBe(true);
+    expect(evaluateTicketHourlyRunCap({ runsStartedInWindow: 6, alreadyFlaggedInWindow: false, maxRuns }))
+      .toEqual({ allow: false, flag: true, reason: "capped" });
+    expect(wakeLoopFlagBody(6)).toContain("already had 6 runs");
   });
 });
 
