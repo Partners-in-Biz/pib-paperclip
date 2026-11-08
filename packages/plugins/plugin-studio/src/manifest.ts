@@ -51,6 +51,12 @@ const manifest: PaperclipPluginManifestV1 = {
       schedule: "* * * * *",
     },
     {
+      jobKey: "process-renders",
+      displayName: "Process video renders",
+      description: "Starts the next queued video render, keeps the running one alive and recovers renders a stopped worker left behind.",
+      schedule: "* * * * *",
+    },
+    {
       jobKey: "sweep-local-files",
       displayName: "Remove local copies",
       description: "Removes the local copies of assets that agents opened more than a day ago.",
