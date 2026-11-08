@@ -29,8 +29,17 @@ export function instanceConfigSchema(): JsonSchema {
       },
       xai: {
         type: "object",
-        title: "xAI speech to text",
-        properties: { apiKey: secretField("API key", "console.x.ai key for auto-captions (grok-voice-transcribe). The Voice plugin's key works here too.") },
+        title: "xAI voice",
+        properties: { apiKey: secretField("API key", "console.x.ai key for voice: auto-captions (grok-voice-transcribe) and voiceover. The Voice plugin's key works here too.") },
+      },
+      providers: {
+        type: "object",
+        title: "Voice providers",
+        description: "Which provider each voice job uses unless the job names one.",
+        properties: {
+          stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
+          tts: { type: "string", title: "Text to speech", enum: ["xai"], default: "xai" },
+        },
       },
     },
   };
@@ -68,7 +77,19 @@ export class StudioConfig {
 
   async xaiKey(): Promise<string> {
     const key = await (await this.secrets).get("xai.apiKey");
-    if (!key) throw new StudioError("Auto-captions need an xAI key in Studio's plugin settings.", "not_configured");
+    if (!key) throw new StudioError("Voice needs an xAI key: set it under \"xAI voice\" in Studio's plugin settings.", "not_configured");
     return key;
+  }
+
+  /** The company default provider key for a capability, as set in the plugin settings (undefined when unset). */
+  async providerDefault(cap: "stt" | "tts"): Promise<string | undefined> {
+    const providers = ((await this.raw).providers ?? {}) as Record<string, unknown>;
+    const v = providers[cap];
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  }
+
+  /** Whether a secret reference resolves to a value. */
+  async hasSecret(path: string): Promise<boolean> {
+    return Boolean(await (await this.secrets).get(path).catch(() => null));
   }
 }

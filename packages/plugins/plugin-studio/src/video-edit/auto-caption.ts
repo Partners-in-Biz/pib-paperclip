@@ -14,12 +14,12 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { scopeOfRow } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "../config.js";
 import { StudioError } from "../errors.js";
-import { fakeProviderOn } from "../provider.js";
+import { resolveProvider, sttFor } from "../providers/registry.js";
 import { applyOpsAction } from "./actions.js";
 import { runContained } from "./ffmpeg.js";
 import { resolveInputs, type ResolvedInput } from "./render-pipeline.js";
 import { getVideoEdit, type EditActor } from "./store.js";
-import { fakeSpeechToText, xaiSpeechToText, type SpeechToText, type SttWord } from "./stt.js";
+import type { SpeechToText, SttWord } from "./stt.js";
 import { CAPTION_STYLES, LIMITS, type CaptionClip, type CaptionStyle, type CaptionWord, type EditDoc, type MediaClip } from "./timeline.js";
 import { downloadObjectToWorkdir, withRenderWorkdir } from "./workdir.js";
 
@@ -161,12 +161,12 @@ async function extractClipAudio(ctx: PluginContext, companyId: string, input: Re
 }
 
 export interface CaptionDeps {
-  stt?: (ctx: PluginContext, companyId: string) => Promise<SpeechToText>;
+  stt?: (ctx: PluginContext, companyId: string, provider?: string) => Promise<SpeechToText>;
   extract?: (ctx: PluginContext, companyId: string, input: ResolvedInput, from: number, span: number) => Promise<Uint8Array>;
 }
 
-async function defaultStt(ctx: PluginContext, companyId: string): Promise<SpeechToText> {
-  return fakeProviderOn() ? fakeSpeechToText() : xaiSpeechToText(await new StudioConfig(ctx, companyId).xaiKey());
+async function defaultStt(ctx: PluginContext, companyId: string, provider?: string): Promise<SpeechToText> {
+  return sttFor(provider, new StudioConfig(ctx, companyId));
 }
 
 /** `video-edit-caption`: speech in clip `clipId` becomes captions on a caption track, saved at `baseRevision`. */
@@ -179,6 +179,8 @@ export async function captionClipAction(ctx: PluginContext, companyId: string, p
   if (!CAPTION_STYLES.includes(style)) bad(`style must be one of ${CAPTION_STYLES.join(", ")}.`);
   const language = typeof params.language === "string" && params.language.trim() ? params.language.trim() : undefined;
   if (language && !LANGUAGE.test(language)) bad("language must be a code like en or af.");
+  const provider = typeof params.provider === "string" && params.provider.trim() ? params.provider.trim() : undefined;
+  if (provider) resolveProvider("stt", provider);
   const trackId = typeof params.trackId === "string" && params.trackId.trim() ? params.trackId.trim() : undefined;
 
   const edit = await getVideoEdit(ctx, companyId, String(params.editId ?? "").trim());
@@ -198,7 +200,7 @@ export async function captionClipAction(ctx: PluginContext, companyId: string, p
   if (input.kind !== "video") bad("A picture has no sound to caption; pick a video or sound clip.");
   const span = ms(clip.out - clip.in);
   const audio = await (deps.extract ?? extractClipAudio)(ctx, companyId, input, clip.in, span);
-  const stt = await (deps.stt ?? defaultStt)(ctx, companyId);
+  const stt = await (deps.stt ?? defaultStt)(ctx, companyId, provider);
   const heard = await stt.transcribe({ audio, mimeType: "audio/wav", language });
   const words = timelineWords(heard.words, clip);
   const plan = captionOps(edit.doc, clipId, words, { trackId, style });

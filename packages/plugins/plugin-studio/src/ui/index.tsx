@@ -70,6 +70,7 @@ interface Overview {
   period: string;
   companyUsed: number;
   balance?: Balance | null;
+  providers?: Array<{ capability: "stt" | "tts"; provider: string; label: string; configured: boolean }>;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
@@ -1157,6 +1158,18 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
             title="Credits by client"
             items={data.clientUsage.filter((c) => c.used > 0).sort((a, b) => b.used - a.used).map((c) => ({ label: data.clients.find((k) => k.scopeKey === c.scopeKey)?.name ?? c.scopeKey, value: roundCredits(c.used) }))}
           />
+        </Section>
+      ) : null}
+      {data.providers?.length ? (
+        <Section title="Providers">
+          {data.providers.map((p) => (
+            <div key={p.capability} style={{ ...row, padding: "4px 0" }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                {p.capability === "stt" ? "Speech to text" : "Text to speech"}: {p.label} - {p.configured ? "key set" : "not set"}
+              </span>
+            </div>
+          ))}
+          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
         </Section>
       ) : null}
       <Section title="Monthly credit caps">
