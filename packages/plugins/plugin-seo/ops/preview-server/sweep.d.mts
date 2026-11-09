@@ -10,3 +10,10 @@ export function chromiumEnv(dir: string, base?: NodeJS.ProcessEnv): NodeJS.Proce
 export function domArgs(dir: string, url: string): string[];
 export function shotArgs(dir: string, url: string, file: string, mobile?: boolean): string[];
 export function findChrome(root: string, explicit?: string): Promise<string>;
+export function renderArgs(dir: string, url: string, proxyPort: number): string[];
+export function isPublicAddress(ip: string): boolean;
+export function lookupAll(host: string): Promise<string[]>;
+export type Resolver = (host: string) => Promise<string[]>;
+export function publicAddresses(host: string, resolve?: Resolver, isPublic?: (ip: string) => boolean): Promise<string[]>;
+export const ALLOWED_PORTS: readonly number[];
+export function checkRenderUrl(url: string, resolve?: Resolver): Promise<{ url: string; host: string; port: number; addresses: string[] }>;

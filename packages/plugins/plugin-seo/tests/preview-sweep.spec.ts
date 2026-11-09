@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { chromiumEnv, domArgs, findChrome, makeProfile, PROFILE_NAME, removeProfile, SHOT_MAX_AGE_MS, SHOT_NAME, shotArgs, sweepProfiles, sweepShots } from "../ops/preview-server/sweep.mjs";
+import { chromiumEnv, domArgs, findChrome, makeProfile, PROFILE_NAME, removeProfile, renderArgs, SHOT_MAX_AGE_MS, SHOT_NAME, shotArgs, sweepProfiles, sweepShots } from "../ops/preview-server/sweep.mjs";
 
 const roots: string[] = [];
 function scratch(): string {
@@ -145,9 +145,19 @@ describe("how Chromium is run", () => {
     expect(shot).toEqual(expect.arrayContaining(["--window-size=1280,3200", "--hide-scrollbars", "--screenshot=/tmp/s/t-live.png"]));
     expect(shot.some((a) => a.startsWith("--user-agent="))).toBe(false);
     expect(dom).toContain("--dump-dom");
+    expect(dom).toContain("--window-size=1280,3200");
     const phone = shotArgs(dir, "https://x.test/", "/tmp/s/t-live-m.png", true);
     expect(phone).toContain("--window-size=390,3000");
     expect(phone.find((a) => a.startsWith("--user-agent="))).toMatch(/iPhone/);
+  });
+
+  it("renderArgs sends everything through the egress proxy at desktop width (PAR-8798)", () => {
+    const dir = "/tmp/p/p-abc123";
+    const args = renderArgs(dir, "https://x.test/", 41234);
+    expect(args).toEqual(expect.arrayContaining([...domArgs(dir, "https://x.test/"), "--window-size=1280,3200", "--proxy-server=http://127.0.0.1:41234", "--proxy-bypass-list=<-loopback>", "--disable-quic"]));
+    expect(args.at(-1)).toBe("https://x.test/");
+    expect(args.filter((a) => a.startsWith("--proxy-server="))).toHaveLength(1);
+    for (const bad of [0, 70000, 1.5, NaN]) expect(() => renderArgs(dir, "https://x.test/", bad)).toThrow(/bad proxy port/);
   });
 });
 
