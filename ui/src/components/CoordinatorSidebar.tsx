@@ -10,6 +10,9 @@ import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
+import { useCompany } from "@/context/CompanyContext";
+import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
@@ -75,6 +78,22 @@ function ProjectRecent({ project }: { project: Project }) {
         : <p className="px-3 py-2 text-xs text-muted-foreground">No tasks yet.</p>}
     </div>}
   </div>;
+}
+
+/** Plugin pages (CRM, Studio, Cockpit…) — the Coordinator layout had no
+ * outlet for them, so installed plugins vanished from navigation. Shown only
+ * when at least one plugin contributes a sidebar link or launcher. */
+function PluginNavigation({ companyId, rail }: { companyId: string | null; rail: boolean }) {
+  const { selectedCompany } = useCompany();
+  const context = { companyId, companyPrefix: selectedCompany?.issuePrefix ?? null };
+  const { slots } = usePluginSlots({ slotTypes: ["sidebar"], companyId });
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId });
+  const [open, setOpen] = useState(true);
+  if (rail || !companyId || (slots.length === 0 && launchers.length === 0)) return null;
+  return <div className="design-sidebar-apps"><SidebarSection label="Apps" collapsible={{ open, onOpenChange: setOpen }}>
+    <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" />
+    <PluginLauncherOutlet placementZones={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" />
+  </SidebarSection></div>;
 }
 
 function RecentNavigationList({ children }: { children: ReactNode }) {
@@ -189,6 +208,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       {orderedPins.length > 0 && <div className="design-sidebar-pins"><SidebarSection label="Pinned">
         <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />
       </SidebarSection></div>}
+      <PluginNavigation companyId={companyId ?? null} rail={rail} />
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <RecentNavigationList>
