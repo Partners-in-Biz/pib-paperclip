@@ -11,7 +11,8 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[],
+  pluginSlots: [] as unknown[], pluginLaunchers: [] as unknown[] }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
@@ -23,6 +24,16 @@ vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, sum
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { id: "company", issuePrefix: "COO" } }) }));
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: () => ({ slots: fixture.pluginSlots }),
+  PluginSlotOutlet: ({ slotTypes, context }: { slotTypes: string[]; context: { companyPrefix: string | null } }) =>
+    <div data-plugin-slot-types={slotTypes.join(",")} data-prefix={context.companyPrefix ?? ""}>Plugin slot outlet</div>,
+}));
+vi.mock("@/plugins/launchers", () => ({
+  usePluginLaunchers: () => ({ launchers: fixture.pluginLaunchers }),
+  PluginLauncherOutlet: ({ placementZones }: { placementZones: string[] }) => <div data-plugin-launcher-zone={placementZones.join(",")}>Plugin launcher outlet</div>,
+}));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
@@ -46,7 +57,7 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = []; fixture.pluginSlots = []; fixture.pluginLaunchers = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -291,5 +302,23 @@ describe("Coordinator task status glyphs (BUG-07)", () => {
     expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ projectId: "project-1", projection: "rows" }));
     expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
     expect(glyph("/issues/ONB-3")?.getAttribute("aria-label")).toBe("Idle");
+  });
+});
+
+describe("Coordinator plugin navigation", () => {
+  it("lists plugin sidebar links under Apps so installed plugins stay reachable", async () => {
+    fixture.pluginSlots = [{ id: "crm-nav" }];
+    await renderSidebar();
+    const apps = container.querySelector(".design-sidebar-apps");
+    expect(apps?.textContent).toContain("Apps");
+    expect(apps?.querySelector('[data-plugin-slot-types="sidebar"]')?.getAttribute("data-prefix")).toBe("COO");
+    expect(apps?.querySelector('[data-plugin-launcher-zone="sidebar"]')).not.toBeNull();
+  });
+  it("hides Apps when no plugin adds a link, and in the collapsed rail", async () => {
+    await renderSidebar();
+    expect(container.querySelector(".design-sidebar-apps")).toBeNull();
+    fixture.pluginLaunchers = [{ id: "open" }]; fixture.collapsed = true;
+    await renderSidebar();
+    expect(container.querySelector(".design-sidebar-apps")).toBeNull();
   });
 });
