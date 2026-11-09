@@ -12,7 +12,7 @@ import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, MIN_KEPT_PCT, parseContentSelector, previewStats, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, countBySelector, MIN_KEPT_PCT, parseContentSelector, previewStats, visibleWords, withDoctype, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
@@ -27,7 +27,7 @@ import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
 export { PREVIEW_BASE, previewLink, previewSlug } from "./preview-links.js";
-import { previewLink, previewSlug } from "./preview-links.js";
+import { PREVIEW_RENDER_URL, previewLink, previewSlug } from "./preview-links.js";
 
 function hostOf(url: string): string {
   return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
@@ -52,7 +52,56 @@ export function previewClient(params: Params): { kind: "company" | "contact"; re
   return { kind, ref: ref.trim().slice(0, 200) };
 }
 
+/** What create-preview stores in `previews.stats`: exactly one kept-text figure (PAR-8787). */
+export type StoredPreviewStats =
+  | { basis: "rendered"; rendered: ReturnType<typeof previewStats> & { at: string } }
+  | (ReturnType<typeof previewStats> & { basis: "source"; rendered?: undefined });
+
+/** Shown wherever a preview was built from the page source because the render was not usable (PiB, PAR-8791 Q5). */
+export const SOURCE_BASIS_NOTICE = "Made from the page source: header and scripted parts may differ.";
+/** /render is only asked while the 30 s tool call still has room for it (source fetch <= 12 s + render <= 15 s). */
+const RENDER_START_BY_MS = 12_000;
+const RENDER_TIMEOUT_MS = 15_000;
+
+const basisOf = (stats: { basis?: unknown } | null | undefined): "rendered" | "source" => (stats?.basis === "rendered" ? "rendered" : "source");
+
+/**
+ * The live page's DOM after its scripts ran, from the preview service's fixed loopback endpoint. Never throws: any
+ * problem returns the reason, and the caller builds from the source as before.
+ */
+async function renderedLive(env: Env, url: string, source: string, selector: string | undefined, startedAt: number): Promise<{ html: string; note: string } | { note: string }> {
+  const fallback = (reason: string) => ({ note: `${SOURCE_BASIS_NOTICE} (Render not used: ${reason}.)` });
+  const elapsed = env.now().getTime() - startedAt;
+  if (elapsed >= RENDER_START_BY_MS) return fallback(`${Math.round(elapsed / 1000)} s already spent fetching the page`);
+  let html: unknown;
+  try {
+    const r = await env.fetch(PREVIEW_RENDER_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }), signal: AbortSignal.timeout(RENDER_TIMEOUT_MS) });
+    if (r.status !== 200) return fallback(`the render service answered ${r.status}`);
+    const text = await r.text();
+    try {
+      html = (JSON.parse(text) as { html?: unknown } | null)?.html;
+    } catch {
+      return fallback("the render service did not answer JSON");
+    }
+  } catch (error) {
+    const name = (error as { name?: string } | null)?.name;
+    return fallback(name === "AbortError" || name === "TimeoutError" ? `no render within ${RENDER_TIMEOUT_MS / 1000} s` : `the render service could not be reached (${errorMessage(error).slice(0, 120)})`);
+  }
+  if (typeof html !== "string" || !html.trim()) return fallback("the render came back empty");
+  if (html.length > MAX_HTML) return fallback("the rendered page is too large");
+  if (visibleWords(html).length === 0) return fallback("the rendered page shows 0 words");
+  let counts = "";
+  if (selector) {
+    const inRender = countBySelector(html, selector);
+    const inSource = countBySelector(source, selector);
+    counts = ` contentSelector ${selector}: ${inRender} in the rendered page, ${inSource} in the source.`;
+    if (inRender < 1 || inRender !== inSource) return fallback(`contentSelector ${selector} matches ${inRender} element(s) in the rendered page and ${inSource} in the source`);
+  }
+  return { html: withDoctype(html), note: `Built from the live page as a visitor's browser shows it (scripts ran, 1280 px wide).${counts}` };
+}
+
 export async function createPreview(env: Env, companyId: string, actor: Actor, params: Params) {
+  const startedAt = env.now().getTime();
   const sprintId = reqStr(params, "sprintId");
   const client = previewClient(params);
   const { sprint } = await loadSprintContext(env, companyId, sprintId);
@@ -111,12 +160,20 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   const res = await env.site(pageUrl, { maxChars: MAX_HTML });
   if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
   const token = randomBytes(24).toString("base64url");
-  const built = buildPreviewHtml(withoutNul(res.text), res.url || pageUrl, withoutNul(changes), { token, clientName: sprint.clientName });
+  const sourceUrl = res.url || pageUrl;
+  // Build from the page as a visitor sees it (scripts ran) when the preview service can render it; else from the source.
+  const render = await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
+  const liveHtml = withoutNul("html" in render ? render.html : res.text);
+  const built = buildPreviewHtml(liveHtml, sourceUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
-  const stats = previewStats(res.text, built.html);
-  if (stats.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
+  built.notes.unshift(render.note);
+  const figure = previewStats(liveHtml, built.html);
+  // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
+  // source basis the review page measures `stats.rendered` on first open.
+  const stats: StoredPreviewStats = "html" in render ? { basis: "rendered", rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" };
+  if (figure.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
     throw new SeoError(
-      `This preview would keep only ${stats.keptPct}% of the live page's text (${stats.removedWords} of ${stats.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
+      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
     );
   }
   const reviewKey = randomBytes(18).toString("base64url");
@@ -155,6 +212,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     expiresAt,
     applied: built.applied,
     stats,
+    basis: stats.basis,
     reviewStatus: "pending",
     reviewIssueId: review,
     ...(rubric ? { rubric } : {}),
@@ -213,7 +271,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
         status: String(r.status),
         reviewStatus,
         ...(reviewNote ? { reviewNote } : {}),
-        stats,
+        stats: { ...stats, basis: basisOf(stats) },
         ...(note ? { note } : {}),
         decidedAt: r.decided_at ? String(r.decided_at) : null,
         expiresAt: String(r.expires_at),
@@ -232,6 +290,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
       ...(reviewNote ? { reviewNote: cut(reviewNote, PREVIEW_NOTE_COMPACT), ...(reviewNote.length > PREVIEW_NOTE_COMPACT ? { reviewNoteCut: true } : {}) } : {}),
       ...(note ? { note: cut(note, PREVIEW_NOTE_COMPACT), ...(note.length > PREVIEW_NOTE_COMPACT ? { noteCut: true } : {}) } : {}),
       ...(keptPct != null ? { keptPct } : {}),
+      basis: basisOf(stats),
       decidedAt: r.decided_at ? String(r.decided_at) : null,
       expiresAt: String(r.expires_at),
     };
@@ -344,7 +403,7 @@ const REDESIGN_CHECKS = [
 async function routePreviewReview(
   env: Env,
   sprint: db.Sprint,
-  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: ReturnType<typeof previewStats>; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
+  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: StoredPreviewStats; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
 ): Promise<string | null> {
   if (isRehearsalSprint(sprint)) return null;
   try {
@@ -358,7 +417,9 @@ async function routePreviewReview(
       `Page: ${p.pageUrl}`,
       `Proposed: ${p.title} (changed: ${p.applied.join(", ")})`,
       `Review page (screenshots + figures): ${reviewUrl}`,
-      `Text kept from the live page: ${p.stats.keptPct}% (${p.stats.liveWords} words live, +${p.stats.addedWords} added, -${p.stats.removedWords} removed).`,
+      p.stats.basis === "rendered"
+        ? `Text kept from the live page: ${p.stats.rendered.keptPct}% (${p.stats.rendered.liveWords} words live, +${p.stats.rendered.addedWords} added, -${p.stats.rendered.removedWords} removed).`
+        : "Kept-text figure: measured when the review page is first opened (made from the page source).",
       ...(p.notes.length ? ["", ...p.notes.map((n) => `Note: ${n}`)] : []),
       ...(p.rubric ? ["", ...rubricLines(p.rubric)] : []),
       "",
@@ -513,6 +574,8 @@ export interface PreviewRow {
   addedWords: number | null;
   /** The check on the page as a visitor sees it has run. */
   renderedChecked: boolean;
+  /** What the copy was built from: the rendered live page, or its source (old rows without a basis are source). */
+  basis: "rendered" | "source";
   createdAt: string;
   expiresAt: string;
   url: string;
@@ -545,6 +608,7 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
       keptPct: typeof rendered?.keptPct === "number" ? rendered.keptPct : typeof stats.keptPct === "number" ? stats.keptPct : null,
       addedWords: typeof rendered?.addedWords === "number" ? rendered.addedWords : typeof stats.addedWords === "number" ? stats.addedWords : null,
       renderedChecked: Boolean(rendered),
+      basis: basisOf(stats as { basis?: unknown }),
       createdAt: String(r.created_at),
       expiresAt: String(r.expires_at),
       url: previewLink(page, String(r.id)),

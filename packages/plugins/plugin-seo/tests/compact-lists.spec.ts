@@ -70,7 +70,7 @@ describe("list-previews", () => {
     expect(out.more).toMatch(/80 older previews not shown/);
     expect(out.detail).toMatch(/previewId/);
     const row = out.previews[0]!;
-    expect(Object.keys(row).sort()).toEqual(["decidedAt", "expiresAt", "keptPct", "pageUrl", "previewId", "reviewNote", "reviewNoteCut", "reviewStatus", "status", "taskId", "title", "url", "note", "noteCut"].filter((k) => k in row).sort());
+    expect(Object.keys(row).sort()).toEqual(["basis", "decidedAt", "expiresAt", "keptPct", "pageUrl", "previewId", "reviewNote", "reviewNoteCut", "reviewStatus", "status", "taskId", "title", "url", "note", "noteCut"].filter((k) => k in row).sort());
     expect(row).not.toHaveProperty("stats");
     expect(String(row.reviewNote).length).toBeLessThanOrEqual(200);
     expect(row.reviewNoteCut).toBe(true);

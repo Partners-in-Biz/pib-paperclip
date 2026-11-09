@@ -1,6 +1,13 @@
 /** Where client preview links live, and how they read. Kept apart so the build hand-off can use them without a cycle through preview.ts. */
 export const PREVIEW_BASE = "https://preview.partnersinbiz.online";
 
+/**
+ * The preview service's loopback-only render endpoint (same VPS as the worker): POST `{url}` -> `{html}`, the live
+ * page's DOM after its scripts ran at 1280 px. Fixed on purpose: no tool parameter may change where this goes,
+ * because it is called with `env.fetch` (the host's SSRF guard refuses loopback).
+ */
+export const PREVIEW_RENDER_URL = "http://127.0.0.1:3032/render";
+
 /** The readable part of a preview link: the site's name, e.g. huntandgun for huntandgun.co.za. Cosmetic; the token is the secret. */
 export function previewSlug(siteUrl: string): string {
   try {
