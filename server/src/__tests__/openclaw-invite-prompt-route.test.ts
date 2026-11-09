@@ -142,6 +142,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
     mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
@@ -194,8 +195,36 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect((db as any).__insertValues).not.toHaveBeenCalled();
   });
 
+  it("rejects CEO agent callers without the users:invite grant", async () => {
+    const db = createDbStub([companyBranding], [logoAsset]);
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+    const app = createApp(
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+      },
+      db,
+    );
+
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("users:invite");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "users:invite");
+    expect((db as any).__insertValues).not.toHaveBeenCalled();
+  });
+
   it("allows CEO agent callers and creates an agent-only invite", async () => {
     const db = createDbStub([companyBranding], [logoAsset]);
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",

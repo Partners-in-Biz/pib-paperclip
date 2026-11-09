@@ -3022,6 +3022,11 @@ export function accessRoutes(
       if (actorAgent.role !== "ceo") {
         throw forbidden("Only CEO agents can generate OpenClaw invite prompts");
       }
+      // An invite brings a new member into the company. The CEO role alone is not
+      // enough: the agent must also hold users:invite, the same grant board users need.
+      if (!(await access.hasPermission(companyId, "agent", actorAgent.id, "users:invite"))) {
+        throw forbidden("CEO agents need the users:invite grant to generate OpenClaw invite prompts");
+      }
       return;
     }
     if (req.actor.type !== "board") throw unauthorized();
