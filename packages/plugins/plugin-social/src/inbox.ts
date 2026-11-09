@@ -31,6 +31,21 @@ import { triageInbox } from "./triage.js";
 const PER_POST_INBOX = new Set(["facebook", "instagram", "threads", "youtube"]);
 export const INBOX_PLATFORMS = ["facebook", "instagram", "threads", "youtube", "x", "bluesky", "mastodon"];
 
+/**
+ * Posts the inbox poll skipped (private, deleted or comments off), per account. A skipped post is logged the
+ * first time only, not on every 15-minute poll; the set is per worker and bounded.
+ */
+const skippedPosts = new Set<string>();
+const SKIPPED_POSTS_MAX = 5000;
+
+export function firstSkip(accountId: string, externalId: string): boolean {
+  const key = `${accountId}:${externalId}`;
+  if (skippedPosts.has(key)) return false;
+  if (skippedPosts.size >= SKIPPED_POSTS_MAX) skippedPosts.clear();
+  skippedPosts.add(key);
+  return true;
+}
+
 async function pollAccount(ctx: PluginContext, config: SocialConfig, row: AccountRow): Promise<number> {
   if (!isSocialPlatform(row.platform)) return 0;
   const provider = providerFor(row.platform);
@@ -39,7 +54,10 @@ async function pollAccount(ctx: PluginContext, config: SocialConfig, row: Accoun
   if (PER_POST_INBOX.has(row.platform) && recent.length === 0) return 0;
   const account = await freshAccount(ctx, config, row);
   const env = await envFor(config, row.platform, account.meta);
-  const items = await provider.inbox(env, account, recent.map((d) => ({ externalId: d.external_id! })));
+  const items = await provider.inbox(env, account, recent.map((d) => ({ externalId: d.external_id! })), (externalId, reason) => {
+    if (!firstSkip(row.id, externalId)) return;
+    ctx.logger.info("Social inbox skipped a post", { accountId: row.id, platform: row.platform, externalId, reason });
+  });
   const byExternal = new Map(recent.map((d) => [d.external_id!, d]));
   let added = 0;
   for (const item of items) {

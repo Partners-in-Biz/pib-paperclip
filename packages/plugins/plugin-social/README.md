@@ -205,3 +205,7 @@ Facebook post snapshots read `post_media_view` (stored as impressions and views)
 ## LinkedIn organization statistics (0.10.13)
 
 LinkedIn Page (organization) posts read `organizationalEntityShareStatistics` (impressions, unique impressions as reach, clicks, likes, comments, shares) for `urn:li:share:` and `urn:li:ugcPost:` posts. Organization pages only: personal profiles have no analytics. A missing element or an API error is stored as `insightsError` and the window is retried; values are never written as zeros. Needs a connected LinkedIn organization account.
+
+## Inbox: one post cannot block the others (0.10.23)
+
+`poll-inbox` reads YouTube, Facebook, Instagram and Threads comments one published post at a time. A post that only it can fail (a private video, comments switched off, a deleted or hidden post: HTTP 400, 403 or 404) is skipped, and the other posts' comments still reach the inbox. Each skipped post is logged once per worker (`Social inbox skipped a post`, with the account, platform, post id and the provider's message), not on every poll. An invalid token, a rate limit or quota answer, a server error or a network error still fails the account's poll as before, and so does a run where every post failed (an account-wide refusal looks like a 403 on every post). Before 0.10.23 one private YouTube video stopped the whole account's poll while the job still reported success (PiB Demo, 2026-11-08).
