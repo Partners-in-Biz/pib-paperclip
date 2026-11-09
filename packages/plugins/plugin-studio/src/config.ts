@@ -38,14 +38,14 @@ export function instanceConfigSchema(): JsonSchema {
       elevenlabs: {
         type: "object",
         title: "ElevenLabs voice",
-        properties: { apiKey: secretField("API key", "elevenlabs.io API key for voiceover (optional: pick ElevenLabs as the text to speech provider).") },
+        properties: { apiKey: secretField("API key", "elevenlabs.io API key (optional: pick ElevenLabs for voiceover or auto-captions).") },
       },
       providers: {
         type: "object",
         title: "Voice providers",
         description: "Which provider each voice job uses unless the job names one.",
         properties: {
-          stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
+          stt: { type: "string", title: "Speech to text", enum: ["xai", "elevenlabs"], default: "xai" },
           tts: { type: "string", title: "Text to speech", enum: ["xai", "elevenlabs"], default: "xai" },
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
