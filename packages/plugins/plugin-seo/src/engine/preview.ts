@@ -274,10 +274,43 @@ function findHeadingAnchor(html: string, boundary: number): { before: number; af
 
 const NO_AREA = "Could not find the page's content area on the live page (no entry-content, <main>, role=main or single article, and no usable heading before the footer). Set contentSelector to say where the copy goes.";
 
+// The head: from <head> to </head> (or to <body> when the close tag is missing). Title and meta rewrites stay inside
+// it, so an SVG <title> or a stray meta in the body is never touched.
+function headRange(html: string): { start: number; end: number } | null {
+  const open = /<head\b[^>]*>/i.exec(html);
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  const rest = html.slice(start);
+  const close = /<\/head\s*>|<body\b/i.exec(rest);
+  return { start, end: close ? start + close.index : html.length };
+}
+
+function inHead(html: string, edit: (head: string) => string): string {
+  const r = headRange(html);
+  return r ? `${html.slice(0, r.start)}${edit(html.slice(r.start, r.end))}${html.slice(r.end)}` : html;
+}
+
+// One tag per key: drop every existing <meta name|property="key"> in the head (themes and SEO plugins often print two
+// or three) and put a single new one where the first was, or at the top of the head. Matches either attribute, since
+// sites write og:* and twitter:* with both.
 function setMeta(html: string, attr: "name" | "property", key: string, value: string): string {
   const tag = `<meta ${attr}="${key}" content="${escapeHtml(value)}">`;
-  const re = new RegExp(`<meta\\b[^>]*\\b${attr}\\s*=\\s*["']${key}["'][^>]*>`, "i");
-  return re.test(html) ? html.replace(re, tag) : html.replace(/<head\b[^>]*>/i, (h) => `${h}${tag}`);
+  const k = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`<meta\\b[^>]*\\b(?:name|property)\\s*=\\s*["']${k}["'][^>]*>`, "gi");
+  return inHead(html, (head) => {
+    let placed = false;
+    const out = head.replace(re, () => (placed ? "" : ((placed = true), tag)));
+    return placed ? out : `${tag}${out}`;
+  });
+}
+
+function setTitle(html: string, value: string): string {
+  const tag = `<title>${escapeHtml(value)}</title>`;
+  return inHead(html, (head) => {
+    let placed = false;
+    const out = head.replace(/<title\b[\s\S]*?<\/title\s*>/gi, () => (placed ? "" : ((placed = true), tag)));
+    return placed ? out : `${tag}${out}`;
+  });
 }
 
 export interface PreviewResult {
@@ -297,14 +330,15 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
   html = html.replace(/<link\b[^>]*rel\s*=\s*["']canonical["'][^>]*>/gi, "");
 
   if (changes.title) {
-    const title = `<title>${escapeHtml(changes.title)}</title>`;
-    html = /<title\b/i.test(html) ? html.replace(/<title\b[\s\S]*?<\/title\s*>/i, title) : html.replace(/<head\b[^>]*>/i, (h) => `${h}${title}`);
+    html = setTitle(html, changes.title);
     html = setMeta(html, "property", "og:title", changes.title);
+    html = setMeta(html, "name", "twitter:title", changes.title);
     applied.push("title");
   }
   if (changes.metaDescription) {
     html = setMeta(html, "name", "description", changes.metaDescription);
     html = setMeta(html, "property", "og:description", changes.metaDescription);
+    html = setMeta(html, "name", "twitter:description", changes.metaDescription);
     applied.push("metaDescription");
   }
   // The page's heading: replace an H1 that sits inside the content area (the page's own title). An H1 outside it
