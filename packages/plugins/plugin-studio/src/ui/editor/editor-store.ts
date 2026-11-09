@@ -50,7 +50,7 @@ export function isEditConflict(err: unknown): boolean {
 function messageOf(err: unknown): string {
   const text = err instanceof Error ? err.message : typeof err === "string" ? err : "";
   // A missing xAI key (PAR-8418): always name the setting, whatever the server worded.
-  if ((err as { code?: unknown } | null)?.code === "not_configured" && !text.includes("xAI voice")) return `Voiceover needs an xAI key: set it under "xAI voice" in Studio's plugin settings.`;
+  if ((err as { code?: unknown } | null)?.code === "not_configured" && !text.includes("xAI voice") && !text.includes("ElevenLabs")) return `Voiceover needs an xAI key: set it under "xAI voice" in Studio's plugin settings.`;
   return text.trim() || "Something went wrong. Try again.";
 }
 

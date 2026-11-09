@@ -35,13 +35,18 @@ export function instanceConfigSchema(): JsonSchema {
         title: "xAI voice",
         properties: { apiKey: secretField("API key", "console.x.ai key for voice: auto-captions (grok-voice-transcribe) and voiceover. The Voice plugin's key works here too.") },
       },
+      elevenlabs: {
+        type: "object",
+        title: "ElevenLabs voice",
+        properties: { apiKey: secretField("API key", "elevenlabs.io API key for voiceover (optional: pick ElevenLabs as the text to speech provider).") },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
         description: "Which provider each voice job uses unless the job names one.",
         properties: {
           stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
-          tts: { type: "string", title: "Text to speech", enum: ["xai"], default: "xai" },
+          tts: { type: "string", title: "Text to speech", enum: ["xai", "elevenlabs"], default: "xai" },
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
@@ -84,6 +89,12 @@ export class StudioConfig {
   async xaiKey(): Promise<string> {
     const key = await (await this.secrets).get("xai.apiKey");
     if (!key) throw new StudioError("Voice needs an xAI key: set it under \"xAI voice\" in Studio's plugin settings.", "not_configured");
+    return key;
+  }
+
+  async elevenLabsKey(): Promise<string> {
+    const key = await (await this.secrets).get("elevenlabs.apiKey");
+    if (!key) throw new StudioError("Voiceover with ElevenLabs needs a key: set it under \"ElevenLabs voice\" in Studio's plugin settings.", "not_configured");
     return key;
   }
 
