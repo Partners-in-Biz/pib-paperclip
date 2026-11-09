@@ -208,7 +208,8 @@ export function parseContentSelector(raw: string): { tag?: string; kind?: "id" |
   return { tag: m[1]?.toLowerCase(), kind: m[2] === "#" ? "id" : m[2] === "." ? "class" : undefined, name: m[3] };
 }
 
-function findBySelector(html: string, raw: string): { innerStart: number; innerEnd: number } {
+/** Every closed element the selector matches, in document order. */
+function* selectorMatches(html: string, raw: string): Generator<{ innerStart: number; innerEnd: number }> {
   const sel = parseContentSelector(raw);
   const re = new RegExp(`<${sel.tag ?? "([a-z][a-z0-9]*)"}\\b[^>]*>`, "gi");
   for (let m = re.exec(html); m; m = re.exec(html)) {
@@ -221,9 +222,25 @@ function findBySelector(html: string, raw: string): { innerStart: number; innerE
     }
     const tag = (sel.tag ?? m[1]!).toLowerCase();
     const range = elementEnd(html, m.index, tag);
-    if (range) return range;
+    if (range) yield range;
   }
+}
+
+function findBySelector(html: string, raw: string): { innerStart: number; innerEnd: number } {
+  for (const range of selectorMatches(html, raw)) return range;
   throw new SeoError(`contentSelector "${raw.trim()}" matches no element on the live page. Check it against the page's HTML, or leave contentSelector out.`);
+}
+
+/** How many elements a contentSelector matches (the rendered page is used only when it matches as often as the source). */
+export function countBySelector(html: string, raw: string): number {
+  let n = 0;
+  for (const _ of selectorMatches(html, raw)) n += 1;
+  return n;
+}
+
+/** A Chromium DOM dump starts at `<html>`: give it the doctype once so the copy renders in standards mode. */
+export function withDoctype(html: string): string {
+  return /^\s*<!doctype\b/i.test(html) ? html : `<!DOCTYPE html>\n${html}`;
 }
 
 function findContentArea(html: string, boundary: number, selector?: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {

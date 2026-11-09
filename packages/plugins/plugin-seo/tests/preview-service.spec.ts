@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
-import { assertPreviewLinksChecked, createPreview, previewLink, previewSlug, reviewPreview } from "../src/service/preview.js";
+import { assertPreviewLinksChecked, createPreview, listPreviews, previewLink, previewRows, previewSlug, reviewPreview, SOURCE_BASIS_NOTICE } from "../src/service/preview.js";
+import { PREVIEW_RENDER_URL } from "../src/service/preview-links.js";
 import { ORIGIN } from "../src/constants.js";
 
 const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn(async (_ctx: unknown, _opts: Record<string, unknown>) => ({ status: "saved", requestId: "rq", driveFileId: "f1", url: "https://drive.example/f1" })) }));
@@ -27,7 +28,11 @@ const TASK: Row = {
 };
 const LIVE = `<html><head><title>Old</title></head><body><h1>Old heading</h1><main><div class="entry-content">${"<p>auction lot listing word </p>".repeat(40)}</div></main></body></html>`;
 
-function host(previewRow?: Row, rounds = 0, evidence: Row | null = null) {
+type FetchMock = (url: string, init?: RequestInit) => Promise<Response>;
+// No render service in tests unless one is given: create-preview falls back to the source.
+const noRender: FetchMock = async () => { throw new TypeError("fetch failed"); };
+
+function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: { fetch?: FetchMock; siteMs?: number } = {}) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ id: string; body: string }> = [];
@@ -39,7 +44,7 @@ function host(previewRow?: Row, rounds = 0, evidence: Row | null = null) {
       async query(sql: string) {
         if (/FROM plugin_seo_8099f8879a\.sprints WHERE id/.test(sql)) return [SPRINT];
         if (/FROM plugin_seo_8099f8879a\.sprint_tasks WHERE id/.test(sql)) return [{ ...TASK, evidence }];
-        if (/count\(\*\)/.test(sql)) return [{ n: rounds }];
+        if (/count\(\*\)(?! OVER)/.test(sql)) return [{ n: rounds }];
         if (/needs_you/.test(sql)) return [];
         if (/FROM plugin_seo_8099f8879a\.previews/.test(sql)) return previewRow ? [previewRow] : [];
         return [];
@@ -57,8 +62,13 @@ function host(previewRow?: Row, rounds = 0, evidence: Row | null = null) {
     },
     logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
   } as unknown as PluginContext;
-  const site = vi.fn(async () => ({ status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: LIVE, ms: 1 }));
-  return { env: createEnv(ctx, { now: () => new Date("2026-10-02T12:00:00Z"), site: site as never }), executes, created, comments, wakes, updates };
+  let clock = Date.parse("2026-10-02T12:00:00Z");
+  const site = vi.fn(async (_url: string) => {
+    clock += opts.siteMs ?? 0;
+    return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: LIVE, ms: 1 };
+  });
+  const fetch = vi.fn(opts.fetch ?? noRender);
+  return { env: createEnv(ctx, { now: () => new Date(clock), site: site as never, fetch }), executes, created, comments, wakes, updates, site, fetch };
 }
 
 const seo: Actor = { kind: "agent", agentId: "seo-1", runId: "r", responsibleUserId: null };
@@ -78,7 +88,7 @@ describe("create-preview", () => {
     expect(out.stats.keptPct).toBeGreaterThanOrEqual(95);
     expect(h.created[0]).toMatchObject({ originKind: ORIGIN.previewReview, parentId: "iss-1" });
     expect(String(h.created[0]!.description)).toMatch(/review\?key=/);
-    expect(String(h.created[0]!.description)).toMatch(/Text kept from the live page: \d+%/);
+    expect(String(h.created[0]!.description)).toMatch(/Kept-text figure: measured when the review page is first opened \(made from the page source\)/);
     const insert = h.executes.find((e) => /INSERT INTO plugin_seo_8099f8879a\.previews/.test(e.sql))!;
     expect(out).toHaveProperty("rubric.score");
     expect(String(h.created[0]!.description)).toMatch(/Creative score: \d+\/100, (passes|below the bar of 70)/);
@@ -202,5 +212,115 @@ describe("waiting for the Reviewer", () => {
     await createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
     expect(h.updates).toEqual([{ id: "iss-1", patch: { status: "blocked" } }]);
     expect(h.executes.some((e) => /UPDATE plugin_seo_8099f8879a\.sprint_tasks SET/.test(e.sql) && e.params.includes("reviewer"))).toBe(true);
+  });
+});
+
+describe("create-preview from the rendered live page (PAR-8787)", () => {
+  // What scripts add on the live page (a banner) is in the render but not in the source.
+  const BANNER = `<div class="auctionUpdatesLiveGroup">${"<p>live auction update banner </p>".repeat(10)}</div>`;
+  const RENDERED = LIVE.replace("<body>", `<body>${BANNER}`).replace("<script>", "");
+  const json = (body: unknown, status = 200) => async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const add = { ...base, bodyHtml: "<p>new intro words</p>" };
+  const stored = (h: ReturnType<typeof host>) => {
+    const insert = h.executes.find((e) => /INSERT INTO plugin_seo_8099f8879a\.previews/.test(e.sql))!;
+    return { html: String(insert.params[7]), stats: JSON.parse(String(insert.params[12])) as Record<string, any> };
+  };
+
+  it("builds from the rendered HTML and stores only stats.rendered with basis rendered", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: RENDERED }) });
+    const out = (await createPreview(h.env, "co-1", seo, add)) as { basis: string; notes: string[] };
+    const { html, stats } = stored(h);
+    expect(html).toContain("live auction update banner");
+    expect(html.match(/<!DOCTYPE html>/gi)).toHaveLength(1);
+    expect(Object.keys(stats).sort()).toEqual(["basis", "rendered"]);
+    expect(stats.basis).toBe("rendered");
+    expect(stats).not.toHaveProperty("keptPct");
+    expect(stats.rendered).toMatchObject({ keptPct: 100, liveWords: 203, at: "2026-10-02T12:00:00.000Z" });
+    expect(out.basis).toBe("rendered");
+    expect(out.notes.join(" ")).not.toContain(SOURCE_BASIS_NOTICE);
+  });
+
+  it("calls the fixed render URL with env.fetch, never through env.site", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: RENDERED }) });
+    await createPreview(h.env, "co-1", seo, { ...add, renderUrl: "http://evil.example/" } as never);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = h.fetch.mock.calls[0]!;
+    expect(url).toBe(PREVIEW_RENDER_URL);
+    expect(url).toBe("http://127.0.0.1:3032/render");
+    expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ url: "https://acme.co.za/" }) });
+    expect(init!.signal).toBeInstanceOf(AbortSignal);
+    expect(h.site.mock.calls.map((c) => c[0])).toEqual(["https://acme.co.za/"]);
+  });
+
+  it("does not double a doctype the render already has", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: `<!doctype html>${RENDERED}` }) });
+    await createPreview(h.env, "co-1", seo, add);
+    expect(stored(h).html.match(/<!DOCTYPE html>/gi)).toHaveLength(1);
+  });
+
+  it("logs both selector counts when the contentSelector matches the same in both", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: RENDERED }) });
+    const out = (await createPreview(h.env, "co-1", seo, { ...add, contentSelector: ".entry-content" })) as { basis: string; notes: string[] };
+    expect(out.basis).toBe("rendered");
+    expect(out.notes.join(" ")).toMatch(/contentSelector \.entry-content: 1 in the rendered page, 1 in the source/);
+  });
+
+  const twoAreas = RENDERED.replace("</main>", `</main><div class="entry-content"><p>sidebar copy</p></div>`);
+  const noArea = RENDERED.replace('class="entry-content"', 'class="content"');
+  it.each([
+    ["500", { fetch: json({ error: "boom" }, 500) }, {}, /answered 500/],
+    ["abort", { fetch: async () => { throw new DOMException("timed out", "TimeoutError"); } }, {}, /no render within 15 s/],
+    ["unreachable", { fetch: noRender }, {}, /could not be reached/],
+    ["empty", { fetch: json({ html: "  " }) }, {}, /came back empty/],
+    ["no html", { fetch: json({}) }, {}, /came back empty/],
+    ["bad JSON", { fetch: json("<html>not json") }, {}, /did not answer JSON/],
+    ["0 words", { fetch: json({ html: "<html><body><script>x()</script></body></html>" }) }, {}, /shows 0 words/],
+    ["selector 2 vs 1", { fetch: json({ html: twoAreas }) }, { contentSelector: ".entry-content" }, /matches 2 element\(s\) in the rendered page and 1 in the source/],
+    ["selector 0", { fetch: json({ html: noArea }) }, { contentSelector: ".entry-content" }, /matches 0 element\(s\) in the rendered page and 1 in the source/],
+    ["elapsed >= 12 s", { fetch: json({ html: RENDERED }), siteMs: 12_000 }, {}, /12 s already spent/],
+  ] as const)("falls back to the source on %s, with the notice and no rendered figure", async (_name, opts, extra, reason) => {
+    const h = host(undefined, 0, null, opts as never);
+    const out = (await createPreview(h.env, "co-1", seo, { ...add, ...extra })) as { basis: string; notes: string[] };
+    const { html, stats } = stored(h);
+    expect(html).not.toContain("live auction update banner");
+    expect(stats).toMatchObject({ basis: "source", liveWords: 163 });
+    expect(typeof stats.keptPct).toBe("number");
+    expect(stats).not.toHaveProperty("rendered");
+    expect(out.basis).toBe("source");
+    expect(out.notes[0]).toContain(SOURCE_BASIS_NOTICE);
+    expect(out.notes[0]).toMatch(reason);
+    const issue = String(h.created[0]!.description);
+    expect(issue).toContain(SOURCE_BASIS_NOTICE);
+    expect(issue).toMatch(reason);
+    expect(issue).toContain("Kept-text figure: measured when the review page is first opened (made from the page source)");
+    if (_name === "elapsed >= 12 s") expect(h.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses on the rendered figure below MIN_KEPT_PCT", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: RENDERED }) });
+    await expect(createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace" })).rejects.toThrow(/keep only \d+% of the live page's text \(\d+ of 203 words gone\)/);
+  });
+
+  it("one stored value: list-previews, rows, the Reviewer gate and the review issue all show stats.rendered.keptPct", async () => {
+    const h = host(undefined, 0, null, { fetch: json({ html: RENDERED }) });
+    await createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace", allowReplace: true });
+    const { stats } = stored(h);
+    const kept = stats.rendered.keptPct as number;
+    expect(kept).toBeLessThan(70);
+    expect(String(h.created[0]!.description)).toContain(`Text kept from the live page: ${kept}% (203 words live`);
+    const row = { id: "p1", task_id: "t-1", issue_id: "iss-1", page_url: "https://acme.co.za/", title: "Home", status: "pending", review_status: "pending", created_by: "seo-1", expires_at: "2026-11-01", created_at: "2026-10-02", total: 1, stats: JSON.stringify(stats) };
+    const list = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1" })) as { previews: Array<Record<string, unknown>> };
+    expect(list.previews[0]).toMatchObject({ keptPct: kept, basis: "rendered" });
+    expect((await previewRows(host(row).env, "co-1", "sp-1"))[0]).toMatchObject({ keptPct: kept, basis: "rendered", renderedChecked: true });
+    await expect(reviewPreview(host(row).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(`only ${kept}%`);
+  });
+
+  it("an old row without a basis lists as source", async () => {
+    const row = { id: "p1", task_id: "t-1", page_url: "https://acme.co.za/", title: "Home", status: "pending", review_status: "pending", expires_at: "2026-11-01", created_at: "2026-10-02", total: 1, stats: { keptPct: 91, liveWords: 200 } };
+    const list = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1" })) as { previews: Array<Record<string, unknown>> };
+    expect(list.previews[0]).toMatchObject({ keptPct: 91, basis: "source" });
+    const full = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1" })) as { previews: Array<{ stats: Record<string, unknown> }> };
+    expect(full.previews[0]!.stats.basis).toBe("source");
+    expect((await previewRows(host(row).env, "co-1", "sp-1"))[0]).toMatchObject({ keptPct: 91, basis: "source", renderedChecked: false });
   });
 });
