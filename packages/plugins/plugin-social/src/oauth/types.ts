@@ -109,6 +109,8 @@ export interface MetricsSnapshot {
   raw?: Record<string, unknown>;
   /** Set when a best-effort sub-call failed or returned no usable element; the main counts are still valid. */
   insightsError?: string;
+  /** Set when a best-effort sub-call failed permanently (non-retryable 4xx); the collector closes the window. */
+  insightsUnavailable?: string;
   /** Updated external id (TikTok resolves the public post id later). */
   externalId?: string;
   url?: string;
