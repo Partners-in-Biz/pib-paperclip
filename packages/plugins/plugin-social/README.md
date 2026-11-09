@@ -166,6 +166,12 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.10.24: Facebook video metrics, X link on hand-marked posts (PAR-8613)
+
+- Facebook video posts (stored as a bare Video id) are measured with `video_insights`: likes and comments from the Video node, impressions and reach from `total_video_impressions(_unique)`, views from `total_video_views`. A Video has no share count: shares are stored as 0 with `raw.sharesSource: "not_available"`. A permanent insights error (non-retryable 4xx) keeps the row, records `metricsError` kind `insights` and closes the window; a 5xx stays partial and retries.
+- `social.mark-posted` with an `x.com/<handle>/status/<id>` (or twitter.com) link of the destination's own account stores the tweet id, so the post can be measured. On an already published post, the link attaches to hand-marked X destinations without an id (status, `published_at` and the post's error stay); no matching destination is an error.
+- `post-analytics` destinations carry `measurable` and `unmeasuredReason`. No migration.
+
 ## 0.10.23: delete a disconnected account
 
 Accounts → **Delete** (shown once an account is disconnected) removes it for good: its inbox items, metrics and RSS feed links go, and its destinations on posts (with their scores) go by cascade, so posts stay but no longer list it. A connected account is refused: disconnect it first. Action `social.delete-account` (a person only; a personal account only by its owner). No migration.

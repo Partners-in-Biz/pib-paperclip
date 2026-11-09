@@ -94,6 +94,11 @@ async function collectOne(ctx: PluginContext, config: SocialConfig, dest: Destin
       if (decision.skip.length) await markMetricWindows(ctx, dest.id, decision.skip);
       return "partial";
     }
+    if (snapshot.insightsUnavailable) {
+      await setDestinationMetricsError(ctx, dest.id, { at: new Date().toISOString(), window: decision.capture, kind: "insights", message: sanitizeMetricsMessage(snapshot.insightsUnavailable) });
+      await markMetricWindows(ctx, dest.id, allWindows);
+      return "captured";
+    }
     await clearDestinationMetricsError(ctx, dest.id);
     await markMetricWindows(ctx, dest.id, allWindows);
     return "captured";

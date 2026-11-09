@@ -61,6 +61,51 @@ async function metaGet<T = Record<string, unknown>>(url: string, params: Record<
 
 // ── Facebook ────────────────────────────────────────────────────────────────
 
+type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
+const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
+
+/** Facebook Video id: V1 likes/comments (required); V2 impressions/reach and V3 views are best effort; a permanent 4xx sets insightsUnavailable. */
+async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, videoId: string): Promise<MetricsSnapshot> {
+  const base = graph(env);
+  const token = account.token.accessToken;
+  const data = await metaGet<{ comments?: { summary?: { total_count?: number } }; likes?: { summary?: { total_count?: number } } }>(
+    `${base}/${videoId}`,
+    { fields: "comments.summary(true).limit(0),likes.summary(true).limit(0)", access_token: token },
+    "Facebook metrics",
+  );
+  const snapshot: MetricsSnapshot = {
+    views: 0, likes: count(data.likes?.summary?.total_count), comments: count(data.comments?.summary?.total_count), shares: 0,
+    impressions: null, reach: null, raw: { fields: data, sharesSource: "not_available" },
+  };
+  const insight = async (metric: string, names: string[]): Promise<Array<number | null> | null> => {
+    try {
+      const res = await metaGet<InsightRows>(`${base}/${videoId}/video_insights`, { metric, period: "lifetime", access_token: token }, "Facebook video insights");
+      const rows = res.data ?? [];
+      const values = names.map((name) => {
+        const row = rows.find((r) => r.name === name);
+        return row ? optionalCount(row.values?.[0]?.value ?? row.total_value?.value) : null;
+      });
+      const missing = names.find((_, i) => values[i] === null);
+      if (missing) snapshot.insightsError ??= `video insights: missing ${missing}`;
+      return values;
+    } catch (error) {
+      const message = cleanError(error instanceof Error ? error.message : String(error));
+      if (error instanceof ProviderHttpError && !error.retryable && !error.tokenInvalid) snapshot.insightsUnavailable ??= message;
+      else snapshot.insightsError ??= message;
+      return null;
+    }
+  };
+  const reach = await insight("total_video_impressions,total_video_impressions_unique", ["total_video_impressions", "total_video_impressions_unique"]);
+  if (reach) {
+    snapshot.impressions = reach[0];
+    snapshot.reach = reach[1];
+  }
+  const views = await insight("total_video_views", ["total_video_views"]);
+  if (views?.[0] != null) snapshot.views = views[0];
+  return snapshot;
+}
+
+
 export const FACEBOOK_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
@@ -276,6 +321,8 @@ export const facebookProvider: SocialProvider = {
   refresh: refreshViaFacebook,
   publish: (env, account, req) => guard(() => facebookPublish(env, account, req)),
   async metrics(env, account, externalId): Promise<MetricsSnapshot | null> {
+    // Only video publishing stores a bare id (a Video node): it has no `shares` field and uses video_insights.
+    if (!externalId.includes("_")) return facebookVideoMetrics(env, account, externalId);
     const base = graph(env);
     const token = account.token.accessToken;
     const data = await metaGet<{
@@ -293,8 +340,6 @@ export const facebookProvider: SocialProvider = {
       shares: count(data.shares?.count),
       raw: { fields: data },
     };
-    type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
-    const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
     // Call 1: impressions and reach. Isolated so a bad clicks metric never blanks them.
     const insights = await bestEffort(() =>
       metaGet<InsightRows>(`${base}/${externalId}/insights`, {

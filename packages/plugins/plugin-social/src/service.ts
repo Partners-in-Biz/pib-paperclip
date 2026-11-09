@@ -39,6 +39,7 @@ import { loadSocialConfig } from "./config.js";
 import { handoffPayload } from "./done-checks.js";
 import {
   accountMetrics,
+  attachDestinationLink,
   deleteDestination,
   deletePost,
   destinationsForPost,
@@ -698,26 +699,51 @@ export async function retryPostRecord(ctx: PluginContext, viewer: Viewer, postId
   return { ...result, message: `${result.reset} destination(s) will be retried within 5 minutes.`, post: await getPostDetail(ctx, viewer, post.id) };
 }
 
+const X_STATUS_LINK = /^https:\/\/(www\.)?(x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/(\d{5,25})(?:[/?#].*)?$/;
+
+/** The tweet id of `url` when it is a status link of this X account; null for any other link or account. */
+export function xStatusIdFor(account: Pick<AccountRow, "platform" | "handle"> | undefined, url: string | null): string | null {
+  if (!account || account.platform !== "x" || !url) return null;
+  const handle = account.handle?.replace(/^@/, "").toLowerCase();
+  const match = X_STATUS_LINK.exec(url);
+  if (!match || !handle || handle === "i") return null;
+  return match[3]!.toLowerCase() === handle ? match[4]! : null;
+}
+
 /**
  * A person posted this themselves (an X reply the API cannot send): record it as published so it leaves the queue.
- * `url` is the link to what they posted, if they have it.
+ * `url` is the link to what they posted, if they have it. On an already published post, `url` attaches the link
+ * to hand-marked destinations that have none, so their metrics can be collected.
  */
 export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   requireUser(viewer, "mark a post as posted");
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
-  if (post.status === "published" || post.status === "publishing" || post.status === "draft" || post.status === "review") {
+  const url = optionalString(params, "url")?.trim() || null;
+  const attach = post.status === "published" && url !== null;
+  if (!attach && (post.status === "published" || post.status === "publishing" || post.status === "draft" || post.status === "review")) {
     throw new SocialError(`A ${post.status} post cannot be marked as posted. Approve it first.`);
   }
-  const url = optionalString(params, "url")?.trim() || null;
   if (url && !/^https?:\/\//i.test(url)) throw new SocialError("The link must start with https://");
   const destinations = await destinationsForPost(ctx, post.id);
   if (destinations.length === 0) throw new SocialError("This post has no destinations to mark as posted");
+  const accounts = new Map((await getAccountsByIds(ctx, viewer.companyId, [...new Set(destinations.map((d) => d.account_id))])).map((a) => [a.id, a]));
+  if (attach) {
+    let changed = 0;
+    for (const d of destinations) {
+      const manual = d.result && typeof d.result === "object" && (d.result as Record<string, unknown>).manual === true;
+      if (d.status !== "published" || !manual || d.external_id !== null) continue;
+      const externalId = xStatusIdFor(accounts.get(d.account_id), url);
+      if (externalId) changed += await attachDestinationLink(ctx, d.id, externalId, url!);
+    }
+    if (changed === 0) throw new SocialError("No hand-marked destination on this post accepts this link");
+    return getPostDetail(ctx, viewer, post.id);
+  }
   for (const d of destinations) {
     if (d.status === "published") continue;
     await saveDestinationOutcome(ctx, d.id, {
       status: "published",
       nextAttemptAt: null,
-      externalId: null,
+      externalId: xStatusIdFor(accounts.get(d.account_id), url),
       externalUrl: url,
       lastError: null,
       result: { ok: true, manual: true, at: new Date().toISOString(), by: viewer.userId ?? null },
@@ -1188,12 +1214,22 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
     const rows = await metricsForPost(ctx, viewer.companyId, post.id);
     const latest = latestPerDestination(rows);
     const dests = await destinationsForPost(ctx, post.id);
+    const accounts = new Map<string, AccountRow | null>();
+    for (const id of new Set(dests.map((d) => d.account_id))) accounts.set(id, await getAccount(ctx, viewer.companyId, id));
+    const unmeasuredReason = (d: DestinationRow): string | null => {
+      const account = accounts.get(d.account_id);
+      if (!d.external_id) return "no external id (marked posted by hand without a link)";
+      if (!account || account.status === "disabled" || !account.token_enc) return "account disabled or disconnected";
+      if (!isSocialPlatform(account.platform) || !providerFor(account.platform).metrics) return "platform has no metrics";
+      return null;
+    };
     return {
       postId: post.id,
       ...aggregateMetrics(latest.map(metricNumbers)),
       destinations: dests.map((d) => {
         const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
-        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null };
+        const reason = unmeasuredReason(d);
+        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
       }),
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };

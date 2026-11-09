@@ -1097,6 +1097,17 @@ export async function setDestinationExternal(ctx: PluginContext, id: string, ext
   );
 }
 
+/** Attach a link to a hand-marked destination; clears metric_windows so the collector takes the latest due window. */
+export async function attachDestinationLink(ctx: PluginContext, id: string, externalId: string, externalUrl: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET external_id = $2, external_url = $3, metric_windows = '{}', updated_at = now()
+      WHERE id = $1 AND status = 'published' AND external_id IS NULL AND result->>'manual' = 'true'`,
+    [id, externalId, externalUrl],
+  );
+  return result.rowCount;
+}
+
 // ── Templates ───────────────────────────────────────────────────────────────
 
 export interface TemplateRow {
