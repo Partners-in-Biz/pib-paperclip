@@ -349,7 +349,7 @@ const ACTIONS: Record<string, ActionHandler> = {
     const actorUserId = requireUser(v, "hires the ads agent");
     return startHire(ctx, v.companyId, ADS_HIRE_ROLE, {
       title: optionalString(p, "title"),
-      description: optionalString(p, "description"),
+      description: optionalString(p, "description", 50_000),
       assigneeAgentId: optionalString(p, "assigneeAgentId") ?? null,
       assigneeUserId: optionalString(p, "assigneeUserId") ?? null,
       actorUserId,
