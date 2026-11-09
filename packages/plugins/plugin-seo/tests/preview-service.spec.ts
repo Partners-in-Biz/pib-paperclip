@@ -247,7 +247,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     expect(h.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = h.fetch.mock.calls[0]!;
     expect(url).toBe(PREVIEW_RENDER_URL);
-    expect(url).toBe("http://127.0.0.1:3032/render");
+    expect(url).toBe("http://127.0.0.1:3033/render");
     expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ url: "https://acme.co.za/" }) });
     expect(init!.signal).toBeInstanceOf(AbortSignal);
     expect(h.site.mock.calls.map((c) => c[0])).toEqual(["https://acme.co.za/"]);
