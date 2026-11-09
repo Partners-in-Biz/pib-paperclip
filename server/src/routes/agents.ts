@@ -289,6 +289,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { AGENT_WAKE_DENIED_MESSAGE, decideAgentWakeAuthority } from "../services/agent-wake-authority.js";
 import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -2599,6 +2600,29 @@ export function agentRoutes(
       targetAgent,
       [agentProfileChangeTargetKey(targetAgent.id)],
     );
+  }
+
+  // Managers may wake agents below them in the reporting chain; agents with
+  // agents:configure for the target may wake it too (same authority as resume).
+  async function agentMayWakeAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return false;
+    const actor = req.actor;
+    const decision = await decideAgentWakeAuthority({
+      actorAgentId: actor.agentId,
+      actorCompanyId: actor.companyId,
+      target: targetAgent,
+      getChainOfCommand: (agentId) => svc.getChainOfCommand(agentId),
+      canConfigureTarget: async () => (await access.decide({
+        actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+        scope: { requiresChangeGrant: true },
+      })).allowed,
+    });
+    return decision.allowed;
   }
 
   async function assertCanResumeAgent(
@@ -6156,8 +6180,8 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      if (!(await agentMayWakeAgent(req, agent))) {
+        res.status(403).json({ error: AGENT_WAKE_DENIED_MESSAGE });
         return;
       }
     } else {
@@ -6433,8 +6457,8 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      if (!(await agentMayWakeAgent(req, agent))) {
+        res.status(403).json({ error: AGENT_WAKE_DENIED_MESSAGE });
         return;
       }
     } else {
