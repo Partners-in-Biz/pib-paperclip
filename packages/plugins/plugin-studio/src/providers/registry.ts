@@ -1,7 +1,7 @@
 /**
  * Voice providers (PAR-8414). One const map, one switch: no factory layer. Each capability (speech to text, text to
  * speech) has a company default in the plugin settings (`providers.stt` / `providers.tts`) and a per-job `provider`
- * override. Order: override, then company default, then the first entry. Only xAI today.
+ * override. Order: override, then company default, then the first entry. xAI is first, so it stays the default.
  */
 import type { ProviderSetting, StudioConfig } from "../config.js";
 import { StudioError } from "../errors.js";
@@ -11,7 +11,7 @@ import { isTablePriced, localCredits } from "../seedance-price.js";
 import { PIB_BASIC_IDS } from "../video-edit/looks.js";
 import { STICKER_PACKS, stickerIds } from "../video-edit/sticker-packs.js";
 import { fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
-import { fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
+import { elevenLabsTextToSpeech, ELEVENLABS_VOICES, fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
 import { ttsCredits } from "../video-edit/tts-price.js";
 import { MUSIC_MAX_SECONDS, STABLE_AUDIO_USD_PER_GENERATION, musicCredits } from "../music/stable-audio-price.js";
 import { fakeMusic, stabilityMusic, type MusicGenerator } from "../music/stable-audio.js";
@@ -26,10 +26,11 @@ export interface ProviderEntry {
 }
 
 const XAI: ProviderEntry = { key: "xai", label: "xAI (Grok)", secret: "xai.apiKey" };
+const ELEVENLABS: ProviderEntry = { key: "elevenlabs", label: "ElevenLabs", secret: "elevenlabs.apiKey" };
 
 const STABILITY: ProviderEntry = { key: "stability", label: "Stability AI (Stable Audio)", secret: "stability.apiKey" };
 
-export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI], music: [STABILITY] };
+export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI, ELEVENLABS], music: [STABILITY] };
 
 const clean = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
@@ -152,12 +153,14 @@ export const STICKER_PACK_ENTRIES: readonly StickerPackEntry[] = STICKER_PACKS.m
 
 const VOICE_NOTES: Record<Capability, Record<string, { price: string; qualityNote: string }>> = {
   stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` } },
-  tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` } },
+  tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` },
+    elevenlabs: { price: `${ttsCredits(1000, "elevenlabs")} credits per 1,000 characters`, qualityNote: `ElevenLabs Multilingual v2, ${ELEVENLABS_VOICES.length} premade voices.` },
+  },
   music: { stability: { price: `USD ${STABLE_AUDIO_USD_PER_GENERATION.toFixed(2)} (${musicCredits()} credits) per track, up to ${MUSIC_MAX_SECONDS} s`, qualityNote: "Stable Audio 2.5, instrumental music and sound beds" } },
 };
 
 /** Every option per capability with its price, quality note and whether it is the company's default. Never a key. */
-export async function providerOptions(config: Pick<StudioConfig, "providerDefault">) {
+export async function providerOptions(config: Pick<StudioConfig, "providerDefault"> & Partial<Pick<StudioConfig, "hasSecret">>) {
   const def = (cap: ProviderSetting) => config.providerDefault(cap).catch(() => undefined);
   const safe = (pick: () => string, fallback: () => string) => {
     try {
@@ -169,7 +172,7 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
   const voice = async (cap: Capability) => {
     const configured = cap === "music" ? undefined : await def(cap);
     const chosen = safe(() => resolveProvider(cap, undefined, configured).key, () => PROVIDERS[cap][0].key);
-    return PROVIDERS[cap].map((p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key], isDefault: p.key === chosen }));
+    return Promise.all(PROVIDERS[cap].map(async (p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key]!, isDefault: p.key === chosen, configured: config.hasSecret ? await config.hasSecret(p.secret) : undefined })));
   };
   const lookDefault = await def("looks");
   const defaults = { audio: await def("lipsync"), line: await def("lipsyncLine") };
@@ -205,6 +208,8 @@ export async function ttsFor(override: unknown, config: StudioConfig): Promise<T
   switch (entry.key) {
     case "xai":
       return xaiTextToSpeech(await config.xaiKey());
+    case "elevenlabs":
+      return elevenLabsTextToSpeech(await config.elevenLabsKey());
     default:
       throw new StudioError(`Unknown provider "${entry.key}".`, "bad_request");
   }
