@@ -8,7 +8,7 @@ import { StudioError } from "../errors.js";
 import { findModel, lipsyncMode } from "../models.js";
 import { fakeProviderOn } from "../provider.js";
 import { isTablePriced, localCredits } from "../seedance-price.js";
-import { fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
+import { elevenLabsSpeechToText, ELEVENLABS_STT_MODEL, fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
 import { elevenLabsTextToSpeech, ELEVENLABS_VOICES, fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
 import { ttsCredits } from "../video-edit/tts-price.js";
 
@@ -24,7 +24,7 @@ export interface ProviderEntry {
 const XAI: ProviderEntry = { key: "xai", label: "xAI (Grok)", secret: "xai.apiKey" };
 const ELEVENLABS: ProviderEntry = { key: "elevenlabs", label: "ElevenLabs", secret: "elevenlabs.apiKey" };
 
-export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI, ELEVENLABS] };
+export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI, ELEVENLABS], tts: [XAI, ELEVENLABS] };
 
 const clean = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
@@ -112,7 +112,9 @@ export function lipsyncPrice(model: string): { credits: number | null; price: st
 }
 
 const VOICE_NOTES: Record<Capability, Record<string, { price: string; qualityNote: string }>> = {
-  stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` } },
+  stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` },
+    elevenlabs: { price: "Not charged to Studio credits (ElevenLabs bills the key $0.22 per hour of audio; elevenlabs.io/pricing/api, read 2026-11-09)", qualityNote: `${ELEVENLABS_STT_MODEL}: timed words for captions.` },
+  },
   tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` },
     elevenlabs: { price: `${ttsCredits(1000, "elevenlabs")} credits per 1,000 characters`, qualityNote: `ElevenLabs Multilingual v2, ${ELEVENLABS_VOICES.length} premade voices.` },
   },
@@ -152,6 +154,8 @@ export async function sttFor(override: unknown, config: StudioConfig): Promise<S
   switch (entry.key) {
     case "xai":
       return xaiSpeechToText(await config.xaiKey());
+    case "elevenlabs":
+      return elevenLabsSpeechToText(await config.elevenLabsKey());
     default:
       throw new StudioError(`Unknown provider "${entry.key}".`, "bad_request");
   }
