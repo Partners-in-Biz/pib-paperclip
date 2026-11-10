@@ -272,13 +272,31 @@ export async function handleClientAnswer(env: Env, sprint: db.Sprint, answer: An
     const info = await companyInfo(env, sprint.companyId);
     await closeNeedsYouItems(env, info, sprint, [`approval-email:${answer.draftKey}`.slice(0, 120)], "client", "The client has answered.").catch(() => 0);
   }
-  const task = await db.getTask(env.ctx.db, sprint.companyId, answer.taskId);
+  return recheckTaskAnswers(env, sprint, answer.taskId);
+}
+
+/**
+ * Looks at the task's current previews: once none is still with the client or the Reviewer, lifts the lock for the approved ones,
+ * takes the task back from the client and wakes the agent once. Runs after a client answer and after previews were cancelled
+ * (a task that only waited on cancelled previews moves on). Always true: the check itself never fails the caller.
+ */
+export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: string): Promise<boolean> {
+  const task = await db.getTask(env.ctx.db, sprint.companyId, taskId);
   if (!task || !task.issueId) return true;
   const previews = await latestTaskPreviews(env, sprint.companyId, task.id);
   // Still with the client or the Reviewer: wait, so the agent gets one wake with the whole answer.
   if (previews.some((p) => p.status === "pending" && (p.reviewStatus === "passed" || p.reviewStatus === "pending"))) return true;
   const approved = previews.filter((p) => p.status === "approved" && !p.handedAt);
   const changes = previews.filter((p) => p.status === "changes_requested" && !p.handedAt);
+  if (previews.length === 0 && task.status === "blocked" && task.assigneeKind === "client") {
+    // Every preview of the task was cancelled: nothing is left for the client to answer, so the agent gets the task back.
+    if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) return true;
+    await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+    if (await commentOn(env, sprint.companyId, task.issueId, "Every preview of this task was cancelled; make a new one or complete the task.")) {
+      await wakeIssue(env.ctx, task.issueId, sprint.companyId, "Every preview of the task was cancelled");
+    }
+    return true;
+  }
   if (approved.length === 0 && changes.length === 0) return true;
   let until: string | null = null;
   if (approved.length > 0) until = await liftWriteLock(env, sprint, `client-approval:${task.id}`, AUTO_APPLY_HOURS);
