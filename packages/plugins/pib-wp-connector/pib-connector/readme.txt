@@ -4,7 +4,7 @@ Tags: seo, redirects, schema, maintenance
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -40,6 +40,10 @@ users.
 3. Paste the key under Settings → PiB Connector and save.
 
 == Changelog ==
+
+= 1.3.0 =
+* New: archive/get and archive/set (feature `content`): intro copy on category, tag and taxonomy archive pages, printed at the start or end of the main archive loop on page 1. Undoable. A term with no posts shows nothing; block themes show nothing (classic themes only).
+* health now reports protocol 1.3.
 
 = 1.2.0 =
 * New: verify/get and verify/set (feature `verify`, on by default): site verification meta tags in the page head and the IndexNow / Google HTML / BingSiteAuth.xml files, served by the Connector without writing any file. Strict allow-lists; undoable.

@@ -6,7 +6,8 @@ SEO fields (Yoast, Rank Math, or its own output) for posts, pages, the home page
 categories/tags/product categories and post type archives (incl. the social share
 image), JSON-LD schema, redirects, robots.txt extra lines, sitemap settings, Media
 Library images and alt text, page and post copy (edits, new drafts), site verification (meta
-tags and the IndexNow / Google HTML / Bing root files, served without writing to disk), updating the
+tags and the IndexNow / Google HTML / Bing root files, served without writing to disk), intro copy on
+category, tag and taxonomy archive pages, updating the
 Connector itself and — only when switched on — plugin install and rollback. Every
 write is logged with its before and after state and can be undone (uploads and
 self updates excepted: those are additive / have `self/rollback`).
@@ -18,7 +19,7 @@ CRM plugin is written against it.
 
 ```
 pib-wp-connector/
-  PROTOCOL.md             the contract (v1, extended in 1.1.0 and 1.2.0)
+  PROTOCOL.md             the contract (v1, extended in 1.1.0, 1.2.0 and 1.3.0)
   build.mjs               builds dist/pib-connector.zip (pure Node, no deps)
   package.json
   pib-connector/          the WordPress plugin folder (zip top folder)
@@ -27,7 +28,7 @@ pib-wp-connector/
     readme.txt
     includes/             auth, router, settings, log, undo, target, seo, seo-list,
                           schema, redirects, robots, sitemap, verify, plugins,
-                          media, content, selfupdate, health, admin
+                          media, content, archive, selfupdate, health, admin
     mu-loader/            pib-connector-loader.php (inert here; copy to mu-plugins)
   tests/                  PHP test harness with WordPress stubs + node signer
 ```
@@ -105,6 +106,12 @@ the key file. The settings page shows the key source ("settings" / "key file").
   text. Because a Connector request has no logged-in user, WordPress's kses
   filters would silently strip embeds on save; the write therefore runs with kses
   switched off (the safety check above is the gate) and switches it back on.
+- **Archive intro (1.3.0, `content` feature).** `archive/set` stores intro HTML (≤ 20,000
+  characters, same `pib_unsafe` check as `posts/update`) in term meta and prints it in
+  `div.pib-archive-intro` at the start or end of the main archive loop of that term, page 1 only,
+  once per request, filtered with `wp_kses_post`. Nothing prints while `content` is off; `undo`
+  restores the previous intro. Limits: a term with no posts shows nothing (no loop runs), and
+  only classic themes print it (block themes build the loop before `<head>`, so nothing is printed).
 - **Verify feature (1.2.0).** Only fixed shapes: nine verification meta names with a 1 to 200
   character `[A-Za-z0-9._:=+/-]` value (printed with `esc_attr` on `wp_head`), and three file kinds
   (IndexNow `<key>.txt`, Google `google<hex>.html`, `BingSiteAuth.xml`) whose content must match what
@@ -166,7 +173,14 @@ content, existing embeds, backup rotation, undo), self update/rollback (host,
 sha, downgrade, foreign entries, automatic restore), feature defaults and the admin
 checkboxes. 1.2.0 adds `tests/test-verify.php`: verify round trips, replace semantics, every
 rule refusal, the feature switch, undo, serving (match, no match, HEAD, trailing slash, query
-string, wrong method, sub-directory sites), escaped meta output and disk conflicts.
+string, wrong method, sub-directory sites), escaped meta output and disk conflicts. 1.3.0 adds
+`tests/test-archive.php`: archive set, get, clear, undo, refused post/page/archive targets, unsafe
+HTML refused and stripped on output, and rendering before/after on that term's main query only
+(not page 2, not a secondary query, not before `wp_head`, not with `content` off). It was also run
+on a throwaway WordPress 7.1.4 (scratch MariaDB, PHP 8.3 built-in server) with a classic test theme and Twenty
+Twenty-Five: intro inside the content column before and after the items, not on page 2, the feed,
+single posts, the home page or a secondary query in the sidebar; nothing (and a warning) on the
+block theme; set, unsafe refusal, no-posts warning, undo and the `content` switch over signed HTTP.
 
 The stub tests are not enough on their own (they missed real bugs in 1.1.0), so 1.2.0 was also run on
 a throwaway WordPress 7.1.2 + Yoast SEO 28.6 + Disable Gutenberg (scratch MariaDB on a unix socket,
