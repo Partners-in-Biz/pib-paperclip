@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, listPreviews, nudgeStalledReviews, previewRows, refreshStalePreviews, reviewPreview, reviveOrphanedChanges } from "../src/service/preview.js";
+import { approveSiteWrites } from "../src/service/signoff.js";
 import { latestTaskPreviews, previewsToDraft } from "../src/service/client-signoff.js";
 import { reclaimPersonHandOffs, taskHasPreview } from "../src/service/tasks.js";
 import { needsYouAddTool } from "../src/service/needs-you.js";
@@ -135,6 +136,46 @@ describePg("cancelled previews", () => {
     await put("old-live", { created_at: ago(4 * HOURS), ...older });
     await put("new-cancelled", { created_at: ago(1 * HOURS), status: "cancelled", cancelled_prev_status: "pending", cancelled_at: ago(0.5 * HOURS), review_status: "pending" });
   };
+
+  describe("approval stays valid 30 days after the answer (PAR-9006)", () => {
+    const days = (n: number) => ago(n * 24 * HOURS);
+    const expired = { expires_at: days(5), created_at: days(40) };
+    const wp = [[/FROM plugin_seo_\w+\.sprints WHERE id/, () => [{ ...SPRINT, site_access: "wordpress", site_id: "site-1", change_policy: "pr_only" }]]] as unknown as Route[];
+    const owner = { kind: "user", userId: "user-1" } as never;
+
+    it("an approved preview answered 10 days ago with an expired link still counts; 31 days ago it does not", async () => {
+      await reset();
+      await put("a10", { status: "approved", decided_at: days(10), page_url: "https://acme.co.za/a10/", ...expired });
+      await put("a31", { status: "approved", decided_at: days(31), page_url: "https://acme.co.za/a31/", ...expired });
+      expect((await latestTaskPreviews(host().env, "co-1", "t-1")).map((p) => p.id)).toEqual(["a10"]);
+      const h = host(wp);
+      const out = (await approveSiteWrites(h.env, "co-1", owner, { sprintId: "sp-1" })) as { approvedPreviews: number };
+      expect(out.approvedPreviews).toBe(1);
+    });
+
+    it("a pending preview past its expiry is still not live", async () => {
+      await reset();
+      await put("p-exp", { status: "pending", ...expired });
+      expect(await latestTaskPreviews(host().env, "co-1", "t-1")).toEqual([]);
+    });
+
+    it("the preview server shows 'You approved this on <date>' for an expired approved preview (within 30 days), 410 past that, and POST stays refused", async () => {
+      await reset();
+      await put("s10", { status: "approved", decided_at: days(10), ...expired });
+      await put("s31", { status: "approved", decided_at: days(31), ...expired });
+      await put("sp", { status: "pending", ...expired });
+      const server = readFileSync(join(import.meta.dirname, "../ops/preview-server/server.mjs"), "utf8");
+      expect(server).toContain("We are applying it.");
+      expect(server.indexOf("rows[0].expired && rows[0].approved_live")).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
+      const get = server.match(/SELECT html, status, review_status[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
+      const read = async (id: string) => (await sql.unsafe(get.replace("$1", `'${id}'`)))[0];
+      expect(await read("s10")).toMatchObject({ expired: true, approved_live: true });
+      expect(await read("s31")).toMatchObject({ expired: true, approved_live: false });
+      expect(await read("sp")).toMatchObject({ expired: true, approved_live: false });
+      const post = server.match(/UPDATE \$\{SCHEMA\}\.previews SET status = \$2[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
+      expect((await sql.unsafe(post, ["s10", "changes_requested", null])).count).toBe(0);
+    });
+  });
 
   it("task gate (latestTaskPreviews) picks the older live preview", async () => {
     await pair();

@@ -370,6 +370,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     parametersSchema: schema(["sprintId"], {
       sprintId,
       previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),
+      checkLive: flag("With previewId only: fetch the live page and return liveCheck: unchanged, changed (with the fields) or unknown. Run it before applying an approved preview"),
       includeHtml: flag("With previewId only: also return the stored preview page html (large)"),
       taskId: text("Only the previews made for this task"),
       status: choice(["pending", "approved", "changes_requested", "cancelled"], "Only previews with this client answer: pending, approved or changes_requested; or cancelled (replaced by a newer version)"),

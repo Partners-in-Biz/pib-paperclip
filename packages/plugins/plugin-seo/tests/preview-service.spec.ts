@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
+import { liveFingerprint } from "../src/engine/preview.js";
 import { assertPreviewLinksChecked, createPreview, listPreviews, previewLink, previewRows, previewSlug, reviewPreview, SOURCE_BASIS_NOTICE } from "../src/service/preview.js";
 import { PREVIEW_RENDER_URL } from "../src/service/preview-links.js";
 import { ORIGIN } from "../src/constants.js";
@@ -232,7 +233,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     const { html, stats } = stored(h);
     expect(html).toContain("live auction update banner");
     expect(html.match(/<!DOCTYPE html>/gi)).toHaveLength(1);
-    expect(Object.keys(stats).sort()).toEqual(["basis", "rendered"]);
+    expect(Object.keys(stats).sort()).toEqual(["basis", "liveFingerprint", "rendered"]);
     expect(stats.basis).toBe("rendered");
     expect(stats).not.toHaveProperty("keptPct");
     expect(stats.rendered).toMatchObject({ keptPct: 100, liveWords: 203, at: "2026-10-02T12:00:00.000Z" });
@@ -313,6 +314,47 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     expect(list.previews[0]).toMatchObject({ keptPct: kept, basis: "rendered" });
     expect((await previewRows(host(row).env, "co-1", "sp-1"))[0]).toMatchObject({ keptPct: kept, basis: "rendered", renderedChecked: true });
     await expect(reviewPreview(host(row).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(`only ${kept}%`);
+  });
+
+  describe("live fingerprint and checkLive (PAR-9006)", () => {
+    const pageHtml = (title: string, h1 = "Old heading", extra = "") => `<html><head><title>${title}</title><meta name="description" content="Old description"></head><body><h1>${h1}</h1><main><div class="entry-content">${"<p>auction lot listing word </p>".repeat(40)}${extra}</div></main></body></html>`;
+    const fp = { title: "Old", metaDescription: "Old description", h1: "Old heading", words: 163 };
+    const row = (stats: unknown) => ({ id: "p1", task_id: "t-1", page_url: "https://acme.co.za/", title: "Home", status: "approved", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: JSON.stringify(stats), changes: "{}" });
+    const check = async (stats: unknown, live: string | Error, extra: Record<string, unknown> = { checkLive: true }) => {
+      const h = host(row(stats));
+      h.site.mockImplementation((async () => { if (live instanceof Error) throw live; return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: live, ms: 1 }; }) as never);
+      const out = (await listPreviews(h.env, "co-1", { sprintId: "sp-1", previewId: "p1", ...extra })) as { previews: Array<Record<string, unknown>> };
+      return out.previews[0]!;
+    };
+
+    it("create-preview stores stats.liveFingerprint of the live page", async () => {
+      const h = host();
+      await createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
+      expect(stored(h).stats.liveFingerprint).toEqual({ title: "Old", metaDescription: "", h1: "Old heading", words: 163 });
+    });
+
+    it("unchanged when the live page still matches", async () => {
+      const first = await check({ liveFingerprint: fp }, pageHtml("Old"));
+      expect(first.liveCheck).toEqual({ result: "unchanged" });
+    });
+
+    it("changed names the fields that moved", async () => {
+      const out = await check({ liveFingerprint: fp }, pageHtml("New title", "New heading", "<p>more words here</p>"));
+      expect(out.liveCheck).toEqual({ result: "changed", fields: ["title", "h1", "words"] });
+    });
+
+    it("unknown without a stored fingerprint, or when the live page cannot be read", async () => {
+      expect(((await check({}, pageHtml("Old"))).liveCheck as { result: string }).result).toBe("unknown");
+      expect(((await check({ liveFingerprint: fp }, new Error("timeout"))).liveCheck as { result: string }).result).toBe("unknown");
+    });
+
+    it("is not run unless asked, and a listing page skips the word count", async () => {
+      expect(await check({ liveFingerprint: fp }, pageHtml("Old"), {})).not.toHaveProperty("liveCheck");
+      const listing = `<html><head><title>Cat</title></head><body><h1>Cat</h1><article><p>a</p></article><article><p>b</p></article></body></html>`;
+      expect(liveFingerprint(listing)).toEqual({ title: "Cat", metaDescription: "", h1: "Cat", words: null });
+      const out = await check({ liveFingerprint: { title: "Cat", metaDescription: "", h1: "Cat", words: null } }, listing.replace("<p>b</p>", "<p>b b b b</p>"));
+      expect(out.liveCheck).toEqual({ result: "unchanged" });
+    });
   });
 
   it("previewId returns the approved copy as changes (and the stored html only with includeHtml); compact rows stay without it", async () => {
