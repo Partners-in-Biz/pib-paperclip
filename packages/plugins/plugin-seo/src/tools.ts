@@ -366,10 +366,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "list-previews",
     displayName: "List client previews",
     description:
-      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link). Check it before applying a change: apply only what the owner has confirmed as approved.",
+      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link, and the approved copy as changes: title, metaDescription, h1, bodyHtml, bodyMode; includeHtml true adds the stored page html). Check it before applying a change: apply only what the owner has confirmed as approved.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),
+      includeHtml: flag("With previewId only: also return the stored preview page html (large)"),
       taskId: text("Only the previews made for this task"),
       status: choice(["pending", "approved", "changes_requested", "cancelled"], "Only previews with this client answer: pending, approved or changes_requested; or cancelled (replaced by a newer version)"),
       reviewStatus: choice(["pending", "passed", "changes_needed"], "Only previews with this Reviewer verdict: pending, passed or changes_needed"),

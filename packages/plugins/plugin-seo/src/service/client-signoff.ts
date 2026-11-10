@@ -16,6 +16,7 @@
  */
 import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { createHash } from "node:crypto";
+import { ARCHIVE_APPLY_GUIDANCE } from "../apply-guidance.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { approvalEmail, approverAddresses } from "../engine/approval-email.js";
@@ -309,6 +310,7 @@ export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: st
       ? ["", "**Changes requested: revise these and make new previews** (the Reviewer checks them; do not apply them):", ...changes.map((p) => `- ${p.pageUrl}${p.note ? `: ${p.note.replace(/\s+/g, " ").slice(0, 300)}` : ""}`)]
       : []),
     "",
+    ARCHIVE_APPLY_GUIDANCE,
     "Rules: apply only the approved previews and nothing else; read each page back and check it live (cache-busting load, phone and desktop); complete this task only when every page of it is applied or dropped. New previews for requested changes park this task again by themselves: end your turn after making them.",
   ];
   const unparked = task.status === "blocked" && task.assigneeKind === "client";
