@@ -615,7 +615,7 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
   if (sprint.clientSignoff === "auto" && ["task", "review", "pr"].includes(kind) && taskIds.length > 0) {
     const pages = await env.ctx.db.query(
       `SELECT t.id FROM ${db.t("sprint_tasks")} t WHERE t.company_id = $1 AND t.id IN (SELECT jsonb_array_elements_text($2::jsonb)) AND t.task_type = 'page-write'
-         AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id)`,
+         AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id AND p.status <> 'cancelled')`,
       [companyId, JSON.stringify(taskIds)],
     );
     if (pages.length > 0) {

@@ -267,8 +267,9 @@ const server = http.createServer(async (req, res) => {
     };
     const sub = m[2] ?? "";
     if (req.method === "GET" && sub === "") {
-      const { rows } = await pool.query(`SELECT html, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
+      const { rows } = await pool.query(`SELECT html, status, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
+      if (rows[0].status === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
       if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
       let html = rows[0].html;
       html = rewriteFormAction(html, PREVIEW_ORIGIN);
@@ -308,7 +309,7 @@ const server = http.createServer(async (req, res) => {
       if (decision !== "approved" && decision !== "changes_requested") return send(res, 400, page("Please choose Approve or Request changes."));
       const note = (form.get("note") ?? "").trim().slice(0, 1000) || null;
       const { rowCount } = await pool.query(
-        `UPDATE ${SCHEMA}.previews SET status = $2, decision_note = $3, decided_at = now(), notified_at = NULL WHERE id = $1 AND expires_at > now() AND review_status = 'passed'`,
+        `UPDATE ${SCHEMA}.previews SET status = $2, decision_note = $3, decided_at = now(), notified_at = NULL WHERE id = $1 AND expires_at > now() AND review_status = 'passed' AND status <> 'cancelled'`,
         [token, decision, note],
       );
       if (!rowCount) return send(res, 409, page("This preview is not ready for an answer yet, or has expired."));

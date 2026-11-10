@@ -311,7 +311,7 @@ describe("a page that keeps failing, on automatic sign-off, is dropped instead o
   const page = "https://agristudies.co.za/product/national-certificate-animal-production/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const routes = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
     latest([preview("p0", "product/other", { status: "approved" })]),
   ];
@@ -348,7 +348,7 @@ describe("on automatic sign-off a page's change is never handed to a person", ()
 
   it("allows it once a preview exists, and on a manual sprint (the controls)", async () => {
     const { blockTask } = await import("../src/service/tasks.js");
-    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 LIMIT 1/, () => [{ "?column?": 1 }]]] });
+    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 AND status <> 'cancelled' LIMIT 1/, () => [{ "?column?": 1 }]]] });
     await expect(blockTask(withPreview.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
     const manual = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })] });
     await expect(blockTask(manual.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
@@ -402,7 +402,7 @@ describe("dropping a failing page does not kill a newer revision of it", () => {
   const page = "https://agriauctionssa.co.za/category/skape-sheep/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const base = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
   ];
   const run = async (newer: boolean) => {

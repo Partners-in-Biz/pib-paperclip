@@ -211,7 +211,7 @@ export async function onBuildIssueUpdated(env: Env, companyId: string, issueId: 
     const fix = builds[at]!.kind === "preview-fix";
     if (fix && status === "done") {
       // The developer's corrected preview is what goes back to the Reviewer; without one the fix is not finished.
-      const newer = await env.ctx.db.query(`SELECT id FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND created_at > $3::timestamptz LIMIT 1`, [companyId, task.id, builds[at]!.at]);
+      const newer = await env.ctx.db.query(`SELECT id FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND status <> 'cancelled' AND created_at > $3::timestamptz LIMIT 1`, [companyId, task.id, builds[at]!.at]);
       if (newer.length === 0) {
         if (await patchIssue(env, companyId, issueId, { status: "todo" })) {
           await commentOn(env, companyId, issueId, "Reopened: no corrected preview was made. Make it with create-preview (see the steps in the description), then set this issue to done.");

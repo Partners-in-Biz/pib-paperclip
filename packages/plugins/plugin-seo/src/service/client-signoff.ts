@@ -55,10 +55,10 @@ interface TaskPreview {
 }
 
 /** The newest preview of each page of a task (an older one for the same page is superseded). */
-async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
+export async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
   const rows = await env.ctx.db.query(
     `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key
-       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND expires_at > now() ORDER BY page_url, created_at DESC`,
+       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND expires_at > now() AND status <> 'cancelled' ORDER BY page_url, created_at DESC`,
     [companyId, taskId],
   );
   return rows.map((r) => ({
@@ -122,11 +122,11 @@ export function draftKeyFor(sprintId: string, previewIds: string[]): string {
 }
 
 /** Passed, unanswered, not yet in a draft, and its task is parked on the client (every preview of the task has been looked at): the newest preview of each page. */
-async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
+export async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
   const rows = await env.ctx.db.query(
     `SELECT id, page_url, title, reviewed_at, changes FROM (
         SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, changes, status, review_status, draft_key, expires_at, task_id
-          FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY page_url, created_at DESC
+          FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC
       ) latest
       WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NULL AND expires_at > now()
         AND (task_id IS NULL OR task_id IN (SELECT id FROM ${t("sprint_tasks")} WHERE company_id = $1 AND assignee_kind = 'client'))
