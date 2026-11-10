@@ -12,7 +12,7 @@ import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, countBySelector, MIN_KEPT_PCT, parseContentSelector, previewStats, visibleWords, withDoctype, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
@@ -53,9 +53,10 @@ export function previewClient(params: Params): { kind: "company" | "contact"; re
 }
 
 /** What create-preview stores in `previews.stats`: exactly one kept-text figure (PAR-8787). */
-export type StoredPreviewStats =
+export type StoredPreviewStats = (
   | { basis: "rendered"; rendered: ReturnType<typeof previewStats> & { at: string } }
-  | (ReturnType<typeof previewStats> & { basis: "source"; rendered?: undefined });
+  | (ReturnType<typeof previewStats> & { basis: "source"; rendered?: undefined })
+) & { liveFingerprint?: LiveFingerprint };
 
 /** Shown wherever a preview was built from the page source because the render was not usable (PiB, PAR-8791 Q5). */
 export const SOURCE_BASIS_NOTICE = "Made from the page source: header and scripted parts may differ.";
@@ -170,7 +171,11 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   const figure = previewStats(liveHtml, built.html);
   // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
   // source basis the review page measures `stats.rendered` on first open.
-  const stats: StoredPreviewStats = "html" in render ? { basis: "rendered", rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" };
+  const stats: StoredPreviewStats = {
+    ...("html" in render ? { basis: "rendered" as const, rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" as const }),
+    // The live page as it was when the preview was made (the page source, the same thing checkLive fetches); list-previews checkLive compares it later.
+    liveFingerprint: liveFingerprint(res.text),
+  };
   if (figure.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
     throw new SeoError(
       `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
@@ -257,7 +262,8 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
     args,
   );
   const total = rows[0] ? Number(rows[0].total ?? rows.length) : 0;
-  const previews = rows.map((r) => {
+  const checkLive = Boolean(previewId) && bool(params, "checkLive") === true;
+  const previews = await Promise.all(rows.map(async (r) => {
     const stats = typeof r.stats === "string" ? JSON.parse(String(r.stats)) : r.stats ?? {};
     const reviewNote = r.review_note ? String(r.review_note) : null;
     const note = r.decision_note ? String(r.decision_note) : null;
@@ -281,6 +287,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
         decidedAt: r.decided_at ? String(r.decided_at) : null,
         expiresAt: String(r.expires_at),
         ...(r.cancelled_at ? { cancelReason: r.cancel_reason ? String(r.cancel_reason) : null, cancelledAt: String(r.cancelled_at) } : {}),
+        ...(checkLive ? { liveCheck: await liveCheckOf(env, String(r.page_url), stats?.liveFingerprint) } : {}),
       };
     }
     const keptPct = typeof stats?.rendered?.keptPct === "number" ? stats.rendered.keptPct : typeof stats?.keptPct === "number" ? stats.keptPct : null;
@@ -300,7 +307,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
       decidedAt: r.decided_at ? String(r.decided_at) : null,
       expiresAt: String(r.expires_at),
     };
-  });
+  }));
   const cutAny = compact && previews.some((p) => "reviewNoteCut" in p || "noteCut" in p);
   return {
     previews,
@@ -997,4 +1004,18 @@ export async function refreshStalePreviews(env: Env): Promise<number> {
     }
   }
   return refreshed;
+}
+
+/** unchanged | changed (with the fields) | unknown (no stored fingerprint, or the live page could not be read) (PAR-9006). */
+async function liveCheckOf(env: Env, pageUrl: string, stored: LiveFingerprint | undefined): Promise<{ result: "unchanged" | "changed" | "unknown"; fields?: string[]; reason?: string }> {
+  if (!stored || typeof stored.title !== "string") return { result: "unknown", reason: "This preview has no stored copy of the live page (made before the check existed)." };
+  let res: Awaited<ReturnType<Env["site"]>>;
+  try {
+    res = await env.site(pageUrl, { maxChars: MAX_HTML });
+  } catch (error) {
+    return { result: "unknown", reason: `The live page could not be read: ${errorMessage(error)}` };
+  }
+  if (res.status >= 400 || !res.text) return { result: "unknown", reason: `The live page answered ${res.status}.` };
+  const fields = fingerprintChanges(stored, liveFingerprint(res.text));
+  return fields.length ? { result: "changed", fields } : { result: "unchanged" };
 }

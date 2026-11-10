@@ -433,3 +433,30 @@ export function thanksHtml(decision: "approved" | "changes_requested"): string {
   const text = decision === "approved" ? "Thank you. We have your approval and will make the change." : "Thank you. We have your comments and will send an updated version.";
   return `<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thank you</title><body style="font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;text-align:center"><p>${text}</p></body>`;
 }
+
+/** What a visitor sees of a page's head and heading: compared later to tell whether the live page moved since a preview was made (PAR-9006). */
+export interface LiveFingerprint { title: string; metaDescription: string; h1: string; words: number | null }
+
+const decodeText = (v: string) => v.replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+
+/** Title, meta description, first H1 and the visible word count of a page's html. A listing page (two or more <article> items) skips the count: its items change all the time. */
+export function liveFingerprint(html: string, opts: { skipWords?: boolean } = {}): LiveFingerprint {
+  const skipWords = opts.skipWords ?? (html.match(/<article\b/gi) ?? []).length > 1;
+  const title = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)?.[1] ?? "";
+  let meta = "";
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    if (!/\bname\s*=\s*["']description["']/i.test(m[0])) continue;
+    meta = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(m[0])?.slice(1, 3).find((x) => x !== undefined) ?? "";
+    break;
+  }
+  const h1 = /<h1\b[^>]*>([\s\S]*?)<\/h1\s*>/i.exec(html)?.[1] ?? "";
+  return { title: decodeText(title), metaDescription: decodeText(meta), h1: decodeText(h1), words: skipWords ? null : visibleWords(html).length };
+}
+
+/** Fields that differ between the stored and the current fingerprint (words only when both counted them). */
+export function fingerprintChanges(stored: LiveFingerprint, now: LiveFingerprint): string[] {
+  const out: string[] = [];
+  for (const k of ["title", "metaDescription", "h1"] as const) if (stored[k] !== now[k]) out.push(k);
+  if (stored.words != null && now.words != null && stored.words !== now.words) out.push("words");
+  return out;
+}

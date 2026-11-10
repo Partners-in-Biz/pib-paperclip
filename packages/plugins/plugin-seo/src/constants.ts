@@ -79,3 +79,8 @@ export function taskIdFromOrigin(originId: string | null | undefined): string | 
 export function isOurOrigin(originKind: unknown): boolean {
   return typeof originKind === "string" && (originKind === `plugin:${PLUGIN_ID}` || originKind.startsWith(`plugin:${PLUGIN_ID}:`));
 }
+
+/** How long a client's "approved" answer stays usable after they gave it, whatever the link's own expiry (PAR-9006). */
+export const APPROVAL_VALID_DAYS = 30;
+/** SQL: the preview row counts as live: pending ones until expires_at, approved ones until APPROVAL_VALID_DAYS after the answer. */
+export const PREVIEW_LIVE_SQL = `(CASE WHEN status = 'approved' THEN decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ELSE expires_at > now() END)`;

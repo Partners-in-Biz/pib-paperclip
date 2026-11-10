@@ -16,7 +16,8 @@
  */
 import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { createHash } from "node:crypto";
-import { ARCHIVE_APPLY_GUIDANCE } from "../apply-guidance.js";
+import { ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
+import { PREVIEW_LIVE_SQL } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { approvalEmail, approverAddresses } from "../engine/approval-email.js";
@@ -59,7 +60,7 @@ interface TaskPreview {
 export async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
   const rows = await env.ctx.db.query(
     `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key
-       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND expires_at > now() AND status <> 'cancelled' ORDER BY page_url, created_at DESC`,
+       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND ${PREVIEW_LIVE_SQL} AND status <> 'cancelled' ORDER BY page_url, created_at DESC`,
     [companyId, taskId],
   );
   return rows.map((r) => ({
@@ -311,6 +312,7 @@ export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: st
       : []),
     "",
     ARCHIVE_APPLY_GUIDANCE,
+    LIVE_CHECK_GUIDANCE,
     "Rules: apply only the approved previews and nothing else; read each page back and check it live (cache-busting load, phone and desktop); complete this task only when every page of it is applied or dropped. New previews for requested changes park this task again by themselves: end your turn after making them.",
   ];
   const unparked = task.status === "blocked" && task.assigneeKind === "client";

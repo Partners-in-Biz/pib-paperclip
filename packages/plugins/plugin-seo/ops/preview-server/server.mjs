@@ -267,9 +267,11 @@ const server = http.createServer(async (req, res) => {
     };
     const sub = m[2] ?? "";
     if (req.method === "GET" && sub === "") {
-      const { rows } = await pool.query(`SELECT html, status, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
+      const { rows } = await pool.query(`SELECT html, status, review_status, review_key, decided_at, expires_at < now() AS expired, (status = 'approved' AND decided_at > now() - interval '30 days') AS approved_live FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
       if (rows[0].status === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
+      // An approved answer stays valid 30 days after it was given (APPROVAL_VALID_DAYS), whatever the link's expiry; no form, POST stays refused.
+      if (rows[0].expired && rows[0].approved_live) return send(res, 200, page(`You approved this on ${new Date(rows[0].decided_at).toISOString().slice(0, 10)}. We are applying it.`));
       if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
       let html = rows[0].html;
       html = rewriteFormAction(html, PREVIEW_ORIGIN);
