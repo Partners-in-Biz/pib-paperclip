@@ -219,7 +219,11 @@ export async function listHermesSkills(
  * (`<skills root>/__versions__/<skillId>/<versionId>`) under the same skills
  * root as the unversioned source folder.
  */
-async function isSameSkillInstallation(linked: string, source: string): Promise<boolean> {
+async function isSameSkillInstallation(
+  linked: string,
+  source: string,
+  versionIds: Array<string | null | undefined> = [],
+): Promise<boolean> {
   const resolvedLinked = path.resolve(linked);
   const resolvedSource = path.resolve(source);
   if (resolvedLinked === resolvedSource) return true;
@@ -232,7 +236,12 @@ async function isSameSkillInstallation(linked: string, source: string): Promise<
   const markerIndex = resolvedLinked.indexOf(marker);
   if (markerIndex <= 0) return false;
   const linkedRoot = resolvedLinked.slice(0, markerIndex);
-  return resolvedSource.startsWith(linkedRoot + path.sep);
+  if (!resolvedSource.startsWith(linkedRoot + path.sep)) return false;
+  // Layout is <root>/__versions__/<skillId>/<versionId>. When the entry carries
+  // a version identity, the link must point at exactly that version.
+  const known = versionIds.filter((id): id is string => Boolean(id));
+  if (known.length === 0) return true;
+  return known.includes(path.basename(resolvedLinked));
 }
 
 export async function reconcileHermesPaperclipSkills(
@@ -260,7 +269,7 @@ export async function reconcileHermesPaperclipSkills(
     const resolvedSource = linkedSource
       ? path.resolve(path.dirname(target), linkedSource)
       : null;
-    if (!resolvedSource || !(await isSameSkillInstallation(resolvedSource, entry.source))) {
+    if (!resolvedSource || !(await isSameSkillInstallation(resolvedSource, entry.source, [entry.versionId, entry.currentVersionId]))) {
       throw new Error(
         `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
       );

@@ -155,37 +155,90 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
   }
 });
 
-test("Hermes treats a versioned cache link under the same skills root as the same installation", async () => {
+const COMPANY = "22222222-2222-4222-8222-222222222222";
+const SKILL_ID = "33333333-3333-4333-8333-333333333333";
+const VERSION_ID = "44444444-4444-4444-8444-444444444444";
+
+async function syncWithLink(opts: {
+  linkRel: string[] | null; // path under home/skills/<company>-root, or null for a real dir
+  linkRoot?: string; // override root that holds __versions__
+  versionId?: string;
+}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-versioned-link-"));
   try {
-    const skillsRoot = path.join(home, "skills", "22222222-2222-4222-8222-222222222222");
+    const skillsRoot = path.join(home, "skills", COMPANY);
     const source = path.join(skillsRoot, "paperclip");
-    const versioned = path.join(skillsRoot, "__versions__", "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444");
     const target = path.join(home, ".hermes", "skills", "paperclip");
     await fs.mkdir(source, { recursive: true });
-    await fs.mkdir(versioned, { recursive: true });
-    await fs.writeFile(path.join(versioned, "SKILL.md"), "# Paperclip\n", "utf8");
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.symlink(versioned, target);
+    let linked: string;
+    if (opts.linkRel) {
+      linked = path.join(opts.linkRoot ?? skillsRoot, "__versions__", ...opts.linkRel);
+      await fs.mkdir(linked, { recursive: true });
+      await fs.writeFile(path.join(linked, "SKILL.md"), "# Paperclip\n", "utf8");
+      await fs.symlink(linked, target);
+    } else {
+      linked = target;
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, "SKILL.md"), "# Other\n", "utf8");
+    }
     const adapter = createServerAdapter();
-
-    const snapshot = await adapter.syncSkills?.({
+    const run = () => adapter.syncSkills?.({
       adapterType: "hermes_local",
       agentId: "11111111-1111-4111-8111-111111111111",
-      companyId: "22222222-2222-4222-8222-222222222222",
+      companyId: COMPANY,
       config: {
         env: { HOME: home },
         paperclipRuntimeSkills: [{
           key: "paperclipai/paperclip/paperclip",
           runtimeName: "paperclip",
           source,
+          ...(opts.versionId ? { versionId: opts.versionId } : {}),
         }],
       },
     }, []);
-
-    expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
-    expect(await fs.readlink(target)).toBe(versioned);
-  } finally {
+    return { run, target, linked };
+  } catch (err) {
     await fs.rm(home, { recursive: true, force: true });
+    throw err;
   }
+}
+
+test("Hermes treats a versioned cache link under the same skills root as the same installation (no versionId)", async () => {
+  const ctx = await syncWithLink({ linkRel: [SKILL_ID, VERSION_ID] });
+  const snapshot = await ctx.run();
+  expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
+  expect(await fs.readlink(ctx.target)).toBe(ctx.linked);
+});
+
+test("Hermes accepts a versioned cache link whose basename matches the entry versionId", async () => {
+  const ctx = await syncWithLink({ linkRel: [SKILL_ID, VERSION_ID], versionId: VERSION_ID });
+  const snapshot = await ctx.run();
+  expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
+  expect(await fs.readlink(ctx.target)).toBe(ctx.linked);
+});
+
+test("Hermes rejects a versioned cache link with a non-matching versionId", async () => {
+  const ctx = await syncWithLink({
+    linkRel: [SKILL_ID, VERSION_ID],
+    versionId: "55555555-5555-4555-8555-555555555555",
+  });
+  await expect(ctx.run()).rejects.toThrow("occupied by another installation");
+});
+
+test("Hermes rejects a versioned cache link under a different company root", async () => {
+  const ctx = await syncWithLink({
+    linkRel: [SKILL_ID, VERSION_ID],
+    linkRoot: path.join(os.tmpdir(), `paperclip-other-root-${process.pid}-${Date.now()}`),
+  });
+  try {
+    await expect(ctx.run()).rejects.toThrow("occupied by another installation");
+  } finally {
+    await fs.rm(path.dirname(path.dirname(path.dirname(ctx.linked))), { recursive: true, force: true });
+  }
+});
+
+test("Hermes rejects a real directory at the target even with a versions cache present", async () => {
+  const ctx = await syncWithLink({ linkRel: null, versionId: VERSION_ID });
+  await expect(ctx.run()).rejects.toThrow("occupied by another installation");
 });
