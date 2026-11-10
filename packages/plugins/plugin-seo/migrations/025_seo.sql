@@ -1,4 +1,4 @@
--- Cancelled previews (0.33.0, PAR-8972 T1a): a duplicate or superseded preview can be taken out of the client's sight without
+-- Cancelled previews (0.33.0, PAR-8972 T1a): a duplicate or superseded preview can be taken out of sight of the client without
 -- being deleted. `cancelled_prev_status` keeps the exact prior status so a rollback can put the row back as it was.
 -- The CHECK is replaced NOT VALID first (brief lock, no table scan), then validated (scan under a lighter lock).
 -- Rollback, option A: bring the duplicates back exactly as they were (run BEFORE re-adding the old CHECK, and before rolling the plugin back):
