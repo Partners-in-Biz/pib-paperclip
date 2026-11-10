@@ -887,9 +887,9 @@ export async function reissueTask(env: Env, companyId: string, taskId: string, o
 }
 
 
-/** Whether any client preview has been made for the task. */
+/** Whether any client preview has been made for the task (a cancelled one is not a preview the client can answer). */
 export async function taskHasPreview(env: Env, companyId: string, taskId: string): Promise<boolean> {
-  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 LIMIT 1`, [companyId, taskId]);
+  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 AND status <> 'cancelled' LIMIT 1`, [companyId, taskId]);
   return rows.length > 0;
 }
 
@@ -902,7 +902,7 @@ export async function reclaimPersonHandOffs(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence, t.human_ask FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
       WHERE s.status = 'active' AND s.client_signoff = 'auto' AND t.task_type = 'page-write' AND t.status = 'blocked' AND t.issue_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
+        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id AND p.status <> 'cancelled') LIMIT 20`,
   );
   let taken = 0;
   for (const row of rows) {

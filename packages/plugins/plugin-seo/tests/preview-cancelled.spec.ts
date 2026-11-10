@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, listPreviews, nudgeStalledReviews, previewRows, refreshStalePreviews, reviewPreview, reviveOrphanedChanges } from "../src/service/preview.js";
 import { latestTaskPreviews, previewsToDraft } from "../src/service/client-signoff.js";
+import { reclaimPersonHandOffs, taskHasPreview } from "../src/service/tasks.js";
+import { needsYouAddTool } from "../src/service/needs-you.js";
 import { siteProgress } from "../src/service/report.js";
 import { onBuildIssueUpdated } from "../src/service/build.js";
 import { SeoError } from "../src/service/common.js";
@@ -268,5 +270,56 @@ describePg("cancelled previews", () => {
     const get = server.match(/SELECT html, status, review_status[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA).replace("$1", "'srv'");
     const [row] = await sql.unsafe(get);
     expect(row.status).toBe("cancelled");
+  });
+  describe("task-level readers: a cancelled preview is not a preview the client can answer", () => {
+    const actor = { type: "agent", id: "agent-1" } as never;
+    async function seedTask(id: string) {
+      await sql.unsafe(`ALTER TABLE ${SCHEMA}.sprint_tasks DROP CONSTRAINT IF EXISTS sprint_tasks_sprint_id_fkey`);
+      await sql.unsafe(`DELETE FROM ${SCHEMA}.sprint_tasks`);
+      await sql.unsafe(`DELETE FROM ${SCHEMA}.sprints`);
+      await sql.unsafe(`INSERT INTO ${SCHEMA}.sprints (id, company_id, name, site_name, start_date, site_url, status, client_signoff) VALUES ('sp-1', 'co-1', 'S', 'Acme', current_date, 'https://acme.co.za', 'active', 'auto')`);
+      await sql.unsafe(`INSERT INTO ${SCHEMA}.sprint_tasks (id, company_id, sprint_id, title, task_type, status, issue_id) VALUES ($1, 'co-1', 'sp-1', 'Write', 'page-write', 'blocked', 'iss-1')`, [id]);
+    }
+    const onlyCancelled = async () => { await reset(); await put("c-only", { status: "cancelled", cancelled_prev_status: "pending" }); };
+    const olderLive = async () => { await onlyCancelled(); await put("live", { created_at: ago(5 * HOURS) }); };
+
+    it("taskHasPreview: only a cancelled preview counts as none, an older live one counts", async () => {
+      await onlyCancelled();
+      expect(await taskHasPreview(host().env, "co-1", "t-1")).toBe(false);
+      await olderLive();
+      expect(await taskHasPreview(host().env, "co-1", "t-1")).toBe(true);
+    });
+
+    // These two queries join sprint_tasks, so they are sent to the real database whole.
+    const realHost = () => {
+      const h = host([[/FROM plugin_seo_8099f8879a\.sprints WHERE id = \$1/, () => [{ ...SPRINT, client_signoff: "auto" }]]]);
+      const before = h.ctx.db.query.bind(h.ctx.db);
+      h.ctx.db.query = (async (text: string, params: unknown[] = []) => (/NOT EXISTS \(SELECT 1 FROM plugin_seo_8099f8879a\.previews/.test(text) ? ((await sql.unsafe(text, params.map((x) => (typeof x === "string" && x.startsWith("[") ? JSON.parse(x) : x)) as never)) as unknown as Row[]) : before(text, params))) as never;
+      return h;
+    };
+
+    it("reclaimPersonHandOffs: a blocked page task with only a cancelled preview is a candidate; with an older live one it is not", async () => {
+      await seedTask("t-1");
+      await onlyCancelled();
+      const h = realHost();
+      const seen: string[][] = [];
+      const orig = h.ctx.db.query;
+      h.ctx.db.query = (async (text: string, params: unknown[] = []) => { const r = await orig(text, params); if (/AS t JOIN|t JOIN/.test(text) && /reclaim|NOT EXISTS/.test(text)) seen.push((r as Row[]).map((x) => String(x.id))); return r; }) as never;
+      await reclaimPersonHandOffs(h.env).catch(() => undefined);
+      expect(seen.at(-1)).toEqual(["t-1"]);
+      await olderLive();
+      seen.length = 0;
+      await reclaimPersonHandOffs(h.env).catch(() => undefined);
+      expect(seen.at(-1)).toEqual([]);
+    });
+
+    it("needs-you-add on an auto sign-off sprint: only a cancelled preview does not satisfy the page; an older live one does", async () => {
+      await seedTask("t-1");
+      const params = { sprintId: "sp-1", kind: "task", title: "Apply it", why: "x", after: "y", taskIds: ["t-1"] };
+      await onlyCancelled();
+      await expect(needsYouAddTool(realHost().env, "co-1", actor, params)).rejects.toThrow(/client sign-off is automatic/);
+      await olderLive();
+      await expect(needsYouAddTool(realHost().env, "co-1", actor, params)).resolves.toMatchObject({ key: "task:apply-it" });
+    });
   });
 });

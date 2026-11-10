@@ -348,7 +348,7 @@ describe("on automatic sign-off a page's change is never handed to a person", ()
 
   it("allows it once a preview exists, and on a manual sprint (the controls)", async () => {
     const { blockTask } = await import("../src/service/tasks.js");
-    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 LIMIT 1/, () => [{ "?column?": 1 }]]] });
+    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 AND status <> 'cancelled' LIMIT 1/, () => [{ "?column?": 1 }]]] });
     await expect(blockTask(withPreview.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
     const manual = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })] });
     await expect(blockTask(manual.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
