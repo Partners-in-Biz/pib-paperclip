@@ -213,6 +213,19 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
     expect(entry?.details).toMatchObject({ reason: "owner_agent_idle" });
   });
 
+  it("leaves an issue alone while a future monitor already holds it (PAR-8900)", async () => {
+    const ctx = await seedCompany("idle");
+    const issueId = await seedIssue(ctx, {
+      monitorNextCheckAt: new Date(now.getTime() + 60 * 60 * 1000),
+    });
+    const { sweeper, wakeup } = makeSweeper();
+
+    await sweeper.sweep(now);
+
+    expect(await statusOf(issueId)).toBe("blocked");
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
   it("uses the agent named in the unblock descriptor as the owner to check", async () => {
     const ctx = await seedCompany("idle");
     const pausedOwnerId = randomUUID();

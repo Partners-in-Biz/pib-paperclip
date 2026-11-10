@@ -7,6 +7,7 @@ import { logActivity } from "./activity-log.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "./issue-dependency-wakeups.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+import { readDispositionRepairDurableWaitingState } from "./recovery/disposition-repair.js";
 
 export const BLOCKED_ISSUE_SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
 export const BLOCKED_ISSUE_SWEEP_MAX_PER_TICK = 50;
@@ -58,7 +59,12 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
         id: issues.id,
         companyId: issues.companyId,
         identifier: issues.identifier,
+        status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
         executionRunId: issues.executionRunId,
         unblockDescriptor: issues.unblockDescriptor,
         blockedTransitionAt: issues.blockedTransitionAt,
@@ -159,6 +165,15 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
         }
         const ownerAgentId = owner && "agentId" in owner ? owner.agentId : assigneeAgentId;
         if (!isHealthy(ownerAgentId) || !isHealthy(assigneeAgentId)) {
+          skipped += 1;
+          continue;
+        }
+        // A pending question or approval, a future monitor, or a pending review
+        // stage already holds the issue and will wake the owner. Sweeping it
+        // anyway wakes the agent to say "still waiting"; its re-check then ends
+        // without a disposition and buys a second, repair wake (PAR-8900).
+        const wait = await readDispositionRepairDurableWaitingState(db, { issue: candidate });
+        if (wait.hasDurableWaitingPath) {
           skipped += 1;
           continue;
         }
