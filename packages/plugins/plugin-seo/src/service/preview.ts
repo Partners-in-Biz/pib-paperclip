@@ -249,9 +249,10 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
   filter("review_status", oneOf(params, "reviewStatus", ["pending", "passed", "changes_needed"] as const));
   const limit = previewId ? 1 : num(params, "limit", { integer: true, min: 1, max: 100 }) ?? PREVIEW_LIST_DEFAULT;
   const compact = previewId ? false : bool(params, "compact") ?? true;
+  const includeHtml = Boolean(previewId) && bool(params, "includeHtml") === true;
   args.push(limit);
   const rows = await env.ctx.db.query(
-    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats, cancel_reason, cancelled_at, count(*) OVER() AS total FROM ${t("previews")}
+    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats, cancel_reason, cancelled_at, changes, ${includeHtml ? "html," : ""} count(*) OVER() AS total FROM ${t("previews")}
       WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT $${args.length}::int`,
     args,
   );
@@ -262,8 +263,12 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
     const note = r.decision_note ? String(r.decision_note) : null;
     const reviewStatus = String(r.review_status ?? "pending");
     if (!compact) {
+      const stored = typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {};
       return {
         previewId: String(r.id),
+        // The approved copy, readable for any status and expiry (the stored html is only returned with includeHtml).
+        changes: { title: stored.title ?? null, metaDescription: stored.metaDescription ?? null, h1: stored.h1 ?? null, bodyHtml: stored.bodyHtml ?? null, bodyMode: stored.bodyHtml ? stored.bodyMode ?? "before" : null },
+        ...(includeHtml ? { html: String(r.html ?? "") } : {}),
         url: previewLink(String(r.page_url), String(r.id)),
         taskId: r.task_id ? String(r.task_id) : null,
         pageUrl: String(r.page_url),

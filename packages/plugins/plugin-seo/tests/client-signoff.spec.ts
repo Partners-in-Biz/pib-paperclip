@@ -171,6 +171,8 @@ describe("the client's answers", () => {
     expect(w.wakeups).toEqual(["iss-1"]);
     const body = w.comments.at(-1)!.body;
     expect(body).toMatch(/Approved: apply these now/);
+    expect(body).toContain("wp-archive set (html = <h1>h1</h1> + bodyHtml, position = bodyMode before or after); never wp-content update");
+    expect(body).toContain("bodyMode replace on an archive cannot be applied");
     expect(body).toContain("https://agristudies.co.za/a");
     expect(body).toMatch(/Changes requested: revise/);
     expect(body).toContain("Use our logo colours");

@@ -79,6 +79,13 @@ describe("approve-site-writes comment", () => {
     expect(body).not.toContain("long title");
   });
 
+  it("tells the agent how to apply an archive page", async () => {
+    const h = approvedHost(3);
+    await approveSiteWrites(h.env, "co-1", owner, { sprintId: "sp-1" });
+    expect(h.comments[0]).toContain("Category, tag or other archive page: title and meta with wp-seo");
+    expect(h.comments[0]).toContain("never wp-content update");
+  });
+
   it("lists a short approval in full", async () => {
     const h = approvedHost(3);
     await approveSiteWrites(h.env, "co-1", owner, { sprintId: "sp-1" });

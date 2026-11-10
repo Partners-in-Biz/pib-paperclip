@@ -315,6 +315,19 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     await expect(reviewPreview(host(row).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(`only ${kept}%`);
   });
 
+  it("previewId returns the approved copy as changes (and the stored html only with includeHtml); compact rows stay without it", async () => {
+    const row = { id: "p1", task_id: "t-1", page_url: "https://acme.co.za/category/x/", title: "X", status: "cancelled", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: {}, html: "<html>stored</html>", changes: JSON.stringify({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after", css: "x{}" }) };
+    type Out = { previews: Array<Record<string, unknown>> };
+    const plain = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1" })) as Out;
+    expect(plain.previews[0]!.changes).toEqual({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after" });
+    expect(plain.previews[0]).not.toHaveProperty("html");
+    const withHtml = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1", includeHtml: true })) as Out;
+    expect(withHtml.previews[0]!.html).toBe("<html>stored</html>");
+    const compact = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1" })) as Out;
+    expect(compact.previews[0]).not.toHaveProperty("changes");
+    expect(compact.previews[0]).not.toHaveProperty("html");
+  });
+
   it("an old row without a basis lists as source", async () => {
     const row = { id: "p1", task_id: "t-1", page_url: "https://acme.co.za/", title: "Home", status: "pending", review_status: "pending", expires_at: "2026-11-01", created_at: "2026-10-02", total: 1, stats: { keptPct: 91, liveWords: 200 } };
     const list = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1" })) as { previews: Array<Record<string, unknown>> };
