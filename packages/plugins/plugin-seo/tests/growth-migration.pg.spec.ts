@@ -33,8 +33,8 @@ describe("migration 024 text", () => {
     expect(sql).not.toMatch(/\bDELETE\s+FROM\b/i);
   });
 
-  it("leaves 013 untouched and 024 is the head", () => {
-    expect(files[files.length - 1]).toBe(GROWTH_FILE);
+  it("leaves 013 untouched and keeps 024 in place", () => {
+    expect(files).toContain(GROWTH_FILE);
     expect(read("013_seo.sql")).toContain(`CREATE TABLE ${NAMESPACE}.playbooks (`);
     expect(read("013_seo.sql")).not.toContain("growth_");
   });

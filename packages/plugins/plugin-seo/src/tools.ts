@@ -371,7 +371,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       sprintId,
       previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),
       taskId: text("Only the previews made for this task"),
-      status: choice(["pending", "approved", "changes_requested"], "Only previews with this client answer: pending, approved or changes_requested"),
+      status: choice(["pending", "approved", "changes_requested", "cancelled"], "Only previews with this client answer: pending, approved or changes_requested; or cancelled (replaced by a newer version)"),
       reviewStatus: choice(["pending", "passed", "changes_needed"], "Only previews with this Reviewer verdict: pending, passed or changes_needed"),
       limit: int("Rows to return (default 20, at most 100)"),
       compact: flag("Short rows (default true); false returns every field in full for each row"),

@@ -311,7 +311,7 @@ describe("a page that keeps failing, on automatic sign-off, is dropped instead o
   const page = "https://agristudies.co.za/product/national-certificate-animal-production/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const routes = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
     latest([preview("p0", "product/other", { status: "approved" })]),
   ];
@@ -402,7 +402,7 @@ describe("dropping a failing page does not kill a newer revision of it", () => {
   const page = "https://agriauctionssa.co.za/category/skape-sheep/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const base = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
   ];
   const run = async (newer: boolean) => {

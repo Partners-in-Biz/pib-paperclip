@@ -245,13 +245,13 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
   };
   filter("id", previewId);
   filter("task_id", str(params, "taskId", { max: 80 }));
-  filter("status", oneOf(params, "status", ["pending", "approved", "changes_requested"] as const));
+  filter("status", oneOf(params, "status", ["pending", "approved", "changes_requested", "cancelled"] as const));
   filter("review_status", oneOf(params, "reviewStatus", ["pending", "passed", "changes_needed"] as const));
   const limit = previewId ? 1 : num(params, "limit", { integer: true, min: 1, max: 100 }) ?? PREVIEW_LIST_DEFAULT;
   const compact = previewId ? false : bool(params, "compact") ?? true;
   args.push(limit);
   const rows = await env.ctx.db.query(
-    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats, count(*) OVER() AS total FROM ${t("previews")}
+    `SELECT id, task_id, page_url, title, status, decision_note, decided_at, expires_at, created_at, review_status, review_note, stats, cancel_reason, cancelled_at, count(*) OVER() AS total FROM ${t("previews")}
       WHERE ${where.join(" AND ")} ORDER BY created_at DESC LIMIT $${args.length}::int`,
     args,
   );
@@ -275,6 +275,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
         ...(note ? { note } : {}),
         decidedAt: r.decided_at ? String(r.decided_at) : null,
         expiresAt: String(r.expires_at),
+        ...(r.cancelled_at ? { cancelReason: r.cancel_reason ? String(r.cancel_reason) : null, cancelledAt: String(r.cancelled_at) } : {}),
       };
     }
     const keptPct = typeof stats?.rendered?.keptPct === "number" ? stats.rendered.keptPct : typeof stats?.keptPct === "number" ? stats.keptPct : null;
@@ -310,7 +311,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
 export async function deliverPreviewAnswers(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT id, company_id, sprint_id, task_id, issue_id, page_url, title, status, decision_note, draft_key FROM ${t("previews")}
-      WHERE decided_at IS NOT NULL AND notified_at IS NULL ORDER BY decided_at LIMIT 25`,
+      WHERE decided_at IS NOT NULL AND notified_at IS NULL AND status <> 'cancelled' ORDER BY decided_at LIMIT 25`,
   );
   let sent = 0;
   for (const row of rows) {
@@ -466,11 +467,12 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
   let fixBy = oneOf(params, "fixBy", ["seo", "developer", "senior"] as const) ?? "seo";
   if (verdict === "changes" && !notes) throw new SeoError("Say what is wrong: notes are required with verdict changes.");
   const rows = await env.ctx.db.query(
-    `SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM ${t("previews")} WHERE id = $1 AND company_id = $2 AND sprint_id = $3 LIMIT 1`,
+    `SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM ${t("previews")} WHERE id = $1 AND company_id = $2 AND sprint_id = $3 LIMIT 1`,
     [previewId, companyId, sprintId],
   );
   const row = rows[0];
   if (!row) throw new SeoError("No such preview on this sprint.");
+  if (String(row.status) === "cancelled") throw new SeoError("This preview was cancelled (replaced by a newer version), so there is nothing to review. Review the current preview of the page instead (list-previews shows it).");
   if (actor.kind === "agent" && actorId(actor) === String(row.created_by)) throw new SeoError("You made this preview, so someone else has to check it: the Reviewer or the owner.");
   if (verdict === "pass" && actor.kind === "agent") {
     const stat = await env.ctx.db.query(`SELECT stats FROM ${t("previews")} WHERE id = $1 LIMIT 1`, [previewId]);
@@ -491,7 +493,7 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
   // A page that keeps failing the check: the Senior Developer gets one go (the developer's own fix was the last try so far), then the owner is asked instead of going round and round.
   let forcedSenior = false;
   const escalateToOwner = async () => {
-    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
+    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed' AND status <> 'cancelled'`, [companyId, taskId, pageUrl]);
     const escalated = await escalateStuckPreview(env, companyId, sprintId, taskId!, pageUrl, String(row.title), notes!, Number(rounds[0]?.n), previewId);
     if (!escalated) return null;
     const owning = await db.getSprint(env.ctx.db, companyId, sprintId);
@@ -509,7 +511,7 @@ export async function reviewPreview(env: Env, companyId: string, actor: Actor, p
     return { previewId, reviewStatus: "changes_needed", clientCanOpen: false, escalatedToOwner: true, next: "Set your review issue to done. The owner decides what happens with this page." };
   };
   if (verdict === "changes" && taskId) {
-    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed'`, [companyId, taskId, pageUrl]);
+    const rounds = await env.ctx.db.query(`SELECT count(*)::int AS n FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url = $3 AND review_status = 'changes_needed' AND status <> 'cancelled'`, [companyId, taskId, pageUrl]);
     if (Number(rounds[0]?.n ?? 0) >= MAX_REVIEW_ROUNDS) {
       const task = await db.getTask(env.ctx.db, companyId, taskId);
       if (task && !seniorTried(task, pageUrl)) {
@@ -587,7 +589,7 @@ export interface PreviewRow {
 export async function previewRows(env: Env, companyId: string, sprintId: string): Promise<PreviewRow[]> {
   const rows = await env.ctx.db.query(
     `SELECT id, page_url, title, status, review_status, review_note, decision_note, review_key, stats, created_at, expires_at FROM ${t("previews")}
-      WHERE company_id = $1 AND sprint_id = $2 ORDER BY created_at DESC LIMIT 200`,
+      WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY created_at DESC LIMIT 200`,
     [companyId, sprintId],
   );
   const seen = new Set<string>();
@@ -757,7 +759,7 @@ export async function handStuckPreviewsToSenior(env: Env): Promise<number> {
           if (!task || !task.issueId) continue;
           const keyed = item.key.slice(`preview-stuck:${taskId}:`.length);
           const rows = await env.ctx.db.query(
-            `SELECT id, page_url, changes, review_note, review_key FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url LIKE $3 ORDER BY created_at DESC LIMIT 1`,
+            `SELECT id, page_url, changes, review_note, review_key FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND page_url LIKE $3 AND status <> 'cancelled' ORDER BY created_at DESC LIMIT 1`,
             [companyId, taskId, `${keyed}%`],
           );
           const row = rows[0];
@@ -808,7 +810,7 @@ export async function nudgeStalledReviews(env: Env): Promise<number> {
     `SELECT id, company_id, sprint_id, task_id, page_url, title, review_issue_id, stats FROM ${t("previews")}
       WHERE review_status = 'pending' AND review_issue_id IS NOT NULL AND status = 'pending' AND expires_at > now()
         AND created_at < now() - ($1::int * interval '1 minute')
-        AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.sprint_id = ${t("previews")}.sprint_id AND n.page_url = ${t("previews")}.page_url AND n.created_at > ${t("previews")}.created_at)
+        AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.sprint_id = ${t("previews")}.sprint_id AND n.page_url = ${t("previews")}.page_url AND n.status <> 'cancelled' AND n.created_at > ${t("previews")}.created_at)
       ORDER BY created_at LIMIT 20`,
     [REVIEW_STALL_MINUTES],
   );
@@ -874,7 +876,7 @@ export async function reviveOrphanedChanges(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT id, company_id, sprint_id, task_id, page_url, review_note, stats FROM (
         SELECT DISTINCT ON (sprint_id, page_url) id, company_id, sprint_id, task_id, page_url, review_note, review_status, status, reviewed_at, expires_at, stats
-          FROM ${t("previews")} ORDER BY sprint_id, page_url, created_at DESC
+          FROM ${t("previews")} WHERE status <> 'cancelled' ORDER BY sprint_id, page_url, created_at DESC
       ) latest
       WHERE review_status = 'changes_needed' AND status = 'pending' AND task_id IS NOT NULL AND expires_at > now()
         AND reviewed_at < now() - ($1::int * interval '1 minute') ORDER BY reviewed_at LIMIT 40`,
@@ -948,7 +950,7 @@ export async function refreshStalePreviews(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT id, company_id, sprint_id, task_id, page_url FROM (
         SELECT DISTINCT ON (sprint_id, page_url) id, company_id, sprint_id, task_id, page_url, review_status, status, draft_key, created_at, expires_at
-          FROM ${t("previews")} ORDER BY sprint_id, page_url, created_at DESC
+          FROM ${t("previews")} WHERE status <> 'cancelled' ORDER BY sprint_id, page_url, created_at DESC
       ) latest
       WHERE review_status = 'passed' AND status = 'pending' AND draft_key IS NULL AND task_id IS NOT NULL AND expires_at > now()
         AND created_at < now() - ($1::int * interval '1 hour') LIMIT 40`,
