@@ -107,7 +107,7 @@ class PIB_Connector_Health {
 		return array(
 			'connector'         => array(
 				'version'   => PIB_CONNECTOR_VERSION,
-				'protocol'  => '1.2',
+				'protocol'  => '1.3',
 				'endpoints' => array_keys( PIB_Connector_Router::endpoints() ),
 				'features'  => PIB_Connector_Settings::features(),
 			),

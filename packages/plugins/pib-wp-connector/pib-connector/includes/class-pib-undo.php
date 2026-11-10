@@ -29,6 +29,7 @@ class PIB_Connector_Undo {
 			'posts/update'     => array( 'content', array( 'PIB_Connector_Content', 'undo_update' ) ),
 			'posts/create'     => array( 'content', array( 'PIB_Connector_Content', 'undo_create' ) ),
 			'posts/publish'    => array( 'content', array( 'PIB_Connector_Content', 'undo_publish' ) ),
+			'archive/set'      => array( 'content', array( 'PIB_Connector_Archive', 'undo' ) ),
 		);
 	}
 

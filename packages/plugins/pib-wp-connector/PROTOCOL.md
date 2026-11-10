@@ -1,4 +1,4 @@
-# PiB Connector protocol (v1, extended in 1.1.0 and 1.2.0)
+# PiB Connector protocol (v1, extended in 1.1.0, 1.2.0 and 1.3.0)
 
 The PiB Connector is a WordPress plugin installed once per client site. It lets
 Paperclip (the CRM plugin, `partnersinbiz.crm`) make a short, fixed list of SEO
@@ -621,3 +621,50 @@ Verified on a real WordPress 7.1.2 with Yoast SEO 28.6 (see README, Tests).
   pairing working, `health` reported `1.2.0`/`"1.2"` with the `verify` endpoints straight after, and
   `verify/*` worked without re-pairing. Settings saved by 1.1.0 get `verify` at its default (on).
 
+---
+
+# Version 1.3.0 additions
+
+Everything above still holds. 1.3.0 adds intro copy (for example an H1 and a paragraph) on
+category, tag and custom taxonomy archive pages. Title and meta description of those pages stay
+with `seo/set` (term targets). `health` reports `connector.version` `1.3.0` and
+`connector.protocol` `"1.3"`. Both endpoints belong to the `content` feature.
+
+## `archive/get` `{ url | termId, taxonomy? }`
+→ `{ termId, taxonomy, url, name, postCount, html, position: "before"|"after" }`
+
+The target resolves like a term target of `seo/*` (`url` of the term page, or `termId` with an
+optional `taxonomy`). A post, page, home page or post type archive is `pib_unsupported_target`
+(422). `html` is `""` when no intro is set.
+
+## `archive/set` `{ url | termId, taxonomy?, html, position?: "before"|"after", reason }`
+→ `{ changeId, target, before: { html, position }, after: { html, position }, warnings }`
+
+- `html`: at most 20,000 characters, valid UTF-8. `""` (or only whitespace) removes the intro.
+  The same safety check as `posts/update`: `<script>`, `<iframe>`, `<object>`, `<embed>`,
+  `<form>`, `javascript:` URLs and `on…=` attributes are refused (`pib_unsafe`, 422) unless the
+  same text is already in the current intro.
+- `position`: `before` (default) prints at the start of the archive loop, above the items;
+  `after` at its end, below them.
+- Stored in term meta `_pib_archive_intro` and `_pib_archive_intro_pos`; the term cache is
+  cleared (`clean_term_cache`). Sending the current values changes nothing (`changeId: null`).
+- Logged with `before` and `after`; `undo` puts the previous intro and position back (an
+  intro that did not exist is removed again).
+- `warnings` says so when the term has no posts or the active theme is a block theme (see the
+  limits below).
+
+## Front-end output
+
+The intro is printed as `<div class="pib-archive-intro">…</div>` (no inline style, so headings and
+paragraphs take the theme's styles) on `loop_start` (`before`) or `loop_end` (`after`), only when
+all of these hold: the query is the main query, `wp_head` has already run, not wp-admin, `is_category() || is_tag() ||
+is_tax()`, not page 2 or later, not a feed, the queried term has an intro, and the `content`
+feature is on. It is printed at most once per request and filtered with `wp_kses_post` on output.
+
+**Limits:**
+- A term with no posts shows nothing, because the theme does not run the loop and `loop_start`
+  never fires. `archive/get` returns `postCount` so the caller can tell.
+- Block themes (Twenty Twenty-Five and other FSE themes) show nothing: they build the whole template,
+  main loop included, into a string before `<head>` is printed, so output from `loop_start` would
+  land before `<!DOCTYPE html>`. The `wp_head` check stops that. Classic themes (Divi, Astra, the
+  Genesis family and so on) run the loop after `wp_head` and show the intro.
