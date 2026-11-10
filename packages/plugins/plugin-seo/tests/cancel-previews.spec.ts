@@ -236,5 +236,34 @@ describePg("cancel-previews", () => {
       const left = await sql.unsafe(`SELECT count(*)::int AS n FROM ${S}.previews WHERE status = 'cancelled' AND stats->>'cancelHandled' IS NULL`);
       expect(left[0].n).toBeGreaterThan(0);
     });
+
+    it("hands a task back to the agent when every preview of it was cancelled", async () => {
+      await seedTask();
+      await put("dup-only-00001");
+      const h = host();
+      await run(h, { previewIds: ["dup-only-00001"], dryRun: false, allowLast: true });
+      expect(await handleCancelledPreviews(h.env)).toBe(1);
+      expect((await sql.unsafe(`SELECT assignee_kind, status FROM ${S}.sprint_tasks WHERE id = 't-1'`))[0]).toEqual({ assignee_kind: "agent", status: "in_progress" });
+      expect(h.comments.filter((c) => c.id === "iss-1").map((c) => c.body)).toEqual(["Every preview of this task was cancelled; make a new one or complete the task."]);
+      expect(h.wakeups).toEqual(["iss-1"]);
+    });
+
+    it("gives up a permanently failing row after 5 runs so it cannot starve a later one", async () => {
+      for (let i = 0; i < 25; i += 1) await put(`stuck-${String(i).padStart(8, "0")}`, { review_issue_id: `rev-${i}`, review_status: "pending", status: "cancelled", cancelled_prev_status: "pending", cancelled_at: ago(2 * HOURS) });
+      await put("good-0000000001", { status: "cancelled", cancelled_prev_status: "pending", cancelled_at: ago(HOURS), task_id: null });
+      const h = host();
+      (h.ctx.issues.update as any).mockRejectedValue(new Error("host down"));
+      for (let run = 1; run <= 4; run += 1) {
+        expect(await handleCancelledPreviews(h.env)).toBe(0);
+        expect((await status("stuck-00000000")).stats.cancelAttempts).toBe(run);
+      }
+      expect(await handleCancelledPreviews(h.env)).toBe(0);
+      const gaveUp = (await status("stuck-00000000")).stats;
+      expect(gaveUp.cancelHandled).toBeTruthy();
+      expect(gaveUp.cancelHandledError).toMatch(/./);
+      expect((await status("good-0000000001")).stats.cancelHandled).toBeUndefined();
+      expect(await handleCancelledPreviews(h.env)).toBe(1);
+      expect((await status("good-0000000001")).stats.cancelHandled).toBeTruthy();
+    });
   });
 });

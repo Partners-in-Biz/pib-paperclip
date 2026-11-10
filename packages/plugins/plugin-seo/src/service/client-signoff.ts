@@ -288,6 +288,15 @@ export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: st
   if (previews.some((p) => p.status === "pending" && (p.reviewStatus === "passed" || p.reviewStatus === "pending"))) return true;
   const approved = previews.filter((p) => p.status === "approved" && !p.handedAt);
   const changes = previews.filter((p) => p.status === "changes_requested" && !p.handedAt);
+  if (previews.length === 0 && task.status === "blocked" && task.assigneeKind === "client") {
+    // Every preview of the task was cancelled: nothing is left for the client to answer, so the agent gets the task back.
+    if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) return true;
+    await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+    if (await commentOn(env, sprint.companyId, task.issueId, "Every preview of this task was cancelled; make a new one or complete the task.")) {
+      await wakeIssue(env.ctx, task.issueId, sprint.companyId, "Every preview of the task was cancelled");
+    }
+    return true;
+  }
   if (approved.length === 0 && changes.length === 0) return true;
   let until: string | null = null;
   if (approved.length > 0) until = await liftWriteLock(env, sprint, `client-approval:${task.id}`, AUTO_APPLY_HOURS);

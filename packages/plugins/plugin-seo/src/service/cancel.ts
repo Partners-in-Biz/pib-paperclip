@@ -16,6 +16,7 @@ export const CANCEL_FOLLOW_UP = "review issues closed and tasks re-checked withi
 export const CANCEL_REVIEW_COMMENT = "Preview replaced by a newer version; nothing to review.";
 const FOLLOW_UP_PREVIEWS = 25;
 const FOLLOW_UP_TASKS = 10;
+const FOLLOW_UP_MAX_ATTEMPTS = 5;
 
 type SkipReason = "notFound" | "ambiguous" | "alreadyCancelled" | "approved" | "lastOnPage";
 interface Row {
@@ -164,10 +165,11 @@ function readInputs(params: Params): string[] {
  */
 export async function handleCancelledPreviews(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
-    `SELECT id, company_id, sprint_id, task_id, review_issue_id, review_status FROM ${t("previews")}
+    `SELECT id, company_id, sprint_id, task_id, review_issue_id, review_status, stats FROM ${t("previews")}
       WHERE status = 'cancelled' AND stats->>'cancelHandled' IS NULL ORDER BY cancelled_at LIMIT ${FOLLOW_UP_PREVIEWS}`,
   );
   const ready: Array<Record<string, any>> = [];
+  const failed: Array<{ row: Record<string, any>; error: string }> = [];
   for (const row of rows) {
     const companyId = String(row.company_id);
     try {
@@ -182,6 +184,7 @@ export async function handleCancelledPreviews(env: Env): Promise<number> {
       }
       ready.push(row);
     } catch (error) {
+      failed.push({ row, error: errorMessage(error) });
       env.ctx.logger.info("SEO cancelled preview review issue not closed", { previewId: String(row.id), error: errorMessage(error) });
     }
   }
@@ -196,6 +199,7 @@ export async function handleCancelledPreviews(env: Env): Promise<number> {
       if (sprint && isAutoSignoff(sprint)) await recheckTaskAnswers(env, sprint, taskId);
       checked.add(key);
     } catch (error) {
+      for (const row of ready) if (`${row.company_id}:${row.task_id}` === key) failed.push({ row, error: errorMessage(error) });
       env.ctx.logger.info("SEO cancelled preview task not re-checked", { taskId, error: errorMessage(error) });
     }
   }
@@ -204,6 +208,23 @@ export async function handleCancelledPreviews(env: Env): Promise<number> {
     if (row.task_id && !checked.has(`${row.company_id}:${row.task_id}`)) continue; // beyond this run's 10 tasks, or the re-check failed
     await env.ctx.db.execute(`UPDATE ${t("previews")} SET stats = stats || jsonb_build_object('cancelHandled', $2::text) WHERE id = $1`, [String(row.id), env.now().toISOString()]);
     handled += 1;
+  }
+  // A row that keeps failing is given up after a few runs, so it cannot hold one of the 25 places for ever.
+  const seen = new Set<string>();
+  for (const { row, error } of failed) {
+    const id = String(row.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const attempts = Number(row.stats?.cancelAttempts ?? 0) + 1;
+    if (attempts >= FOLLOW_UP_MAX_ATTEMPTS) {
+      env.ctx.logger.info("SEO cancelled preview follow-up given up", { previewId: id, attempts, error });
+      await env.ctx.db.execute(
+        `UPDATE ${t("previews")} SET stats = stats || jsonb_build_object('cancelHandled', $2::text, 'cancelHandledError', $3::text, 'cancelAttempts', $4::int) WHERE id = $1`,
+        [id, env.now().toISOString(), error.slice(0, 300), attempts],
+      );
+    } else {
+      await env.ctx.db.execute(`UPDATE ${t("previews")} SET stats = stats || jsonb_build_object('cancelAttempts', $2::int) WHERE id = $1`, [id, attempts]);
+    }
   }
   return handled;
 }
