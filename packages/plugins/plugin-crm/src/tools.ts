@@ -459,6 +459,22 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "wp-archive",
+    displayName: "WordPress: archive intro copy",
+    description:
+      "H1 and intro copy on a category, tag or taxonomy archive page; title and meta stay with wp-seo. Connector 1.3+. op get reads the current copy of the archive (target it by url, or by termId and taxonomy). op set writes html (the intro copy, up to 20,000 characters; empty removes it) at position (before the items by default, or after), and needs a reason. Scripts, iframes, forms and on-event attributes are refused. A term with no posts, or a block theme, shows nothing (get returns postCount; set warns). Then check the live archive page. If the site answers rest_no_route, it runs a Connector older than 1.3: run wp-connector update first. Undo with wp-undo.",
+    parametersSchema: schema(["siteId", "op"], {
+      siteId: text("A WordPress site with the Connector."),
+      op: oneOf(["get", "set"], "get reads, set changes."),
+      url: text("The archive page URL."),
+      termId: { type: "integer", description: "The term id (use with taxonomy instead of url)." } as JsonSchema,
+      taxonomy: text("The taxonomy, e.g. category, post_tag or a custom one."),
+      html: text("set: the H1 and intro copy as HTML."),
+      position: oneOf(["before", "after"], "set: print above (before, default) or below (after) the items."),
+      reason: text("Required for set: one line on why (kept in the site's log)."),
+    }),
+  },
+  {
     name: "wp-plugins",
     displayName: "WordPress: plugins",
     description:

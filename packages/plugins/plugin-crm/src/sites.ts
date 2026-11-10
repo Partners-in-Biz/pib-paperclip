@@ -40,6 +40,7 @@ import {
   CONNECTOR_SELF_UPDATE_MIN_VERSION,
   CONNECTOR_V11_ENDPOINTS,
   CONNECTOR_V12_ENDPOINTS,
+  CONNECTOR_V13_ENDPOINTS,
   ConnectorError,
   connectorKeyId,
   isConnectionFailure,
@@ -802,6 +803,7 @@ const WP_TOOLS: Record<string, Record<string, ConnectorEndpoint>> = {
     publish: "posts/publish",
   },
   "wp-verify": { get: "verify/get", set: "verify/set" },
+  "wp-archive": { get: "archive/get", set: "archive/set" },
   "wp-connector": { update: "self/update", rollback: "self/rollback" },
   "wp-log": { get: "log" },
   "wp-undo": { set: "undo" },
@@ -840,6 +842,8 @@ export const PASS: Partial<Record<ConnectorEndpoint, string[]>> = {
   "posts/publish": ["postId", "reason"],
   "verify/get": [],
   "verify/set": ["metaTags", "files", "reason"],
+  "archive/get": ["url", "termId", "taxonomy"],
+  "archive/set": ["url", "termId", "taxonomy", "html", "position", "reason"],
   "self/update": [],
   "self/rollback": ["backupId", "reason"],
   log: ["limit"],
@@ -890,15 +894,16 @@ async function planConnectorUpdate(ctx: PluginContext, viewer: Viewer, site: Sit
 
 /** rest_no_route on a 1.1 endpoint from a site that answers health means an older Connector, not a missing one. */
 async function explainMissingRoute(ctx: PluginContext, site: SiteRecord, endpoint: ConnectorEndpoint, actor: string | null): Promise<CrmError | null> {
+  const needs13 = CONNECTOR_V13_ENDPOINTS.includes(endpoint);
   const needs12 = CONNECTOR_V12_ENDPOINTS.includes(endpoint);
-  if (!needs12 && !CONNECTOR_V11_ENDPOINTS.includes(endpoint)) return null;
+  if (!needs13 && !needs12 && !CONNECTOR_V11_ENDPOINTS.includes(endpoint)) return null;
   try {
     const health = await callConnector(ctx, site, "health", {}, { actor });
     await saveHealth(ctx, site, health);
     const installed = typeof asRecord(health.connector).version === "string" ? String(asRecord(health.connector).version) : "unknown version";
     const zipUrl = await connectorZipUrl(ctx, site.companyId);
     const how = connectorVersionWarning(installed, zipUrl) ?? `Run wp-health and check that the plugin is current.`;
-    return new CrmError(`${site.url} has no ${endpoint} route: it runs Connector ${installed}, which is older than the ${needs12 ? "1.2" : "1.1"} routes this tool needs. ${how}`);
+    return new CrmError(`${site.url} has no ${endpoint} route: it runs Connector ${installed}, which is older than the ${needs13 ? "1.3" : needs12 ? "1.2" : "1.1"} routes this tool needs. ${how}`);
   } catch {
     return null;
   }
