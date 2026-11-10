@@ -210,6 +210,7 @@ import {
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
@@ -11716,6 +11717,31 @@ export function issueService(db: Db) {
         if (issueData.status === "done" || issueData.status === "cancelled") {
           await cancelCaseHandoffsForIssue(tx, { companyId: receiptExisting.companyId, issueId: id,
             reason: `Task was marked ${issueData.status}`, agentTransfersOnly: issueData.status === "done", publications: activityPublications });
+          // PAR-8899: a finished task needs no monitor or review-recovery wake. Clear the
+          // monitor columns (also for writes that skip the policy transition) and drop
+          // queued wakes so they do not start a no-op run on a closed issue.
+          if (receiptExisting.status !== issueData.status) {
+            const storedPolicy = (issueData.executionPolicy !== undefined ? issueData.executionPolicy : receiptExisting.executionPolicy) as Record<string, unknown> | null;
+            if (storedPolicy && "monitor" in storedPolicy) {
+              const monitorClear = applyIssueMonitorPolicyTransition({
+                issue: receiptExisting, policy: normalizeIssueExecutionPolicy(storedPolicy),
+                previousPolicy: normalizeIssueExecutionPolicy(receiptExisting.executionPolicy ?? null),
+                requestedStatus: issueData.status, requestedAssigneePatch: {},
+                actor: { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+              });
+              Object.assign(patch, monitorClear.patch);
+            }
+            patch.monitorNextCheckAt = null;
+            patch.monitorWakeRequestedAt = null;
+            await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+              .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
+                inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+                isNull(agentWakeupRequests.runId),
+                inArray(agentWakeupRequests.reason, ["issue_monitor_due", "execution_review_participant_recovery"]),
+                sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
+                  ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
+                  ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`));
+          }
         }
         if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== receiptExisting.assigneeAgentId)
           || (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== receiptExisting.assigneeUserId)) {
