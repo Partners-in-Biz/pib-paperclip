@@ -298,7 +298,11 @@ import {
 } from "../attachment-types.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import {
+  buildReviewVerdictWakeup,
+  shouldRelayReviewVerdictWake,
+  shouldWakeAssigneeForIssueComment,
+} from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -3562,6 +3566,28 @@ export function issueRoutes(
     opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  // PAR-8960: a `qa` agent's verdict comment on a blocked issue wakes the
+  // assignee. Called only when the normal comment wake did not fire.
+  async function reviewVerdictWakeupFor(input: {
+    issue: { id: string; companyId: string; status: string | null; assigneeAgentId: string | null };
+    actor: { actorType: string; actorId: string };
+    comment: { id: string; body: string };
+  }) {
+    if (input.issue.status !== "blocked" || input.actor.actorType !== "agent") return null;
+    const actorAgent = await agentsSvc.getById(input.actor.actorId).catch(() => null);
+    if (!actorAgent || actorAgent.companyId !== input.issue.companyId) return null;
+    const relay = shouldRelayReviewVerdictWake({
+      issueStatus: input.issue.status,
+      actorType: input.actor.actorType,
+      actorAgentId: input.actor.actorId,
+      actorAgentRole: actorAgent.role,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      commentBody: input.comment.body,
+    });
+    return relay
+      ? buildReviewVerdictWakeup({ issueId: input.issue.id, commentId: input.comment.id })
+      : null;
+  }
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -16572,6 +16598,9 @@ export function issueRoutes(
                   : {}),
               },
             });
+          } else if (assigneeId && !assigneeChanged && !goalCommentSteered) {
+            const verdictWakeup = await reviewVerdictWakeupFor({ issue, actor, comment });
+            if (verdictWakeup) addWakeup(assigneeId, verdictWakeup);
           }
         }
 
@@ -20209,6 +20238,13 @@ export function issueRoutes(
               },
             });
           }
+        } else if (assigneeId && !goalCommentSteered) {
+          const verdictWakeup = await reviewVerdictWakeupFor({
+            issue: wakeIssueSnapshot,
+            actor,
+            comment,
+          });
+          if (verdictWakeup) addWakeup(assigneeId, verdictWakeup);
         }
 
         const becameDone =

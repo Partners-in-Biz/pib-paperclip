@@ -58,15 +58,52 @@ export function isSystemRecoveryWakeReason(wakeReason: string | null | undefined
   return Boolean(wakeReason && SYSTEM_RECOVERY_WAKE_REASONS.has(wakeReason));
 }
 
+/**
+ * PAR-8960: a `qa` agent's verdict comment on a blocked issue wakes its
+ * assignee. Only the issue comment routes write this fixed actor id. The agent
+ * wakeup route cannot send a `system` actor, and plugin paths always set the
+ * plugin UUID, so the triple below cannot be forged. Do not use
+ * contextSnapshot.source as the marker: plugin paths copy a caller-supplied one.
+ */
+export const ISSUE_REVIEW_VERDICT_WAKE_REASON = "issue_review_verdict";
+export const REVIEW_VERDICT_WAKE_ACTOR_ID = "issue_review_verdict_relay";
+const REVIEW_VERDICT_LINE = /^(?:\*\*)?(PASS|FAIL|CHANGES NEEDED|DOGFOOD:\s*(?:PASS|FAIL))\b/;
+
+export function isReviewVerdictWake(input: {
+  wakeReason?: string | null;
+  requestedByActorType?: string | null;
+  requestedByActorId?: string | null;
+}): boolean {
+  return (
+    input.wakeReason === ISSUE_REVIEW_VERDICT_WAKE_REASON &&
+    input.requestedByActorType === "system" &&
+    input.requestedByActorId === REVIEW_VERDICT_WAKE_ACTOR_ID
+  );
+}
+
+/** The first non-empty line, trimmed, starts with a verdict token (case-sensitive). */
+export function isReviewVerdictComment(body: string | null | undefined): boolean {
+  const firstLine = (body ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  return Boolean(firstLine && REVIEW_VERDICT_LINE.test(firstLine));
+}
+
 export function shouldWakeBlockedTicket(input: {
   issueStatus: string | null | undefined;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
+  requestedByActorId?: string | null;
   /** The issue is a chat conversation (its own conversationAgentId column). */
   chatConversation?: boolean | null;
 }): {
   wake: boolean;
-  reason: "not_blocked" | "blocker_cleared" | "human" | "system_recovery" | "chat_conversation" | "blocked_suppressed";
+  reason:
+    | "not_blocked"
+    | "blocker_cleared"
+    | "human"
+    | "system_recovery"
+    | "review_verdict"
+    | "chat_conversation"
+    | "blocked_suppressed";
 } {
   if (input.issueStatus !== "blocked") {
     return { wake: true, reason: "not_blocked" };
@@ -89,6 +126,9 @@ export function shouldWakeBlockedTicket(input: {
     SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)
   ) {
     return { wake: true, reason: "system_recovery" };
+  }
+  if (isReviewVerdictWake(input)) {
+    return { wake: true, reason: "review_verdict" };
   }
   if (isHumanBoardActor(input.requestedByActorType)) {
     return { wake: true, reason: "human" };
@@ -180,6 +220,7 @@ export function shouldStartQueuedIssueRun(input: {
   runAgentId: string;
   wakeReason?: string | null;
   requestedByActorType?: string | null;
+  requestedByActorId?: string | null;
   humanWake: boolean;
   blockerClearedWake: boolean;
   assigneeMismatchExempt?: boolean;
@@ -201,7 +242,8 @@ export function shouldStartQueuedIssueRun(input: {
       input.requestedByActorType === "system" &&
       input.wakeReason &&
       SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)
-    )
+    ) &&
+    !isReviewVerdictWake(input)
   ) {
     return { start: false, reason: "blocked" };
   }

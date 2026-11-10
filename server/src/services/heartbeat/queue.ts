@@ -177,13 +177,18 @@ import {
   evaluateTicketHourlyRunCap,
   isExecutionStageHandoffWake,
   isHumanBoardActor,
+  isReviewVerdictWake,
   ISSUE_RUN_CAP_SKIP_REASON,
   isTicketRunCapExempt,
   readTicketRunsPerHourCap,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
 } from "../issue-wake-guards.js";
-import { loadTicketRunCapState, recordWakeLoopFlag } from "../issue-wake-guard-store.js";
+import {
+  hasReviewVerdictWakeInWindow,
+  loadTicketRunCapState,
+  recordWakeLoopFlag,
+} from "../issue-wake-guard-store.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -984,6 +989,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ? await db
             .select({
               requestedByActorType: agentWakeupRequests.requestedByActorType,
+              requestedByActorId: agentWakeupRequests.requestedByActorId,
               reason: agentWakeupRequests.reason,
             })
             .from(agentWakeupRequests)
@@ -1077,6 +1083,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           startWakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
         chatConversation: Boolean(startIssue?.conversationAgentId),
         requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+        requestedByActorId: wakeRequest?.requestedByActorId ?? null,
         assigneeMismatchExempt:
           isNonAssigneeWorkspaceBusyRetry(
             readNonEmptyString(context.retryReason),
@@ -1161,7 +1168,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // PAR-6202 per-ticket hourly run cap (exemptions: retries, chat PAR-6862,
       // execution-stage review/approval hand-offs PAR-6736, system recovery).
       const capNow = new Date();
-      const claimCapExempt = isTicketRunCapExempt({
+      // PAR-8960: enqueue sets reviewVerdictCapExempt only for the first
+      // verified verdict wake in the window; the flag alone is not trusted.
+      const reviewVerdictCapExempt =
+        context.reviewVerdictCapExempt === true &&
+        isReviewVerdictWake({
+          wakeReason: startWakeReason,
+          requestedByActorType: wakeRequest?.requestedByActorType ?? null,
+          requestedByActorId: wakeRequest?.requestedByActorId ?? null,
+        });
+      const claimCapExempt = reviewVerdictCapExempt || isTicketRunCapExempt({
         retryOfRunId: readNonEmptyString(context.retryOfRunId),
         chatConversation: Boolean(startIssue?.conversationAgentId),
         executionStageHandoff: isExecutionStageHandoffWake({
@@ -3706,6 +3722,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issueStatus: issue.status,
             wakeReason: enqueueWakeReason,
             requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
             chatConversation: Boolean(issue.conversationAgentId),
           });
           if (
@@ -3767,9 +3784,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 issueId: issue.id,
                 now: capNow,
               });
-          const capDecision = capExempt
+          let capDecision = capExempt
             ? { allow: true as const, flag: false as const, reason: "under_cap" as const }
             : evaluateTicketHourlyRunCap(capState);
+          // PAR-8960: only this code may set the claim-side exemption flag.
+          delete enrichedContextSnapshot.reviewVerdictCapExempt;
+          if (
+            !capDecision.allow &&
+            isReviewVerdictWake({
+              wakeReason: enqueueWakeReason,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+            }) &&
+            !(await hasReviewVerdictWakeInWindow(tx as unknown as Db, {
+              companyId: agent.companyId,
+              issueId: issue.id,
+              now: capNow,
+            }))
+          ) {
+            // The first verdict wake per issue per rolling hour is cap-exempt,
+            // so loops stay bounded at cap + 1.
+            enrichedContextSnapshot.reviewVerdictCapExempt = true;
+            capDecision = { allow: true as const, flag: false as const, reason: "under_cap" as const };
+          }
           if (!capDecision.allow) {
             if (capDecision.flag) {
               await recordWakeLoopFlag(tx as unknown as Db, {
