@@ -107,6 +107,14 @@ export function parsePagespeed(json: unknown, url: string, strategy: Strategy): 
   };
 }
 
+/**
+ * Budget for one run-pagespeed tool call. Lighthouse on a heavy page takes
+ * over 26 s, so the PSI request gets 50 s and the tool declares 60 s (the
+ * gateway maximum) to leave room for saving the page health.
+ */
+export const RUN_PAGESPEED_PSI_TIMEOUT_MS = 50_000;
+export const RUN_PAGESPEED_TOOL_TIMEOUT_MS = 60_000;
+
 export async function runPagespeed(
   fetchImpl: FetchLike,
   input: { url: string; strategy?: Strategy; apiKey?: string | null; timeoutMs?: number },

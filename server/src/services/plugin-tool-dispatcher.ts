@@ -62,6 +62,8 @@ export interface AgentToolDescriptor {
   parametersSchema: Record<string, unknown>;
   /** The plugin that provides this tool. */
   pluginId: string;
+  /** Execution budget the tool declared in its manifest, when it set one. */
+  timeoutMs?: number;
 }
 
 /**
@@ -285,6 +287,7 @@ export function createPluginToolDispatcher(
       description: tool.description,
       parametersSchema: tool.parametersSchema,
       pluginId: tool.pluginDbId,
+      ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
     };
   }
 

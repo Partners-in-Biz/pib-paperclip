@@ -218,6 +218,7 @@ import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.j
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+const MAX_TOOL_TIMEOUT_MS = 60_000;
 
 export function resolveCredentialGrantKind(
   policy: "shared" | "per_user" | "per_user_with_fallback" | "per_agent",
@@ -797,14 +798,23 @@ function gatewaySessionFromRow(
 }
 
 function timeoutMs(value: number | undefined, tool?: ToolGatewayDescriptor) {
-  if (!Number.isFinite(value)) return tool?.providerType === "paperclip_github_chat"
-    ? GITHUB_BOT_TOOL_TIMEOUT_MS
-    : DEFAULT_TOOL_TIMEOUT_MS;
+  if (!Number.isFinite(value)) {
+    if (tool?.providerType === "paperclip_github_chat") return GITHUB_BOT_TOOL_TIMEOUT_MS;
+    // A slow plugin tool (e.g. a Lighthouse run) declares its own budget in
+    // its manifest so callers need not send `timeoutMs`.
+    const declared = tool?.providerType === "paperclip_plugin" ? tool.timeoutMs : undefined;
+    if (typeof declared === "number" && Number.isFinite(declared) && declared > 0) {
+      return Math.max(1, Math.min(MAX_TOOL_TIMEOUT_MS, Math.floor(declared)));
+    }
+    return DEFAULT_TOOL_TIMEOUT_MS;
+  }
   return Math.max(
     1,
-    Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)),
+    Math.min(MAX_TOOL_TIMEOUT_MS, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)),
   );
 }
+
+export const resolveToolTimeoutMs = timeoutMs;
 
 function sessionTtlMs(value: number | undefined) {
   if (!Number.isFinite(value)) return DEFAULT_SESSION_TTL_MS;

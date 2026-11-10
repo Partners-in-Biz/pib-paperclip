@@ -118,6 +118,12 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Optional execution budget in milliseconds for a slow tool. The tool
+   * gateway uses it when the caller sends no `timeoutMs` (gateway maximum
+   * 60 000 ms); the host also uses it for the worker `executeTool` RPC.
+   */
+  timeoutMs?: number;
 }
 
 /**

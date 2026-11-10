@@ -460,8 +460,11 @@ tools?: Array<{
   displayName: string;
   description: string;
   parametersSchema: JsonSchema;
+  timeoutMs?: number; // 1000-60000; budget for a slow tool
 }>;
 ```
+
+A tool that may run longer than the tool gateway's 10 s default (e.g. a Lighthouse run) sets `timeoutMs`. The gateway uses it when the caller sends no `timeoutMs` (capped at 60 s), and the host uses it for the worker `executeTool` RPC.
 
 Tool names are automatically namespaced by plugin ID at runtime (e.g. `linear:search-issues`), so plugins cannot shadow core tools or each other's tools.
 

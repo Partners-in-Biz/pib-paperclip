@@ -14,6 +14,7 @@ import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-c
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
 import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
+import { RUN_PAGESPEED_TOOL_TIMEOUT_MS } from "./integrations/pagespeed.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -587,7 +588,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   { group: "Site checks", name: "check-soft404", displayName: "Check soft-404", description: "Request a random nonexistent path on the site origin; flag if HTTP 200 is returned (app shell issue).", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-thin-content", displayName: "Check thin content", description: "Measure server-rendered text size and flag pages below threshold (default 200 chars, configurable).", parametersSchema: schema([], { ...urlOrSprint, minChars: int("Text length threshold in characters (50–1000, default 200)") }) },
   { group: "Site checks", name: "check-byline", displayName: "Check byline and date", description: "For article pages (og:type=article, /blog/ path, or <article> tag), check for author/byline and publication/modified date info.", parametersSchema: schema([], { ...urlOrSprint }) },
-  { group: "Site checks", name: "run-pagespeed", displayName: "Run PageSpeed Insights", description: "PageSpeed Insights for one URL (up to ~25 s): scores, LCP/CLS/INP (field data when Google has it), top opportunities. Saved to page health with sprintId.", parametersSchema: schema([], { ...urlOrSprint, strategy: choice(["mobile", "desktop"], "Device profile (default mobile; only mobile runs record CWV findings)") }) },
+  { group: "Site checks", name: "run-pagespeed", displayName: "Run PageSpeed Insights", description: "PageSpeed Insights for one URL (up to ~50 s; no gateway timeoutMs needed): scores, LCP/CLS/INP (field data when Google has it), top opportunities. Saved to page health with sprintId.", parametersSchema: schema([], { ...urlOrSprint, strategy: choice(["mobile", "desktop"], "Device profile (default mobile; only mobile runs record CWV findings)") }), timeoutMs: RUN_PAGESPEED_TOOL_TIMEOUT_MS },
 
   // GSC
   { group: "Google Search Console", name: "gsc-connect-url", displayName: "GSC access status", description: "How this sprint reaches Search Console: the service account (preferred; its email and next step) or the OAuth fallback page.", parametersSchema: schema(["sprintId"], { sprintId }) },

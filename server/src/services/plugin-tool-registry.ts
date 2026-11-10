@@ -67,6 +67,8 @@ export interface RegisteredTool {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: Record<string, unknown>;
+  /** Execution budget the tool declared in its manifest, when it set one. */
+  timeoutMs?: number;
 }
 
 /**
@@ -257,6 +259,10 @@ export function createPluginToolRegistry(
     };
   }
 
+  function declaredToolTimeoutMs(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+  }
+
   function addTool(pluginId: string, decl: PluginToolDeclaration, pluginDbId: string): void {
     const namespacedName = buildName(pluginId, decl.name);
 
@@ -268,6 +274,7 @@ export function createPluginToolRegistry(
       displayName: decl.displayName,
       description: decl.description,
       parametersSchema: decl.parametersSchema,
+      ...(declaredToolTimeoutMs(decl.timeoutMs) !== undefined ? { timeoutMs: declaredToolTimeoutMs(decl.timeoutMs) } : {}),
     };
 
     byNamespace.set(namespacedName, entry);
@@ -434,7 +441,7 @@ export function createPluginToolRegistry(
         runContext,
       };
 
-      const result = await workerManager.call(dbId, "executeTool", rpcParams);
+      const result = await workerManager.call(dbId, "executeTool", rpcParams, tool.timeoutMs);
 
       log.debug(
         {

@@ -19,7 +19,7 @@ import {
   runThinContentCheck,
 } from "../checks/site.js";
 import * as db from "../db.js";
-import { cwvFindings, runPagespeed, type PageHealthRecord, type Strategy } from "../integrations/pagespeed.js";
+import { cwvFindings, runPagespeed, RUN_PAGESPEED_PSI_TIMEOUT_MS, type PageHealthRecord, type Strategy } from "../integrations/pagespeed.js";
 import { companyInfo, errorMessage, num, oneOf, SeoError, str, urlParam, type Env, type Params } from "./common.js";
 import { sameSiteHost, stripCacheBusters } from "./url-guards.js";
 import { requireSprint } from "./context.js";
@@ -244,7 +244,7 @@ export async function runPagespeedTool(env: Env, companyId: string, params: Para
   } catch (error) {
     env.ctx.logger.info("PageSpeed key unavailable", { error: errorMessage(error) });
   }
-  const record = await runPagespeed(env.fetch, { url, strategy, apiKey });
+  const record = await runPagespeed(env.fetch, { url, strategy, apiKey, timeoutMs: RUN_PAGESPEED_PSI_TIMEOUT_MS });
   const stored = sprint ? await savePageHealth(env, sprint, record, info.today) : { recorded: 0, resolved: 0 };
   if (sprint) {
     const integration = await db.getIntegration(env.ctx.db, companyId, sprint.id, "pagespeed");
