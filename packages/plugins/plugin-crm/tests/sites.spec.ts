@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { BUNDLED_CONNECTOR_SHA256, BUNDLED_CONNECTOR_VERSION, CONNECTOR_ENDPOINTS, CONNECTOR_V11_ENDPOINTS, CONNECTOR_V12_ENDPOINTS, compareVersions, connectorKeyId, newConnectorKey, signConnectorRequest } from "../src/connector.js";
+import { BUNDLED_CONNECTOR_SHA256, BUNDLED_CONNECTOR_VERSION, CONNECTOR_ENDPOINTS, CONNECTOR_V11_ENDPOINTS, CONNECTOR_V12_ENDPOINTS, CONNECTOR_V13_ENDPOINTS, compareVersions, connectorKeyId, newConnectorKey, signConnectorRequest } from "../src/connector.js";
 import { CRM_TOOLS } from "../src/tools.js";
 import { buildConnectorZip } from "../../pib-wp-connector/build.mjs";
 import { connectorHeaderVersion } from "../scripts/connector-bundle.mjs";
@@ -416,5 +416,61 @@ describe("the 1.2 verify tool and plugin warnings", () => {
     const checked = await harness.performAction<Record<string, any>>("crm.check-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
     expect(checked.site.connector.protocol).toBe("1.2");
     expect(checked.warnings.filter((w: string) => /og: tags|503/.test(w))).toHaveLength(2);
+  });
+});
+
+describe("the 1.3 archive tool", () => {
+  it("registers archive/get as a read and archive/set as a write, with a filtered pass list", () => {
+    expect(CONNECTOR_ENDPOINTS["archive/get"]).toBe(false);
+    expect(CONNECTOR_ENDPOINTS["archive/set"]).toBe(true);
+    expect(CONNECTOR_V13_ENDPOINTS).toEqual(["archive/get", "archive/set"]);
+    expect(PASS["archive/get"]).toEqual(["url", "termId", "taxonomy"]);
+    expect(PASS["archive/set"]).toEqual(["url", "termId", "taxonomy", "html", "position", "reason"]);
+    expect(WP_TOOL_NAMES).toContain("wp-archive");
+    expect(BUNDLED_CONNECTOR_VERSION).toBe("1.3.0");
+    const tool = CRM_TOOLS.find((t) => t.name === "wp-archive")!;
+    expect(tool.description).toMatch(/H1 and intro copy on a category, tag or taxonomy archive page; title and meta stay with wp-seo/);
+  });
+
+  it("set needs a reason, drops params outside the pass list and logs the change", async () => {
+    const { harness, store } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    const calls = fakeSite(harness, () => ({ status: 200, json: { ok: true, data: { changeId: "chg-a", target: "term:5", warnings: [] } } }));
+    const noReason = await toolRaw(harness, "wp-archive", { siteId: site.id, op: "set", termId: 5, taxonomy: "category", html: "<h1>Drains</h1>" });
+    expect(noReason.error).toMatch(/reason is required/);
+    const out = await tool(harness, "wp-archive", { siteId: site.id, op: "set", termId: 5, taxonomy: "category", html: "<h1>Drains</h1>", position: "after", junk: 1, reason: "Archive intro" });
+    expect(out).toMatchObject({ endpoint: "archive/set", changeId: "chg-a" });
+    expect(calls.at(-1)!.url).toContain("/archive/set");
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ termId: 5, taxonomy: "category", html: "<h1>Drains</h1>", position: "after", reason: "Archive intro" });
+    expect(store.site_changes!.map((c) => c.endpoint)).toEqual(["archive/set"]);
+    await tool(harness, "wp-archive", { siteId: site.id, op: "get", url: "https://acme.co.za/category/drains/", html: "x" });
+    expect(calls.at(-1)!.url).toContain("/archive/get");
+    expect(JSON.parse(calls.at(-1)!.body)).toEqual({ url: "https://acme.co.za/category/drains/" });
+  });
+
+  it("an agent write is blocked by the sign-off lock", async () => {
+    const { harness } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    await harness.emit("plugin.partnersinbiz.seo.site.signoff", { siteId: site.id, required: true }, { companyId: CO });
+    const calls = fakeSite(harness, () => ({ status: 200, json: { ok: true, data: {} } }));
+    const res = await toolRaw(harness, "wp-archive", { siteId: site.id, op: "set", termId: 5, html: "<p>x</p>", reason: "Intro" });
+    expect(res.error).toBeTruthy();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("an install older than 1.3 gets the update hint", async () => {
+    const { harness } = await boot();
+    const site = await addWordPressSite(harness);
+    await harness.performAction("crm.connect-client-site", { siteId: site.id }, { companyId: CO, actor: BOARD });
+    fakeSite(harness, (route) =>
+      route.endsWith("/health")
+        ? { status: 200, json: { ok: true, data: { connector: { version: "1.2.0", protocol: "1.2" }, plugins: [] } } }
+        : { status: 404, json: { code: "rest_no_route", message: "No route" } },
+    );
+    const res = await toolRaw(harness, "wp-archive", { siteId: site.id, op: "get", termId: 5 });
+    expect(res.error).toMatch(/runs Connector 1\.2\.0, which is older than the 1\.3 routes/);
+    expect(res.error).toMatch(/wp-connector update/);
   });
 });
