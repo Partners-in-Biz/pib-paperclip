@@ -20,6 +20,7 @@ import * as build from "./service/build.js";
 import * as signoff from "./service/signoff.js";
 import * as clientSignoff from "./service/client-signoff.js";
 import * as report from "./service/report.js";
+import * as cancel from "./service/cancel.js";
 import * as preview from "./service/preview.js";
 import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
@@ -57,6 +58,7 @@ export const HANDLERS: Record<string, Handler> = {
   "compact-task-thread": (env, c, _a, p) => thread.compactTaskThreadTool(env, c, p),
   "split-task": (env, c, a, p) => chunks.splitTaskTool(env, c, a, p),
   // Client previews
+  "cancel-previews": (env, c, a, p) => cancel.cancelPreviews(env, c, a, p),
   "create-preview": (env, c, a, p) => preview.createPreview(env, c, a, p),
   "get-client-facts": (env, c, _a, p) => facts.getClientFacts(env, c, p),
   "confirm-client-facts": (env, c, a, p) => facts.confirmClientFacts(env, c, a, p),

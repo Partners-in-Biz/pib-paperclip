@@ -272,7 +272,16 @@ export async function handleClientAnswer(env: Env, sprint: db.Sprint, answer: An
     const info = await companyInfo(env, sprint.companyId);
     await closeNeedsYouItems(env, info, sprint, [`approval-email:${answer.draftKey}`.slice(0, 120)], "client", "The client has answered.").catch(() => 0);
   }
-  const task = await db.getTask(env.ctx.db, sprint.companyId, answer.taskId);
+  return recheckTaskAnswers(env, sprint, answer.taskId);
+}
+
+/**
+ * Looks at the task's current previews: once none is still with the client or the Reviewer, lifts the lock for the approved ones,
+ * takes the task back from the client and wakes the agent once. Runs after a client answer and after previews were cancelled
+ * (a task that only waited on cancelled previews moves on). Always true: the check itself never fails the caller.
+ */
+export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: string): Promise<boolean> {
+  const task = await db.getTask(env.ctx.db, sprint.companyId, taskId);
   if (!task || !task.issueId) return true;
   const previews = await latestTaskPreviews(env, sprint.companyId, task.id);
   // Still with the client or the Reviewer: wait, so the agent gets one wake with the whole answer.

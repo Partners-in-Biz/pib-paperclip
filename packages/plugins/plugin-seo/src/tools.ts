@@ -377,6 +377,21 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       compact: flag("Short rows (default true); false returns every field in full for each row"),
     }),
   },
+  {
+    group: "Site",
+    name: "cancel-previews",
+    displayName: "Cancel duplicate previews",
+    description:
+      "Take duplicate or replaced client previews out of the client's sight (they are kept, marked cancelled, and the client's link stops working). Send up to 300 previewIds (full id, or the first 8 or more characters) and a reason. It is a dry run unless you send dryRun false: it then lists what would be cancelled, what was skipped and why (notFound, ambiguous, alreadyCancelled, approved, lastOnPage), previews already in an approval email draft, and for each page the preview that stays (newestByPage; wouldRevive true means the page's remaining preview was sent back by the Reviewer and the SEO agent will get it again). Approved previews are skipped unless allowApproved; a page's last live preview is skipped unless allowLast. Within 5 minutes the Reviewer issues are closed and the tasks re-checked.",
+    parametersSchema: schema(["sprintId", "previewIds", "reason"], {
+      sprintId,
+      previewIds: list("1 to 300 preview ids from list-previews: the full id or at least 8 characters from its start"),
+      reason: text("Why they are cancelled (at most 300 characters; kept on each preview)"),
+      allowApproved: flag("Also cancel previews the client already approved (default false: they are skipped)"),
+      allowLast: flag("Also cancel the last live preview of a page (default false: such previews are skipped as lastOnPage)"),
+      dryRun: flag("Default true: change nothing and report; send false to cancel"),
+    }),
+  },
   // Keywords
   { group: "Keywords", name: "list-keywords", displayName: "List keywords", description: "Tracked keywords with current position, impressions, clicks, CTR, intent and target URL.", parametersSchema: schema(["sprintId"], { sprintId, includeRetired: flag("Include retired keywords (default false)") }) },
   {
