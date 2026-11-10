@@ -1,4 +1,59 @@
-import { shouldWakeBlockedTicket } from "./issue-wake-guards.js";
+import {
+  ISSUE_REVIEW_VERDICT_WAKE_REASON,
+  isReviewVerdictComment,
+  REVIEW_VERDICT_WAKE_ACTOR_ID,
+  shouldWakeBlockedTicket,
+} from "./issue-wake-guards.js";
+
+/**
+ * PAR-8960: a `qa` agent (not the assignee) posts a verdict comment on a
+ * blocked issue. The caller still checks that the normal comment wake did not
+ * fire, and the assignee/goal-steer guards it applies to that wake.
+ */
+export function shouldRelayReviewVerdictWake(input: {
+  issueStatus: string | null | undefined;
+  actorType: string | null | undefined;
+  actorAgentId: string | null | undefined;
+  actorAgentRole: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  commentBody: string | null | undefined;
+}): boolean {
+  return (
+    input.issueStatus === "blocked" &&
+    input.actorType === "agent" &&
+    input.actorAgentRole === "qa" &&
+    Boolean(input.assigneeAgentId) &&
+    Boolean(input.actorAgentId) &&
+    input.actorAgentId !== input.assigneeAgentId &&
+    isReviewVerdictComment(input.commentBody)
+  );
+}
+
+export function buildReviewVerdictWakeup(input: { issueId: string; commentId: string }) {
+  return {
+    source: "automation" as const,
+    triggerDetail: "system" as const,
+    reason: ISSUE_REVIEW_VERDICT_WAKE_REASON,
+    requestedByActorType: "system" as const,
+    requestedByActorId: REVIEW_VERDICT_WAKE_ACTOR_ID,
+    // Audit label only: no index dedupes on it (plan Q&A 8).
+    idempotencyKey: `review-verdict:${input.issueId}:${input.commentId}`,
+    payload: {
+      issueId: input.issueId,
+      commentId: input.commentId,
+      mutation: "comment",
+      reviewVerdict: true,
+    },
+    contextSnapshot: {
+      issueId: input.issueId,
+      taskId: input.issueId,
+      commentId: input.commentId,
+      wakeCommentId: input.commentId,
+      source: "issue.comment.review_verdict",
+      wakeReason: ISSUE_REVIEW_VERDICT_WAKE_REASON,
+    },
+  };
+}
 
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;
