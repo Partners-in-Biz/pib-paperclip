@@ -767,6 +767,8 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
 /** A task handed to the SEO agent whose issue has sat in todo or in_progress this long with no run is woken again (a wake can be coalesced into a run that was ending, and a run can end without anything finishing the task). */
 export const IDLE_TASK_MINUTES = 25;
 export const IDLE_TASK_MAX_NUDGES = 4;
+/** An issue already in_progress (a run started on it before) is woken this many times at most. */
+export const IDLE_IN_PROGRESS_MAX_NUDGES = 1;
 /** After this many wakes with no run, the task gets a fresh issue (at most IDLE_TASK_MAX_REISSUES times). */
 export const IDLE_TASK_REISSUE_AFTER = 3;
 export const IDLE_TASK_MAX_REISSUES = 2;
@@ -795,6 +797,9 @@ export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
       if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
       const issue = await getIssue(env, companyId, issueId);
       if (!issue || !["todo", "backlog", "in_progress"].includes(String(issue.status))) continue;
+      // An issue left in_progress already had a run (the agent checked it out): one wake is enough. Repeating it only produced ~13 s runs
+      // where the agent found nothing new (109 such wakes for one agent in a week). Only an untouched todo issue is worth more wakes.
+      if (String(issue.status) === "in_progress" && nudges >= IDLE_IN_PROGRESS_MAX_NUDGES) continue;
       // Woken IDLE_TASK_REISSUE_AFTER times with no run ever starting: the host is holding this issue (a recovery action from an interrupted
       // run: "execution reconciliation required", which waits for a board operator). The plugin opens a fresh issue for the task instead.
       if (nudges >= IDLE_TASK_REISSUE_AFTER && Number(evidence.reissues ?? 0) < IDLE_TASK_MAX_REISSUES) {
