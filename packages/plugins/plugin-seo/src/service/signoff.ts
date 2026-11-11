@@ -97,7 +97,7 @@ export async function syncSiteWindow(env: Env, companyId: string, siteId: string
 }
 
 /** The company's sign-off delegate agents (host settings form). A failed read is the empty list (fail closed). */
-async function delegateAgentIds(env: Env, companyId: string): Promise<string[]> {
+export async function delegateAgentIds(env: Env, companyId: string): Promise<string[]> {
   try {
     return (await loadSeoConfig(env.ctx, companyId)).config.signoffDelegateAgentIds;
   } catch (error) {
