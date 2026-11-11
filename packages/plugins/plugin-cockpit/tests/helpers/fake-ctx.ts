@@ -288,7 +288,11 @@ export function fakeCtx(options: {
     },
     authorization: {
       grants: {
-        list: async ({ principalId }: { principalId: string }) => grants.get(principalId) ?? [],
+        // Like the host: one principal's grants, or (with no principal) the whole company's, each row naming its principal.
+        list: async ({ principalId }: { principalId?: string }) =>
+          principalId
+            ? (grants.get(principalId) ?? []).map((g) => ({ principalType: "agent", principalId, ...g }))
+            : [...grants.entries()].flatMap(([id, rows]) => rows.map((g) => ({ principalType: "agent", principalId: id, ...g }))),
         set: async ({ principalId, grants: next }: { principalId: string; grants: Array<{ permissionKey: string; scope: unknown }> }) => {
           grants.set(principalId, next);
           return next;

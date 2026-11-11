@@ -134,6 +134,17 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     },
+    access: {
+      type: "object",
+      title: "Access look-up and requests",
+      description:
+        "Agents look access up with access-check and ask the seat that decides access (Who decides, Access that already exists) with access-request. That seat gives a tool itself. Attaching a stored secret is a board-only call, so its yes puts one line on the board queue issue below. A payment, banking or personal login is never given by an agent.",
+      properties: {
+        boardQueueIssue: { type: "string", title: "Board queue issue", description: "The issue the board works through (identifier, e.g. PAR-9356). A yes for a stored secret posts one line there, in a fixed format." },
+        neverGrant: { type: "array", title: "Never grant (owner only)", description: "Plain text. A stored secret or a tool whose name contains one of these is never given by an agent, on top of the built-in rule for payment, banking and personal logins.", items: { type: "string" } },
+        grantLookupTools: { type: "boolean", title: "Keep access-check and access-request callable by every seat whose tools grant names its tools", default: true },
+      },
+    },
     credentialSeed: {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
@@ -394,6 +405,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Owner push: send critical push notifications from external systems to the owner.
     // Hosted usage (owner company only; any other company gets 403).
     { routeKey: "hosted-usage", method: "GET", path: "/hosted-usage", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
+    // Access look-up: the names-only lists (stored secret names, tool profiles, tool names) a script on the server pushes in. Never a secret value.
+    { routeKey: "access-inventory", method: "POST", path: "/access-inventory", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [

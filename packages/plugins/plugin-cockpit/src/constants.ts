@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.20.0";
+export const VERSION = "0.21.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -73,6 +73,8 @@ export const ORIGIN = {
   autoresearch: `plugin:${COCKPIT_PLUGIN}:autoresearch`,
   /** A question routed to the seat that decides its class (decision rights): one open per asking issue. */
   decision: `plugin:${COCKPIT_PLUGIN}:decision`,
+  /** A request for access that already exists (a tool grant, a stored secret), for the seat that decides access: one open per seat and thing. */
+  access: `plugin:${COCKPIT_PLUGIN}:access`,
   /** The owner's one daily digest of everything that waits on them. */
   digest: `plugin:${COCKPIT_PLUGIN}:digest`,
 } as const;
