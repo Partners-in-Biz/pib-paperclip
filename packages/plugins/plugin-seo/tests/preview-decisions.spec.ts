@@ -362,6 +362,79 @@ describePg("cockpit decisions on previews", () => {
     expect(lines.some((l) => l.startsWith("Ignore"))).toBe(false);
   });
 
+  describe("the page window (0.40.0, PAR-9131 T3)", () => {
+    /** The window read joins the real sprints and sprint_tasks tables, so they get rows here (removed again after). */
+    async function putSprint(sprint: Row) {
+      await sql.unsafe(`DELETE FROM ${SCHEMA}.sprints`);
+      await sql.unsafe(
+        `INSERT INTO ${SCHEMA}.sprints (id, company_id, name, site_url, site_name, start_date, client_signoff, change_policy, site_access, site_id) VALUES ('sp-1', 'co-1', 'S', 'https://acme.co.za', 'Acme', '2026-10-01', $1, $2, $3, $4)`,
+        [String(sprint.client_signoff), String(sprint.change_policy), String(sprint.site_access), String(sprint.site_id)],
+      );
+      for (const [id, issue] of [["t-1", "iss-1"], ["t-2", "iss-2"]]) {
+        await sql.unsafe(`INSERT INTO ${SCHEMA}.sprint_tasks (id, company_id, sprint_id, title, issue_id, issue_status, status) VALUES ($1, 'co-1', 'sp-1', 'T', $2, 'blocked', 'in_progress')`, [id, issue]);
+      }
+    }
+    afterAll(async () => {
+      await sql.unsafe(`DELETE FROM ${SCHEMA}.sprints`);
+    });
+    const payload = (h: ReturnType<typeof host>, i = -1) => h.locks().at(i)![2] as { siteId: string; scope: string; pages: string[]; until: string | null; seq: string; by: string };
+
+    it("undo through the real action sends the set without the page, with a higher seq; undoing the last page closes the window", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await put("a");
+      await put("b");
+      const h = host(AUTO);
+      await decide(h, USER, { previewIds: ["a", "b"], decision: "approved" });
+      const opened = payload(h);
+      expect(opened).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/a", "https://acme.co.za/b"] });
+      expect(opened.until).not.toBeNull();
+
+      expect(await undo(h, ["a"])).toMatchObject({ undone: ["a"], agentTold: ["a"] });
+      const after = payload(h);
+      expect(after).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/b"], by: "preview-undo:u1" });
+      expect(BigInt(after.seq) > BigInt(opened.seq)).toBe(true);
+      // The window is synced before the agent hears of the undo.
+      expect(h.comments.at(-1)!.body).toContain("The write lock no longer lets this page through");
+
+      await undo(h, ["b"]);
+      expect(payload(h)).toMatchObject({ pages: [], until: null, by: "preview-undo:u1" });
+      expect(BigInt(payload(h).seq) > BigInt(after.seq)).toBe(true);
+    });
+
+    it("an undo whose window sync fails is still recorded; nothing is sent for an undo that was never handed over", async () => {
+      await reset();
+      await putSprint(MANUAL);
+      await put("u");
+      await put("u-sib", { page_url: "https://acme.co.za/u2/" });
+      expect((await sql.unsafe(DECISION_SQL, ["u", "approved", null])).count).toBe(1);
+      const h = host(MANUAL);
+      await undo(h, ["u"]);
+      expect(h.locks()).toHaveLength(0);
+
+      await reset();
+      await put("a");
+      const h2 = host(AUTO);
+      await decide(h2, USER, { previewIds: ["a"], decision: "approved" });
+      const emit = h2.ctx.events.emit as unknown as { mockImplementationOnce(fn: () => Promise<never>): void };
+      emit.mockImplementationOnce(() => Promise.reject(new Error("bus down")));
+      expect(await undo(h2, ["a"])).toMatchObject({ undone: ["a"], agentTold: ["a"] });
+      expect((await one("a")).status).toBe("pending");
+    });
+
+    it("confirm-preview-approval sends a page event for the confirmed page", async () => {
+      await reset();
+      await putSprint(MANUAL);
+      await put("m");
+      expect((await sql.unsafe(DECISION_SQL, ["m", "approved", null])).count).toBe(1);
+      const h = host(MANUAL);
+      expect(await dispatch(h.env, "co-1", USER, "confirm-preview-approval", { sprintId: "sp-1", previewIds: ["m"] })).toMatchObject({ confirmed: ["m"] });
+      expect(h.locks()).toHaveLength(1);
+      expect(payload(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/m"] });
+      expect(payload(h).until).not.toBeNull();
+    });
+  });
+
   it("checks its input: decision, list size and ids", async () => {
     const h = host(AUTO);
     await expect(decide(h, USER, { previewIds: ["a"], decision: "maybe" })).rejects.toThrow(/decision must be one of/);
