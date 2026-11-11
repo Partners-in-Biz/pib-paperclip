@@ -38,6 +38,11 @@ describe("what the skills tell agents", () => {
     for (const tool of SOCIAL_TOOLS) expect(publish, tool.name).toContain(tool.name);
   });
 
+  it("social-publish keeps room for the delegated-approver text (16,400 characters at most)", () => {
+    const n = skill("social-publish").markdown.length;
+    expect(n, `social-publish is ${n}`).toBeLessThanOrEqual(16_400);
+  });
+
   it("agents never approve, never change a policy, and never send the client's email", () => {
     const publish = skill("social-publish").markdown;
     expect(publish).toContain("You never approve, and never change who approves");

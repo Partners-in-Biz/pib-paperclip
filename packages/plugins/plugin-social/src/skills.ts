@@ -43,16 +43,15 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands; only the owner can approve).
+A person's My Social space holds personal profile drafts, visible only to them before publishing to their personal accounts (scope=personal, one user each). Create them with \`create-personal-draft\` (agent tool only; a person uses create-post). Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands).
 
 ## Approvals
 
-- \`request-review\` opens the post's review issue by the scope's policy (\`get-approval-policy\`). Sign-offs: the Reviewer's pass (a check), a team member's approval, the client's approval. The post is approved when every sign-off the policy needs is in **for its current version**: editing it makes earlier sign-offs stale. \`get-approval-status\` shows where one post stands.
-- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
-- **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
-- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; a repeat call returns it. Attach the asset, then \`request-review\`.
-- \`review-outcomes\` gives first-pass rates and streaks per post type. Only a low-risk post with a team streak of 5 skips the team click.
-Full flow, statuses and edge cases: \`references/approvals.md\`.
+- **Who approves.** The scope's policy (\`get-approval-policy\`) names the sign-offs: Reviewer's pass (a check), a team member, the client. The post is approved when every sign-off is in **for its current version**; editing makes earlier ones stale (\`get-approval-status\`).
+- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Ask the owner once to send it. Changes requested: fix it, \`request-review\`, make a new link.
+- **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue.
+- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post. Attach the asset, then \`request-review\`.
+Who approves, statuses, outcomes: \`references/approvals.md\`.
 
 ## After scheduling
 
