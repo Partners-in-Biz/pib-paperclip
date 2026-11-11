@@ -3,6 +3,7 @@
  * the files here already include it), and the reference material that does not fit moves into each skill's references.
  */
 import { describe, expect, it } from "vitest";
+import { SOCIAL_HIRE_INSTRUCTIONS } from "../src/hire.js";
 import { SKILLS } from "../src/skills.js";
 import { SOCIAL_TOOLS } from "../src/tools.js";
 
@@ -52,6 +53,10 @@ describe("what the skills tell agents", () => {
     const approvals = reference("social-publish", "references/approvals.md");
     expect(approvals).toContain("**Never send it**");
     expect(approvals).toContain("You may not approve, record a client approval or change a policy");
+    expect(approvals).toContain("never edits the post it approves");
+    expect(approvals).toContain("stale");
+    expect(approvals).toContain("The Social agent is never the delegate");
+    expect(SOCIAL_HIRE_INSTRUCTIONS).toContain("delegated approver");
     expect(approvals).toContain("auto-approval is off");
     expect(approvals).toContain("A link made for an older version of the post does not count");
   });

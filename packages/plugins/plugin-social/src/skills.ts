@@ -25,7 +25,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 ## Ground rules
 
 - **Clients come from the CRM.** Call \`list-clients\` for companies and contacts. Never invent a client or type a name instead of an id.
-- **You draft and schedule. A person approves** (for a client the policy can name the client: see Approvals below). You create and edit drafts, give each a proposed time and request review. You never approve, and never change who approves. Approval schedules the post at its proposed time. You schedule approved posts that have no time. Never claim a post is published: the \`publish-due\` job publishes it and records the result.
+- **You draft and schedule. A person approves** (or the delegated approver after a scored Reviewer pass; for a client, the client: see Approvals). You create and edit drafts, give each a proposed time and request review. You never approve, and never change who approves. Approval schedules the post at its proposed time. You schedule approved posts that have no time. Never claim a post is published: the \`publish-due\` job publishes it and records the result.
 - **Accounts are connected by a person** (signing in to the platform is a one-time grant). When an account shows \`needs_reconnect\`, the plugin has already opened a "Reconnect …" issue for a person; do not schedule to it until it is \`connected\` again. If you need an account the scope does not have, call \`connect-account\` with the issue you are working on, then ask once with \`${ASK_OWNER_TOOL}\`: the platform, why, and the link and steps it returns (plus its \`effect\`, when ask-owner takes one). When the account is connected the plugin comments on your issue and wakes you: do not poll.
 - \`visibility\` is \`org\` (the default: company and client pages) or \`personal\` (a person's own profile, only for that person). An organisation post cannot target a personal account.
 - Never paste tokens, secrets or passwords into posts, comments or issues.
@@ -39,7 +39,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 4. \`overrides\` is keyed by platform: \`{ "x": { "text": "…" }, "youtube": { "title": "…", "privacy": "unlisted" }, "reddit": { "subreddit": "smallbusiness", "title": "…" }, "pinterest": { "boardId": "…", "link": "https://…" }, "tiktok": { "privacy": "SELF_ONLY" } }\`. Fields: text, title, link, privacy, subreddit, boardId. Anything not overridden falls back to the main body.
 5. \`validate-post\` → fix every problem it lists (usually text too long for X/Bluesky/Threads/Mastodon, or missing media for Instagram/TikTok/YouTube/Pinterest).
 6. \`request-review\`. The post waits in the approval queue (the Cockpit shows it to the approver; the Reviewer checks it first when there is one). Nothing else is needed from you.
-7. When a person approves, the post is scheduled at its proposed time if that is still ahead and every destination passes \`validate-post\`. Otherwise you get one **"Schedule approved social posts"** issue per scope: pick a time for each approved post (\`list-posts\` status approved) and \`schedule-post\` (or \`bulk-schedule\` for several at one time). Do not change approved content.
+7. Once approved, it is scheduled at its proposed time if that is still ahead and every destination passes \`validate-post\`. Otherwise you get one **"Schedule approved social posts"** issue per scope: pick a time for each approved post (\`list-posts\` status approved) and \`schedule-post\` (or \`bulk-schedule\` for several at one time). Do not change approved content.
 
 ## My Social (personal space)
 
@@ -71,7 +71,7 @@ Who approves, statuses, outcomes: \`references/approvals.md\`.
 ## Hand-offs
 
 - You own repurposing. When an SEO page is live (it answers 200) you get one **"Repurpose for social: …"** issue in that page's scope: draft a LinkedIn post, an X post with a first-comment reply (X takes one post plus one reply, not a thread) and an Instagram post from the page, with the link, following the playbook. Pass the issue's \`handoffKey\` to \`create-post\` so each draft is linked to the page (and stays in its scope). Drafts with proposed times, then \`request-review\`. Close the issue with the post ids; the SEO agent links them.
-- With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before a person approves. Fix what it lists, then re-send for review.
+- With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before they are approved. Fix what it lists, then re-send for review.
 
 ## Analytics and feeds
 
@@ -253,7 +253,7 @@ export const APPROVALS_REFERENCE = `# Approvals reference
 Each scope (own work, each client) has an approval policy a PERSON sets on Social → Posts → "Who approves". \`get-approval-policy\` shows it; you cannot change it. It lists which sign-offs a post needs:
 
 - **Reviewer's pass** (optional): the Reviewer agent checked this version. A pass is a check, never an approval.
-- **Team member** (default): a person clicks Approve on the Social page.
+- **Team member** (default): a person clicks Approve on the Social page. Where a person named a delegated approver for the scope, that agent's approval counts as this sign-off, only after a scored Reviewer pass on this version; a person still can. The delegate never edits the post it approves, and an edit makes both the pass and its yes stale. The Social agent is never the delegate.
 - **Client** (client scopes only): the client approves on their link, or a person records that they approved elsewhere (with a note saying how).
 
 No policy set = a team member approves, as before. At least one of team member or client always approves.
@@ -272,7 +272,7 @@ No policy set = a team member approves, as before. At least one of team member o
 8. The link is the client's. Never open it to answer, and never submit its form: the page records whoever answers as the client. (Where only the client approves, the link IS the approval.)
 
 ## The Reviewer
-\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
+\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person or delegated approver who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
 Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.
@@ -324,7 +324,7 @@ ffmpeg -y -framerate 1/3 -i out/slide-%02d.png -vf "scale=1080:1920,format=yuv42
 Add a voice-over or music track you have the rights to with \`-i track.m4a -shortest -c:a aac\`. Screen recordings and B-roll the client supplied can be concatenated the same way. Check the result: \`ffprobe -v error -show_entries stream=width,height,duration -of csv=p=0 out/reel.mp4\` must say 1080,1920 and the length you planned.
 
 ## 4. Look at it
-Open the first and last slide as images and read the text at phone size. Fix overflow, low contrast, anything outside the safe area, a wrong name or number. A person approves the post, but the Reviewer will send back a visual that is wrong.
+Open the first and last slide as images and read the text at phone size. Fix overflow, low contrast, anything outside the safe area, a wrong name or number. A person or the delegated approver approves the post, but the Reviewer will send back a visual that is wrong.
 
 ## 5. Attach, import, post
 1. Attach each file to the issue you are working on (the paperclip skill: \`POST /api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments\`, multipart field \`file\`). A file in your workspace reaches the plugin only this way.
