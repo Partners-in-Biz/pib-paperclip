@@ -202,7 +202,7 @@
       ],
       "loggedIn": {
         "url": "https://paperclip.partnersinbiz.online/PAR/dashboard",
-        "expect": "Dashboard"
+        "expect": "New task"
       },
       "confirm": [],
       "redact": [
