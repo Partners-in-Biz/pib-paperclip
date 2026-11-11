@@ -238,14 +238,15 @@ function stampOf(value: unknown): number {
   return typeof value === "string" && value ? Date.parse(value) : Number.NaN;
 }
 
-/**
- * The scope's delegated approver approves a post in review (PAR-9561): its yes is
- * the owner's sign-off. Every check refuses on its own sentence, and every input
- * that cannot be read refuses (a person approves then). The ledger row must be
- * written: it is the only record that an agent approved, so without it nothing
- * is approved. `set-post-status` and `social.approve` stay closed to agents.
- */
-export async function approvePostByDelegate(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<ApprovalProgress> {
+interface DelegateGate {
+  agentId: string;
+  scope: ReturnType<typeof scopeOfRow>;
+  entry: NonNullable<Awaited<ReturnType<typeof getDelegate>>>;
+  policy: ApprovalPolicy;
+}
+
+/** Checks 1 to 6 of the delegate's two tools (approve and return), in one place: every refusal is the same for both. */
+async function delegateGate(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<DelegateGate> {
   const companyId = caller.companyId;
   // 1. An agent with an id.
   const agentId = caller.isAgent ? caller.agentId : null;
@@ -276,6 +277,19 @@ export async function approvePostByDelegate(ctx: PluginContext, caller: Delegate
   if (blockers.length > 0) throw new SocialError(`The delegated approver cannot act in this scope now: ${blockers[0]} A person approves it.`);
   // 6. Not its own post.
   if (post.created_by_agent_id === agentId) throw new SocialError("You created this post, so you cannot approve it. A person approves it.");
+  return { agentId, scope, entry, policy };
+}
+
+/**
+ * The scope's delegated approver approves a post in review (PAR-9561): its yes is
+ * the owner's sign-off. Every check refuses on its own sentence, and every input
+ * that cannot be read refuses (a person approves then). The ledger row must be
+ * written: it is the only record that an agent approved, so without it nothing
+ * is approved. `set-post-status` and `social.approve` stay closed to agents.
+ */
+export async function approvePostByDelegate(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<ApprovalProgress> {
+  const companyId = caller.companyId;
+  const { agentId, entry, policy } = await delegateGate(ctx, caller, post);
   // 7. The Reviewer passed THIS version, scored, and the pass was not the caller's (read from the ledger whatever the policy says).
   const { hash } = await postFingerprint(ctx, post);
   let rows: OutcomeRow[];
@@ -317,6 +331,34 @@ export async function approvePostByDelegate(ctx: PluginContext, caller: Delegate
   }
   if (!progress.completed) throw new SocialError(`The post was not approved: still waiting for ${stageList(progress.pending)}.`);
   return progress;
+}
+
+export interface DelegateReturn {
+  returned: boolean;
+  next: string;
+}
+
+/**
+ * The scope's delegated approver sends a post in review back to draft with notes (PAR-9561): the same caller checks as
+ * the approval (1 to 6), and notes are required (8). The owner/changes/delegate ledger row carries the notes and must
+ * be written; the post then goes back to draft as the Reviewer's return does (`review_returns` counts a person's returns only).
+ */
+export async function returnPostByDelegate(ctx: PluginContext, caller: DelegateCaller, post: PostRow, rawNotes: string | null | undefined): Promise<DelegateReturn> {
+  const companyId = caller.companyId;
+  const { agentId } = await delegateGate(ctx, caller, post);
+  // 8. Notes are required: the Social agent works from them.
+  const notes = (rawNotes ?? "").trim();
+  if (!notes) throw new SocialError("Say what has to change (notes): the Social agent works from your list.");
+  const { hash } = await postFingerprint(ctx, post);
+  let written = false;
+  try {
+    written = (await recordOutcome(ctx, { companyId, post, platforms: await platformsOf(ctx, companyId, post), stage: "owner", outcome: "changes", contentHash: hash, via: "delegate", actor: { agentId }, note: notes })).recorded;
+  } catch (error) {
+    ctx.logger.warn("Social delegated return not recorded", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+  }
+  if (!written) throw new SocialError("Your return could not be recorded, so the post stays in review. Try again.");
+  await sendBackForChanges(ctx, companyId, post, "The delegated approver", notes, false);
+  return { returned: true, next: "The post is back in draft and the Social agent has your notes." };
 }
 
 export interface VerdictInput {

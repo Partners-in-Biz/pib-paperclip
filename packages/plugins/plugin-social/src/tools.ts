@@ -260,6 +260,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
+    name: "return-post-as-delegate",
+    displayName: "Return post as delegate",
+    description:
+      "Delegated approver only: send a post in review back to draft with notes (required: one line per problem, so the Social agent can fix each). Use it when what you checked in approve-post-as-delegate's list is wrong. The post goes to draft, the review issue is handed back to the Social agent with your notes, and nothing is posted. Same refusals as approve-post-as-delegate (not the delegate, personal post, your own post, you are the Reviewer, the scope asks for the client, anything unreadable): then a person decides.",
+    parametersSchema: schema(["postId", "notes"], { postId: POST_ID, notes: text("What has to change, one line per problem (required).") }),
+  },
+  {
     name: "request-creative",
     displayName: "Request creative",
     description:
