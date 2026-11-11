@@ -56,7 +56,7 @@ import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr,
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
 import { handleCancelledPreviews } from "./service/cancel.js";
-import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
+import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks, retryHandovers } from "./service/client-signoff.js";
 import { syncSignoff } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -127,6 +127,8 @@ const plugin = definePlugin({
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
       await handleCancelledPreviews(e).catch((error) => ctx.logger.info("SEO cancelled previews not followed up", { error: errorMessage(error) }));
+      // Hand-overs a crash left half done, and person decisions nobody handed over yet (bounded: 25 rows, 5 tries each).
+      await retryHandovers(e).catch((error) => ctx.logger.info("SEO hand-overs not retried", { error: errorMessage(error) }));
       // Sprints on automatic client sign-off: one approval email draft per batch of passed previews.
       const drafted = await draftApprovalRequests(e).catch((error) => {
         ctx.logger.info("SEO approval drafts failed", { error: errorMessage(error) });

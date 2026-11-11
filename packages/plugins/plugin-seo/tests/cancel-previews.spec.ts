@@ -212,7 +212,7 @@ describePg("cancel-previews", () => {
       expect(h.updates.filter((u) => u.id === "rev-1")).toEqual([{ id: "rev-1", patch: { status: "cancelled" } }]);
       expect(h.comments.filter((c) => c.id === "rev-1").map((c) => c.body)).toEqual(["Preview replaced by a newer version; nothing to review."]);
       expect(h.wakeups).toEqual(["iss-1"]);
-      expect(h.comments.find((c) => c.id === "iss-1")!.body).toMatch(/The client has answered every preview of this task/);
+      expect(h.comments.find((c) => c.id === "iss-1")!.body).toMatch(/The previews of this task are decided/);
       expect((await sql.unsafe(`SELECT assignee_kind, status FROM ${S}.sprint_tasks WHERE id = 't-1'`))[0]).toEqual({ assignee_kind: "agent", status: "in_progress" });
       expect((await status("dup-waiting-01")).stats.cancelHandled).toBeTruthy();
       // A second run does nothing: no second close, comment or wake.
