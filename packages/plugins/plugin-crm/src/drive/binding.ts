@@ -6,7 +6,8 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { readConfig, SecretResolver, PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
+import { readConfig, PIB_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
+import { driveKeyAfterAuthFailure, driveServiceAccountKey } from "./sa-secret.js";
 import { BrokerError } from "./broker.js";
 import { createGoogleDriveBroker } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
@@ -345,14 +346,25 @@ export async function driveBindingStatus(
   let identityError: string | undefined;
 
   try {
-    const resolver = new SecretResolver(ctx, companyId, cfg);
-    const serviceAccountJson = await resolver.get("driveServiceAccountJson");
+    // Cached per company (PAR-9358); a refused key is read again once, so a rotated key shows here at once.
+    let serviceAccountJson = await driveServiceAccountKey(ctx, companyId, cfg);
     if (serviceAccountJson) {
       // Native path: ask Google whether the service account can add files to the Shared Drive
-      const key = parseServiceAccountKey(serviceAccountJson);
+      let key = parseServiceAccountKey(serviceAccountJson);
       serviceAccountEmail = key.clientEmail;
       if (bound && sharedDriveId) {
-        const identity = await createGoogleDriveBroker(fetch, key, sharedDriveId).identity(sharedDriveId);
+        let identity;
+        try {
+          identity = await createGoogleDriveBroker(fetch, key, sharedDriveId).identity(sharedDriveId);
+        } catch (e) {
+          const refused = e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
+          const next = refused ? await driveKeyAfterAuthFailure(ctx, companyId, cfg, serviceAccountJson) : null;
+          if (!next) throw e;
+          serviceAccountJson = next;
+          key = parseServiceAccountKey(next);
+          serviceAccountEmail = key.clientEmail;
+          identity = await createGoogleDriveBroker(fetch, key, sharedDriveId).identity(sharedDriveId);
+        }
         serviceAccountIsMember = identity.isMember === true;
       }
       await publishStatusEvent(ctx, companyId, { bound, sharedDriveId, serviceAccountEmail, serviceAccountIsMember });
