@@ -14,6 +14,7 @@ const EMBEDDED = join(PLUGIN_KIT_ROOT, "../../db/node_modules/embedded-postgres/
 type PgClient = { query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number | null }>; connect: () => Promise<void>; end: () => Promise<void> };
 
 export async function embeddedAvailable(): Promise<boolean> {
+  if (process.getuid?.() === 0) return false; // Postgres refuses to start as root (VPS deploy gate, PAR-9296)
   try {
     await import(EMBEDDED);
     return true;
