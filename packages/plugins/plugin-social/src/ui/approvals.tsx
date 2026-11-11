@@ -11,6 +11,18 @@ const STATE_TEXT: Record<SignoffState, string> = { approved: "done", changes: "a
 export const CLIENT_ONLY_NOTE =
   "Only the client approves here, so their link is the approval. The Social agent makes the link and holds it while it drafts the email. The approval page refuses answers that come from the server itself, which stops a slip but not a determined attempt: tick \"A team member approves\" too if nobody should be able to approve without a person's click.";
 
+/** How many posts in review the server could not re-check after a save (it logs each one). Zero or unknown: nothing to say. */
+export function recheckFailed(result: unknown): number {
+  const failed = (result as { failed?: unknown } | null | undefined)?.failed;
+  return typeof failed === "number" && failed > 0 ? failed : 0;
+}
+
+/** Said when the re-check after a save missed posts: they keep their old routing until the next save. */
+function RecheckNote({ failed }: { failed: number }) {
+  if (!failed) return null;
+  return <Muted style={{ color: tokens.fg }}>{failed === 1 ? "1 post in review" : `${failed} posts in review`} could not be re-checked (the server logged why). A team member can still approve them from Posts.</Muted>;
+}
+
 const checkStyle = { display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" } as const;
 
 /** Who approves posts in this scope, and (for a person) a way to change it. An agent can never change it. */
@@ -23,6 +35,7 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
   const [owner, setOwner] = useState(true);
   const [client, setClient] = useState(false);
   const [days, setDays] = useState("14");
+  const [failed, setFailed] = useState(0);
   if (!policy) return null;
   const open = () => {
     setReviewer(policy.requireReviewer);
@@ -34,7 +47,10 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
   const valid = owner || client;
   const save = () =>
     run("social.set-approval-policy", { ...scopeParams(snapshot), requireReviewer: reviewer, requireOwner: owner, requireClient: client && isClient, linkExpiryDays: Number(days) || 14 }, "Saved")
-      .then(() => setEditing(false))
+      .then((result) => {
+        setFailed(recheckFailed(result));
+        setEditing(false);
+      })
       .catch(ignore);
   return (
     <Card style={{ gap: 8 }}>
@@ -70,6 +86,7 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
           </Row>
         </div>
       )}
+      <RecheckNote failed={failed} />
       {!editing ? <DelegateApprover snapshot={snapshot} policy={policy} run={run} /> : null}
     </Card>
   );
@@ -82,6 +99,7 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
   const [pick, setPick] = useState(delegate?.agentId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState(0);
   const current = delegate?.agentId ?? "";
   useEffect(() => setPick(current), [current]);
   // scope is null on own work, which is where this matters most: the worker's empty candidates hide it where it is not allowed.
@@ -90,7 +108,9 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
   const send = (agentId: string | null) => {
     setBusy(true);
     setError(null);
+    setFailed(0);
     return run("social.set-approval-delegate", { ...scopeParams(snapshot), agentId }, agentId ? "Delegated approver saved" : "Delegated approver cleared")
+      .then((result) => setFailed(recheckFailed(result)))
       .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "The change was not saved."))
       .finally(() => setBusy(false));
   };
@@ -122,6 +142,7 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
         {delegate ? <SmallButton disabled={busy} onClick={() => void send(null)}>Clear</SmallButton> : null}
       </Row>
       {error ? <Banner tone="error" title="The delegated approver was not saved">{error}</Banner> : null}
+      <RecheckNote failed={failed} />
       <Muted>Only on scopes an instance admin allowed. Own brands only.</Muted>
     </div>
   );

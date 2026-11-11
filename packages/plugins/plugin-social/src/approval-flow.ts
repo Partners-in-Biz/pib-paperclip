@@ -589,6 +589,27 @@ export async function sendBackForChanges(ctx: PluginContext, companyId: string, 
 }
 
 /**
+ * A person cleared the scope's delegated approver (PAR-9561 T7b, findings 13): the review issue it holds for this post goes back
+ * to the person, as without a delegate. Only an issue that matches "post in review, current pass in, owner missing, assignee = the
+ * cleared delegate"; any other issue the agent holds (a changes-requested draft, a client link) is left alone. Returns true when it
+ * handed the issue back. Read errors throw: the caller counts the post as failed.
+ */
+export async function handBackFromDelegate(ctx: PluginContext, actor: ReviewActor, post: PostRow, state: SignoffState, agentId: string): Promise<boolean> {
+  const companyId = actor.companyId;
+  if (post.status !== "review" || state.signoffs.reviewer !== "approved" || !state.missing.includes("owner")) return false;
+  const issueId = await reviewIssueOf(ctx, companyId, post.id);
+  if (!issueId) return false;
+  const issue = await ctx.issues.get(issueId, companyId);
+  if (!issue || issue.assigneeAgentId !== agentId || !(await issueOpen(ctx, companyId, issueId))) return false;
+  // A matching issue that cannot go back is a failure, not a skip: the cleared delegate would keep work its tool now refuses.
+  const targets = await handoffTargets(ctx, companyId, post);
+  if (!targets.person) throw new Error("no team member to hand the review issue back to");
+  const note = `The delegated approver was cleared, so a team member approves this post now. Next: ${stageList(state.missing)}. Open the post on the Social page → Posts and click Approve.`;
+  if (!(await handReviewIssue(ctx, companyId, post, targets.person, note, "Social post needs a team member's approval"))) throw new Error("the review issue was not handed back");
+  return true;
+}
+
+/**
  * A post in review that is waiting on an agent's step but has no open review issue to say so: the policy began to ask for the
  * client after the post went to review, or an agent closed the issue. Opens the issue the next step needs (the Reviewer's check,
  * or the Social agent's client link). Returns true when it did. A post that waits only for a person is left to the Cockpit's list.
