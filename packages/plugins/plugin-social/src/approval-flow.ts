@@ -23,7 +23,7 @@ import { SocialError } from "./domain.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision, ownerStreak } from "./autonomy.js";
-import { currentSignoffs, humanRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
+import { currentSignoffs, ladderRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
 import { validatePostRow } from "./validate.js";
 import { growthEnv, type GrowthEnv } from "./growth/host.js";
@@ -82,7 +82,7 @@ export async function recordSignoff(
   hash: string,
   stage: Stage,
   outcome: "approved" | "changes",
-  via: "tool" | "ui" | "link" | "recorded" | "auto",
+  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate",
   actor: OutcomeActor,
   note?: string | null,
 ): Promise<void> {
@@ -152,7 +152,7 @@ export async function tryAutoApprove(ctx: PluginContext, actor: ReviewActor, pos
     const quick = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: true, streak: AUTO_APPROVE_STREAK });
     if (!quick.eligible) return null;
     const check = await validatePostRow(ctx, companyId, post);
-    const streak = ownerStreak(summariseOutcomes(humanRows(await statRows(ctx, companyId, scopeOfRow(post), 90))), type.type);
+    const streak = ownerStreak(summariseOutcomes(ladderRows(await statRows(ctx, companyId, scopeOfRow(post), 90))), type.type);
     const decision = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: check.ok, streak });
     if (!decision.eligible) return null;
     const note = `Auto-approved: low-risk ${type.type} post, ${streak} team approvals in a row for this type in this scope.`;
