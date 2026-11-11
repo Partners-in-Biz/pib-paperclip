@@ -2046,19 +2046,41 @@ export async function revokePageGrants(db: SeoDb, companyId: string, taskId: str
 }
 
 /**
- * Claims the right to tell the task issue about these open grants: marks `notified_until = apply_until` where it differs. More than 0
- * means this call claimed a new `apply_until` and should comment; 0 means the issue was already told. The host's execute has no
- * RETURNING, so the row count is the claim.
+ * Claims the right to tell the task issue about these open grants: marks `notified_until = apply_until` where the issue was not told
+ * yet or `apply_until` moved past the told time by more than NOTICE_SLACK_MINUTES. More than 0 means this call claimed a new
+ * `apply_until` and should comment; 0 means the issue was already told. The slack keeps a repeat of the same call (whose fresh
+ * `now() + hours` is a few seconds later) from posting again (PAR-9493 T2b). The host's execute has no RETURNING, so the row
+ * count is the claim.
  */
+export const NOTICE_SLACK_MINUTES = 15;
 export async function claimGrantNotice(db: SeoDb, companyId: string, taskId: string, pageUrls: string[]): Promise<number> {
   if (pageUrls.length === 0) return 0;
   const result = await db.execute(
     `UPDATE ${t("page_apply_grants")} SET notified_until = apply_until
       WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND page_url IN (SELECT jsonb_array_elements_text($3::jsonb))
-        AND notified_until IS DISTINCT FROM apply_until`,
+        AND (notified_until IS NULL OR apply_until > notified_until + interval '${NOTICE_SLACK_MINUTES} minutes')`,
     [companyId, taskId, JSON.stringify(pageUrls)],
   );
   return result.rowCount;
+}
+
+/** Gives back a notice claim whose comment did not go out (PAR-9493 T2b), so a repeat call claims and posts it. */
+export async function releaseGrantNotice(db: SeoDb, companyId: string, taskId: string, pageUrls: string[]): Promise<void> {
+  if (pageUrls.length === 0) return;
+  await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET notified_until = NULL
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND page_url IN (SELECT jsonb_array_elements_text($3::jsonb))`,
+    [companyId, taskId, JSON.stringify(pageUrls)],
+  );
+}
+
+/** The task's open grants (not revoked, `apply_until` not passed): page and until (ISO). */
+export async function openPageGrants(db: SeoDb, companyId: string, taskId: string): Promise<Array<{ pageUrl: string; applyUntil: string }>> {
+  const rows = await db.query(
+    `SELECT page_url, apply_until FROM ${t("page_apply_grants")} WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND apply_until > now() ORDER BY page_url`,
+    [companyId, taskId],
+  );
+  return rows.map((r: Record<string, unknown>) => ({ pageUrl: String(r.page_url), applyUntil: new Date(r.apply_until instanceof Date ? r.apply_until : String(r.apply_until)).toISOString() }));
 }
 
 /**

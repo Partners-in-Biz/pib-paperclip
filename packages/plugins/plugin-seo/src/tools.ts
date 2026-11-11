@@ -268,6 +268,29 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
 
   {
     group: "Site",
+    name: "approve-page-apply",
+    displayName: "Approve applying a task's pages (sign-off delegate)",
+    description:
+      "pr_only WordPress sprint with manual sign-off: a person or a sign-off delegate (SEO setting signoffDelegateAgentIds, never the assignee of the task's issue) opens the apply window for 1 to 10 of the task's own pages that the Reviewer passed (a passed preview, or reviewCommentId). Sends the window to the CRM, resolves needsYouKey when given, and tells and wakes the task issue once. Safe to repeat: a repeat only does the missing steps (follow `retry` when it is returned).",
+    parametersSchema: schema(["sprintId", "taskId", "pageUrls", "note"], {
+      sprintId,
+      taskId,
+      pageUrls: list("1 to 10 of the task's pages (full URLs on the sprint's site)"),
+      note: text("Why this may be applied now (the standing approval and what the Reviewer passed), max 1000 chars"),
+      hours: int("How long the window stays open, 1 to 72 (default 24)"),
+      reviewCommentId: text("The Reviewer's PASS comment id on the task issue or a child of it, for pages without a passed preview"),
+      needsYouKey: text("The Needs you item this answers (from needs-you); it is resolved"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "revoke-page-apply",
+    displayName: "Close a task's page apply window",
+    description: "A person or a sign-off delegate closes the task's open page apply grants (all, or only pageUrls) and tells the task issue not to write. Nothing open: revoked 0.",
+    parametersSchema: schema(["sprintId", "taskId"], { sprintId, taskId, pageUrls: list("Only these pages (default: every open grant of the task)") }),
+  },
+  {
+    group: "Site",
     name: "create-preview",
     displayName: "Create a client preview link",
     description:
