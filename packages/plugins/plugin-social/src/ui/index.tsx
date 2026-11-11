@@ -63,6 +63,7 @@ const ACTION_KEYS = [
   "social.approve",
   "social.approval-policy",
   "social.set-approval-policy",
+  "social.set-approval-delegate",
   "social.approval-status",
   "social.request-client-approval",
   "social.record-client-approval",

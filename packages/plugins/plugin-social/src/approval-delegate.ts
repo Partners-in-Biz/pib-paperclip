@@ -20,7 +20,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { readCompanyRoles, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { getPolicyStrict, scopeKeyOf, type ApprovalPolicy } from "./approval-policy.js";
+import { getPolicyStrict, scopeKeyOf, type ApprovalPolicy, type PolicyDelegate } from "./approval-policy.js";
 import { readDelegatableScopes } from "./config.js";
 import { SocialError } from "./domain.js";
 import { agentStatusActive } from "./issues.js";
@@ -114,6 +114,11 @@ export async function listDelegates(ctx: PluginContext, companyId: string): Prom
 /** The scope's stored delegate, or null. Never throws: an unreadable state means no delegate. */
 export async function getDelegate(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<DelegateEntry | null> {
   return (await listDelegates(ctx, companyId))[normalKey(delegateScopeKey(scope))] ?? null;
+}
+
+/** The scope's stored delegate, or null. Throws (a SocialError) when the state cannot be read: the policy lock refuses then. */
+export async function getDelegateStrict(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<DelegateEntry | null> {
+  return (await readForWrite(ctx, companyId))[normalKey(delegateScopeKey(scope))] ?? null;
 }
 
 async function readForWrite(ctx: PluginContext, companyId: string): Promise<DelegateMap> {
@@ -215,4 +220,44 @@ export async function activeDelegate(ctx: PluginContext, companyId: string, scop
   if (!entry) return null;
   const facts = await delegateFacts(ctx, companyId, scope, entry.agentId);
   return delegateBlockers(facts).length === 0 ? entry.agentId : null;
+}
+
+/**
+ * The scope's delegate as the page and the tools show it (`policyOut`), with
+ * whether it may act now and, if not, the first reason. Null: none set.
+ */
+export async function delegateView(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<PolicyDelegate | null> {
+  if (scope === "personal") return null;
+  const entry = await getDelegate(ctx, companyId, scope);
+  if (!entry) return null;
+  const [facts, name] = await Promise.all([
+    delegateFacts(ctx, companyId, scope, entry.agentId),
+    ctx.agents
+      .get(entry.agentId, companyId)
+      .then((a) => (a && typeof a.name === "string" && a.name ? a.name : null))
+      .catch(() => null),
+  ]);
+  const reasons = delegateBlockers(facts);
+  return { agentId: entry.agentId, name, active: reasons.length === 0, inactiveReason: reasons[0] ?? null };
+}
+
+/**
+ * Agents a person may pick as the scope's delegate: running agents of this
+ * company, minus the configured Reviewer, and only on an allowlisted scope.
+ * Any failed read gives an empty list (nothing to pick).
+ */
+export async function delegateCandidates(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<Array<{ id: string; name: string }>> {
+  if (scope === "personal" || scope?.kind === "contact") return [];
+  try {
+    const [allowlist, roles, agents] = await Promise.all([readDelegatableScopes(ctx, companyId), readCompanyRoles(ctx, companyId), ctx.agents.list({ companyId, limit: 200 })]);
+    if (!allowlist.map(normalKey).includes(normalKey(delegateScopeKey(scope)))) return [];
+    if (roles.error) return [];
+    const reviewer = roles.roles?.reviewerAgentId ?? null;
+    return agents
+      .filter((a) => a.companyId === companyId && agentStatusActive(a.status) && a.id !== reviewer)
+      .map((a) => ({ id: a.id, name: a.name || a.id }));
+  } catch (error) {
+    ctx.logger.info("Social delegate candidates skipped", { companyId, error: errorText(error) });
+    return [];
+  }
 }

@@ -14,6 +14,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId } from "@partnersinbiz/pib-plugin-kit";
+import { delegateView } from "./approval-delegate.js";
 import { getPolicy, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
 import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
@@ -55,8 +56,8 @@ export function withSignoff(state: SignoffState, stage: Stage): SignoffState {
 
 /** What the page and tools show about a post's approval. */
 export async function approvalView(ctx: PluginContext, companyId: string, post: PostRow) {
-  const state = await signoffState(ctx, companyId, post);
-  return { policy: policyOut(state.policy), signoffs: state.signoffs, missing: state.missing };
+  const [state, delegate] = await Promise.all([signoffState(ctx, companyId, post), delegateView(ctx, companyId, post.scope === "personal" ? "personal" : scopeOfRow(post))]);
+  return { policy: policyOut(state.policy, delegate), signoffs: state.signoffs, missing: state.missing };
 }
 
 export interface ApprovalProgress {

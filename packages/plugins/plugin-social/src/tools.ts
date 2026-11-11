@@ -219,7 +219,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "get-approval-policy",
     displayName: "Get approval policy",
-    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. Read it before you promise anyone a timeline. Only a person sets it; you cannot.${OWN}`,
+    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. \`delegate\` names the agent a person chose as the scope's delegated approver (null: none), and \`delegate.active\` says whether it may act now (\`inactiveReason\` says why not). Read it before you promise anyone a timeline. Only a person sets the policy or the delegate; you cannot.${OWN}`,
     parametersSchema: schema([], { ...scope }),
   },
   {
