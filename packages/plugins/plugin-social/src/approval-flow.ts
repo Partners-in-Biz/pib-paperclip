@@ -24,7 +24,7 @@ import { postFingerprint } from "./content-hash.js";
 import { destinationsForPost, getAccountsByIds, getPost, setPostStatus, table, type PostRow } from "./db.js";
 import { SocialError } from "./domain.js";
 import { requireCanActOnPost } from "./ownership.js";
-import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
+import { closePostReview, delegateForPost, handReviewIssue, handToDelegate, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision, ownerStreak } from "./autonomy.js";
 import { currentSignoffs, ladderRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type OutcomeRow, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
@@ -68,6 +68,8 @@ export interface ApprovalProgress {
   /** Sign-offs still missing after this one. */
   pending: Stage[];
   message: string;
+  /** The scope's delegated approver the post was handed to (only the owner's sign-off was missing). */
+  delegateAgentId?: string;
   approval?: ApprovalOutcome;
 }
 
@@ -188,8 +190,16 @@ export async function afterSignoff(ctx: PluginContext, actor: ReviewActor, post:
     if (!(await openLinkFor(ctx, companyId, post.id, state.hash))) {
       handed = Boolean(await handToSocialAgent(ctx, companyId, post, { task: "client-approval", note: `${intro}Next: ${waiting}. Get the client's approval with \`request-client-approval\` and a Mailbox draft (never send it yourself). Nothing is posted until then.`, wakeReason: "Social post needs the client's approval" }));
     }
-  } else if (state.missing.includes("owner") && targets.person) {
-    handed = await handReviewIssue(ctx, companyId, post, targets.person, `${intro}Next: ${waiting}. Open the post on the Social page → Posts and click Approve.`, "Social post needs a team member's approval");
+  } else if (state.missing.includes("owner")) {
+    // The scope's delegated approver takes it when it could approve it now; a failed hand-off goes to the person, as without one.
+    const delegate = await delegateToHandTo(ctx, companyId, post, state);
+    if (delegate) {
+      const note = `${intro}Next: the scope's delegated approver. Check the post and approve it with \`approve-post-as-delegate\`, or send it back with notes with \`return-post-as-delegate\`. A person may still approve it on the Social page.`;
+      if (await handToDelegate(ctx, companyId, post, delegate, note)) {
+        return { completed: false, pending: state.missing, message: `Recorded. Waiting for ${waiting}: handed to the delegated approver.`, delegateAgentId: delegate };
+      }
+    }
+    if (targets.person) handed = await handReviewIssue(ctx, companyId, post, targets.person, `${intro}Next: ${waiting}. Open the post on the Social page → Posts and click Approve.`, "Social post needs a team member's approval");
   }
   // Nobody to hand to (or no open issue): the sign-off still goes on the issue, when there is one.
   if (!handed && lead) {
@@ -197,6 +207,27 @@ export async function afterSignoff(ctx: PluginContext, actor: ReviewActor, post:
     if (issueId && (await issueOpen(ctx, companyId, issueId))) await ctx.issues.createComment(issueId, `${lead}\n\nStill needed: ${waiting}.`, companyId).catch(() => undefined);
   }
   return { completed: false, pending: state.missing, message: `Recorded. Waiting for ${waiting}.` };
+}
+
+/**
+ * The delegate a post waiting only for the owner goes to (PAR-9561 T7a), or null (the person gets it). The same conditions the
+ * approve tool checks: an active delegate that is not the creator, named before the post was created, and the Reviewer's latest
+ * pass is of this version, scored and not the delegate's own. Any read error is null. Never throws.
+ */
+async function delegateToHandTo(ctx: PluginContext, companyId: string, post: PostRow, state: SignoffState): Promise<string | null> {
+  try {
+    if (state.missing.length !== 1 || state.missing[0] !== "owner") return null;
+    const entry = await delegateForPost(ctx, companyId, post, state.policy);
+    if (!entry) return null;
+    const rows = await outcomesForPost(ctx, companyId, post.id);
+    const pass = rows.filter((row) => row.stage === "reviewer").sort((a, b) => b.round - a.round || String(b.created_at).localeCompare(String(a.created_at)))[0];
+    if (!pass || pass.outcome !== "approved" || pass.content_hash !== state.hash || pass.via === "unscored") return null;
+    if (!pass.actor_agent_id || pass.actor_agent_id === entry.agentId) return null;
+    return entry.agentId;
+  } catch (error) {
+    ctx.logger.info("Social delegate routing skipped; a person approves", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 /** A person clicks Approve. Needs the policy to ask for a team member, and the Reviewer's pass first when it asks for that. Personal posts can only be approved by the owner. */
@@ -527,7 +558,11 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
       verdict: "pass",
       score: minScore,
       warnings: warnings.length > 0 ? warnings : undefined,
-      next: progress.completed ? "Nothing else was needed: the post is approved." : `Handed on: ${stageList(progress.pending)} still has to approve. Nothing is posted until then.`,
+      next: progress.completed
+        ? "Nothing else was needed: the post is approved."
+        : progress.delegateAgentId
+          ? `Handed on to the scope's delegated approver (agent \`${progress.delegateAgentId}\`), who approves or returns it. Nothing is posted until then.`
+          : `Handed on: ${stageList(progress.pending)} still has to approve. Nothing is posted until then.`,
     };
   }
 
