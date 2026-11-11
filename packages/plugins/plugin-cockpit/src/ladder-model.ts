@@ -6,8 +6,8 @@
 
 import { parseMarker } from "@partnersinbiz/pib-plugin-kit";
 
-export const BLOCKED_ESCALATE_HOURS = 24; // stuck issue blocked this long with no open blocker -> level 1
-export const LEVEL_DEADLINE_HOURS = 24; // an open Unblock level may sit this long
+export const BLOCKED_ESCALATE_HOURS = 4; // stuck issue blocked this long with no open blocker -> level 1 (24 until 2026-11-11)
+export const LEVEL_DEADLINE_HOURS = 8; // an open Unblock level may sit this long (the kit's ESCALATION_DEADLINE_MS; 24 until 2026-11-11)
 export const TRANSIENT_RETRY_WINDOW_HOURS = 6;
 
 export type Level = 1 | 2 | 3 | 4; // 4 = owner, end of ladder
@@ -17,6 +17,8 @@ export interface StuckInput {
   identifier: string;
   status: string;
   blockedSince: string; // ISO
+  /** The host sweeper handed it back to the assignee and the assignee blocked it again: stuck now, whatever the clock says. */
+  reblockedAfterSweep?: boolean;
   openBlockers: number;
   closedBlockers: number;
 }
@@ -70,7 +72,7 @@ export function nextAction(stuck: StuckInput, unblocks: UnblockInput[], now: Dat
   if (linked.length === 0) {
     if (stuck.openBlockers > 0) return { type: "none", reason: "not_stuck_yet" };
     const hoursSinceBlocked = (now.getTime() - new Date(stuck.blockedSince).getTime()) / (1000 * 60 * 60);
-    return hoursSinceBlocked >= BLOCKED_ESCALATE_HOURS ? { type: "create", level: 1 } : { type: "none", reason: "not_stuck_yet" };
+    return stuck.reblockedAfterSweep || hoursSinceBlocked >= BLOCKED_ESCALATE_HOURS ? { type: "create", level: 1 } : { type: "none", reason: "not_stuck_yet" };
   }
 
   const isOpen = (s: string) => !["done", "cancelled"].includes(s);

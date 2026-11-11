@@ -224,7 +224,9 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         }
       } else if (action.type === "create") {
         stage = "create";
-        const reason = `Blocked over ${BLOCKED_ESCALATE_HOURS} hours with no open blocker.`;
+        const reason = issue.stuck.reblockedAfterSweep
+          ? "Blocked with nobody else named to act: the assignee was handed it back, tried again and blocked it again."
+          : `Blocked over ${BLOCKED_ESCALATE_HOURS} hours with no open blocker and nobody else named to act.`;
         const startLevel = action.level === 4 ? "coo" : action.level;
 
         // Level 4: skip if owner already pushed in last 24h
