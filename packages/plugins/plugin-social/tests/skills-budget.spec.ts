@@ -38,9 +38,10 @@ describe("what the skills tell agents", () => {
     for (const tool of SOCIAL_TOOLS) expect(publish, tool.name).toContain(tool.name);
   });
 
-  it("social-publish keeps room for the delegated-approver text (16,400 characters at most)", () => {
+  // T4b left 16,400; from T5 on the delegate tools may use the room up to 17,000 (PAR-9566 breakdown).
+  it("social-publish keeps room for the delegated-approver text (17,000 characters at most)", () => {
     const n = skill("social-publish").markdown.length;
-    expect(n, `social-publish is ${n}`).toBeLessThanOrEqual(16_400);
+    expect(n, `social-publish is ${n}`).toBeLessThanOrEqual(17_000);
   });
 
   it("agents never approve, never change a policy, and never send the client's email", () => {
