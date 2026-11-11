@@ -155,8 +155,8 @@ describe("Campaigns cockpit snapshot", () => {
     expect(snap.health.find((h) => h.key === "outbox")?.status).toBe("bad");
     expect(snap.health.find((h) => h.key === "campaigns:sends")).toMatchObject({ status: "bad", since: ago(120) });
     // Only the approval that sits with a person is waiting; the one the Reviewer got 3 hours ago is not.
-    expect(snap.waiting).toEqual([expect.objectContaining({ key: "approval:iss-1", issueId: "iss-1", title: "[Acme] Approve campaign Draft", kind: "review", href: "/issues/iss-1" })]);
-    expect(snap.waiting[0]!.why).toMatch(/launches by itself/);
+    expect(snap.waiting).toEqual([expect.objectContaining({ key: "approval:iss-1", issueId: "iss-1", title: "[Acme] Approve campaign Draft", kind: "review", href: expect.stringMatching(/^\/campaigns\?campaign=/) })]);
+    expect(snap.waiting[0]!.why).toMatch(/Open the campaign to approve or send back/);
     expect(snap.activity.map((a) => a.text)).toEqual(["Handled 1 reply to campaign Spring", "Sent 4 emails for campaign Spring"]);
     expect(snap.quality.find((q) => q.key === "reply_classification_corrected_rate")).toMatchObject({ value: "5% (1 of 20)", tone: "ok" });
     expect(snap.quality.find((q) => q.key === "ab_suggestions_pending")).toMatchObject({ raw: 0, tone: "ok" });

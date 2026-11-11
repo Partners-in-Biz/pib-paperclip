@@ -323,6 +323,10 @@ describe("cockpit waiting items", () => {
     expect(items[1]).toMatchObject({ title: "Launch approved campaign Spring", kind: "review" });
     expect(items[2]!.why).toMatch(/held this launch approval for over a day/);
     expect(items[3]!.why).toMatch(/could not launch after the last approval/);
+    // Stage 1 (PAR-9230): both items open the campaign and say so.
+    expect(items[0]).toMatchObject({ title: "Approve campaign Spring", href: "/campaigns?campaign=c1" });
+    expect(items[1]!.href).toBe("/campaigns?campaign=c2");
+    for (const item of items) expect(item.why).toMatch(/open the campaign to approve or send back/i);
   });
 
   it("keeps the launch row after the Cockpit prunes closed issues, and still prunes the other approval rows", () => {
