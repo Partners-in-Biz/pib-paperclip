@@ -22,6 +22,8 @@ const parked = (extra: Row = {}) => taskRow({ id: "t1", sprint_id: "sp-real", te
 const preview = (id: string, page: string, extra: Row = {}): Row => ({ id, page_url: `https://agristudies.co.za/${page}`, title: `Page ${page}`, status: "pending", review_status: "passed", decision_note: null, handed_at: null, draft_key: null, reviewed_at: "2026-10-03T07:00:00Z", ...extra });
 
 const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, page_url, title, status, review_status, decision_note, handed_at, draft_key/, () => rows];
+/** The rows a hand-over claimed, as finishHandover reads them back (the fake execute claims every eligible row). */
+const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {
@@ -161,7 +163,8 @@ describe("the client's answers", () => {
   });
 
   it("when every preview is answered: lifts the lock for the window, takes the task back and wakes the agent once with what to apply and what to revise", async () => {
-    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest([preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })])] });
+    const answered = [preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })];
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered)] });
     const sprint = (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!;
     expect(await handleClientAnswer(w.env, sprint, answer())).toBe(true);
     const [grant] = lock(w);
@@ -177,11 +180,13 @@ describe("the client's answers", () => {
     expect(body).toMatch(/Changes requested: revise/);
     expect(body).toContain("Use our logo colours");
     expect(body).toMatch(/complete this task only when every page of it is applied/);
-    expect(executed(w, /SET handed_at = now\(\)/)[0]!.params[1]).toBe(JSON.stringify(["p1", "p2"]));
+    expect(executed(w, /SET handed_at = \$3::timestamptz/)[0]!.params[3]).toBe(JSON.stringify(["p1", "p2"]));
+    expect(executed(w, /SET handover_done_at = now\(\)/)).toHaveLength(1);
   });
 
   it("changes requested only: no lock is lifted", async () => {
-    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest([preview("p2", "b", { status: "changes_requested", decision_note: "no" })])] });
+    const answered = [preview("p2", "b", { status: "changes_requested", decision_note: "no" })];
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered)] });
     await handleClientAnswer(w.env, (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!, answer({ id: "p2", status: "changes_requested" }));
     expect(lock(w)).toEqual([]);
     expect(w.wakeups).toEqual(["iss-1"]);
