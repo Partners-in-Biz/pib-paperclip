@@ -10,6 +10,7 @@ import { r2Chunks, R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
 import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
 import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
+import { acquireTransferSlot } from "./transfer-slots.js";
 
 const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo", "social", "campaigns", "ads", "ops"] as const;
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
@@ -234,11 +235,17 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
       if (!broker.uploadFileStream) {
         return { status: "broker_error", code: "unsupported", retryable: false, hint: "This Drive connection cannot take files over 5 MB." };
       }
-      uploadResult = await broker.uploadFileStream({
-        name, mimeType, parentFolderId: uploadFolderId, size: large.size, sha256: computedSha256,
-        chunks: r2Chunks(large.url, large.size, opts?.r2FetchFn ? { fetchFn: opts.r2FetchFn } : {}),
-        onProgress: input.onProgress ? (done) => input.onProgress!(done, large!.size) : undefined,
-      });
+      // Counted in the shared transfer slots (PAR-9219 C.4), never refused: a producer route keeps its behaviour.
+      const releaseSlot = acquireTransferSlot();
+      try {
+        uploadResult = await broker.uploadFileStream({
+          name, mimeType, parentFolderId: uploadFolderId, size: large.size, sha256: computedSha256,
+          chunks: r2Chunks(large.url, large.size, opts?.r2FetchFn ? { fetchFn: opts.r2FetchFn } : {}),
+          onProgress: input.onProgress ? (done) => input.onProgress!(done, large!.size) : undefined,
+        });
+      } finally {
+        releaseSlot();
+      }
     } else {
       uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
     }
