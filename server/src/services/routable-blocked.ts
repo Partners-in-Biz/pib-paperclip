@@ -1,6 +1,8 @@
 import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
+/** Fixed system actor id; isSystemUnblockOwnerWake (issue-wake-guards.ts) admits it. */
+export const ROUTABLE_BLOCKED_WAKE_ACTOR_ID = "routable_blocked";
 
 type RoutableBlockedIssue = {
   id: string;
@@ -20,6 +22,12 @@ export function isProspectiveBlockedTransition(issue: RoutableBlockedIssue): iss
     Boolean(issue.blockedTransitionAt && issue.blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT);
 }
 
+/** True when the wakeup result is a skipped receipt (enqueueWakeup returns null for a skip). */
+function isSkippedWake(result: unknown): boolean {
+  if (result === null || result === undefined) return true;
+  return typeof result === "object" && (result as { status?: unknown }).status === "skipped";
+}
+
 export async function deliverAgentUnblockNotification(input: {
   issue: RoutableBlockedIssue;
   wakeup: (agentId: string, options: {
@@ -27,6 +35,8 @@ export async function deliverAgentUnblockNotification(input: {
     triggerDetail: "system";
     reason: "issue_unblock_requested";
     idempotencyKey: string;
+    requestedByActorType: "system";
+    requestedByActorId: typeof ROUTABLE_BLOCKED_WAKE_ACTOR_ID;
     payload: { issueId: string; action: string };
     contextSnapshot: { wakeReason: "issue_unblock_requested"; issueId: string; taskId: string };
   }) => Promise<unknown>;
@@ -41,14 +51,18 @@ export async function deliverAgentUnblockNotification(input: {
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
 
-  await input.wakeup(owner.agentId, {
+  const result = await input.wakeup(owner.agentId, {
     source: "automation",
     triggerDetail: "system",
     reason: "issue_unblock_requested",
     idempotencyKey: `issue-unblock:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+    requestedByActorType: "system",
+    requestedByActorId: ROUTABLE_BLOCKED_WAKE_ACTOR_ID,
     payload: { issueId: issue.id, action: issue.unblockDescriptor.action },
     contextSnapshot: { wakeReason: "issue_unblock_requested", issueId: issue.id, taskId: issue.id },
   });
+  // PAR-9390: a skipped wake reached nobody, so the owner is not notified.
+  if (isSkippedWake(result)) return false;
   await input.markNotified((input.now ?? (() => new Date()))());
   return true;
 }

@@ -15628,7 +15628,25 @@ export function issueRoutes(
         let ownerNotifiedAt: Date | null = null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
-          wakeup: heartbeat.wakeup,
+          // PAR-9390: enqueueWakeup returns null both for a skip and for a
+          // deferred wake; read the receipt so only a skip counts as unsent.
+          wakeup: async (agentId, options) => {
+            const run = await heartbeat.wakeup(agentId, options);
+            if (run) return run;
+            const [receipt] = await db
+              .select({ status: agentWakeupRequests.status })
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, blockedIssue.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.idempotencyKey, options.idempotencyKey),
+                ),
+              )
+              .orderBy(desc(agentWakeupRequests.requestedAt))
+              .limit(1);
+            return receipt ?? null;
+          },
           markNotified: async (blockedOwnerNotifiedAt) => {
             ownerNotifiedAt = blockedOwnerNotifiedAt;
           },
