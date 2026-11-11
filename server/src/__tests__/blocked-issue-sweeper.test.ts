@@ -527,6 +527,36 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
     });
 
     it.each([
+      ["throws", true, () => Promise.reject(new Error("queue down"))],
+      ["is skipped", false, () => Promise.resolve({ id: randomUUID(), status: "skipped" })],
+      ["returns nothing", false, () => Promise.resolve(null)],
+    ] as const)("still falls back to todo at 72 hours when the owner wake %s", async (_how, failed, ownerWake) => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      const wakeup = vi.fn(async (agentId: string, _opts: unknown): Promise<unknown> =>
+        agentId === ownerId ? ownerWake() : null,
+      );
+      const sweeper = blockedIssueSweeper(db, { wakeup });
+
+      expect((await sweeper.sweep(at(24))).renotified).toBe(1);
+      expect((await sweeper.sweep(at(48))).renotified).toBe(1);
+      const rows = await renotices(issueId);
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        if (failed) expect(row.details).toMatchObject({ wakeFailed: true });
+        else expect(row.details).not.toHaveProperty("wakeFailed");
+      }
+
+      expect(await sweeper.sweep(at(72))).toMatchObject({ moved: 1 });
+      expect(await statusOf(issueId)).toBe("todo");
+      expect(wakeup).toHaveBeenLastCalledWith(ctx.agentId, expect.objectContaining({ reason: "issue_status_changed" }));
+      const [swept] = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.blocked_swept_to_todo")));
+      expect(swept?.details).toMatchObject({ reason: "owner_did_not_act", status: "todo" });
+    });
+
+    it.each([
       ["the owner", "paused", "idle"],
       ["the assignee", "idle", "paused"],
     ])("leaves the issue alone when %s is unhealthy", async (_who, ownerStatus, assigneeStatus) => {
