@@ -253,6 +253,13 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "approve-post-as-delegate",
+    displayName: "Approve post as delegate",
+    description:
+      "Delegated approver only: the agent a person named for this post's scope (Social page, Approvals, Who approves). Your yes is the owner's approval. Before you call it, read the post (get-post) and get-approval-status, and check: the Reviewer passed THIS version; the text, media and alt text match the brand and the playbook; facts, prices and dates are right; nothing promises what the client has not agreed; the time is right. Anything wrong: do not approve, return it with return-post-as-delegate and one line per problem. Refused when the post is not in review, personal, yours, created before you were named, the Reviewer's pass is missing, stale, unscored or yours, the scope asks for the client, you are the Reviewer, or anything cannot be read: then a person approves. Approving schedules the post at its proposed time and closes the review issue. Never use set-post-status to approve.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
     name: "request-creative",
     displayName: "Request creative",
     description:

@@ -8,14 +8,17 @@
  *   `applyClientAnswer` in client-approval.ts), or a person recorded that the
  *   client approved elsewhere, with a note (`recordClientApprovalByPerson`).
  *
- * No agent approves: the only agent verdict is the Reviewer's pass/changes, and an
- * approval needs a person or the client behind it. Nothing here is new authority
- * for the default policy (the owner approves): that path behaves as before.
+ * - the owner's delegate: the agent a person named for the scope approves with
+ *   `approve-post-as-delegate` (`approvePostByDelegate`), after a scored Reviewer pass.
+ *
+ * No other agent approves: the Reviewer's verdict is a check, and an approval needs
+ * a person, the client, or the agent a person named for that scope. Nothing here is
+ * new authority for the default policy (the owner approves): that path behaves as before.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId } from "@partnersinbiz/pib-plugin-kit";
-import { delegateView } from "./approval-delegate.js";
-import { getPolicy, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
+import { delegateBlockers, delegateFacts, delegateView, getDelegate } from "./approval-delegate.js";
+import { getPolicy, getPolicyStrict, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
 import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
 import { destinationsForPost, getAccountsByIds, getPost, setPostStatus, table, type PostRow } from "./db.js";
@@ -23,7 +26,7 @@ import { SocialError } from "./domain.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { closePostReview, handReviewIssue, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision, ownerStreak } from "./autonomy.js";
-import { currentSignoffs, ladderRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type Stage, type StageState } from "./review-outcomes.js";
+import { currentSignoffs, ladderRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type OutcomeRow, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
 import { validatePostRow } from "./validate.js";
 import { growthEnv, type GrowthEnv } from "./growth/host.js";
@@ -222,6 +225,98 @@ export async function recordClientApprovalByPerson(ctx: PluginContext, actor: Re
   if (before.policy.requireReviewer && before.signoffs.reviewer !== "approved") throw new SocialError("The Reviewer has not passed this version yet. Its pass comes first in this scope.");
   await recordSignoff(ctx, companyId, post, before.hash, "client", "approved", "recorded", { userId: actor.userId, name: by ?? null }, text);
   return afterSignoff(ctx, actor, post, withSignoff(before, "client"), "A person, recording the client's approval,", `Record: ${text.slice(0, 300)}`);
+}
+
+export interface DelegateCaller {
+  companyId: string;
+  agentId: string | null;
+  isAgent: boolean;
+}
+
+function stampOf(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "string" && value ? Date.parse(value) : Number.NaN;
+}
+
+/**
+ * The scope's delegated approver approves a post in review (PAR-9561): its yes is
+ * the owner's sign-off. Every check refuses on its own sentence, and every input
+ * that cannot be read refuses (a person approves then). The ledger row must be
+ * written: it is the only record that an agent approved, so without it nothing
+ * is approved. `set-post-status` and `social.approve` stay closed to agents.
+ */
+export async function approvePostByDelegate(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<ApprovalProgress> {
+  const companyId = caller.companyId;
+  // 1. An agent with an id.
+  const agentId = caller.isAgent ? caller.agentId : null;
+  if (!agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  // 2. A company post in review.
+  if (post.company_id !== companyId) throw new SocialError("Post is not visible");
+  if (post.scope === "personal") throw new SocialError("A personal post has no delegated approver: only its owner approves it.");
+  if (post.status !== "review") throw new SocialError(`The post is ${post.status.replace("_", " ")}, not in review: there is nothing to approve.`);
+  // 3. The scope's delegate is the caller.
+  const scope = scopeOfRow(post);
+  const entry = await getDelegate(ctx, companyId, scope);
+  if (!entry) throw new SocialError("No delegated approver is set for this post's scope, so a person approves it.");
+  if (entry.agentId !== agentId) throw new SocialError("You are not the delegated approver for this post's scope. A person approves it.");
+  const facts = await delegateFacts(ctx, companyId, scope, agentId);
+  // 4. Not the Reviewer (the configured one, paused or not).
+  if (facts.configuredReviewerId === undefined) throw new SocialError("The company's roles could not be read, so it is not known who the Reviewer is. Nothing was approved; try again.");
+  if (facts.configuredReviewerId === agentId) throw new SocialError("The Reviewer checks the post; it cannot also approve it. A person approves it.");
+  // 5. The live policy asks for the owner and not the client (read strictly: an unreadable policy refuses).
+  let policy: ApprovalPolicy;
+  try {
+    policy = await getPolicyStrict(ctx, companyId, scope);
+  } catch {
+    throw new SocialError("The approval policy could not be read, so nothing was approved. Try again.");
+  }
+  if (policy.requireClient) throw new SocialError("This scope asks the client to approve; a delegated approver cannot stand in for the client.");
+  if (!policy.requireOwner) throw new SocialError("This scope does not ask for a team member's approval, so there is nothing for a delegate to approve.");
+  const blockers = delegateBlockers({ ...facts, policy });
+  if (blockers.length > 0) throw new SocialError(`The delegated approver cannot act in this scope now: ${blockers[0]} A person approves it.`);
+  // 6. Not its own post.
+  if (post.created_by_agent_id === agentId) throw new SocialError("You created this post, so you cannot approve it. A person approves it.");
+  // 7. The Reviewer passed THIS version, scored, and the pass was not the caller's (read from the ledger whatever the policy says).
+  const { hash } = await postFingerprint(ctx, post);
+  let rows: OutcomeRow[];
+  try {
+    rows = await outcomesForPost(ctx, companyId, post.id);
+  } catch {
+    throw new SocialError("The sign-offs could not be read, so nothing was approved. Try again.");
+  }
+  const pass = rows.filter((row) => row.stage === "reviewer").sort((a, b) => b.round - a.round || String(b.created_at).localeCompare(String(a.created_at)))[0];
+  if (!pass) throw new SocialError("The Reviewer has not passed this post yet. Its pass comes first.");
+  if (pass.outcome !== "approved") throw new SocialError("The Reviewer asked for changes to this post. Return it instead of approving it.");
+  if (pass.content_hash !== hash) throw new SocialError("The Reviewer passed an older version of this post. It has to pass this version first.");
+  if (pass.via === "unscored") throw new SocialError("The Reviewer's pass scored nothing (no destination the rubric checks), so a person approves this post.");
+  if (!pass.actor_agent_id) throw new SocialError("The Reviewer's pass does not say which agent gave it, so a person approves this post.");
+  if (pass.actor_agent_id === agentId) throw new SocialError("You recorded the Reviewer's pass on this post, so you cannot also approve it. A person approves it.");
+  // 9. The post was created after the delegate was named (D3): older posts stay with the person.
+  const created = stampOf(post.created_at);
+  const setAt = Date.parse(entry.setAt);
+  if (!Number.isFinite(created) || !Number.isFinite(setAt) || created < setAt) {
+    throw new SocialError("This post was created before you were named the delegated approver, so a person approves it.");
+  }
+  // The row is the audit trail: no row, no approval.
+  let written = false;
+  try {
+    written = (await recordOutcome(ctx, { companyId, post, platforms: await platformsOf(ctx, companyId, post), stage: "owner", outcome: "approved", contentHash: hash, via: "delegate", actor: { agentId } })).recorded;
+  } catch (error) {
+    ctx.logger.warn("Social delegated approval not recorded", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+  }
+  if (!written) throw new SocialError("Your approval could not be recorded, so the post was not approved and stays in review. Try again.");
+  const signoffs = currentSignoffs(rows, hash);
+  const state: SignoffState = { policy, hash, accountIds: [], signoffs, missing: missingStages(policy, signoffs) };
+  const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+  let progress: ApprovalProgress;
+  try {
+    progress = await afterSignoff(ctx, actor, post, withSignoff(state, "owner"), "The delegated approver");
+  } catch (error) {
+    // A lost status race (completeApproval found the post out of review) is not an approval.
+    throw new SocialError(`The post was not approved: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!progress.completed) throw new SocialError(`The post was not approved: still waiting for ${stageList(progress.pending)}.`);
+  return progress;
 }
 
 export interface VerdictInput {

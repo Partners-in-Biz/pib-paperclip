@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByDelegate, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
 import { clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
@@ -868,6 +868,14 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
     throw new SocialError("toneScore must be a whole number from 0 to 20");
   }
   return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `approve-post-as-delegate`: only the agent a person named as the scope's delegated approver (checks in `approvePostByDelegate`). */
+export async function approvePostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const progress = await approvePostByDelegate(ctx, viewer, post);
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */

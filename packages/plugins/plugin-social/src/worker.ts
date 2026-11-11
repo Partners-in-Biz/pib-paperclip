@@ -109,6 +109,7 @@ import {
   recordInboxRecord,
   recordMetricsRecord,
   recordReviewVerdictRecord,
+  approvePostAsDelegateRecord,
   refreshAccountRecord,
   replyInboxRecord,
   requestClientApprovalRecord,
@@ -254,6 +255,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return requestClientApprovalRecord(ctx, viewer, p);
     case "record-review-verdict":
       return recordReviewVerdictRecord(ctx, viewer, p);
+    case "approve-post-as-delegate":
+      return approvePostAsDelegateRecord(ctx, viewer, p);
     case "request-creative":
       return requestCreativeRecord(ctx, viewer, p);
     case "review-outcomes":
