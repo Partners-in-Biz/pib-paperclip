@@ -97,6 +97,29 @@ describe("LeaderElection", () => {
     expect(store.read()).toMatchObject({ leader: "a", visible: true });
   });
 
+  it("renews a held lease only past half its lifetime or on a visibility change", () => {
+    let now = 1_000;
+    const store = new MemoryLeaseStore();
+    const write = vi.spyOn(store, "write");
+    const a = new LeaderElection({ now: () => now, store, random: () => 0 }, { tabId: "a", leaseTtlMs: 8_000 });
+
+    expect(a.step(true)).toBe("leader");
+    expect(write).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 3; i += 1) {
+      now += 1_000;
+      expect(a.step(true)).toBe("leader");
+    }
+    expect(write).toHaveBeenCalledTimes(1);
+    now += 1_000;
+    expect(a.step(true)).toBe("leader");
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(store.read()?.expiresAt).toBe(now + 8_000);
+    now += 1_000;
+    expect(a.step(false)).toBe("leader");
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(store.read()?.visible).toBe(false);
+  });
+
   it("keeps hidden tabs from claiming an empty lease until their grace expires", () => {
     let now = 10_000;
     const store = new MemoryLeaseStore();
