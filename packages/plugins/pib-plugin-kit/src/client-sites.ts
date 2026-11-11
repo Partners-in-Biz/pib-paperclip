@@ -89,6 +89,29 @@ export function siteKey(url: string): string | null {
   }
 }
 
+/**
+ * One page's key, shared by plugin-seo (which pages are approved) and the CRM sign-off lock (is this write on one of
+ * them): scheme and host lower-cased, the path kept as it is, a trailing slash removed except on `/`.
+ * A relative URL is resolved against `base` (the site's URL) and is null without one. A URL with a query or a
+ * fragment is null: a page key never has one, and WordPress honours `?p=` over the path (PAR-9131 Q14).
+ */
+export function normalisePageUrl(url: string, base?: string | null): string | null {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.includes("?") || trimmed.includes("#")) return null;
+  try {
+    const absolute = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+    if (!absolute && !base) return null;
+    const parsed = absolute ? new URL(trimmed) : new URL(trimmed, new URL(base!).origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.username || parsed.password) return null;
+    const path = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, "") || "/" : "/";
+    return `${parsed.protocol}//${parsed.host}${path}`;
+  } catch {
+    return null;
+  }
+}
+
 /** True when two URLs point at the same site (host without www). */
 export function sameSite(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
