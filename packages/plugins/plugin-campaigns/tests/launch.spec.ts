@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { ALL_CONTACTS_MARK, audienceLine, enrollmentStart, isEveryContact } from "../src/domain.js";
+import { pruneStaleWaiting } from "../../plugin-cockpit/src/brief.js";
+import { emptySnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { approvalWaiting, AGENT_HOLD_MS } from "../src/cockpit.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 import { boot, campaign, CO, enrollment, issueUpdated, PAST, seed, seedIssue, setIssueStatus, setRoles, step } from "./helpers/harness.js";
@@ -289,5 +291,24 @@ describe("cockpit waiting items", () => {
     expect(items[1]).toMatchObject({ title: "Launch approved campaign Spring", kind: "review" });
     expect(items[2]!.why).toMatch(/held this launch approval for over a day/);
     expect(items[3]!.why).toMatch(/could not launch after the last approval/);
+  });
+
+  it("keeps the launch row after the Cockpit prunes closed issues, and still prunes the other approval rows", () => {
+    const now = Date.now();
+    const old = new Date(now - AGENT_HOLD_MS - 60_000).toISOString();
+    const rows = [
+      row({ id: "c2", approval_issue_id: "iss-2", issue_status: "done" }),
+      row({ id: "c3", approval_issue_id: "iss-3", issue_status: "done", launch_error: "No contact." }),
+      row({}),
+      row({ id: "c4", approval_issue_id: "iss-4", issue_agent_id: "agent-reviewer", created_at: old }),
+    ];
+    const waiting = approvalWaiting(rows, now);
+    expect(waiting.find((w) => w.key === "launch:c2")!.issueId).toBeUndefined();
+    expect(waiting.find((w) => w.key === "approval:iss-1")!.issueId).toBe("iss-1");
+    const snap = { ...emptySnapshot("campaigns", "Campaigns"), waiting };
+    const open = new Map([["iss-1", "todo"], ["iss-4", "in_progress"], ["iss-2", "done"], ["iss-3", "done"]]);
+    expect(pruneStaleWaiting([snap], open)[0]!.waiting.map((w) => w.key)).toEqual(["launch:c2", "launch:c3", "approval:iss-1", "approval:iss-4"]);
+    const closed = new Map([["iss-1", "done"], ["iss-4", "cancelled"], ["iss-2", "done"], ["iss-3", "done"]]);
+    expect(pruneStaleWaiting([snap], closed)[0]!.waiting.map((w) => w.key)).toEqual(["launch:c2", "launch:c3"]);
   });
 });

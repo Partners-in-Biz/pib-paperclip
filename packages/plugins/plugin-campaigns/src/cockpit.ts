@@ -366,7 +366,7 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
           ? `Approved, but it could not launch: ${row.launch_error}`
           : "Approved, not launched yet. It launches on the next check (within 5 minutes); if it stays here, open Campaigns and click Launch.",
         href: "/campaigns?tab=campaigns",
-        issueId: row.approval_issue_id,
+        // No issueId: this issue is always done, and the Cockpit drops waiting rows whose issue is closed.
         kind: "review",
         since: row.updated_at ?? row.created_at,
       });
