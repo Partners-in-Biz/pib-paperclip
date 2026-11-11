@@ -291,7 +291,7 @@ function actionActor(context: PluginPerformActionContext): Actor {
 }
 
 function requireUser(actor: Actor): Extract<Actor, { kind: "user" }> {
-  if (actor.kind !== "user") throw new SeoError("This action is for board users");
+  if (actor.kind !== "user") throw new SeoError("This action is for board users. Do not retry.");
   return actor;
 }
 

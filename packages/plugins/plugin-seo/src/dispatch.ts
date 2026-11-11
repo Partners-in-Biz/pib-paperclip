@@ -22,6 +22,7 @@ import * as clientSignoff from "./service/client-signoff.js";
 import * as report from "./service/report.js";
 import * as cancel from "./service/cancel.js";
 import * as preview from "./service/preview.js";
+import * as previewDecisions from "./service/preview-decisions.js";
 import * as playbook from "./service/playbook.js";
 import * as plans from "./service/plans.js";
 import * as snapshots from "./service/snapshots.js";
@@ -162,6 +163,11 @@ export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "set-release-through": (env, c, a, p) => sprints.setReleaseThrough(env, c, a, p),
   // A signed-in person gives Needs you items the SEO agent can do back to it (the handler checks the actor itself).
   "needs-you-give": (env, c, a, p) => needsYou.giveNeedsYouToAgent(env, c, a, p),
+  // A signed-in person decides previews, undoes an unapplied decision, or confirms a client's email approval (PAR-9131 T1c).
+  // The handlers take the actor only from the authenticated context and refuse anyone else with "Do not retry".
+  "decide-preview": (env, c, a, p) => previewDecisions.decidePreview(env, c, a, p),
+  "undo-preview-decision": (env, c, a, p) => previewDecisions.undoPreviewDecision(env, c, a, p),
+  "confirm-preview-approval": (env, c, a, p) => previewDecisions.confirmPreviewApproval(env, c, a, p),
 };
 
 export async function dispatch(env: Env, companyId: string, actor: Actor, name: string, params: unknown): Promise<unknown> {
