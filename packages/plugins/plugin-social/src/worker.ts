@@ -119,6 +119,7 @@ import {
   reviewOutcomesRecord,
   mediaComplianceRecord,
   schedulePost,
+  setApprovalDelegateRecord,
   setApprovalPolicyRecord,
   setRssActiveRecord,
   transitionPost,
@@ -376,6 +377,8 @@ const ACTIONS: Record<string, ActionHandler> = {
   // Who approves posts (people only: a policy delegates authority), the client's link, the client's approval recorded by hand.
   "social.approval-policy": (ctx, v, p) => getApprovalPolicyRecord(ctx, v, p),
   "social.set-approval-policy": (ctx, v, p) => setApprovalPolicyRecord(ctx, v, p),
+  // The delegated approver of a scope (PAR-9561): a page action only, never an agent tool.
+  "social.set-approval-delegate": (ctx, v, p) => setApprovalDelegateRecord(ctx, v, p),
   "social.approval-status": (ctx, v, p) => approvalStatusRecord(ctx, v, requiredString(p, "postId")),
   "social.request-client-approval": (ctx, v, p) => {
     requireUser(v, "make the client's approval link");

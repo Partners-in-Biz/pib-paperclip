@@ -14,7 +14,8 @@ import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
 import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
-import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
+import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
+import { clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -764,7 +765,8 @@ export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postI
 
 export async function getApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
-  return policyOut(await getPolicy(ctx, viewer.companyId, scope));
+  const [policy, delegate] = await Promise.all([getPolicy(ctx, viewer.companyId, scope), delegateView(ctx, viewer.companyId, scope)]);
+  return policyOut(policy, delegate);
 }
 
 /** A person sets who approves posts in a scope. An agent cannot: the policy delegates authority. */
@@ -774,10 +776,43 @@ export async function setApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer
   if (params.requireReviewer === true && !(await reviewerAgentId(ctx, viewer.companyId))) {
     throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
   }
-  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId);
+  // A delegated approver locks the Reviewer and the team member on and the client off. Read strictly: an unreadable store refuses.
+  const delegated = (await getDelegateStrict(ctx, viewer.companyId, target.scope)) !== null;
+  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId, delegated);
   // A looser policy can leave posts in review with every sign-off already in: approve those now.
   const { approved, routed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
-  return { ...policyOut(saved), approved, routed };
+  return { ...policyOut(saved, await delegateView(ctx, viewer.companyId, target.scope)), approved, routed };
+}
+
+/**
+ * A person names (or clears, `agentId: null`) the agent whose yes will count as the team member's approval in one scope,
+ * after the Reviewer's pass (PAR-9561). An agent cannot, not even with a responsible user on its run. Setting it turns the
+ * Reviewer's pass on; clearing it leaves the policy as it is.
+ */
+export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const userId = requireUser(viewer, "name a delegated approver");
+  const target = await readScope(ctx, viewer, params);
+  const scope: DelegateScope = spaceOf(params) === "me" ? "personal" : target.scope;
+  if (!("agentId" in params)) throw new SocialError("agentId is required (null clears the delegated approver)");
+  const agentId = params.agentId;
+  if (agentId === null) {
+    if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+    await clearDelegate(ctx, viewer.companyId, scope, userId);
+    ctx.logger.info("Social delegated approver cleared by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), by: userId });
+    return getApprovalPolicyRecord(ctx, viewer, params);
+  }
+  if (typeof agentId !== "string" || !agentId.trim()) throw new SocialError("agentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, agentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+  if (!(await reviewerAgentId(ctx, viewer.companyId))) {
+    throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
+  }
+  // The delegate approves only after the Reviewer's pass: turn it on first, so a failed save leaves no delegate behind.
+  await savePolicy(ctx, viewer.companyId, { scope, clientName: target.client?.name ?? null }, { requireReviewer: true }, userId);
+  await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
+  ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
+  return getApprovalPolicyRecord(ctx, viewer, params);
 }
 
 /**
@@ -1314,6 +1349,10 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
+  // The scope's delegated approver; the agents a person may pick (never shown to an agent).
+  const [delegate, candidates] = me
+    ? [null, []]
+    : await Promise.all([delegateView(ctx, viewer.companyId, scope), viewer.isAgent || !viewer.userId ? Promise.resolve([]) : delegateCandidates(ctx, viewer.companyId, scope)]);
   // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
   const routine = scope || me ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
@@ -1360,7 +1399,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     inbox: inbox.map(inboxOut),
     experiments,
     stats,
-    approvalPolicy: policyOut(policy),
+    approvalPolicy: policyOut(policy, delegate),
+    delegateCandidates: candidates,
     agent,
     pendingPickers: pickers
       .filter((p) => (jsonObject(p.extra).accountScope === "personal") === Boolean(me))
