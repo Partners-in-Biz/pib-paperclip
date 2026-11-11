@@ -9,6 +9,7 @@
  * - params are JSON over RPC: lists and objects travel as JSON strings cast
  *   with `$n::jsonb` (never JS arrays); dates are selected as text.
  */
+import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { NAMESPACE } from "./namespace.js";
@@ -1998,6 +1999,65 @@ export async function lastComments(db: SeoDb, companyId: string, issueId: string
 /** A task's issue was replaced by a continuation issue: the previews that point at it follow. */
 export async function repointPreviews(db: SeoDb, companyId: string, fromIssueId: string, toIssueId: string): Promise<number> {
   const result = await db.execute(`UPDATE ${t("previews")} SET issue_id = $3 WHERE company_id = $1 AND issue_id = $2`, [companyId, fromIssueId, toIssueId]);
+  return result.rowCount;
+}
+
+/** One approval to apply a task's pages (PAR-9493 T1). `pageUrls` are normalised by the caller; `grantedByAgentId` is null for a person. */
+export interface PageGrantInput {
+  companyId: string;
+  sprintId: string;
+  siteId: string;
+  taskId: string;
+  pageUrls: string[];
+  grantedBy: string;
+  grantedByAgentId: string | null;
+  reviewRef: string | null;
+  note: string | null;
+  applyUntil: string;
+}
+
+/**
+ * Opens (or extends) a grant per page of the task. A repeat on an open grant keeps the later `apply_until` (GREATEST) and takes the
+ * new label, agent, review ref and note. One statement, so the pages land together. Returns the rows written.
+ */
+export async function upsertPageGrants(db: SeoDb, input: PageGrantInput): Promise<number> {
+  const pages = [...new Set(input.pageUrls)];
+  if (pages.length === 0) return 0;
+  const rows = pages.map((page_url) => ({ id: randomUUID(), page_url }));
+  const result = await db.execute(
+    `INSERT INTO ${t("page_apply_grants")} AS a (id, company_id, sprint_id, site_id, task_id, page_url, granted_by, granted_by_agent_id, review_ref, note, apply_until)
+     SELECT v.id, $1, $2, $3, $4, v.page_url, $5, $6, $7, $8, $9::timestamptz FROM jsonb_to_recordset($10::jsonb) AS v(id text, page_url text)
+     ON CONFLICT (company_id, task_id, page_url) WHERE revoked_at IS NULL DO UPDATE SET apply_until = GREATEST(a.apply_until, EXCLUDED.apply_until),
+       granted_by = EXCLUDED.granted_by, granted_by_agent_id = EXCLUDED.granted_by_agent_id, review_ref = EXCLUDED.review_ref, note = EXCLUDED.note`,
+    [input.companyId, input.sprintId, input.siteId, input.taskId, input.grantedBy, input.grantedByAgentId, input.reviewRef, input.note, input.applyUntil, JSON.stringify(rows)],
+  );
+  return result.rowCount;
+}
+
+/** Revokes the task's open grants (`pageUrls` null = all of them). Returns how many were open and are now revoked. */
+export async function revokePageGrants(db: SeoDb, companyId: string, taskId: string, pageUrls: string[] | null, by: string): Promise<number> {
+  const result = await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET revoked_at = now(), revoked_by = $3
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND apply_until > now()
+        AND ($4::jsonb IS NULL OR page_url IN (SELECT jsonb_array_elements_text($4::jsonb)))`,
+    [companyId, taskId, by, pageUrls === null ? null : JSON.stringify(pageUrls)],
+  );
+  return result.rowCount;
+}
+
+/**
+ * Claims the right to tell the task issue about these open grants: marks `notified_until = apply_until` where it differs. More than 0
+ * means this call claimed a new `apply_until` and should comment; 0 means the issue was already told. The host's execute has no
+ * RETURNING, so the row count is the claim.
+ */
+export async function claimGrantNotice(db: SeoDb, companyId: string, taskId: string, pageUrls: string[]): Promise<number> {
+  if (pageUrls.length === 0) return 0;
+  const result = await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET notified_until = apply_until
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND page_url IN (SELECT jsonb_array_elements_text($3::jsonb))
+        AND notified_until IS DISTINCT FROM apply_until`,
+    [companyId, taskId, JSON.stringify(pageUrls)],
+  );
   return result.rowCount;
 }
 

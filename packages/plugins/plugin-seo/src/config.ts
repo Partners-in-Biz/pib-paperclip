@@ -65,9 +65,24 @@ export const instanceConfigSchema: JsonSchema = {
     },
     pagespeedApiKey: secretField("PageSpeed Insights API key (optional)", "Raises the PageSpeed quota. Without it Google may rate-limit the daily checks."),
     bingApiKey: secretField("Bing Webmaster API key (optional)", "From Bing Webmaster Tools → Settings → API access. Enables inbound link counts."),
+    signoffDelegateAgentIds: {
+      type: "array",
+      title: "Sign-off delegate agents",
+      description: "Agents allowed to approve applying a Reviewer-passed page change on a pr_only site (standing approval). Only an instance admin saves this.",
+      items: { type: "string", format: "uuid" },
+      default: [],
+    },
     jev: jevConfigSchema() as unknown as JsonSchema,
   },
 };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The saved delegate list: uuids only, lower case, deduplicated. Anything else (or no list) is the empty list (off). */
+export function parseDelegateAgentIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((v): v is string => typeof v === "string" && UUID.test(v.trim())).map((v) => v.trim().toLowerCase()))];
+}
 
 export interface SeoConfig {
   saved: boolean;
@@ -76,6 +91,8 @@ export interface SeoConfig {
   dailyHourLocal: number;
   defaultAutopilotMode: AutopilotMode;
   googleClientId: string | null;
+  /** Host settings form only (an instance admin saves it); never a preference. Empty = no agent may grant. */
+  signoffDelegateAgentIds: string[];
 }
 
 export function parseSeoConfig(raw: Record<string, unknown>): SeoConfig {
@@ -90,6 +107,7 @@ export function parseSeoConfig(raw: Record<string, unknown>): SeoConfig {
     dailyHourLocal: Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_DAILY_HOUR,
     defaultAutopilotMode: AUTOPILOT_MODES.includes(mode as AutopilotMode) ? (mode as AutopilotMode) : "safe",
     googleClientId: typeof google.clientId === "string" && google.clientId.trim() ? google.clientId.trim() : null,
+    signoffDelegateAgentIds: parseDelegateAgentIds(raw.signoffDelegateAgentIds),
   };
 }
 
@@ -147,6 +165,10 @@ export function validateSeoConfig(raw: Record<string, unknown>): { ok: boolean; 
   }
   if (typeof raw.encryptionKey === "string" && raw.encryptionKey.trim()) {
     warnings.push("Token encryption key is stored as plain text; pick a Paperclip secret instead.");
+  }
+  if (raw.signoffDelegateAgentIds != null) {
+    const list = raw.signoffDelegateAgentIds;
+    if (!Array.isArray(list) || list.some((v) => typeof v !== "string" || !UUID.test(v.trim()))) errors.push("Sign-off delegate agents must be a list of agent ids (uuids)");
   }
   const google = (raw.google && typeof raw.google === "object" ? raw.google : {}) as Record<string, unknown>;
   if (google.clientId && !google.clientSecret) warnings.push("Google client secret is missing.");
