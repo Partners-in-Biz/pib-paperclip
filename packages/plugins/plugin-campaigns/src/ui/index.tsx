@@ -47,7 +47,7 @@ import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientS
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
-import { clientWorkspacePath, type ClientSummaryRow } from "../client-summary.js";
+import { clientSummaryModel, type ClientSummaryRow } from "../client-link.js";
 import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
@@ -129,25 +129,26 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
 
 /** "Client campaigns: N running, M waiting for approval"; several clients are listed, each linking into its workspace. */
 function ClientSummaryLine({ rows, linkProps }: { rows: ClientSummaryRow[]; linkProps: (href: string) => Record<string, unknown> }) {
-  const running = rows.reduce((sum, row) => sum + row.running, 0);
-  const waiting = rows.reduce((sum, row) => sum + row.waiting, 0);
-  const counts = (r: number, w: number) => `${r} running, ${w} waiting for approval`;
-  if (rows.length === 1) {
-    const only = rows[0]!;
+  const model = clientSummaryModel(rows);
+  if (!model) return null;
+  const style = { margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" as const };
+  const linkStyle = { color: tokens.primary, fontWeight: 600 };
+  if (model.inline) {
+    const only = model.items[0]!;
     return (
-      <p data-testid="client-summary" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" }}>
-        Client campaigns: {counts(running, waiting)}{" ("}
-        <a {...linkProps(clientWorkspacePath(only))} style={{ color: tokens.primary, fontWeight: 600 }}>{only.name}</a>{")"}
+      <p data-testid="client-summary" style={style}>
+        {model.text}{" ("}
+        <a {...linkProps(only.href)} style={linkStyle}>{only.name}</a>{")"}
       </p>
     );
   }
   return (
-    <div data-testid="client-summary" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" }}>
-      <p style={{ margin: 0 }}>Client campaigns: {counts(running, waiting)}</p>
+    <div data-testid="client-summary" style={style}>
+      <p style={{ margin: 0 }}>{model.text}</p>
       <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-        {rows.map((row) => (
-          <li key={`${row.kind}:${row.id}`}>
-            <a {...linkProps(clientWorkspacePath(row))} style={{ color: tokens.primary, fontWeight: 600 }}>{row.name}</a>: {counts(row.running, row.waiting)}
+        {model.items.map((item) => (
+          <li key={item.href}>
+            <a {...linkProps(item.href)} style={linkStyle}>{item.name}</a>: {item.text}
           </li>
         ))}
       </ul>
