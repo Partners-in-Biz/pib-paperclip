@@ -21,12 +21,23 @@ interface Sql {
   unsafe<T = Row>(text: string, params?: unknown[]): Promise<T[] & { count: number }>;
   end(o?: { timeout?: number }): Promise<void>;
 }
-const postgres = requireFromDb("postgres") as (url: string, o?: Record<string, unknown>) => Sql;
-const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
-const { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as {
+type Postgres = (url: string, o?: Record<string, unknown>) => Sql;
+type EmbeddedDbHelper = {
   getEmbeddedPostgresTestSupport(): Promise<{ supported: boolean }>;
   startEmbeddedPostgresTestDatabase(prefix: string): Promise<{ connectionString: string; cleanup(): Promise<void> }>;
 };
+// The deploy host installs only this plugin's dependencies: when the db package or `postgres` is missing, these specs skip.
+let postgres: Postgres = (() => { throw new Error("postgres is not installed"); }) as never;
+let getEmbeddedPostgresTestSupport: EmbeddedDbHelper["getEmbeddedPostgresTestSupport"] = async () => ({ supported: false });
+let startEmbeddedPostgresTestDatabase: EmbeddedDbHelper["startEmbeddedPostgresTestDatabase"] = async () => { throw new Error("embedded postgres is not available"); };
+try {
+  postgres = requireFromDb("postgres") as Postgres;
+  // Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
+  const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
+  ({ getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as EmbeddedDbHelper);
+} catch {
+  // keep the skipping stubs
+}
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
 const MIGRATIONS = join(import.meta.dirname, "../migrations");
