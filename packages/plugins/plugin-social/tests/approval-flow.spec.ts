@@ -5,8 +5,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { afterSignoff, approvePostByPerson, recordClientApprovalByPerson, recordReviewerVerdict, signoffState } from "../src/approval-flow.js";
-import { approvePostAsDelegateRecord, recordClientApprovalRecord, recordReviewVerdictRecord, setApprovalDelegateRecord, setApprovalPolicyRecord, transitionPost } from "../src/service.js";
-import { BRAND, delegateWorld, RHEA } from "./delegate-world.js";
+import { approvePostAsDelegateRecord, attachDestination, detachDestination, recordClientApprovalRecord, recordReviewVerdictRecord, setApprovalDelegateRecord, setApprovalPolicyRecord, transitionPost, updatePostRecord } from "../src/service.js";
+import { BRAND, delegateWorld, OTHER, RHEA } from "./delegate-world.js";
 import { approvalWorld, PERSON, postRow, REVIEWER_AGENT, SOCIAL_AGENT, T } from "./world.js";
 
 const ACTOR = { companyId: "co", userId: "owner-1", isAgent: false };
@@ -491,5 +491,56 @@ describe("PAR-9561 T7b: clearing the delegate hands its work back; the re-check 
     expect(card.match(/setFailed\(recheckFailed\(result\)\)/g)).toHaveLength(2);
     expect(card.match(/<RecheckNote failed=\{failed\} \/>/g)).toHaveLength(2);
     expect(card).toContain("could not be re-checked");
+  });
+});
+
+describe("PAR-9561 T8 (Q10): the delegate does not change a post it did not create", () => {
+  const NOT_YOURS = "You are the delegated approver of";
+  /** Rhea is the delegate of own work instead of the brand: the post (in the brand) is outside her scope. */
+  const ownDelegate = (w: ReturnType<typeof delegateWorld>) => w.store.set("delegates", { own: { agentId: "ag-rhea", setBy: "owner-1", setAt: new Date(0).toISOString() } });
+
+  it("refuses the delegate's edit, attach and detach on another agent's post in its scope, and changes nothing", async () => {
+    const w = delegateWorld();
+    await expect(updatePostRecord(w.ctx, RHEA, { postId: "p1", body: "Rhea's own words." })).rejects.toThrow(NOT_YOURS);
+    await expect(attachDestination(w.ctx, RHEA, { postId: "p1", accountId: "a1" })).rejects.toThrow(NOT_YOURS);
+    await expect(detachDestination(w.ctx, RHEA, { postId: "p1", accountId: "a1" })).rejects.toThrow(NOT_YOURS);
+    expect(w.destinations).toHaveLength(1);
+  });
+
+  it("refuses moving another agent's post out of the delegate's scope", async () => {
+    const w = delegateWorld();
+    await expect(updatePostRecord(w.ctx, RHEA, { postId: "p1", client: null })).rejects.toThrow(NOT_YOURS);
+    expect(w.post.client_ref).not.toBeNull();
+  });
+
+  it("refuses moving another agent's post into the scope it is the delegate of", async () => {
+    const w = delegateWorld();
+    ownDelegate(w);
+    await expect(updatePostRecord(w.ctx, RHEA, { postId: "p1", body: "Moved and rewritten.", client: null })).rejects.toThrow(`${NOT_YOURS} own`);
+    expect(w.post.client_ref).not.toBeNull();
+  });
+
+  it("lets the delegate edit where it is not the delegate, and its own post where it is", async () => {
+    const elsewhere = delegateWorld();
+    ownDelegate(elsewhere);
+    await expect(updatePostRecord(elsewhere.ctx, RHEA, { postId: "p1", body: "Rhea edits a brand post." })).resolves.toMatchObject({ id: "p1" });
+    await expect(attachDestination(elsewhere.ctx, RHEA, { postId: "p1", accountId: "a1" })).resolves.toMatchObject({ id: "p1" });
+    const mine = delegateWorld();
+    mine.post.created_by_agent_id = "ag-rhea";
+    await expect(updatePostRecord(mine.ctx, RHEA, { postId: "p1", body: "Rhea edits her own post." })).resolves.toMatchObject({ id: "p1" });
+  });
+
+  it("another agent and a person still edit a post in the delegated scope", async () => {
+    const w = delegateWorld();
+    await expect(updatePostRecord(w.ctx, OTHER, { postId: "p1", body: "Another agent edits." })).resolves.toMatchObject({ id: "p1" });
+    await expect(updatePostRecord(w.ctx, PERSON, { postId: "p1", body: "A person edits." })).resolves.toMatchObject({ id: "p1" });
+  });
+
+  it("fails closed: an unreadable delegate store refuses an agent's change to a post it did not create", async () => {
+    const w = delegateWorld();
+    w.io.stateThrows = true;
+    await expect(updatePostRecord(w.ctx, OTHER, { postId: "p1", body: "x y z" })).rejects.toThrow("delegated approvers could not be read");
+    await expect(attachDestination(w.ctx, OTHER, { postId: "p1", accountId: "a1" })).rejects.toThrow("delegated approvers could not be read");
+    await expect(detachDestination(w.ctx, OTHER, { postId: "p1", accountId: "a1" })).rejects.toThrow("delegated approvers could not be read");
   });
 });
