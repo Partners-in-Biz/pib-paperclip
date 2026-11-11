@@ -26,10 +26,11 @@ afterEach(() => vi.unstubAllGlobals());
 describe("Drive binding tools", () => {
   it("declares three binding tools with schemas and descriptions", () => {
     // Tools are declared in DRIVE_TOOLS; should have 8 total (5 folder tools + 3 binding tools)
-    expect(DRIVE_TOOLS).toHaveLength(8);
+    expect(DRIVE_TOOLS).toHaveLength(9);
     expect(DRIVE_TOOLS[5].name).toBe("drive_binding_discover");
     expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
     expect(DRIVE_TOOLS[7].name).toBe("drive_binding_status");
+    expect(DRIVE_TOOLS[8].name).toBe("drive_transfer_status");
     expect(DRIVE_TOOLS[5].description).toContain("exact case-insensitive");
     expect(DRIVE_TOOLS[6].description).toContain("Shared Drive");
     expect(DRIVE_TOOLS[7].description).toContain("read-only");

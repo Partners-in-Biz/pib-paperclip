@@ -11,6 +11,7 @@ import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
+import { driveJobStatus, type DriveJobView } from "./jobs.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
@@ -74,6 +75,12 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Check Shared Drive binding status",
     description: "read-only: check whether this company's Shared Drive is bound, whether the Drive service account key is set, and whether the service account is a member of the drive. Does not modify anything.",
     parametersSchema: schema([], {}),
+  },
+  {
+    name: "drive_transfer_status",
+    displayName: "Drive transfer status",
+    description: "Check a Drive transfer that runs in the background. A drive_file_save over 5 MB (up to 200 MB) and every drive_file_fetch return a jobId at once; call this with that jobId until status is done (result holds the file) or failed (code and hint say why). running shows bytesDone of bytesTotal; a slow chunk is slow, not dead, so keep calling every 20-30 s. not_found: the transfer is gone (the CRM restarted); start it again, a finished copy is not made twice. Only the agent that started the transfer can see it, and a fetch only from the same run. Read-only.",
+    parametersSchema: schema(["jobId"], { jobId: text("The jobId a Drive save or fetch returned.", 100) }),
   },
 ];
 
@@ -421,6 +428,10 @@ export async function driveProjectKindList(ctx: PluginContext, viewer: Viewer, p
   }
 
   return { projects: result, total: result.length };
+}
+
+export function driveTransferStatus(viewer: Viewer, params: Record<string, unknown>): DriveJobView {
+  return driveJobStatus({ companyId: viewer.companyId, agentId: viewer.agentId, runId: viewer.runId ?? null }, params.jobId);
 }
 
 export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<SaveDriveFileResult> {
