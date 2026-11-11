@@ -17,7 +17,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId } from "@partnersinbiz/pib-plugin-kit";
-import { delegateBlockers, delegateFacts, delegateView, getDelegate } from "./approval-delegate.js";
+import { delegateBlockers, delegateFacts, delegateView, getDelegate, ladderDelegation } from "./approval-delegate.js";
 import { getPolicy, getPolicyStrict, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
 import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
@@ -147,6 +147,7 @@ export async function completeApproval(ctx: PluginContext, actor: ReviewActor, p
  * The autonomy ladder: a low-risk post whose only missing sign-off is the team member's click, and whose owner streak for its
  * type in this scope is at least AUTO_APPROVE_STREAK, is approved here (rule in autonomy.ts). Returns null when the post is not
  * eligible or anything fails: a person approves it as before. A Reviewer's pass the policy asks for must already be in.
+ * Off in a scope with a stored delegate (Q8), and when the delegate store cannot be read: the delegate decides there.
  */
 export async function tryAutoApprove(ctx: PluginContext, actor: ReviewActor, post: PostRow, known?: SignoffState): Promise<ApprovalProgress | null> {
   try {
@@ -154,6 +155,7 @@ export async function tryAutoApprove(ctx: PluginContext, actor: ReviewActor, pos
     const companyId = actor.companyId;
     const state = known ?? (await signoffState(ctx, companyId, post));
     if (!state.policy.requireOwner || !state.missing.includes("owner")) return null;
+    if ((await ladderDelegation(ctx, companyId, scopeOfRow(post))) !== null) return null;
     const type = postTypeOf(post);
     // Cheap checks first: the validation and the stats are only read for a post that could qualify.
     const quick = autoApprovalDecision({ kind: type.kind, format: type.format, requireClient: state.policy.requireClient, missing: state.missing, validateOk: true, streak: AUTO_APPROVE_STREAK });

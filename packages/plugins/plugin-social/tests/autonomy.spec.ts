@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { autoApprovalDecision, AUTO_APPROVE_STREAK } from "../src/autonomy.js";
 import { reviewStats, summariseOutcomes } from "../src/review-outcomes.js";
 import { recordReviewVerdictRecord, transitionPost } from "../src/service.js";
+import { BRAND_ID, delegateWorld } from "./delegate-world.js";
 import { approvalWorld, REVIEWER_AGENT, SOCIAL_AGENT } from "./world.js";
 
 type World = ReturnType<typeof approvalWorld>;
@@ -141,5 +142,58 @@ describe("the ladder in the approval flow", () => {
     await transitionPost(w.ctx, SOCIAL_AGENT, "p1", "review");
     expect(w.post.status).toBe("review");
     expect(w.outcomes.slice(seeded).filter((o) => o.via === "auto")).toEqual([]);
+  });
+});
+
+describe("PAR-9561 T8 (Q8): the ladder is off in a scope with a delegated approver", () => {
+  /** A brand scope without the Reviewer step, so only the owner's click is missing. */
+  const world = (delegate: string | null = "ag-rhea") => delegateWorld({ delegate, policy: { require_reviewer: false } });
+
+  it("does not auto-approve with a streak of 5 while the scope has a stored delegate", async () => {
+    const w = world();
+    seedStreak(w, 5);
+    await sendForReview(w);
+    expect(w.post.status).toBe("review");
+    expect(w.outcomes.some((o) => o.via === "auto")).toBe(false);
+  });
+
+  it("still auto-approves the same post in a scope without a delegate", async () => {
+    const w = world(null);
+    seedStreak(w, 5);
+    await sendForReview(w);
+    expect(w.post.status).toBe("approved");
+    expect(w.outcomes.at(-1)).toMatchObject({ stage: "owner", via: "auto" });
+  });
+
+  it("a delegate that may not act now (not on the allowlist) still switches the ladder off", async () => {
+    const w = delegateWorld({ policy: { require_reviewer: false }, allowlist: [] });
+    seedStreak(w, 5);
+    await sendForReview(w);
+    expect(w.post.status).toBe("review");
+  });
+
+  it("fails closed: an unreadable delegate store means no auto-approval", async () => {
+    const w = world(null);
+    w.io.stateThrows = true;
+    seedStreak(w, 5);
+    await sendForReview(w);
+    expect(w.post.status).toBe("review");
+  });
+
+  it("review-outcomes reports the ladder off with reason delegated, and on without a delegate", async () => {
+    const scope = { kind: "company" as const, id: BRAND_ID };
+    const on = world(null);
+    seedStreak(on, 5);
+    expect((await reviewStats(on.ctx, "co", scope)).autonomy).toMatchObject({ enabled: true, reason: null });
+    const off = world();
+    seedStreak(off, 5);
+    const stats = await reviewStats(off.ctx, "co", scope);
+    expect(stats.autonomy).toMatchObject({ enabled: false, reason: "delegated" });
+    expect(stats.autonomy.types.every((t) => !t.enabled)).toBe(true);
+    expect(stats.autonomy.note).toContain("delegated approver");
+    const unread = world(null);
+    unread.io.stateThrows = true;
+    seedStreak(unread, 5);
+    expect((await reviewStats(unread.ctx, "co", scope)).autonomy).toMatchObject({ enabled: false, reason: "delegate-unreadable" });
   });
 });

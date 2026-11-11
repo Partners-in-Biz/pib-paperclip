@@ -121,6 +121,48 @@ export async function getDelegateStrict(ctx: PluginContext, companyId: string, s
   return (await readForWrite(ctx, companyId))[normalKey(delegateScopeKey(scope))] ?? null;
 }
 
+/**
+ * Q8: the autonomy ladder is off in a scope with a stored delegate (set, even if it may not act now), so the
+ * delegate decides every post there. `unreadable`: the store could not be read; callers treat it as delegated.
+ */
+export async function ladderDelegation(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<"delegated" | "unreadable" | null> {
+  try {
+    return (await readMapStrict(ctx, companyId))[normalKey(delegateScopeKey(scope))] ? "delegated" : null;
+  } catch (error) {
+    logReadError(ctx, companyId, error);
+    return "unreadable";
+  }
+}
+
+/**
+ * Q10, the no-edit rule: an agent that is the stored delegate of a post's scope, or of the scope the post is
+ * moved to, cannot change a post it did not create there (text, media, accounts, time or scope). Otherwise it could
+ * write the text it then approves. Persons and the post's own creator are not checked; a personal scope never has
+ * a delegate. Fail closed: an unreadable store refuses the change.
+ */
+export async function assertDelegateNotEditing(
+  ctx: PluginContext,
+  viewer: { companyId: string; agentId: string | null; isAgent: boolean },
+  post: { created_by_agent_id: string | null },
+  scopes: DelegateScope[],
+): Promise<void> {
+  if (!viewer.isAgent || !viewer.agentId || post.created_by_agent_id === viewer.agentId) return;
+  const keys = scopes.filter((s) => s !== "personal").map((s) => normalKey(delegateScopeKey(s)));
+  if (keys.length === 0) return;
+  let map: DelegateMap;
+  try {
+    map = await readMapStrict(ctx, viewer.companyId);
+  } catch (error) {
+    throw new SocialError(`The delegated approvers could not be read, so this post was not changed. Try again. (${errorText(error)})`);
+  }
+  const own = keys.find((key) => map[key]?.agentId === viewer.agentId);
+  if (own) {
+    throw new SocialError(
+      `You are the delegated approver of ${own}, so you cannot change a post another agent or a person created there. Approve it with approve-post-as-delegate, or send it back with notes with return-post-as-delegate.`,
+    );
+  }
+}
+
 async function readForWrite(ctx: PluginContext, companyId: string): Promise<DelegateMap> {
   try {
     return await readMapStrict(ctx, companyId);

@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, type ClientScope, formatOf } from "@partnersinbiz/pib-plugin-kit";
 import { scopeOfRow } from "./clients.js";
+import { ladderDelegation } from "./approval-delegate.js";
 import { getPolicy } from "./approval-policy.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision } from "./autonomy.js";
 import { postMedia, table, type PostRow } from "./db.js";
@@ -247,21 +248,31 @@ export async function reviewStats(ctx: PluginContext, companyId: string, scope: 
   const rows = await statRows(ctx, companyId, scope, days);
   const stats = summariseOutcomes(withoutDelegate(rows));
   const { requireClient } = await getPolicy(ctx, companyId, scope);
+  // Q8: a stored delegate switches the ladder off in this scope; an unreadable store says so too (fail closed).
+  const delegation = await ladderDelegation(ctx, companyId, scope);
   const owner = summariseOutcomes(ladderRows(rows)).filter((row) => row.stage === "owner");
   const ladder = owner.map((row) => {
     const [kind = "", format = ""] = row.postType.split(":");
     const decision = autoApprovalDecision({ kind, format, requireClient, missing: ["owner"], validateOk: true, streak: row.streak });
-    return { postType: row.postType, streak: row.streak, enabled: decision.eligible };
+    return { postType: row.postType, streak: row.streak, enabled: decision.eligible && delegation === null };
   });
+  const off =
+    delegation === "delegated"
+      ? " Off in this scope: it has a delegated approver, who decides every post here."
+      : delegation === "unreadable"
+        ? " Off for now: the delegated approvers could not be read."
+        : "";
   return {
     days,
     scope: scope ? `${scope.kind}:${scope.id}` : null,
     types: stats,
     autonomy: {
       enabled: ladder.some((row) => row.enabled),
+      /** Why the ladder is off for the whole scope: `delegated` (Q8), `delegate-unreadable`, or null. */
+      reason: delegation === "delegated" ? ("delegated" as const) : delegation === "unreadable" ? ("delegate-unreadable" as const) : null,
       streakRequired: AUTO_APPROVE_STREAK,
       types: ladder,
-      note: `Only a low-risk post (original or repurpose, text or one image, scope without client approval, validate-post passing) whose owner streak is ${AUTO_APPROVE_STREAK} approvals in a row skips the team member's click. Every other type is approved by a person.`,
+      note: `Only a low-risk post (original or repurpose, text or one image, scope without client approval, validate-post passing) whose owner streak is ${AUTO_APPROVE_STREAK} approvals in a row skips the team member's click. Every other type is approved by a person.${off}`,
     },
   };
 }

@@ -15,7 +15,7 @@ import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToke
 import { agentSummary } from "./agent.js";
 import { approvalView, approvePostByDelegate, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
-import { clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
+import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -459,6 +459,11 @@ export function changedTarget(params: Record<string, unknown>) {
   return fields;
 }
 
+/** The delegate scope a post sits in: `personal` for a person's own post (never delegatable). */
+function postDelegateScope(post: PostRow): DelegateScope {
+  return post.scope === "personal" ? "personal" : rowScope(post).scope;
+}
+
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
   const params = postParams(input);
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
@@ -473,6 +478,8 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const requested = scopeInput(params);
   const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
   const moving = !sameClient(target.scope, current.scope);
+  // Q10: the delegate of the post's scope, or of the scope it moves to, does not change another's post.
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post), ...(moving ? [target.scope] : [])]);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
   if (viewer.isAgent && (body !== undefined || moving || params.overrides !== undefined || params.firstComment !== undefined)) {
     await assertClientFiling(ctx, viewer.companyId, {
@@ -578,6 +585,7 @@ export async function attachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only attach destinations to personal drafts they created");
   }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
   const accounts = await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]);
   // When viewer is agent and post is personal, account must be personal and owned by post owner
@@ -599,6 +607,7 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only detach destinations from personal drafts they created");
   }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
   const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
