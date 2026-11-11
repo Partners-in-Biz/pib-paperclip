@@ -2,7 +2,8 @@
  * Sign-offs and approval (Q1a-2). A post in review becomes approved when every
  * sign-off its scope's policy needs is in for the CURRENT version of the post:
  *
- * - the owner: a person clicks Approve on the Social page (`approvePostByPerson`);
+ * - the owner: a person clicks Approve on the Social page (`approvePostByPerson`), or the scope's
+ *   delegated approver approves (`approvePostByDelegate`, below);
  * - the Reviewer: it passed the post (`recordReviewerVerdict`), a check, never an approval;
  * - the client: they approved on the approval page (the answer job applies it,
  *   `applyClientAnswer` in client-approval.ts), or a person recorded that the
@@ -11,8 +12,8 @@
  * - the owner's delegate: the agent a person named for the scope approves with
  *   `approve-post-as-delegate` (`approvePostByDelegate`), after a scored Reviewer pass.
  *
- * No other agent approves: the Reviewer's verdict is a check, and an approval needs
- * a person, the client, or the agent a person named for that scope. Nothing here is
+ * No other agent approves, and never the Social agent: the Reviewer's verdict is a check, never an
+ * approval. An approval comes from a person, the client, or the agent a person named for that scope. Nothing here is
  * new authority for the default policy (the owner approves): that path behaves as before.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";

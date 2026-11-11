@@ -43,7 +43,7 @@ export function assertTransition(from: PostStatus, to: PostStatus): void {
 
 export function assertAgentTransition(from: PostStatus, to: PostStatus): void {
   if (to === "approved" || to === "published" || to === "partially_published") {
-    throw new SocialError("Agents draft and schedule. A person approves before publishing.");
+    throw new SocialError("The Social agent drafts and schedules and never approves. A person, or the scope's delegated approver, approves before publishing.");
   }
   assertTransition(from, to);
 }

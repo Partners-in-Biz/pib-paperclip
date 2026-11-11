@@ -5,7 +5,7 @@
  * - With a Reviewer in the Cockpit roles and "review outward-facing work" on, a
  *   post sent for review opens an issue for the Reviewer with concrete checks.
  *   The Reviewer records its verdict with `record-review-verdict`; the plugin
- *   hands the issue on (the person who approves, or the Social agent when the
+ *   hands the issue on (the person or delegated approver who approves, or the Social agent when the
  *   client has to approve).
  * - With no Reviewer nothing opens, as before, except when the scope's policy
  *   needs the client: then the Social agent gets the issue, to send the client
@@ -89,7 +89,7 @@ export function postReviewDescription(input: {
 }): string {
   const media = postMedia(input.post);
   const lines = [
-    "A social post was sent for review. Check it before the person approves it.",
+    "A social post was sent for review. Check it before it is approved.",
     "",
     `**Destinations:** ${input.destinations.length ? input.destinations.join(", ") : "none yet (the post needs at least one account before it can be scheduled)"}`,
     `**Media:** ${media.length ? media.map((m) => `${m.kind}${m.altText ? "" : " (no alt text)"}`).join(", ") : "none"}`,
@@ -365,7 +365,7 @@ export async function routePostReview(ctx: PluginContext, actor: ReviewActor, po
   try {
     const policy = await getPolicy(ctx, companyId, scopeOfRow(post));
     const reviewer = await reviewerAgentId(ctx, companyId);
-    // No Reviewer: nothing opens (a person approves from the Social page and the Cockpit lists the post), unless the client
+    // No Reviewer: nothing opens (a person, or the scope's delegated approver, approves from the Social page and the Cockpit lists the post), unless the client
     // has to approve: then the Social agent gets the issue, to send the client their link.
     if (!reviewer && !policy.requireClient) return null;
     const social = reviewer ? null : (await handoffTargets(ctx, companyId, post)).social;
