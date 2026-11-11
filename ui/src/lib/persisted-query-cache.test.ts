@@ -38,6 +38,40 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it("saves at most once per interval while queries keep updating, and skips unchanged records", async () => {
+    vi.useFakeTimers();
+    const storage = new MemoryStorage();
+    const writes = vi.spyOn(storage, "setItem");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const handle = startPersistedQueryCache(client, { storage, buildId: "build-one", eventTarget: null });
+    handles.push(() => { handle.dispose(); client.clear(); });
+    const recordWrites = () => writes.mock.calls.filter(([key]) => key.startsWith(QUERY_CACHE_PREFIX) && key !== QUERY_CACHE_ACTIVE).length;
+    seed(client);
+    await vi.advanceTimersByTimeAsync(300);
+    const first = recordWrites();
+    expect(first).toBeGreaterThan(0);
+
+    for (let i = 0; i < 20; i += 1) {
+      client.setQueryData(queryKeys.health, { status: "ok", tick: i });
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    // 40 s of updates: still inside the 60 s interval, nothing written.
+    expect(recordWrites()).toBe(first);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(recordWrites()).toBe(first + 1);
+    expect(storage.getItem(`${QUERY_CACHE_PREFIX}alice:root`)).toContain("\"tick\":19");
+
+    // Same data, newer read time: no rewrite until the refresh window passes.
+    const afterChange = recordWrites();
+    client.setQueryData(queryKeys.health, { status: "ok", tick: 19 });
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(recordWrites()).toBe(afterChange);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    client.setQueryData(queryKeys.health, { status: "ok", tick: 19 });
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(recordWrites()).toBeGreaterThan(afterChange);
+  });
+
   it.each([null, "", "   "])("skips hydration and persistence without a build stamp (%s)", (buildId) => {
     const first = setup(); seed(first.client); first.handle.flush();
     const saved = new Map(first.storage.values);
@@ -248,6 +282,8 @@ describe("persisted read cache", () => {
         write(QUERY_CACHE_ACTIVE, "bob");
       }
     });
+    // Unchanged records are not rewritten, so change one to force the write.
+    first.client.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "authenticated", changed: true });
     first.handle.flush();
     expect(first.storage.getItem(bobKey)).toBe(bobRecord);
     expect(first.storage.getItem(QUERY_CACHE_ACTIVE)).toBe("bob");
