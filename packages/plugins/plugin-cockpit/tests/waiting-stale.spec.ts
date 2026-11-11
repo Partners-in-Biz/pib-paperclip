@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CockpitSnapshot, WaitingItem } from "@partnersinbiz/pib-plugin-kit/cockpit";
-import { pruneStaleWaiting } from "../src/brief.js";
+import { issueStatuses, pruneStaleWaiting } from "../src/brief.js";
 
 const w = (key: string, issueId?: string): WaitingItem => ({ key, title: key, why: "why", kind: "review", issueId });
 const snap = (waiting: WaitingItem[]): CockpitSnapshot => ({ plugin: "partnersinbiz.social", waiting } as unknown as CockpitSnapshot);
@@ -15,12 +15,27 @@ describe("pruneStaleWaiting", () => {
   });
 
   it("drops a task row that duplicates its review row", () => {
-    const out = pruneStaleWaiting([snap([w("review:t1"), w("task:t1"), w("task:t2")])], statuses);
-    expect(keys(out)).toEqual(["review:t1", "task:t2"]);
+    const out = pruneStaleWaiting([snap([w("seo:needs-you:s1:review:t1"), w("seo:needs-you:s1:task:t1"), w("seo:needs-you:s2:task:t1"), w("seo:needs-you:s1:task:t2")])], statuses);
+    expect(keys(out)).toEqual(["seo:needs-you:s1:review:t1", "seo:needs-you:s2:task:t1", "seo:needs-you:s1:task:t2"]);
   });
 
   it("keeps everything linked when the status lookup failed", () => {
-    const out = pruneStaleWaiting([snap([w("a", "missing"), w("review:t1"), w("task:t1")])], null);
-    expect(keys(out)).toEqual(["a", "review:t1"]);
+    const out = pruneStaleWaiting([snap([w("a", "missing"), w("social:review:t1"), w("social:task:t1")])], null);
+    expect(keys(out)).toEqual(["a", "social:review:t1"]);
+  });
+});
+
+describe("issueStatuses", () => {
+  const ctxWith = (query: () => Promise<unknown>) => ({ db: { query } }) as never;
+
+  it("maps found issues so closed and missing ones can be pruned", async () => {
+    const ctx = ctxWith(async () => [{ id: "open", status: "in_review" }, { id: "done", status: "done" }]);
+    const map = await issueStatuses(ctx, "c1", ["open", "done", "missing"]);
+    expect(Object.fromEntries(map)).toEqual({ open: "in_review", done: "done" });
+    expect(keys(pruneStaleWaiting([snap([w("a", "open"), w("b", "done"), w("c", "missing")])], map))).toEqual(["a"]);
+  });
+
+  it("rejects when the lookup throws (caller passes null and keeps rows)", async () => {
+    await expect(issueStatuses(ctxWith(async () => { throw new Error("db down"); }), "c1", ["x"])).rejects.toThrow("db down");
   });
 });
