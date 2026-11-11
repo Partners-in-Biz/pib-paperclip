@@ -346,6 +346,31 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+const ERROR_RESULT_STATUSES = new Set(["error", "failed", "failure", "cancelled", "timed_out", "timeout"]);
+
+/**
+ * True when the only abnormal fact is a signal or exit code from host cleanup
+ * that ran after the adapter already saw a terminal result (PAR-9393).
+ */
+function isHostCleanupAfterTerminalResult(
+  adapterResult: AdapterExecutionResult,
+  processCancellation: unknown,
+) {
+  const resultJson = adapterResult.resultJson;
+  const evidence = parseObject(resultJson?.unmanagedBackgroundTask);
+  const status = typeof resultJson?.status === "string" ? resultJson.status.trim().toLowerCase() : null;
+  return (
+    evidence.terminalResultSeen === true &&
+    !adapterResult.errorMessage &&
+    !adapterResult.errorCode &&
+    !adapterResult.timedOut &&
+    !(status && ERROR_RESULT_STATUSES.has(status)) &&
+    resultJson?.is_error !== true &&
+    !processCancellation &&
+    (Boolean(adapterResult.signal) || (adapterResult.exitCode ?? 0) !== 0)
+  );
+}
+
 // Keep the watchdog's closed cause and timings so the run and its failure
 // report show whether renewal stalled in the database or the event loop.
 function controllerLeaseLossEvidence(reason: unknown) {
@@ -454,6 +479,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       !adapterResult.signal &&
       !processCancellation?.failed
     ) {
+      outcome = "succeeded";
+    } else if (isHostCleanupAfterTerminalResult(adapterResult, processCancellation)) {
+      // The adapter saw the final success result, then the host stopped a
+      // leftover background child. The signal or exit code is cleanup, not a
+      // failure; resultJson keeps the evidence for liveness (PAR-9393).
       outcome = "succeeded";
     } else {
       outcome = "failed";
