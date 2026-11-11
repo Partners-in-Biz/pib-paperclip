@@ -49,8 +49,10 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 ## Approval and launch
 - \`preflight-campaign\` runs the checks an approval request runs: every step complete, a client sender, a configured channel, the unsubscribe, the sender's domain health, working links, and who can receive each channel. Errors block the request; warnings go to the approver.
 - \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, who it goes out as, start date and every step. With a Reviewer it checks first and gives its verdict with \`review-campaign-approval\` (Reviewer only): pass hands it to the person, changes sends it back with a Revise task; nobody but a person approves.
-- A person marks it **done** (or clicks **Approve and launch** on the campaign): the campaign launches by itself and a comment says how many were enrolled. If it cannot launch, the issue goes back to the person with the reason. A client's campaign launches only from **Approve and launch**, with the client's written yes recorded there; a hand-marked issue does not launch it.
-- A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft, request approval again, then mark it done. Cancel the revise issue instead when they said to drop the campaign.
+- Approval happens on the campaign screen: a person opens the campaign (the Cockpit's "Waiting on you" item links there) and clicks **Approve and launch**, or **Send back**. The campaign launches by itself and a comment says how many were enrolled. If it cannot launch, it stays in Waiting on you with the reason. A client's campaign needs the client's written yes recorded on that screen; a hand-marked issue does not launch it.
+- The Reviewer gives its verdict only with \`review-campaign-approval\`; it never marks the approval issue done.
+- Adding people to a list or tagging contacts is not a send and needs no send approval.
+- A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft and request approval again. Cancel the revise issue instead when they said to drop the campaign.
 - Changing a draft after asking (steps, HTML, audience, sender, delivery, dates) cancels that approval (\`approvalReset: true\`). Request again.
 - \`launch-campaign\` is only for a paused campaign (it enrolls audience contacts not in it yet) or an approved draft that has not launched.
 
