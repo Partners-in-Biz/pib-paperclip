@@ -45,13 +45,15 @@ function seqOf(value: unknown): string | null {
 
 export async function onApprovalEvent(ctx: PluginContext, event: Pick<PluginEvent, "companyId" | "payload">): Promise<void> {
   const p = record(event.payload);
-  if (!event.companyId || typeof p.siteId !== "string" || typeof p.until !== "string" || Number.isNaN(Date.parse(p.until))) return;
+  if (!event.companyId || typeof p.siteId !== "string") return;
+  const until = typeof p.until === "string" && !Number.isNaN(Date.parse(p.until)) ? p.until : null;
   const by = typeof p.by === "string" ? p.by : null;
   if (p.scope === undefined) {
+    if (!until) return;
     await ctx.db.execute(
       `INSERT INTO ${table(ctx, "site_signoff")} (site_id, company_id, required, approved_until, approved_by) VALUES ($1, $2, true, $3::timestamptz, $4)
        ON CONFLICT (site_id) DO UPDATE SET approved_until = EXCLUDED.approved_until, approved_by = EXCLUDED.approved_by, updated_at = now()`,
-      [p.siteId, event.companyId, p.until, by],
+      [p.siteId, event.companyId, until, by],
     );
     return;
   }
@@ -59,6 +61,10 @@ export async function onApprovalEvent(ctx: PluginContext, event: Pick<PluginEven
   if (p.scope !== "pages" || !Array.isArray(p.pages)) return;
   const seq = seqOf(p.seq);
   if (!seq) return;
+  // A close (`pages: []`) carries no until when the sender's page set is empty (max over nothing is null): it still
+  // closes, with pages_until NULL. An open set needs a valid until.
+  if (p.pages.length > 0 && !until) return;
+  const pagesUntil = p.pages.length > 0 ? until : null;
   const pages = [...new Set(p.pages.map((page) => (typeof page === "string" ? normalisePageUrl(page) : null)).filter((page): page is string => page !== null))];
   // One guarded upsert: a late or out-of-order event (seq not newer) changes nothing. pages_opened_at marks when the
   // grant went from closed to open, so the change replay (T2b) knows where to start.
@@ -72,7 +78,7 @@ export async function onApprovalEvent(ctx: PluginContext, event: Pick<PluginEven
          ELSE now() END,
        updated_at = now()
      WHERE s.pages_seq < EXCLUDED.pages_seq`,
-    [p.siteId, event.companyId, JSON.stringify(pages), p.until, seq, by],
+    [p.siteId, event.companyId, JSON.stringify(pages), pagesUntil, seq, by],
   );
 }
 

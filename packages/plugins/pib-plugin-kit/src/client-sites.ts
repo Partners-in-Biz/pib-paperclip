@@ -94,11 +94,16 @@ export function siteKey(url: string): string | null {
  * them): scheme and host lower-cased, the path kept as it is, a trailing slash removed except on `/`.
  * A relative URL is resolved against `base` (the site's URL) and is null without one. A URL with a query or a
  * fragment is null: a page key never has one, and WordPress honours `?p=` over the path (PAR-9131 Q14).
+ * So is one the URL parser would rewrite (a backslash, a `.` or `..` segment, plain or percent-encoded, or inner
+ * whitespace or control characters): the site gets the raw url, so the key must be that path, not a cleaned one.
  */
 export function normalisePageUrl(url: string, base?: string | null): string | null {
   if (typeof url !== "string") return null;
   const trimmed = url.trim();
   if (!trimmed || trimmed.includes("?") || trimmed.includes("#")) return null;
+  // eslint-disable-next-line no-control-regex
+  if (trimmed.includes("\\") || /[\x00-\x20\x7f]/.test(trimmed)) return null;
+  if (trimmed.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) return null;
   try {
     const absolute = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
     if (!absolute && !base) return null;

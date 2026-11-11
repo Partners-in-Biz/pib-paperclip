@@ -86,6 +86,24 @@ describe.skipIf(!available)("page-scoped grant", () => {
     expect(await block("seo/set", { url: CONTACT })).toMatch(/no approval to apply is running/);
   });
 
+  it("closes on the exact close event the sender emits for an empty set: until null or left out", async () => {
+    const send = (payload: Record<string, unknown>) => onApprovalEvent(ctx, { companyId: CO, payload: { siteId: SITE.id, scope: "pages", by: "user-1", ...payload } });
+    await send({ pages: [ABOUT], until: inHours(48), seq: 1 });
+    expect(await block("seo/set", { url: ABOUT })).toBeNull();
+    await send({ pages: [], until: null, seq: 2 });
+    expect(await block("seo/set", { url: ABOUT })).toMatch(/no approval to apply is running/);
+    expect([(await row()).pages, (await row()).pages_until, Number((await row()).pages_seq)]).toEqual([[], null, 2]);
+    await send({ pages: [ABOUT], until: inHours(48), seq: 3 });
+    expect(await block("seo/set", { url: ABOUT })).toBeNull();
+    await send({ pages: [], seq: 4 });
+    expect(await block("seo/set", { url: ABOUT })).toMatch(/no approval to apply is running/);
+    expect([(await row()).pages_until, Number((await row()).pages_seq)]).toEqual([null, 4]);
+    // A non-empty set still needs a valid until: these change nothing.
+    for (const [until, seq] of [[null, 5], [undefined, 6], ["not a date", 7]] as const) await send({ pages: [ABOUT], until, seq });
+    expect(Number((await row()).pages_seq)).toBe(4);
+    expect(await block("seo/set", { url: ABOUT })).toMatch(/no approval to apply is running/);
+  });
+
   it("undo passes for a change on an approved page and is refused for another page", async () => {
     await pages([ABOUT], 1);
     await pg.client.query(

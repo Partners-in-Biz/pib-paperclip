@@ -30,4 +30,25 @@ describe("normalisePageUrl (PAR-9131 Q14)", () => {
     expect(normalisePageUrl("http://")).toBeNull();
     expect(normalisePageUrl(5 as unknown as string)).toBeNull();
   });
+
+  it("refuses a path the URL parser would rewrite: dot segments, backslashes, inner whitespace (Q14: path kept as it is)", () => {
+    for (const url of [
+      "https://example.com/other/../approved",
+      "https://example.com/other/%2e%2e/approved",
+      "https://example.com/other/%2E%2e/approved",
+      "https://example.com/other/.%2e/approved",
+      "https://example.com/./approved",
+      "https://example.com/%2e/approved",
+      "https://example.com/approved/..",
+      "https://example.com/other\\..\\approved",
+      "https://example.com\\approved",
+      "https://example.com/appr\toved",
+      "https://example.com/appr\noved",
+      "https://example.com/appr oved",
+    ]) expect(normalisePageUrl(url), url).toBeNull();
+    expect(normalisePageUrl("/other/../approved", "https://example.com")).toBeNull();
+    // Dots inside a segment are an ordinary path.
+    expect(normalisePageUrl("https://example.com/v1.2/...x/a.b")).toBe("https://example.com/v1.2/...x/a.b");
+    expect(normalisePageUrl("  https://example.com/approved/  ")).toBe("https://example.com/approved");
+  });
 });

@@ -41,6 +41,10 @@ describe("page grant allow list", () => {
     expect(refuse("posts/update", { url: "" })).toMatch(/name its page with url/);
     expect(refuse("posts/update", { url: "/contact" })).toMatch(/not one of the approved pages/);
     expect(refuse("posts/update", { url: "/about/team" })).toMatch(/not one of the approved pages/);
+    // The site resolves the raw url, so a path the parser would clean up to an approved page is refused.
+    expect(refuse("seo/set", { url: "/other/../about" })).toMatch(/not a page address/);
+    expect(refuse("seo/set", { url: "https://example.com/other/%2e%2e/about" })).toMatch(/not a page address/);
+    expect(refuse("seo/set", { url: "https://example.com/other\\..\\about" })).toMatch(/not a page address/);
   });
 
   it("refuses every other write, including posts/create and redirects/set", () => {
