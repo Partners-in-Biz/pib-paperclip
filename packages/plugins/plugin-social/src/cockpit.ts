@@ -12,6 +12,7 @@ import {
   jobHealth,
   linkedAgentId,
   outboxHealth,
+  parseClientParam,
   publishCockpitSnapshot,
   reviewerAgentId,
   withClientParam,
@@ -25,7 +26,8 @@ import {
   type Tone,
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
-import { getPolicy } from "./approval-policy.js";
+import { delegateFacts, delegateView, listDelegates } from "./approval-delegate.js";
+import { getPolicy, scopeKeyOf } from "./approval-policy.js";
 import { approvalServiceHealth, checkedApprovalBase, clientApprovalCounts } from "./client-approval.js";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
@@ -34,7 +36,7 @@ import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
-import { socialProjectId } from "./issues.js";
+import { agentStatusActive, socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
 import { isSocialPlatform, PLAN_ROUTINE_KEY, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
@@ -288,6 +290,59 @@ async function approvalHealth(ctx: PluginContext, companyId: string): Promise<He
   return approvalChecks({ pending: counts.pending, unanswered: counts.unanswered7d, waitingDelivery: counts.waitingDelivery, pageOk, pageError, reviewerPolicies, reviewerAvailable });
 }
 
+/**
+ * Scopes whose delegated approver cannot act, each with its reason, and review
+ * issues still assigned to an inactive delegate. Said only when there is a problem.
+ */
+async function delegateHealth(ctx: PluginContext, companyId: string): Promise<HealthCheck[]> {
+  const entries = Object.entries(await listDelegates(ctx, companyId));
+  if (entries.length === 0) return [];
+  const reviewer = await reviewerAgentId(ctx, companyId).catch(() => null);
+  const problems: string[] = [];
+  const inactive = new Map<string, string>();
+  for (const [key, entry] of entries) {
+    const scope = parseClientParam(key);
+    const facts = await delegateFacts(ctx, companyId, scope, entry.agentId);
+    const label = `${key === "own" ? "own brand" : key}`;
+    const reasons: string[] = [];
+    if (!facts.agent) reasons.push("the delegate was not found (deleted or unreadable)");
+    else if (!agentStatusActive(facts.agent.status)) {
+      reasons.push(`the delegate is ${facts.agent.status ?? "not running"}`);
+      inactive.set(key, entry.agentId);
+    }
+    if (!facts.allowlist.map((k) => k.toLowerCase()).includes(key.toLowerCase())) reasons.push("the scope was removed from the delegatable scopes list in the Social settings");
+    if (!reviewer) reasons.push("no Reviewer is running (clear the delegated approver, then turn the Reviewer's pass off)");
+    if (!facts.agent) inactive.set(key, entry.agentId);
+    if (reasons.length) problems.push(`${label}: ${reasons.join("; ")}`);
+  }
+  // Review issues still sitting with an inactive delegate.
+  let stuck = 0;
+  if (inactive.size > 0) {
+    const rows = await ctx.db.query<Scoped & { review_issue_id: string }>(
+      `SELECT review_issue_id, client_kind, client_ref, client_name FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' AND review_issue_id IS NOT NULL LIMIT 50`,
+      [companyId],
+    );
+    for (const row of rows) {
+      const agent = inactive.get(scopeKeyOf(scopeOfRow(row)).toLowerCase());
+      if (!agent) continue;
+      const issue = (await ctx.issues.get(row.review_issue_id, companyId).catch(() => null)) as { status?: string; assigneeAgentId?: string | null } | null;
+      if (issue && issue.assigneeAgentId === agent && OPEN_ISSUE.has(String(issue.status))) stuck++;
+    }
+    if (stuck > 0) problems.push(`${plural(stuck, "review issue")} still assigned to an inactive delegate`);
+  }
+  if (problems.length === 0) return [];
+  return [
+    {
+      key: "approval-delegate",
+      title: "A delegated approver cannot act",
+      status: "warn",
+      detail: problems.slice(0, 5).join(" | "),
+      href: POSTS,
+      fix: "Social → Posts → Who approves: pick a running agent, or clear the delegated approver so a person approves. With no running Reviewer, clear the delegate first, then turn the Reviewer's pass off.",
+    },
+  ];
+}
+
 async function healthChecks(ctx: PluginContext, companyId: string, agentId: string | null): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   for (const job of SOCIAL_JOBS) {
@@ -337,6 +392,7 @@ async function healthChecks(ctx: PluginContext, companyId: string, agentId: stri
   checks.push(await part(ctx, "outbox", () => outboxHealth(ctx, companyId), { key: "outbox", title: "Cross-plugin deliveries", status: "ok" as const }));
   // Client approval links and approval policies (said only when there is a problem).
   checks.push(...(await part(ctx, "approvals", () => approvalHealth(ctx, companyId), [] as HealthCheck[])));
+  checks.push(...(await part(ctx, "approval-delegate", () => delegateHealth(ctx, companyId), [] as HealthCheck[])));
   const failed = await part(
     ctx,
     "failed",
@@ -372,8 +428,8 @@ async function healthChecks(ctx: PluginContext, companyId: string, agentId: stri
 
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
-  const posts = await ctx.db.query<Scoped & { id: string; body: string; review_issue_id: string | null; updated_at: string | null }>(
-    `SELECT id, body, client_kind, client_ref, client_name, review_issue_id, updated_at::text AS updated_at
+  const posts = await ctx.db.query<Scoped & { id: string; body: string; review_issue_id: string | null; owner_user_id: string | null; updated_at: string | null }>(
+    `SELECT id, body, client_kind, client_ref, client_name, review_issue_id, owner_user_id, updated_at::text AS updated_at
        FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
@@ -388,17 +444,22 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     // Where the client alone approves, nobody on the team has to: the item says who is waited for.
     const policy = await policyOf(post);
     const clientOnly = !policy.requireOwner && policy.requireClient;
+    // A scope with a delegated approver that may act: the item says who is waited for (a person can still approve).
+    const delegate = clientOnly || post.owner_user_id ? null : await delegateView(ctx, companyId, scopeOfRow(post));
+    const delegated = Boolean(delegate?.active);
     items.push({
       key: `social:review:${post.id}`,
-      title: `${clientPrefix(post)}${clientOnly ? "Waiting for the client" : "Approve post"}: ${snippet(post.body)}`,
+      title: `${clientPrefix(post)}${clientOnly ? "Waiting for the client" : delegated ? `Waiting for the delegated approver (${delegate?.name ?? delegate?.agentId})` : "Approve post"}: ${snippet(post.body)}`,
       why: clientOnly
         ? "The client approves this post on their link; nobody on the team has to. The Social agent sends the link and is woken with the answer."
-        : post.review_issue_id
+        : delegated
+          ? "The delegated approver approves this post after the Reviewer's pass; a team member can still approve it too."
+          : post.review_issue_id
           ? "A person approves every post before it is scheduled. The Reviewer checks it first on its issue."
           : "A person approves every post before it is scheduled.",
       href: path(POSTS, post),
       issueId: post.review_issue_id,
-      kind: clientOnly ? "other" : "review",
+      kind: clientOnly || delegated ? "other" : "review",
       since: post.updated_at,
     });
   }
