@@ -8,11 +8,12 @@
  * `claimLaunch` is the second guard.
  */
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import { readCompanyRoles } from "@partnersinbiz/pib-plugin-kit";
 import { approvalAudience, audienceChangedMessage, customerCount } from "./approval-audience.js";
 import { getCampaign, listSteps, setApprovalAudience, setClientYes } from "./db.js";
 import { CampaignError, type CampaignDraft } from "./domain.js";
 import { messagingSetup } from "./messaging.js";
-import { companyOwnerUserId } from "./owner.js";
+import { approverUserId, companyOwnerUserId } from "./owner.js";
 import { optionalString, requiredString } from "./params.js";
 
 /** The worker's own launch and refusal paths, passed in so there is one of each. */
@@ -30,7 +31,7 @@ export function personOnly(context: PluginPerformActionContext): { companyId: st
 }
 
 /** A draft with an approval that is still open (or done but not launched). */
-async function openApproval(ctx: PluginContext, companyId: string, campaignId: string): Promise<{ campaign: CampaignDraft; issueId: string }> {
+async function openApproval(ctx: PluginContext, companyId: string, campaignId: string): Promise<{ campaign: CampaignDraft; issueId: string; issueStatus: string; issueAgentId: string | null }> {
   const campaign = await getCampaign(ctx, campaignId);
   if (!campaign || campaign.companyId !== companyId) throw new CampaignError("Campaign was not found");
   if (campaign.status !== "draft") throw new CampaignError(`This campaign is ${campaign.status}, not a draft waiting for approval. Nothing to approve or send back.`);
@@ -38,7 +39,7 @@ async function openApproval(ctx: PluginContext, companyId: string, campaignId: s
   const issue = await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null);
   if (!issue) throw new CampaignError(`The approval issue ${campaign.approvalIssueId} was not found. Ask for approval again.`);
   if (issue.status === "cancelled") throw new CampaignError("This approval was cancelled. The campaign needs a new approval (request-campaign-approval).");
-  return { campaign, issueId: issue.id };
+  return { campaign, issueId: issue.id, issueStatus: issue.status, issueAgentId: issue.assigneeAgentId ?? null };
 }
 
 /** Q5a, Q7, F18: who may decide on this campaign. Throws with the reason when the caller may not. */
@@ -93,8 +94,44 @@ export async function sendBackAction(ctx: PluginContext, context: PluginPerformA
   const { campaign, issueId } = await openApproval(ctx, companyId, requiredString(params, "campaignId"));
   const audience = await currentAudience(ctx, companyId, campaign);
   await assertMayDecide(ctx, companyId, userId, campaign, audience.contactIds);
-  await ctx.issues.createComment(issueId, `Sent back: ${note}`, companyId);
+  await sendBackApproval(ctx, companyId, campaign, issueId, `Sent back: ${note}`, paths);
+  return { campaignId: campaign.id, sentBack: true, approvalIssueId: issueId };
+}
+
+/** Send back: the note on the issue, the issue cancelled, and the existing refusal path (the Revise issue). */
+async function sendBackApproval(ctx: PluginContext, companyId: string, campaign: CampaignDraft, issueId: string, comment: string, paths: ApprovalPaths): Promise<void> {
+  await ctx.issues.createComment(issueId, comment, companyId);
   await ctx.issues.update(issueId, { status: "cancelled" }, companyId);
   await paths.onApprovalRefused(ctx, companyId, campaign, issueId);
-  return { campaignId: campaign.id, sentBack: true, approvalIssueId: issueId };
+}
+
+/**
+ * Agent tool `review-campaign-approval` (plan section 5.1, Reviewer verdict).
+ * Only the company's Reviewer (the one the kit routes approvals to), and only
+ * while the approval issue is with it. Pass comments the note and hands the
+ * issue to the approver person with no agent on it, so the Cockpit shows it at
+ * once (`issue_agent_id` is null). Changes does what Send back does.
+ */
+export async function reviewApprovalTool(ctx: PluginContext, companyId: string, agentId: string | null | undefined, params: Record<string, unknown>, paths: ApprovalPaths) {
+  if (!agentId) throw new CampaignError("Only the company's Reviewer agent gives a review verdict. A person approves or sends back on the campaign screen.");
+  const reviewer = (await readCompanyRoles(ctx, companyId)).roles?.reviewerAgentId ?? null;
+  if (!reviewer || reviewer !== agentId) throw new CampaignError("Only the company's Reviewer agent gives a review verdict on a campaign launch. Wait for the approval to be decided.");
+  const verdict = requiredString(params, "verdict");
+  if (verdict !== "pass" && verdict !== "changes") throw new CampaignError("verdict must be pass or changes");
+  const note = optionalString(params, "note");
+  if (!note) throw new CampaignError(verdict === "pass" ? "Add a note: what you checked." : "Add a note: what to change.");
+  const { campaign, issueId, issueStatus, issueAgentId } = await openApproval(ctx, companyId, requiredString(params, "campaignId"));
+  if (issueStatus === "done" || issueAgentId !== agentId) throw new CampaignError("This approval is not with you any more: a person decides it now. Nothing to review.");
+  if (verdict === "changes") {
+    await sendBackApproval(ctx, companyId, campaign, issueId, `Reviewer asked for changes: ${note}`, paths);
+    return { campaignId: campaign.id, verdict, sentBack: true, approvalIssueId: issueId };
+  }
+  // The PR 3 rule: the owner decides a client's campaign or one that reaches current clients; else the approver by the kit's chain.
+  const audience = await currentAudience(ctx, companyId, campaign);
+  const ownerOnly = Boolean(campaign.clientRef) || (await customerCount(ctx, companyId, audience.contactIds)) > 0;
+  const person = ownerOnly ? await companyOwnerUserId(ctx, companyId) : await approverUserId(ctx, companyId, campaign);
+  if (!person) throw new CampaignError("No approver is known for this company (set the owner in the Cockpit). The approval stays with you; a person sees it after 24 hours.");
+  await ctx.issues.createComment(issueId, `Reviewer pass: ${note}\n\nOver to the approver: open the campaign to approve or send back.`, companyId);
+  await ctx.issues.update(issueId, { assigneeAgentId: null, assigneeUserId: person, ...(issueStatus === "backlog" ? { status: "todo" } : {}) }, companyId);
+  return { campaignId: campaign.id, verdict, approvalIssueId: issueId, assignedToUserId: person, next: "Done. A person approves or sends it back now." };
 }

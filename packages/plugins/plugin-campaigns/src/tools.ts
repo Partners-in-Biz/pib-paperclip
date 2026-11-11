@@ -250,6 +250,17 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {
+    name: "review-campaign-approval",
+    displayName: "Review campaign approval",
+    description:
+      "The Reviewer's verdict on a launch approval assigned to it (the Reviewer agent only). pass: your note goes on the issue and it moves to the approver, a person, who approves or sends back. changes: the approval is cancelled and the campaign's agent gets a task to revise it with your note.",
+    parametersSchema: schema(["campaignId", "verdict", "note"], {
+      campaignId,
+      verdict: { type: "string", enum: ["pass", "changes"], description: "pass: ready for a person to decide. changes: send it back to be fixed." },
+      note: str("What you checked (pass) or what to change (changes). Goes on the approval issue."),
+    }),
+  },
+  {
     name: "create-ab-variant",
     displayName: "Create A/B variant",
     description: "Add a B version of a draft's step (same channel as its A version); contacts are split evenly between A and B. Cancels a pending approval (ask again).",
