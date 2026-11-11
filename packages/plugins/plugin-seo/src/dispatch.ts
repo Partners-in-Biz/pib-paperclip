@@ -9,6 +9,7 @@ import * as data from "./service/data.js";
 import * as gsc from "./service/gsc.js";
 import * as indexing from "./service/indexing.js";
 import * as needsYou from "./service/needs-you.js";
+import * as pageApply from "./service/page-apply.js";
 import * as pageTools from "./service/page-tools.js";
 import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
@@ -68,6 +69,9 @@ export const HANDLERS: Record<string, Handler> = {
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
   "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),
   "list-previews": (env, c, _a, p) => preview.listPreviews(env, c, p),
+  // pr_only page apply grants (PAR-9493): a person or a sign-off delegate opens or closes a task's pages; the handlers check the actor.
+  "approve-page-apply": (env, c, a, p) => pageApply.approvePageApply(env, c, a, p),
+  "revoke-page-apply": (env, c, a, p) => pageApply.revokePageApply(env, c, a, p),
   // Keywords
   "list-keywords": (env, c, _a, p) => data.listKeywordsTool(env, c, p),
   "add-keywords": (env, c, a, p) => data.addKeywords(env, c, a, p),
