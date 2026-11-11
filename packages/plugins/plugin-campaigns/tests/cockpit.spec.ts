@@ -193,6 +193,7 @@ describe("Campaign launch approval: Reviewer routing", () => {
     campaigns: [campaign("camp-draft", { status: "draft", owner_user_id: "user-owner", audience_tags: ["newsletter"] })],
     campaign_steps: [step("camp-draft", 1, "a", "Hi {{first_name}}"), step("camp-draft", 1, "b", "Quick one")],
     campaign_enrollments: [],
+    crm_contacts: [{ id: "ada", company_id: CO, name: "Ada", emails: ["ada@acme.test"], phones: [], lifecycle: "lead", tags: ["newsletter"], account_ids: [], updated_at: "2026-01-01T00:00:00Z", deleted: false }],
   });
 
   it("without a Reviewer the approval issue is unassigned, as before", async () => {

@@ -80,6 +80,9 @@ export interface PreflightFacts {
   approvedFacts?: string[];
 }
 
+/** Text that means a step was left unfinished. Whole words, upper case, so ordinary prose ("todo list") is not caught. */
+export const PLACEHOLDER_MARKERS = ["NOT-ISSUED-YET", "TODO", "TBC"] as const;
+
 const KNOWN_TOKENS = new Set(["first_name", "last_name", "name", "company", "email", "unsubscribe_url"]);
 
 function stepName(step: CampaignStepDraft): string {
@@ -140,9 +143,15 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
       for (const blocker of rubric.blockers) add("warning", `creative-${blocker.rule}`, `${where}: ${blocker.text}`);
       if (rubric.score < CREATIVE_PASS_SCORE) add("warning", "creative-score", `${where} scores ${rubric.score} of 100 on the creative rubric (it passes at ${CREATIVE_PASS_SCORE}). ${rubric.notes.filter((n) => !n.startsWith("Tone is not scored")).slice(0, 3).join(" ")}`.trim());
     }
+    // Subject and body (text and html) of this step or A/B version: an unresolved merge field or a leftover marker.
+    const unfilled: string[] = [];
     for (const match of `${step.subject} ${step.body} ${step.htmlBody ?? ""}`.matchAll(/\{\{\s*([a-z_]+)\s*(?:\|[^}]*)?\}\}/gi)) {
-      if (!KNOWN_TOKENS.has(match[1]!.toLowerCase())) add("warning", "unknown-token", `${where} uses {{${match[1]}}}, which is not filled in and goes out as typed. Known: first_name, last_name, name, company, email, unsubscribe_url.`);
+      if (!KNOWN_TOKENS.has(match[1]!.toLowerCase()) && !unfilled.includes(`{{${match[1]}}}`)) unfilled.push(`{{${match[1]}}}`);
     }
+    for (const marker of PLACEHOLDER_MARKERS) {
+      if (new RegExp(`(?<![A-Za-z0-9-])${marker}(?![A-Za-z0-9-])`).test(`${step.subject} ${step.body} ${step.htmlBody ?? ""}`)) unfilled.push(marker);
+    }
+    if (unfilled.length > 0) add("error", "unfilled-placeholder", `${where} still has a placeholder that was never filled in: ${unfilled.join(", ")}. Known merge fields: first_name, last_name, name, company, email, unsubscribe_url.`, "update-campaign-step with the real text");
     for (const url of extractLinks(`${step.body} ${step.htmlBody ?? ""}`)) {
       const problem = linkProblem(url);
       if (problem) add(problem.level, "link", `${where}: ${problem.message}`);
@@ -220,6 +229,7 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
   // Audience
   const audience = facts.audience;
   if (audience) {
+    if (audience.contacts.length === 0) add("error", "empty-audience", "The audience matches nobody: there is no one to send this campaign to.", "Change the audience (the tag or segment) so it matches at least one contact.");
     for (const channel of used) {
       const reach = audience.reach[channel];
       if (channel !== "email" && reach === 0) add("error", "nobody-reachable", `Nobody in the audience can receive ${CHANNEL_LABELS[channel]}: a contact needs a mobile number and a recorded opt-in for this sender.`, "record-channel-consent for people who agreed, with the evidence");
