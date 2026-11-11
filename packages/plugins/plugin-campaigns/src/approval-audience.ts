@@ -36,6 +36,9 @@ export async function approvalAudience(
   return audienceFingerprint(eligible.map((contact) => contact.id));
 }
 
+/** `launchCampaign` refuses a client's campaign's first launch without the client's written yes on record. */
+export const CLIENT_YES_MISSING = "Record the client's yes on the campaign screen: where the client said yes (a link to the comment or email) and a tick that you have seen it, then Approve and launch.";
+
 /** The refusal when the people a launch would reach are not the ones the approver saw. */
 export function audienceChangedMessage(before: number | null | undefined, now: number): string {
   return `The audience changed since you looked (${before ?? "unknown"}, now ${now}). Look again.`;

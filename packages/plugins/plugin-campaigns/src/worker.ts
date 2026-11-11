@@ -89,9 +89,9 @@ import {
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
-import { nextSend } from "./detail.js";
+import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
-import { audienceChangedMessage, audienceFingerprint } from "./approval-audience.js";
+import { audienceChangedMessage, audienceFingerprint, CLIENT_YES_MISSING, customerCount } from "./approval-audience.js";
 import { approveAction, reviewApprovalTool, sendBackAction, type ApprovalPaths } from "./approve.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
@@ -462,19 +462,41 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
     enrollmentViews(ctx, campaign.id),
     campaign.approvalIssueId ? ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : Promise.resolve(null),
   ]);
-  const audience = await launchAudience(ctx, companyId, campaign, steps).catch(() => null);
+  // The same resolution (and country) as the approve action, so the hash the bar sends matches when nothing changed.
+  const setup = await messagingSetup(ctx, companyId).catch(() => null);
+  const audience = await launchAudience(ctx, companyId, campaign, steps, [], setup?.config.defaultCountry).catch(() => null);
   // Who it goes out as and what is wrong, without asking the web: the page shows this before anyone approves.
   const preflight = await gatherPreflight(ctx, companyId, campaign, steps, { network: false, audience: false }).catch(() => null);
   const running = enrollments.filter((row) => row.status === "running");
+  const fingerprint = audience ? audienceFingerprint(audience.eligible.map((contact) => contact.id)) : null;
+  // The approval bar (plan 5.1): for an own campaign, how many of the people are current clients.
+  const deciding = campaign.status === "draft" && Boolean(campaign.approvalIssueId);
+  const customers = deciding && fingerprint && !campaign.clientRef ? await customerCount(ctx, companyId, fingerprint.contactIds).catch(() => null) : null;
   return {
-    campaign: { ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null },
+    campaign: {
+      ...publicCampaign(campaign),
+      steps,
+      stats,
+      approvalStatus: approval?.status ?? null,
+      clientYes: campaign.clientYesRef ? { ref: campaign.clientYesRef, by: campaign.clientYesBy ?? null, at: campaign.clientYesAt ?? null } : null,
+    },
     sender: preflight ? { sentAs: preflight.sentAs, channels: preflight.channels } : null,
     preflight: preflight ? { errors: preflight.errors, warnings: preflight.warnings } : null,
     approval: approval
       ? { issueId: approval.id, identifier: approval.identifier ?? null, status: approval.status, withPerson: Boolean(approval.assigneeUserId), withAgent: Boolean(approval.assigneeAgentId) }
       : null,
     audience: audience
-      ? { matching: audience.contacts.length, willGet: audience.eligible.length, leftOut: audience.suppressedCount, notReachable: audience.notReachable, reach: audience.reach, sample: audience.eligible.slice(0, 5).map((contact) => contact.name) }
+      ? {
+          matching: audience.contacts.length,
+          willGet: audience.eligible.length,
+          leftOut: audience.suppressedCount,
+          notReachable: audience.notReachable,
+          reach: audience.reach,
+          sample: audience.eligible.slice(0, 5).map((contact) => contact.name),
+          firstNames: audience.eligible.slice(0, 8).map((contact) => firstName(contact.name)),
+          customers,
+          hash: fingerprint!.hash,
+        }
       : null,
     enrolled: {
       total: stats.enrolled,
@@ -683,6 +705,8 @@ async function launchCampaign(
   options: { contactIds?: string[]; approvedByUserId: string | null },
 ): Promise<LaunchResult> {
   assertCanLaunch(campaign.status);
+  // A client's campaign launches the first time only with the client's written yes on record (plan 5.1): a hand-marked issue is not enough.
+  if (campaign.status === "draft" && campaign.clientRef && !(campaign.clientYesRef && campaign.clientYesAt)) throw new CampaignError(CLIENT_YES_MISSING);
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch. Add one with add-campaign-step.");
   // Things change between approval and launch (a sender removed, a provider switched off): check again, without the web.
@@ -765,7 +789,10 @@ async function launchOnApproval(ctx: PluginContext, companyId: string, campaign:
     const userId = approvedByUserId ?? (await approverUserId(ctx, companyId, campaign));
     try {
       await ctx.issues.update(issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, companyId);
-      await commentOn(ctx, companyId, issueId, `Approved, but the campaign could not launch: ${error.message}\n\nFix that, then mark this issue **done** again to launch it. Cancel the issue to drop the launch.`);
+      const next = campaign.clientRef
+        ? "Open the campaign, record where the client said yes, then click **Approve and launch** there. Marking this issue done does not launch a client's campaign."
+        : "Fix that, then click **Launch** on the campaign (or mark this issue **done** again).";
+      await commentOn(ctx, companyId, issueId, `Approved, but the campaign could not launch: ${error.message}\n\n${next} Cancel the issue to drop the launch.`);
     } catch (updateError) {
       ctx.logger.info("Could not hand the approval back after a failed launch", { issueId, error: updateError instanceof Error ? updateError.message : String(updateError) });
     }
@@ -1109,7 +1136,9 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
       ? "- **Delivery:** email. The Mailbox sends each due step as marketing mail (with an unsubscribe header). {{first_name}} and the other tokens are filled in per contact."
       : "- **Delivery:** issue. Each due step opens an issue and the campaign's agent sends the email.";
   const description = [
-    `Mark this issue **done** to approve campaign **${campaign.name}**: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
+    campaign.clientRef
+      ? `To approve campaign **${campaign.name}**, open it on the Campaigns page, record where the client said yes and click **Approve and launch**. Marking this issue done does not launch a client's campaign. Cancel the issue to refuse it (its agent gets a task to revise it).`
+      : `Mark this issue **done** to approve campaign **${campaign.name}**, or click **Approve and launch** on the campaign: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
     "",
     `See every email, who gets it and when on the Campaigns page: [${campaign.name}](${await campaignPageLink(ctx, companyId, campaign)}).`,
     "",

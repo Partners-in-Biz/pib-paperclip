@@ -154,6 +154,8 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const addStep = usePluginAction("campaigns.add-step");
   const launch = usePluginAction("campaigns.launch");
   const requestApproval = usePluginAction("campaigns.request-approval");
+  const approveCampaign = usePluginAction("campaigns.approve");
+  const sendBackCampaign = usePluginAction("campaigns.send-back");
   const pause = usePluginAction("campaigns.pause");
   const resume = usePluginAction("campaigns.resume");
   const complete = usePluginAction("campaigns.complete");
@@ -228,14 +230,14 @@ function CampaignsPageMain({ context }: PluginPageProps) {
     };
   }, [context.companyId, openId]);
 
-  async function run(work: () => Promise<unknown>, success: string) {
+  async function run(work: () => Promise<unknown>, success: string | ((result: unknown) => string)) {
     setMessage("");
     setBusy(true);
     try {
-      await work();
+      const result = await work();
       await refresh();
       if (openId) await refreshDetail(openId);
-      setMessage(success);
+      setMessage(typeof success === "function" ? success(result) : success);
       setCreate(null);
     } catch (error) {
       setMessage(errorText(error));
@@ -244,6 +246,12 @@ function CampaignsPageMain({ context }: PluginPageProps) {
     }
   }
 
+  function approvedMessage(result: unknown): string {
+    const outcome = (result ?? {}) as { launched?: boolean; alreadyLaunched?: boolean; enrolled?: number; error?: string };
+    if (outcome.error) return `Approved, but it could not launch: ${outcome.error}`;
+    if (outcome.alreadyLaunched) return "Approved. It had already launched.";
+    return `Approved and launched: ${outcome.enrolled ?? 0} enrolled.`;
+  }
   function openCampaign(id: string) {
     navigation.navigate(`/campaigns${withParam(location.search, "campaign", id)}`);
   }
@@ -438,6 +446,8 @@ function CampaignsPageMain({ context }: PluginPageProps) {
                 if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
               },
               onAb: () => openAb(detail.campaign.id),
+              onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
+              onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
             }}
           />
         ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}

@@ -5,7 +5,8 @@
  */
 import type { ReactNode } from "react";
 import { Button, CircleAlert, Clock, Mail, Pill, Send, Users, formatDate, formatShortDate, tokens, tone, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
-import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, type NextSend } from "../detail.js";
+import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, showApprovalBar, type NextSend } from "../detail.js";
+import { ApprovalBar, type ApproveInput } from "./approval-bar.js";
 import { StatusPill } from "./overview.js";
 
 export interface DetailStep { position: number; delayDays: number; subject: string; body: string; htmlBody?: string | null; variant?: "a" | "b"; channel?: "email" | "sms" | "whatsapp" }
@@ -28,6 +29,8 @@ export interface CampaignDetailData {
     approvalIssueId: string | null;
     approvalStatus: string | null;
     winnerVariant?: "a" | "b" | null;
+    /** The client's written yes, once recorded by Approve on a client campaign. */
+    clientYes?: { ref: string; by: string | null; at: string | null } | null;
     steps: DetailStep[];
     stats: { enrolled: number; running: number; done: number };
   };
@@ -35,7 +38,17 @@ export interface CampaignDetailData {
   /** Who it goes out as, from the checks that run before approval. */
   sender?: { sentAs: string | null; channels: Array<{ channel: string; sentFrom: string | null; ready: boolean; note: string | null }> } | null;
   preflight?: { errors: PreflightFindingView[]; warnings: PreflightFindingView[] } | null;
-  audience: { matching: number; willGet: number; leftOut: number; notReachable?: number; sample: string[] } | null;
+  audience: {
+    matching: number;
+    willGet: number;
+    leftOut: number;
+    notReachable?: number;
+    sample: string[];
+    /** For the approval bar: first names of the first few, current clients among them (own campaign), and the hash Approve sends. */
+    firstNames?: string[];
+    customers?: number | null;
+    hash?: string;
+  } | null;
   enrolled: {
     total: number;
     running: number;
@@ -56,6 +69,8 @@ export interface DetailActions {
   onEnrollNew: () => void;
   onComplete: () => void;
   onAb: () => void;
+  onApprove: (input: ApproveInput) => void;
+  onSendBack: (note: string) => void;
 }
 
 const APPROVAL_TONE: Record<string, ToneInput> = { "not-requested": "neutral", waiting: "warn", approved: "ok", "could-not-launch": "bad", launched: "ok", none: "neutral" };
@@ -123,6 +138,7 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
   const issueLink = approval ? linkFor(`/issues/${approval.identifier ?? approval.issueId}`) : null;
   const issueName = approval?.identifier ?? "the approval task";
   const small = { height: 32, fontSize: 12.5 };
+  const bar = showApprovalBar(campaign, approval);
 
   // One main action for the campaign's state; the rest are secondary.
   let main: ReactNode = null;
@@ -154,12 +170,13 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
           <Pill tone={APPROVAL_TONE[state.key] ?? "neutral"} dot>{state.label}</Pill>
         </div>
         {campaign.description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{campaign.description}</p> : null}
-        {state.key === "waiting" ? (
+        {bar ? <ApprovalBar key={`${campaign.id}:${approval?.issueId}`} data={data} busy={actions.busy} onApprove={actions.onApprove} onSendBack={actions.onSendBack} /> : null}
+        {state.key === "waiting" && !bar ? (
           <Callout tone="warn">
             A person approves it on {issueLink ? <a {...issueLink} style={{ color: "inherit", fontWeight: 600 }}>{issueName}</a> : issueName}. It then launches by itself. Check the emails below first.
           </Callout>
         ) : null}
-        {state.key === "could-not-launch" ? (
+        {state.key === "could-not-launch" && !bar ? (
           <Callout tone="bad">
             It was approved but could not launch: {campaign.launchError}. Fix that, then approve again on {issueLink ? <a {...issueLink} style={{ color: "inherit", fontWeight: 600 }}>{issueName}</a> : issueName}.
           </Callout>
