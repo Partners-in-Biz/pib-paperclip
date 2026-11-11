@@ -84,7 +84,8 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
   const [error, setError] = useState<string | null>(null);
   const current = delegate?.agentId ?? "";
   useEffect(() => setPick(current), [current]);
-  if (!snapshot.viewer.userId || !snapshot.scope || policy.requireClient) return null;
+  // scope is null on own work, which is where this matters most: the worker's empty candidates hide it where it is not allowed.
+  if (!snapshot.viewer.userId || policy.requireClient) return null;
   if (candidates.length === 0 && !delegate) return null;
   const send = (agentId: string | null) => {
     setBusy(true);
@@ -118,7 +119,7 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
         {candidates.length > 0 ? (
           <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={busy || !pick || pick === current} onClick={() => void send(pick)}>Save</Button>
         ) : null}
-        {delegate ? <SmallButton onClick={() => void send(null)}>Clear</SmallButton> : null}
+        {delegate ? <SmallButton disabled={busy} onClick={() => void send(null)}>Clear</SmallButton> : null}
       </Row>
       {error ? <Banner tone="error" title="The delegated approver was not saved">{error}</Banner> : null}
       <Muted>Only on scopes an instance admin allowed. Own brands only.</Muted>
