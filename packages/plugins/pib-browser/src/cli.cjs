@@ -8,6 +8,8 @@ const { probeAll } = require('./probe.cjs');
 
 const COMMANDS = ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+// open launches Chromium and waits for networkidle (~7 s on Paperclip), so 5 s was too short.
+const SOCKET_TIMEOUT_MS = Number(process.env.PIB_BROWSER_CLI_TIMEOUT_MS) || 60000;
 
 async function send(request, { socketPath = '/run/pib-browser/sock', maxResponseBytes = MAX_RESPONSE_BYTES } = {}) {
   return new Promise((resolve, reject) => {
@@ -19,7 +21,7 @@ async function send(request, { socketPath = '/run/pib-browser/sock', maxResponse
     const timeout = setTimeout(() => {
       client.destroy();
       reject(new Error('Socket timeout'));
-    }, 5000);
+    }, SOCKET_TIMEOUT_MS);
 
     client.on('connect', () => {
       client.write(JSON.stringify(request) + '\n');
