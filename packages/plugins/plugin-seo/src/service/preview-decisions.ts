@@ -15,6 +15,7 @@ import { errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type 
 import { assertWritable, loadSprintContext } from "./context.js";
 import { commentOn } from "./issues.js";
 import { quoted, recheckTaskAnswers } from "./client-signoff.js";
+import { syncApplyWindow } from "./signoff.js";
 
 export const BOARD_ONLY = "This action is for board users. Do not retry.";
 export const MIN_REASON = 10;
@@ -203,6 +204,7 @@ export async function undoPreviewDecision(env: Env, companyId: string, actor: Ac
   const skipped: Skipped[] = [];
   const undone: string[] = [];
   const told: string[] = [];
+  const handed: Row[] = [];
   for (const id of ids) {
     const r = rows.get(id);
     if (!r) { skipped.push(notOnSprint(id)); continue; }
@@ -217,13 +219,21 @@ export async function undoPreviewDecision(env: Env, companyId: string, actor: Ac
     );
     if (!res.rowCount) { skipped.push({ id, reason: "It changed while you undid it (applied, handed to the agent, or decided again). Reload and try again." }); continue; }
     undone.push(id);
-    if (r.handedAt) await tellAgent(env, sprint, r).then((ok) => ok && told.push(id));
+    if (r.handedAt) handed.push(r);
   }
+  // Only a handed-over page can be in the window. Sync before telling the agent, so the page is out of the lock by
+  // the time it reads the comment; a failed sync is retried by the 5-minute job (it reads the last sent window).
+  if (handed.length > 0) {
+    await syncApplyWindow(env, sprint, `preview-undo:${userId}`).catch((error: unknown) =>
+      env.ctx.logger.info("SEO undo: window sync failed; the 5-minute job retries it", { sprintId: sprint.id, error: errorMessage(error) }),
+    );
+  }
+  for (const r of handed) await tellAgent(env, sprint, r).then((ok) => ok && told.push(r.id));
   audit(env, "undo", companyId, sprint.id, userId, undone, skipped, { agentTold: told });
   return { sprintId: sprint.id, undone, skipped, agentTold: told };
 }
 
-/** The agent had this decision: do not apply it, revert if it already did. Until T3 the lock stays whole-site, so the comment says so. */
+/** The agent had this decision: do not apply it, revert if it already did. The page has left the page window (T3). */
 async function tellAgent(env: Env, sprint: db.Sprint, r: Row): Promise<boolean> {
   try {
     const task = r.taskId ? await db.getTask(env.ctx.db, sprint.companyId, r.taskId) : null;
@@ -232,7 +242,7 @@ async function tellAgent(env: Env, sprint: db.Sprint, r: Row): Promise<boolean> 
     const body = [
       `Decision on preview ${r.id} undone: do not apply it. If you already changed ${quoted(r.pageUrl, 300)}, revert it with wp-undo.`,
       "",
-      `The decision undone was ${r.status} at ${r.decidedAt ?? "-"}. A lock that is still open for the whole site does not make this page approved. You are woken again when it is decided.`,
+      `The decision undone was ${r.status} at ${r.decidedAt ?? "-"}. The write lock no longer lets this page through (at the latest within 5 minutes). You are woken again when it is decided.`,
     ].join("\n");
     if (!(await commentOn(env, sprint.companyId, issueId, body))) return false;
     await wakeIssue(env.ctx, issueId, sprint.companyId, "Preview decision undone");

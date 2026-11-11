@@ -31,7 +31,7 @@ import { assertWritable, loadSprintContext } from "./context.js";
 import { commentOn, patchIssue } from "./issues.js";
 import { closeNeedsYouItems, addNeedsYou } from "./needs-you.js";
 import { previewLink } from "./preview-links.js";
-import { liftWriteLock } from "./signoff.js";
+import { syncApplyWindow } from "./signoff.js";
 
 /** How long the client's approval keeps the sign-off lock open for the agent to apply it. */
 export const AUTO_APPLY_HOURS = 6;
@@ -384,14 +384,13 @@ async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, 
   const declined = rows.filter((r) => r.status === "declined");
   const changes = rows.filter((r) => r.status === "changes_requested");
   const until = approved.length > 0 ? approved.map((r) => iso(r.apply_until)).sort().at(-1)! : null;
-  // Whole-site until T3 (page windows) ships; the comment says so. Rounded up to whole hours, with a second's slack for the stamp's
-  // microseconds. A retry after the window (the sweep finishing an old claim) opens nothing and says so.
-  const hours = until ? Math.ceil((Date.parse(until) - env.now().getTime() - 1000) / 3_600_000) : 0;
-  const open = hours > 0;
+  // Page-scoped (T3): the window holds only the approved pages, until their apply_until. A retry after the window (the sweep finishing
+  // an old claim) opens nothing and says so.
+  const open = until !== null && Date.parse(until) > env.now().getTime();
   const lines = [
     "The previews of this task are decided.",
     ...(until && open
-      ? ["", `**Approved: apply these now through the Connector.** The lock is open for the whole site until ${until}; change only these pages:`, ...approved.map(line)]
+      ? ["", `**Approved: apply these now through the Connector.** The lock is open for these pages only until ${until}; any other page is refused:`, ...approved.map(line)]
       : []),
     ...(until && !open
       ? ["", `**Approved, but the window to apply them ended at ${until}: do not apply these.** The lock is closed; ask for a new decision in the sprint's Previews tab:`, ...approved.map(line)]
@@ -411,8 +410,8 @@ async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, 
     if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) throw new Error("the task's issue was not set to todo");
     await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
   }
-  // As before T1b: lifted even when the sprint has no site id (the event names no site then, and the Connector ignores it).
-  if (open) await liftWriteLock(env, sprint, `client-approval:${task.id}`, hours);
+  // The whole page set of the site, sent after the claim (handed_at set), so these pages are in it. No site id: no lock to open.
+  if (open) await syncApplyWindow(env, sprint, `client-approval:${task.id}`);
   if (!(await commentOn(env, sprint.companyId, task.issueId, lines.join("\n")))) throw new Error("the hand-over comment was not posted");
   if (!(await wakeIssue(env.ctx, task.issueId, sprint.companyId, "Previews decided"))) throw new Error("the agent was not woken");
   await env.ctx.db.execute(
