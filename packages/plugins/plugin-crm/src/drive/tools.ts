@@ -2,12 +2,13 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { type Broker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { driveKeyAfterAuthFailure, driveServiceAccountKey } from "./sa-secret.js";
 import { createGoogleDriveBroker, CLIENTS_PATH } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
-import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
@@ -205,9 +206,57 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
     throw new DriveNotBoundError();
   }
 
-  const serviceAccountJson = await new SecretResolver(ctx, companyId, cfg).get("driveServiceAccountJson");
+  // Cached per company (PAR-9358): the host allows 30 secret lookups a minute for the whole plugin.
+  const serviceAccountJson = await driveServiceAccountKey(ctx, companyId, cfg);
   if (!serviceAccountJson) return null;
-  return createGoogleDriveBroker(fetch, parseServiceAccountKey(serviceAccountJson), sharedDriveId);
+  return withKeyRefresh(ctx, companyId, cfg, serviceAccountJson, sharedDriveId);
+}
+
+const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
+
+/** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
+const REPLAYABLE = ["resolve", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
+const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
+
+/**
+ * The broker on the cached key. When Google refuses the key, the secret is read once more; a different key (rotated
+ * since it was cached) gets one retry of a replayable call. A streamed call is not retried, but the next call uses the new key.
+ */
+function withKeyRefresh(ctx: PluginContext, companyId: string, cfg: Record<string, unknown>, keyJson: string, sharedDriveId: string): Broker {
+  let currentKey = keyJson;
+  let inner = createGoogleDriveBroker(fetch, parseServiceAccountKey(keyJson), sharedDriveId);
+  const refresh = async (): Promise<boolean> => {
+    const next = await driveKeyAfterAuthFailure(ctx, companyId, cfg, currentKey);
+    if (!next) return false;
+    currentKey = next;
+    inner = createGoogleDriveBroker(fetch, parseServiceAccountKey(next), sharedDriveId);
+    return true;
+  };
+  const broker: Record<string, unknown> = {};
+  for (const name of REPLAYABLE) {
+    if (typeof (inner as unknown as Record<string, unknown>)[name] !== "function") continue;
+    broker[name] = async (...args: unknown[]) => {
+      const call = () => ((inner as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name])(...args);
+      try {
+        return await call();
+      } catch (e) {
+        if (!isBadCredential(e) || !(await refresh())) throw e;
+        return call();
+      }
+    };
+  }
+  for (const name of ONE_SHOT) {
+    if (typeof (inner as unknown as Record<string, unknown>)[name] !== "function") continue;
+    broker[name] = async (...args: unknown[]) => {
+      try {
+        return await ((inner as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name])(...args);
+      } catch (e) {
+        if (isBadCredential(e)) await refresh().catch(() => false);
+        throw e;
+      }
+    };
+  }
+  return broker as unknown as Broker;
 }
 
 /**

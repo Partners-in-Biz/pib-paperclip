@@ -9,6 +9,7 @@ import manifest from "../../src/manifest.js";
 import plugin from "../../src/worker.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import { clearJevCache } from "../../src/jev.js";
+import { clearDriveKeyCache } from "../../src/drive/sa-secret.js";
 import { createFakeDb, type Route, type Row, type Store } from "./fake-db.js";
 
 export const CO = "co-1";
@@ -197,6 +198,7 @@ export function liveHostDocuments(harness: ReturnType<typeof createTestHarness>)
 /** `routes` are tried before the shared ones (e.g. the Cockpit's aggregate queries). */
 export async function boot(options: { store?: Store; config?: Record<string, unknown>; routes?: Route[] } = {}) {
   clearJevCache();
+  clearDriveKeyCache();
   const store = options.store ?? seed();
   const harness = createTestHarness({ manifest, config: options.config ?? { timezone: "Africa/Johannesburg" } });
   harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never] });
