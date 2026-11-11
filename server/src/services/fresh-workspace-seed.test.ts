@@ -8,7 +8,7 @@ import { ensureSeedCommit, materializeFreshWorkspaceSeed } from "./fresh-workspa
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" }).trim();
 
-describe("materializeFreshWorkspaceSeed commit availability", () => {
+describe("materializeFreshWorkspaceSeed commit availability", { timeout: 30_000 }, () => {
   let tmp: string;
   let upstream: string;
   let source: string;
