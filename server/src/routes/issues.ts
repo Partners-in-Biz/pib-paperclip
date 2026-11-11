@@ -151,6 +151,7 @@ import {
   isUuidLike,
   type IssueCreationSource,
   type IssueParentAdjustment,
+  type IssueUnblockOwner,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
   type CompanySearchExtractQuery,
@@ -7121,11 +7122,104 @@ export function issueRoutes(
     return false;
   }
 
+  // PAR-9291: one rule for who an unblock owner may be, on PATCH and on every
+  // create route. Agents name themselves, a manager anywhere up their
+  // reports_to chain, or the board when no manager in that chain can be woken.
+  const UNBLOCK_OWNER_FORBIDDEN =
+    "Agents may only name themselves, a manager in their reporting chain, or the board as an unblock owner";
+  const UNWAKEABLE_AGENT_STATUSES = new Set(["terminated", "pending_approval"]);
+
+  // Same walk as agentService.getChainOfCommand, keeping each manager's status.
+  async function loadReportingChain(agentId: string, companyId: string) {
+    const chain: Array<{ id: string; status: string }> = [];
+    const visited = new Set<string>([agentId]);
+    let currentId = (await agentsSvc.getById(agentId))?.reportsTo ?? null;
+    while (currentId && !visited.has(currentId) && chain.length < 50) {
+      visited.add(currentId);
+      const manager = await agentsSvc.getById(currentId);
+      if (!manager || manager.companyId !== companyId) break;
+      chain.push({ id: manager.id, status: manager.status });
+      currentId = manager.reportsTo ?? null;
+    }
+    return chain;
+  }
+
+  // Sign-off option (b), accepted on PAR-9291: the board owns the block only
+  // when the agent has no manager left in its chain that can be woken.
+  function boardOwnerAllowed(chain: Array<{ status: string }>) {
+    return chain.every((manager) => UNWAKEABLE_AGENT_STATUSES.has(manager.status));
+  }
+
+  async function assertUnblockOwnerAllowed(
+    req: Request,
+    owner: IssueUnblockOwner,
+    companyId: string,
+  ) {
+    const actorAgentId =
+      req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+    if (req.actor.type === "agent" && !actorAgentId) {
+      throw forbidden(UNBLOCK_OWNER_FORBIDDEN);
+    }
+    if (owner === "board") {
+      if (
+        actorAgentId &&
+        !boardOwnerAllowed(await loadReportingChain(actorAgentId, companyId))
+      ) {
+        throw forbidden(UNBLOCK_OWNER_FORBIDDEN);
+      }
+      return;
+    }
+    if ("userId" in owner) {
+      if (actorAgentId) throw forbidden(UNBLOCK_OWNER_FORBIDDEN);
+      const member = await db
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, owner.userId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!member) {
+        throw unprocessable("Unblock owner user must be an active company member");
+      }
+      return;
+    }
+    if (actorAgentId && owner.agentId === actorAgentId) return;
+    const target = await agentsSvc.getById(owner.agentId);
+    if (!target || target.companyId !== companyId) {
+      throw unprocessable("Unblock owner agent must belong to the issue company");
+    }
+    if (!actorAgentId) return;
+    const chain = await loadReportingChain(actorAgentId, companyId);
+    if (!chain.some((manager) => manager.id === target.id)) {
+      throw forbidden(UNBLOCK_OWNER_FORBIDDEN);
+    }
+    if (UNWAKEABLE_AGENT_STATUSES.has(target.status)) {
+      throw unprocessable("Unblock owner agent cannot be woken");
+    }
+  }
+
+  async function assertCreateUnblockOwnerAllowed(
+    req: Request,
+    body: { unblockDescriptor?: { owner: IssueUnblockOwner } | null },
+    companyId: string,
+  ) {
+    const owner = body.unblockDescriptor?.owner;
+    if (owner) await assertUnblockOwnerAllowed(req, owner, companyId);
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean } = {},
+    issue: Parameters<typeof decideIssueAccess>[1] & {
+      unblockDescriptor?: { owner: IssueUnblockOwner } | null;
+    },
+    options: { resumeIntent?: boolean; nextStatus?: string } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -7201,6 +7295,20 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
+    // PAR-9291: the named unblock owner hands the issue back (blocked -> todo
+    // only). Reads the descriptor from the issue before the update, which
+    // clears it on leaving blocked and wakes the assignee.
+    const unblockOwner = issue.unblockDescriptor?.owner;
+    if (
+      issue.status === "blocked" &&
+      options.nextStatus === "todo" &&
+      unblockOwner &&
+      unblockOwner !== "board" &&
+      "agentId" in unblockOwner &&
+      unblockOwner.agentId === actorAgentId
+    ) {
+      return true;
+    }
     if (
       await hasActiveCheckoutManagementOverride(
         actorAgentId,
@@ -12850,6 +12958,7 @@ export function issueRoutes(
         },
       );
       if (!sanitizedBody) return;
+      await assertCreateUnblockOwnerAllowed(req, sanitizedBody, companyId);
       const {
         watchdogDiscovery: rawWatchdogDiscovery,
         onboardingFirstTask: rawOnboardingFirstTask,
@@ -13432,6 +13541,7 @@ export function issueRoutes(
         },
       );
       if (!sanitizedBody) return;
+      await assertCreateUnblockOwnerAllowed(req, sanitizedBody, parent.companyId);
       const normalizedAssigneeAgentId =
         await normalizeIssueAssigneeAgentReference(
           parent.companyId,
@@ -13712,6 +13822,7 @@ export function issueRoutes(
           },
         );
         if (!sanitizedChild) return;
+        await assertCreateUnblockOwnerAllowed(req, sanitizedChild, sourceIssue.companyId);
         const normalizedAssigneeAgentId =
           await normalizeIssueAssigneeAgentReference(
             sourceIssue.companyId,
@@ -14697,7 +14808,9 @@ export function issueRoutes(
       if (
         resumeRequested !== true &&
         agentStatusTransitionRequiresResumeAuthority &&
-        !(await assertExplicitResumeIntentAllowed(req, res, existing))
+        !(await assertExplicitResumeIntentAllowed(req, res, existing, {
+          nextStatus: updateFields.status,
+        }))
       ) {
         return;
       }
@@ -14995,58 +15108,7 @@ export function issueRoutes(
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
       if (descriptor && typeof descriptor === "object") {
-        const owner = descriptor.owner;
-        if (
-          req.actor.type === "agent" &&
-          (owner === "board" || "userId" in owner)
-        ) {
-          throw forbidden(
-            "Agents may only name themselves as an unblock owner",
-          );
-        }
-        if (owner !== "board" && "agentId" in owner) {
-          const target = await db
-            .select({ id: agents.id })
-            .from(agents)
-            .where(
-              and(
-                eq(agents.id, owner.agentId),
-                eq(agents.companyId, existing.companyId),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!target)
-            throw unprocessable(
-              "Unblock owner agent must belong to the issue company",
-            );
-          if (
-            req.actor.type === "agent" &&
-            req.actor.agentId !== owner.agentId
-          ) {
-            throw forbidden(
-              "Agents may only name themselves as an unblock owner",
-            );
-          }
-        } else if (owner !== "board" && "userId" in owner) {
-          const member = await db
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, existing.companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.principalId, owner.userId),
-                eq(companyMemberships.status, "active"),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!member)
-            throw unprocessable(
-              "Unblock owner user must be an active company member",
-            );
-        }
+        await assertUnblockOwnerAllowed(req, descriptor.owner, existing.companyId);
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
