@@ -82,6 +82,15 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     description: "Check a Drive transfer that runs in the background. A drive_file_save over 5 MB (up to 200 MB) and every drive_file_fetch return a jobId at once; call this with that jobId until status is done (result holds the file) or failed (code and hint say why). running shows bytesDone of bytesTotal; a slow chunk is slow, not dead, so keep calling every 20-30 s. not_found: the transfer is gone (the CRM restarted); start it again, a finished copy is not made twice. Only the agent that started the transfer can see it, and a fetch only from the same run. Read-only.",
     parametersSchema: schema(["jobId"], { jobId: text("The jobId a Drive save or fetch returned.", 100) }),
   },
+  {
+    name: "drive_file_fetch",
+    displayName: "Fetch Drive file",
+    description: "Copy a file from a Paperclip project's Google Drive folder (or one of its sub-folders) into this run's scratch dir ($PAPERCLIP_TMPDIR), up to 200 MB. Always returns status started with a jobId at once; call drive_transfer_status with it every 20-30 s until it is done. Its result holds path (the local file), size, sha256, name, mimeType and runId. The file lives only as long as this run: the scratch dir is deleted when the run ends. Google Docs files are refused (export them in Drive first). Works only from a run on this server. fileId is the Google Drive file id.",
+    parametersSchema: schema(["projectId", "fileId"], {
+      projectId: text("The Paperclip project whose Drive folder holds the file.", 100),
+      fileId: text("The Google Drive file id (from the file's Drive link), not a name or URL.", 200),
+    }),
+  },
 ];
 
 export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {

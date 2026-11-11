@@ -38,7 +38,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive folder tools", () => {
   it("declares resolve, ensure, file-save, set, list, and binding tools with schemas and descriptions", () => {
-    expect(DRIVE_TOOLS).toHaveLength(9);
+    expect(DRIVE_TOOLS).toHaveLength(10);
     expect(DRIVE_TOOLS[0].name).toBe("drive_folder_resolve");
     expect(DRIVE_TOOLS[1].name).toBe("drive_folder_ensure");
     expect(DRIVE_TOOLS[2].name).toBe("drive_file_save");
