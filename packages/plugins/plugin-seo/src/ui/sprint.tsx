@@ -59,13 +59,15 @@ import { Banner, Breadcrumb, IssueLink, StatePill, StuckBanner, linkButton, shor
 import { PlaybookTab } from "./playbook.js";
 import { BacklinksTab, ContentTab, KeywordsTab, AuditsTab, OptimizationsTab } from "./lists.js";
 import { IntegrationsTab } from "./integrations.js";
+import { PreviewsTab, awaitingCount } from "./previews.js";
 import { TEAM_SETUP_HREF } from "./role-skills.js";
 import { CHIP_LABEL, CHIP_ORDER, CHIP_TONE, changeText, healthTone, statusTone, taskSegments, trafficSeries } from "./series.js";
-import type { AgentState, CallFn, LoadResult, SprintBundle, SprintSummary, TabId, Task } from "./types.js";
+import type { AgentState, CallFn, LoadResult, PreviewFilter, SprintBundle, SprintSummary, TabId, Task } from "./types.js";
 import { STATE_LABEL, STATE_ORDER, STATE_SHORT, STATE_TONE, sprintStatusText, tabsForPhone } from "./words.js";
 
 const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "plan", label: "Plan", icon: ListChecks },
+  { id: "previews", label: "Previews", icon: Eye },
   { id: "keywords", label: "Keywords", icon: Target },
   { id: "backlinks", label: "Backlinks", icon: Share2 },
   { id: "content", label: "Content", icon: FileText },
@@ -105,6 +107,10 @@ function tabCount(id: TabId, bundle: SprintBundle, canWork: boolean): { count?: 
       if (tally.stuck) return { count: tally.stuck, countTone: "bad" };
       return tally.due ? { count: tally.due } : {};
     }
+    case "previews": {
+      const waiting = awaitingCount(bundle.previews);
+      return waiting ? { count: waiting, countTone: full ? undefined : "warn" } : {};
+    }
     case "keywords": return { count: bundle.keywords.filter((k) => !k.retiredAt).length || null };
     case "backlinks": return { count: bundle.backlinks.filter((b) => b.status === "live").length || null };
     case "content": return { count: bundle.content.length || null };
@@ -133,6 +139,7 @@ export function SprintCockpit({
   scope,
   load,
   initialTab,
+  initialFilter,
   onTab,
   onRedirect,
   onMessage,
@@ -143,6 +150,8 @@ export function SprintCockpit({
   scope: ClientScope;
   load: LoadResult;
   initialTab: TabId;
+  /** `?filter=` of the Previews tab. */
+  initialFilter?: PreviewFilter;
   onTab: (tab: TabId) => void;
   /** The sprint belongs to another scope (a client, or PiB's own sites). */
   onRedirect: (client: string | null, clientName: string | null) => void;
@@ -157,6 +166,7 @@ export function SprintCockpit({
   const runWeekly = usePluginAction("seo.run-weekly");
   const [bundle, setBundle] = useState<SprintBundle | null>(null);
   const [tab, setTab] = useState<TabId>(SPRINT_TAB_IDS.includes(initialTab) ? initialTab : "plan");
+  const [previewFilter, setPreviewFilter] = useState<PreviewFilter>(initialFilter ?? "awaiting");
   const [working, setWorking] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"link" | "autopilot" | "plan" | "archive" | "start" | "through" | null>(null);
   const client = scope ? `${scope.kind}:${scope.id}` : null;
@@ -285,9 +295,10 @@ export function SprintCockpit({
         />
       ) : null}
       {tab === "plan" && !s.legacy ? <PlanTab bundle={bundle} today={load.today} agent={load.agent} canWork={canWork} call={call} onTab={selectTab} /> : null}
+      {tab === "previews" ? <PreviewsTab bundle={bundle} filter={previewFilter} onFilter={setPreviewFilter} onChanged={reload} /> : null}
       {tab === "keywords" ? <KeywordsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "backlinks" ? <BacklinksTab bundle={bundle} call={call} /> : null}
-      {tab === "content" ? <ContentTab bundle={bundle} call={call} /> : null}
+      {tab === "content" ? <ContentTab bundle={bundle} call={call} onTab={selectTab} /> : null}
       {tab === "audits" ? <AuditsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "optimizations" ? <OptimizationsTab bundle={bundle} call={call} /> : null}
       {tab === "playbook" ? <PlaybookTab sprintId={sprintId} onChanged={reload} onMessage={onMessage} /> : null}

@@ -280,7 +280,9 @@ export type SprintBundle = {
   playbook?: { playbookId: string | null; version: number | null; pending: number } | null;
 };
 
-export type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "playbook" | "integrations";
+export type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "previews" | "playbook" | "integrations";
+
+export type PreviewFilter = "awaiting" | "approved" | "declined" | "applied" | "expired";
 
 export type CallFn = (tool: string, params: Record<string, unknown>, success?: string) => Promise<unknown>;
 
@@ -300,4 +302,15 @@ export type PreviewItem = {
   url: string;
   reviewUrl: string | null;
   superseded: boolean;
+  taskId: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  changedFields: string[];
+  decidedBy: string | null;
+  decisionSource: string | null;
+  decidedAt: string | null;
+  confirmedAt: string | null;
+  appliedAt: string | null;
+  expired: boolean;
+  overlapIds: string[];
 };

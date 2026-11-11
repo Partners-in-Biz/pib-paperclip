@@ -602,17 +602,41 @@ export interface PreviewRow {
   url: string;
   reviewUrl: string | null;
   superseded: boolean;
+  /** The sprint task and its issue (the Previews tab groups by task). */
+  taskId: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  /** Which fields the proposal changes, in words the tab shows. */
+  changedFields: string[];
+  decidedBy: string | null;
+  decisionSource: string | null;
+  decidedAt: string | null;
+  confirmedAt: string | null;
+  appliedAt: string | null;
+  /** Pending and past its expiry: nobody decided in time. */
+  expired: boolean;
+  /** Other pending previews of the same page (read-only note, no gating). */
+  overlapIds: string[];
 }
+
+const CHANGE_FIELDS: Array<[string, string]> = [["title", "Title"], ["metaDescription", "Meta description"], ["h1", "Heading"], ["bodyHtml", "Body copy"], ["css", "Styles"]];
 
 /** The sprint's previews for the SEO page (staff only: includes the review link). A newer preview of the same page supersedes older ones. */
 export async function previewRows(env: Env, companyId: string, sprintId: string): Promise<PreviewRow[]> {
   const rows = await env.ctx.db.query(
-    `SELECT id, page_url, title, status, review_status, review_note, decision_note, review_key, stats, created_at, expires_at FROM ${t("previews")}
-      WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY created_at DESC LIMIT 200`,
+    `SELECT p.id, p.page_url, p.title, p.status, p.review_status, p.review_note, p.decision_note, p.review_key, p.stats, p.created_at, p.expires_at,
+        p.task_id, COALESCE(p.issue_id, st.issue_id) AS issue_id, st.issue_identifier, p.changes, p.decided_by, p.decision_source, p.decided_at,
+        p.confirmed_at, p.applied_at, (p.status = 'pending' AND p.expires_at <= now()) AS expired
+      FROM ${t("previews")} p LEFT JOIN ${t("sprint_tasks")} st ON st.id = p.task_id
+      WHERE p.company_id = $1 AND p.sprint_id = $2 AND p.status <> 'cancelled' ORDER BY p.created_at DESC LIMIT 200`,
     [companyId, sprintId],
   );
   const seen = new Set<string>();
+  const iso = (v: unknown): string | null => (v == null ? null : (v instanceof Date ? v : new Date(String(v))).toISOString());
+  const livePending = rows.filter((r) => r.status === "pending" && !r.expired);
   return rows.map((r) => {
+    const changes = (typeof r.changes === "string" ? JSON.parse(String(r.changes)) : (r.changes ?? {})) as Record<string, unknown>;
+    const overlapIds = livePending.filter((o) => o.page_url === r.page_url && o.id !== r.id).map((o) => String(o.id));
     const stats = typeof r.stats === "string" ? (JSON.parse(String(r.stats)) as Record<string, number>) : ((r.stats ?? {}) as Record<string, number>);
     const rendered = (stats as unknown as { rendered?: { keptPct?: number; addedWords?: number } }).rendered;
     const page = String(r.page_url);
@@ -635,6 +659,17 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
       url: previewLink(page, String(r.id)),
       reviewUrl: r.review_key ? `${previewLink(page, String(r.id))}/review?key=${String(r.review_key)}` : null,
       superseded,
+      taskId: r.task_id ? String(r.task_id) : null,
+      issueId: r.issue_id ? String(r.issue_id) : null,
+      issueIdentifier: r.issue_identifier ? String(r.issue_identifier) : null,
+      changedFields: CHANGE_FIELDS.filter(([key]) => Boolean(changes[key])).map(([, label]) => label),
+      decidedBy: r.decided_by ? String(r.decided_by) : null,
+      decisionSource: r.decision_source ? String(r.decision_source) : null,
+      decidedAt: iso(r.decided_at),
+      confirmedAt: iso(r.confirmed_at),
+      appliedAt: iso(r.applied_at),
+      expired: Boolean(r.expired),
+      overlapIds,
     };
   });
 }

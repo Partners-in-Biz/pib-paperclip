@@ -25,7 +25,8 @@ import { CreateSprintModal, SprintHome, StartPlanModal } from "./home.js";
 import { Banner, StuckBanner, compactLink, linkButton, small } from "./parts.js";
 import { SeoPreferences } from "./preferences.js";
 import { SPRINT_TAB_IDS, SprintCockpit } from "./sprint.js";
-import type { HireView, LoadResult, SprintSummary, TabId } from "./types.js";
+import type { HireView, LoadResult, PreviewFilter, SprintSummary, TabId } from "./types.js";
+import { isPreviewFilter } from "./words.js";
 
 function useSearch(): URLSearchParams {
   const location = useHostLocation();
@@ -246,6 +247,7 @@ function SeoPageMain({ context }: PluginPageProps) {
           scope={scope}
           load={data}
           initialTab={((search.get("tab") as TabId | null) && SPRINT_TAB_IDS.includes(search.get("tab") as TabId) ? search.get("tab") : "plan") as TabId}
+          initialFilter={isPreviewFilter(search.get("filter")) ? (search.get("filter") as PreviewFilter) : undefined}
           onTab={(tab) => openSprint(sprintId, scope, tab)}
           onRedirect={(target, name) => reopenIn(sprintId, target, name)}
           onMessage={setMessage}
