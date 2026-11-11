@@ -356,7 +356,7 @@ const CONTENT_STATUSES = ["idea", "drafting", "review", "scheduled", "live", "ar
 const CONTENT_TYPES = ["post", "page", "comparison", "alternative", "use-case", "pillar", "cluster", "how-to", "feature"];
 
 const REVIEW_LABEL: Record<string, string> = { pending: "Being checked", passed: "Checked", changes_needed: "Sent back" };
-const ANSWER_LABEL: Record<string, string> = { pending: "Waiting for the client", approved: "Client approved", changes_requested: "Client wants changes" };
+const ANSWER_LABEL: Record<string, string> = { pending: "Waiting for the client", approved: "Client approved", changes_requested: "Client wants changes", declined: "Declined" };
 
 function copyText(text: string) {
   try {

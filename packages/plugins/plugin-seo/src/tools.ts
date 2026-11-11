@@ -374,7 +374,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       checkLive: flag("With previewId only: fetch the live page and return liveCheck: unchanged, changed (with the fields) or unknown. Run it before applying an approved preview"),
       includeHtml: flag("With previewId only: also return the stored preview page html (large)"),
       taskId: text("Only the previews made for this task"),
-      status: choice(["pending", "approved", "changes_requested", "cancelled"], "Only previews with this client answer: pending, approved or changes_requested; or cancelled (replaced by a newer version)"),
+      status: choice(["pending", "approved", "changes_requested", "declined", "cancelled"], "Only previews with this answer: pending, approved, changes_requested or declined (not going ahead); or cancelled (replaced by a newer version)"),
       reviewStatus: choice(["pending", "passed", "changes_needed"], "Only previews with this Reviewer verdict: pending, passed or changes_needed"),
       limit: int("Rows to return (default 20, at most 100)"),
       compact: flag("Short rows (default true); false returns every field in full for each row"),
