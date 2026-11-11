@@ -128,6 +128,14 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, {});
       return assetFileForAgent(ctx, companyId, String(params.assetId ?? "").trim(), work.projectId);
     }
+    case "studio-drive-save": {
+      const work = await workOf(ctx, run, {});
+      const assetId = String(params.assetId ?? "").trim();
+      await assertReachable(ctx, companyId, scopeOfRow(await getAssetRow(ctx, companyId, assetId)), work.projectId);
+      return saveAssetToDrive(ctx, companyId, assetId);
+    }
+    case "studio-drive-transfer":
+      return getTransfer(companyId, String(params.transferId ?? "").trim());
     case "studio-import-from-attachment": {
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("issueId is required: the issue the file is attached to.", "bad_import");
