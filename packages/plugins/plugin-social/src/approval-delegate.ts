@@ -215,11 +215,21 @@ export async function delegateFacts(ctx: PluginContext, companyId: string, scope
  * person approves). Routing and text use this; the approve tool checks again.
  */
 export async function activeDelegate(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<string | null> {
+  return (await activeDelegateEntry(ctx, companyId, scope))?.agentId ?? null;
+}
+
+/** As `activeDelegate`, with the stored entry (routing needs `setAt`). Never throws: any failure is no delegate. */
+export async function activeDelegateEntry(ctx: PluginContext, companyId: string, scope: DelegateScope): Promise<DelegateEntry | null> {
   if (scope === "personal") return null;
-  const entry = await getDelegate(ctx, companyId, scope);
-  if (!entry) return null;
-  const facts = await delegateFacts(ctx, companyId, scope, entry.agentId);
-  return delegateBlockers(facts).length === 0 ? entry.agentId : null;
+  try {
+    const entry = await getDelegate(ctx, companyId, scope);
+    if (!entry) return null;
+    const facts = await delegateFacts(ctx, companyId, scope, entry.agentId);
+    return delegateBlockers(facts).length === 0 ? entry : null;
+  } catch (error) {
+    logReadError(ctx, companyId, error);
+    return null;
+  }
 }
 
 /**

@@ -3,9 +3,10 @@
  * The Reviewer's pass is a check, the client's answer or a person's click is the approval, and no agent ever approves.
  */
 import { describe, expect, it } from "vitest";
-import { approvePostByPerson, recordClientApprovalByPerson, recordReviewerVerdict, signoffState } from "../src/approval-flow.js";
+import { afterSignoff, approvePostByPerson, recordClientApprovalByPerson, recordReviewerVerdict, signoffState } from "../src/approval-flow.js";
 import { recordClientApprovalRecord, recordReviewVerdictRecord, setApprovalPolicyRecord, transitionPost } from "../src/service.js";
-import { approvalWorld, PERSON, postRow, REVIEWER_AGENT, SOCIAL_AGENT } from "./world.js";
+import { delegateWorld } from "./delegate-world.js";
+import { approvalWorld, PERSON, postRow, REVIEWER_AGENT, SOCIAL_AGENT, T } from "./world.js";
 
 const ACTOR = { companyId: "co", userId: "owner-1", isAgent: false };
 
@@ -227,5 +228,117 @@ describe("loosening a policy approves posts whose sign-offs are already in", () 
     const saved = await setApprovalPolicyRecord(w.ctx, PERSON, { client: "company:c1", requireClient: false });
     expect(saved).toMatchObject({ requireClient: false, approved: 1 });
     expect(w.post.status).toBe("approved");
+  });
+});
+
+describe("PAR-9561 T7a: a passed post goes to the scope's delegated approver", () => {
+  const HOUR = 3_600_000;
+  const weekly = (w: { created: Array<Record<string, unknown>> }) => w.created.filter((c) => String(c.originId).includes("review-week:"));
+
+  /** After the Reviewer's pass (in the ledger), what is left is routed as `recordReviewerVerdict` does. */
+  async function route(w: ReturnType<typeof delegateWorld>) {
+    const state = await signoffState(w.ctx, "co", postRow(w));
+    return afterSignoff(w.ctx, { companyId: "co", userId: null, isAgent: true }, postRow(w), state, "A person");
+  }
+
+  /** The person got it, as without a delegate: the weekly issue, the post's own issue finished, the delegate never woken. */
+  function toPerson(w: ReturnType<typeof delegateWorld>) {
+    expect(w.updates.some((u) => u.patch.assigneeAgentId === "ag-rhea")).toBe(false);
+    expect(weekly(w)).toHaveLength(1);
+    expect(w.updates).toContainEqual({ id: "iss-9", patch: { status: "done" } });
+    expect(w.wakeups).toEqual([]);
+    expect(w.post.status).toBe("review");
+  }
+
+  it("after the Reviewer's real pass the review issue goes to the delegate and wakes it; never the weekly issue", async () => {
+    const w = delegateWorld();
+    const result = await recordReviewVerdictRecord(w.ctx, REVIEWER_AGENT, { postId: "p1", verdict: "pass" });
+    expect(result).toMatchObject({ recorded: true, next: expect.stringContaining("delegated approver (agent `ag-rhea`)") });
+    expect(w.updates).toContainEqual({ id: "iss-9", patch: { status: "todo", assigneeAgentId: "ag-rhea", assigneeUserId: null } });
+    expect(w.comments.find((c) => c.id === "iss-9")?.body).toContain("`approve-post-as-delegate`");
+    expect(w.wakeups).toEqual(["iss-9"]);
+    expect(weekly(w)).toEqual([]);
+    expect(w.reviewIssueId()).toBe("iss-9");
+    expect(w.post.status).toBe("review");
+  });
+
+  it("the delegate is inactive (paused): the person gets it", async () => {
+    const w = delegateWorld();
+    w.pass();
+    const agents = w.ctx.agents as unknown as { get: (id: string) => Promise<unknown> };
+    const base = agents.get;
+    agents.get = async (id: string) => (id === "ag-rhea" ? { id, companyId: "co", name: id, status: "paused" } : base(id));
+    await route(w);
+    toPerson(w);
+  });
+
+  it("the delegate created the post: the person gets it", async () => {
+    const w = delegateWorld();
+    w.post.created_by_agent_id = "ag-rhea";
+    w.pass();
+    await route(w);
+    toPerson(w);
+  });
+
+  it("the pass is unscored (D1): the person gets it", async () => {
+    const w = delegateWorld();
+    w.pass({ via: "unscored" });
+    await route(w);
+    toPerson(w);
+  });
+
+  it("the delegate recorded the pass: the person gets it", async () => {
+    const w = delegateWorld();
+    w.pass({ actor_agent_id: "ag-rhea" });
+    await route(w);
+    toPerson(w);
+  });
+
+  it("the post was created before the delegate was set (D3): the person gets it", async () => {
+    const w = delegateWorld({ setAt: new Date(Date.now() + HOUR).toISOString() });
+    w.pass();
+    await route(w);
+    toPerson(w);
+  });
+
+  it("the hand-off fails: the person gets it", async () => {
+    const w = delegateWorld();
+    w.pass();
+    const issues = w.ctx.issues as unknown as { update: (id: string, patch: Record<string, unknown>) => Promise<unknown> };
+    const base = issues.update;
+    issues.update = async (id, patch) => {
+      if (patch.assigneeAgentId === "ag-rhea") throw new Error("host refused");
+      return base(id, patch);
+    };
+    const progress = await route(w);
+    expect(progress.delegateAgentId).toBeUndefined();
+    toPerson(w);
+  });
+
+  it("fails closed: the delegate store or the sign-off ledger cannot be read, so the person gets it", async () => {
+    const store = delegateWorld();
+    store.pass();
+    store.io.stateThrows = true;
+    await route(store);
+    toPerson(store);
+
+    const ledger = delegateWorld();
+    ledger.pass();
+    const state = await signoffState(ledger.ctx, "co", postRow(ledger));
+    const db = ledger.ctx.db as unknown as { query: (sql: string, params: unknown[]) => Promise<unknown[]> };
+    const base = db.query;
+    db.query = async (sql, params) => {
+      if (sql.includes(`FROM ${T("review_outcomes")}`)) throw new Error("db down");
+      return base(sql, params);
+    };
+    await afterSignoff(ledger.ctx, { companyId: "co", userId: null, isAgent: true }, postRow(ledger), state, "A person");
+    toPerson(ledger);
+  });
+
+  it("the client still has to approve: the delegate is not involved", async () => {
+    const w = delegateWorld({ policy: { require_client: true } });
+    w.pass();
+    await route(w);
+    expect(w.updates.some((u) => u.patch.assigneeAgentId === "ag-rhea")).toBe(false);
   });
 });
