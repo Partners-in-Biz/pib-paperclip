@@ -138,15 +138,24 @@ function fromRow(row: PolicyRow): ApprovalPolicy {
   };
 }
 
+/**
+ * The scope's policy, or the default when no row is saved. Throws when the
+ * table cannot be read: an authority check (the delegated approver) refuses
+ * then, instead of acting on the default.
+ */
+export async function getPolicyStrict(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ApprovalPolicy> {
+  const rows = await ctx.db.query<PolicyRow>(
+    `SELECT scope_key, require_reviewer, require_owner, require_client, link_expiry_days, updated_by, updated_at
+       FROM ${table(ctx, "approval_policies")} WHERE company_id = $1 AND scope_key = $2 LIMIT 1`,
+    [companyId, scopeKeyOf(scope)],
+  );
+  return rows[0] ? fromRow(rows[0]) : defaultPolicy(scope);
+}
+
 /** The scope's policy, or the default. Never throws: an unreadable table means the strictest old behaviour (the owner approves). */
 export async function getPolicy(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ApprovalPolicy> {
   try {
-    const rows = await ctx.db.query<PolicyRow>(
-      `SELECT scope_key, require_reviewer, require_owner, require_client, link_expiry_days, updated_by, updated_at
-         FROM ${table(ctx, "approval_policies")} WHERE company_id = $1 AND scope_key = $2 LIMIT 1`,
-      [companyId, scopeKeyOf(scope)],
-    );
-    return rows[0] ? fromRow(rows[0]) : defaultPolicy(scope);
+    return await getPolicyStrict(ctx, companyId, scope);
   } catch (error) {
     ctx.logger.info("Social approval policy unreadable; the owner approves", { companyId, error: error instanceof Error ? error.message : String(error) });
     return defaultPolicy(scope);
