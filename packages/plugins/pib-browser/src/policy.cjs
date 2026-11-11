@@ -82,7 +82,7 @@ function authorise({ policy, sites, agentId, identity, url, click, approved }) {
   }
   return { ok: true };
 }
-function isDestructive(site, { selector, text }) {
+function isDestructive(site, { selector, text, label }) {
   if (!site?.destructive) return false;
   if (selector && typeof selector === 'string') {
     const ns = selector.trim().toLowerCase();
@@ -90,10 +90,15 @@ function isDestructive(site, { selector, text }) {
       if (typeof ds === 'string' && (ns === ds.toLowerCase() || ns.includes(ds.toLowerCase())))
         return true;
   }
-  if (text && typeof text === 'string') {
-    const nt = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  // The destructive word list is matched against the --text filter, the selector
+  // itself (Playwright selectors carry text: `button:has-text(Save)`, `text=Delete`,
+  // `[aria-label=Remove]`), and the target element's own label when the driver
+  // resolved it. Fails closed: a selector that merely mentions a word needs approval.
+  for (const s of [text, selector, label]) {
+    if (!s || typeof s !== 'string') continue;
+    const nt = s.trim().toLowerCase().replace(/\s+/g, ' ');
     for (const dt of (site.destructive.text || []))
-      if (typeof dt === 'string' && nt.includes(dt.toLowerCase()))
+      if (typeof dt === 'string' && dt && nt.includes(dt.toLowerCase()))
         return true;
   }
   return false;
