@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dedupeByTask } from "../src/cockpit.js";
+import type { NeedsYouItem } from "../src/engine/needs-you.js";
 import { companyInfo } from "../src/service/common.js";
 import { closeItemsForClosedTask } from "../src/service/needs-you.js";
 import { seoHost, taskRow, SPRINT, type Route, type Row } from "./helpers/seo-host.js";
@@ -50,7 +51,7 @@ describe("closeItemsForClosedTask", () => {
 });
 
 describe("dedupeByTask", () => {
-  const row = (key: string, kind: string, taskIds: string[], sprint = "sp-1") => ({ item: item(key, kind, taskIds) as never, digest: { sprint_id: sprint } });
+  const row = (key: string, kind: string, taskIds: string[], sprint = "sp-1") => ({ item: item(key, kind, taskIds) as unknown as NeedsYouItem, digest: { sprint_id: sprint } });
   it("keeps one row per sprint and task, the sign-off first", () => {
     const out = dedupeByTask([row("task:t-1", "task", ["t-1"]), row("review:t-1", "review", ["t-1"]), row("again", "review", ["t-1"]), row("task:t-1", "task", ["t-1"], "sp-2"), row("g", "grant", [])]);
     expect(out.map((r) => `${r.digest.sprint_id}:${r.item.key}`)).toEqual(["sp-1:review:t-1", "sp-2:task:t-1", "sp-1:g"]);
