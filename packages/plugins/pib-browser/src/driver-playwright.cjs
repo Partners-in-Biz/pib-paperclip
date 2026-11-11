@@ -80,20 +80,25 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             scheme = '';
           }
 
+          // Swallow route errors: a request still in flight when the page or context
+          // closes rejects, and an unhandled rejection would kill the daemon (PAR-9187).
+          const safe = (fn) => {
+            try { return Promise.resolve(fn()).catch(() => {}); } catch (e) { return Promise.resolve(); }
+          };
           if (!['http:', 'https:'].includes(scheme) && url !== 'about:blank') {
             checkGuard(url, 'request');
-            route.abort();
+            return safe(() => route.abort());
           } else if (checkGuard(url, 'request')) {
-            route.continue();
+            return safe(() => route.continue());
           } else {
-            route.abort();
+            return safe(() => route.abort());
           }
         });
 
         context.on('page', (popup) => {
           const url = popup.url();
           if (!checkGuard(url, 'popup')) {
-            popup.close();
+            Promise.resolve().then(() => popup.close()).catch(() => {});
           }
         });
 
@@ -124,6 +129,26 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             locator = locator.filter({ hasText: text });
           }
           await locator.click();
+        },
+
+        // Short read of the click target's label for the destructive-word check.
+        // Returns '' when the target is missing; never waits the full action timeout.
+        label: async (selector, text) => {
+          await ensureInitialized();
+          let locator = page.locator(selector);
+          if (text) {
+            locator = locator.filter({ hasText: text });
+          }
+          if ((await locator.count()) === 0) return '';
+          const first = locator.first();
+          const opts = { timeout: 2000 };
+          const parts = await Promise.all([
+            first.getAttribute('aria-label', opts).catch(() => null),
+            first.getAttribute('title', opts).catch(() => null),
+            first.getAttribute('value', opts).catch(() => null),
+            first.innerText(opts).then((t) => t.slice(0, 200)).catch(() => null)
+          ]);
+          return parts.filter(Boolean).join(' ');
         },
 
         fill: async (selector, value) => {
