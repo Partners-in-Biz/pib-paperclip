@@ -1633,7 +1633,9 @@ async function startServerWithDatabaseTeardown(
         run: async () => {
           try {
             const result = await blockedIssueSweep.sweep(new Date());
-            if (result.moved > 0) logger.info(result, "blocked issue sweeper moved issues to todo");
+            if (result.moved > 0 || result.renotified > 0) {
+              logger.info(result, "blocked issue sweeper moved issues to todo or re-noticed owners");
+            }
           } catch (err) {
             logger.error({ err }, "blocked issue sweeper failed");
           }
