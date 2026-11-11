@@ -110,6 +110,8 @@ export interface DriveFileInfo {
   parents: string[];
   /** ISO time, when Drive gave one. */
   modifiedTime?: string;
+  /** `appProperties.pibSha256`, when a save stored one (fileMeta only). */
+  sha256?: string;
 }
 
 export type DriveThumbnail = { status: "ok"; mimeType: string; bytes: Uint8Array } | { status: "not_in_client_folder" | "no_preview" | "too_large" };

@@ -206,6 +206,7 @@ import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
 import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, createBrokerForCompany } from "./drive/tools.js";
+import { driveFileFetch } from "./drive/fetch.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { registerDriveSaveRoute } from "./drive/save-route.js";
 import { reportsDriveCatchup } from "./report-drive-catchup.js";
@@ -874,6 +875,8 @@ async function dispatch(
       return driveBindingStatus(ctx, viewer);
     case "drive_transfer_status":
       return driveTransferStatus(viewer, body);
+    case "drive_file_fetch":
+      return driveFileFetch(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);

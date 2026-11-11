@@ -19,6 +19,7 @@ export type RunScopeReason =
   | "run_not_running"
   | "remote_run"
   | "no_roots"
+  | "no_scratch"
   | "dot_dot"
   | "missing"
   | "symlink"
@@ -49,6 +50,7 @@ const HINTS: Record<RunScopeReason, string> = {
   run_not_running: NOT_RUNNING_HINT,
   remote_run: REMOTE_HINT,
   no_roots: "This run has no workspace or scratch dir on this server, so it cannot send files by path.",
+  no_scratch: "This run has no scratch dir on this server, so a Drive file cannot be fetched into it.",
   dot_dot: `The path may not contain "..". ${OUTSIDE_HINT}`,
   missing: `No file at that path. ${OUTSIDE_HINT}`,
   symlink: `The path is a symbolic link; give the file itself. ${OUTSIDE_HINT}`,
@@ -78,6 +80,32 @@ export function isLocalEnvironment(env: RunRow["environment"]): boolean {
 
 /** The real paths of the calling run's cwd, worktree and scratch dir, when the run is the viewer's own, running and local. */
 export async function resolveRunRoots(ctx: PluginContext, viewer: Viewer): Promise<RunRoots> {
+  const row = await callerRun(ctx, viewer);
+  if (!("status" in row)) return row;
+  const roots: string[] = [];
+  for (const dir of [row.cwd, row.worktree_path, row.scratch_dir]) {
+    const real = await realDir(dir);
+    if (real && !roots.includes(real)) roots.push(real);
+  }
+  return roots.length ? { ok: true, roots } : refuse("no_roots");
+}
+
+/** The real path of the calling run's scratch dir only (PAR-9219 D: a fetch writes nowhere else). */
+export async function resolveRunScratch(ctx: PluginContext, viewer: Viewer): Promise<{ ok: true; scratch: string } | RunScopeRefusal> {
+  const row = await callerRun(ctx, viewer);
+  if (!("status" in row)) return row;
+  const scratch = await realDir(row.scratch_dir);
+  return scratch ? { ok: true, scratch } : refuse("no_scratch");
+}
+
+async function realDir(dir: string | null): Promise<string | null> {
+  if (typeof dir !== "string" || !isAbsolute(dir)) return null;
+  // A root that is gone is dropped.
+  return realpath(dir).catch(() => null);
+}
+
+/** The run row, when the run is the viewer's own, running and local. */
+async function callerRun(ctx: PluginContext, viewer: Viewer): Promise<RunRow | RunScopeRefusal> {
   if (!viewer.runId || !viewer.agentId) return refuse("no_run");
   // The id columns are uuids: anything else would be a query error, not a refusal.
   if (![viewer.runId, viewer.companyId, viewer.agentId].every((id) => UUID.test(id))) return refuse("run_not_found");
@@ -104,17 +132,7 @@ export async function resolveRunRoots(ctx: PluginContext, viewer: Viewer): Promi
   }
   if (row.status !== "running") return refuse("run_not_running");
   if (!isLocalEnvironment(row.environment)) return refuse("remote_run");
-  const roots: string[] = [];
-  for (const dir of [row.cwd, row.worktree_path, row.scratch_dir]) {
-    if (typeof dir !== "string" || !isAbsolute(dir)) continue;
-    try {
-      const real = await realpath(dir);
-      if (!roots.includes(real)) roots.push(real);
-    } catch {
-      // A root that is gone is dropped.
-    }
-  }
-  return roots.length ? { ok: true, roots } : refuse("no_roots");
+  return row;
 }
 
 /** The deepest root that holds `real`, or null. */
