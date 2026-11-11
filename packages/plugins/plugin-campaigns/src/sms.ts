@@ -18,7 +18,7 @@
  * provider is called, so a crash can never send a step twice.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { consentKey, getCrmContact, HANDOFF_EVENTS, type ConsentRecorded } from "@partnersinbiz/pib-plugin-kit";
+import { consentKey, HANDOFF_EVENTS, type ConsentRecorded } from "@partnersinbiz/pib-plugin-kit";
 import {
   addChannelSuppression,
   blockedAddresses,
@@ -59,6 +59,7 @@ import {
 import { failStep, personalVars } from "./mail.js";
 import { firstHeldLog, messagingSetup, providerPaused, readinessOf, recordProviderResult, type MessagingSetup, type OutboundMessage, type SendOutcome } from "./messaging.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { resolveRecipient } from "./recipient.js";
 import { resolveMessageSender } from "./sender.js";
 import { cancelStepIssue } from "./suppress.js";
 
@@ -222,7 +223,7 @@ export async function sendMessagingStep(ctx: PluginContext, input: MessagingStep
     if (firstHeldLog(`${campaign.id}:${channel}:not-ready`)) ctx.logger.warn("Campaign message held: channel not ready", { campaignId: campaign.id, channel, reason: readiness.reason });
     return "held";
   }
-  const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId);
+  const contact = await resolveRecipient(ctx, companyId, enrollment.contactId);
   const phone = campaignPhone(contact?.phones, setup.config.defaultCountry);
   if (!contact || !phone) return skipStep(ctx, { enrollment, steps, step }, "no mobile number on the contact");
   const sender = await resolveMessageSender(ctx, companyId, campaign, channel, setup);

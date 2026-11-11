@@ -91,6 +91,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { replyOrigin, sendFailedOrigin } from "./origins.js";
 import { assigneeFields, workOwner } from "./owner.js";
 import { projectForCampaign } from "./projects.js";
+import { resolveRecipient } from "./recipient.js";
 import { resolveEmailSender, senderDisplayName, type EmailSender } from "./sender.js";
 import { announceSuppression, suppressAddress, suppressionPayload } from "./suppress.js";
 import { saveSendRecord } from "./drive.js";
@@ -240,7 +241,7 @@ export async function sendCampaignStep(
   input: { campaign: CampaignDraft; enrollment: EnrollmentDraft; step: CampaignStepDraft; issueFallback: (note: string) => Promise<void>; sender?: EmailSender },
 ): Promise<"sent" | "stopped" | "issue" | "held"> {
   const { campaign, enrollment, step } = input;
-  const contact = await getCrmContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
+  const contact = await resolveRecipient(ctx, enrollment.companyId, enrollment.contactId);
   const to = campaignAddress(contact?.emails);
   if (!contact || !to) {
     await input.issueFallback("This contact has no email address in the CRM, so the step was not emailed. Reach them another way, then mark this issue done.");
