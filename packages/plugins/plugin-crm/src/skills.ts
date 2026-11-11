@@ -48,8 +48,8 @@ A company's billing details (billingEmail, phone, address, vatNumber, registrati
 
 ## Files in Drive
 \`drive_folder_resolve\` looks up the Google Drive folder (path and URL) registered for a Paperclip project or CRM company (a client's project resolves to the client's folder). ALWAYS call this first before saving any file to Drive. Never hard-code, guess or paste a Drive folder ID: take it from this tool's result.
-\`drive_folder_ensure\` creates (once) the standard Drive folder, with its sub-folders, for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. It is safe to call again: an existing folder is returned unchanged and nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
-\`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. See \`references/drive.md\`.
+\`drive_folder_ensure\` creates (once) the standard Drive folder, with its sub-folders, for a project or CRM company and returns its path and URL. Call \`drive_folder_resolve\` first; call this only when resolve says not_found. Safe to repeat: nothing is duplicated. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.
+\`drive_file_save\` saves a file there and returns its URL (quote it); on \`drive_not_bound\` report once and stop. Over 5 MB: \`path\` only, up to 200 MB, as a job. See \`references/drive.md\`.
 
 ## Binding a company's Shared Drive
 \`drive_binding_discover\`, \`drive_binding_set\`, \`drive_binding_status\`: bind the company's Shared Drive. Discover lists it from the read-only Drive connection; it auto-binds on exact match or returns candidates. Set with the ID. Status checks binding and access.

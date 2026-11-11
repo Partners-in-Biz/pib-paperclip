@@ -33,14 +33,14 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "drive_file_save",
     displayName: "Save file to Drive",
-    description: "Save a file to a Paperclip project's Google Drive folder (a client's project saves into the client's folder). Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths (max 5 MB). Exactly one source required: contentBase64 or path.",
+    description: "Save a file to a Paperclip project's Google Drive folder (a client's project saves into the client's folder). Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths. Exactly one source required: contentBase64 or path. Up to 5 MB the file is saved at once. Over 5 MB, path only, up to 200 MB: returns status started with a jobId; call drive_transfer_status until done. path must be inside this run's workspace or $PAPERCLIP_TMPDIR (not $TMPDIR). Dotfiles, keys and credential files are refused.",
     parametersSchema: schema(["projectId", "fileKind", "name", "mimeType"], {
       projectId: text("The Paperclip project id (determines the Drive folder).", 100),
       fileKind: text("File kind for classification (e.g. client, product, book, marketing, company, seo, social, campaigns, ads, ops; stored in the Drive file record).", 50),
       name: text("File name: YYYY-MM-DD <what> v<n>.<ext> or <ISSUE>-<step>-<ts>.<ext> (e.g. 2026-10-20 report v1.pdf or PAR-4059-login-1760000000.png).", 300),
       mimeType: text("MIME type (e.g. application/pdf, image/png).", 100),
       contentBase64: text("File content as base64 (mutually exclusive with path). Binary-safe."),
-      path: text("Absolute local file path (mutually exclusive with contentBase64). Must be inside an allowed root. Max 5 MB."),
+      path: text("Local file path (mutually exclusive with contentBase64), inside this run's workspace or $PAPERCLIP_TMPDIR (not $TMPDIR). Up to 200 MB; over 5 MB the save runs in the background (see drive_transfer_status). Dotfiles, keys and credential files are refused."),
       sha256: text("Optional: hex-encoded sha256 to verify the file content after decode/read.", 64),
       subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder of the project's Drive folder. A client's folder has Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client; a product's has Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally. A name the project's folder does not have is refused (invalid_subfolder lists the real ones); book, company and marketing folders have none, so the file goes into the folder itself. Omit to save into the folder itself."),
       requestId: text("Optional: request ID for correlation.", 100),
