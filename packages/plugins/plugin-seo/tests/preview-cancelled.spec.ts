@@ -20,13 +20,23 @@ import { DECISION_SQL } from "../ops/preview-server/decision.mjs";
 import { seoHost, SPRINT, taskRow, type Row, type Route } from "./helpers/seo-host.js";
 
 const requireFromDb = createRequire(new URL("../../../db/package.json", import.meta.url));
-const postgres = requireFromDb("postgres") as (url: string, o?: Record<string, unknown>) => any;
-// Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
-const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
-const { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as {
+type Postgres = (url: string, o?: Record<string, unknown>) => any;
+type EmbeddedDbHelper = {
   getEmbeddedPostgresTestSupport(): Promise<{ supported: boolean }>;
   startEmbeddedPostgresTestDatabase(prefix: string): Promise<{ connectionString: string; cleanup(): Promise<void> }>;
 };
+// The deploy host installs only this plugin's dependencies: when the db package or `postgres` is missing, these specs skip.
+let postgres: Postgres = (() => { throw new Error("postgres is not installed"); }) as never;
+let getEmbeddedPostgresTestSupport: EmbeddedDbHelper["getEmbeddedPostgresTestSupport"] = async () => ({ supported: false });
+let startEmbeddedPostgresTestDatabase: EmbeddedDbHelper["startEmbeddedPostgresTestDatabase"] = async () => { throw new Error("embedded postgres is not available"); };
+try {
+  postgres = requireFromDb("postgres") as Postgres;
+  // Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
+  const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
+  ({ getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as EmbeddedDbHelper);
+} catch {
+  // keep the skipping stubs
+}
 type EmbeddedPostgresTestDatabase = Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
