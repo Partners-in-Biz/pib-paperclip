@@ -82,14 +82,16 @@ export async function recordSignoff(
   hash: string,
   stage: Stage,
   outcome: "approved" | "changes",
-  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate",
+  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate" | "unscored",
   actor: OutcomeActor,
   note?: string | null,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await recordOutcome(ctx, { companyId, post, platforms: await platformsOf(ctx, companyId, post), stage, outcome, contentHash: hash, via, actor, note });
+    return true;
   } catch (error) {
     ctx.logger.info("Social review outcome not recorded", { postId: post.id, stage, error: error instanceof Error ? error.message : String(error) });
+    return false;
   }
 }
 
@@ -274,12 +276,18 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
     const accounts = await getAccountsByIds(ctx, companyId, destinations.map((d) => d.account_id));
     const platforms = accounts.map((a) => a.platform).filter((p): p is "linkedin" | "instagram" | "facebook" | "x" | "email" | "web" => ["linkedin", "instagram", "facebook", "x", "email", "web"].includes(p));
 
-    // No destinations: return pass with warning
+    // No destinations the rubric covers: the pass is recorded as unscored (a later account makes it stale) and the warning stays
     if (platforms.length === 0) {
+      const written = await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "unscored", { agentId: input.agentId }, notes);
+      if (!written) {
+        return { recorded: false, verdict: "pass", next: "The pass could not be recorded. Try again.", warnings: ["No destinations to check"] };
+      }
+      const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+      const progress = await afterSignoff(ctx, actor, post, withSignoff(before, "reviewer"), "A person");
       return {
         recorded: true,
         verdict: "pass",
-        next: "No destinations to check. Add accounts if needed.",
+        next: progress.completed ? "No destinations to check: the post is approved." : `No destinations to check. Handed on: ${stageList(progress.pending)} still has to approve. Add accounts if needed.`,
         warnings: ["No destinations to check"],
       };
     }
@@ -365,7 +373,10 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
     }
 
     // Record the pass and include score and warnings
-    await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "tool", { agentId: input.agentId }, notes);
+    const written = await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "tool", { agentId: input.agentId }, notes);
+    if (!written) {
+      return { recorded: false, verdict: "pass", score: minScore, next: "The pass could not be recorded. Try again." };
+    }
     const actor: ReviewActor = { companyId, userId: null, isAgent: true };
     const progress = await afterSignoff(ctx, actor, post, withSignoff(before, "reviewer"), "A person");
 
@@ -384,10 +395,9 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
   }
 
   // For "changes", don't run the rubric
-  await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "changes", "tool", { agentId: input.agentId }, notes);
-  const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+  const changesWritten = await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "changes", "tool", { agentId: input.agentId }, notes);
   await sendBackForChanges(ctx, companyId, post, "The Reviewer", notes ?? "", false);
-  return { recorded: true, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
+  return { recorded: changesWritten, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
 }
 
 /**

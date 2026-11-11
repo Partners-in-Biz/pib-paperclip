@@ -62,5 +62,6 @@ describe("media-compliance query", () => {
     expect(c.fakeDb.executes).toEqual([]);
     expect(c.fakeDb.queries.every((q) => q.params[0] === "co" && q.params[1] === 7)).toBe(true);
     expect(c.fakeDb.queries[1]!.sql).toContain("o.stage = 'reviewer'");
+    expect(c.fakeDb.queries[1]!.sql).toContain("o.via <> 'unscored'");
   });
 });
