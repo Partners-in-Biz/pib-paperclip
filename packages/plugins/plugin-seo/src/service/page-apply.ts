@@ -51,11 +51,11 @@ export async function taskPageSet(env: Env, companyId: string, task: db.SprintTa
  */
 export async function reviewerPass(env: Env, companyId: string, task: db.SprintTask, pages: string[], reviewCommentId: string | null): Promise<string> {
   const rows = await env.ctx.db.query(
-    `SELECT DISTINCT ON (page_url) id, page_url, review_status FROM ${t("previews")}
-      WHERE company_id = $1 AND task_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC, id DESC`,
+    `SELECT id, page_url, review_status FROM ${t("previews")}
+      WHERE company_id = $1 AND task_id = $2 AND status <> 'cancelled' ORDER BY created_at DESC, id DESC`,
     [companyId, task.id],
   );
-  // Newest per stored page_url; two stored spellings of one page (www, trailing slash) keep the newest of those too.
+  // Rows come newest first, so the first row per pageKey is the newest across every stored spelling (www, trailing slash).
   const newest = new Map<string, { id: string; status: string }>();
   for (const r of rows) {
     const key = normalisePageUrl(String(r.page_url ?? ""));
@@ -158,7 +158,10 @@ export async function authorisePageApply(env: Env, companyId: string, actor: Act
   const allowed = new Set(set.map(pageKey));
   const outside = pages.filter((p) => !allowed.has(pageKey(p)));
   if (outside.length > 0) throw new SeoError(`${outside.join(", ")} is not one of the task's pages: ${set.join(", ")}.`);
-  const unique = [...new Set(pages)];
+  // One row per page: dedupe on pageKey so www and bare spellings of one page count once (first spelling wins).
+  const byKey = new Map<string, string>();
+  for (const p of pages) if (!byKey.has(pageKey(p)!)) byKey.set(pageKey(p)!, p);
+  const unique = [...byKey.values()];
 
   const reviewRef = await reviewerPass(env, companyId, task, unique, reviewCommentId);
 

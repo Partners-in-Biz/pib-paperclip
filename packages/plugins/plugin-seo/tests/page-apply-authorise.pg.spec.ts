@@ -183,6 +183,11 @@ describePg("authorisePageApply", () => {
       const g = await grant(person, { pageUrls: ["https://www.acme.co.za/crop-production/"] });
       expect(g.input.pageUrls).toEqual(["https://www.acme.co.za/crop-production"]);
     });
+    it("writes one row for www and bare spellings of one page in one call (first spelling wins)", async () => {
+      const g = await grant(person, { pageUrls: [PAGE, "https://www.acme.co.za/crop-production"] });
+      expect(g.input.pageUrls).toEqual([PAGE]);
+      expect(await grants()).toHaveLength(1);
+    });
     it("refuses a URL outside the page set, naming the set", async () => {
       await expect(grant(person, { pageUrls: ["https://acme.co.za/other"] })).rejects.toThrow(`not one of the task's pages: ${PAGE}`);
     });
@@ -210,6 +215,16 @@ describePg("authorisePageApply", () => {
     it("refuses when the newest preview of the page needs changes", async () => {
       await preview("p-2", PAGE, "changes_needed", { ago: "1 minute" });
       await expect(grant(person)).rejects.toThrow(/No Reviewer PASS for/);
+    });
+    it.each([
+      ["old PASS on bare, newest changes_needed on www", "https://acme.co.za/crop-production", "https://www.acme.co.za/crop-production"],
+      ["old PASS on www, newest changes_needed on bare", "https://www.acme.co.za/crop-production", "https://acme.co.za/crop-production"],
+    ])("takes the newest preview across two stored spellings: %s", async (_n, passedUrl, failedUrl) => {
+      await sql.unsafe(`DELETE FROM ${S}.previews`);
+      await preview("p-old", passedUrl, "passed", { ago: "3 days" });
+      await preview("p-new", failedUrl, "changes_needed", { ago: "1 minute" });
+      await expect(grant(person)).rejects.toThrow(/No Reviewer PASS for/);
+      expect(await grants()).toHaveLength(0);
     });
     it("accepts a Reviewer comment with PASS on a child of the task issue", async () => {
       await sql.unsafe(`UPDATE ${S}.previews SET review_status = 'changes_needed'`);
