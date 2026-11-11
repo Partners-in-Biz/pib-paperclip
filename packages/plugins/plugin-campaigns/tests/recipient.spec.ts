@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { MEMBER_PREFIX, recipientKind, resolveRecipient } from "../src/recipient.js";
+import { MEMBER_PREFIX, recipientKind, recipientsByEmail, recipientsByPhone, resolveRecipient } from "../src/recipient.js";
 import { setMessagingProvider } from "../src/messaging.js";
 import { boot, campaign, CO, contact, enrollment, PAST, PUBLIC_URL, seed, step } from "./helpers/harness.js";
 import { MockProvider } from "./helpers/mock-provider.js";
@@ -57,6 +57,31 @@ describe("resolveRecipient", () => {
       expect(id.startsWith(MEMBER_PREFIX)).toBe(false);
       expect(recipientKind(id)).toBe("contact");
     }
+  });
+});
+
+describe("recipientsByEmail and recipientsByPhone (contacts only in Stage 4a)", () => {
+  it("finds contacts by email, ignoring case and spaces, never deleted or other-company rows", async () => {
+    const store = seed();
+    store.crm_contacts = [
+      contact("ada", "Ada Lovelace", ["Ada@Acme.test"]),
+      contact("gone", "Gone", ["ada@acme.test"], { deleted: true }),
+      contact("other", "Other Co", ["ada@acme.test"], { company_id: "co-2" }),
+    ];
+    const { harness } = await boot({ store });
+    expect(await recipientsByEmail(harness.ctx, CO, " ADA@acme.test ")).toEqual([{ id: "ada", kind: "contact", name: "Ada Lovelace" }]);
+    expect(await recipientsByEmail(harness.ctx, CO, "nobody@acme.test")).toEqual([]);
+  });
+
+  it("finds contacts by phone however the number was written, not a number that only shares the last nine digits", async () => {
+    const store = seed();
+    store.crm_contacts = [
+      contact("ada", "Ada Lovelace", [], { phones: ["082 123 4567"] }),
+      contact("abroad", "Abroad", [], { phones: ["+44 82 123 4567"] }),
+    ];
+    const { harness } = await boot({ store });
+    expect(await recipientsByPhone(harness.ctx, CO, "+27821234567", "+27")).toEqual([{ id: "ada", kind: "contact", name: "Ada Lovelace" }]);
+    expect(await recipientsByPhone(harness.ctx, CO, "+27839999999", "+27")).toEqual([]);
   });
 });
 

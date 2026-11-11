@@ -13,14 +13,15 @@
  *   after the reply, or the address on the do-not-email list.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { getCrmContact, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
+import { type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
 import { campaignEditedAt, contactSuppressed, enrollmentById, enrollmentState, getCampaign, replyLogged } from "./db.js";
 import { CAMPAIGN_ORIGINS, parsePairOrigin, parseStepOrigin } from "./origins.js";
+import { resolveRecipient } from "./recipient.js";
 
 const done: DoneCheckResult = { done: true };
 
 async function contactName(ctx: PluginContext, companyId: string, contactId: string): Promise<{ name: string; emails: string[] }> {
-  const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, contactId).catch(() => null);
+  const contact = await resolveRecipient(ctx, companyId, contactId).catch(() => null);
   return { name: contact?.name ?? `contact:${contactId}`, emails: contact?.emails ?? [] };
 }
 

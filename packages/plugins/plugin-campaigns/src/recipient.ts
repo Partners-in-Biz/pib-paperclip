@@ -10,10 +10,13 @@
  *
  * Stage 4a ships contacts only: a `member:` id resolves to nothing, so the send
  * paths treat it as they treat an unknown contact (email hands the step to a
- * person, SMS/WhatsApp skips it) and nothing goes out.
+ * person, SMS/WhatsApp skips it) and nothing goes out, and the reverse lookups
+ * (by email, by phone) find contacts only.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { getCrmContact } from "@partnersinbiz/pib-plugin-kit";
+import { normalizePhone } from "./channels.js";
+import { crmContactsByEmail, crmContactsByPhone } from "./db.js";
 
 export const MEMBER_PREFIX = "member:";
 
@@ -47,4 +50,25 @@ export async function resolveRecipient(ctx: PluginContext, companyId: string, re
     phones: contact.phones ?? [],
     account_ids: contact.account_ids ?? [],
   };
+}
+
+/** Who an address belongs to, as the stop, reply and erase paths need it. */
+export interface RecipientMatch {
+  id: string;
+  kind: RecipientKind;
+  name: string;
+}
+
+/** The people with this email address (case and spaces ignored), at most 10, oldest update first. */
+export async function recipientsByEmail(ctx: PluginContext, companyId: string, email: string): Promise<RecipientMatch[]> {
+  const rows = await crmContactsByEmail(ctx, companyId, email);
+  return rows.map((row) => ({ id: row.id, kind: "contact", name: row.name }));
+}
+
+/** The people with this phone number (already normalized), however their number was written. */
+export async function recipientsByPhone(ctx: PluginContext, companyId: string, phone: string, country: string): Promise<RecipientMatch[]> {
+  const rows = await crmContactsByPhone(ctx, companyId, phone.replace(/\D/g, "").slice(-9));
+  return rows
+    .filter((row) => (row.phones ?? []).some((raw) => normalizePhone(raw, country) === phone))
+    .map((row) => ({ id: row.id, kind: "contact", name: row.name }));
 }

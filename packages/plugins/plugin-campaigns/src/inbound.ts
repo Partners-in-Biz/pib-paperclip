@@ -18,10 +18,9 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { configSaved, createClaimGuard, decide, readConfig, getCrmContact, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
+import { configSaved, createClaimGuard, decide, readConfig, isModuleEnabled, OWN_SENDER, receiveOnce, shouldAct } from "@partnersinbiz/pib-plugin-kit";
 import {
   addChannelSuppression,
-  crmContactsByPhone,
   enrollmentById,
   getCampaign,
   insertStepEventOnce,
@@ -34,6 +33,7 @@ import {
   updateMessage,
 } from "./db.js";
 import { classifyKeyword, normalizePhone, type InboundIntent, type MessagingChannel } from "./channels.js";
+import { recipientsByPhone, resolveRecipient } from "./recipient.js";
 import { campaignReplyPlan, clientPrefix, isReplyKind, pushDate, REPLY_KIND_LABELS } from "./domain.js";
 import { jevConfigFor, REPLY_QUESTIONS, replyState } from "./jev.js";
 import { campaignAssignee, openIssueOnce } from "./mail.js";
@@ -66,12 +66,6 @@ async function senderKeyForNumber(ctx: PluginContext, companyId: string, channel
   return own && own === to ? OWN_SENDER : "";
 }
 
-/** The projected contacts that have this number (any way it was written). */
-async function contactsForPhone(ctx: PluginContext, companyId: string, phone: string, country: string): Promise<Array<{ id: string; name: string }>> {
-  const rows = await crmContactsByPhone(ctx, companyId, phone.replace(/\D/g, "").slice(-9));
-  return rows.filter((row) => (row.phones ?? []).some((raw) => normalizePhone(raw, country) === phone)).map((row) => ({ id: row.id, name: row.name }));
-}
-
 function pct(value: number | null): string {
   return `${Math.round((value ?? 0) * 100)}%`;
 }
@@ -79,7 +73,7 @@ function pct(value: number | null): string {
 async function processInbound(ctx: PluginContext, companyId: string, msg: InboundMessage, setup: MessagingSetup): Promise<InboundOutcome> {
   const intent = classifyKeyword(msg.body);
   const senderKey = await senderKeyForNumber(ctx, companyId, msg.channel, msg.to, setup);
-  const contacts = await contactsForPhone(ctx, companyId, msg.from, setup.config.defaultCountry);
+  const contacts = await recipientsByPhone(ctx, companyId, msg.from, setup.config.defaultCountry);
   const contactIds = contacts.map((contact) => contact.id);
   if (intent === "stop") {
     await optOutChannel(ctx, { companyId, channel: msg.channel, address: msg.from, senderKey, reason: "stop_keyword", source: PLUGIN_ID, contactIds, wording: "texted a stop word" });
@@ -120,7 +114,7 @@ async function processInbound(ctx: PluginContext, companyId: string, msg: Inboun
 
   let issueId: string | null = null;
   if (plan.issue) {
-    const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null);
+    const contact = await resolveRecipient(ctx, companyId, enrollment.contactId).catch(() => null);
     const name = contact?.name ?? "A contact";
     const followUp = plan.issue === "follow-up";
     const channelName = msg.channel === "sms" ? "SMS" : "WhatsApp";

@@ -30,12 +30,12 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import {
   addSuppression,
-  crmContactsByEmail,
   ownSuppressionsSince,
   stopEnrollmentsForSender,
 } from "./db.js";
 import { campaignSuppressionReason, kitSuppressionReason, SUPPRESSION_REASON_LABELS, type CampaignSuppressionReason } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { recipientsByEmail } from "./recipient.js";
 
 export const REANNOUNCE_HOURS = 72;
 const KIT_REASONS: SuppressionReason[] = ["unsubscribed", "bounced", "complained", "manual"];
@@ -106,7 +106,7 @@ export async function suppressAddress(
     senderKey: input.senderKey,
   });
   const contactIds = new Set<string>(input.contactId ? [input.contactId] : []);
-  for (const contact of await crmContactsByEmail(ctx, input.companyId, email)) contactIds.add(contact.id);
+  for (const person of await recipientsByEmail(ctx, input.companyId, email)) contactIds.add(person.id);
   let cancelledIssues = 0;
   for (const contactId of contactIds) {
     const stopped = await stopEnrollmentsForSender(ctx, input.companyId, contactId, input.scope === "all" ? "" : input.senderKey);
