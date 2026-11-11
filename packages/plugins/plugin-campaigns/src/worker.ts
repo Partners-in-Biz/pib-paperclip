@@ -16,6 +16,7 @@ import {
   campaignStats,
   claimLaunch,
   clearApproval,
+  setApprovalAudience,
   clientCampaignCounts,
   closedStepIssues,
   crmContactsByIds,
@@ -90,6 +91,7 @@ import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
+import { audienceFingerprint } from "./approval-audience.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
@@ -1127,6 +1129,8 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   campaign.approvalIssueId = approval.id;
   await saveCampaign(ctx, campaign);
   await setLaunchError(ctx, campaign.id, null);
+  // Who this approval is for: a launch compares against it, so someone added to the audience meanwhile is noticed.
+  await setApprovalAudience(ctx, campaign.id, audienceFingerprint(eligible.map((contact) => contact.id)));
   return {
     campaignId: campaign.id,
     approvalIssueId: approval.id,

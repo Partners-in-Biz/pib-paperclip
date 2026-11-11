@@ -34,10 +34,15 @@ export interface CampaignRow {
   approved_by_user_id?: string | null;
   launched_at?: unknown;
   launch_error?: string | null;
+  client_yes_ref?: string | null;
+  client_yes_by?: string | null;
+  client_yes_at?: unknown;
+  approval_audience_count?: number | string | null;
+  approval_audience_hash?: string | null;
 }
 
 const CAMPAIGN_COLUMNS =
-  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, approved_by_user_id, launched_at, launch_error";
+  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, approved_by_user_id, launched_at, launch_error, client_yes_ref, client_yes_by, client_yes_at, approval_audience_count, approval_audience_hash";
 
 export interface StepRow {
   id: string;
@@ -124,6 +129,11 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     approvedByUserId: row.approved_by_user_id ?? null,
     launchedAt: asIso(row.launched_at),
     launchError: row.launch_error ?? null,
+    clientYesRef: row.client_yes_ref ?? null,
+    clientYesBy: row.client_yes_by ?? null,
+    clientYesAt: asIso(row.client_yes_at),
+    approvalAudienceCount: row.approval_audience_count == null ? null : Number(row.approval_audience_count),
+    approvalAudienceHash: row.approval_audience_hash ?? null,
   };
 }
 
@@ -258,11 +268,34 @@ export async function setLaunchError(ctx: PluginContext, campaignId: string, err
   );
 }
 
-/** Forgets the approval issue so the draft can be sent for approval again. */
+/**
+ * Forgets the approval issue so the draft can be sent for approval again. The
+ * client's yes goes with it: it was for the copy that approval showed.
+ */
 export async function clearApproval(ctx: PluginContext, campaignId: string): Promise<void> {
   await ctx.db.execute(
-    `UPDATE ${table(ctx, "campaigns")} SET approval_issue_id = NULL, launch_error = NULL, updated_at = now() WHERE id = $1`,
+    `UPDATE ${table(ctx, "campaigns")}
+        SET approval_issue_id = NULL, launch_error = NULL, client_yes_ref = NULL, client_yes_by = NULL, client_yes_at = NULL, updated_at = now()
+      WHERE id = $1`,
     [campaignId],
+  );
+}
+
+/** Who a launch would have enrolled when approval was requested (see `approval-audience.ts`). */
+export async function setApprovalAudience(ctx: PluginContext, campaignId: string, audience: { count: number; hash: string }): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")} SET approval_audience_count = $2, approval_audience_hash = $3, updated_at = now() WHERE id = $1`,
+    [campaignId, audience.count, audience.hash],
+  );
+}
+
+/** Records where the client said yes to this copy and who recorded it; null `ref` clears it. */
+export async function setClientYes(ctx: PluginContext, campaignId: string, yes: { ref: string; by: string } | null): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")}
+        SET client_yes_ref = $2, client_yes_by = $3, client_yes_at = ${yes ? "now()" : "NULL"}, updated_at = now()
+      WHERE id = $1`,
+    [campaignId, yes?.ref.slice(0, 500) ?? null, yes?.by ?? null],
   );
 }
 
