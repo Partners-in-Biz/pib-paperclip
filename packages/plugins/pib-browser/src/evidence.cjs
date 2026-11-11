@@ -35,7 +35,10 @@ function uploadScriptCandidates(env, fsLib) {
     }
   };
   walk(skillsRoot, 0);
-  found.sort((a, b) => b.mtime - a.mtime);
+  // Prefer this company's skills subtree, then the newest copy overall.
+  const co = env.PAPERCLIP_COMPANY_ID;
+  const mine = (f) => (co && f.cand.split(path.sep).includes(co) ? 1 : 0);
+  found.sort((a, b) => mine(b) - mine(a) || b.mtime - a.mtime);
   for (const f of found) out.push(f.cand);
   return out;
 }
@@ -167,13 +170,13 @@ async function run(argv, env, deps = {}) {
     return 1;
   }
 
-  // Return the attachment ID and SHA256
   // Link to the stored artifact (the Paperclip-hosted copy; Drive saving is separate).
   const contentPath = output.attachment?.contentPath || output.workProduct?.url || '';
   let url = contentPath;
   if (contentPath && !/^https?:\/\//.test(contentPath) && env.PAPERCLIP_API_URL) {
     try { url = new URL(contentPath, env.PAPERCLIP_API_URL).toString(); } catch (e) { url = contentPath; }
   }
+  // Return the attachment ID and SHA256 (plus the link when known).
   const evidence = { attachmentId, sha256 };
   if (url) evidence.url = url;
   stdout.write(JSON.stringify(evidence) + '\n');

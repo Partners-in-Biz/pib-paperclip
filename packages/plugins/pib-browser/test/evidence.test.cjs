@@ -431,3 +431,40 @@ test('evidence with no env finds the upload script without a bare upload failed'
   assert.ok(used && used.endsWith('paperclip-upload-artifact.sh'));
   fs.rmSync(tmpDir, { recursive: true });
 });
+
+test('evidence walks the instance skills store (not the checkout), prefers own company, then newest', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  fs.writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const mk = (company, name, mtimeSec) => {
+    const d = path.join(tmpDir, 'home', 'instances', 'default', 'skills', company, name, 'scripts');
+    fs.mkdirSync(d, { recursive: true });
+    const f = path.join(d, 'paperclip-upload-artifact.sh');
+    fs.writeFileSync(f, '#!/bin/sh\n', { mode: 0o755 });
+    fs.utimesSync(f, mtimeSec, mtimeSec);
+    return f;
+  };
+  const otherNewest = mk('other-co', 'paperclip', 3000);
+  const mineOld = mk('my-co', 'paperclip-a', 1000);
+  const mineNew = mk('my-co', 'paperclip-b', 2000);
+  // Hide every non-store path so the result cannot come from the checkout.
+  const storeOnlyFs = Object.create(fs);
+  storeOnlyFs.existsSync = (p) => p.startsWith(tmpDir) && fs.existsSync(p);
+  const call = async (env) => {
+    let used = null;
+    const stderr = new MockOutput();
+    const code = await run([pngPath, '--issue', 'PAR-123', '--step', 's'], env, {
+      fs: storeOnlyFs,
+      spawnSync: (p) => { used = p; return { status: 0, signal: null, stderr: '', stdout: JSON.stringify({ attachment: { id: 'a' } }) }; },
+      stdout: new MockOutput(),
+      stderr
+    });
+    assert.equal(code, 0, stderr.toString());
+    return used;
+  };
+  const home = path.join(tmpDir, 'home');
+  assert.equal(await call({ PAPERCLIP_HOME: home }), otherNewest);
+  assert.equal(await call({ PAPERCLIP_HOME: home, PAPERCLIP_COMPANY_ID: 'my-co' }), mineNew);
+  assert.notEqual(mineNew, mineOld);
+  fs.rmSync(tmpDir, { recursive: true });
+});
