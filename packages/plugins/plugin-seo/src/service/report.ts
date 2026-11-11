@@ -55,6 +55,7 @@ export async function siteProgress(env: Env, sprint: db.Sprint, today: string): 
       prepared: live.filter((p) => String(p.review_status) === "passed").length,
       asked: live.filter((p) => String(p.review_status) === "passed" && String(p.status) === "pending" && p.draft_key).length,
       approved: live.filter((p) => String(p.status) === "approved").length,
+      declined: live.filter((p) => String(p.status) === "declined").length,
       held: dropped.size,
     },
     next: byWeek(NEXT_WEEKS, (x) => x.status !== "skipped" && x.status !== "na"),

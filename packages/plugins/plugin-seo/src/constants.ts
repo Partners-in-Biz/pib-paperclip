@@ -82,5 +82,5 @@ export function isOurOrigin(originKind: unknown): boolean {
 
 /** How long a client's "approved" answer stays usable after they gave it, whatever the link's own expiry (PAR-9006). */
 export const APPROVAL_VALID_DAYS = 30;
-/** SQL: the preview row counts as live: pending ones until expires_at, approved ones until APPROVAL_VALID_DAYS after the answer. */
-export const PREVIEW_LIVE_SQL = `(CASE WHEN status = 'approved' THEN decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ELSE expires_at > now() END)`;
+/** SQL: the preview row counts as live: pending ones until expires_at, approved and declined ones until APPROVAL_VALID_DAYS after the answer (a decision must not vanish before its hand-over, PAR-9131). */
+export const PREVIEW_LIVE_SQL = `(CASE WHEN status IN ('approved', 'declined') THEN decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ELSE expires_at > now() END)`;

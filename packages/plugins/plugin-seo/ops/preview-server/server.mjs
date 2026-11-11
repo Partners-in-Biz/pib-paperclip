@@ -5,6 +5,7 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
+import { DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, refusedAnswer, SCHEMA } from "./decision.mjs";
 import { startEgressProxy } from "./egress.mjs";
 import { createRenderService, keptTextFigure, RENDER_PORT } from "./render.mjs";
 import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
@@ -12,7 +13,6 @@ import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArg
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
 const { Pool } = require("pg");
 
-const SCHEMA = "plugin_seo_8099f8879a";
 const PORT = Number(process.env.PORT ?? 3031);
 // CHROME_PATH pins one binary; otherwise the newest Playwright Chromium is looked up on each run (findChrome in sweep.mjs).
 const CHROME_PATH = process.env.CHROME_PATH;
@@ -262,6 +262,7 @@ const server = http.createServer(async (req, res) => {
       const { rows } = await pool.query(`SELECT html, status, review_status, review_key, decided_at, expires_at < now() AS expired, (status = 'approved' AND decided_at > now() - interval '30 days') AS approved_live FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
       if (rows[0].status === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
+      if (rows[0].status === "declined") return send(res, 410, page(DECLINED_PAGE));
       // An approved answer stays valid 30 days after it was given (APPROVAL_VALID_DAYS), whatever the link's expiry; no form, POST stays refused.
       if (rows[0].expired && rows[0].approved_live) return send(res, 200, page(`You approved this on ${new Date(rows[0].decided_at).toISOString().slice(0, 10)}. We are applying it.`));
       if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
@@ -302,11 +303,11 @@ const server = http.createServer(async (req, res) => {
       const decision = form.get("decision");
       if (decision !== "approved" && decision !== "changes_requested") return send(res, 400, page("Please choose Approve or Request changes."));
       const note = (form.get("note") ?? "").trim().slice(0, 1000) || null;
-      const { rowCount } = await pool.query(
-        `UPDATE ${SCHEMA}.previews SET status = $2, decision_note = $3, decided_at = now(), notified_at = NULL WHERE id = $1 AND expires_at > now() AND review_status = 'passed' AND status <> 'cancelled'`,
-        [token, decision, note],
-      );
-      if (!rowCount) return send(res, 409, page("This preview is not ready for an answer yet, or has expired."));
+      const { rowCount } = await pool.query(DECISION_SQL, [token, decision, note]);
+      if (!rowCount) {
+        const { rows } = await pool.query(DECISION_STATE_SQL, [token]);
+        return send(res, 409, page(refusedAnswer(rows[0]?.status)));
+      }
       return send(res, 200, page(decision === "approved" ? "Thank you. We have your approval and will make the change." : "Thank you. We have your comments and will send an updated version."));
     }
     return send(res, 405, page("Not allowed."));

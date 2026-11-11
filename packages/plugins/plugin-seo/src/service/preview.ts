@@ -250,7 +250,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
   };
   filter("id", previewId);
   filter("task_id", str(params, "taskId", { max: 80 }));
-  filter("status", oneOf(params, "status", ["pending", "approved", "changes_requested", "cancelled"] as const));
+  filter("status", oneOf(params, "status", ["pending", "approved", "changes_requested", "declined", "cancelled"] as const));
   filter("review_status", oneOf(params, "reviewStatus", ["pending", "passed", "changes_needed"] as const));
   const limit = previewId ? 1 : num(params, "limit", { integer: true, min: 1, max: 100 }) ?? PREVIEW_LIST_DEFAULT;
   const compact = previewId ? false : bool(params, "compact") ?? true;
@@ -323,7 +323,8 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
 export async function deliverPreviewAnswers(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT id, company_id, sprint_id, task_id, issue_id, page_url, title, status, decision_note, draft_key FROM ${t("previews")}
-      WHERE decided_at IS NOT NULL AND notified_at IS NULL AND status <> 'cancelled' ORDER BY decided_at LIMIT 25`,
+      WHERE decided_at IS NOT NULL AND notified_at IS NULL AND status IN ('approved', 'changes_requested')
+        AND (decision_source = 'email' OR decision_source IS NULL) ORDER BY decided_at LIMIT 25`,
   );
   let sent = 0;
   for (const row of rows) {
@@ -369,7 +370,13 @@ export async function deliverPreviewAnswers(env: Env): Promise<number> {
         if (!ok) continue;
         if (!approved) await wakeIssue(env.ctx, issueId, companyId, "The client asked for changes to a preview");
       }
-      await env.ctx.db.execute(`UPDATE ${t("previews")} SET notified_at = now() WHERE id = $1`, [id]);
+      // Asked for changes: the task went back to its agent here, so the hand-over sweep (T1b) must never repeat it.
+      await env.ctx.db.execute(
+        approved
+          ? `UPDATE ${t("previews")} SET notified_at = now() WHERE id = $1`
+          : `UPDATE ${t("previews")} SET notified_at = now(), handed_at = COALESCE(handed_at, now()), handover_done_at = COALESCE(handover_done_at, now()) WHERE id = $1`,
+        [id],
+      );
       sent += 1;
     } catch (error) {
       env.ctx.logger.info("SEO preview answer not delivered", { previewId: id, error: errorMessage(error) });

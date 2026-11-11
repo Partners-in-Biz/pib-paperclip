@@ -2,10 +2,15 @@
 
 Public page for client sign-off links (`https://preview.partnersinbiz.online/p/<token>`; Caddy also still answers `preview.65.108.146.144.sslip.io`). Built by the SEO plugin's `create-preview` tool.
 
-- Code: `server.mjs`, `sweep.mjs` (the cleanup, Chromium and address-check helpers, `tests/preview-sweep.spec.ts`), `egress.mjs` (the egress proxy, `tests/preview-egress.spec.ts`) and `render.mjs` (`/render` and the review page's figure, `tests/preview-render.spec.ts`), unit `pib-preview.service`, installed at `/home/paperclip/pib-preview/` on the VPS, port 3031 behind Caddy.
+- Code: `server.mjs`, `sweep.mjs` (the cleanup, Chromium and address-check helpers, `tests/preview-sweep.spec.ts`), `egress.mjs` (the egress proxy, `tests/preview-egress.spec.ts`) `render.mjs` (`/render` and the review page's figure, `tests/preview-render.spec.ts`) and `decision.mjs` (the client's answer SQL, `tests/preview-declined.spec.ts`), unit `pib-preview.service`, installed at `/home/paperclip/pib-preview/` on the VPS, port 3031 behind Caddy.
 - Database role `pib_preview` (SELECT on `previews`, UPDATE of the answer columns only). Its URL is in `/root/pib-ops/preview.env`.
 - Caddy block for `preview.partnersinbiz.online` reverse-proxies to 127.0.0.1:3031.
 - A client's answer is posted on the task issue by the plugin job `seo-previews` (every 5 minutes).
+- One answer per link (plugin-seo 0.37.0, PAR-9131): only a `pending` preview takes an answer, and it is stored with `decision_source = 'email'` and `decided_by = 'client:email-link'`. A second answer gets 409 "This preview has already been answered. To change it, reply to the email." A declined preview's link shows "This proposal is not going ahead."
+
+### Before the 0.37.0 server goes live
+
+In this order: plugin-seo 0.37.0 (migration 026) is installed and `previews.decision_source` exists; then, as the database owner, `GRANT UPDATE (decision_source, decided_by) ON plugin_seo_8099f8879a.previews TO pib_preview;` (without it every client answer fails with a 500); then copy the files and restart as below. Rollback: copy the previous `server.mjs` back and restart (it does not use `decision.mjs`; the grant can stay).
 - Links expire after 30 days.
 
 ## Screenshots and Chromium: what is kept, what is deleted
@@ -28,4 +33,4 @@ The review page (`/p/<token>/review?key=...`) shows side-by-side screenshots of 
 
 ## Deploy
 
-This service is deployed separately from the plugin (`dist` and the plugin upgrade do not touch it). Copy `server.mjs`, `sweep.mjs`, `egress.mjs` and `render.mjs` (all four) to `/home/paperclip/pib-preview/` (owner `paperclip`), then `systemctl restart pib-preview`. The restart only drops open requests (a link opens again straight away) and also clears the old private `/tmp`. Check: `systemctl is-active pib-preview`, `curl -s http://127.0.0.1:3031/health` answers `ok`, `ss -ltnp | grep -E ':3033|node'` shows 3033 and the proxy port on 127.0.0.1 only, `curl -s 127.0.0.1:3033/render -H 'content-type: application/json' -d '{"url":"https://huntandgun.co.za/about-us/"}' | jq -r .html | grep -c et_pb_menu` is above 0 and the same with `http://127.0.0.1:3031/health` answers 400, open one review page and its four images, then `journalctl -u pib-preview -n 20` should show no errors and `ls /tmp/systemd-private-*-pib-preview.service-*/tmp/` only `pib-preview-shots` (no `org.chromium.*`, and `pib-preview-profiles` empty).
+This service is deployed separately from the plugin (`dist` and the plugin upgrade do not touch it). Copy `server.mjs`, `sweep.mjs`, `egress.mjs`, `render.mjs` and `decision.mjs` (all five) to `/home/paperclip/pib-preview/` (owner `paperclip`), then `systemctl restart pib-preview`. The restart only drops open requests (a link opens again straight away) and also clears the old private `/tmp`. Check: `systemctl is-active pib-preview`, `curl -s http://127.0.0.1:3031/health` answers `ok`, `ss -ltnp | grep -E ':3033|node'` shows 3033 and the proxy port on 127.0.0.1 only, `curl -s 127.0.0.1:3033/render -H 'content-type: application/json' -d '{"url":"https://huntandgun.co.za/about-us/"}' | jq -r .html | grep -c et_pb_menu` is above 0 and the same with `http://127.0.0.1:3031/health` answers 400, open one review page and its four images, then `journalctl -u pib-preview -n 20` should show no errors and `ls /tmp/systemd-private-*-pib-preview.service-*/tmp/` only `pib-preview-shots` (no `org.chromium.*`, and `pib-preview-profiles` empty).

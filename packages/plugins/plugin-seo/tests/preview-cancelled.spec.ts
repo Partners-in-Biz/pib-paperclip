@@ -16,6 +16,7 @@ import { needsYouAddTool } from "../src/service/needs-you.js";
 import { siteProgress } from "../src/service/report.js";
 import { onBuildIssueUpdated } from "../src/service/build.js";
 import { SeoError } from "../src/service/common.js";
+import { DECISION_SQL } from "../ops/preview-server/decision.mjs";
 import { seoHost, SPRINT, taskRow, type Row, type Route } from "./helpers/seo-host.js";
 
 const requireFromDb = createRequire(new URL("../../../db/package.json", import.meta.url));
@@ -172,7 +173,7 @@ describePg("cancelled previews", () => {
       expect(await read("s10")).toMatchObject({ expired: true, approved_live: true });
       expect(await read("s31")).toMatchObject({ expired: true, approved_live: false });
       expect(await read("sp")).toMatchObject({ expired: true, approved_live: false });
-      const post = server.match(/UPDATE \$\{SCHEMA\}\.previews SET status = \$2[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
+      const post = DECISION_SQL;
       expect((await sql.unsafe(post, ["s10", "changes_requested", null])).count).toBe(0);
     });
   });
@@ -305,7 +306,7 @@ describePg("cancelled previews", () => {
     expect(cancelledAt).toBeGreaterThan(0);
     expect(cancelledAt).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
     expect(server).toContain("This preview was replaced by a newer version. We will send you the current link.");
-    const post = server.match(/UPDATE \$\{SCHEMA\}\.previews SET status = \$2[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
+    const post = DECISION_SQL;
     const r = await sql.unsafe(post, ["srv", "approved", null]);
     expect(r.count).toBe(0);
     const get = server.match(/SELECT html, status, review_status[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA).replace("$1", "'srv'");

@@ -1880,16 +1880,17 @@ export interface TaskPreviewRow {
   status: string;
   reviewStatus: string;
   reviewNote: string | null;
+  decisionSource: string | null;
 }
 
 /** A task's previews, newest first (a continuation issue lists them). */
 export async function previewsForTask(db: SeoDb, companyId: string, taskId: string, limit = 30): Promise<TaskPreviewRow[]> {
   const rows = await db.query(
-    `SELECT id, page_url, title, status, review_status, review_note FROM ${t("previews")}
+    `SELECT id, page_url, title, status, review_status, review_note, decision_source FROM ${t("previews")}
       WHERE company_id = $1 AND task_id = $2 ORDER BY created_at DESC LIMIT $3::int`,
     [companyId, taskId, Math.max(1, Math.min(100, limit))],
   );
-  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), status: String(r.status), reviewStatus: String(r.review_status ?? "pending"), reviewNote: s(r.review_note) }));
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), status: String(r.status), reviewStatus: String(r.review_status ?? "pending"), reviewNote: s(r.review_note), decisionSource: s(r.decision_source) }));
 }
 
 /** Every open task (not started, in progress, blocked) of the company's sprints, in plan order. */
