@@ -1,6 +1,7 @@
 /** The page-scoped grant's allow list (PAR-9131 Q14), checked on the pure rule so every bypass is named. */
 import { describe, expect, it } from "vitest";
-import { PAGE_GRANT_ENDPOINTS, pageGrantRefusal } from "../src/site-signoff.js";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { PAGE_GRANT_ENDPOINTS, pageGrantRefusal, signoffBlock } from "../src/site-signoff.js";
 
 const SITE = { id: "s1", url: "https://example.com" };
 const PAGES = new Set(["https://example.com/about", "https://example.com/"]);
@@ -60,5 +61,23 @@ describe("page grant allow list", () => {
     expect(refuse("undo", { changeId: "c1" }, { endpoint: "seo/set", target: "post:12" })).toMatch(/not on an approved page/);
     expect(refuse("undo", { changeId: "c1" }, { endpoint: "redirects/set", target: "https://example.com/about" })).toMatch(/redirects\/set change/);
     expect(refuse("undo", { changeId: "c1" }, null)).toMatch(/not an applied change on this site/);
+  });
+});
+
+describe("pr_only refusal texts name the three ways a window opens", () => {
+  const ways = [/approve-page-apply/, /create-preview/, /approve-site-writes/];
+  const ctxWith = (row: Record<string, unknown>) =>
+    ({ db: { namespace: "plugin_crm_832258244c", query: async () => [row] } }) as unknown as PluginContext;
+
+  it("page-scoped refusal", async () => {
+    const text = await signoffBlock(ctxWith({ required: true, approved: false, pages_open: true, pages: ["https://example.com/about"] }), SITE, "seo/set", { url: "/contact" });
+    for (const w of ways) expect(text).toMatch(w);
+    expect(text).toMatch(/Do not retry it in another form/);
+  });
+
+  it("no window", async () => {
+    const text = await signoffBlock(ctxWith({ required: true, approved: false, pages_open: false, pages: [] }), SITE, "seo/set", {});
+    for (const w of ways) expect(text).toMatch(w);
+    expect(text).toMatch(/Do not write to it/);
   });
 });
