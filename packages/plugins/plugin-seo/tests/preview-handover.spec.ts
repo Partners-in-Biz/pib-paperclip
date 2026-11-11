@@ -60,7 +60,10 @@ describePg("the hand-over of decided previews", () => {
     await pg?.cleanup();
   });
 
-  const reset = () => sql.unsafe(`DELETE FROM ${SCHEMA}.previews`);
+  const reset = async () => {
+    await sql.unsafe(`DELETE FROM ${SCHEMA}.previews`);
+    await sql.unsafe(`DELETE FROM ${SCHEMA}.apply_windows`);
+  };
   const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
   async function put(id: string, extra: Record<string, unknown> = {}) {
     const row = { company_id: "co-1", sprint_id: "sp-1", task_id: "t-1", issue_id: "iss-1", page_url: `https://acme.co.za/${id}/`, title: `Page ${id}`, html: "<html></html>", review_status: "passed", status: "pending", created_at: ago(3 * HOURS), expires_at: new Date(Date.now() + 24 * HOURS).toISOString(), ...extra };
@@ -96,7 +99,7 @@ describePg("the hand-over of decided previews", () => {
     });
     const fakeQuery = h.ctx.db.query.bind(h.ctx.db);
     const fakeExecute = h.ctx.db.execute.bind(h.ctx.db);
-    const real = (text: string) => new RegExp(`(FROM|UPDATE) ${SCHEMA}\\.previews`).test(text);
+    const real = (text: string) => new RegExp(`(FROM|UPDATE|INTO) ${SCHEMA}\\.(previews|apply_windows)`).test(text);
     // As the host does: a JSON text bound to ::jsonb is the JSON itself, and rows come back as JSON (dates as ISO strings).
     const bind = (params: unknown[]) => params.map((x) => (typeof x === "string" && x.startsWith("[") ? JSON.parse(x) : x)) as never;
     const plain = (rows: unknown) => JSON.parse(JSON.stringify(rows)) as Row[];
@@ -394,8 +397,46 @@ describePg("the hand-over of decided previews", () => {
       const h = host(AUTO);
       expect(await syncApplyWindows(h.env)).toBe(1);
       expect(last(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: [], until: null, by: "seo:window-job" });
+      // Within the hour after the close the job still re-sends it; after that it leaves the site alone.
+      expect(await syncApplyWindows(h.env)).toBe(1);
       await sql.unsafe(`UPDATE ${SCHEMA}.previews SET apply_until = now() - interval '2 hours'`);
+      await sql.unsafe(`UPDATE ${SCHEMA}.apply_windows SET closed_at = now() - interval '2 hours'`);
       expect(await syncApplyWindows(h.env)).toBe(0);
+    });
+
+    it("the backstop closes a window whose last page was undone, even when the undo-path sync never ran", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1", "todo");
+      await put("a", handed());
+      const h = host(AUTO);
+      expect((await syncApplyWindow(h.env, await sprintOf(h), "test"))!.pages).toEqual(["https://acme.co.za/a"]);
+      // The undo (Q11) with no window sync after it: the row no longer names the site.
+      await sql.unsafe(`UPDATE ${SCHEMA}.previews SET status = 'pending', decided_at = NULL, decided_by = NULL, decision_source = NULL, handed_at = NULL, apply_until = NULL, handover_done_at = NULL WHERE id = 'a'`);
+      expect(await syncApplyWindows(h.env)).toBe(1);
+      expect(last(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: [], until: null, by: "seo:window-job" });
+      const [rec] = await sql.unsafe<{ is_open: boolean; closed_at: Date | null }>(`SELECT is_open, closed_at FROM ${SCHEMA}.apply_windows`);
+      expect(rec).toMatchObject({ is_open: false });
+      expect(rec!.closed_at).not.toBeNull();
+    });
+
+    it("a failed emit is not recorded, so the job retries it; an older seq never overwrites a newer record", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1", "todo");
+      await put("a", handed());
+      const h = host(AUTO);
+      const sent = (await syncApplyWindow(h.env, await sprintOf(h), "test"))!;
+      await sql.unsafe(`UPDATE ${SCHEMA}.previews SET status = 'pending', handed_at = NULL, apply_until = NULL WHERE id = 'a'`);
+      const emit = h.env.ctx.events.emit;
+      h.env.ctx.events.emit = (async () => { throw new Error("bus down"); }) as never;
+      await expect(syncApplyWindow(h.env, await sprintOf(h), "test")).rejects.toThrow("bus down");
+      h.env.ctx.events.emit = emit;
+      expect((await sql.unsafe<{ is_open: boolean }>(`SELECT is_open FROM ${SCHEMA}.apply_windows`))[0]!.is_open).toBe(true);
+      // A record with a newer seq than this read stays as it is.
+      await sql.unsafe(`UPDATE ${SCHEMA}.apply_windows SET seq = $1::bigint`, [String(BigInt(sent.seq) * 10n)]);
+      await syncApplyWindow(h.env, await sprintOf(h), "test");
+      expect((await sql.unsafe<{ is_open: boolean }>(`SELECT is_open FROM ${SCHEMA}.apply_windows`))[0]!.is_open).toBe(true);
     });
 
     it("site.changed marks the preview applied once; a replay keeps the first time and another site is ignored", async () => {

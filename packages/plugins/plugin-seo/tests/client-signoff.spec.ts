@@ -25,7 +25,7 @@ const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, pag
 /** The rows a hand-over claimed, as finishHandover reads them back (the fake execute claims every eligible row). */
 const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
 /** The page window as syncSiteWindow reads it (the real host always returns one row, with the seq). */
-const windowRows = (rows: Row[]): Route => [/AS seq\s+FROM \(SELECT 1 AS one\)/, () => rows];
+const windowRows = (rows: Row[]): Route => [/statement_timestamp\(\)\) \* 1000000\)::bigint::text AS seq\) o LEFT JOIN/, () => rows];
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {

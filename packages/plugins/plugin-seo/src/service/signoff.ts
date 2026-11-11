@@ -46,15 +46,17 @@ export async function liftWriteLock(env: Env, sprint: Pick<db.Sprint, "companyId
 /**
  * The page-scoped apply window of one site (PAR-9131 T3, Q13). The window's pages are the approved previews that were handed to the
  * agent, whose `apply_until` has not passed and whose task issue is not done or cancelled, across every sprint of the company on
- * this site. It is sent to the CRM as a whole (`scope: "pages"`, replace semantics), with `seq` from `clock_timestamp()` in
- * microseconds read in the same statement as the set, so the CRM keeps the newest read and drops a late event. An empty set is
- * the close. The board's whole-site grant (approveSiteWrites) is separate and untouched. Returns the pages sent.
+ * this site. It is sent to the CRM as a whole (`scope: "pages"`, replace semantics), with `seq` from `statement_timestamp()` in
+ * microseconds, read once in the statement that reads the set, so the CRM keeps the newest read and drops a late event. The
+ * statement time is at or before the snapshot, so a sync that starts after a commit (an undo) has a later seq and sees the
+ * commit (amended Q13). An empty set is the close. What was sent is recorded in `apply_windows` for the 5-minute job. The
+ * board's whole-site grant (approveSiteWrites) is separate and untouched. Returns the pages sent.
  */
 export async function syncSiteWindow(env: Env, companyId: string, siteId: string, by: string): Promise<{ pages: string[]; until: string | null; seq: string }> {
   // One row even when the set is empty (the LEFT JOIN on a one-row select), so the close carries a seq too.
   const rows = await env.ctx.db.query(
-    `SELECT w.page_url, w.apply_until, floor(extract(epoch FROM clock_timestamp()) * 1000000)::bigint::text AS seq
-       FROM (SELECT 1 AS one) o LEFT JOIN (
+    `SELECT w.page_url, w.apply_until, o.seq
+       FROM (SELECT floor(extract(epoch FROM statement_timestamp()) * 1000000)::bigint::text AS seq) o LEFT JOIN (
          SELECT p.page_url, p.apply_until FROM ${t("previews")} p
            JOIN ${t("sprints")} s ON s.company_id = p.company_id AND s.id = p.sprint_id
            JOIN ${t("sprint_tasks")} k ON k.company_id = p.company_id AND k.id = p.task_id
@@ -66,9 +68,19 @@ export async function syncSiteWindow(env: Env, companyId: string, siteId: string
   const open = rows.filter((r) => r.page_url != null);
   const pages = [...new Set(open.map((r) => normalisePageUrl(String(r.page_url))).filter((u): u is string => u !== null))].sort();
   const until = pages.length > 0 ? open.map((r) => (r.apply_until instanceof Date ? r.apply_until : new Date(String(r.apply_until))).toISOString()).sort().at(-1)! : null;
-  const seq = rows.map((r) => String(r.seq ?? "")).filter((s) => /^[1-9][0-9]*$/.test(s)).sort((a, b) => (a.length - b.length) || a.localeCompare(b)).at(-1);
-  if (!seq) throw new Error("the apply window read returned no seq");
+  const seq = String(rows[0]?.seq ?? "");
+  if (!/^[1-9][0-9]*$/.test(seq)) throw new Error("the apply window read returned no seq");
   await env.ctx.events.emit(APPROVAL_EVENT, companyId, { siteId, scope: "pages", pages, until, seq, by });
+  // Recorded only after the emit went out, so a failed emit leaves the last state (open) and the job retries it. The seq guard
+  // keeps a slower, older sync from overwriting a newer record. closed_at is set on the open-to-closed step only.
+  await env.ctx.db.execute(
+    `INSERT INTO ${t("apply_windows")} AS a (company_id, site_id, is_open, until, seq, sent_at, closed_at)
+     VALUES ($1, $2, $3::boolean, $4::timestamptz, $5::bigint, now(), CASE WHEN $3::boolean THEN NULL ELSE now() END)
+     ON CONFLICT (company_id, site_id) DO UPDATE SET is_open = EXCLUDED.is_open, until = EXCLUDED.until, seq = EXCLUDED.seq, sent_at = EXCLUDED.sent_at,
+       closed_at = CASE WHEN EXCLUDED.is_open THEN NULL WHEN a.is_open THEN EXCLUDED.sent_at ELSE COALESCE(a.closed_at, EXCLUDED.sent_at) END
+     WHERE a.seq < EXCLUDED.seq`,
+    [companyId, siteId, pages.length > 0, until, seq],
+  );
   return { pages, until, seq };
 }
 
@@ -79,12 +91,16 @@ export async function syncApplyWindow(env: Env, sprint: Pick<db.Sprint, "company
 }
 
 /**
- * The 5-minute backstop: re-sends the window of every site with an approved, handed-over preview whose window is open or ended
- * under an hour ago. So a task closed without an `issue.updated` reaching us, or an `apply_until` that passed, still closes it.
+ * The 5-minute backstop. It re-sends the window of every site whose last sent window was open or closed under an hour ago (from
+ * `apply_windows`, so an undone last page, a lost undo-path sync or a restart still gets its close), and of every site with an
+ * approved, handed-over preview whose window is open or ended under an hour ago (a hand-over whose emit never went out). So a
+ * task closed without an `issue.updated` reaching us, or an `apply_until` that passed, still closes it.
  */
 export async function syncApplyWindows(env: Env): Promise<number> {
   const sites = await env.ctx.db.query(
-    `SELECT DISTINCT p.company_id, s.site_id FROM ${t("previews")} p JOIN ${t("sprints")} s ON s.company_id = p.company_id AND s.id = p.sprint_id
+    `SELECT company_id, site_id FROM ${t("apply_windows")} WHERE is_open OR closed_at > now() - interval '1 hour'
+     UNION
+     SELECT p.company_id, s.site_id FROM ${t("previews")} p JOIN ${t("sprints")} s ON s.company_id = p.company_id AND s.id = p.sprint_id
       WHERE s.site_id IS NOT NULL AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now() - interval '1 hour'`,
   );
   let sent = 0;
