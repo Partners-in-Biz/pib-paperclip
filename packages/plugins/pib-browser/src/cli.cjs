@@ -326,7 +326,7 @@ async function run(argv, env, deps = {}) {
       root: evidenceRoot,
       issue,
       step,
-      now,
+      now: typeof now === 'function' ? now() : now,
       b64: data.bytes,
       sha256: data.sha256
     });
