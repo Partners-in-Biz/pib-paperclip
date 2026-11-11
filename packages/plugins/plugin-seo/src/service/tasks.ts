@@ -45,7 +45,7 @@ import { isAutoSignoff } from "./client-signoff.js";
 import { PLUGIN_VERSION } from "../namespace.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
-import { addNeedsYou, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
+import { addNeedsYou, closeItemsForClosedTask, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
@@ -254,6 +254,9 @@ export async function onIssueUpdated(env: Env, companyId: string, issueId: strin
     const mergeTaskId = await followUpApprovedPr(env, task);
     await publishTaskDone(env, companyId, task.id, mergeTaskId);
     await releaseAnnouncements(env, companyId, task.id);
+  }
+  if (result.changed && (result.status === "done" || result.status === "skipped")) {
+    await closeItemsForClosedTask(env, companyId, task.sprintId, task.id, result.status === "done" ? "The task was closed." : "The task was cancelled.").catch((error) => env.ctx.logger.info("SEO Needs you rows not closed for closed task", { taskId: task.id, error: errorMessage(error) }));
   }
   if (result.changed && (result.status === "done" || result.status === "skipped" || result.status === "blocked") && task.status !== result.status) await openNextQueuedTask(env, companyId, task);
 }
