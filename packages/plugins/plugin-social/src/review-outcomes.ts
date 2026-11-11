@@ -64,7 +64,7 @@ export interface RecordOutcomeInput {
   outcome: Outcome;
   contentHash: string | null;
   /** How it was recorded: `tool` (an agent), `ui` (a person on the page), `link` (the client's approval page), `recorded` (a person on the client's behalf). */
-  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate";
+  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate" | "unscored";
   actor?: OutcomeActor;
   note?: string | null;
 }

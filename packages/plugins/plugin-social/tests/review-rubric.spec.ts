@@ -328,6 +328,14 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
     const result = await recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
     expect(result.recorded).toBe(true);
     expect(result.warnings).toContain("No destinations to check");
+    expect(w.outcomes.map((o) => [o.stage, o.outcome, o.via])).toEqual([["reviewer", "approved", "unscored"]]);
+  });
+
+  it("unscored pass is stale once the destinations change", async () => {
+    const { currentSignoffs } = await import("../src/review-outcomes.js");
+    const rows = [{ stage: "reviewer" as const, outcome: "approved" as const, round: 1, content_hash: "h-no-accounts", created_at: "2026-01-01" }];
+    expect(currentSignoffs(rows, "h-no-accounts").reviewer).toBe("approved");
+    expect(currentSignoffs(rows, "h-with-account").reviewer).toBe("stale");
   });
 
   it("X (Twitter) text-first: no media, no text-native tag, block mode -> recorded", async () => {
