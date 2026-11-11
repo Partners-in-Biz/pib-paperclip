@@ -110,7 +110,7 @@ Use these tools for every file that belongs on Google Drive. They find or make t
 ## Steps
 1. \`drive_folder_resolve\` with the project (\`entity_type: project\`, \`entity_id\`) or the CRM company. It returns the folder path and URL.
 2. On \`not_found\` only, call \`drive_folder_ensure\` for the same entity. It is safe to repeat. On \`needs_human_look\` stop and ask a person: do not retry or rename.
-3. Save with \`drive_file_save\`: \`projectId\`, \`fileKind\`, \`name\`, \`mimeType\`, and exactly one of \`contentBase64\` or \`path\` (max 5 MB; the tool takes no URL source, so download the file first and pass its path). Name it \`YYYY-MM-DD <what> v<n>.<ext>\`, for example \`2026-10-20 Athleet profile mock v01.png\`.
+3. Save with \`drive_file_save\`: \`projectId\`, \`fileKind\`, \`name\`, \`mimeType\`, and exactly one of \`contentBase64\` (up to 5 MB) or \`path\` (up to 200 MB; the tool takes no URL source, so download the file first and pass its path). A \`path\` must be inside this run's workspace or \`$PAPERCLIP_TMPDIR\` (not \`$TMPDIR\`); dotfiles, keys and credential files are refused. Up to 5 MB the file is saved at once; over 5 MB you get \`status: started\` and a \`jobId\`: call \`drive_transfer_status\` with it every 20-30 s until it is \`done\` (its \`result\` holds the URL) or \`failed\`. Name it \`YYYY-MM-DD <what> v<n>.<ext>\`, for example \`2026-10-20 Athleet profile mock v01.png\`.
 4. Quote the returned URL in your issue comment. A \`duplicate: true\` result means the same file was already saved: quote its URL too.
 
 ## Where files go
