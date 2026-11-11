@@ -26,9 +26,13 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.9.0");
-    expect(PLUGIN_VERSION).toBe("0.9.0");
-    expect(pkg.version).toBe("0.9.0");
+    expect(manifest.version).toBe("0.10.0");
+    expect(PLUGIN_VERSION).toBe("0.10.0");
+    expect(pkg.version).toBe("0.10.0");
+  });
+
+  it("declares the activity.log.write capability", () => {
+    expect(manifest.capabilities).toContain("activity.log.write");
   });
 
   it("declares a public unsubscribe endpoint and an optional reply endpoint, and the capabilities that need", () => {
