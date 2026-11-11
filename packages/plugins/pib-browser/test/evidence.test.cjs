@@ -370,3 +370,64 @@ test('real upload script accepts evidence.cjs argument structure with --dry-run'
 
   fs.rmSync(tmpDir, { recursive: true });
 });
+
+test('evidence names the missing upload script path instead of a bare failure', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  fs.writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const missing = path.join(tmpDir, 'nope', 'paperclip-upload-artifact.sh');
+
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const code = await run([pngPath, '--issue', 'PAR-123', '--step', 's'], { PIB_UPLOAD_ARTIFACT_SCRIPT: missing }, {
+    spawnSync: () => { throw new Error('must not spawn'); },
+    stdout,
+    stderr
+  });
+
+  assert.equal(code, 5);
+  assert.ok(stderr.toString().includes(missing), stderr.toString());
+  assert.ok(stderr.toString().includes('not found'));
+  assert.equal(stdout.toString(), '');
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('evidence returns the artifact url alongside attachmentId and sha256', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  fs.writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const scriptPath = path.join(tmpDir, 'stub.sh');
+  fs.writeFileSync(scriptPath, '#!/bin/sh\n', { mode: 0o755 });
+
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const code = await run([pngPath, '--issue', 'PAR-123', '--step', 's'],
+    { PIB_UPLOAD_ARTIFACT_SCRIPT: scriptPath, PAPERCLIP_API_URL: 'https://pc.example/api' }, {
+      spawnSync: () => ({ status: 0, signal: null, stderr: '', stdout: JSON.stringify({ attachment: { id: 'att-1', contentPath: '/api/attachments/att-1/content' } }) }),
+      stdout,
+      stderr
+    });
+  assert.equal(code, 0, stderr.toString());
+  const out = JSON.parse(stdout.toString());
+  assert.equal(out.attachmentId, 'att-1');
+  assert.equal(out.url, 'https://pc.example/api/attachments/att-1/content');
+  assert.match(out.sha256, /^[0-9a-f]{64}$/);
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('evidence with no env finds the upload script without a bare upload failed', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-test-'));
+  const pngPath = path.join(tmpDir, 'test.png');
+  fs.writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  let used = null;
+  const stdout = new MockOutput();
+  const stderr = new MockOutput();
+  const code = await run([pngPath, '--issue', 'PAR-123', '--step', 's'], { PAPERCLIP_HOME: path.join(tmpDir, 'none') }, {
+    spawnSync: (p) => { used = p; return { status: 0, signal: null, stderr: '', stdout: JSON.stringify({ attachment: { id: 'a' } }) }; },
+    stdout,
+    stderr
+  });
+  assert.equal(code, 0, stderr.toString());
+  assert.ok(used && used.endsWith('paperclip-upload-artifact.sh'));
+  fs.rmSync(tmpDir, { recursive: true });
+});
