@@ -263,6 +263,37 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
 }
 
 /**
+ * A sprint task closed (done or cancelled): its Needs you rows are over. Closes, on every recent digest of the sprint,
+ * the open `review:<taskId>` / `task:<taskId>` rows and any row whose taskIds are all closed tasks (a row that lists
+ * several tasks stays open while one of them is still open). Setup items (logins, repo links) are left alone.
+ */
+export async function closeItemsForClosedTask(env: Env, companyId: string, sprintId: string, taskId: string, note: string): Promise<number> {
+  const sprint = await requireSprint(env, companyId, sprintId);
+  const info = await companyInfo(env, companyId);
+  const digests = (await db.recentNeedsYouDigests(env.ctx.db, companyId, sprintId)).filter((d) => d.items.some((i) => i.status === "open"));
+  let total = 0;
+  for (const digest of digests) {
+    let closed = 0;
+    const items: NeedsYouItem[] = [];
+    for (const item of digest.items) {
+      const ids = item.taskIds ?? [];
+      const lists = ids.includes(taskId) || item.key === `review:${taskId}` || item.key === `task:${taskId}`;
+      if (item.status !== "open" || !lists || (STANDARD_KEYS as readonly string[]).includes(item.key)) { items.push(item); continue; }
+      const others = ids.filter((id) => id !== taskId);
+      if (others.length > 0 && (await tasksAllTerminal(env, sprint, others)) !== true) { items.push(item); continue; }
+      closed += 1;
+      items.push({ ...item, status: "done" as const, doneAt: nowIso(env), doneBy: "plugin", note });
+    }
+    if (closed === 0) continue;
+    const next = { ...digest, items };
+    await db.upsertNeedsYou(env.ctx.db, next);
+    if (digest.status === "open") await syncDigestIssue(env, info, sprint, next);
+    total += closed;
+  }
+  return total;
+}
+
+/**
  * A person switched an extra off: its optional lines are over. Closed without a check and without handing any task back
  * (no wake), with the reason as the note. Returns how many were closed.
  */

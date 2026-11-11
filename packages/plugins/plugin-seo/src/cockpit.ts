@@ -457,6 +457,24 @@ export interface WaitingData {
 /** Needs you item kinds that are a sign-off of a site change or content (the rest are grants, messages and tasks). */
 export const SIGNOFF_KINDS = new Set<NeedsYouItem["kind"]>(["review", "pr"]);
 
+/**
+ * One row per task: a sign-off, its `task:` line and a re-added copy from a later week all name the same single task.
+ * The first row for a (sprint, task) wins, sign-offs (review, pr) before the rest. Rows with no or several tasks stay.
+ */
+export function dedupeByTask<T extends { item: NeedsYouItem; digest: { sprint_id: string } }>(rows: T[]): T[] {
+  const rank = (r: T) => (SIGNOFF_KINDS.has(r.item.kind) ? 0 : 1);
+  const taken = new Set<string>();
+  const drop = new Set<T>();
+  for (const row of [...rows].sort((a, b) => rank(a) - rank(b))) {
+    const ids = row.item.taskIds ?? [];
+    if (ids.length !== 1) continue;
+    const k = `${row.digest.sprint_id}:${ids[0]}`;
+    if (taken.has(k)) drop.add(row);
+    else taken.add(k);
+  }
+  return rows.filter((r) => !drop.has(r));
+}
+
 async function loadWaiting(ctx: PluginContext, companyId: string): Promise<WaitingData> {
   const digests = await ctx.db.query<DigestRow>(
     `SELECT n.items, n.issue_id, s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
@@ -465,15 +483,16 @@ async function loadWaiting(ctx: PluginContext, companyId: string): Promise<Waiti
     [companyId],
   );
   const seen = new Set<string>();
-  const pending: WaitingData["pending"] = [];
+  const candidates: WaitingData["pending"] = [];
   for (const digest of digests) {
     for (const item of json<NeedsYouItem[]>(digest.items, [])) {
       const key = `seo:needs-you:${digest.sprint_id}:${item.key}`;
       if (item.status !== "open" || item.optional || seen.has(key)) continue;
       seen.add(key);
-      pending.push({ item, digest });
+      candidates.push({ item, digest });
     }
   }
+  const pending = dedupeByTask(candidates);
   // In safe (and off) autopilot the owner approves each optimization.
   const proposals = await ctx.db.query<ProposalRow>(
     `SELECT o.id, o.subject, o.proposed_action, o.approval_issue_id, o.created_at::text AS created_at,
