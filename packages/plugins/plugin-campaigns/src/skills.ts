@@ -48,7 +48,7 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 
 ## Approval and launch
 - \`preflight-campaign\` runs the checks an approval request runs: every step complete, a client sender, a configured channel, the unsubscribe, the sender's domain health, working links, and who can receive each channel. Errors block the request; warnings go to the approver.
-- \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, who it goes out as, start date and every step. With a Reviewer it checks first, comments PASS or CHANGES NEEDED and hands it to the person; nobody but a person marks it done.
+- \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, who it goes out as, start date and every step. With a Reviewer it checks first and gives its verdict with \`review-campaign-approval\` (Reviewer only): pass hands it to the person, changes sends it back with a Revise task; nobody but a person approves.
 - A person marks it **done**: the campaign launches by itself and a comment says how many were enrolled. If it cannot launch, the issue goes back to the person with the reason.
 - A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft, request approval again, then mark it done. Cancel the revise issue instead when they said to drop the campaign.
 - Changing a draft after asking (steps, HTML, audience, sender, delivery, dates) cancels that approval (\`approvalReset: true\`). Request again.

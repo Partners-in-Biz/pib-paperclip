@@ -92,7 +92,7 @@ import { SKILLS } from "./skills.js";
 import { nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
 import { audienceChangedMessage, audienceFingerprint } from "./approval-audience.js";
-import { approveAction, sendBackAction, type ApprovalPaths } from "./approve.js";
+import { approveAction, reviewApprovalTool, sendBackAction, type ApprovalPaths } from "./approve.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
@@ -383,6 +383,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-stats") return stats(ctx, companyId, body);
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
+  if (name === "review-campaign-approval") return reviewApprovalTool(ctx, companyId, run.agentId, body, APPROVAL_PATHS);
   if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
@@ -1134,7 +1135,8 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
     projectId: await projectForCampaign(ctx, companyId, campaign),
     outward: true,
     actorUserId: campaign.ownerUserId,
-    reviewerBrief: (route) => launchReviewBrief(campaign, route.approverUserId),
+    reviewerBrief: (route) =>
+      `${launchReviewBrief(campaign, route.approverUserId)}\nGive the verdict with the tool \`review-campaign-approval\` (campaignId \`${campaign.id}\`, verdict pass or changes, your note): it comments and reassigns for you.`,
     wakeReason: "Review a campaign launch before a person approves it",
   });
   campaign.approvalIssueId = approval.id;
