@@ -24,6 +24,8 @@ const preview = (id: string, page: string, extra: Row = {}): Row => ({ id, page_
 const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, page_url, title, status, review_status, decision_note, handed_at, draft_key/, () => rows];
 /** The rows a hand-over claimed, as finishHandover reads them back (the fake execute claims every eligible row). */
 const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
+/** The page window as syncSiteWindow reads it (the real host always returns one row, with the seq). */
+const windowRows = (rows: Row[]): Route => [/AS seq\s+FROM \(SELECT 1 AS one\)/, () => rows];
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {
@@ -164,11 +166,12 @@ describe("the client's answers", () => {
 
   it("when every preview is answered: lifts the lock for the window, takes the task back and wakes the agent once with what to apply and what to revise", async () => {
     const answered = [preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })];
-    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered)] });
+    const window = windowRows([{ page_url: "https://agristudies.co.za/a/", apply_until: "2026-10-03T14:00:00.000Z", seq: "1793692800000000" }]);
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered), window] });
     const sprint = (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!;
     expect(await handleClientAnswer(w.env, sprint, answer())).toBe(true);
     const [grant] = lock(w);
-    expect(grant!.payload).toMatchObject({ siteId: "site-1", by: "client-approval:t1" });
+    expect(grant!.payload).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://agristudies.co.za/a"], seq: "1793692800000000", by: "client-approval:t1" });
     expect(new Date(String(grant!.payload.until)).getTime() - new Date("2026-10-03T08:00:00Z").getTime()).toBe(AUTO_APPLY_HOURS * 3_600_000);
     expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent", blocker_reason: null });
     expect(w.wakeups).toEqual(["iss-1"]);

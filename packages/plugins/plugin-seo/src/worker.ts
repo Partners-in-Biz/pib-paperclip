@@ -57,7 +57,7 @@ import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
 import { handleCancelledPreviews } from "./service/cancel.js";
 import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks, retryHandovers } from "./service/client-signoff.js";
-import { syncSignoff } from "./service/signoff.js";
+import { onSiteChanged, SITE_CHANGED_EVENT, syncApplyWindows, syncSignoff, syncWindowForIssue } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
 import { ga4Summary, ga4View } from "./service/analytics.js";
@@ -129,6 +129,8 @@ const plugin = definePlugin({
       await handleCancelledPreviews(e).catch((error) => ctx.logger.info("SEO cancelled previews not followed up", { error: errorMessage(error) }));
       // Hand-overs a crash left half done, and person decisions nobody handed over yet (bounded: 25 rows, 5 tries each).
       await retryHandovers(e).catch((error) => ctx.logger.info("SEO hand-overs not retried", { error: errorMessage(error) }));
+      // The backstop of the page-scoped apply windows: a task closed unseen, or an apply_until that passed, closes its pages.
+      await syncApplyWindows(e).catch((error) => ctx.logger.info("SEO apply windows not synced", { error: errorMessage(error) }));
       // Sprints on automatic client sign-off: one approval email draft per batch of passed previews.
       const drafted = await draftApprovalRequests(e).catch((error) => {
         ctx.logger.info("SEO approval drafts failed", { error: errorMessage(error) });
@@ -155,21 +157,32 @@ const plugin = definePlugin({
         ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
       }
     });
+    // The CRM's word that an agent write on an approved page went through: the preview counts as applied (PAR-9131 Q16).
+    ctx.events.on(SITE_CHANGED_EVENT, async (event) => {
+      if (!event.companyId) return;
+      await onSiteChanged(e, event.companyId, event.payload).catch((error) => ctx.logger.info("SEO site change not recorded", { error: errorMessage(error) }));
+    });
     // One subscription for every issue event (a second one, e.g. kit registerDoneChecks, would deliver each event twice).
     ctx.events.on("issue.updated", async (event) => {
       if (!event.entityId || !event.companyId) return;
+      const companyId = event.companyId;
+      const issueId = event.entityId;
       try {
-        if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
-        if (await onBuildIssueUpdated(e, event.companyId, event.entityId)) return;
-        // A page group of a site-wide task: sync it, open the next group, wake the task when the last one closes.
-        if (await onChunkIssueUpdated(e, event.companyId, event.entityId)) return;
-        // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
-        // so an early close never marks the task done, tells Social or opens a merge task.
-        if (await checkAgentClose(ctx, event)) return;
-        await onIssueUpdated(e, event.companyId, event.entityId);
+        await (async () => {
+          if (await onNeedsYouIssueUpdated(e, companyId, issueId)) return;
+          if (await onBuildIssueUpdated(e, companyId, issueId)) return;
+          // A page group of a site-wide task: sync it, open the next group, wake the task when the last one closes.
+          if (await onChunkIssueUpdated(e, companyId, issueId)) return;
+          // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
+          // so an early close never marks the task done, tells Social or opens a merge task.
+          if (await checkAgentClose(ctx, event)) return;
+          await onIssueUpdated(e, companyId, issueId);
+        })();
       } catch (error) {
-        ctx.logger.info("SEO issue sync failed", { issueId: event.entityId, error: errorMessage(error) });
+        ctx.logger.info("SEO issue sync failed", { issueId, error: errorMessage(error) });
       }
+      // After the task mirrors the issue: a task done or cancelled drops its pages from the apply window (PAR-9131 T3).
+      await syncWindowForIssue(e, companyId, issueId).catch((error) => ctx.logger.info("SEO apply window not synced", { issueId, error: errorMessage(error) }));
     });
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);

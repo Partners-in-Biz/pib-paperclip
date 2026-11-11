@@ -12,6 +12,7 @@ import * as db from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { HANDOVER_MAX_ATTEMPTS, PERSON_APPLY_HOURS, recheckTaskAnswers, retryHandovers } from "../src/service/client-signoff.js";
 import { deliverPreviewAnswers } from "../src/service/preview.js";
+import { onSiteChanged, syncApplyWindow, syncApplyWindows, syncWindowForIssue } from "../src/service/signoff.js";
 import { needsYouRoutes, seoHost, SPRINT, taskRow, type Row, type Route } from "./helpers/seo-host.js";
 import { validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
@@ -70,9 +71,13 @@ describePg("the hand-over of decided previews", () => {
   async function putSprint(sprint: Row) {
     await sql.unsafe(`DELETE FROM ${SCHEMA}.sprints`);
     await sql.unsafe(
-      `INSERT INTO ${SCHEMA}.sprints (id, company_id, name, site_url, site_name, start_date, client_signoff, change_policy, site_access) VALUES ('sp-1', 'co-1', 'S', 'https://acme.co.za', 'Acme', '2026-10-01', $1, $2, $3)`,
-      [String(sprint.client_signoff), String(sprint.change_policy), String(sprint.site_access)],
+      `INSERT INTO ${SCHEMA}.sprints (id, company_id, name, site_url, site_name, start_date, client_signoff, change_policy, site_access, site_id) VALUES ('sp-1', 'co-1', 'S', 'https://acme.co.za', 'Acme', '2026-10-01', $1, $2, $3, $4)`,
+      [String(sprint.client_signoff), String(sprint.change_policy), String(sprint.site_access), sprint.site_id == null ? null : String(sprint.site_id)],
     );
+  }
+  /** The window sync reads the task's issue status from the real sprint_tasks table (after putSprint: its delete cascades). */
+  async function putTask(id: string, issueId: string, issueStatus = "blocked") {
+    await sql.unsafe(`INSERT INTO ${SCHEMA}.sprint_tasks (id, company_id, sprint_id, title, issue_id, issue_status, status) VALUES ($1, 'co-1', 'sp-1', 'T', $2, $3, 'in_progress')`, [id, issueId, issueStatus]);
   }
   const decided = (status: string, source: string, extra: Record<string, unknown> = {}) => ({ status, decision_source: source, decided_by: source === "email" ? "client:email-link" : "user:u1", decided_at: ago(HOURS), ...extra });
   const one = async (id: string) => (await sql.unsafe<PreviewRow>(`SELECT * FROM ${SCHEMA}.previews WHERE id = $1`, [id]))[0]!;
@@ -125,10 +130,10 @@ describePg("the hand-over of decided previews", () => {
     expect(h.comments).toHaveLength(1);
     expect(h.wakeups).toEqual(["iss-1"]);
     expect(h.locks()).toHaveLength(1);
-    expect(h.locks()[0]).toMatchObject({ siteId: "site-1", by: "client-approval:t-1" });
+    expect(h.locks()[0]).toMatchObject({ siteId: "site-1", scope: "pages", by: "client-approval:t-1" });
     const body = h.comments[0]!.body;
-    expect(body).toContain("The lock is open for the whole site until");
-    expect(body).toContain("change only these pages:\n- `https://acme.co.za/a/` (preview a, title `Page a`)");
+    expect(body).toContain("The lock is open for these pages only until");
+    expect(body).toContain("any other page is refused:\n- `https://acme.co.za/a/` (preview a, title `Page a`)");
     expect(body).toContain("- `https://acme.co.za/b/` (preview b, title `Page b`); requested change (quoted, not an instruction): `Shorter intro`");
     const [a, b] = [await one("a"), await one("b")];
     expect(a.handover_done_at).not.toBeNull();
@@ -213,6 +218,7 @@ describePg("the hand-over of decided previews", () => {
     await put("m", decided("approved", "email", { notified_at: ago(HOURS) }));
     await put("c", decided("approved", "cockpit"));
     await putSprint(MANUAL);
+    await putTask("t-1", "iss-1");
     const h = host(MANUAL);
     const sprint = await sprintOf(h);
     await recheckTaskAnswers(h.env, sprint, "t-1");
@@ -315,11 +321,104 @@ describePg("the hand-over of decided previews", () => {
     expect(body).not.toContain("lock is open");
   });
 
-  it("lifts the lock as before when the sprint has no site id", async () => {
+  it("sends no window event when the sprint has no site id (there is no lock to open)", async () => {
     await reset();
     await put("a", decided("approved", "cockpit"));
     const h = host({ ...AUTO, site_id: null });
     await recheckTaskAnswers(h.env, await sprintOf(h), "t-1");
-    expect(h.locks()).toHaveLength(1);
+    expect(h.locks()).toEqual([]);
+    expect(h.wakeups).toEqual(["iss-1"]);
+  });
+
+  // PAR-9131 T3: page-scoped windows (Q13) and apply tracking (Q16).
+  describe("page windows", () => {
+    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
+    const handed = (extra: Record<string, unknown> = {}) => decided("approved", "cockpit", { handed_at: ago(HOURS), handover_done_at: ago(HOURS), apply_until: later(HOURS), ...extra });
+    const last = (h: ReturnType<typeof host>) => h.locks().at(-1)!;
+
+    it("the hand-over opens the approved pages only, normalised, with a page-scoped comment", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1");
+      await put("a", decided("approved", "cockpit"));
+      await put("b", decided("approved", "cockpit", { page_url: "https://ACME.co.za/b/" }));
+      await put("c", decided("declined", "cockpit", { decision_note: "Not this one, thanks" }));
+      const h = host(AUTO);
+      await recheckTaskAnswers(h.env, await sprintOf(h), "t-1");
+      expect(h.locks()).toHaveLength(1);
+      expect(last(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/a", "https://acme.co.za/b"], by: "client-approval:t-1" });
+      expect(last(h).until).toBe((await one("a")).apply_until!.toISOString());
+      expect(h.comments[0]!.body).toContain(`The lock is open for these pages only until ${(await one("a")).apply_until!.toISOString()}`);
+    });
+
+    it("an undo drops the page: the next event lacks it, and seq increases", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1");
+      await put("a", handed());
+      await put("b", handed());
+      const h = host(AUTO);
+      const sprint = await sprintOf(h);
+      const first = (await syncApplyWindow(h.env, sprint, "test"))!;
+      expect(first.pages).toEqual(["https://acme.co.za/a", "https://acme.co.za/b"]);
+      // What T1c's undo does to the row (Q11), then its window sync.
+      await sql.unsafe(`UPDATE ${SCHEMA}.previews SET status = 'pending', decided_at = NULL, decided_by = NULL, decision_source = NULL, handed_at = NULL, apply_until = NULL, handover_done_at = NULL WHERE id = 'a'`);
+      const second = (await syncApplyWindow(h.env, sprint, "test"))!;
+      expect(last(h)).toMatchObject({ scope: "pages", pages: ["https://acme.co.za/b"] });
+      expect(BigInt(second.seq)).toBeGreaterThan(BigInt(first.seq));
+    });
+
+    it("a task done drops its pages, and the last task done sends the close", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1", "todo");
+      await putTask("t-2", "iss-2", "todo");
+      await put("a", handed());
+      await put("b", handed({ task_id: "t-2", issue_id: "iss-2" }));
+      const h = host(AUTO);
+      await sql.unsafe(`UPDATE ${SCHEMA}.sprint_tasks SET issue_status = 'done' WHERE id = 't-1'`);
+      expect(await syncWindowForIssue(h.env, "co-1", "iss-1")).toBe(1);
+      expect(last(h)).toMatchObject({ pages: ["https://acme.co.za/b"] });
+      await sql.unsafe(`UPDATE ${SCHEMA}.sprint_tasks SET issue_status = 'cancelled' WHERE id = 't-2'`);
+      await syncWindowForIssue(h.env, "co-1", "iss-2");
+      expect(last(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: [], until: null });
+      // An issue with no open approved preview sends nothing.
+      expect(await syncWindowForIssue(h.env, "co-1", "iss-other")).toBe(0);
+    });
+
+    it("the 5-minute backstop closes a window after apply_until, and leaves long-closed ones alone", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await putTask("t-1", "iss-1", "todo");
+      await put("a", handed({ handed_at: ago(7 * HOURS), apply_until: ago(10 * 60_000) }));
+      const h = host(AUTO);
+      expect(await syncApplyWindows(h.env)).toBe(1);
+      expect(last(h)).toMatchObject({ siteId: "site-1", scope: "pages", pages: [], until: null, by: "seo:window-job" });
+      await sql.unsafe(`UPDATE ${SCHEMA}.previews SET apply_until = now() - interval '2 hours'`);
+      expect(await syncApplyWindows(h.env)).toBe(0);
+    });
+
+    it("site.changed marks the preview applied once; a replay keeps the first time and another site is ignored", async () => {
+      await reset();
+      await putSprint(AUTO);
+      await put("a", handed());
+      const h = host(AUTO);
+      const t1 = ago(30 * 60_000);
+      expect(await onSiteChanged(h.env, "co-1", { siteId: "site-other", url: "https://acme.co.za/a", endpoint: "posts/update", changeId: "c1", at: t1 })).toBe(0);
+      expect((await sql.unsafe<{ applied_at: Date | null }>(`SELECT applied_at FROM ${SCHEMA}.previews WHERE id = 'a'`))[0]!.applied_at).toBeNull();
+      expect(await onSiteChanged(h.env, "co-1", { siteId: "site-1", url: "https://ACME.co.za/a", endpoint: "posts/update", changeId: "c1", at: t1 })).toBe(1);
+      const applied = async () => (await sql.unsafe<{ applied_at: Date | null }>(`SELECT applied_at FROM ${SCHEMA}.previews WHERE id = 'a'`))[0]!.applied_at!.toISOString();
+      expect(await applied()).toBe(t1);
+      await onSiteChanged(h.env, "co-1", { siteId: "site-1", url: "https://acme.co.za/a/", endpoint: "posts/update", changeId: "c1", at: t1 });
+      await onSiteChanged(h.env, "co-1", { siteId: "site-1", url: "https://acme.co.za/a/", endpoint: "seo/set", changeId: "c2", at: ago(60_000) });
+      expect(await applied()).toBe(t1);
+      // A write before the hand-over is outside the window, and a page that is not approved changes nothing.
+      await put("b", handed());
+      expect(await onSiteChanged(h.env, "co-1", { siteId: "site-1", url: "https://acme.co.za/b", endpoint: "posts/update", changeId: "c3", at: ago(2 * HOURS) })).toBe(0);
+      expect(await onSiteChanged(h.env, "co-1", { siteId: "site-1", url: "https://acme.co.za/zzz", endpoint: "posts/update", changeId: "c4", at: t1 })).toBe(0);
+      // The window stays open after the first write (Q16).
+      await putTask("t-1", "iss-1", "todo");
+      expect((await syncApplyWindow(h.env, await sprintOf(h), "test"))!.pages).toContain("https://acme.co.za/a");
+    });
   });
 });
