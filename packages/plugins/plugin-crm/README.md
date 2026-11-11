@@ -64,6 +64,11 @@ Agents put people on the desk instead of listing them in an issue: `set-next-act
 - **No duplicates:** `create-contact` and `import-contacts` match on email, then on phone (last 9 digits); `create-company` matches on the website domain, then the name. A match fills only empty fields, adds missing emails, phones and tags, logs a note, and returns `matched: true`.
 - **Skills:** `pib-sales-lead`, `pib-inbound-qualify`, `pib-data-steward`, `pib-deal-desk`.
 
+## Sign-off lock: page-scoped approval (0.39.0)
+- **Two grants on `site_signoff`** (migration 020): the whole-site grant (`site.write-approved` without `scope`, and the board button) is unchanged. A `site.write-approved` event with `scope: "pages"`, `pages`, `until`, `seq` and `by` replaces the approved page set as a whole, only when `seq` is newer than the stored one; `pages: []` or a past `until` closes it. An unknown `scope` is ignored, never read as whole-site.
+- **What a page grant allows:** only `posts/update`, `posts/img-alt`, `seo/set` and `schema/set`, with `url` alone naming the page (no `postId`, `termId`, `taxonomy`, `postTypeArchive` or `site`), no `?` or `#`, on the site's own host, and the page in the set (kit `normalisePageUrl`). `wp-undo` passes for an ok change on this site of one of those endpoints whose target is an approved page. Everything else is refused with the reason.
+- **Deploy order:** this CRM before any SEO plugin that sends page events (an older CRM would read one as whole-site).
+
 ## Connector 1.3: archive intro copy (0.38.0)
 - **New tool `wp-archive`** (ops `get`, `set`; endpoints `archive/get`, `archive/set`, the second a write that needs a `reason`, is blocked for agents by the sign-off lock and is logged). H1 and intro copy on a category, tag or taxonomy archive page; title and meta stay with `wp-seo`. Passes `url`, `termId`, `taxonomy` (and for `set` `html`, `position`, `reason`); anything else is dropped. A 1.3 tool on an older install gets the "older than the 1.3 routes" explanation (run `wp-connector update`). The bundled Connector is 1.3.0.
 

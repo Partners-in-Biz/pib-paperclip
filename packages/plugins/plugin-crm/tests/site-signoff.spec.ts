@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { onApprovalEvent, onSignoffEvent, signoffBlock } from "../src/site-signoff.js";
 
+const SITE = { id: "s1", url: "https://example.com" };
+
 /** A tiny in-memory stand-in for the one table the lock reads and writes. */
 function fakeCtx() {
   const rows = new Map<string, { required: boolean; until: number | null }>();
@@ -26,26 +28,26 @@ function fakeCtx() {
 
 describe("site sign-off lock", () => {
   it("does not block a site nobody marked", async () => {
-    expect(await signoffBlock(fakeCtx(), "s1")).toBeNull();
+    expect(await signoffBlock(fakeCtx(), SITE, "seo/set", {})).toBeNull();
   });
 
   it("blocks agent writes on a pr_only site until a person approves, then again after the window", async () => {
     const ctx = fakeCtx();
     await onSignoffEvent(ctx, { companyId: "c", payload: { siteId: "s1", required: true } });
-    expect(await signoffBlock(ctx, "s1")).toMatch(/sign-off/);
+    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toMatch(/sign-off/);
     await onApprovalEvent(ctx, { companyId: "c", payload: { siteId: "s1", until: new Date(Date.now() + 3600_000).toISOString(), by: "user-1" } });
-    expect(await signoffBlock(ctx, "s1")).toBeNull();
+    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toBeNull();
     await onApprovalEvent(ctx, { companyId: "c", payload: { siteId: "s1", until: new Date(Date.now() - 1000).toISOString() } });
-    expect(await signoffBlock(ctx, "s1")).toMatch(/sign-off/);
+    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toMatch(/sign-off/);
   });
 
   it("unlocks when the sprint is no longer pr_only and ignores malformed events", async () => {
     const ctx = fakeCtx();
     await onSignoffEvent(ctx, { companyId: "c", payload: { siteId: "s1", required: true } });
     await onSignoffEvent(ctx, { companyId: "c", payload: { siteId: "s1", required: false } });
-    expect(await signoffBlock(ctx, "s1")).toBeNull();
+    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toBeNull();
     await onSignoffEvent(ctx, { companyId: "c", payload: { siteId: 5 } });
     await onApprovalEvent(ctx, { companyId: "c", payload: { siteId: "s1", until: "nonsense" } });
-    expect(await signoffBlock(ctx, "s1")).toBeNull();
+    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toBeNull();
   });
 });
