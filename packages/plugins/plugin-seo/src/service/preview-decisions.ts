@@ -77,13 +77,15 @@ interface Row {
   decisionSource: string | null;
   confirmedAt: string | null;
   handedAt: string | null;
+  /** handed_at as Postgres prints it, for the undo CAS: a hand-over between the read and the UPDATE must lose the undo. */
+  handedText: string | null;
   appliedAt: string | null;
 }
 
 async function readRows(env: Env, companyId: string, sprintId: string, ids: string[]): Promise<Map<string, Row>> {
   const rows = await env.ctx.db.query(
     `SELECT id, task_id, issue_id, page_url, status, review_status, expires_at > now() AS open, ${PREVIEW_LIVE_SQL} AS live,
-        decided_at, decided_at::text AS decided_text, decided_by, decision_source, confirmed_at, handed_at, applied_at
+        decided_at, decided_at::text AS decided_text, decided_by, decision_source, confirmed_at, handed_at, handed_at::text AS handed_text, applied_at
        FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND id IN (SELECT jsonb_array_elements_text($3::jsonb))`,
     [companyId, sprintId, JSON.stringify(ids)],
   );
@@ -105,6 +107,7 @@ async function readRows(env: Env, companyId: string, sprintId: string, ids: stri
         decisionSource: r.decision_source ? String(r.decision_source) : null,
         confirmedAt: isoOf(r.confirmed_at),
         handedAt: isoOf(r.handed_at),
+        handedText: r.handed_text ? String(r.handed_text) : null,
         appliedAt: isoOf(r.applied_at),
       },
     ]),
@@ -208,10 +211,11 @@ export async function undoPreviewDecision(env: Env, companyId: string, actor: Ac
     const res = await env.ctx.db.execute(
       `UPDATE ${t("previews")} SET status = 'pending', decision_note = NULL, decided_at = NULL, decided_by = NULL, decision_source = NULL, confirmed_by = NULL, confirmed_at = NULL,
           handed_at = NULL, apply_until = NULL, handover_done_at = NULL, notified_at = NULL, handover_attempts = 0
-        WHERE company_id = $1 AND sprint_id = $2 AND id = $3 AND status = $4 AND decided_at IS NOT DISTINCT FROM $5::text::timestamptz AND applied_at IS NULL AND ${DECIDED_SQL}`,
-      [companyId, sprint.id, id, r.status, r.decidedText],
+        WHERE company_id = $1 AND sprint_id = $2 AND id = $3 AND status = $4 AND decided_at IS NOT DISTINCT FROM $5::text::timestamptz
+          AND handed_at IS NOT DISTINCT FROM $6::text::timestamptz AND applied_at IS NULL AND ${DECIDED_SQL}`,
+      [companyId, sprint.id, id, r.status, r.decidedText, r.handedText],
     );
-    if (!res.rowCount) { skipped.push({ id, reason: "It changed while you undid it (applied, or decided again). Reload and try again." }); continue; }
+    if (!res.rowCount) { skipped.push({ id, reason: "It changed while you undid it (applied, handed to the agent, or decided again). Reload and try again." }); continue; }
     undone.push(id);
     if (r.handedAt) await tellAgent(env, sprint, r).then((ok) => ok && told.push(id));
   }
