@@ -76,6 +76,16 @@ describe("the Reviewer's pass comes first when the policy says so", () => {
     expect(w.post.status).toBe("approved");
   });
 
+  it("a post with no rubric destination: the Reviewer's unscored pass unblocks the person's approval", async () => {
+    const w = approvalWorld({ reviewer: "rev-1", policy, destinations: [] });
+    await expect(approvePostByPerson(w.ctx, ACTOR, postRow(w))).rejects.toThrow("The Reviewer has not passed this version yet");
+    const result = await recordReviewVerdictRecord(w.ctx, REVIEWER_AGENT, { postId: "p1", verdict: "pass" });
+    expect(result).toMatchObject({ recorded: true, verdict: "pass" });
+    expect(w.outcomes).toMatchObject([{ stage: "reviewer", outcome: "approved", via: "unscored" }]);
+    await approvePostByPerson(w.ctx, ACTOR, postRow(w));
+    expect(w.post.status).toBe("approved");
+  });
+
   it("changes need notes, send the post back to draft and give the Social agent the review issue (kept open, not closed)", async () => {
     const w = approvalWorld({ reviewer: "rev-1", policy, reviewIssue: "iss-9" });
     await expect(recordReviewerVerdict(w.ctx, "co", postRow(w), { agentId: "rev-1", verdict: "changes", notes: " " })).rejects.toThrow("Say what has to change");

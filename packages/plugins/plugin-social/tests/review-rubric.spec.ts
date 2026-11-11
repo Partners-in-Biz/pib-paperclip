@@ -331,11 +331,38 @@ describe("review verdict with creative rubric scoring (PAR-4159)", () => {
     expect(w.outcomes.map((o) => [o.stage, o.outcome, o.via])).toEqual([["reviewer", "approved", "unscored"]]);
   });
 
-  it("unscored pass is stale once the destinations change", async () => {
+  it("an unscored pass is stale once an account is attached (real content hash)", async () => {
     const { currentSignoffs } = await import("../src/review-outcomes.js");
-    const rows = [{ stage: "reviewer" as const, outcome: "approved" as const, round: 1, content_hash: "h-no-accounts", created_at: "2026-01-01" }];
-    expect(currentSignoffs(rows, "h-no-accounts").reviewer).toBe("approved");
-    expect(currentSignoffs(rows, "h-with-account").reviewer).toBe("stale");
+    const { contentHashOf } = await import("../src/content-hash.js");
+    const w = seed({ destinations: [] });
+    const post = postRow(w);
+    const before = contentHashOf(post, []);
+    const after = contentHashOf(post, ["acc-1"]);
+    expect(after).not.toBe(before);
+    const rows = [{ stage: "reviewer" as const, outcome: "approved" as const, round: 1, content_hash: before, created_at: "2026-01-01" }];
+    expect(currentSignoffs(rows, before).reviewer).toBe("approved");
+    expect(currentSignoffs(rows, after).reviewer).toBe("stale");
+  });
+
+  it("no destinations and the outcome write throws -> recorded is false, no row, nothing handed on", async () => {
+    const w = seed({ destinations: [] });
+    const failing = { ...w.ctx, db: { ...w.ctx.db, execute: async (sql: string, params: unknown[]) => { if (sql.includes("review_outcomes")) throw new Error("disk full"); return w.ctx.db.execute(sql, params); } } } as typeof w.ctx;
+    const result = await recordReviewerVerdict(failing, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
+    expect(result.recorded).toBe(false);
+    expect(w.outcomes).toEqual([]);
+    expect(w.created).toEqual([]);
+    expect(w.updates).toEqual([]);
+  });
+
+  it("rubric pass whose outcome write throws -> recorded is false, no row, nothing handed on", async () => {
+    const spy = vi.spyOn(kit, "scoreCreative").mockImplementation(() => ({ score: 90, pass: true, parts: { hook: 0, clarity: 0, brand: 0, cta: 0, format: 0 }, blockers: [], notes: [], writing: [] }));
+    const w = seed({ accounts: [{ id: "a-x", platform: "x", display_name: "X" }], destinations: [{ id: "d1", company_id: "co", post_id: "p1", account_id: "a-x", status: "pending", attempts: 0 }] });
+    const failing = { ...w.ctx, db: { ...w.ctx.db, execute: async (sql: string, params: unknown[]) => { if (sql.includes("review_outcomes")) throw new Error("disk full"); return w.ctx.db.execute(sql, params); } } } as typeof w.ctx;
+    const result = await recordReviewerVerdict(failing, "co", postRow(w), { agentId: "rev-1", verdict: "pass", notes: null });
+    expect(result.recorded).toBe(false);
+    expect(w.outcomes).toEqual([]);
+    expect(w.created).toEqual([]);
+    spy.mockRestore();
   });
 
   it("X (Twitter) text-first: no media, no text-native tag, block mode -> recorded", async () => {

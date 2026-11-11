@@ -373,7 +373,10 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
     }
 
     // Record the pass and include score and warnings
-    await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "tool", { agentId: input.agentId }, notes);
+    const written = await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "approved", "tool", { agentId: input.agentId }, notes);
+    if (!written) {
+      return { recorded: false, verdict: "pass", score: minScore, next: "The pass could not be recorded. Try again." };
+    }
     const actor: ReviewActor = { companyId, userId: null, isAgent: true };
     const progress = await afterSignoff(ctx, actor, post, withSignoff(before, "reviewer"), "A person");
 
@@ -392,10 +395,9 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
   }
 
   // For "changes", don't run the rubric
-  await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "changes", "tool", { agentId: input.agentId }, notes);
-  const actor: ReviewActor = { companyId, userId: null, isAgent: true };
+  const changesWritten = await recordSignoff(ctx, companyId, post, before.hash, "reviewer", "changes", "tool", { agentId: input.agentId }, notes);
   await sendBackForChanges(ctx, companyId, post, "The Reviewer", notes ?? "", false);
-  return { recorded: true, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
+  return { recorded: changesWritten, verdict: "changes", next: "The post is back in draft and the Social agent has your notes." };
 }
 
 /**
