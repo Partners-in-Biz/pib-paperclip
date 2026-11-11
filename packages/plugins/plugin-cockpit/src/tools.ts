@@ -7,6 +7,7 @@
  */
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
+import { ACCESS_TOOLS } from "./access-tool-declarations.js";
 import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
 import { HARD_STOPS } from "./decision-rights-model.js";
 import { EVAL_TOOLS } from "./eval-tool-declarations.js";
@@ -191,4 +192,5 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
   ...ACCEPTANCE_TOOLS,
   ...EVAL_TOOLS,
   ...REVIEW_FINDING_TOOLS,
+  ...ACCESS_TOOLS,
 ];

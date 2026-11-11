@@ -117,6 +117,13 @@
           "by": "Delivery Lead",
           "at": "2026-11-04",
           "expires": "2026-12-04"
+        },
+        {
+          "hash": "4585d5dde9f4d21a",
+          "reason": "0.21.0 changes one rule in \"How work moves\": the stuck rule now says to run access-check before saying there is no access, and access-request when the access exists (improvement plan item 3). The line about missing tools is shortened to make room. No recorded candidate run; the release is proven with two live agent runs instead. Re-baseline with the other skills before expiry (PAR-7275).",
+          "by": "Owner session",
+          "at": "2026-11-11",
+          "expires": "2026-12-04"
         }
       ]
     },

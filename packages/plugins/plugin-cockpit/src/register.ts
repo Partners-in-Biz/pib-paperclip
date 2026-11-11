@@ -29,6 +29,7 @@ import { nightlyAcceptance, onPluginVersion, requestAcceptanceNow } from "./acce
 import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
+import { ACCESS_TOOL_SET, handleAccessInventory, runAccessTool } from "./access.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
 import { REVIEW_FINDING_TOOL_SET, runReviewFindingTool } from "./review-findings.js";
 import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
@@ -673,6 +674,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await env.skills.ensure(run.companyId).catch(() => undefined);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
         ? await runMemoryTool(env, tool.name, params, run)
+        : ACCESS_TOOL_SET.has(tool.name)
+          ? await runAccessTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
           : AGENT_READ_TOOL_NAMES.has(tool.name)
@@ -810,6 +813,7 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
       // agent_already_paused, governor_active, not_paused -> 409
       return { status: 409, body: result };
     }
+    if (input.routeKey === "access-inventory") return await handleAccessInventory(env, input);
     if (input.routeKey === "owner-push") {
       return await handleOwnerPush(env, input);
     }
