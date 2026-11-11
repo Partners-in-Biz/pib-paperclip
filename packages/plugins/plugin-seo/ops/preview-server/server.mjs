@@ -5,6 +5,8 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
+import { startEgressProxy } from "./egress.mjs";
+import { createRenderService, keptTextFigure, RENDER_PORT } from "./render.mjs";
 import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
 
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
@@ -222,17 +224,7 @@ function reviewPage(token, key, row) {
 <body style="font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#f3f4f6;color:#111">
 <h1 style="font-size:20px;margin:0 0 4px">Check before the client sees it</h1>
 <p style="margin:0 0 12px">${esc(row.title)}<br><a href="${esc(row.page_url)}">${esc(row.page_url)}</a> · review status: <strong>${esc(row.review_status)}</strong></p>
-${(() => {
-  const r = st.rendered;
-  if (!r) return `<p style="background:#fef3c7;padding:8px 12px;border-radius:6px">The rendered check could not be made. Do not pass this preview until it works: reload this page.</p>`;
-  const bad = r.keptPct < 70;
-  return `<p style="background:${bad ? "#fee2e2" : "#dcfce7"};padding:8px 12px;border-radius:6px;margin:0 0 12px"><strong>What a visitor sees:</strong> the proposal still shows <strong>${esc(r.keptPct)}%</strong> of the live page's text (${esc(r.liveWords)} words live, ${esc(r.removedWords)} missing, ${esc(r.addedWords)} new). ${bad ? "A lot of the live page is missing from the proposal. Do not pass it." : "Now compare the screenshots for layout, listings and images."}</p>`;
-})()}
-<p style="margin:0 0 4px;color:#555">Figures from the page source (before scripts run):</p>
-<table style="border-collapse:collapse;background:#fff;margin-bottom:12px"><tbody>
-<tr><td style="padding:4px 12px">Words on the live page</td><td><strong>${esc(st.liveWords)}</strong></td></tr>
-<tr><td style="padding:4px 12px">Words on the proposal</td><td><strong>${esc(st.previewWords)}</strong></td></tr>
-<tr><td style="padding:4px 12px">Live text kept</td><td><strong>${esc(st.keptPct)}%</strong> (added ${esc(st.addedWords)}, removed ${esc(st.removedWords)})</td></tr></tbody></table>
+${keptTextFigure(st)}
 <p style="margin:0 0 8px">Left: the live page as it is now (with its scripts, so listings and menus show). Right: the proposal (static copy of the same page with the new copy added). Anything on the left that is missing on the right is a problem. Images: <a href="${base}/shot/live?${q}">live.png</a> · <a href="${base}/shot/proposed?${q}">proposed.png</a> (first load takes up to a minute).</p>
 <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
 <figure style="margin:0;flex:1;min-width:300px"><figcaption><strong>Live now</strong></figcaption><img style="width:100%;border:1px solid #ccc;background:#fff" src="${base}/shot/live?${q}" alt="live"></figure>
@@ -328,3 +320,27 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`preview service on 127.0.0.1:${PORT}`);
   void housekeeping();
 });
+
+// /render (PAR-8799): loopback only, fixed port, for the SEO plugin's create-preview. Never on PORT, never behind Caddy.
+const egress = await startEgressProxy({ log: (line) => console.log(line) });
+const render = createRenderService({
+  proxyPort: egress.port,
+  chrome: () => findChrome(PLAYWRIGHT_DIR, CHROME_PATH),
+  withChromium,
+  before: housekeeping,
+  log: (line) => console.error(line),
+});
+const renderServer = http.createServer(render.handle);
+// A busy port must not take the public service on PORT down with it.
+renderServer.on("error", (error) => console.error(`render server on ${RENDER_PORT} failed`, error instanceof Error ? error.message : error));
+renderServer.listen(RENDER_PORT, "127.0.0.1", () => console.log(`render on 127.0.0.1:${RENDER_PORT}, egress proxy on 127.0.0.1:${egress.port}`));
+
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, () => {
+    render.stop();
+    void egress.close();
+    server.close();
+    renderServer.close();
+    setTimeout(() => process.exit(0), 500).unref();
+  });
+}
