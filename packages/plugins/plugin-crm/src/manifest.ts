@@ -232,7 +232,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "site-monitor",
       displayName: "Check client websites",
-      description: "Every 5 minutes: one GET of the address of each client website that is due (twice a day its certificate, once a day its domain expiry). A site down for 5 minutes, a certificate under 14 days or a domain under 30 days opens an issue for the Delivery Lead.",
+      description: "Every 5 minutes: one GET of the address of each client website that is due (twice a day its certificate, once a day its domain expiry). A site down for 5 minutes, a certificate under 14 days or a domain under 30 days opens an issue for the Delivery Lead. It also re-sends site.changed for agent writes an approval for pages allowed (sites whose approval is open or closed under an hour ago, at most 50 each).",
       schedule: "*/5 * * * *",
     },
     {

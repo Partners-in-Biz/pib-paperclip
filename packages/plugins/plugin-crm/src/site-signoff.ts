@@ -67,15 +67,20 @@ export async function onApprovalEvent(ctx: PluginContext, event: Pick<PluginEven
   const pagesUntil = p.pages.length > 0 ? until : null;
   const pages = [...new Set(p.pages.map((page) => (typeof page === "string" ? normalisePageUrl(page) : null)).filter((page): page is string => page !== null))];
   // One guarded upsert: a late or out-of-order event (seq not newer) changes nothing. pages_opened_at marks when the
-  // grant went from closed to open, so the change replay (T2b) knows where to start.
+  // grant went from closed to open, so the change replay (T2b) knows where to start. pages_closed_at marks when an open
+  // grant was closed (an expired one counts as closed at its old pages_until), so the replay runs for one more hour.
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "site_signoff")} AS s (site_id, company_id, required, pages, pages_until, pages_seq, pages_by, pages_opened_at)
-     VALUES ($1, $2, true, $3::jsonb, $4::timestamptz, $5::bigint, $6, CASE WHEN jsonb_array_length($3::jsonb) > 0 AND $4::timestamptz > now() THEN now() END)
+    `INSERT INTO ${table(ctx, "site_signoff")} AS s (site_id, company_id, required, pages, pages_until, pages_seq, pages_by, pages_opened_at, pages_closed_at)
+     VALUES ($1, $2, true, $3::jsonb, $4::timestamptz, $5::bigint, $6, CASE WHEN jsonb_array_length($3::jsonb) > 0 AND $4::timestamptz > now() THEN now() END,
+       CASE WHEN jsonb_array_length($3::jsonb) = 0 OR $4::timestamptz IS NULL OR $4::timestamptz <= now() THEN now() END)
      ON CONFLICT (site_id) DO UPDATE SET pages = EXCLUDED.pages, pages_until = EXCLUDED.pages_until, pages_seq = EXCLUDED.pages_seq, pages_by = EXCLUDED.pages_by,
        pages_opened_at = CASE
          WHEN jsonb_array_length(EXCLUDED.pages) = 0 OR EXCLUDED.pages_until <= now() THEN s.pages_opened_at
          WHEN s.pages_until > now() AND jsonb_array_length(COALESCE(s.pages, '[]'::jsonb)) > 0 THEN COALESCE(s.pages_opened_at, now())
          ELSE now() END,
+       pages_closed_at = CASE
+         WHEN jsonb_array_length(EXCLUDED.pages) = 0 OR EXCLUDED.pages_until <= now() THEN COALESCE(s.pages_closed_at, LEAST(s.pages_until, now()))
+         ELSE NULL END,
        updated_at = now()
      WHERE s.pages_seq < EXCLUDED.pages_seq`,
     [p.siteId, event.companyId, JSON.stringify(pages), pagesUntil, seq, by],
@@ -130,8 +135,21 @@ function pagesOf(value: unknown): Set<string> {
   return new Set(Array.isArray(list) ? list.filter((page): page is string => typeof page === "string") : []);
 }
 
-/** Why an agent may not make this Connector write right now, or null. */
-export async function signoffBlock(ctx: PluginContext, site: SignoffSite, endpoint: string, params: Record<string, unknown>): Promise<string | null> {
+/** The normalised page a write that passes `pageGrantRefusal` changes (for `undo`: the page of the undone change). */
+function grantedPage(site: SignoffSite, endpoint: string, params: Record<string, unknown>, undoTarget: UndoTarget | null): string | null {
+  if (endpoint === "undo") return undoTarget?.target ? normalisePageUrl(undoTarget.target, site.url) : null;
+  return typeof params.url === "string" ? normalisePageUrl(params.url, site.url) : null;
+}
+
+export interface SignoffCheck {
+  /** Why the agent may not make this write, or null. */
+  refusal: string | null;
+  /** The approved page this write changes when an open page grant allows it (whichever grant let it through), else null. */
+  page: string | null;
+}
+
+/** The lock decision for an agent's Connector write, and whether a page grant applies to it (PAR-9131 T2b). */
+export async function signoffCheck(ctx: PluginContext, site: SignoffSite, endpoint: string, params: Record<string, unknown>): Promise<SignoffCheck> {
   const rows = await ctx.db.query(
     `SELECT required, (approved_until IS NOT NULL AND approved_until > now()) AS approved,
             (pages_until IS NOT NULL AND pages_until > now()) AS pages_open, pages
@@ -139,7 +157,7 @@ export async function signoffBlock(ctx: PluginContext, site: SignoffSite, endpoi
     [site.id],
   );
   const row = rows[0];
-  if (!row || !row.required || row.approved) return null;
+  if (!row || !row.required) return { refusal: null, page: null };
   const pages = row.pages_open ? pagesOf(row.pages) : new Set<string>();
   if (pages.size > 0) {
     let undoTarget: UndoTarget | null = null;
@@ -152,8 +170,71 @@ export async function signoffBlock(ctx: PluginContext, site: SignoffSite, endpoi
       if (change && typeof change.endpoint === "string") undoTarget = { endpoint: change.endpoint, target: typeof change.target === "string" ? change.target : null };
     }
     const refusal = pageGrantRefusal(site, endpoint, params, pages, undoTarget);
-    if (!refusal) return null;
-    return `This site needs the client's sign-off before anything changes (change policy pr_only). Only the approved pages may change now (${[...pages].join(", ")}), and this write is refused: ${refusal}. Do not retry it in another form. Change only the approved pages with posts/update, posts/img-alt, seo/set or schema/set by url alone; anything else needs a new preview and approval.`;
+    if (!refusal) return { refusal: null, page: grantedPage(site, endpoint, params, undoTarget) };
+    if (row.approved) return { refusal: null, page: null };
+    return {
+      refusal: `This site needs the client's sign-off before anything changes (change policy pr_only). Only the approved pages may change now (${[...pages].join(", ")}), and this write is refused: ${refusal}. Do not retry it in another form. Change only the approved pages with posts/update, posts/img-alt, seo/set or schema/set by url alone; anything else needs a new preview and approval.`,
+      page: null,
+    };
   }
-  return "This site needs the client's sign-off before anything changes (change policy pr_only), and no approval to apply is running. Do not write to it. Make a client preview with create-preview (partnersinbiz.seo), put the proposal and link on Needs you and block-task. When the owner has approved applying the changes this tool works again for the approved window.";
+  if (row.approved) return { refusal: null, page: null };
+  return {
+    refusal: "This site needs the client's sign-off before anything changes (change policy pr_only), and no approval to apply is running. Do not write to it. Make a client preview with create-preview (partnersinbiz.seo), put the proposal and link on Needs you and block-task. When the owner has approved applying the changes this tool works again for the approved window.",
+    page: null,
+  };
+}
+
+/** Why an agent may not make this Connector write right now, or null. */
+export async function signoffBlock(ctx: PluginContext, site: SignoffSite, endpoint: string, params: Record<string, unknown>): Promise<string | null> {
+  return (await signoffCheck(ctx, site, endpoint, params)).refusal;
+}
+
+export const SITE_CHANGED_EVENT = "site.changed";
+/** How many changes per site one replay run re-emits at most. */
+export const REPLAY_CAP = 50;
+
+export interface SiteChangedPayload {
+  siteId: string;
+  url: string;
+  endpoint: string;
+  changeId: string | null;
+  at: string;
+}
+
+function iso(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+/**
+ * The replay of `site.changed` (PAR-9131 Q16): a lost event is sent again. Every 5 minutes, for sites whose page grant
+ * is open or closed less than an hour ago, each ok agent write the page grant allowed since the grant opened is
+ * emitted again, oldest first, at most REPLAY_CAP per site. The SEO consumer is idempotent.
+ */
+export async function replaySiteChanges(ctx: PluginContext, companyId: string): Promise<number> {
+  const rows = await ctx.db.query(
+    `SELECT site_id, endpoint, change_ref, page_url, created_at FROM (
+       SELECT c.site_id, c.endpoint, c.change_ref, c.page_url, c.created_at,
+              row_number() OVER (PARTITION BY c.site_id ORDER BY c.created_at, c.id) AS n
+         FROM ${table(ctx, "site_changes")} c
+         JOIN ${table(ctx, "site_signoff")} s ON s.site_id = c.site_id AND s.company_id = c.company_id
+        WHERE c.company_id = $1 AND c.ok = true AND c.page_url IS NOT NULL AND c.actor LIKE 'agent:%'
+          AND s.pages_opened_at IS NOT NULL AND c.created_at >= s.pages_opened_at
+          AND COALESCE(s.pages_closed_at, s.pages_until) > now() - interval '1 hour'
+     ) r WHERE n <= $2 ORDER BY site_id, created_at`,
+    [companyId, REPLAY_CAP],
+  );
+  let sent = 0;
+  for (const row of rows) {
+    const payload: SiteChangedPayload = {
+      siteId: String(row.site_id),
+      url: String(row.page_url),
+      endpoint: String(row.endpoint),
+      changeId: typeof row.change_ref === "string" ? row.change_ref : null,
+      at: iso(row.created_at),
+    };
+    await ctx.events.emit(SITE_CHANGED_EVENT, companyId, payload as unknown as Record<string, unknown>);
+    sent += 1;
+  }
+  return sent;
 }
