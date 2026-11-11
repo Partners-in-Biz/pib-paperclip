@@ -924,7 +924,7 @@ export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string
   const writes = CONNECTOR_ENDPOINTS[endpoint];
   const reason = typeof params.reason === "string" ? params.reason.trim().slice(0, 500) : "";
   if (writes && source === "agent") {
-    const blocked = await signoffBlock(ctx, site.id);
+    const blocked = await signoffBlock(ctx, site, endpoint, params);
     if (blocked) throw new CrmError(blocked);
   }
   if (writes && !reason) throw new CrmError("reason is required for a change: one line on why (it is kept in the site's log)");
