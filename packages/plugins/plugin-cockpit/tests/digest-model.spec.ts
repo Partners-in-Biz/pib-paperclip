@@ -59,6 +59,13 @@ describe("grouping by where the owner acts", () => {
     expect(placeOf({ action: "Two values needed", detail: "Paste the App Store Connect provider token.", source: "card" })).toBe("stores");
   });
 
+  it("a change that is prepared but not applied is a decision, not an application (the first live digest, 11 Nov)", () => {
+    expect(placeOf({ action: "Hunt and Gun Sign off: Add 3 internal links to the \"used guns for sale\" page", detail: "Change policy is pr_only. Three contextual links are drafted, not applied.", source: "plugin" })).toBe("decisions");
+    expect(placeOf({ action: "Hunt and Gun Sign off: Fix Core Web Vitals on https://huntandgun.co.za/buy-a-gun/", detail: "Prepared, not applied. Policy is pr_only and safe mode.", source: "plugin" })).toBe("decisions");
+    expect(placeOf({ action: "MT-S (Peet): Meta apps for Velox and Lumen", detail: null, source: "issue" })).toBe("applications");
+    expect(placeOf({ action: "Apply for TikTok Marketing API access", detail: null, source: "issue" })).toBe("applications");
+  });
+
   it("an approval with nothing else to go on is a quick click; anything else unplaced is a decision", () => {
     expect(placeOf({ action: "Hire request", detail: null, source: "approval" })).toBe("quick");
     expect(placeOf({ action: "Hire request", detail: null, source: "issue" })).toBe("decisions");
