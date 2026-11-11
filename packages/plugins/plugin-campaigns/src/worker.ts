@@ -149,6 +149,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { campaignsGrowthStore, campaignsGrowthToolsHost } from "./growth-host.js";
 import { linkCampaignToExperiment, measureExperimentsJob } from "./growth-measure.js";
 import { eventCounts, eventDays } from "./db.js";
+import { ownClientCounts } from "./client-summary.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
@@ -200,6 +201,7 @@ const plugin = definePlugin({
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
+    ctx.actions.register("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
     ctx.actions.register("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
     ctx.actions.register("campaigns.preferences-save", async (params, context) => {
       const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);

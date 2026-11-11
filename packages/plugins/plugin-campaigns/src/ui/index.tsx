@@ -47,6 +47,7 @@ import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientS
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
+import { clientWorkspacePath, type ClientSummaryRow } from "../client-summary.js";
 import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
@@ -126,6 +127,34 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
   );
 }
 
+/** "Client campaigns: N running, M waiting for approval"; several clients are listed, each linking into its workspace. */
+function ClientSummaryLine({ rows, linkProps }: { rows: ClientSummaryRow[]; linkProps: (href: string) => Record<string, unknown> }) {
+  const running = rows.reduce((sum, row) => sum + row.running, 0);
+  const waiting = rows.reduce((sum, row) => sum + row.waiting, 0);
+  const counts = (r: number, w: number) => `${r} running, ${w} waiting for approval`;
+  if (rows.length === 1) {
+    const only = rows[0]!;
+    return (
+      <p data-testid="client-summary" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" }}>
+        Client campaigns: {counts(running, waiting)}{" ("}
+        <a {...linkProps(clientWorkspacePath(only))} style={{ color: tokens.primary, fontWeight: 600 }}>{only.name}</a>{")"}
+      </p>
+    );
+  }
+  return (
+    <div data-testid="client-summary" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" }}>
+      <p style={{ margin: 0 }}>Client campaigns: {counts(running, waiting)}</p>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+        {rows.map((row) => (
+          <li key={`${row.kind}:${row.id}`}>
+            <a {...linkProps(clientWorkspacePath(row))} style={{ color: tokens.primary, fontWeight: 600 }}>{row.name}</a>: {counts(row.running, row.waiting)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** One line above the tabs: what cannot work yet, and the link that fixes it. */
 function Banner({ text, link, linkProps }: { text: string; link: { label: string; href: string }; linkProps: (href: string) => Record<string, unknown> }) {
   const colors = tone("warn");
@@ -148,6 +177,8 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const scopeKey = scope ? formatClientParam(scope) : "own";
   const load = usePluginAction("campaigns.load");
   const loadDetail = usePluginAction("campaigns.detail");
+  const loadClientSummary = usePluginAction("campaigns.client-summary");
+  const [clientRows, setClientRows] = useState<ClientSummaryRow[]>([]);
   const createCampaign = usePluginAction("campaigns.create-campaign");
   const loadPreferences = usePluginAction("campaigns.preferences-load");
   const savePreferences = usePluginAction("campaigns.preferences-save");
@@ -206,6 +237,17 @@ function CampaignsPageMain({ context }: PluginPageProps) {
       setLoadError(errorText(error));
       setMessage(errorText(error));
     });
+  }, [context.companyId, scopeKey]);
+
+  // Own page only: how the client campaigns are doing, one line.
+  useEffect(() => {
+    if (!context.companyId || scope) {
+      setClientRows([]);
+      return;
+    }
+    loadClientSummary({})
+      .then((result) => setClientRows(((result as { clients?: ClientSummaryRow[] }).clients ?? [])))
+      .catch(() => setClientRows([]));
   }, [context.companyId, scopeKey]);
 
   useEffect(() => {
@@ -612,6 +654,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
       message={pageMessage}
       actions={headerAction}
     >
+      {clientRows.length > 0 ? <ClientSummaryLine rows={clientRows} linkProps={linkProps} /> : null}
       {body}
     </Page>
   );
