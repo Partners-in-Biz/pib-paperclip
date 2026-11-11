@@ -785,6 +785,8 @@ type PaperclipWakePayload = {
   githubReviewConfigurations: Array<{ key: string; instructions: string }>;
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
+  /** PAR-9390: the action of the issue's unblock descriptor, for its named owner. */
+  unblockOwnerAction: string | null;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
@@ -1704,6 +1706,9 @@ function normalizePaperclipExternalChatQuestionResponse(
   };
 }
 
+export const UNBLOCK_OWNER_WAKE_INSTRUCTION =
+  "You are the named unblock owner of this issue, not its assignee. Do the action, then move the issue to todo; a comment alone does not wake the assignee.";
+
 export function normalizePaperclipWakePayload(
   value: unknown,
 ): PaperclipWakePayload | null {
@@ -1808,6 +1813,7 @@ export function normalizePaperclipWakePayload(
   );
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
   const issue = normalizePaperclipWakeIssue(payload.issue);
+  const unblockOwnerAction = asString(payload.unblockOwnerAction, "").trim() || null;
   const skillTest =
     issue?.workMode === "skill_test" ||
     payload.skillTest === true ||
@@ -1833,13 +1839,15 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
-    !issue
+    !issue &&
+    !unblockOwnerAction
   ) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
+    unblockOwnerAction,
     // Server-owned delivery snapshots also restore instructions for board wakes.
     // This field does not authenticate an external-chat turn or grant tools.
     githubReviewConfigurations: Array.isArray(payload.githubReviewConfigurations)
@@ -2492,6 +2500,12 @@ function renderPaperclipWakePromptBody(
     ...(normalized.reason === "issue_recovery_action_restored"
       ? [
           "- instruction: Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.",
+        ]
+      : []),
+    ...(normalized.unblockOwnerAction
+      ? [
+          `- unblock action: ${normalized.unblockOwnerAction}`,
+          `- instruction: ${UNBLOCK_OWNER_WAKE_INSTRUCTION}`,
         ]
       : []),
   ];

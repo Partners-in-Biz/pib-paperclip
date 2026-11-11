@@ -158,8 +158,14 @@ describeEmbeddedPostgres("unblock-owner wake reaches its owner and starts (PAR-9
     const [issueWhileRunning] = await db.select().from(issues).where(eq(issues.id, ids.issueId));
     expect(issueWhileRunning?.executionRunId).toBeNull();
 
+    // AC 7: the action reaches the run context and its wake payload.
+    const [running] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    expect(running?.contextSnapshot).toMatchObject({ unblockAction: ACTION });
+
     release();
     expect((await settled(run?.id))?.status).toBe("succeeded");
+    const executeContext = (mockAdapterExecute.mock.calls[0]?.[0] as { context?: Record<string, unknown> })?.context;
+    expect(executeContext?.paperclipWake).toMatchObject({ reason: "issue_unblock_requested", unblockOwnerAction: ACTION });
   });
 
   // AC 4: a later wake for the assignee on X is not deferred behind M.

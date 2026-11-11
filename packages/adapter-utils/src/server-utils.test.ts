@@ -4217,3 +4217,27 @@ describe("wake continuation comment ownership", () => {
     expect(legacy).toContain(`"objective":"${objective}"`);
   });
 });
+
+// PAR-9390 AC 7: the named unblock owner sees the action and the owner line.
+describe("renderPaperclipWakePrompt unblock owner action", () => {
+  const payload = {
+    reason: "issue_unblock_requested",
+    unblockOwnerAction: "Grant the deploy key to the CI runner",
+    issue: { id: "issue-x", identifier: "PAR-1", title: "Blocked on a grant", status: "blocked", priority: "high" },
+    commentIds: [],
+    comments: [],
+  };
+
+  it("renders the action and the owner instruction in the wake summary", () => {
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- unblock action: Grant the deploy key to the CI runner");
+    expect(prompt).toContain(
+      "- instruction: You are the named unblock owner of this issue, not its assignee. Do the action, then move the issue to todo; a comment alone does not wake the assignee.",
+    );
+  });
+
+  it("renders no owner line without an action", () => {
+    const prompt = renderPaperclipWakePrompt({ ...payload, unblockOwnerAction: null });
+    expect(prompt).not.toContain("named unblock owner");
+  });
+});
