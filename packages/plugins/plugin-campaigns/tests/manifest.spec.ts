@@ -123,7 +123,7 @@ describe("migrations", () => {
   it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
     expect(files[13]).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(15);
+    expect(files).toHaveLength(16);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.

@@ -5,6 +5,8 @@ import { ALL_CONTACTS_MARK, audienceLine, enrollmentStart, isEveryContact } from
 import { pruneStaleWaiting } from "../../plugin-cockpit/src/brief.js";
 import { emptySnapshot } from "@partnersinbiz/pib-plugin-kit";
 import { approvalWaiting, AGENT_HOLD_MS } from "../src/cockpit.js";
+import { approvalAudience, audienceFingerprint } from "../src/approval-audience.js";
+import { getCampaign, listSteps } from "../src/db.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 import { boot, campaign, CO, enrollment, issueUpdated, PAST, seed, seedIssue, setIssueStatus, setRoles, step } from "./helpers/harness.js";
 
@@ -77,6 +79,31 @@ describe("approval request", () => {
     expect(issue.description).toContain("[camp-1](/PIB/campaigns?campaign=camp-1)");
   });
 
+  it("stores who it is for: the count and hash of the people a launch would enroll", async () => {
+    const store = draftStore();
+    store.suppressions!.push({ company_id: CO, email: "uma@x.test", reason: "unsubscribe", scope: "marketing", source: "partnersinbiz.crm", contact_id: null, campaign_id: null });
+    const { harness } = await boot({ store });
+    await requestApproval(harness, store);
+    // Tagged vip: ada, bob, uma; uma is unsubscribed, so a launch enrolls ada and bob.
+    const expected = audienceFingerprint(["ada", "bob"]);
+    expect(store.campaigns![0]).toMatchObject({ approval_audience_count: 2, approval_audience_hash: expected.hash });
+    const saved = (await getCampaign(harness.ctx, "camp-1"))!;
+    expect(saved).toMatchObject({ approvalAudienceCount: 2, approvalAudienceHash: expected.hash });
+    // The helper PR 3 compares with resolves the same people.
+    expect(await approvalAudience(harness.ctx, CO, saved, await listSteps(harness.ctx, "camp-1"))).toEqual({ ...expected, contactIds: ["ada", "bob"] });
+  });
+
+  it("hashes the same people the same in any order, and differently with one more", () => {
+    const base = audienceFingerprint(["bob", "ada", "cy"]);
+    expect(audienceFingerprint(["cy", "bob", "ada"]).hash).toBe(base.hash);
+    expect(audienceFingerprint(["ada", "bob", "cy", "ada"])).toEqual(base);
+    expect(base.count).toBe(3);
+    const grown = audienceFingerprint(["ada", "bob", "cy", "dee"]);
+    expect(grown.count).toBe(4);
+    expect(grown.hash).not.toBe(base.hash);
+    expect(audienceFingerprint(["ada", "bob"]).hash).not.toBe(base.hash);
+  });
+
   it("says All contacts (N) when there are no tags, and refuses a campaign without steps", async () => {
     const store = draftStore({ audience_tags: [] });
     const { harness } = await boot({ store });
@@ -92,11 +119,15 @@ describe("approval request", () => {
     const store = draftStore();
     const { harness, comments } = await boot({ store });
     const { issueId } = await requestApproval(harness, store);
+    // The client's yes was recorded for this copy.
+    Object.assign(store.campaigns![0]!, { client_yes_ref: "https://mail.example/t/1", client_yes_by: "user-peet", client_yes_at: "2026-11-11T10:00:00Z" });
     const added = await harness.executeTool<{ data: Record<string, any> }>("add-campaign-step", { campaignId: "camp-1", subject: "Follow up", body: "Any thoughts?", delayDays: 3 }, { companyId: CO, agentId: "agent-camp" });
     expect(added.data.approvalReset).toBe(true);
     expect((await harness.ctx.issues.get(issueId, CO))!.status).toBe("cancelled");
     expect(comments.mock.calls.some(([id, body]) => id === issueId && /step 2 was added/.test(String(body)))).toBe(true);
     expect(store.campaigns![0]!.approval_issue_id).toBeNull();
+    // The yes was for the copy before the edit.
+    expect(store.campaigns![0]).toMatchObject({ client_yes_ref: null, client_yes_by: null, client_yes_at: null });
 
     // A change that does not touch what the approver saw keeps the new approval.
     const { issueId: second } = await requestApproval(harness, store);

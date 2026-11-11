@@ -46,6 +46,13 @@ export interface CampaignDraft {
   launchedAt?: string | null;
   /** Why the last launch on approval failed (cleared on a launch). */
   launchError?: string | null;
+  /** Where the client said yes to this copy (a link to the comment or email), who recorded it and when. Cleared by an edit that cancels the approval. */
+  clientYesRef?: string | null;
+  clientYesBy?: string | null;
+  clientYesAt?: string | null;
+  /** Who a launch would have enrolled when approval was requested: the count and a hash of the sorted contact ids. */
+  approvalAudienceCount?: number | null;
+  approvalAudienceHash?: string | null;
 }
 
 export const CAMPAIGN_DELIVERIES = ["issue", "email", "auto"] as const;
