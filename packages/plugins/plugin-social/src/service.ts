@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByDelegate, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
 import { clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
@@ -876,6 +876,14 @@ export async function approvePostAsDelegateRecord(ctx: PluginContext, viewer: Vi
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const progress = await approvePostByDelegate(ctx, viewer, post);
   return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
+}
+
+/** `return-post-as-delegate`: the delegated approver sends a post in review back to draft with notes (checks in `returnPostByDelegate`). */
+export async function returnPostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await returnPostByDelegate(ctx, viewer, post, optionalString(params, "notes"));
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...result };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */

@@ -187,8 +187,8 @@ describe("the delegated approver is a person's choice", () => {
   });
 
   it("is a page action only: no agent tool and no manifest tool sets a delegate (the delegate's own tool only approves)", () => {
-    expect(SOCIAL_TOOLS.map((t) => t.name).filter((n) => n.includes("delegate"))).toEqual(["approve-post-as-delegate"]);
-    expect((manifest.tools ?? []).map((t) => t.name).filter((n) => n.includes("delegate"))).toEqual(["approve-post-as-delegate"]);
+    expect(SOCIAL_TOOLS.map((t) => t.name).filter((n) => n.includes("delegate"))).toEqual(["approve-post-as-delegate", "return-post-as-delegate"]);
+    expect((manifest.tools ?? []).map((t) => t.name).filter((n) => n.includes("delegate"))).toEqual(["approve-post-as-delegate", "return-post-as-delegate"]);
   });
 
   it("refuses a blocked agent or scope, and with no running Reviewer, before writing anything", async () => {
