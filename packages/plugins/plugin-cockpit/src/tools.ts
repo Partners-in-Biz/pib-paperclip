@@ -8,6 +8,7 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
 import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
+import { HARD_STOPS } from "./decision-rights-model.js";
 import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
 import { GROWTH_TOOLS } from "./growth-tool-declarations.js";
@@ -90,7 +91,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.askOwner,
     displayName: "Ask the owner",
     description:
-      "Ask the owner for a decision, a one-time grant (a login consent, a key, a DNS record), money, legal or information you cannot get elsewhere. Once per issue; asking again updates the question. The issue goes to the owner (in review), shows first in the Cockpit's Waiting on you and the daily brief, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next. Optionally set defaultAfterHours, recommended (one of options) and policyClass so a policy can answer if the owner does not by then.",
+      "Ask the owner. ONLY the six hard stops reach the owner: (1) a client's site or app going to main or live, or a production database change; (2) a spend over R500, a new subscription, or any quote, invoice or price; (3) a login, key or account only the owner holds, or their hands on a device; (4) legal text, or a message that commits the company to a client; (5) a new app version going public in a store; (6) deleting client or production data with no way back. Anything else is not the owner's to decide: where the company has set deciding seats the tool hands your question to the seat for its class at once (the result names the seat and the Decision issue; you are woken when it is closed) and nothing reaches the owner. Once per issue; asking again updates the question. A hard stop goes to the owner (in review), reaches them in the one daily digest at 16:00 and in the Cockpit's Waiting on you, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. Put your recommended option first: a decision or info question that is not a hard stop applies it by itself after 24 hours with no reply, and says so on the issue. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next.",
     parametersSchema: schema(["issueId", "question", "why", "kind"], {
       issueId: { type: "string", description: "The issue you are working on, which waits for the answer (id or identifier, e.g. PIB-23)." },
       question: { type: "string", maxLength: ASK_LIMITS.question, description: `One clear question (at most ${ASK_LIMITS.question} characters).` },
@@ -114,9 +115,10 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
       steps: { type: "array", items: { type: "string", maxLength: ASK_LIMITS.stepChars }, maxItems: ASK_LIMITS.steps, description: `Exact steps for anything they must do themselves, in order (up to ${ASK_LIMITS.steps}).` },
       client: { type: "string", pattern: "^(company|contact):[A-Za-z0-9_-]{1,128}$", description: "The client it is about: \"company:<crm id>\" or \"contact:<crm id>\". Omit for own work." },
       dueBy: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "When you need the answer by, YYYY-MM-DD." },
-      defaultAfterHours: { type: "integer", minimum: 1, description: "Hours to wait before applying the default answer (must be 1 or higher)." },
-      recommended: { type: "string", description: "The recommended answer (must be one of the options)." },
+      defaultAfterHours: { type: "integer", minimum: 1, description: "Hours to wait before applying the default answer (must be 1 or higher). Left out, a question that is not a hard stop uses 24." },
+      recommended: { type: "string", description: "The recommended answer (must be one of the options). Left out, the first option is the recommended one." },
       policyClass: { type: "string", enum: [...POLICY_CLASSES], description: "The policy class for auto-answering the question." },
+      hardStop: { type: "string", enum: Object.keys(HARD_STOPS), description: "Which of the six hard stops this is, when it is one: client-production, money, logins, legal, store-release or data-delete. It then waits for the owner however long it takes and never answers itself. Leave it out when it is none of them." },
       effect: {
         type: "object",
         description: "What the system does when the owner says yes to your FIRST option, so a grant takes effect and is checked (not just answered). Only for kind grant or decision, and only an effect a skill or the Setup checklist names (for example mailbox.delegate, cockpit.grant-memory-tools). The owner sees exactly what it will do. After the answer you are woken with what happened: do not ask again.",

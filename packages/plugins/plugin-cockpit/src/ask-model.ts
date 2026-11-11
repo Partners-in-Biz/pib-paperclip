@@ -13,6 +13,7 @@ import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { ASK_OWNER_COMMENT_MARK } from "@partnersinbiz/pib-plugin-kit/asking";
 import type { WaitingItem } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import type { WaitingAskInfo } from "./merge.js";
+import { DEFAULT_APPLY_HOURS, HARD_STOPS, type HardStopKey } from "./decision-rights-model.js";
 import { POLICY_CLASSES, type PolicyClass } from "./owner-defaults-model.js";
 
 export const ASK_KINDS = ["decision", "grant", "money", "legal", "info"] as const;
@@ -128,6 +129,8 @@ export interface AskInput {
   recommended: string | null;
   /** The policy class for auto-answer. */
   policyClass: PolicyClass | null;
+  /** Set by the asker when the question is one of the six hard stops: it then waits for the owner however long it takes. */
+  hardStop: HardStopKey | null;
 }
 
 export class AskError extends Error {}
@@ -229,7 +232,13 @@ export function parseAskInput(raw: Record<string, unknown>): AskInput {
     }
     policyClass = val as PolicyClass;
   }
-  return { issueId, question, options, why, kind, links, steps, client, dueBy, effect, defaultAfterHours, recommended, policyClass };
+  let hardStop: HardStopKey | null = null;
+  if (raw.hardStop != null && raw.hardStop !== "") {
+    const val = typeof raw.hardStop === "string" ? raw.hardStop.trim() : "";
+    if (!(Object.keys(HARD_STOPS) as string[]).includes(val)) throw new AskError(`hardStop must be one of ${Object.keys(HARD_STOPS).join(", ")}. Leave it out when the question is none of them.`);
+    hardStop = val as HardStopKey;
+  }
+  return { issueId, question, options, why, kind, links, steps, client, dueBy, effect, defaultAfterHours, recommended, policyClass, hardStop };
 }
 
 /** A Paperclip path with the company prefix (`/issues/X` → `/PIB/issues/X`); links that already have it, and https links, stay. */
@@ -248,6 +257,8 @@ export function askComment(input: {
   clientLabel?: string | null;
   prefix: string | null;
   again?: boolean;
+  /** The answer that applies by itself when nobody replies in time (never set for a hard stop). */
+  autoApply?: { answer: string; hours: number } | null;
 }): string {
   const { ask } = input;
   const meta = [input.from ? `from ${input.from}` : null, ASK_KIND_LABEL[ask.kind], input.clientLabel ? `for ${input.clientLabel}` : null, ask.dueBy ? `needed by ${ask.dueBy}` : null].filter(Boolean).join(" · ");
@@ -268,7 +279,18 @@ export function askComment(input: {
   }
   if (ask.effect) lines.push(`**If you say yes to the first option:** ${describeEffect(ask.effect)} It is checked afterwards, and ${input.agentName} is told what happened.`, "");
   lines.push(`Reply here with your answer${ask.options.length ? " (the option number is enough)" : ""}. The issue then goes back to ${input.agentName}, who carries on.`);
+  if (input.autoApply) lines.push("", autoApplyLine(input.autoApply));
   return lines.join("\n");
+}
+
+/** The line that tells the owner an unanswered question answers itself. */
+export function autoApplyLine(auto: { answer: string; hours: number }): string {
+  return `This is not a hard stop. With no reply in ${auto.hours} hours the recommended answer applies by itself: **${auto.answer}**.`;
+}
+
+/** The comment posted when the recommended answer was applied because nobody replied. */
+export function defaultAppliedComment(answer: string, hours: number = DEFAULT_APPLY_HOURS): string {
+  return `No reply in ${hours} hours, so the recommended answer was applied: **${answer}**. This was not a hard stop (${Object.values(HARD_STOPS).map((h) => h.label).join(", ")}), so it did not wait. Reply here to change it.`;
 }
 
 /** "2" → "Option 2: Publish on Tuesday" when the reply is just an option number. */
@@ -280,11 +302,13 @@ export function answerText(answer: string, options: string[]): string {
 }
 
 /** The wake reason for the agent: its question's answer, short. */
-export function wakeReason(input: { identifier: string | null; answer: string; options: string[]; effect?: string | null }): string {
+export function wakeReason(input: { identifier: string | null; answer: string; options: string[]; effect?: string | null; byDefault?: boolean }): string {
   const answer = answerText(input.answer, input.options).replace(/\s+/g, " ");
   const short = answer.length > ASK_LIMITS.wakeAnswerChars ? `${answer.slice(0, ASK_LIMITS.wakeAnswerChars - 1)}…` : answer;
   const effect = input.effect ? ` What the answer was meant to do: ${input.effect}` : "";
-  return `The owner answered your question${input.identifier ? ` on ${input.identifier}` : ""}: "${short}".${effect} Read the reply on the issue and carry on.`;
+  const on = input.identifier ? ` on ${input.identifier}` : "";
+  if (input.byDefault) return `Nobody replied to your question${on} in time, so your recommended answer was applied: "${short}". Carry on with it; the owner can still change it by replying on the issue.`;
+  return `The owner answered your question${on}: "${short}".${effect} Read the reply on the issue and carry on.`;
 }
 
 /** An open ask as the Cockpit page and the Operator see it. */

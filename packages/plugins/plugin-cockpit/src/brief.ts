@@ -104,7 +104,8 @@ export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<st
 export async function issueStatuses(ctx: PluginContext, companyId: string, ids: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (!ids.length) return out;
-  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, status FROM public.issues WHERE company_id = $1 AND id::text = ANY($2::text[])`, [companyId, ids]);
+  // The ids go as one JSON value: the host binds each array element as its own parameter, so an array cannot be cast to text[].
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
   for (const row of rows) out.set(String(row.id), String(row.status ?? ""));
   return out;
 }
@@ -113,7 +114,7 @@ export async function issueStatuses(ctx: PluginContext, companyId: string, ids: 
 export const OWNER_ISSUE_CEILING = 500;
 const OWNER_ISSUE_PAGE = 100;
 
-/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. `total` is the real count; `more` is set when some are not shown. */
+/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. The owner's daily digest issue is a list of work, not work, so it is left out. `total` is the real count; `more` is set when some are not shown. */
 export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<{ items: IssueLite[]; total: number; more: boolean }> {
   if (!userId) return { items: [], total: 0, more: false };
   const items: IssueLite[] = [];
@@ -125,6 +126,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
       const rows = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
           WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
+            AND origin_kind IS DISTINCT FROM '${ORIGIN.digest}'
           ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
         [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - offset), offset],
       );

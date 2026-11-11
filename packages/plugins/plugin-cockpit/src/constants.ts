@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.19.9";
+export const VERSION = "0.20.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -71,6 +71,10 @@ export const ORIGIN = {
   routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
   growthReview: `plugin:${COCKPIT_PLUGIN}:growth-review`,
   autoresearch: `plugin:${COCKPIT_PLUGIN}:autoresearch`,
+  /** A question routed to the seat that decides its class (decision rights): one open per asking issue. */
+  decision: `plugin:${COCKPIT_PLUGIN}:decision`,
+  /** The owner's one daily digest of everything that waits on them. */
+  digest: `plugin:${COCKPIT_PLUGIN}:digest`,
 } as const;
 
 /**

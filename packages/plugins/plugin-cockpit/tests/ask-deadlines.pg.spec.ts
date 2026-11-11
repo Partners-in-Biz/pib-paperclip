@@ -131,7 +131,7 @@ d("ask deadline sweep (Postgres)", () => {
     expect(ask?.answer).toBe("Yes");
   });
 
-  it("escalates when policy does not cover", async () => {
+  it("policy does not cover: waits, then the 24-hour rule applies the recommended answer and says so", async () => {
     const w = await worlds.make({
       savedConfigs: { [A]: { healthIssue: true } },
       prefixes: { [A]: "PAR" },
@@ -157,12 +157,82 @@ d("ask deadline sweep (Postgres)", () => {
     const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
     const result = await sweepAt(w, deadlineTime);
 
-    expect(result.errors).toBe(0);
-    expect(result.escalated).toBe(1);
+    // Past its own deadline but not 24 hours old: nothing happens, and nothing is escalated.
+    expect(result).toMatchObject({ errors: 0, escalated: 0, applied: 0, processed: 0 });
+    expect((await getAsk(w.env, A, askId))?.status).toBe("open");
 
+    const after = await sweepAt(w, new Date(Date.parse(NOW) + 24 * 3600000 + 60_000));
+    expect(after).toMatchObject({ errors: 0, escalated: 0, applied: 1 });
     const ask = await getAsk(w.env, A, askId);
-    expect(ask?.status).toBe("open");
+    expect(ask).toMatchObject({ status: "answered", answer: "Yes", defaultPolicy: "24-hour default" });
+    expect(ask?.defaultAppliedAt).toBeTruthy();
+    const said = w.comments.filter((c) => c.issueId === child.id).map((c) => c.body);
+    expect(said.some((b) => b.startsWith("No reply in 24 hours, so the recommended answer was applied: **Yes**"))).toBe(true);
+    // The agent is woken with its own answer, not told the owner replied.
+    expect(w.wakeReasons.at(-1)?.reason).toContain("Nobody replied");
+
+    // Once only.
+    const again = await sweepAt(w, new Date(Date.parse(NOW) + 30 * 3600000));
+    expect(again).toMatchObject({ applied: 0, escalated: 0 });
   });
+
+  it("the 24-hour rule needs no deadline from the agent: the first option is the recommended one", async () => {
+    const w = await worlds.make({
+      savedConfigs: { [A]: { healthIssue: true } },
+      prefixes: { [A]: "PAR" },
+      agents: [
+        { id: OP, companyId: A, name: "Olive", status: "active", role: "general" },
+        { id: SEO, companyId: A, name: "Sam", status: "active", role: "general" },
+      ],
+    });
+    await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");
+    const issue = await createIssueWithParent(w);
+    const askId = await createAsk(w, { issueId: issue.id });
+    const row = await getAsk(w.env, A, askId);
+    expect(row).toMatchObject({ recommended: "Yes", defaultAfterHours: 24 });
+    expect(row?.deadlineAt).toBe(new Date(Date.parse(NOW) + 24 * 3600000).toISOString());
+    // The card tells the owner what happens.
+    expect(w.comments.find((c) => c.issueId === issue.id)?.body).toContain("With no reply in 24 hours the recommended answer applies by itself: **Yes**");
+
+    expect((await sweepAt(w, new Date(Date.parse(NOW) + 23 * 3600000))).applied).toBe(0);
+    expect((await sweepAt(w, new Date(Date.parse(NOW) + 24 * 3600000 + 60_000))).applied).toBe(1);
+    expect((await getAsk(w.env, A, askId))?.answer).toBe("Yes");
+  });
+
+  it("a hard stop never applies: by its words, by its kind, or named by the asker", async () => {
+    const w = await worlds.make({
+      savedConfigs: { [A]: { healthIssue: true } },
+      prefixes: { [A]: "PAR" },
+      agents: [
+        { id: OP, companyId: A, name: "Olive", status: "active", role: "general" },
+        { id: SEO, companyId: A, name: "Sam", status: "active", role: "general" },
+      ],
+    });
+    await saveTeam(w.env, A, { operatorAgentId: OP }, "user-owner");
+    const ask = async (extra: Record<string, unknown>) => {
+      const issue = await createIssueWithParent(w);
+      const result = (await w.tools.get("ask-owner")!(
+        { issueId: issue.id, question: "What should we do?", why: "Need a decision", kind: "decision", options: ["Yes", "No"], links: [{ label: "Issue", href: "/PAR/issues/PAR-1" }], ...extra },
+        RUN,
+      )) as { error?: string; data: { askId: string; hardStop: string | null; autoApply: unknown } };
+      if (result.error) throw new Error(result.error);
+      return { issue, ...result.data };
+    };
+    const byWords = await ask({ question: "Send quote Q-HUN-001 for R 6,860.00 to Hunt and Gun?" });
+    const byKind = await ask({ kind: "money", question: "Approve the spend?", links: [{ label: "Billing", href: "/PAR/billing" }] });
+    const named = await ask({ hardStop: "client-production" });
+    expect([byWords.hardStop, byKind.hardStop, named.hardStop]).toEqual(["money", "money", "client-production"]);
+    for (const a of [byWords, byKind, named]) {
+      expect(a.autoApply).toBeNull();
+      // No deadline, and the card does not promise an answer.
+      expect((await getAsk(w.env, A, a.askId))?.deadlineAt).toBeNull();
+      expect(w.comments.find((c) => c.issueId === a.issue.id)?.body).not.toContain("applies by itself");
+    }
+    const result = await sweepAt(w, new Date(Date.parse(NOW) + 72 * 3600000));
+    expect(result).toMatchObject({ applied: 0, errors: 0 });
+    for (const a of [byWords, byKind, named]) expect((await getAsk(w.env, A, a.askId))?.status).toBe("open");
+  });
+
 
   it("applies idempotently: second sweep does nothing", async () => {
     const w = await worlds.make({
