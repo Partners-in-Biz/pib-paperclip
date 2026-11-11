@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Field, Input, Pill, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Pill, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, Card, fmtDate, ignore, Muted, Row, scopeParams, SmallButton } from "./parts.js";
 import type { ApprovalPolicyView, ApprovalStatus, Post, RequestedApproval, RunAction, SignoffState, Snapshot } from "./types.js";
 
@@ -70,7 +70,59 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
           </Row>
         </div>
       )}
+      {!editing ? <DelegateApprover snapshot={snapshot} policy={policy} run={run} /> : null}
     </Card>
+  );
+}
+
+/** The scope's delegated approver: a person picks an agent (Save) or removes it (Clear). Never shown to an agent, nor where the client approves. */
+function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; policy: ApprovalPolicyView; run: RunAction }) {
+  const delegate = policy.delegate ?? null;
+  const candidates = snapshot.delegateCandidates ?? [];
+  const [pick, setPick] = useState(delegate?.agentId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = delegate?.agentId ?? "";
+  useEffect(() => setPick(current), [current]);
+  if (!snapshot.viewer.userId || !snapshot.scope || policy.requireClient) return null;
+  if (candidates.length === 0 && !delegate) return null;
+  const send = (agentId: string | null) => {
+    setBusy(true);
+    setError(null);
+    return run("social.set-approval-delegate", { ...scopeParams(snapshot), agentId }, agentId ? "Delegated approver saved" : "Delegated approver cleared")
+      .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "The change was not saved."))
+      .finally(() => setBusy(false));
+  };
+  const name = delegate ? delegate.name ?? delegate.agentId : null;
+  return (
+    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      <strong style={{ fontSize: 13 }}>Delegated approver</strong>
+      {delegate ? (
+        <Row style={{ flexWrap: "wrap" }}>
+          <Pill tone={delegate.active ? "ok" : "warn"} dot>{delegate.active ? "acting" : "not acting"}</Pill>
+          <span style={{ fontSize: 13, minWidth: 0, overflowWrap: "anywhere" }}>{name}</span>
+        </Row>
+      ) : (
+        <Muted>No delegated approver: a team member approves.</Muted>
+      )}
+      {delegate && !delegate.active ? <Muted style={{ color: tokens.fg }}>Not acting because: {delegate.inactiveReason ?? "a check failed"}. A team member approves until then.</Muted> : null}
+      {candidates.length === 0 ? <Muted>No agent can be picked here right now.</Muted> : null}
+      <Row style={{ flexWrap: "wrap" }}>
+        {candidates.length > 0 ? (
+          <Select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Delegated approver" disabled={busy} style={{ minWidth: 0, maxWidth: "100%" }}>
+            <option value="">Choose an agent</option>
+            {delegate && !candidates.some((c) => c.id === delegate.agentId) ? <option value={delegate.agentId}>{name}</option> : null}
+            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        ) : null}
+        {candidates.length > 0 ? (
+          <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={busy || !pick || pick === current} onClick={() => void send(pick)}>Save</Button>
+        ) : null}
+        {delegate ? <SmallButton onClick={() => void send(null)}>Clear</SmallButton> : null}
+      </Row>
+      {error ? <Banner tone="error" title="The delegated approver was not saved">{error}</Banner> : null}
+      <Muted>Only on scopes an instance admin allowed. Own brands only.</Muted>
+    </div>
   );
 }
 
