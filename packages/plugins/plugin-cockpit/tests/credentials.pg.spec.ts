@@ -543,5 +543,17 @@ d("the credentials register (Postgres)", () => {
       expect(await syncBrowserIdentities(w.env, A, "x")).toMatchObject({ identities: 2, expired: 2, cards: 2 });
       expect((await rows(w)).every((r) => r.last_verify_status === "expired")).toBe(true);
     });
+    it("site_not_found is a config problem: row recorded, no Log-in-again card", async () => {
+      const w = await setup(JSON.stringify({ checkedAt: w0(1), identities: { "pib:paperclip": { ok: false, reason: "site_not_found" } } }));
+      expect(await syncBrowserIdentities(w.env, A, "x")).toMatchObject({ identities: 1, expired: 1, cards: 0 });
+      expect(await cards(w)).toBe(0);
+      expect((await rows(w))[0]!.last_verify_detail).toMatch(/site_not_found/);
+    });
+
+    it("a stale file with no identities raises no card", async () => {
+      const w = await setup(JSON.stringify({ checkedAt: w0(40), identities: {} }));
+      expect(await syncBrowserIdentities(w.env, A, "x")).toEqual({ identities: 0, expired: 0, cards: 0 });
+      expect(await cards(w)).toBe(0);
+    });
   });
 });
