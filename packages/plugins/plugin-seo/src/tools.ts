@@ -763,13 +763,27 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       links: list('"Label | https://…" or a bare URL'),
       copy: text("Copy-ready text (DM, email, post)"),
       after: text("What you do once it is done (required unless a standard key)"),
-      taskIds: list("Tasks that continue when it is done"),
+      taskIds: list("Tasks that continue when it is done (a page change set on a pr_only site: its task, so resolving can open the apply window)"),
       optional: flag("Listed under Optional on the Needs you issue (default false)"),
       wpVerifyFailed: text("Verification items on a WordPress site with wp-verify are refused unless this says what you tried and the error; it is recorded on the sprint."),
       personOnly: text("Page changes and template markup you can make yourself are refused; only if one truly needs a person (wp-admin, an account, a judgement), say here exactly what only a person can do (kept on the item)."),
     }),
   },
-  { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text("Item key (from needs-you)"), note: text("What was done, stored on the item (max 1000 chars)") }) },
+  {
+    group: "Needs you",
+    name: "needs-you-resolve",
+    displayName: "Resolve Needs you item",
+    description:
+      "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you. A page change set on a pr_only WordPress sprint with manual sign-off: pass pageUrls (and taskId when the item names no task or several, reviewCommentId when the pages have no passed preview) to open the apply window first, exactly like approve-page-apply (24 h); a refused window leaves the item open. Without pageUrls such an item is resolved with applyWindow not_opened.",
+    parametersSchema: schema(["sprintId", "key"], {
+      sprintId,
+      key: text("Item key (from needs-you)"),
+      note: text("What was done, stored on the item (max 1000 chars); with pageUrls also the grant note"),
+      pageUrls: list("Open the apply window for these pages of the task (1 to 10, full URLs) before resolving"),
+      taskId: text("The sprint task whose pages these are (one of the item's taskIds when it names any)"),
+      reviewCommentId: text("The Reviewer's PASS comment id, for pages without a passed preview"),
+    }),
+  },
   { group: "Needs you", name: "setup-checklist", displayName: "Setup checklist", description: "Every one-time setup item (settings, service account, GitHub access, agent, keys; per sprint: site repo or WordPress Connector, property, Bing, autopilot) with status, links and what you do next.", parametersSchema: schema([], { sprintId }) },
 
   // Audits
