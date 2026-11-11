@@ -183,6 +183,8 @@ import {
   readTicketRunsPerHourCap,
   shouldStartQueuedIssueRun,
   shouldWakeBlockedTicket,
+  isSystemUnblockOwnerWake,
+  ISSUE_UNBLOCK_REQUESTED_WAKE_REASON,
 } from "../issue-wake-guards.js";
 import {
   hasReviewVerdictWakeInWindow,
@@ -1061,6 +1063,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           conversationAgentId: issues.conversationAgentId,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issues)
         .where(
@@ -1072,6 +1075,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         readNonEmptyString(context.reason) ??
         wakeRequest?.reason ??
         null;
+      // PAR-9390: checked again here against the live descriptor and assignee.
+      const unblockOwnerWake = isSystemUnblockOwnerWake(
+        wakeRequest,
+        context,
+        startIssue,
+        run.agentId,
+      );
       const startDecision = shouldStartQueuedIssueRun({
         issueStatus: startIssue?.status ?? null,
         paused: false,
@@ -1084,7 +1094,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         chatConversation: Boolean(startIssue?.conversationAgentId),
         requestedByActorType: wakeRequest?.requestedByActorType ?? null,
         requestedByActorId: wakeRequest?.requestedByActorId ?? null,
+        systemUnblockOwnerWake: unblockOwnerWake,
         assigneeMismatchExempt:
+          unblockOwnerWake ||
           isNonAssigneeWorkspaceBusyRetry(
             readNonEmptyString(context.retryReason),
             context,
@@ -3606,6 +3618,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               executionWorkspaceSettings: issues.executionWorkspaceSettings,
               assigneeAgentId: issues.assigneeAgentId,
               assigneeUserId: issues.assigneeUserId,
+              unblockDescriptor: issues.unblockDescriptor,
               monitorNextCheckAt: issues.monitorNextCheckAt,
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
               executionRunId: issues.executionRunId,
@@ -3724,6 +3737,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             chatConversation: Boolean(issue.conversationAgentId),
+            systemUnblockOwnerWake: isSystemUnblockOwnerWake(
+              { reason, requestedByActorType: opts.requestedByActorType, requestedByActorId: opts.requestedByActorId },
+              enrichedContextSnapshot,
+              issue,
+              agentId,
+            ),
           });
           if (
             !caseRequest &&
@@ -4332,6 +4351,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                     ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
                   ]),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                  // PAR-9390: the named unblock owner's run never holds the
+                  // assignee's execution lock, so it must not be adopted here.
+                  sql`not (${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${ISSUE_UNBLOCK_REQUESTED_WAKE_REASON}
+                    and ${heartbeatRuns.agentId} is distinct from ${issue.assigneeAgentId})`,
                 ),
               )
               .orderBy(

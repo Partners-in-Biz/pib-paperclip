@@ -81,6 +81,60 @@ export function isReviewVerdictWake(input: {
   );
 }
 
+/**
+ * PAR-9390: the named unblock owner of a blocked issue is woken by the server
+ * (routes/issues.ts via deliverAgentUnblockNotification, or the blocked-issue
+ * sweeper) with a fixed system actor. The agent wakeup route cannot send a
+ * `system` actor, so the actor pair cannot be forged. The owner is checked
+ * against the live descriptor each time, so a cleared or changed descriptor
+ * stops the run at the start guard. An owner who is also the assignee gets
+ * no exemption: the normal blocked rules apply to the assignee.
+ */
+export const ISSUE_UNBLOCK_REQUESTED_WAKE_REASON = "issue_unblock_requested";
+export const UNBLOCK_OWNER_WAKE_ACTOR_IDS: ReadonlySet<string> = new Set([
+  "routable_blocked",
+  "blocked_issue_sweeper",
+]);
+
+export function isSystemUnblockOwnerWake(
+  wakeRequest: {
+    reason?: string | null;
+    requestedByActorType?: string | null;
+    requestedByActorId?: string | null;
+  } | null | undefined,
+  context: { wakeReason?: unknown } | null | undefined,
+  issue: {
+    assigneeAgentId?: string | null;
+    unblockDescriptor?: unknown;
+  } | null | undefined,
+  agentId: string | null | undefined,
+): boolean {
+  if (!wakeRequest || !issue || !agentId) return false;
+  const reasons = [wakeRequest.reason, context?.wakeReason].filter(
+    (value) => value !== null && value !== undefined,
+  );
+  if (
+    reasons.length === 0 ||
+    !reasons.every((value) => value === ISSUE_UNBLOCK_REQUESTED_WAKE_REASON)
+  ) {
+    return false;
+  }
+  if (
+    wakeRequest.requestedByActorType !== "system" ||
+    !wakeRequest.requestedByActorId ||
+    !UNBLOCK_OWNER_WAKE_ACTOR_IDS.has(wakeRequest.requestedByActorId)
+  ) {
+    return false;
+  }
+  const descriptor = issue.unblockDescriptor;
+  if (!descriptor || typeof descriptor !== "object") return false;
+  const owner = (descriptor as { owner?: unknown }).owner;
+  if (!owner || typeof owner !== "object") return false;
+  const ownerAgentId = (owner as { agentId?: unknown }).agentId;
+  if (typeof ownerAgentId !== "string" || ownerAgentId !== agentId) return false;
+  return issue.assigneeAgentId !== agentId;
+}
+
 /** The first non-empty line, trimmed, starts with a verdict token (case-sensitive). */
 export function isReviewVerdictComment(body: string | null | undefined): boolean {
   const firstLine = (body ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
@@ -94,6 +148,8 @@ export function shouldWakeBlockedTicket(input: {
   requestedByActorId?: string | null;
   /** The issue is a chat conversation (its own conversationAgentId column). */
   chatConversation?: boolean | null;
+  /** isSystemUnblockOwnerWake() for this wake, the woken agent and the live issue. */
+  systemUnblockOwnerWake?: boolean | null;
 }): {
   wake: boolean;
   reason:
@@ -102,6 +158,7 @@ export function shouldWakeBlockedTicket(input: {
     | "human"
     | "system_recovery"
     | "review_verdict"
+    | "unblock_owner"
     | "chat_conversation"
     | "blocked_suppressed";
 } {
@@ -129,6 +186,9 @@ export function shouldWakeBlockedTicket(input: {
   }
   if (isReviewVerdictWake(input)) {
     return { wake: true, reason: "review_verdict" };
+  }
+  if (input.systemUnblockOwnerWake) {
+    return { wake: true, reason: "unblock_owner" };
   }
   if (isHumanBoardActor(input.requestedByActorType)) {
     return { wake: true, reason: "human" };
@@ -226,6 +286,8 @@ export function shouldStartQueuedIssueRun(input: {
   assigneeMismatchExempt?: boolean;
   /** Chat conversation issue: exempt from the blocked check (see shouldWakeBlockedTicket). */
   chatConversation?: boolean;
+  /** isSystemUnblockOwnerWake(), evaluated again at start against the live issue. */
+  systemUnblockOwnerWake?: boolean;
 }): {
   start: boolean;
   reason: "ok" | "paused" | "cancelled" | "blocked" | "reassigning";
@@ -243,7 +305,8 @@ export function shouldStartQueuedIssueRun(input: {
       input.wakeReason &&
       SYSTEM_RECOVERY_WAKE_REASONS.has(input.wakeReason)
     ) &&
-    !isReviewVerdictWake(input)
+    !isReviewVerdictWake(input) &&
+    !input.systemUnblockOwnerWake
   ) {
     return { start: false, reason: "blocked" };
   }
