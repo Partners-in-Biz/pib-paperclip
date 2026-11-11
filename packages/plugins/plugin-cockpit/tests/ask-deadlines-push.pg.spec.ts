@@ -49,7 +49,7 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
 
   async function createAsk(
     w: Hybrid,
-    opts: { issueId: string; kind?: string; policyClass?: string; defaultAfterHours?: number; recommended?: string; steps?: string[]; links?: Array<{ label: string; href: string }> },
+    opts: { issueId: string; kind?: string; policyClass?: string; defaultAfterHours?: number; recommended?: string; steps?: string[]; links?: Array<{ label: string; href: string }>; hardStop?: string },
   ) {
     const card = {
       issueId: opts.issueId,
@@ -62,6 +62,8 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
       ...(opts.defaultAfterHours && { defaultAfterHours: opts.defaultAfterHours }),
       ...(opts.recommended && { recommended: opts.recommended }),
       ...(opts.policyClass && { policyClass: opts.policyClass }),
+      // A hard stop the asker names: it escalates at its deadline and never answers itself (without it the 24-hour rule would apply the recommended answer).
+      ...(opts.hardStop && { hardStop: opts.hardStop }),
     };
     const result = (await w.tools.get("ask-owner")!(card, RUN)) as { error?: string; data: { askId: string } };
     if (result.error) throw new Error(result.error);
@@ -131,6 +133,7 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
       policyClass: "engineering-decision",
       defaultAfterHours: 4,
       recommended: "Yes",
+      hardStop: "money",
     });
 
     const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
@@ -182,7 +185,7 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
     expect(escalateRepair?.outcome).toBe("escalated");
   });
 
-  it("(f) policy disabled -> escalate_ask row", async () => {
+  it("(f) policy disabled, a hard stop the asker named -> escalate_ask row, never applied", async () => {
     const w = await worlds.make({
       savedConfigs: { [A]: { healthIssue: true } },
       prefixes: { [A]: "PAR" },
@@ -202,6 +205,7 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
       policyClass: "engineering-decision",
       defaultAfterHours: 4,
       recommended: "Yes",
+      hardStop: "money",
     });
 
     const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
@@ -215,6 +219,11 @@ d("ask deadline sweep - escalation & repairs (Postgres)", () => {
 
     const repairs = await listRepairs(w.env.ctx, A, { kind: "ask_deadline" });
     expect(repairs.filter((r) => r.action === "escalate_ask" && r.targetId === askId)).toHaveLength(1);
+
+    // Two days on it still waits for the owner: a hard stop never answers itself.
+    const later = await sweepAskDeadlines(w.env, new Date(Date.parse(NOW) + 48 * 3600000));
+    expect(later.applied).toBe(0);
+    expect((await getAsk(w.env, A, askId))?.status).toBe("open");
   });
 
   it("(j) closed card: second sweep does nothing", async () => {

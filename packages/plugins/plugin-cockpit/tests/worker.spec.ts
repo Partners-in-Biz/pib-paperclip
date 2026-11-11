@@ -398,7 +398,11 @@ describe("Operator tools", () => {
   function seeded() {
     const s = setup({
       approvals: [{ id: "ap1", companyId: A, type: "budget_override_required", status: "pending", payload: { agentName: "SEO" }, createdAt: "2026-09-25T10:00:00.000Z" }],
-      coreIssues: [{ id: "i1", company_id: A, assignee_user_id: "user-1", status: "in_review", title: "Approve post", identifier: "PIB-7", updated_at: "2026-09-26T08:00:00.000Z" }],
+      coreIssues: [
+        { id: "i1", company_id: A, assignee_user_id: "user-1", status: "in_review", title: "Approve post", identifier: "PIB-7", updated_at: "2026-09-26T08:00:00.000Z" },
+        // The open issue behind Billing's waiting row: a row whose issue is done, cancelled or gone is dropped (pruneStaleWaiting).
+        { id: "i-inv", company_id: A, assignee_agent_id: "op", status: "in_progress", title: "Invoice run", identifier: "PIB-8", updated_at: "2026-09-26T08:00:00.000Z" },
+      ],
       runs: [{ company_id: A, agent_id: "op", status: "succeeded", started_at: "2026-09-26T07:00:00.000Z" }, { company_id: A, agent_id: "op", status: "failed", started_at: "2026-09-25T07:00:00.000Z", error: "boom" }],
     });
     s.store.snapshots = [{

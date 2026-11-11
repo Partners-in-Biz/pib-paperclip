@@ -48,7 +48,7 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
 
   async function createAsk(
     w: Hybrid,
-    opts: { issueId: string; kind?: string; policyClass?: string; defaultAfterHours?: number; recommended?: string; steps?: string[]; links?: Array<{ label: string; href: string }> },
+    opts: { issueId: string; kind?: string; policyClass?: string; defaultAfterHours?: number; recommended?: string; steps?: string[]; links?: Array<{ label: string; href: string }>; hardStop?: string },
   ) {
     const card = {
       issueId: opts.issueId,
@@ -61,6 +61,8 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
       ...(opts.defaultAfterHours && { defaultAfterHours: opts.defaultAfterHours }),
       ...(opts.recommended && { recommended: opts.recommended }),
       ...(opts.policyClass && { policyClass: opts.policyClass }),
+      // A hard stop the asker names: it escalates at its deadline and never answers itself (without it the 24-hour rule would apply the recommended answer).
+      ...(opts.hardStop && { hardStop: opts.hardStop }),
     };
     const result = (await w.tools.get("ask-owner")!(card, RUN)) as { error?: string; data: { askId: string } };
     if (result.error) throw new Error(result.error);
@@ -192,6 +194,7 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
       policyClass: "engineering-decision",
       defaultAfterHours: 4,
       recommended: "Yes",
+      hardStop: "money",
     });
 
     const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);
@@ -248,6 +251,7 @@ d("ask deadline sweep - ladder & errors (Postgres)", () => {
       policyClass: "engineering-decision",
       defaultAfterHours: 4,
       recommended: "Yes",
+      hardStop: "money",
     });
 
     const deadlineTime = new Date(Date.parse(NOW) + 5 * 3600000);

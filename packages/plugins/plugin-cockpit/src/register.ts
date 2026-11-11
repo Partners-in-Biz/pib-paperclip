@@ -83,6 +83,7 @@ import { registerBrowserStatus } from "./browser-status.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
+import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -218,6 +219,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   registerW1cEdge(env);
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
+  registerOwnerDigest(env);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env);
 
@@ -584,6 +586,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       "Ask deadline sweep",
       await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),
     );
+    // The owner's one daily digest rides on this sweep: from 16:00 SAST, once a day, caught up after a missed sweep.
+    try {
+      const digest = await ownerDigestTick(env);
+      if (digest.posted || digest.failed) ctx.logger.info("Owner digest", digest);
+    } catch (error) {
+      ctx.logger.warn("Owner digest: the sweep failed", { error: message(error) });
+    }
   });
 
   registerMemoryActions(env);

@@ -100,6 +100,40 @@ const instanceConfigSchema: JsonSchema = {
         allowedOwners: { type: "array", title: "Allowed GitHub owners", items: { type: "string" }, default: ["Partners-in-Biz"] },
       },
     },
+    ownerDigest: {
+      type: "object",
+      title: "Owner's daily digest",
+      description: "Once a day at 16:00 (SAST) the Cockpit opens one issue for the owner that lists everything waiting on them, grouped by where they act. While it is on, a task that lands on the owner no longer sends its own push: only the digest and a critical issue do.",
+      properties: {
+        enabled: { type: "boolean", title: "Post the daily digest", default: true },
+      },
+    },
+    decisionRights: {
+      type: "object",
+      title: "Who decides (decision rights)",
+      description:
+        "One agent decides each class of sign-off, so only the six hard stops reach the owner (client production, money over R500 or any quote, invoice, price or subscription, logins and devices only the owner has, legal text or a client commitment, a public store release, deleting data with no way back). A question an agent raises with ask-owner that is none of these goes to the seat for its class at once. Seats are agent ids, so a rename changes nothing. With no seat set, every question goes to the owner as before.",
+      properties: {
+        enabled: { type: "boolean", title: "Route questions to the deciding seats", default: true },
+        ownProducts: { type: "array", title: "Our own products", description: "Names as agents write them. A release that names none of these is treated as a client's and goes to the owner.", items: { type: "string" } },
+        seats: {
+          type: "object",
+          title: "Seats (agent ids)",
+          properties: {
+            release: { type: "string", title: "Release of our own products" },
+            planTechnical: { type: "string", title: "Technical plans" },
+            planBusiness: { type: "string", title: "Business plans" },
+            access: { type: "string", title: "Access that already exists (a stored secret, a tool grant)" },
+            social: { type: "string", title: "Social posts for our own brands" },
+            storeListing: { type: "string", title: "Store listing text and pictures" },
+            seo: { type: "string", title: "SEO page refresh or internal links on a client site" },
+            root: { type: "string", title: "Root on the server, a board-only setting" },
+            instructions: { type: "string", title: "Instruction and skill file changes" },
+            other: { type: "string", title: "Anything else (also the last seat before the owner)" },
+          },
+        },
+      },
+    },
     credentialSeed: {
       type: "boolean",
       title: "Load Partners in Biz's own credentials list (owner company only)",
@@ -338,7 +372,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOBS.askDeadlines,
       displayName: "Ask deadline sweep",
-      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
+      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: an effect, a money, legal or grant question and a hard stop escalate and never apply; else if the standing policy covers it, applies via policy and posts a comment; else, once the question is 24 hours old and has a recommended answer, applies that answer and says so on the issue. Idempotent. The same sweep posts the owner's one daily digest from 16:00 SAST (one issue listing everything that waits on the owner, grouped by where they act), once a day.",
       schedule: "*/15 * * * *",
     },
     {
