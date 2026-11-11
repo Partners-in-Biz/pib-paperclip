@@ -297,4 +297,74 @@ d("ladder reads (Postgres)", () => {
       expect(ladder.length).toBeLessThanOrEqual(8); // We only created 8
     });
   });
+
+  // PAR-8362 (2026-11-11): the assignee names itself as unblock owner (the host refuses any other owner from an
+  // agent) and re-blocks after every host sweep, so the block never reached "24 hours with no descriptor".
+  describe("ladder candidates: self-owned and re-blocked", () => {
+    const agentId = "aaaaaaaa-0000-4000-8000-000000000001";
+    const otherAgent = "aaaaaaaa-0000-4000-8000-000000000002";
+    const owned = (ownerAgentId: string) => JSON.stringify({ owner: { agentId: ownerAgentId }, action: "PiB grants the tools" });
+    const sweepRun = (issueId: string, minutesAgo: number) =>
+      h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, context_snapshot) VALUES ($1, $2, $3, 'succeeded', $4, $5::jsonb)`,
+        [uuid(), COMPANY, agentId, ago(minutesAgo), JSON.stringify({ issueId, source: "blocked_issue_sweeper" })],
+      );
+
+    it("a block the assignee owns itself is a candidate after 4 hours", async () => {
+      const stuck = uuid();
+      await issue(stuck, "PAR-301", "blocked", { agent: agentId, blockedMinutesAgo: 5 * 60, descriptor: owned(agentId) });
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      expect(ladder.map((l) => l.stuck.identifier)).toEqual(["PAR-301"]);
+      expect(ladder[0]!.stuck.reblockedAfterSweep).toBe(false);
+    });
+
+    it("a block owned by another agent is not a candidate: that agent is the way out", async () => {
+      await issue(uuid(), "PAR-302", "blocked", { agent: agentId, blockedMinutesAgo: 3 * 1440, descriptor: owned(otherAgent) });
+      expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
+    });
+
+    it("a fresh self-owned block is not a candidate before 4 hours", async () => {
+      await issue(uuid(), "PAR-303", "blocked", { agent: agentId, blockedMinutesAgo: 60, descriptor: owned(agentId) });
+      expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
+    });
+
+    it("re-blocked after a host sweep: a candidate at once, flagged", async () => {
+      const stuck = uuid();
+      await issue(stuck, "PAR-304", "blocked", { agent: agentId, blockedMinutesAgo: 5, descriptor: owned(agentId) });
+      await sweepRun(stuck, 10); // the sweeper woke the assignee 10 minutes ago; it blocked again 5 minutes ago
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      expect(ladder.map((l) => l.stuck.identifier)).toEqual(["PAR-304"]);
+      expect(ladder[0]!.stuck.reblockedAfterSweep).toBe(true);
+    });
+
+    it("a sweep older than the lookback, or one after the block, does not count", async () => {
+      const old = uuid();
+      const later = uuid();
+      await issue(old, "PAR-305", "blocked", { agent: agentId, blockedMinutesAgo: 5, descriptor: owned(agentId) });
+      await sweepRun(old, 3 * 1440);
+      await issue(later, "PAR-306", "blocked", { agent: agentId, blockedMinutesAgo: 30, descriptor: owned(agentId) });
+      await sweepRun(later, 10);
+      expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
+    });
+
+    it("an open blocker keeps a re-blocked issue off the ladder", async () => {
+      const stuck = uuid();
+      const blocker = uuid();
+      await issue(stuck, "PAR-307", "blocked", { agent: agentId, blockedMinutesAgo: 5, descriptor: owned(agentId) });
+      await sweepRun(stuck, 10);
+      await issue(blocker, "PAR-307-blocker", "in_progress");
+      await relation(blocker, stuck);
+      expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
+    });
+
+    it("the health check's own read is unchanged: descriptor-less blocks over 24 hours only", async () => {
+      await issue(uuid(), "PAR-308", "blocked", { agent: agentId, blockedMinutesAgo: 5 * 60, descriptor: owned(agentId) });
+      await issue(uuid(), "PAR-309", "blocked", { agent: agentId, blockedMinutesAgo: 5 * 60 });
+      await issue(uuid(), "PAR-310", "blocked", { agent: agentId, blockedMinutesAgo: 2 * 1440 });
+      const plain = await readBlocked(h.ctx, COMPANY, h.clock.now, 25);
+      expect(plain.items.map((b) => b.identifier)).toEqual(["PAR-310"]);
+      const ladder = await readBlocked(h.ctx, COMPANY, h.clock.now, 25, { ladder: true });
+      expect(ladder.items.map((b) => b.identifier).sort()).toEqual(["PAR-308", "PAR-309", "PAR-310"]);
+    });
+  });
 });

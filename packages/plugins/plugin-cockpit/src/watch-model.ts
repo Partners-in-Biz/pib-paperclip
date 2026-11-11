@@ -30,6 +30,10 @@ export const WATCH = {
   stormMin: 4,
   /** Blocked with no way out for this long. */
   blockedHours: 24,
+  /** Ladder: blocked this long with nobody else named to act goes to the manager (keep equal to BLOCKED_ESCALATE_HOURS). */
+  ladderBlockedHours: 4,
+  /** Ladder: a host sweep inside this window followed by a re-block means the assignee tried again and is still stuck. */
+  reblockLookbackHours: 48,
   /** In progress, assignee idle and without a run for this long. */
   stalledHours: 12,
   /** Agents or issues that get their own check per rule (worst first); one check names up to `named` issues. */
