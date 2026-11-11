@@ -205,4 +205,61 @@ describePg("approve-page-apply and revoke-page-apply", () => {
     expect(createComment).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
   });
+  // 0.45.0 (PAR-9493 T3, PAR-9530): needs-you-resolve with pageUrls opens the window through approve-page-apply first.
+  describe("needs-you-resolve with pageUrls", () => {
+    const seedItem = async (taskIds: string[], key = "change-set-1") => {
+      const items = [{ key, kind: "task", title: "Approve page refresh: crop production", why: "w", steps: [], links: [], after: "a", check: "manual", taskIds, status: "open", addedAt: "2026-11-01T00:00:00.000Z" }];
+      await sql.unsafe(`INSERT INTO ${S}.needs_you (id, company_id, sprint_id, week_start, items, status) VALUES ('ny-r', 'co-1', 'sp-1', date_trunc('week', now())::date, $1::jsonb, 'open')`, [JSON.stringify(items)]);
+    };
+    const resolve = (actor: Actor, params: Row) => dispatch(env(), "co-1", actor, "needs-you-resolve", { sprintId: "sp-1", key: "change-set-1", pageUrls: [PAGE], ...params }) as Promise<Row>;
+    beforeEach(() => resolveNeedsYou.mockResolvedValue({ resolved: true, stillOpen: null, tasksContinued: 1 }));
+
+    it("the item's single task: opens the window and resolves the item with needsYouKey", async () => {
+      await seedItem(["t-1"]);
+      const r = await resolve(rhea, {});
+      expect(r).toMatchObject({ sprintId: "sp-1", key: "change-set-1", taskId: "t-1", pages: [PAGE], applyWindow: "opened", resolved: true, needsYouResolved: true, windowSent: true });
+      expect(await openRows()).toHaveLength(1);
+      expect(resolveNeedsYou.mock.calls[0]![3]).toBe("change-set-1");
+      // 24 h default
+      const hours = (Date.parse(String(r.applyUntil)) - Date.now()) / 3_600_000;
+      expect(hours).toBeGreaterThan(23.9);
+      expect(hours).toBeLessThanOrEqual(24);
+    });
+
+    it("an item with no taskIds opens with taskId (the Agri Studies shape)", async () => {
+      await seedItem([]);
+      expect(await resolve(person, { taskId: "t-1" })).toMatchObject({ taskId: "t-1", applyWindow: "opened", resolved: true });
+      expect(await openRows()).toHaveLength(1);
+    });
+
+    it("refuses a taskId outside the item's tasks, and 0 or several tasks without taskId", async () => {
+      await seedItem(["t-1"]);
+      await expect(resolve(rhea, { taskId: "t-2" })).rejects.toThrow(/not one of this item's tasks/);
+      await sql.unsafe(`DELETE FROM ${S}.needs_you`);
+      await seedItem([]);
+      await expect(resolve(rhea, {})).rejects.toThrow(/names no task.*pass taskId/);
+      await sql.unsafe(`DELETE FROM ${S}.needs_you`);
+      await seedItem(["t-1", "t-2"]);
+      await expect(resolve(rhea, {})).rejects.toThrow(/names 2 tasks.*pass taskId/);
+      expect(await openRows()).toHaveLength(0);
+      expect(resolveNeedsYou).not.toHaveBeenCalled();
+    });
+
+    it("a refused grant (no Reviewer PASS) leaves the item open", async () => {
+      await seedItem(["t-1"]);
+      await sql.unsafe(`UPDATE ${S}.previews SET review_status = 'pending'`);
+      await expect(resolve(rhea, {})).rejects.toThrow(/No Reviewer PASS/);
+      expect(resolveNeedsYou).not.toHaveBeenCalled();
+      expect(await openRows()).toHaveLength(0);
+      const [row] = await sql.unsafe<{ items: unknown }>(`SELECT items FROM ${S}.needs_you WHERE id = 'ny-r'`);
+      const items = (typeof row!.items === "string" ? JSON.parse(row!.items) : row!.items) as Array<{ status: string }>;
+      expect(items[0]!.status).toBe("open");
+    });
+
+    it("the task issue's assignee cannot open it through needs-you-resolve either", async () => {
+      await seedItem(["t-1"]);
+      await expect(resolve(sofia, {})).rejects.toThrow(/not a sign-off delegate|no self-approval/);
+      expect(resolveNeedsYou).not.toHaveBeenCalled();
+    });
+  });
 });

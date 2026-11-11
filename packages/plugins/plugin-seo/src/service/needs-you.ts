@@ -47,7 +47,7 @@ import { requireSprint, sprintCopy } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "../engine/items.js";
 import { settingsPath } from "./settings-path.js";
-import { agentInstruction, agentRouteFor, type AgentRoute, type HandoffSite } from "../engine/needs-you-handoff.js";
+import { agentInstruction, agentRouteFor, isPageChangeTitle, needsPageWindow, type AgentRoute, type HandoffSite } from "../engine/needs-you-handoff.js";
 import { findSeoClientProject } from "./site.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { routePrReview } from "./review.js";
@@ -696,17 +696,57 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
     item.why = `${item.why}\n\nOnly a person: ${personOnly}`.slice(0, 2600);
   }
   const result = await addNeedsYou(env, info, sprint, item, { reopen: true });
+  // A page change set on a pr_only manual sign-off WordPress sprint is opened for applying by needs-you-resolve with pageUrls,
+  // which needs the task: without it the resolver must pass taskId. A wording heuristic, so a warning, never a refusal.
+  const warning = taskIds.length === 0 && needsPageWindow(sprint) && isPageChangeTitle(item.title) ? PAGE_CHANGE_NO_TASK_WARNING : null;
   // An out-of-scope PR is outward-facing: the Cockpit Reviewer checks it before the owner merges.
   const reviewIssueId = kind === "pr" && result.added ? await routePrReview(env, sprint, item) : null;
-  return { sprintId: sprint.id, ...result, ...(reviewIssueId ? { reviewIssueId } : {}), by: actorLabel(actor) };
+  return { sprintId: sprint.id, ...result, ...(reviewIssueId ? { reviewIssueId } : {}), ...(warning ? { warning } : {}), by: actorLabel(actor) };
+}
+
+export const PAGE_CHANGE_NO_TASK_WARNING =
+  "Added, but with no taskIds: this looks like a page change set on a pr_only site, and opening its apply window needs the task. Call needs-you-add again with the same key and taskIds = the sprint task of the page, or whoever resolves it must pass taskId.";
+const NOT_OPENED_NEXT =
+  "Resolved, but no apply window was opened: on this pr_only site the agent still may not write the page. To open it, call partnersinbiz.seo:approve-page-apply (sprintId, taskId, pageUrls, note; reviewCommentId when the pages have no passed preview), or needs-you-resolve with pageUrls and taskId next time.";
+
+/** The task a page approval on an item is for: `taskId` (one of the item's tasks when it names any), else its only task. */
+function pageApprovalTask(item: NeedsYouItem, taskId: string | null): string {
+  const ids = item.taskIds ?? [];
+  if (taskId) {
+    if (ids.length > 0 && !ids.includes(taskId)) throw new SeoError(`Task ${taskId} is not one of this item's tasks (${ids.join(", ")}).`);
+    return taskId;
+  }
+  if (ids.length === 1) return ids[0]!;
+  throw new SeoError(`${ids.length === 0 ? "This item names no task" : `This item names ${ids.length} tasks (${ids.join(", ")})`}: pass taskId (the sprint task whose pages these are) with pageUrls.`);
 }
 
 export async function needsYouResolveTool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const key = reqStr(params, "key", { max: 120 });
-  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), str(params, "note", { max: 1000 }) ?? null, { person: actor.kind === "user" });
+  const note = str(params, "note", { max: 1000 }) ?? null;
+  const pageUrls = strList(params, "pageUrls");
+  const digest = await currentDigest(env, info, sprint, "read");
+  const item = digest?.items.find((i) => i.key === key && i.status === "open") ?? null;
+  if (pageUrls.length > 0) {
+    // Opens the window first (approve-page-apply resolves the item as its own step): a refused grant leaves the item open.
+    if (!item) throw new SeoError(`No open Needs you item ${key} on this sprint`);
+    const taskId = pageApprovalTask(item, str(params, "taskId", { max: 100 }) ?? null);
+    const reviewCommentId = str(params, "reviewCommentId", { max: 100 });
+    // Loaded on use: page-apply imports resolveNeedsYou from this module, so a static import would be a cycle.
+    const { approvePageApply } = await import("./page-apply.js");
+    const grant = await approvePageApply(env, companyId, actor, {
+      sprintId: sprint.id, taskId, pageUrls, needsYouKey: key, note: note ?? `Needs you item resolved: ${item.title}`.slice(0, 1000),
+      ...(reviewCommentId ? { reviewCommentId } : {}),
+    });
+    return { ...grant, sprintId: sprint.id, key, resolved: grant.needsYouResolved, applyWindow: "opened" as const };
+  }
+  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), note, { person: actor.kind === "user" });
   if (!result.resolved && !result.stillOpen) throw new SeoError(`No open Needs you item ${key} on this sprint`);
+  // Any caller: a person may also resolve a page change set without knowing the agent still may not write it.
+  if (result.resolved && item && needsPageWindow(sprint) && isPageChangeTitle(item.title)) {
+    return { sprintId: sprint.id, key, ...result, applyWindow: "not_opened" as const, next: NOT_OPENED_NEXT };
+  }
   return { sprintId: sprint.id, key, ...result };
 }
 
