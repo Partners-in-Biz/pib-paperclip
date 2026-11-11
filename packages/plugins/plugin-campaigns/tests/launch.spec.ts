@@ -179,7 +179,8 @@ describe("launch on approval", () => {
   });
 
   it("when it cannot launch, the approval goes back to the person with the reason", async () => {
-    const store = draftStore({ audience_tags: [], audience_mode: "client_contact", client_kind: "contact", client_ref: "ghost", client_name: "Ghost Person" });
+    // The client's yes is on record (plan 5.1), so the launch gets as far as the audience.
+    const store = draftStore({ audience_tags: [], audience_mode: "client_contact", client_kind: "contact", client_ref: "ghost", client_name: "Ghost Person", client_yes_ref: "https://mail.example/t/1", client_yes_by: "user-peet", client_yes_at: "2026-11-11T10:00:00Z" });
     // A client's email needs its own sender before anything else is checked.
     store.sender_identities = [{ company_id: CO, sender_key: "contact:ghost", from_address: "ghost@client.test", from_name: "Ghost Person", reply_to: null, sms_from: null, whatsapp_from: null }];
     const { harness, comments } = await boot({ store });
