@@ -70,6 +70,37 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
   }
 }
 
+/** Statuses that mean the work is over: nothing waits on the owner any more. */
+const CLOSED_ISSUE = new Set(["done", "cancelled"]);
+
+/**
+ * Plugins list their own waiting rows and can leave stale ones behind. Drop a row whose linked issue is done,
+ * cancelled or gone (`statuses` has no entry), and a `task:<id>` row when the same sign-off already shows as `review:<id>`.
+ * `statuses` is null when the lookup failed: then only the duplicate rule runs (never hide a row on a failed read).
+ */
+export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<string, string> | null): CockpitSnapshot[] {
+  return snapshots.map((snapshot) => {
+    const reviewIds = new Set(snapshot.waiting.filter((w) => w.key.startsWith("review:")).map((w) => w.key.slice("review:".length)));
+    const waiting = snapshot.waiting.filter((w) => {
+      if (w.key.startsWith("task:") && reviewIds.has(w.key.slice("task:".length))) return false;
+      if (statuses && w.issueId) {
+        const status = statuses.get(w.issueId);
+        if (status === undefined || CLOSED_ISSUE.has(status)) return false;
+      }
+      return true;
+    });
+    return waiting.length === snapshot.waiting.length ? snapshot : { ...snapshot, waiting };
+  });
+}
+
+async function issueStatuses(ctx: PluginContext, companyId: string, ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!ids.length) return out;
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, status FROM public.issues WHERE company_id = $1 AND id::text = ANY($2::text[])`, [companyId, ids]);
+  for (const row of rows) out.set(String(row.id), String(row.status ?? ""));
+  return out;
+}
+
 /** Most owner issues listed; past this the rest are counted but not shown. */
 export const OWNER_ISSUE_CEILING = 500;
 const OWNER_ISSUE_PAGE = 100;
@@ -261,6 +292,8 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
   const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
+  const linked = [...new Set(stored.flatMap((s) => s.snapshot.waiting.map((w) => w.issueId ?? "")).filter(Boolean))];
+  const statuses2 = await guard("waitingIssues", () => issueStatuses(env.ctx, companyId, linked), null as Map<string, string> | null);
   const now = env.now().getTime();
   const ownerIssues = ownerList.items.map((i) => {
     const since = Date.parse(i.updatedAt ?? i.createdAt ?? "");
@@ -272,7 +305,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     ? null
     : setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
-    snapshots: [...stored.map((s) => s.snapshot), own],
+    snapshots: [...pruneStaleWaiting(stored.map((s) => s.snapshot), statuses2), own],
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
     agents,
     runStats,
