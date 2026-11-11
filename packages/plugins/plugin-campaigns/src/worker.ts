@@ -91,7 +91,8 @@ import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
-import { audienceFingerprint } from "./approval-audience.js";
+import { audienceChangedMessage, audienceFingerprint } from "./approval-audience.js";
+import { approveAction, sendBackAction, type ApprovalPaths } from "./approve.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
@@ -209,6 +210,8 @@ const plugin = definePlugin({
     ctx.actions.register("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
     ctx.actions.register("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
     ctx.actions.register("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
+    ctx.actions.register("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
+    ctx.actions.register("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
     ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
@@ -702,6 +705,12 @@ async function launchCampaign(
       throw new CampaignError(`This campaign would email every CRM contact (${contacts.length}), but its approval did not say "${ALL_CONTACTS_MARK}${contacts.length})". Add audience tags, or request approval again so the approver sees who gets it.`);
     }
   }
+  // A draft launches only to the people its approval was for (F5): someone tagged since, or an issue marked done by hand
+  // after the audience grew, is refused. An approval opened before these columns existed has no hash and is not compared.
+  if (campaign.status === "draft" && campaign.approvalIssueId && campaign.approvalAudienceHash) {
+    const now = audienceFingerprint(eligible.map((contact) => contact.id));
+    if (now.hash !== campaign.approvalAudienceHash) throw new CampaignError(audienceChangedMessage(campaign.approvalAudienceCount, now.count));
+  }
   const audience = audienceLine(campaign, eligible.length);
   const start = enrollmentStart(new Date(), campaign.startAt);
   if (!(await claimLaunch(ctx, campaign, campaign.status, options.approvedByUserId))) {
@@ -762,6 +771,8 @@ async function launchOnApproval(ctx: PluginContext, companyId: string, campaign:
     return null;
   }
 }
+
+const APPROVAL_PATHS: ApprovalPaths = { launchOnApproval, onApprovalRefused };
 
 /** A person refused the launch: the draft can be fixed and sent for approval again; its agent gets a task to do that. */
 async function onApprovalRefused(ctx: PluginContext, companyId: string, campaign: CampaignDraft, issueId: string): Promise<void> {
