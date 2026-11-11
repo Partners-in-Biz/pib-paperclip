@@ -204,7 +204,12 @@
         "url": "https://paperclip.partnersinbiz.online/PAR/dashboard",
         "expect": "New task"
       },
-      "confirm": [],
+      "confirm": [
+        {
+          "step": "page-loaded",
+          "expect": "New task"
+        }
+      ],
       "redact": [
         "input[type=password]",
         "[data-pib-redact]",
