@@ -1,10 +1,9 @@
 /**
  * PAR-9264: the agent tools studio-drive-save and studio-drive-transfer wrap the page's Drive save. Generated data
- * only. The large path runs over the host's real event bus with the CRM save route registered.
+ * only. The large path runs over the host's real event bus with a fake CRM save route on it (no cross-package source import: tsconfig rootDir).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { driveSave as realDriveSave } from "@partnersinbiz/pib-plugin-kit";
-import { registerDriveSaveRoute, type DriveSaveRouteDeps } from "../../plugin-crm/src/drive/save-route.js";
 
 const MiB = 1024 * 1024;
 const ID = "11111111-2222-3333-4444-555555555555";
@@ -36,18 +35,60 @@ const { STUDIO_TOOLS } = await import("../src/tools.js");
 
 const ctx = { db: { namespace: "plugin_studio_test", query: vi.fn(async () => [{ sha256: SHA }]) } } as never;
 
-function pluginCtx(bus: any, pluginId: string) {
+type Handler = (event: unknown) => unknown;
+interface Scoped { subscribe: (name: string, fn: Handler) => void; emit: (name: string, companyId: string, payload: unknown) => Promise<unknown> }
+interface Bus { forPlugin: (id: string) => Scoped }
+interface CrmRequest { onProgress: (done: number, total: number) => Promise<void>; r2Url: string; size: number; sha256: string }
+
+function pluginCtx(bus: Bus, pluginId: string) {
   const scoped = bus.forPlugin(pluginId);
   const logs: unknown[] = [];
   const log = (...a: unknown[]) => void logs.push(a);
   return {
     logs,
     events: {
-      on: (name: string, ...rest: unknown[]) => (scoped.subscribe(name, rest[rest.length - 1]), () => undefined),
+      on: (name: string, ...rest: unknown[]) => (scoped.subscribe(name, rest[rest.length - 1] as Handler), () => undefined),
       emit: async (name: string, companyId: string, payload: unknown) => void (await scoped.emit(name, companyId, payload)),
     },
     logger: { info: log, warn: log, error: log, debug: log },
-  } as any;
+  };
+}
+
+/** A small stand-in for the CRM save route: hears the studio's request, calls `save`, replies with the bare names. */
+function fakeCrmRoute(crm: ReturnType<typeof pluginCtx>, save: (input: CrmRequest) => Promise<{ driveFileId: string; url: string }>) {
+  crm.events.on("plugin.partnersinbiz.studio.drive.save-requested", async (event: unknown) => {
+    const e = event as { companyId: string; payload: Record<string, unknown> };
+    const requestId = e.payload.requestId;
+    const reply = (name: string, body: Record<string, unknown>) => crm.events.emit(name, e.companyId, { ...body, requestId });
+    try {
+      const input: CrmRequest = {
+        r2Url: String(e.payload.r2Url),
+        size: Number(e.payload.size),
+        sha256: String(e.payload.sha256),
+        onProgress: (bytesDone, bytesTotal) => reply("drive.transfer.progress", { bytesDone, bytesTotal }),
+      };
+      const r = await save(input);
+      await reply("drive.file.saved", { driveFileId: r.driveFileId, url: r.url });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      crm.logger.info("Drive save event handler failed", { error: message });
+      await reply("drive.file.failed", { reason: "handler_error", hint: message });
+    }
+  });
+}
+
+async function newBus(): Promise<Bus> {
+  const mod = (await import(/* @vite-ignore */ BUS)) as { createPluginEventBus: () => Bus };
+  return mod.createPluginEventBus();
+}
+
+async function settleTransfer(transferId: string) {
+  let view = getTransfer("co-1", transferId);
+  for (let i = 0; i < 100 && view.status === "running"; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    view = getTransfer("co-1", transferId);
+  }
+  return view;
 }
 
 beforeEach(() => {
@@ -72,24 +113,35 @@ describe("studio-drive tools", () => {
   });
 
   it("a 50 MiB asset becomes a transfer that reaches done with the url, over the event bus and the CRM save route", async () => {
-    const bus = (await import(/* @vite-ignore */ BUS) as any).createPluginEventBus();
+    const bus = await newBus();
     const crm = pluginCtx(bus, "partnersinbiz.crm");
-    const crmSave = vi.fn(async (_c: unknown, _v: unknown, input: any) => {
+    const seen: CrmRequest[] = [];
+    fakeCrmRoute(crm, async (input) => {
+      seen.push(input);
       await input.onProgress(8 * MiB, 50 * MiB);
-      return { status: "saved", driveFileId: "1AbCdEfGhIjKlMnOp", url: "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view" };
+      return { driveFileId: "1AbCdEfGhIjKlMnOp", url: "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view" };
     });
-    registerDriveSaveRoute(crm, { resolveProject: vi.fn(async () => "p1"), save: crmSave } as unknown as DriveSaveRouteDeps);
     const studio = pluginCtx(bus, "partnersinbiz.studio");
-    const started = (await saveAssetToDrive(ctx, "co-1", ID, (c, o) => realDriveSave(studio, o) as never)) as { transferId: string; status: string };
+    const started = (await saveAssetToDrive(ctx, "co-1", ID, (_c, o) => realDriveSave(studio as never, o as never) as never)) as { transferId: string; status: string };
     expect(started.status).toBe("running");
-    let view = getTransfer("co-1", started.transferId);
-    for (let i = 0; i < 100 && view.status === "running"; i++) {
-      await new Promise((r) => setTimeout(r, 10));
-      view = getTransfer("co-1", started.transferId);
-    }
+    const view = await settleTransfer(started.transferId);
     expect(view).toMatchObject({ status: "done", result: { url: "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view" } });
-    expect(crmSave.mock.calls[0]![2]).toMatchObject({ r2Url: SIGNED, size: 50 * MiB, sha256: SHA });
+    expect(seen[0]).toMatchObject({ r2Url: SIGNED, size: 50 * MiB, sha256: SHA });
     expect(JSON.stringify([started, view, crm.logs, studio.logs])).not.toMatch(/X-Amz-Signature|r2\.cloudflarestorage\.com/);
+  });
+
+  it("a failed save whose error message carries the signed link leaks it neither to the transfer nor to the logs", async () => {
+    const bus = await newBus();
+    const crm = pluginCtx(bus, "partnersinbiz.crm");
+    fakeCrmRoute(crm, async () => {
+      throw new Error(`fetch failed for ${SIGNED}`);
+    });
+    const studio = pluginCtx(bus, "partnersinbiz.studio");
+    const started = (await saveAssetToDrive(ctx, "co-1", ID, (_c, o) => realDriveSave(studio as never, o as never) as never)) as { transferId: string };
+    const view = await settleTransfer(started.transferId);
+    expect(view.status).toBe("failed");
+    // The CRM's own log line is the CRM plugin's; here the transfer text and the studio's logs must be clean.
+    expect(JSON.stringify([view, studio.logs])).not.toMatch(/X-Amz-Signature|r2\.cloudflarestorage\.com/);
   });
 
   it("refuses an unknown transferId, another company's transferId and another company's assetId in plain words", async () => {
