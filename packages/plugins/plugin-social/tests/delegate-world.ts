@@ -32,6 +32,11 @@ export function delegateWorld(opts: Opts = {}) {
     }
     return baseGet(key);
   };
+  const baseSet = ctx.state.set as (key: unknown, value: unknown) => Promise<unknown>;
+  ctx.state.set = async (key: { namespace?: string; stateKey: string }, value: unknown) => {
+    if (key.namespace === "social-approval") return void store.set(key.stateKey, value);
+    return baseSet(key, value);
+  };
   const agents = ["ag-rhea", "rev-1", "ag-social", "ag-other"].map((id) => ({ id, companyId: "co", name: id, status: "idle" }));
   ctx.agents = { ...ctx.agents, get: async (id: string) => agents.find((a) => a.id === id) ?? null, list: async () => agents };
   const baseQuery = ctx.db.query as (sql: string, params: unknown[]) => Promise<unknown[]>;

@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByDelegate, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
 import { clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
@@ -780,8 +780,8 @@ export async function setApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer
   const delegated = (await getDelegateStrict(ctx, viewer.companyId, target.scope)) !== null;
   const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId, delegated);
   // A looser policy can leave posts in review with every sign-off already in: approve those now.
-  const { approved, routed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
-  return { ...policyOut(saved, await delegateView(ctx, viewer.companyId, target.scope)), approved, routed };
+  const { approved, routed, failed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...policyOut(saved, await delegateView(ctx, viewer.companyId, target.scope)), approved, routed, failed };
 }
 
 /**
@@ -797,9 +797,12 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
   const agentId = params.agentId;
   if (agentId === null) {
     if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+    // Read strictly first: the review issues the cleared agent holds go back to the person (T7b, findings 13).
+    const cleared = (await getDelegateStrict(ctx, viewer.companyId, scope))?.agentId;
     await clearDelegate(ctx, viewer.companyId, scope, userId);
     ctx.logger.info("Social delegated approver cleared by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), by: userId });
-    return getApprovalPolicyRecord(ctx, viewer, params);
+    const recheck = cleared ? await reevaluateReviewPosts(ctx, viewer, target.scope, cleared) : { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+    return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
   }
   if (typeof agentId !== "string" || !agentId.trim()) throw new SocialError("agentId must be an agent id, or null to clear");
   const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, agentId.trim()));
@@ -809,33 +812,50 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
     throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
   }
   // The delegate approves only after the Reviewer's pass: turn it on first, so a failed save leaves no delegate behind.
+  // Nothing is re-routed on set: a post created before the delegate was named stays with the person (check 9, Quinn 2.4).
   await savePolicy(ctx, viewer.companyId, { scope, clientName: target.client?.name ?? null }, { requireReviewer: true }, userId);
   await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
   ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
   return getApprovalPolicyRecord(ctx, viewer, params);
 }
 
+/** What the re-check of a scope's posts in review did. `failed` counts posts that threw (and 1 when the list itself could not be read). */
+export interface RecheckResult { approved: number; routed: number; handedBack: number; failed: number }
+
+/** Posts in review the re-check reads in one go (Quinn 2.4: 50 left the rest of a busy scope unchecked). */
+const RECHECK_LIMIT = 1000;
+
 /**
  * Posts in review in a scope whose sign-offs are all in under the current policy are approved. A post that still waits on an agent's
  * step with no open review issue to say so (the policy began to ask for the client after the post went to review) gets its issue.
+ * With `clearedDelegate`, a review issue that agent holds for a passed post waiting on the owner goes back to the person (T7b).
+ * One post that throws is logged at warn and counted in `failed`; the others are still checked.
  */
-async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope): Promise<{ approved: number; routed: number }> {
-  let approved = 0;
-  let routed = 0;
+async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope, clearedDelegate?: string): Promise<RecheckResult> {
+  const result: RecheckResult = { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+  let posts: PostRow[];
   try {
-    for (const post of (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: 50 })).filter((p) => postVisible(viewer, p))) {
+    posts = (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: RECHECK_LIMIT })).filter((p) => postVisible(viewer, p));
+  } catch (error) {
+    ctx.logger.warn("Social policy re-check could not list posts in review", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
+    return { ...result, failed: 1 };
+  }
+  for (const post of posts) {
+    try {
       const state = await signoffState(ctx, viewer.companyId, post);
       if (state.missing.length > 0) {
-        if (await routeWaitingPost(ctx, viewer, post)) routed += 1;
+        if (clearedDelegate && (await handBackFromDelegate(ctx, viewer, post, state, clearedDelegate))) result.handedBack += 1;
+        else if (await routeWaitingPost(ctx, viewer, post)) result.routed += 1;
         continue;
       }
       await completeApproval(ctx, viewer, post, "A person (the policy changed)");
-      approved += 1;
+      result.approved += 1;
+    } catch (error) {
+      result.failed += 1;
+      ctx.logger.warn("Social policy re-check failed for a post", { companyId: viewer.companyId, postId: post.id, error: error instanceof Error ? error.message : String(error) });
     }
-  } catch (error) {
-    ctx.logger.info("Social policy re-check skipped", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
   }
-  return { approved, routed };
+  return result;
 }
 
 /** Where a post's approval stands: the policy, each sign-off for the current version, what is missing, and the client's links (never the links themselves). */
