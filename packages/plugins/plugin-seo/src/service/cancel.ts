@@ -7,7 +7,7 @@ import { t } from "../db.js";
 import * as db from "../db.js";
 import { actorId, bool, errorMessage, reqStr, SeoError, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, requireSprint } from "./context.js";
-import { isAutoSignoff, recheckTaskAnswers } from "./client-signoff.js";
+import { recheckTaskAnswers } from "./client-signoff.js";
 import { commentOn, getIssue, patchIssue } from "./issues.js";
 
 export const CANCEL_MIN_PREFIX = 8;
@@ -196,7 +196,8 @@ export async function handleCancelledPreviews(env: Env): Promise<number> {
   for (const [key, { companyId, sprintId, taskId }] of tasks) {
     try {
       const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
-      if (sprint && isAutoSignoff(sprint)) await recheckTaskAnswers(env, sprint, taskId);
+      // Any sprint: a person's decisions on the task's other previews hand over once nothing is left waiting.
+      if (sprint) await recheckTaskAnswers(env, sprint, taskId);
       checked.add(key);
     } catch (error) {
       for (const row of ready) if (`${row.company_id}:${row.task_id}` === key) failed.push({ row, error: errorMessage(error) });
