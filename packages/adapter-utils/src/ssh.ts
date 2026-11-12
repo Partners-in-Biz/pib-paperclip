@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { pipeIntoChildStdin, writeChildStdin } from "./child-stdin.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
@@ -322,8 +323,12 @@ async function spawnText(
       }));
     });
 
-    if (options.stdin != null && child.stdin) {
-      child.stdin.end(options.stdin);
+    if (options.stdin != null) {
+      // Pipe-closed codes are left to the close handler; other codes reject.
+      writeChildStdin(child, options.stdin, "ssh.spawnText", (error) => {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(error, { code: null }));
+      });
     }
   });
 }
@@ -649,7 +654,8 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
   }
 }
 
-async function streamLocalFileToSsh(input: {
+/** @internal Exported for tests only. */
+export async function streamLocalFileToSsh(input: {
   spec: SshConnectionConfig;
   localFile: string;
   remoteScript: string;
@@ -688,11 +694,13 @@ async function streamLocalFileToSsh(input: {
     ssh.on("error", fail);
     if (input.progress) {
       input.progress.counter.on("error", fail);
-      source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source.pipe(input.progress.counter), ssh, "ssh.streamLocalFileToSsh", fail);
     } else {
-      source.pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source, ssh, "ssh.streamLocalFileToSsh", fail);
     }
     ssh.on("close", (code) => {
+      // ssh may close before reading the whole file; free the read stream.
+      source.destroy();
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
@@ -1470,7 +1478,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
+      if (!tarStopped && (tarExitCode ?? 0) !== 0) {
         reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
@@ -1491,11 +1499,21 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
-    if (progress) {
-      progress.counter.on("error", fail);
-      tar.stdout?.pipe(progress.counter).pipe(ssh.stdin ?? null);
-    } else {
-      tar.stdout?.pipe(ssh.stdin ?? null);
+    // Peer-kill rule: when ssh stops reading, tar blocks on a full pipe and
+    // never exits. Stop tar and let maybeFinish report ssh's own exit code and
+    // stderr, rather than failing with a bare EPIPE. A tar whose output already
+    // ended is exiting by itself and keeps its own exit code; a stopped one's
+    // exit code is ignored.
+    let tarStopped = false;
+    const stopTar = () => {
+      if (tarExited || tar.stdout?.readableEnded) return;
+      tarStopped = true;
+      tar.kill("SIGTERM");
+    };
+    if (tar.stdout) {
+      const tarOut = progress ? tar.stdout.pipe(progress.counter) : tar.stdout;
+      progress?.counter.on("error", fail);
+      pipeIntoChildStdin(tarOut, ssh, "ssh.syncDirectoryToSsh", stopTar, { includePipeClosed: true });
     }
     tar.stderr?.on("data", (chunk) => {
       tarStderr += String(chunk);
@@ -1514,6 +1532,7 @@ export async function syncDirectoryToSsh(input: {
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
+      stopTar();
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1583,7 +1602,7 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
+        if (!sshStopped && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
@@ -1602,11 +1621,19 @@ export async function syncDirectoryFromSsh(input: {
         reject(error);
       };
 
-      if (progress) {
-        progress.counter.on("error", fail);
-        ssh.stdout?.pipe(progress.counter).pipe(tar.stdin ?? null);
-      } else {
-        ssh.stdout?.pipe(tar.stdin ?? null);
+      // Peer-kill rule (see syncDirectoryToSsh): when tar stops reading, ssh
+      // blocks on a full pipe. Stop ssh and let tar's exit decide: OpenSSH
+      // exits 255 on SIGTERM, so a stopped ssh's exit code is ignored.
+      let sshStopped = false;
+      const stopSsh = () => {
+        if (sshExited || ssh.stdout?.readableEnded) return;
+        sshStopped = true;
+        ssh.kill("SIGTERM");
+      };
+      if (ssh.stdout) {
+        const sshOut = progress ? ssh.stdout.pipe(progress.counter) : ssh.stdout;
+        progress?.counter.on("error", fail);
+        pipeIntoChildStdin(sshOut, tar, "ssh.syncDirectoryFromSsh", stopSsh, { includePipeClosed: true });
       }
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
@@ -1625,6 +1652,7 @@ export async function syncDirectoryFromSsh(input: {
       tar.on("close", (code) => {
         tarExited = true;
         tarExitCode = code;
+        stopSsh();
         maybeFinish();
       });
     });
