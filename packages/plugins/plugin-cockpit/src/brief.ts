@@ -37,6 +37,7 @@ import {
   type AgentLite,
   type ApprovalLite,
   type CockpitSnapshot,
+  type WaitingItem,
   type IssueLite,
   type RunStat,
   type WaitingEntry,
@@ -71,7 +72,7 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
 }
 
 /** Statuses that mean the work is over: nothing waits on the owner any more. */
-const CLOSED_ISSUE = new Set(["done", "cancelled"]);
+const CLOSED_ISSUE = new Set(["done", "cancelled", "hidden"]);
 
 /** `<prefix>:(review|task):<id>`, e.g. `seo:needs-you:<sprintId>:review:<taskId>`, `social:review:<postId>`. Prefix keeps sprints apart. */
 const REVIEW_OR_TASK_KEY = /^(.*):(review|task):([^:]+)$/;
@@ -81,6 +82,15 @@ const REVIEW_OR_TASK_KEY = /^(.*):(review|task):([^:]+)$/;
  * cancelled or gone (`statuses` has no entry), and a `<prefix>:task:<id>` row when the same sign-off already shows as `<prefix>:review:<id>`.
  * `statuses` is null when the lookup failed: then only the duplicate rule runs (never hide a row on a failed read).
  */
+function dedupeId(w: WaitingItem): string {
+  return `${w.kind}|${w.title.trim().replace(/\s+/g, " ").toLowerCase()}`;
+}
+
+function sinceTime(w: WaitingItem): number {
+  const t = w.since ? Date.parse(w.since) : Number.NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
 export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<string, string> | null): CockpitSnapshot[] {
   return snapshots.map((snapshot) => {
     const reviewKeys = new Set<string>();
@@ -88,7 +98,15 @@ export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<st
       const m = REVIEW_OR_TASK_KEY.exec(w.key);
       if (m && m[2] === "review") reviewKeys.add(`${m[1]}|${m[3]}`);
     }
+    // The same sign-off listed twice (one per sprint digest, or a re-opened round): keep the newest row per title and kind.
+    const newest = new Map<string, WaitingItem>();
+    for (const w of snapshot.waiting) {
+      const id = dedupeId(w);
+      const cur = newest.get(id);
+      if (!cur || sinceTime(w) > sinceTime(cur)) newest.set(id, w);
+    }
     const waiting = snapshot.waiting.filter((w) => {
+      if (newest.get(dedupeId(w)) !== w) return false;
       const m = REVIEW_OR_TASK_KEY.exec(w.key);
       if (m && m[2] === "task" && reviewKeys.has(`${m[1]}|${m[3]}`)) return false;
       if (statuses && w.issueId) {
@@ -105,7 +123,7 @@ export async function issueStatuses(ctx: PluginContext, companyId: string, ids: 
   const out = new Map<string, string>();
   if (!ids.length) return out;
   // The ids go as one JSON value: the host binds each array element as its own parameter, so an array cannot be cast to text[].
-  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, CASE WHEN hidden_at IS NOT NULL THEN 'hidden' ELSE status END AS status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
   for (const row of rows) out.set(String(row.id), String(row.status ?? ""));
   return out;
 }
