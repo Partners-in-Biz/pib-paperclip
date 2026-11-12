@@ -702,6 +702,24 @@ export async function setStepHtml(
   return result != null;
 }
 
+export async function updateStepText(
+  ctx: PluginContext,
+  input: { companyId: string; campaignId: string; position: number; variant: string; subject?: string; body?: string },
+): Promise<boolean> {
+  const sets: string[] = [];
+  const values: unknown[] = [input.companyId, input.campaignId, input.position, input.variant];
+  if (input.subject !== undefined) { values.push(input.subject); sets.push(`subject = $${values.length}`); }
+  if (input.body !== undefined) { values.push(input.body); sets.push(`body = $${values.length}`); }
+  if (sets.length === 0) return false;
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaign_steps")}
+        SET ${sets.join(", ")}
+      WHERE company_id = $1 AND campaign_id = $2 AND position = $3 AND variant = $4`,
+    values,
+  );
+  return result != null;
+}
+
 export interface CampaignTemplateRow {
   id: string;
   company_id: string;

@@ -16,7 +16,7 @@ The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbo
 ## Build
 1. \`create-campaign\`: name, \`delivery\`, audience, \`client\`, optional \`startAt\` (no step is due before it).
 2. For a client: \`set-sender-identity\` first (below).
-3. \`add-campaign-step\` per message (\`channel\` email, sms or whatsapp; subject and body; \`delayDays\` after the previous step). \`create-ab-variant\` adds a B version; \`set-step-html\` sets an HTML body.
+3. \`add-campaign-step\` per message (\`channel\` email, sms or whatsapp; subject and body; \`delayDays\` after the previous step). \`create-ab-variant\` adds a B version; \`set-step-html\` sets an HTML body; \`edit-campaign-step\` changes the subject or plain body of a draft step (HTML stays).
 4. \`preflight-campaign\` and fix what it lists, then \`request-campaign-approval\`.
 - \`update-campaign\` edits a draft, including moving it to another client (or \`client: "own"\` for own work).
 - Templates: \`create-campaign-template\`, \`list-campaign-templates\`, \`create-campaign-from-template\`.
