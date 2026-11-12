@@ -153,8 +153,8 @@ describe.skipIf(!hasFfmpeg)("looks + adjust with real ffmpeg", () => {
   }, 120_000);
 
   // The render matches the looks.ts reference math the preview is built from (flat colour, centre patch). Tolerance is
-  // looks.ts's own eq tolerance (7/255, 10/255 combined): ffmpeg `eq` truncates (int)(100*b+100), so brightness -0.1
-  // renders as -0.11 (Y -29 codes, not -25.6); measured here and filed against looks.ts.
+  // looks.ts's own eq tolerance (7/255, 10/255 combined): measured on this ffmpeg, `eq` moves Y by +25/+50 codes for
+  // brightness +0.1/+0.2 but -29/-55 for -0.1/-0.2, so negative brightness lands about 4/255 darker than the formula.
   const cases: [string, { look?: Partial<LookRef>; adjust?: Partial<Adjust> }][] = [
     ["teal-orange", { look: { id: "teal-orange", intensity: 1 } }],
     ["sepia 0.5", { look: { id: "sepia", intensity: 0.5 } }],
