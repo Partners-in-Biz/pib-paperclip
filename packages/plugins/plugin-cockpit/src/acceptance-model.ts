@@ -340,6 +340,21 @@ export function recordIdOf(ref: string): string {
   return ref.slice(ref.indexOf(":") + 1);
 }
 
+/**
+ * The client a rehearsal's evidence file goes to (evidence-save with acceptanceRunId, PAR-10122). The acceptance issue
+ * a journey runs under has a project of its own, and that project otherwise decides the folder (PAR-8128), so the canary's
+ * file was refused. The run, not the agent, names the client: only a run that is still going, whose client is the canary
+ * (every run's is, initRun refuses any other), and only for a step name that carries the run's id, so real work can never
+ * borrow it to file evidence elsewhere.
+ */
+export function rehearsalEvidenceClient(run: { id: string; status: string; clientRef: string } | null, runId: string, step: string): { client: { kind: "company"; ref: string } } | { error: string } {
+  if (!run) return { error: `No acceptance run ${runId} in this company. acceptanceRunId is only for a journey step; leave it out for real work.` };
+  if (run.status !== "running") return { error: `Acceptance run ${run.id} is ${run.status}: its evidence can no longer be saved.` };
+  if (!isCanaryClientRef(run.clientRef)) return { error: `Acceptance run ${run.id} is not on the canary client.` };
+  if (!step.includes(run.id)) return { error: `step must contain the run id ${run.id} when acceptanceRunId is given.` };
+  return { client: { kind: "company", ref: recordIdOf(run.clientRef) } };
+}
+
 const EMAIL_RE = /[A-Za-z0-9._%+'-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
 const CLIENT_KEYS = new Set(["client", "clientref", "client_ref", "customerref", "companyrecordid", "recordid", "contactid", "clientkind"]);
 

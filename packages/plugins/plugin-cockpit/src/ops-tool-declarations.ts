@@ -188,6 +188,7 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
         },
         required: ["kind", "ref"],
       },
+      acceptanceRunId: { type: "string", maxLength: 60, description: "Only for an acceptance journey step that says so: the run id. The file then goes to that run's canary client, whatever project the issue has, and step must contain the run id. Leave it out for real work." },
     }),
   },
 ];

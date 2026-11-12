@@ -159,6 +159,13 @@
           "by": "Senior Developer",
           "at": "2026-11-12",
           "expires": "2026-12-12"
+        },
+        {
+          "hash": "e4ba318073961b11",
+          "reason": "Only the generated journeys list (references/journeys.md) changed: drive-producers-canary is now v2 (0.24.1, evidence-save under the run's canary client). No instruction in the skill changed, so its two scenarios are unaffected. Re-baseline from a live run before expiry (PAR-10122).",
+          "by": "Senior Developer",
+          "at": "2026-11-12",
+          "expires": "2026-12-12"
         }
       ]
     }
