@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-crm",
-  "version": "0.45.1",
+  "version": "0.46.0",
   "private": true,
   "type": "module",
   "description": "Partners in Biz CRM plugin. Companies, contacts, deals, and sequences in the Paperclip Postgres namespace.",

@@ -17,6 +17,10 @@ export const LEAD_ENDPOINT_KEY = "lead";
 export const SOURCE_STATUSES = ["active", "paused", "revoked"] as const;
 export type SourceStatus = (typeof SOURCE_STATUSES)[number];
 
+/** lead (default): a submission becomes a lead. issue: it opens one issue in a set project (a report), with no contact and no consent record. */
+export const LEAD_INTAKES = ["lead", "issue"] as const;
+export type LeadIntake = (typeof LEAD_INTAKES)[number];
+
 /** Largest request body the endpoint reads. A real form is a few hundred bytes. */
 export const MAX_BODY_BYTES = 16_384;
 /** A person cannot fill in a form in under this long: faster is a script. */
@@ -32,6 +36,7 @@ export const LIMITS = {
   phone: 40,
   company: 160,
   message: 2_000,
+  subject: 200,
   url: 500,
   consentText: 500,
   extraKeys: 10,
@@ -253,6 +258,8 @@ export interface Submission {
   email: string;
   phone: string | null;
   company: string | null;
+  /** A short subject line (report sources use it as the issue title). */
+  subject: string | null;
   message: string;
   /** Other fields the form asked (a service, a budget). A few, short, as text. */
   extra: Record<string, string>;
@@ -343,12 +350,14 @@ export type SubmissionCheck = { ok: true; submission: Submission } | { ok: false
 /**
  * Reads and checks the fields. Refuses a missing or malformed email and a
  * throwaway or reserved address with a plain message the form shows.
+ * `emailOptional` (a report source): no email is fine (`email` is then ""), and a given one only has to look like an address,
+ * since nobody is emailed from a report.
  */
-export function parseSubmission(body: Record<string, unknown>, options: { extraBlockedDomains?: readonly string[]; allowReserved?: boolean } = {}): SubmissionCheck {
+export function parseSubmission(body: Record<string, unknown>, options: { extraBlockedDomains?: readonly string[]; allowReserved?: boolean; emailOptional?: boolean } = {}): SubmissionCheck {
   const email = cleanText(body.email, LIMITS.email + 20).toLowerCase();
-  if (!email) return { ok: false, reason: "invalid", message: "Please enter your email address." };
-  if (!isValidEmail(email)) return { ok: false, reason: "invalid", message: "That email address does not look right." };
-  if (isDisposableEmail(email, options.extraBlockedDomains) || (!options.allowReserved && isReservedEmail(email))) {
+  if (!email && !options.emailOptional) return { ok: false, reason: "invalid", message: "Please enter your email address." };
+  if (email && !isValidEmail(email)) return { ok: false, reason: "invalid", message: "That email address does not look right." };
+  if (email && !options.emailOptional && (isDisposableEmail(email, options.extraBlockedDomains) || (!options.allowReserved && isReservedEmail(email)))) {
     return { ok: false, reason: "blocked_email", message: "Please use a permanent email address, not a temporary one." };
   }
   const message = cleanText(body.message, LIMITS.message, true);
@@ -361,6 +370,7 @@ export function parseSubmission(body: Record<string, unknown>, options: { extraB
       email,
       phone: cleanText(body.phone, LIMITS.phone).replace(/[^0-9+()\-\s.]/g, "").replace(/\s+/g, " ").trim() || null,
       company: cleanText(body.company, LIMITS.company) || null,
+      subject: cleanText(body.subject, LIMITS.subject) || null,
       message,
       extra: parseExtra(body.fields ?? body.extra),
       consent,
@@ -375,6 +385,16 @@ export function parseSubmission(body: Record<string, unknown>, options: { extraB
 }
 
 /** `form:<source id>:<keyed email hash>:<yyyymmdd>`: the same person sending the same form twice in a day is one lead. */
+/**
+ * `report:<source id>:<keyed content hash>:<yyyymmdd>`: a report has no email to key on, so the same report (same sender, subject,
+ * message and fields) sent twice in a day is one report; a different report is a new one.
+ */
+export function reportCaptureKey(sourceId: string, sub: Pick<Submission, "email" | "name" | "phone" | "subject" | "message" | "extra">, now: Date, salt?: string): string {
+  const content = JSON.stringify([sub.email, sub.name, sub.phone, sub.subject, sub.message, Object.entries(sub.extra).sort(([a], [b]) => a.localeCompare(b))]);
+  const hash = (salt ? createHmac("sha256", salt).update(`report:${content}`) : createHash("sha256").update(content)).digest("hex").slice(0, 16);
+  return `report:${sourceId}:${hash}:${now.toISOString().slice(0, 10).replace(/-/g, "")}`;
+}
+
 export function leadCaptureKey(sourceId: string, email: string, now: Date, salt?: string): string {
   return `form:${sourceId}:${emailHash(email, salt)}:${now.toISOString().slice(0, 10).replace(/-/g, "")}`;
 }

@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { asRecord, table } from "./db.js";
-import { SOURCE_STATUSES, type SourceStatus } from "./lead-form.js";
+import { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus } from "./lead-form.js";
 import type { ClientKind } from "./refs.js";
 
 function iso(value: unknown): string | null {
@@ -26,7 +26,7 @@ function int(value: unknown): number {
 // Lead sources
 // ---------------------------------------------------------------------------
 
-export { SOURCE_STATUSES, type SourceStatus };
+export { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus };
 
 export interface LeadSource {
   id: string;
@@ -55,6 +55,10 @@ export interface LeadSource {
   lastSubmissionAt: string | null;
   createdBy: string | null;
   createdAt: string | null;
+  /** `lead` (default): a submission becomes a lead. `issue`: it opens one issue in `targetProjectId`, with no contact and no consent record. */
+  intake: LeadIntake;
+  targetProjectId: string | null;
+  targetAgentId: string | null;
 }
 
 interface SourceRow {
@@ -81,11 +85,14 @@ interface SourceRow {
   last_submission_at: unknown;
   created_by: string | null;
   created_at: unknown;
+  intake?: string | null;
+  target_project_id?: string | null;
+  target_agent_id?: string | null;
 }
 
 const SOURCE_COLUMNS = `id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, previous_key, previous_key_until, signing_secret,
   status, canary, consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, accepted_count, rejected_count,
-  last_submission_at, created_by, created_at`;
+  last_submission_at, created_by, created_at, intake, target_project_id, target_agent_id`;
 
 function mapSource(row: SourceRow): LeadSource {
   return {
@@ -112,6 +119,9 @@ function mapSource(row: SourceRow): LeadSource {
     lastSubmissionAt: iso(row.last_submission_at),
     createdBy: row.created_by ?? null,
     createdAt: iso(row.created_at),
+    intake: row.intake === "issue" ? "issue" : "lead",
+    targetProjectId: row.target_project_id ?? null,
+    targetAgentId: row.target_agent_id ?? null,
   };
 }
 
@@ -119,8 +129,8 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "lead_sources")}
       (id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, signing_secret, status, canary,
-       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by, intake, target_project_id, target_agent_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
     [
       source.id,
       source.companyId,
@@ -139,6 +149,9 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
       source.turnstileSiteKey,
       source.rateLimitPerHour,
       source.createdBy,
+      source.intake,
+      source.targetProjectId,
+      source.targetAgentId,
     ],
   );
 }

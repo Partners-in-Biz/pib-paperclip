@@ -1,7 +1,7 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersinbiz/pib-plugin-kit/client-sites";
 import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
-import { SOURCE_STATUSES } from "./lead-form.js";
+import { LEAD_INTAKES, SOURCE_STATUSES } from "./lead-form.js";
 import { CARE_TOOLS } from "./care-tools.js";
 import { ESIGN_TOOLS } from "./esign-tools.js";
 import { GROWTH_TOOLS } from "./growth-tools.js";
@@ -175,6 +175,9 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box. Default: the client (or we) may email news and offers, with an unsubscribe line. Must say who will email them."),
       privacyUrl: text("A link to the privacy policy shown under the form."),
       successMessage: text("What the visitor reads after sending (default: Thank you, we will be in touch)."),
+      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>)."),
+      projectId: text("Only with intake issue (required there): the Paperclip project the report issues open in."),
+      assigneeAgentId: text("Only with intake issue: the agent each report issue is assigned to. Leave out for unassigned issues in the project."),
     }),
   },
   {
