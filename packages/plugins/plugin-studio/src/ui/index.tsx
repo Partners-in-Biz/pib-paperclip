@@ -1224,7 +1224,11 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
         </Section>
       ) : null}
-      {data.musicUsage ? <p data-music-usage style={{ ...muted, overflowWrap: "anywhere" }}>{musicUsageLine(data.musicUsage)}</p> : null}
+      {data.musicUsage ? (
+        <Section title="Music">
+          <p data-music-usage style={{ ...muted, overflowWrap: "anywhere", margin: 0 }}>{musicUsageLine(data.musicUsage)}</p>
+        </Section>
+      ) : null}
       <Section title="Monthly credit caps">
         <CapRow label="Company" hint="All of this company's work, clients included." scopeKey={COMPANY_SCOPE} cap={capOf(COMPANY_SCOPE)} used={data.companyUsed} save={save} busy={busy} editable={owner} />
         <CapRow label="Default" hint="Used when the company cap is blank." scopeKey={DEFAULT_SCOPE} cap={capOf(DEFAULT_SCOPE)} save={save} busy={busy} editable={owner} />
