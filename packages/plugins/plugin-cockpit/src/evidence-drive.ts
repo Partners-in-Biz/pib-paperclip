@@ -46,6 +46,8 @@ export function evidenceFileName(issueId: string, step: string, timestamp: strin
   return `${prefix}-${number}-${sanitizedStep}-${timestamp}.png`;
 }
 
+const EVIDENCE_ACK_TIMEOUT_MS = 20_000;
+
 /**
  * Save an evidence screenshot to Drive as a fire-and-forget operation.
  * Never throws or rejects; logs warnings on failure.
@@ -105,6 +107,8 @@ export async function saveEvidenceToDrive(
       mimeType: "image/png",
       bytes,
       subfolder: EVIDENCE_SUBFOLDER,
+      // Answer before the tool gateway's 30 s limit (a 504 hides the result): a slow Drive gives saved:false, not a timeout.
+      timeoutMs: EVIDENCE_ACK_TIMEOUT_MS,
       ...(projectId ? { projectId } : { client: parsed.client! }),
     });
 
