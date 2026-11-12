@@ -423,3 +423,56 @@ test('driver-playwright', async (t) => {
     assert.equal(launchOpts.acceptDownloads, false);
   });
 });
+
+test('driver-playwright on a live page (2026-11-12)', async (t) => {
+  const make = (page) => {
+    const fakeContext = { pages: () => [page], route: async () => {}, on: () => {}, close: async () => {} };
+    const fakePw = { chromium: { launchPersistentContext: async () => fakeContext } };
+    return createPlaywrightBrowser({ playwright: fakePw, profileRoot: '/tmp' })
+      .newContext({ origins: ['https://example.com'], guard: () => true });
+  };
+  const basePage = (over) => Object.assign({
+    url: () => 'https://example.com',
+    on: () => {}, screenshot: async () => {}, mainFrame: () => ({}),
+    locator: () => ({ innerText: async () => '' })
+  }, over);
+
+  await t.test('goto loads the document and does not fail when the network never goes idle', async () => {
+    const calls = [];
+    const ctx = make(basePage({
+      goto: async (url, opts) => { calls.push(['goto', opts.waitUntil]); },
+      waitForLoadState: async (state, opts) => { calls.push(['settle', state, opts.timeout]); throw new Error('Timeout 8000ms exceeded.'); }
+    }));
+    await ctx.goto('https://example.com');
+    assert.deepEqual(calls[0], ['goto', 'domcontentloaded']);
+    assert.equal(calls[1][0], 'settle');
+    assert.equal(calls[1][1], 'networkidle');
+    assert.ok(calls[1][2] > 0 && calls[1][2] <= 30000);
+  });
+
+  await t.test('goto still reports a document that fails to load', async () => {
+    const ctx = make(basePage({ goto: async () => { const e = new Error('net::ERR_CONNECTION_REFUSED'); throw e; } }));
+    await assert.rejects(() => ctx.goto('https://example.com'), /ERR_CONNECTION_REFUSED/);
+  });
+
+  await t.test('hasText reads once by default and waits when asked', async () => {
+    let reads = 0;
+    const ctx = make(basePage({
+      goto: async () => {},
+      locator: () => ({ innerText: async () => { reads += 1; return reads >= 3 ? 'Dashboard New task' : 'Loading'; } })
+    }));
+    await ctx.goto('https://example.com');
+    assert.equal(await ctx.hasText('New task'), false);
+    assert.equal(reads, 1);
+    assert.equal(await ctx.hasText('New task', { timeoutMs: 3000 }), true);
+    assert.equal(reads, 3);
+  });
+
+  await t.test('hasText gives up after the wait and survives a failing read', async () => {
+    const ctx = make(basePage({ goto: async () => {}, locator: () => ({ innerText: async () => { throw new Error('detached'); } }) }));
+    await ctx.goto('https://example.com');
+    const t0 = Date.now();
+    assert.equal(await ctx.hasText('New task', { timeoutMs: 600 }), false);
+    assert.ok(Date.now() - t0 >= 500);
+  });
+});

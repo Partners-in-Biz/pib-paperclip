@@ -2,6 +2,12 @@
 const path = require('path');
 const fs = require('fs');
 
+// How long goto lets the network settle after the document has loaded (PIB_BROWSER_SETTLE_MS, 0..30000).
+function settleMs() {
+  const raw = Number(process.env.PIB_BROWSER_SETTLE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 30000) : 8000;
+}
+
 function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   const pw = playwright || require('playwright-core');
   const defaultProfileRoot = profileRoot || env.PIB_BROWSER_PROFILES || '/var/lib/pib-browser/profiles';
@@ -119,7 +125,13 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
       return {
         goto: async (url) => {
           await ensureInitialized();
-          await page.goto(url, { waitUntil: 'networkidle' });
+          // A live board never goes network-idle (polling, event streams). Waiting for "networkidle" alone
+          // timed out on a healthy, logged-in page and was reported as an expired session (2026-11-12).
+          // Load the document, then give the network a bounded moment to settle.
+          await page.goto(url, { waitUntil: 'domcontentloaded' });
+          if (typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('networkidle', { timeout: settleMs() }).catch(() => {});
+          }
         },
 
         click: async (selector, text) => {
@@ -165,10 +177,18 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           }
         },
 
-        hasText: async (text) => {
+        // timeoutMs > 0 re-reads the page until the text shows or the time is up: a single-page app renders
+        // after the document has loaded. The default (0) is one read, as before.
+        hasText: async (text, opts) => {
           await ensureInitialized();
-          const bodyText = await page.locator('body').innerText();
-          return bodyText.includes(text);
+          const timeoutMs = Math.max(0, Number(opts && opts.timeoutMs) || 0);
+          const deadline = Date.now() + timeoutMs;
+          for (;;) {
+            const bodyText = await page.locator('body').innerText().catch(() => '');
+            if (bodyText.includes(text)) return true;
+            if (Date.now() >= deadline) return false;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
         },
 
         describe: async (selector) => {
