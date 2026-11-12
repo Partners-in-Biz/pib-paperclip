@@ -113,7 +113,7 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   }
 }
 
-interface SaveHeld { fh?: FileHandle; handedOff?: boolean; timing: EnsureTiming; reachedDrive?: boolean; ensurePath?: "full" | "exists"; dedupeMs?: number; uploadMs?: number }
+interface SaveHeld { fh?: FileHandle; handedOff?: boolean; timing: EnsureTiming; reachedDrive?: boolean; ensurePath?: "full" | "exists" | "fast"; dedupeMs?: number; uploadMs?: number }
 
 async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: SaveHeld, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
@@ -227,9 +227,9 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
   let resolvedSubfolderId: string | null = null;
   // The sub-folder the file really goes into (null: the folder itself, also when the folder has no sub-folders and the requested one is ignored)
   let savedSubfolder: string | null = null;
-  // Pass include_tree when subfolder is set, so already-ensured projects return tree with subfolders
+  // want_subfolder: one query for that sub-folder; a miss falls back to the full tree (PAR-10250)
   held.reachedDrive = true;
-  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, timing: held.timing, ...(subfolder ? { include_tree: true } : {}) });
+  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, timing: held.timing, ...(subfolder ? { want_subfolder: subfolder } : {}) });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
   }
@@ -241,7 +241,7 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: folderAny.status as any, hint: folderAny.hint };
   }
 
-  held.ensurePath = folderAny.status === "exists" ? "exists" : "full";
+  held.ensurePath = held.timing.fast ? "fast" : folderAny.status === "exists" ? "exists" : "full";
   const folderId = folderAny.folder_id;
   if (!folderId) {
     return { status: "invalid_input", hint: "No folder_id from ensure result" };

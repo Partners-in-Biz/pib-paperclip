@@ -218,6 +218,37 @@ export function createGoogleDriveBroker(
     return file ? toRegistry(type, id, file) : null;
   }
 
+  /**
+   * ONE query for the sub-folder at `subPath` below an entity folder (PAR-10250): every prefix of the path is tagged
+   * `pibEntityType=subfolder` with `pibEntityId=idTag(<id>/<prefix>)`. The chain is checked in code (first folder under the
+   * entity folder, each next under the previous, each prefix found once); anything else is null and the caller takes the full path.
+   * `folderId` is the entity folder when the caller already resolved it (no second lookup).
+   */
+  async function findSubfolder(type: DriveEntityType, id: string, subPath: string, folderId?: string): Promise<{ folder_id: string } | null> {
+    const segments = subPath.split("/").filter(Boolean);
+    if (segments.length === 0) return null;
+    const prefixes = segments.map((_, i) => segments.slice(0, i + 1).join("/"));
+    const rootId = folderId ?? (await resolve(type, id))?.folder_id;
+    if (!rootId) return null;
+    const ids = prefixes.map((p) => `appProperties has { key='pibEntityId' and value=${q(idTag(`${id}/${p}`))} }`).join(" or ");
+    const files = await list(
+      `mimeType = '${FOLDER_MIME}' and trashed = false and appProperties has { key='pibEntityType' and value='subfolder' } and (${ids})`,
+      FOLDER_FIELDS,
+      prefixes.length * 2 + 2,
+    );
+    let parentId = rootId;
+    let found: DriveFile | undefined;
+    for (const prefix of prefixes) {
+      const tag = idTag(`${id}/${prefix}`);
+      const matches = files.filter((f) => f.appProperties?.pibEntityType === "subfolder" && f.appProperties?.pibEntityId === tag);
+      if (matches.length !== 1) return null;
+      found = matches[0]!;
+      if (!found.parents?.includes(parentId)) return null;
+      parentId = found.id;
+    }
+    return found ? { folder_id: found.id } : null;
+  }
+
   async function createFolder(name: string, parentId: string, path: string, props: Record<string, string>): Promise<DriveFile> {
     return json<DriveFile>("POST", `${DRIVE}/files?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, {
       name,
@@ -581,5 +612,5 @@ export function createGoogleDriveBroker(
     return { body: res.body as ReadableStream<Uint8Array>, size: size !== null && Number.isFinite(size) ? size : null };
   }
 
-  return { resolve, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, downloadStream, thumbnail };
+  return { resolve, findSubfolder, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, downloadStream, thumbnail };
 }

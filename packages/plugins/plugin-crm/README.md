@@ -74,9 +74,13 @@ PAR-10822. A lead source now has an `intake`: `lead` (the default; every existin
 The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`, named CHECK `lead_sources_intake`: `lead` or `issue`; a later mode drops and re-adds that one constraint), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
 
 
+## Drive save: one query into an existing sub-folder (0.46.2)
+
+src-only (PAR-10250). A save that names a sub-folder of a complete client folder now asks Drive once (`findSubfolder`: one `files.list` scoped to the Shared Drive, matching the `subfolder` tag of every prefix of the path) instead of running the full ensure with its sibling scan. The folder is used only when the chain holds: the first segment under the client's folder, each next under the previous, each found once, not trashed. Any miss falls back to the full path as before. The `drive save timing` line shows `path: fast` on a hit. Sub-folders a person made are not tagged.
+
 ## Drive save budgets and timing (0.46.1)
 
-src-only (PAR-10249). `drive_file_save`, `drive_folder_ensure` and `drive_files_list` declare `timeoutMs` 25 s (the gateway cut them at 10 s). Each save that reaches Drive logs one `drive save timing` line: `resolveMs`, `siblingsMs`, `ensureMs`, `ensureLockWaitMs`, `driveLookups`, `adoptedUntagged`, `dedupeMs`, `uploadMs`, `totalMs`, `deduplicated`, `path` (`full` or `exists`). Numbers only.
+src-only (PAR-10249). `drive_file_save`, `drive_folder_ensure` and `drive_files_list` declare `timeoutMs` 25 s (the gateway cut them at 10 s). Each save that reaches Drive logs one `drive save timing` line: `resolveMs`, `siblingsMs`, `ensureMs`, `ensureLockWaitMs`, `driveLookups`, `adoptedUntagged`, `dedupeMs`, `uploadMs`, `totalMs`, `deduplicated`, `path` (`full`, `exists` or `fast`). Numbers only.
 
 ## Drive save timing logs (0.45.1)
 
