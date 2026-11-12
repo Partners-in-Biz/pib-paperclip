@@ -7,8 +7,10 @@ import { MediaViewer } from "./media-viewer.js";
 import { canPostByHand, HandPost } from "./hand-post.js";
 import { Banner, Card, chipStyle, destinationLabel, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
+import { AccountPicker, AskForChanges, Switch, useStoredChoice } from "./post-tools.js";
+import { PostPreview, previewAccounts } from "./preview.js";
 import { PostTarget } from "./target.js";
-import type { ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
+import type { Account, ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -27,6 +29,8 @@ const waitsForHand = (post: Post): boolean => post.destinations.some((d) => d.st
 export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; run: RunAction; onOpen: (post: Post) => void; onNew: () => void }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
+  // List: compact rows. Preview: each post as its platform shows it.
+  const [view, setView] = useStoredChoice("pib.social.posts.view", ["list", "preview"] as const, "list");
   const q = search.trim().toLowerCase();
   const count = (id: string) => id === "all" ? posts.length : id === "by_hand" ? posts.filter(waitsForHand).length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
   const rows = useMemo(() => posts.filter((post) => {
@@ -43,10 +47,28 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
         {FILTERS.map((f) => (
           <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}), ...(f.id === "by_hand" && count(f.id) && filter !== f.id ? { color: tone("warn").fg, borderColor: tone("warn").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
+        <Switch label="How posts are shown" value={view} onChange={setView} options={[{ id: "list", label: "List" }, { id: "preview", label: "Preview" }]} />
         {snapshot.canPost === false ? null : <Button type="button" onClick={onNew}>+ New post</Button>}
       </Toolbar>
       {rows.length === 0 ? (
         <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={snapshot.canPost === false ? undefined : <Button type="button" onClick={onNew}>+ New post</Button>} />
+      ) : view === "preview" ? (
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: fluidColumns(300, "auto-fill"), alignItems: "start" }}>
+          {rows.map((post) => (
+            <div key={post.id} style={{ display: "grid", gap: 8, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, borderTop: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tokens.card, minWidth: 0 }}>
+              <Row style={{ justifyContent: "space-between" }}>
+                <Row>
+                  <PostStatus status={post.status} />
+                  {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
+                </Row>
+                <SmallButton onClick={() => onOpen(post)}>Open</SmallButton>
+              </Row>
+              <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
+              <PostTarget post={post} compact />
+              <PostPreview source={post} accounts={previewAccounts(snapshot.accounts, post.destinations)} empty="No account picked yet." />
+            </div>
+          ))}
+        </div>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {rows.map((post) => (
@@ -86,6 +108,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
   const [approval, setApproval] = useState<ApprovalOutcome | null>(null);
   const [waiting, setWaiting] = useState<string | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
+  const [look, setLook] = useStoredChoice("pib.social.post.look", ["preview", "text"] as const, "preview");
+  const [toggling, setToggling] = useState<string | null>(null);
   const tz = snapshot.config.timezone;
   const isUser = Boolean(snapshot.viewer.userId);
   const proposed = (post.status === "draft" || post.status === "review") && post.scheduledAt ? post.scheduledAt : null;
@@ -114,6 +138,18 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     };
   }, [post.id, post.updatedAt, post.destinations.length]);
 
+  // Accounts can change while the post can still be edited; a destination that has gone out stays.
+  const canPick = (post.status === "draft" || post.status === "review") && isUser && snapshot.canPost !== false;
+  const pickable: Account[] = canPick ? snapshot.accounts.filter((a) => (a.connected && a.status !== "needs_reconnect") || post.destinations.some((d) => d.accountId === a.id)) : [];
+  const onPost = new Set(post.destinations.map((d) => d.accountId));
+  const fixed = new Set(post.destinations.filter((d) => d.status !== "pending" && d.status !== "failed").map((d) => d.accountId));
+  const toggleAccount = (account: Account) => {
+    setToggling(account.id);
+    run(onPost.has(account.id) ? "social.detach" : "social.attach", { postId: post.id, accountId: account.id })
+      .catch(ignore)
+      .finally(() => setToggling(null));
+  };
+
   const act = (key: string, success: string, extra: Record<string, unknown> = {}) => run(key, { postId: post.id, ...extra }, success).catch(ignore);
   const failed = post.destinations.filter((d) => d.status === "failed").length;
   // A reply to an X post cannot go through the API, so it can be posted from X's own reply box instead.
@@ -131,11 +167,21 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
       <PostTarget post={post} />
-      <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
+      <Row style={{ justifyContent: "space-between" }}>
+        <Muted>{look === "preview" ? "As it will look when posted" : "The post's text and media"}</Muted>
+        <Switch label="How the post is shown" value={look} onChange={setLook} options={[{ id: "preview", label: "Preview" }, { id: "text", label: "Text" }]} />
+      </Row>
+      {look === "preview" ? (
+        <PostPreview source={post} accounts={previewAccounts(snapshot.accounts, post.destinations)} empty="No account picked yet: this is a general look. Pick accounts below." />
+      ) : (
+        <>
+          <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
+          {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
+        </>
+      )}
       {post.media.length ? (
         <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind, name: m.altText ?? undefined }} onClick={() => setViewing(i)} />)}</Row>
       ) : null}
-      {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
       {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
       {waiting ? <Banner tone="info" title="Your approval is recorded">{waiting}</Banner> : null}
       {snapshot.space === "me" ? null : <PostApproval post={post} snapshot={snapshot} run={run} />}
@@ -157,8 +203,15 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       ) : null}
 
       <Card style={{ gap: 8 }}>
-        <strong style={{ fontSize: 12 }}>Destinations</strong>
-        {post.destinations.length === 0 ? <Muted>No destinations yet. Edit the post and pick accounts.</Muted> : null}
+        <strong style={{ fontSize: 12 }}>{canPick ? "Post to" : "Destinations"}</strong>
+        {canPick && pickable.length ? (
+          <>
+            <Muted>Press an account to add it or take it off.{post.status === "review" ? " A change here means the post needs approving in its new form." : ""}</Muted>
+            <AccountPicker accounts={pickable} selected={onPost} locked={fixed} busyId={toggling} onToggle={toggleAccount} />
+          </>
+        ) : null}
+        {canPick && pickable.length === 0 ? <Muted>No connected accounts yet. Connect one on the Accounts tab.</Muted> : null}
+        {!canPick && post.destinations.length === 0 ? <Muted>No destinations yet. Edit the post and pick accounts.</Muted> : null}
         {post.destinations.map((d) => (
           <div key={d.id} style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: `1px solid ${tokens.border}` }}>
             <Row style={{ justifyContent: "space-between" }}>
@@ -211,6 +264,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
           }}>Delete</SmallButton>
         ) : null}
       </Row>
+
+      {snapshot.space === "me" ? null : <AskForChanges post={post} snapshot={snapshot} run={run} />}
 
       {post.status === "approved" ? (
         <Card style={{ gap: 8 }}>

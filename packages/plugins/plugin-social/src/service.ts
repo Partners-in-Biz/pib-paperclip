@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByDelegate, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
 import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
@@ -991,6 +991,20 @@ export async function returnPostAsDelegateRecord(ctx: PluginContext, viewer: Vie
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const result = await returnPostByDelegate(ctx, viewer, post, optionalString(params, "notes"));
   return { ...(await getPostDetail(ctx, viewer, post.id)), ...result };
+}
+
+/** Page action `social.request-changes`: a person's note on a post goes to the Social agent and the post ends as a draft (`requestChangesByPerson`). */
+export async function requestChangesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "send changes to the agent");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await requestChangesByPerson(ctx, viewer, post, optionalString(params, "notes"), { remember: params.remember === true });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changes: result };
+}
+
+/** Page action `social.change-notes`: the change requests a post has had, newest first. */
+export async function changeNotesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  return { postId: post.id, notes: await changeNotesFor(ctx, viewer.companyId, post.id) };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */

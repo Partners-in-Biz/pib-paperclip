@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-social",
-  "version": "0.11.4",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "description": "Org and personal social accounts, post review, a publish job, inbox triage (built-in rules, or Jev) and the Growth Lab.",
