@@ -9,6 +9,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, SeoError, type Actor } from "../src/service/common.js";
 import { createPreview, type CreatePreviewResult } from "../src/service/preview.js";
+import { BUILDER_CASES } from "./fixtures/builders/cases.js";
 import { bodyInsertAreaHtml, buildPreviewHtml } from "../src/engine/preview.js";
 import { assertInsertArea, wpPostContent, wpRestLink } from "../src/service/wp-body.js";
 
@@ -383,23 +384,77 @@ describe("T3 insert-area check R2", () => {
       expect(w.previews).toHaveLength(1);
     }
   });
-  it("bodyInsertAreaHtml returns the area the change uses: the insert lands at the end of the slice, links sit inside it", () => {
-    for (const file of ["huntandgun-hunting.html", "faq.html"]) {
-      const src = readFileSync(resolve("tests/fixtures", file), "utf-8");
-      const marker = "<p>MARKERCOPY insert here</p>";
-      const slice = bodyInsertAreaHtml(src, { bodyHtml: marker, bodyMode: "after" });
-      if (slice === null) continue;
-      const built = buildPreviewHtml(src, "https://x.example/", { bodyHtml: marker, bodyMode: "after" }, { token: "t" }).html;
-      const at = built.indexOf("MARKERCOPY");
-      expect(at).toBeGreaterThan(-1);
-      const sliceAt = built.indexOf(slice.slice(0, 80));
-      expect(sliceAt).toBeGreaterThan(-1);
-      expect(at).toBeLessThanOrEqual(sliceAt + slice.length + marker.length);
-      expect(at).toBeGreaterThanOrEqual(sliceAt);
+  // AC2: the helper returns the area the change really uses. Each fixture is built with a marker; the marker offset is
+  // checked against the slice (before: marker sits right ahead of the slice, after: right behind it, replace: the slice is gone).
+  const FIXTURES: Record<string, string> = {
+    ...BUILDER_CASES,
+    "pasted-card-source": readFileSync(resolve("tests/fixtures/huntandgun-hunting.html"), "utf-8"),
+    "pasted-card-rendered": readFileSync(resolve("tests/fixtures/huntandgun-hunting-rendered.html"), "utf-8"),
+    faq: readFileSync(resolve("tests/fixtures/faq.html"), "utf-8"),
+  };
+  const MARK = "<p>MARKERCOPY insert here</p>";
+  const buildAt = (src: string, changes: Parameters<typeof buildPreviewHtml>[2]) => buildPreviewHtml(src, "https://x.example/", changes, { token: "t" }).html;
+  it.each(Object.keys(FIXTURES))("bodyInsertAreaHtml matches the real insert offset for before, after and replace (%s)", (name) => {
+    const src = FIXTURES[name]!;
+    for (const bodyMode of ["before", "after", "replace"] as const) {
+      const changes = { bodyHtml: MARK, bodyMode };
+      const slice = bodyInsertAreaHtml(src, changes);
+      expect(slice, `${name} ${bodyMode}`).not.toBeNull();
+      const head = slice!.slice(0, 60);
+      const tail = slice!.slice(-60);
+      const built = buildAt(src, changes);
+      if (bodyMode === "before") expect(built).toContain(MARK + head);
+      if (bodyMode === "after") expect(built).toContain(tail + MARK);
+      if (bodyMode === "replace") {
+        expect(built).toContain(MARK);
+        if (slice!.trim().length > 20) expect(built).not.toContain(head);
+      }
     }
-    const src = readFileSync(resolve("tests/fixtures/huntandgun-hunting.html"), "utf-8");
-    const linkSlice = bodyInsertAreaHtml(src, { linkEdits: [{ text: "x", href: "/x/" }] });
-    expect(linkSlice).not.toBeNull();
+  });
+  it.each(Object.keys(BUILDER_CASES))("bodyInsertAreaHtml: a link edit's anchor sits inside the returned slice (%s)", (name) => {
+    const src = BUILDER_CASES[name]!;
+    const text = { "gutenberg-columns": "left", standard: "second", "plain-style-siblings": "second paragraph" }[name] ?? src.match(/>([a-z]+ copy)</)![1]!;
+    const changes = { linkEdits: [{ text, href: "/x/" }] };
+    const slice = bodyInsertAreaHtml(src, changes);
+    expect(slice, name).not.toBeNull();
+    expect(slice).toContain(text);
+    const built = buildAt(src, changes);
+    const anchorAt = built.indexOf('<a href="/x/"');
+    expect(anchorAt).toBeGreaterThan(-1);
+    const open = '<div class="entry-content">';
+    const sliceAt = built.indexOf(open) + open.length;
+    expect(anchorAt).toBeGreaterThanOrEqual(sliceAt);
+    expect(anchorAt).toBeLessThan(sliceAt + slice!.length + 30);
+  });
+  it("the descent flag is mirrored: a pasted-card page gives the card for a body change and the whole entry-content for a link edit", () => {
+    const src = FIXTURES["pasted-card-source"]!;
+    const bodySlice = bodyInsertAreaHtml(src, { bodyHtml: MARK })!;
+    const linkSlice = bodyInsertAreaHtml(src, { linkEdits: [{ text: "x", href: "/x/" }] })!;
+    expect(bodySlice).not.toContain("<style>");
+    expect(linkSlice).toContain("<style>");
+    expect(linkSlice).toContain(bodySlice.slice(0, 80));
+    expect(linkSlice.length).toBeGreaterThan(bodySlice.length);
+    // the real change agrees: body copy "before" lands first in the card, ahead of the stray body, not at the start of entry-content
+    const built = buildAt(src, { bodyHtml: MARK });
+    expect(built).toContain(MARK + bodySlice.slice(0, 60));
+  });
+  // AC3
+  it("a pasted-card page (PAR-10107 fixture) passes, by body change and by link edit", () => {
+    const src = FIXTURES["pasted-card-source"]!;
+    const card = bodyInsertAreaHtml(src, { bodyHtml: MARK })!;
+    const entry = bodyInsertAreaHtml(src, { linkEdits: [{ text: "x", href: "/x/" }] })!;
+    expect(assertInsertArea(ok(card), src, BODY)).toBeNull();
+    expect(assertInsertArea(ok(entry), src, { linkEdits: [{ text: "x", href: "/x/" }] })).toBeNull();
+  });
+  it("a Divi .et_pb_section and an Elementor widget inside the post content pass; the footer and a sidebar widget are refused", () => {
+    const divi = `<div class="et_pb_section et_pb_section_1"><p>${W(12, "post")}</p></div>`;
+    const widget = `<div class="elementor-widget elementor-widget-text-editor"><p>${W(12, "post")}</p></div>`;
+    const html = page(POST + divi + widget);
+    const rendered = ok(POST + divi + widget);
+    expect(assertInsertArea(rendered, html, { ...CHANGE, contentSelector: ".et_pb_section" })).toBeNull();
+    expect(assertInsertArea(rendered, html, { ...CHANGE, contentSelector: ".elementor-widget" })).toBeNull();
+    expect(() => assertInsertArea(rendered, html, { ...CHANGE, contentSelector: "footer" })).toThrow(/outside this page's WordPress content/);
+    expect(() => assertInsertArea(rendered, html, { ...CHANGE, contentSelector: ".sidebar" })).toThrow(/outside this page's WordPress content/);
   });
 });
 
