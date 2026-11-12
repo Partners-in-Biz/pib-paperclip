@@ -26,7 +26,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("Drive binding tools", () => {
   it("declares three binding tools with schemas and descriptions", () => {
     // Tools are declared in DRIVE_TOOLS; should have 8 total (5 folder tools + 3 binding tools)
-    expect(DRIVE_TOOLS).toHaveLength(10);
+    expect(DRIVE_TOOLS).toHaveLength(11);
     expect(DRIVE_TOOLS[5].name).toBe("drive_binding_discover");
     expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
     expect(DRIVE_TOOLS[7].name).toBe("drive_binding_status");

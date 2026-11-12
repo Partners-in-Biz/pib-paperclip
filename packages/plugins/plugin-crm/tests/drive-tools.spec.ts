@@ -38,7 +38,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive folder tools", () => {
   it("declares resolve, ensure, file-save, set, list, and binding tools with schemas and descriptions", () => {
-    expect(DRIVE_TOOLS).toHaveLength(10);
+    expect(DRIVE_TOOLS).toHaveLength(11);
     expect(DRIVE_TOOLS[0].name).toBe("drive_folder_resolve");
     expect(DRIVE_TOOLS[1].name).toBe("drive_folder_ensure");
     expect(DRIVE_TOOLS[2].name).toBe("drive_file_save");
@@ -48,6 +48,8 @@ describe("Drive folder tools", () => {
     expect(DRIVE_TOOLS[6].name).toBe("drive_binding_set");
     expect(DRIVE_TOOLS[7].name).toBe("drive_binding_status");
     expect(DRIVE_TOOLS[8].name).toBe("drive_transfer_status");
+    expect(DRIVE_TOOLS[10].name).toBe("drive_files_list");
+    expect(DRIVE_TOOLS[10].description).toContain("Read-only");
     expect(DRIVE_TOOLS[0].description).toContain("Never hard-code");
     expect(DRIVE_TOOLS[0].description).toContain("ALWAYS call this first");
     expect(DRIVE_TOOLS[1].description).toContain("Never hard-code");
