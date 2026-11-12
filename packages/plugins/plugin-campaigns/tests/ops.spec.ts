@@ -177,6 +177,71 @@ describe("companies and skills", () => {
   });
 });
 
+describe("edit-campaign-step", () => {
+  const agent = { companyId: CO, agentId: "agent-camp" };
+  it("changes only the given fields of the given variant and leaves the HTML alone", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-e", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(
+      { ...step("camp-e", 1, "a", "Old subject", "Old body"), html_body: "<p>keep</p>" },
+      step("camp-e", 1, "b", "B subject", "B body"),
+    );
+    const { harness } = await boot({ store: s });
+    const out = await harness.executeTool<{ data?: { bodySet: boolean; subjectSet: boolean }; error?: string }>("edit-campaign-step", { campaignId: "camp-e", position: 1, body: "New body" }, agent);
+    expect(out.error).toBeUndefined();
+    expect(out.data).toMatchObject({ bodySet: true, subjectSet: false });
+    const rows = s.campaign_steps!.filter((r) => r.campaign_id === "camp-e");
+    expect(rows.find((r) => r.variant === "a")).toMatchObject({ subject: "Old subject", body: "New body", html_body: "<p>keep</p>" });
+    expect(rows.find((r) => r.variant === "b")).toMatchObject({ subject: "B subject", body: "B body" });
+    await harness.executeTool("edit-campaign-step", { campaignId: "camp-e", position: 1, variant: "b", subject: "B2" }, agent);
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-e" && r.variant === "b")).toMatchObject({ subject: "B2", body: "B body" });
+  });
+
+  it("needs a subject or a body, and refuses a campaign that is not a draft", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-d", { status: "draft", delivery: "email" }), campaign("camp-x", { status: "active", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-d", 1, "a", "S", "B"), step("camp-x", 1, "a", "S", "B"));
+    const { harness } = await boot({ store: s });
+    const none = await harness.executeTool<{ error?: string }>("edit-campaign-step", { campaignId: "camp-d", position: 1 }, agent);
+    expect(none.error).toMatch(/subject, a body, or both/);
+    const live = await harness.executeTool<{ error?: string }>("edit-campaign-step", { campaignId: "camp-x", position: 1, body: "x" }, agent);
+    expect(live.error).toMatch(/Only a draft/);
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-x")).toMatchObject({ body: "B" });
+  });
+});
+
+describe("edit-campaign-step re-checks and re-asks", () => {
+  const agent = { companyId: CO, agentId: "agent-camp" };
+  type Pre = { ok: boolean; errors: Array<{ code: string }> };
+  it("a draft edit shows the new body in the returned preflight and in preflight-campaign", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-p", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-p", 1, "a", "Offer", ""));
+    const { harness } = await boot({ store: s });
+    const before = await harness.executeTool<{ data: Pre }>("preflight-campaign", { campaignId: "camp-p", links: false }, agent);
+    expect(before.data.errors.map((e) => e.code)).toContain("empty-body");
+    const out = await harness.executeTool<{ data?: { preflight: Pre }; error?: string }>("edit-campaign-step", { campaignId: "camp-p", position: 1, body: "Hello, a real body." }, agent);
+    expect(out.error).toBeUndefined();
+    expect(out.data!.preflight.errors.map((e) => e.code)).not.toContain("empty-body");
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-p")).toMatchObject({ body: "Hello, a real body." });
+    const after = await harness.executeTool<{ data: Pre }>("preflight-campaign", { campaignId: "camp-p", links: false }, agent);
+    expect(after.data.errors.map((e) => e.code)).not.toContain("empty-body");
+  });
+
+  it("an edit cancels the approval that was asked for, so it must be asked again", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-a", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-a", 1, "a", "Offer", "Hello there"));
+    const { harness } = await boot({ store: s });
+    const issue = await harness.ctx.issues.create({ companyId: CO, title: "Approve camp-a", description: "x" });
+    s.campaigns![0]!.approval_issue_id = issue.id;
+    const out = await harness.executeTool<{ data?: { approvalReset: boolean }; error?: string }>("edit-campaign-step", { campaignId: "camp-a", position: 1, subject: "New offer" }, agent);
+    expect(out.data?.approvalReset).toBe(true);
+    expect(s.campaigns![0]!.approval_issue_id ?? null).toBeNull();
+    expect((await harness.ctx.issues.get(issue.id, CO))!.status).toBe("cancelled");
+  });
+});
+
 describe("an HTML body is for emails", () => {
   it("is refused on an SMS step", async () => {
     const s = seed();

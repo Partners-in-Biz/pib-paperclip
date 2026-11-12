@@ -45,6 +45,7 @@ import {
   saveEnrollment,
   setLaunchError,
   setStepHtml,
+  updateStepText,
   stepEventStats,
   stopEnrollment,
   stopEnrollmentsForContact,
@@ -389,6 +390,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
+  if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
   if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId });
@@ -1289,6 +1291,28 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
   return { campaignId: campaign.id, position, variant, htmlSet: true, approvalReset };
+}
+
+async function editCampaignStepAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign's steps can change. Pause it and create a new draft instead.");
+  const position = integer(params.position, "position");
+  const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
+  const subject = params.subject == null ? undefined : requiredString(params, "subject");
+  const text = params.body == null ? undefined : requiredString(params, "body");
+  if (subject === undefined && text === undefined) throw new CampaignError("Give a subject, a body, or both.");
+  const steps = await listSteps(ctx, campaign.id);
+  const target = steps.find((step) => step.position === position && step.variant === variant);
+  if (!target) throw new CampaignError("No step found at that position and variant");
+  await updateStepText(ctx, { companyId, campaignId: campaign.id, position, variant, subject, body: text });
+  await markEdited(ctx, campaign.id);
+  const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the text of step ${position}${variant === "b" ? "B" : ""} changed`);
+  // Preflight on the edited steps (no link check over the network), so the writer sees at once whether the fix holds.
+  const result = await gatherPreflight(ctx, companyId, campaign, await listSteps(ctx, campaign.id), { network: false });
+  return {
+    campaignId: campaign.id, position, variant, subjectSet: subject !== undefined, bodySet: text !== undefined, approvalReset,
+    preflight: { ok: result.ok, errors: result.errors, warnings: result.warnings, sentAs: result.sentAs, channels: result.channels },
+  };
 }
 
 async function createTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
