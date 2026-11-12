@@ -423,7 +423,7 @@ Read before you plan, draft or make any social post, for own work or for a clien
 - Every image and video uses that kit: the same colours, the same fonts, the logo. One look per brand, the same every time. A reader should know whose post it is before they read a word.
 
 ## 2. One focus a month
-Each scope (own work, each client, each app) has one focus a month: one theme, one audience, one ask, one number that says the month worked, and the real proof we can show. \`get-playbook\` returns it. None, or last month's: set it with \`set-focus\` before you plan (\`learned\` closes the old one with what it taught).
+Each scope (own work, each client, each app) has one focus a month: one theme, one audience, one ask, one number that says the month worked, and the real proof we can show. \`get-playbook\` returns it. None, or last month's: set it with \`set-focus\` before you plan (\`learned\` closes the old one with what it taught; next month's is set when that month starts).
 - About four posts in five serve the focus. The rest may be timely or light.
 - An app's focus is usually downloads: the app doing its one job, on screen in the first two seconds, and the store link as the ask.
 - A client's focus follows the client's goal for the month. Not known: ask once. Do not guess.

@@ -40,13 +40,24 @@ export function partOf(post: Pick<PostRow, "overrides">, part: Part): string | n
 
 export const hookOf = (post: Pick<PostRow, "overrides">): string | null => partOf(post, "hook");
 
-/** Reach and actions of each post: the best reading per destination, added over the post's destinations. */
+/**
+ * Reach and actions of each post: the best reading per destination, added over the post's destinations. Numbers
+ * entered by hand (`record-post-metrics`: no destination) are for the whole post, so they are not added on top: the
+ * post gets whichever is higher, the collected sum or the hand-entered reading.
+ */
 export function postTotals(metrics: MetricsRow[]): Map<string, { reach: number; actions: number }> {
   const byDestination = new Map<string, { postId: string; reach: number; actions: number }>();
+  const byHand = new Map<string, { reach: number; actions: number }>();
   for (const m of metrics) {
-    const key = `${m.post_id}:${m.destination_id ?? m.account_id ?? m.platform ?? ""}`;
     const reach = Math.max(num(m.impressions), num(m.reach), num(m.views));
     const actions = num(m.likes) + num(m.comments) + num(m.shares) + num(m.saves) + num(m.clicks);
+    const where = m.destination_id ?? m.account_id;
+    if (!where) {
+      const known = byHand.get(m.post_id);
+      byHand.set(m.post_id, { reach: Math.max(known?.reach ?? 0, reach), actions: Math.max(known?.actions ?? 0, actions) });
+      continue;
+    }
+    const key = `${m.post_id}:${where}`;
     const known = byDestination.get(key);
     byDestination.set(key, { postId: m.post_id, reach: Math.max(known?.reach ?? 0, reach), actions: Math.max(known?.actions ?? 0, actions) });
   }
@@ -54,6 +65,10 @@ export function postTotals(metrics: MetricsRow[]): Map<string, { reach: number; 
   for (const d of byDestination.values()) {
     const known = out.get(d.postId) ?? { reach: 0, actions: 0 };
     out.set(d.postId, { reach: known.reach + d.reach, actions: known.actions + d.actions });
+  }
+  for (const [postId, hand] of byHand) {
+    const known = out.get(postId) ?? { reach: 0, actions: 0 };
+    out.set(postId, { reach: Math.max(known.reach, hand.reach), actions: Math.max(known.actions, hand.actions) });
   }
   return out;
 }
@@ -73,7 +88,8 @@ export function rankParts(posts: Array<{ id: string; name: string; reach: number
   const ranked = rows.filter((r) => r.reach >= MIN_REACH);
   for (const r of ranked) r.rate = Math.round((r.actions / r.reach) * 1000) / 10;
   const rates = ranked.map((r) => r.rate!).sort((a, b) => a - b);
-  const median = rates.length ? rates[Math.floor(rates.length / 2)]! : 0;
+  const mid = Math.floor(rates.length / 2);
+  const median = rates.length === 0 ? 0 : rates.length % 2 ? rates[mid]! : (rates[mid - 1]! + rates[mid]!) / 2;
   for (const r of ranked) {
     // One ranked value has nothing to be compared with. Otherwise: clearly above the middle, clearly below, or neither.
     r.verdict = ranked.length < 2 ? "keep testing" : r.rate! >= median * 1.3 && r.rate! > 0 ? "double down" : r.rate! <= median * 0.7 ? "drop" : "keep testing";
@@ -84,9 +100,9 @@ export function rankParts(posts: Array<{ id: string; name: string; reach: number
 export async function hookBoard(ctx: PluginContext, companyId: string, scope: ClientScope, days = 28) {
   const period = Math.min(90, Math.max(7, Math.round(days) || 28));
   const since = Date.now() - period * 86_400_000;
-  const posts = (await listPosts(ctx, companyId, { scope, limit: 500 })).filter(
-    (p) => (p.status === "published" || p.status === "partially_published") && p.published_at && new Date(String(p.published_at)).getTime() >= since,
-  );
+  // Read by status: a scope with many drafts must not push its published posts out of the page.
+  const read = await Promise.all(["published", "partially_published"].map((status) => listPosts(ctx, companyId, { scope, status, limit: 500 })));
+  const posts = read.flat().filter((p) => p.published_at && new Date(String(p.published_at)).getTime() >= since);
   const totals = postTotals(await metricsForCompany(ctx, companyId, scope));
   const rankOf = (part: Part) =>
     rankParts(posts.flatMap((p) => {

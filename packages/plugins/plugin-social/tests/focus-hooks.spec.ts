@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { focusOut, monthIn } from "../src/focus.js";
 import { getPlaybookRecord, missingHookTag, setFocus, type GrowthActor, type GrowthEnv } from "../src/growth/service.js";
 import { MIN_REACH, partOf, postTotals, rankParts } from "../src/hook-board.js";
+import { overridesForEdit } from "../src/service.js";
 import type { MetricsRow } from "../src/db.js";
 import { POST_REVIEW_CHECKS } from "../src/review.js";
 import { PLAN_ROUTINE_DESCRIPTION, SKILLS, SOCIAL_CRAFT_REFERENCE } from "../src/skills.js";
@@ -38,6 +39,8 @@ describe("the month of a focus", () => {
   it("says what to do when there is none, or an old one", () => {
     expect(focusOut({ constraints: {} }, "2026-11")).toMatchObject({ focus: null, state: "none", thisMonth: "2026-11", past: [] });
     expect(focusOut({ constraints: {} }, "2026-11").note).toContain("set-focus");
+    // A value written by hand into the program never breaks the page: fields come back as text.
+    expect(focusOut({ constraints: { focus: { month: "2026-11", theme: "T", audience: 5, proof: ["a", 3], metric: null } } }, "2026-11").focus).toMatchObject({ audience: "", offer: "", metric: "", proof: ["a"] });
     const old = { constraints: { focus: { ...FOCUS, month: "2026-10", setBy: "user:u", setAt: "x" } } };
     expect(focusOut(old, "2026-11")).toMatchObject({ state: "expired" });
     expect(focusOut(old, "2026-11").note).toContain("learned");
@@ -88,7 +91,12 @@ describe("set-focus", () => {
   it("refuses a focus without real material, a far month, or a missing part", async () => {
     const w = setup();
     await expect(setFocus(w.env, AGENT, { ...FOCUS, proof: [] })).rejects.toThrow(/proof is required/);
-    await expect(setFocus(w.env, AGENT, { ...FOCUS, month: "2020-01" })).rejects.toThrow(/this month/);
+    await expect(setFocus(w.env, AGENT, { ...FOCUS, month: "2020-01" })).rejects.toThrow(/current month/);
+    // One focus per scope at a time: next month's is set when that month starts.
+    const [y, m] = monthIn(TZ).split("-").map(Number) as [number, number];
+    const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+    await expect(setFocus(w.env, AGENT, { ...FOCUS, month: next })).rejects.toThrow(/when it starts/);
+    expect(await setFocus(w.env, AGENT, { ...FOCUS, month: monthIn(TZ) })).toMatchObject({ state: "current" });
     await expect(setFocus(w.env, AGENT, { ...FOCUS, month: "soon" })).rejects.toThrow(/2026-11/);
     await expect(setFocus(w.env, AGENT, { ...FOCUS, offer: " " })).rejects.toThrow(/offer is required/);
     await expect(setFocus(w.env, AGENT, { ...FOCUS, theme: "x".repeat(201) })).rejects.toThrow(/at most 200/);
@@ -150,6 +158,33 @@ describe("the parts of a post", () => {
     expect(totals.get("p1")).toEqual({ reach: 390, actions: 13 });
     expect(totals.get("p2")).toEqual({ reach: 10, actions: 0 });
   });
+
+  it("numbers entered by hand are for the whole post: not added on top of collected ones", () => {
+    const row = (over: Partial<MetricsRow>): MetricsRow => ({ id: "m", company_id: "co", post_id: "p1", destination_id: null, account_id: null, platform: null, metric_window: null, views: 0, likes: 0, comments: 0, shares: 0, impressions: null, reach: null, saves: null, clicks: null, recorded_at: null, ...over });
+    const totals = postTotals([
+      row({ destination_id: "d1", account_id: "a1", views: 300, likes: 6 }),
+      row({ views: 300, likes: 9 }),
+      row({ views: 250, likes: 2 }),
+      row({ post_id: "p2", views: 80, likes: 4 }),
+    ]);
+    expect(totals.get("p1")).toEqual({ reach: 300, actions: 9 });
+    expect(totals.get("p2")).toEqual({ reach: 80, actions: 4 });
+  });
+
+  it("an edit keeps the tags and the overrides unless it sends new ones", () => {
+    const stored = { tags: ["hook:missed calls", "body:demo"], x: { text: "Short" } };
+    expect(overridesForEdit(stored, undefined, undefined)).toBeUndefined();
+    // The page's editor sends overrides without tags.
+    expect(overridesForEdit(stored, { linkedin: { text: "Long" } }, undefined)).toEqual({ linkedin: { text: "Long" }, tags: stored.tags });
+    expect(overridesForEdit(stored, {}, undefined)).toEqual({ tags: stored.tags });
+    expect(overridesForEdit(JSON.stringify(stored), null, undefined)).toEqual({ tags: stored.tags });
+    // New tags replace the old ones and keep the overrides; an empty list clears.
+    expect(overridesForEdit(stored, undefined, ["Hook:Price"])).toEqual({ x: { text: "Short" }, tags: ["hook:price"] });
+    expect(overridesForEdit(stored, undefined, [])).toEqual({ x: { text: "Short" } });
+    expect(overridesForEdit(stored, { tags: ["cta:book"] }, undefined)).toEqual({ tags: ["cta:book"] });
+    expect(overridesForEdit(null, { x: { text: "A" } }, ["hook:a"])).toEqual({ x: { text: "A" }, tags: ["hook:a"] });
+    expect(() => overridesForEdit(stored, "nope", undefined)).toThrow(/overrides must be an object/);
+  });
 });
 
 describe("ranking the parts", () => {
@@ -175,6 +210,11 @@ describe("ranking the parts", () => {
       ["new", null, "too little reach"],
     ]);
     expect(rows[0]!.postIds).toHaveLength(2);
+  });
+
+  it("two parts are compared with the point between them", () => {
+    expect(rankParts([p("a", 200, 20), p("b", 200, 2)]).map((r) => [r.name, r.verdict])).toEqual([["a", "double down"], ["b", "drop"]]);
+    expect(rankParts([p("a", 200, 10), p("b", 200, 9)]).map((r) => r.verdict)).toEqual(["keep testing", "keep testing"]);
   });
 
   it("never doubles down on nothing", () => {

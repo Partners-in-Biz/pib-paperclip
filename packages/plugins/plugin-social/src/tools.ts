@@ -502,10 +502,10 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "set-focus",
     displayName: "Set the monthly focus",
     description:
-      `Set one scope's focus for this month (or the next): one theme, one audience, one ask, one number, and the real material the posts are built from. Every plan, hook and post of the month serves it. get-playbook returns it and says when it is missing or out of date. A focus of an earlier month is closed first: pass learned (what worked and what did not, from hook-board).${OWN}`,
+      `Set one scope's focus for this month: one theme, one audience, one ask, one number, and the real material the posts are built from. Every plan, hook and post of the month serves it. get-playbook returns it and says when it is missing or out of date. A focus of an earlier month is closed first: pass learned (what worked and what did not, from hook-board).${OWN}`,
     parametersSchema: schema(["theme", "audience", "offer", "proof", "metric"], {
       ...scope,
-      month: text("YYYY-MM. Default: this month. Only this month or the next."),
+      month: text("YYYY-MM. Default and only: this month."),
       theme: text("What the month is about, one line. E.g. \"Getting paid on time without chasing\"."),
       audience: text("Who it is for: one kind of person and the moment they are in."),
       offer: text("The one thing we want them to do (book a call, install the app, reply)."),

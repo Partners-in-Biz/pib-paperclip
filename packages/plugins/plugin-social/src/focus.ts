@@ -44,21 +44,22 @@ export function monthIn(timezone: string, now: Date = new Date()): string {
   }
 }
 
-function nextMonth(month: string): string {
-  const [y, m] = month.split("-").map(Number) as [number, number];
-  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
-}
-
 const isFocus = (v: unknown): v is MonthlyFocus => Boolean(v) && typeof v === "object" && typeof (v as MonthlyFocus).month === "string" && typeof (v as MonthlyFocus).theme === "string";
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** The stored value as text fields only, whatever was written by hand into the program. */
+function clean<T extends MonthlyFocus>(focus: T): T {
+  return { ...focus, audience: str(focus.audience), offer: str(focus.offer), metric: str(focus.metric), proof: Array.isArray(focus.proof) ? focus.proof.filter((p): p is string => typeof p === "string") : [] };
+}
 
 export function focusOf(program: Pick<Program, "constraints">): MonthlyFocus | null {
   const focus = (program.constraints as Record<string, unknown>).focus;
-  return isFocus(focus) ? { ...focus, proof: Array.isArray(focus.proof) ? focus.proof : [] } : null;
+  return isFocus(focus) ? clean(focus) : null;
 }
 
 export function focusLogOf(program: Pick<Program, "constraints">): ClosedFocus[] {
   const log = (program.constraints as Record<string, unknown>).focusLog;
-  return Array.isArray(log) ? (log.filter(isFocus) as ClosedFocus[]) : [];
+  return Array.isArray(log) ? (log.filter(isFocus) as ClosedFocus[]).map((f) => ({ ...clean(f), learned: typeof f.learned === "string" ? f.learned : null })) : [];
 }
 
 /** What agents and the Growth tab see: the focus, whether it is this month's, and what to do when it is not. */
@@ -99,14 +100,15 @@ function proofList(value: unknown): string[] {
 }
 
 /**
- * Set a scope's focus for this month or the next. A focus of an earlier month is closed first: `learned` (what worked
- * and what did not, from the hook board) is required and goes into the log. Setting the same month again replaces it.
+ * Set a scope's focus for the current month. A focus of another month is closed first: `learned` (what worked and what
+ * did not, from the hook board) is required and goes into the log. Setting the same month again replaces it. There is
+ * one focus per scope at a time, so next month's is set when that month starts.
  */
 export async function setFocusRecord(env: GrowthEnv, actor: GrowthActor, program: Program, timezone: string, params: Record<string, unknown>) {
   const thisMonth = monthIn(timezone);
   const month = line(params, "month", 7, false) ?? thisMonth;
   if (!MONTH.test(month)) throw new GrowthError("month must look like 2026-11");
-  if (month !== thisMonth && month !== nextMonth(thisMonth)) throw new GrowthError(`A focus is set for this month (${thisMonth}) or the next (${nextMonth(thisMonth)}).`);
+  if (month !== thisMonth) throw new GrowthError(`A focus is set for the current month (${thisMonth}). Set the next month's when it starts.`);
   const current = focusOf(program);
   const log = focusLogOf(program);
   const constraints: Record<string, unknown> = { ...(program.constraints as Record<string, unknown>) };

@@ -222,6 +222,26 @@ function postVisibility(params: Record<string, unknown>): AccountScope {
   return value;
 }
 
+/**
+ * The overrides an edit writes. An edit that sends neither `overrides` nor `tags` leaves them alone (undefined). New
+ * `overrides` without a `tags` key keep the post's tags: they name the post's parts (`hook:`, `body:`, `cta:`) and the
+ * page's editor does not send them. `tags` (also `[]`, which clears) or `overrides.tags` replace them.
+ */
+export function overridesForEdit(current: unknown, overrides: unknown, tags: unknown): Record<string, unknown> | undefined {
+  if (overrides === undefined && tags === undefined) return undefined;
+  let stored: Record<string, unknown> = {};
+  try {
+    const parsed = typeof current === "string" ? JSON.parse(current) : current;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stored = parsed as Record<string, unknown>;
+  } catch {
+    stored = {};
+  }
+  if (overrides !== undefined && overrides !== null && (typeof overrides !== "object" || Array.isArray(overrides))) throw new SocialError("overrides must be an object keyed by platform");
+  const base = overrides === undefined ? stored : ((overrides as Record<string, unknown> | null) ?? {});
+  const nextTags = Array.isArray(tags) ? tags : "tags" in base ? base.tags : stored.tags;
+  return normalizeOverrides({ ...base, tags: nextTags }) ?? {};
+}
+
 /** Validate and normalise the platform-keyed overrides object and reserved tags key. */
 export function normalizeOverrides(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
@@ -550,13 +570,10 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
-  // Merge tags into overrides if provided
-  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
-  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(overridesWithTags),
+    overrides: overridesForEdit(post.overrides, params.overrides, params.tags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),

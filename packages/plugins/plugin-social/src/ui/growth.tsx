@@ -209,7 +209,7 @@ function ProgramSettings({ data, snapshot, act }: { data: GrowthSnapshot; snapsh
 const VERDICT_PILL: Record<GrowthPartRow["verdict"], ToneInput | undefined> = { "double down": "ok", drop: "bad", "keep testing": "info", "too little reach": undefined };
 
 /** This month's focus of the scope: what every post serves. People set it here; agents set it with `set-focus`. */
-function FocusCard({ view, snapshot, canEdit, act }: { view: GrowthFocusView; snapshot: Snapshot; canEdit: boolean; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
+function FocusCard({ view, snapshot, canEdit, save }: { view: GrowthFocusView; snapshot: Snapshot; canEdit: boolean; save: (params: Record<string, unknown>) => Promise<boolean> }) {
   const f = view.focus;
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState("");
@@ -218,8 +218,9 @@ function FocusCard({ view, snapshot, canEdit, act }: { view: GrowthFocusView; sn
   const [proof, setProof] = useState("");
   const [metric, setMetric] = useState("");
   const [learned, setLearned] = useState("");
-  // A focus of an earlier month is closed with what it taught before the new one starts.
-  const closing = view.state === "expired";
+  const [saving, setSaving] = useState(false);
+  // A focus of another month is closed with what it taught before this month's starts.
+  const closing = Boolean(f) && view.state !== "current";
   const start = () => {
     const keep = f && !closing ? f : null;
     setTheme(keep?.theme ?? "");
@@ -252,9 +253,13 @@ function FocusCard({ view, snapshot, canEdit, act }: { view: GrowthFocusView; sn
       <Modal open={open} title={`Focus for ${view.thisMonth}: ${scopeName(snapshot)}`} onClose={() => setOpen(false)} footer={(
         <>
           <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button type="button" disabled={!ready} onClick={() => {
-            setOpen(false);
-            void act("social.growth-set-focus", { ...scopeParams(snapshot), theme, audience, offer, proof: proof.split("\n"), metric, learned: learned || undefined }, "Focus saved");
+          <Button type="button" disabled={!ready || saving} onClick={() => {
+            setSaving(true);
+            // A refused save keeps the form open with what was typed.
+            void save({ ...scopeParams(snapshot), theme, audience, offer, proof: proof.split("\n"), metric, learned: learned || undefined }).then((ok) => {
+              setSaving(false);
+              if (ok) setOpen(false);
+            });
           }}>Save focus</Button>
         </>
       )}>
@@ -271,14 +276,14 @@ function FocusCard({ view, snapshot, canEdit, act }: { view: GrowthFocusView; sn
   );
 }
 
-function PartTable({ title, rows }: { title: string; rows: GrowthPartRow[] }) {
+function PartTable({ title, one, rows }: { title: string; one: string; rows: GrowthPartRow[] }) {
   if (rows.length === 0) return null;
   return (
     <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
       <strong style={{ fontSize: 12 }}>{title}</strong>
       <DataTable
         columns={[
-          { key: "name", header: title.replace(/s$/, "") },
+          { key: "name", header: one },
           { key: "posts", header: "Posts" },
           { key: "reach", header: "Reached" },
           { key: "rate", header: "Acted per 100" },
@@ -310,9 +315,9 @@ function HookBoardCard({ board }: { board: GrowthHookBoard }) {
           <EmptyState compact icon={Lightbulb} title="No tagged posts yet" description="Posts tagged hook:, body: and cta: show up here once they are published, ranked by how many of the people they reached acted." />
         ) : (
           <>
-            <PartTable title="Hooks" rows={board.hooks} />
-            <PartTable title="Bodies" rows={board.bodies} />
-            <PartTable title="Asks" rows={board.ctas} />
+            <PartTable title="Hooks" one="Hook" rows={board.hooks} />
+            <PartTable title="Bodies" one="Body" rows={board.bodies} />
+            <PartTable title="Asks" one="Ask" rows={board.ctas} />
           </>
         )}
       </div>
@@ -356,6 +361,16 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
     await load();
   }, [run, load]);
 
+  const saveFocus = useCallback(async (params: Record<string, unknown>) => {
+    try {
+      await run("social.growth-set-focus", params, "Focus saved");
+    } catch {
+      return false;
+    }
+    await load();
+    return true;
+  }, [run, load]);
+
   if (error) return <EmptyState tone="bad" title="Growth could not load" description={error} />;
   if (!data) return <p style={{ margin: 0, fontSize: 13 }}>Loading…</p>;
 
@@ -375,7 +390,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         </Banner>
       ) : null}
       {data.notes.map((note) => <Banner key={note} tone="info" title="Note">{note}</Banner>)}
-      {data.focus ? <FocusCard view={data.focus} snapshot={snapshot} canEdit={data.canDecide} act={act} /> : null}
+      {data.focus ? <FocusCard view={data.focus} snapshot={snapshot} canEdit={data.canDecide} save={saveFocus} /> : null}
       <Toolbar>
         {[7, 28, 90].map((days) => (
           <SmallButton key={days} aria-pressed={period === days} onClick={() => setPeriod(days)} style={chipStyle(period === days)}>Last {days} days</SmallButton>
