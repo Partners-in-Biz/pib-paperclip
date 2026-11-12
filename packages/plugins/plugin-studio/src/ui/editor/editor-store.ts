@@ -19,6 +19,7 @@ export interface EditorApi {
   get(editId: string): Promise<unknown>;
   applyOps(params: { editId: string; baseRevision: number; ops: unknown[] }): Promise<unknown>;
   voiceover?(params: { editId: string; baseRevision: number; script: string; voice: string; at: number }): Promise<unknown>;
+  music?(params: { editId: string; baseRevision: number; prompt: string; duration: number; at: number }): Promise<unknown>;
   caption?(params: { editId: string; baseRevision: number; clipId: string; style?: string }): Promise<unknown>;
 }
 
@@ -64,6 +65,25 @@ export function clipCount(doc: EditDoc | null): number {
   return doc ? doc.tracks.reduce((n, t) => n + t.clips.length, 0) : 0;
 }
 
+/** How a `video-edit-music` call ended (PAR-10257). `retry` is false whenever money may have been spent: never offer a second try. */
+export type MusicOutcome =
+  | { kind: "placed"; clipId: string }
+  | { kind: "synthesizing"; message: string }
+  | { kind: "failed"; message: string; retry: boolean };
+
+/** Server refusals that happen before anything is reserved: safe to try again. */
+const MUSIC_BEFORE_SPEND = new Set(["bad_request", "not_configured", "provider_cap_reached", "no_room", "edit_conflict"]);
+export const MUSIC_UNKNOWN_MESSAGE = "This may have been charged. Check the Library before trying again.";
+
+/** A refusal carries the server's `code` and message. An error with no code (a raw RPC timeout) may have been charged. */
+export function musicFailure(err: unknown): { message: string; retry: boolean } {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const code = typeof e?.code === "string" ? e.code : "";
+  const text = typeof e?.message === "string" ? e.message.trim() : "";
+  if (!code) return { message: MUSIC_UNKNOWN_MESSAGE, retry: false };
+  return { message: text || MUSIC_UNKNOWN_MESSAGE, retry: MUSIC_BEFORE_SPEND.has(code) || /nothing was charged/i.test(text) };
+}
+
 export interface EditorStore {
   getState(): EditorState;
   subscribe(listener: () => void): () => void;
@@ -71,6 +91,8 @@ export interface EditorStore {
   applyOps(ops: unknown[]): Promise<boolean>;
   /** `video-edit-voiceover`: script to speech on the audio track; the new clip id, or null on failure. */
   voiceover(params: { script: string; voice: string; at: number }): Promise<string | null>;
+  /** `video-edit-music` (PAR-10257): a prompt to music on the audio track. A cap refusal is also shown as the page toast. */
+  music(params: { prompt: string; duration: number; at: number }): Promise<MusicOutcome>;
   /** `video-edit-caption`: speech in a video/sound clip becomes captions (PAR-8360). False when the page has no such action. */
   autoCaption(params: { clipId: string; style?: string }): Promise<boolean>;
   setPlayhead(seconds: number): void;
@@ -148,6 +170,32 @@ export function createEditorStore(api: EditorApi): EditorStore {
     });
     return ok ? clipId : null;
   };
+  const music = async (params: { prompt: string; duration: number; at: number }): Promise<MusicOutcome> => {
+    if (!api.music) return { kind: "failed", message: "Music isn't available on this page.", retry: false };
+    if (!editId || state.revision === null || state.busy) return { kind: "failed", message: "The editor is busy. Try again in a moment.", retry: true };
+    set({ busy: true, toast: null });
+    try {
+      const saved = (await api.music({ editId, baseRevision: state.revision, ...params })) as { status?: unknown; revision?: number; doc?: EditDoc; duration?: number; clipId?: unknown } | null;
+      if (saved?.status === "synthesizing") {
+        set({ busy: false });
+        return { kind: "synthesizing", message: "Still making it; it will be in the Library; add it with Add audio." };
+      }
+      if (!saved || typeof saved.revision !== "number" || !saved.doc || typeof saved.clipId !== "string") throw Object.assign(new Error(MUSIC_UNKNOWN_MESSAGE), { code: "" });
+      adopt({ ...(state.edit as EditorEdit), revision: saved.revision, doc: saved.doc, duration: saved.duration }, { busy: false });
+      return { kind: "placed", clipId: saved.clipId };
+    } catch (err) {
+      if (isEditConflict(err)) {
+        set({ busy: false });
+        await load(editId);
+        const message = "Someone else changed this video. Their version is loaded; the music was not started.";
+        set({ toast: message });
+        return { kind: "failed", message, retry: true };
+      }
+      const failure = musicFailure(err);
+      set({ busy: false, toast: failure.message });
+      return { kind: "failed", ...failure };
+    }
+  };
   const autoCaption = (params: { clipId: string; style?: string }) =>
     api.caption ? save((p) => api.caption!({ ...p, ...params })) : Promise.resolve(false);
 
@@ -161,6 +209,7 @@ export function createEditorStore(api: EditorApi): EditorStore {
     applyOps,
     autoCaption,
     voiceover,
+    music,
     setPlayhead: (seconds) => set({ playhead: Number.isFinite(seconds) ? Math.max(0, seconds) : 0 }),
     selectClip: (clipId) => set({ selectedClipId: clipId }),
     dismissToast: () => set({ toast: null }),

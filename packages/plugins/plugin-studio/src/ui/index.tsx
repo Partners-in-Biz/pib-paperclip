@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
+import { musicUsageLine } from "./editor/audio-track.js";
 import { useMakerLabel } from "./maker.js";
 import { BrandKitBox } from "./BrandKit.js";
 import { ChipGroup } from "./ChipGroup.js";
@@ -81,7 +82,8 @@ interface Overview {
   companyUsed: number;
   balance?: Balance | null;
   providerOptions?: { stt: ProviderChoice[]; tts: ProviderChoice[]; lipsync: LipsyncOption[] };
-  providers?: Array<{ capability: "stt" | "tts"; provider: string; label: string; configured: boolean }>;
+  musicUsage?: { status: "ok" | "unknown"; usedUsd?: number; capUsd?: number; remainingUsd?: number };
+  providers?: Array<{ capability: "stt" | "tts" | "music"; provider: string; label: string; configured: boolean }>;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
@@ -1201,7 +1203,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           {data.providers.map((p) => (
             <div key={p.capability} style={{ ...row, padding: "4px 0" }}>
               <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
-                {p.capability === "stt" ? "Speech to text" : "Text to speech"}: {p.label} - {p.configured ? "key set" : "not set"}
+                {p.capability === "stt" ? "Speech to text" : p.capability === "music" ? "Music" : "Text to speech"}: {p.label} - {p.configured ? "key set" : "not set"}
               </span>
             </div>
           ))}
@@ -1220,6 +1222,11 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
             </>
           ) : null}
           <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
+        </Section>
+      ) : null}
+      {data.musicUsage ? (
+        <Section title="Music">
+          <p data-music-usage style={{ ...muted, overflowWrap: "anywhere", margin: 0 }}>{musicUsageLine(data.musicUsage)}</p>
         </Section>
       ) : null}
       <Section title="Monthly credit caps">

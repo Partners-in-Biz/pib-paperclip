@@ -109,3 +109,25 @@ export function voiceoverParams(text: string, voice: string, at: number): { scri
   if (script.length > VOICEOVER_MAX_CHARS) return { error: `A voiceover takes at most ${VOICEOVER_MAX_CHARS} characters; this is ${script.length}.` };
   return { script, voice: (VOICEOVER_VOICES as readonly string[]).includes(voice) ? voice : VOICEOVER_VOICES[0], at: Math.max(0, at) };
 }
+
+/** Music from a prompt (PAR-10257). Mirrors music/stable-audio-price.ts (a test keeps them equal); not imported, it pulls server code. */
+export const MUSIC_MAX_PROMPT_CHARS = 2000;
+export const MUSIC_MAX_SECONDS = 180;
+export const MUSIC_DEFAULT_SECONDS = 30;
+export const MUSIC_PRICE_LABEL = "USD 0.08 · 1.28 credits";
+
+/** The `video-edit-music` arguments for the form, or the reason it can't be sent. The server trims the prompt, so the count does too. */
+export function musicParams(prompt: string, duration: string | number, at: number): { prompt: string; duration: number; at: number } | { error: string } {
+  const text = prompt.trim();
+  if (!text) return { error: "Describe the music you want." };
+  if (text.length > MUSIC_MAX_PROMPT_CHARS) return { error: `Music takes at most ${MUSIC_MAX_PROMPT_CHARS} characters; this is ${text.length}.` };
+  const seconds = typeof duration === "string" ? (duration.trim() === "" ? NaN : Number(duration)) : duration;
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > MUSIC_MAX_SECONDS) return { error: `Length must be from 1 to ${MUSIC_MAX_SECONDS} seconds.` };
+  return { prompt: text, duration: seconds, at: Math.max(0, at) };
+}
+
+/** What the overview's `musicUsage` says, as the Studio page line. "unknown" never guesses a figure. */
+export function musicUsageLine(usage: { status?: string; usedUsd?: number; capUsd?: number } | null | undefined): string {
+  if (!usage || usage.status !== "ok" || typeof usage.usedUsd !== "number" || typeof usage.capUsd !== "number") return "Stable Audio this month: unknown";
+  return `Stable Audio this month: USD ${usage.usedUsd.toFixed(2)} of ${usage.capUsd}`;
+}
