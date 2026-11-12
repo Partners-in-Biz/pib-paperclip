@@ -713,6 +713,34 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   return getPostDetail(ctx, viewer, post.id);
 }
 
+/**
+ * Takes a scheduled post back to draft so it can be edited (update-post): body, media and accounts stay, the time is
+ * cleared. A reason is required; who and why are logged and appended to the post's internal note.
+ */
+export async function unschedulePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const reason = requiredString(params, "reason").trim();
+  if (!reason) throw new SocialError("A reason is required to unschedule a post.");
+  // Same scope rules as update-post.
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only unschedule personal posts that they created");
+  }
+  if (post.status !== "scheduled") {
+    throw new SocialError(`Only a scheduled post can be unscheduled; this one is ${post.status.replace("_", " ")}.`);
+  }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostStatus(ctx, viewer.companyId, post.id, ["scheduled"], "draft", null))) {
+    throw new SocialError("The post changed while you were unscheduling it (it may be publishing now). Reload and try again.");
+  }
+  const who = viewer.isAgent ? `agent ${viewer.agentId ?? "unknown"}${viewer.runId ? ` (run ${viewer.runId})` : ""}` : `user ${viewer.userId ?? "unknown"}`;
+  const line = `Unscheduled by ${who}: ${reason}`;
+  const note = [post.note, line].filter(Boolean).join("\n");
+  await updatePostContent(ctx, viewer.companyId, post.id, { note: note.length > 500 ? note.slice(note.length - 500) : note });
+  ctx.logger.info("Social post unscheduled", { companyId: viewer.companyId, postId: post.id, by: who, reason });
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  return getPostDetail(ctx, viewer, post.id);
+}
+
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   if (viewer.isAgent && post.scope === "personal") {

@@ -297,6 +297,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["postId", "scheduledAt"], { postId: POST_ID, scheduledAt: text(`Publish time, ${ISO_TIME}; now or earlier publishes within 5 minutes`) }),
   },
   {
+    name: "unschedule-post",
+    displayName: "Unschedule post",
+    description: "Take a scheduled post back to draft so update-post works on it: body, media and accounts stay, the publish time is cleared. A reason is required; who and why are logged on the post's note. Only a scheduled post qualifies.",
+    parametersSchema: schema(["postId", "reason"], { postId: POST_ID, reason: text("Why the post is taken off the schedule") }),
+  },
+  {
     name: "bulk-schedule",
     displayName: "Bulk schedule posts",
     description: "Schedule several approved posts at the same time. Returns one result per post.",

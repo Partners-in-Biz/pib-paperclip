@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.11.2: unschedule-post
+
+`unschedule-post` (`postId`, required `reason`) takes a scheduled post back to draft: body, media and accounts stay, the time is cleared, and who and why go to the log and the post's internal note. Only a scheduled post qualifies; same scope rules as `update-post`, which works on the post afterwards. src-only.
+
 ## 0.11.1: social craft reference
 
 The content skill gains `references/social-craft.md` and one line that sends the agent there before it drafts: start from the brand kit (the CRM client profile, or the Cockpit company profile for own work; fill a missing kit with the CRM's `extract-brand-from-site`), one real thing per post, the first line earns the second, format before words (a carousel and a short video each week), write the way the brand talks (the plain-writing rules are for reports), never make the review process the subject, do not repeat the last ten posts, one ask with a reason, learn from each post. Every gate stays as it is. src-only.
