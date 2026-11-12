@@ -38,6 +38,16 @@ export interface CompileOptions { fontsDir?: string; loudnorm?: boolean }
 export const GRAPH_FILE = "video.graph";
 /** H.264 High, CRF 20 capped at 6 Mbit/s: a 180 s 1080x1920 render stays near 140 MB (plan PAR-8276, Critic 2d). */
 export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset", "medium", "-crf", "20", "-maxrate", "6M", "-bufsize", "12M", "-pix_fmt", "yuv420p"] as const;
+/**
+ * Thread caps for every render (PAR-10432). `-threads` is per file in ffmpeg: the `-threads 4` in `containedArgv`
+ * reaches the first input only, so on the 16-core host every other input decoded with 16+ threads, the filter graph
+ * ran 16 and x264 about 24. Each thread costs an 8 MiB stack and often its own 64 MiB malloc arena, all counted by
+ * the 6 GiB `--as` cap: three 10 s clips with a look reached 186 threads and failed at VmPeak 6143 MiB, and plain
+ * 30 s edits already peaked at 5695 MiB. With these caps (and `MALLOC_ARENAS` in ffmpeg.ts) they peak near 2.5 GiB.
+ */
+export const DECODE_THREADS = 2;
+export const FILTER_THREADS = 4;
+export const ENCODE_THREADS = 4;
 
 export type CompileErrorCode = "unsupported_feature" | "missing_input" | "bad_input_path";
 /** The edit can't be compiled. Deterministic: the render fails at once, no retry. Message is `<code>:<detail>`. */
@@ -105,6 +115,7 @@ class Graph {
   input(clip: MediaClip): { index: number; kind: CompileInput["kind"] } {
     const source = this.sources[inputKey(clip.assetId, clip.version)];
     if (!source) throw new CompileError("missing_input", inputKey(clip.assetId, clip.version));
+    this.inputArgs.push("-threads", String(DECODE_THREADS));
     if (source.kind === "image") this.inputArgs.push("-loop", "1", "-framerate", String(this.doc.project.fps), "-t", num(clipDuration(clip)), "-i", filePath(source.path));
     else if (source.kind === "video") this.inputArgs.push("-ss", num(clip.in), "-t", num(clip.out - clip.in), "-i", filePath(source.path));
     else unsupported(`input_kind_${String(source.kind)}`);
@@ -362,18 +373,16 @@ export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: s
   const graph = buildVideoGraph(doc, sources, options);
   const audio = buildAudioGraph(doc, sources, graph.inputCount, { loudnorm: options.loudnorm });
   const filters = [...graph.filters, ...audio.filters];
-  // Per-frame shapes add filter threads; on a 16-core host the default (one per core) pushes the address space past the
-  // 6 GiB `--as` cap in ffmpeg.ts. Capped for keyframed edits only, so plain edits keep their argv byte-identical.
-  const keyed = doc.tracks.some((track) => (track.kind === "video" || track.kind === "overlay") && (track.clips as MediaClip[]).some(animated));
   const args = [
     "-hide_banner", "-nostdin", "-y",
     ...graph.inputArgs,
     ...audio.inputArgs,
-    ...(keyed ? ["-filter_complex_threads", "4"] : []),
+    "-filter_complex_threads", String(FILTER_THREADS),
     "-filter_complex_script", GRAPH_FILE,
     "-map", `[${graph.outLabel}]`,
     ...(audio.outLabel ? ["-map", `[${audio.outLabel}]`, ...AUDIO_ENCODER_ARGS] : ["-an"]),
     ...ENCODER_ARGS,
+    "-threads", String(ENCODE_THREADS),
     "-r", String(doc.project.fps),
     "-t", num(graph.duration),
     "-movflags", "+faststart",

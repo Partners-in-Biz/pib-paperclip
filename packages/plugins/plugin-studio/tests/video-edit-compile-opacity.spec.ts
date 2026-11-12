@@ -48,9 +48,7 @@ describe("opacity keyframes: compiled graph", () => {
     expect(g).not.toContain("geq");
   });
 
-  it("opacity keys alone keep today's thread count and static overlay position", () => {
-    const args = compileVideo(doc([video(clip("c1", "box", 0, 3, { keyframes: { opacity: [k(0, 0), k(3, 1)] } }))]), inputs, "out.mp4").args;
-    expect(args).not.toContain("-filter_complex_threads");
+  it("opacity keys alone keep the static overlay position", () => {
     expect(graphOf(doc([video(clip("c1", "box", 0, 3))]))).not.toContain("sendcmd");
   });
 });

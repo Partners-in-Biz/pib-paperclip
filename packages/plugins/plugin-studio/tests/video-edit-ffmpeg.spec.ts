@@ -81,7 +81,7 @@ describe("runContained (mocked spawn)", () => {
     expect(args[0]).toBe("-k");
     expect(opts.detached).toBe(true);
     expect(opts.shell).toBeUndefined();
-    expect(Object.keys(opts.env as object).sort()).toEqual(["LC_ALL", "PATH"]);
+    expect(Object.keys(opts.env as object).sort()).toEqual(["LC_ALL", "MALLOC_ARENA_MAX", "PATH"]);
     expect(run.pgid).toBe(4242);
     child.stderr.write("ffmpeg version 6.1\n");
     child.emit("close", 0, null);
