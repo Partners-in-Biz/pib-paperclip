@@ -37,7 +37,7 @@ One definition (`engine/due.ts`) for the SEO page, `list-sprints` / `get-sprint`
 - **Overdue**: due and still open 7 or more days after its day.
 - **Waiting on you**: blocked (on Needs you), in sign-off, or a person's task.
 - **Stuck**: due agent work while the linked SEO agent is paused, in error or waiting for approval, or no agent is linked (paused sprints are never stuck). The page marks those tasks "Stuck: agent needs attention" with **Fix in Setup → Team**; the Cockpit adds a `seo_stuck_tasks` KPI.
-- **Active sprint**: running (pre-launch, active or compounding) with its 90-day plan. **Needs you** on the SEO home = open required Needs you items plus proposals waiting for approval (not on full autopilot), the same items the Cockpit lists.
+- **Active sprint**: running (pre-launch, active or compounding) with its 90-day plan. **Needs you** on the SEO home = open required Needs you items plus proposals waiting for approval (not on full autopilot), the same items the Cockpit lists. A one-task sign-off (review or pr) carries `waitsOn` the first sign-off delegate (`signoffDelegateAgentIds`) only when the approve-page-apply gate (`pageApplyRefusal`) would let that delegate approve every page of the task; otherwise it stays the owner's.
 
 ## Timeline
 
