@@ -119,4 +119,18 @@ describe.skipIf(!hasFfmpeg)("opacity keyframes with real ffmpeg (alpha = keyfram
     const frames = [15, 45, 75]; // local 0.5 s, 1.5 s, 2.5 s
     expectAlpha(c, frames, await centreGray(d, frames));
   }, 120_000);
+
+  // PAR-10121 acceptance: keys 0 -> 1 over 0-2 s, probes at 0.2 s, 1 s, 5 s (5 s sits inside a 2 s fade-out).
+  const ramp = { fadeOut: 2, keyframes: { opacity: [k(0, 0), k(2, 1)] } };
+  const acceptanceFrames = [6, 30, 150];
+
+  it("acceptance, main track: 0 -> 1 over 0-2 s, probes at 0.2 s, 1 s, 5 s", async () => {
+    const d = doc([video(clip("c1", "box", 0, 6, ramp))]);
+    expectAlpha(d.tracks[0]!.clips[0] as MediaClip, acceptanceFrames, await centreGray(d, acceptanceFrames));
+  }, 120_000);
+
+  it("acceptance, overlay track: 0 -> 1 over 0-2 s, probes at 0.2 s, 1 s, 5 s", async () => {
+    const d = doc([video(clip("bg", "blk", 0, 6)), overlay(clip("o1", "box", 0, 6, ramp))]);
+    expectAlpha(d.tracks[1]!.clips[0] as MediaClip, acceptanceFrames, await centreGray(d, acceptanceFrames));
+  }, 120_000);
 });
