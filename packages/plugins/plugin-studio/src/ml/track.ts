@@ -205,13 +205,13 @@ export async function* frames(stream: AsyncIterable<Buffer>, frameBytes: number)
   }
 }
 
-async function readAll(stream: AsyncIterable<Buffer>): Promise<string> {
+export async function readAll(stream: AsyncIterable<Buffer>): Promise<string> {
   const parts: Buffer[] = [];
   for await (const c of stream) parts.push(c);
   return Buffer.concat(parts).toString("utf8");
 }
 
-function childFailed(what: string, r: ChildResult): string {
+export function childFailed(what: string, r: ChildResult): string {
   return `${what} failed (${r.error ?? (r.signal ? `signal ${r.signal}` : `exit ${r.exitCode}`)}): ${r.stderrTail.trim().slice(-500)}`;
 }
 
