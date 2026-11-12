@@ -14,6 +14,7 @@ import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-c
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
 import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
+import { BING_VERIFY_SITE_TOOL_TIMEOUT_MS } from "./integrations/bing.js";
 import { RUN_PAGESPEED_TOOL_TIMEOUT_MS } from "./integrations/pagespeed.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -266,6 +267,29 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
 
+  {
+    group: "Site",
+    name: "approve-page-apply",
+    displayName: "Approve applying a task's pages (sign-off delegate)",
+    description:
+      "pr_only WordPress sprint with manual sign-off: a person or a sign-off delegate (SEO setting signoffDelegateAgentIds, never the assignee of the task's issue) opens the apply window for 1 to 10 of the task's own pages that the Reviewer passed (a passed preview, or reviewCommentId). Sends the window to the CRM, resolves needsYouKey when given, and tells and wakes the task issue once. Safe to repeat: a repeat only does the missing steps (follow `retry` when it is returned).",
+    parametersSchema: schema(["sprintId", "taskId", "pageUrls", "note"], {
+      sprintId,
+      taskId,
+      pageUrls: list("1 to 10 of the task's pages (full URLs on the sprint's site)"),
+      note: text("Why this may be applied now (the standing approval and what the Reviewer passed), max 1000 chars"),
+      hours: int("How long the window stays open, 1 to 72 (default 24)"),
+      reviewCommentId: text("The Reviewer's PASS comment id on the task issue or a child of it, for pages without a passed preview"),
+      needsYouKey: text("The Needs you item this answers (from needs-you); it is resolved"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "revoke-page-apply",
+    displayName: "Close a task's page apply window",
+    description: "A person or a sign-off delegate closes the task's open page apply grants (all, or only pageUrls) and tells the task issue not to write. Nothing open: revoked 0.",
+    parametersSchema: schema(["sprintId", "taskId"], { sprintId, taskId, pageUrls: list("Only these pages (default: every open grant of the task)") }),
+  },
   {
     group: "Site",
     name: "create-preview",
@@ -583,7 +607,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   { group: "Site checks", name: "check-canonical", displayName: "Check canonical", description: "Canonical link/header vs the served URL.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "validate-schema", displayName: "Validate structured data", description: "Extract and parse JSON-LD; report types, missing required properties and FAQ problems.", parametersSchema: schema([], { ...urlOrSprint }) },
-  { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages in one call (9 s budget, under the 10 s tool gateway limit): inbound internal links per page, orphans, linked pages missing from the sitemap. A slow site returns partial: true with nextStartAt: call again with startAt = nextStartAt to crawl the next pages. Orphans are only returned by a complete crawl from startAt 0.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)"), startAt: int("Offset into the crawl list (home page, then the de-duplicated sitemap URLs) to start from; pass nextStartAt from a partial result (default 0)") }) },
+  { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages in one call (9 s budget, under the 10 s tool gateway limit): inbound internal links per page, orphans, linked pages missing from the sitemap. A slow site returns partial: true with nextStartAt: call again with startAt = nextStartAt to crawl the next pages (the sitemap and pages still loading are kept for the next call, so later calls are faster and never repeat a page). Orphans are only returned by a complete crawl from startAt 0.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)"), startAt: int("Offset into the crawl list (home page, then the de-duplicated sitemap URLs) to start from; pass nextStartAt from a partial result (default 0)") }) },
   { group: "Site checks", name: "crawler-sim", displayName: "Crawler view", description: "Fetch as Googlebot: status, redirects, robots.txt block, noindex (meta and X-Robots-Tag), canonical, h1, text size, images without alt, indexable yes/no.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-soft404", displayName: "Check soft-404", description: "Request a random nonexistent path on the site origin; flag if HTTP 200 is returned (app shell issue).", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-thin-content", displayName: "Check thin content", description: "Measure server-rendered text size and flag pages below threshold (default 200 chars, configurable).", parametersSchema: schema([], { ...urlOrSprint, minChars: int("Text length threshold in characters (50–1000, default 200)") }) },
@@ -664,7 +688,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (metaTags [{ name: \"msvalidate.01\", content }] or files [{ path: \"/BingSiteAuth.xml\", content }]; the result carries the call). Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
-  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }) },
+  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }), timeoutMs: BING_VERIFY_SITE_TOOL_TIMEOUT_MS },
   { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
 
   // Site repo
@@ -740,13 +764,27 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       links: list('"Label | https://…" or a bare URL'),
       copy: text("Copy-ready text (DM, email, post)"),
       after: text("What you do once it is done (required unless a standard key)"),
-      taskIds: list("Tasks that continue when it is done"),
+      taskIds: list("Tasks that continue when it is done (a page change set on a pr_only site: its task, so resolving can open the apply window)"),
       optional: flag("Listed under Optional on the Needs you issue (default false)"),
       wpVerifyFailed: text("Verification items on a WordPress site with wp-verify are refused unless this says what you tried and the error; it is recorded on the sprint."),
       personOnly: text("Page changes and template markup you can make yourself are refused; only if one truly needs a person (wp-admin, an account, a judgement), say here exactly what only a person can do (kept on the item)."),
     }),
   },
-  { group: "Needs you", name: "needs-you-resolve", displayName: "Resolve Needs you item", description: "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you.", parametersSchema: schema(["sprintId", "key"], { sprintId, key: text("Item key (from needs-you)"), note: text("What was done, stored on the item (max 1000 chars)") }) },
+  {
+    group: "Needs you",
+    name: "needs-you-resolve",
+    displayName: "Resolve Needs you item",
+    description:
+      "Mark an item done (when the person confirmed it). Checkable items (keys, access, repo link) are re-checked first; waiting tasks go back to you. A page change set on a pr_only WordPress sprint with manual sign-off: pass pageUrls (and taskId when the item names no task or several, reviewCommentId when the pages have no passed preview) to open the apply window first, exactly like approve-page-apply (24 h); a refused window leaves the item open. Without pageUrls such an item is resolved with applyWindow not_opened.",
+    parametersSchema: schema(["sprintId", "key"], {
+      sprintId,
+      key: text("Item key (from needs-you)"),
+      note: text("What was done, stored on the item (max 1000 chars); with pageUrls also the grant note"),
+      pageUrls: list("Open the apply window for these pages of the task (1 to 10, full URLs) before resolving"),
+      taskId: text("The sprint task whose pages these are (one of the item's taskIds when it names any)"),
+      reviewCommentId: text("The Reviewer's PASS comment id, for pages without a passed preview"),
+    }),
+  },
   { group: "Needs you", name: "setup-checklist", displayName: "Setup checklist", description: "Every one-time setup item (settings, service account, GitHub access, agent, keys; per sprint: site repo or WordPress Connector, property, Bing, autopilot) with status, links and what you do next.", parametersSchema: schema([], { sprintId }) },
 
   // Audits

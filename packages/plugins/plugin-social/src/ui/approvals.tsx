@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Field, Input, Pill, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Pill, Select, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, Card, fmtDate, ignore, Muted, Row, scopeParams, SmallButton } from "./parts.js";
 import type { ApprovalPolicyView, ApprovalStatus, Post, RequestedApproval, RunAction, SignoffState, Snapshot } from "./types.js";
 
@@ -10,6 +10,18 @@ const STATE_TEXT: Record<SignoffState, string> = { approved: "done", changes: "a
 /** Said wherever the client alone approves: the link is the approval, and an agent holds it while it drafts the email. */
 export const CLIENT_ONLY_NOTE =
   "Only the client approves here, so their link is the approval. The Social agent makes the link and holds it while it drafts the email. The approval page refuses answers that come from the server itself, which stops a slip but not a determined attempt: tick \"A team member approves\" too if nobody should be able to approve without a person's click.";
+
+/** How many posts in review the server could not re-check after a save (it logs each one). Zero or unknown: nothing to say. */
+export function recheckFailed(result: unknown): number {
+  const failed = (result as { failed?: unknown } | null | undefined)?.failed;
+  return typeof failed === "number" && failed > 0 ? failed : 0;
+}
+
+/** Said when the re-check after a save missed posts: they keep their old routing until the next save. */
+function RecheckNote({ failed }: { failed: number }) {
+  if (!failed) return null;
+  return <Muted style={{ color: tokens.fg }}>{failed === 1 ? "1 post in review" : `${failed} posts in review`} could not be re-checked (the server logged why). A team member can still approve them from Posts.</Muted>;
+}
 
 const checkStyle = { display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" } as const;
 
@@ -23,6 +35,7 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
   const [owner, setOwner] = useState(true);
   const [client, setClient] = useState(false);
   const [days, setDays] = useState("14");
+  const [failed, setFailed] = useState(0);
   if (!policy) return null;
   const open = () => {
     setReviewer(policy.requireReviewer);
@@ -34,7 +47,10 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
   const valid = owner || client;
   const save = () =>
     run("social.set-approval-policy", { ...scopeParams(snapshot), requireReviewer: reviewer, requireOwner: owner, requireClient: client && isClient, linkExpiryDays: Number(days) || 14 }, "Saved")
-      .then(() => setEditing(false))
+      .then((result) => {
+        setFailed(recheckFailed(result));
+        setEditing(false);
+      })
       .catch(ignore);
   return (
     <Card style={{ gap: 8 }}>
@@ -70,7 +86,65 @@ export function ApprovalPolicyCard({ snapshot, run }: { snapshot: Snapshot; run:
           </Row>
         </div>
       )}
+      <RecheckNote failed={failed} />
+      {!editing ? <DelegateApprover snapshot={snapshot} policy={policy} run={run} /> : null}
     </Card>
+  );
+}
+
+/** The scope's delegated approver: a person picks an agent (Save) or removes it (Clear). Never shown to an agent, nor where the client approves. */
+function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; policy: ApprovalPolicyView; run: RunAction }) {
+  const delegate = policy.delegate ?? null;
+  const candidates = snapshot.delegateCandidates ?? [];
+  const [pick, setPick] = useState(delegate?.agentId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState(0);
+  const current = delegate?.agentId ?? "";
+  useEffect(() => setPick(current), [current]);
+  // scope is null on own work, which is where this matters most: the worker's empty candidates hide it where it is not allowed.
+  if (!snapshot.viewer.userId || policy.requireClient) return null;
+  if (candidates.length === 0 && !delegate) return null;
+  const send = (agentId: string | null) => {
+    setBusy(true);
+    setError(null);
+    setFailed(0);
+    return run("social.set-approval-delegate", { ...scopeParams(snapshot), agentId }, agentId ? "Delegated approver saved" : "Delegated approver cleared")
+      .then((result) => setFailed(recheckFailed(result)))
+      .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "The change was not saved."))
+      .finally(() => setBusy(false));
+  };
+  const name = delegate ? delegate.name ?? delegate.agentId : null;
+  return (
+    <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+      <strong style={{ fontSize: 13 }}>Delegated approver</strong>
+      {delegate ? (
+        <Row style={{ flexWrap: "wrap" }}>
+          <Pill tone={delegate.active ? "ok" : "warn"} dot>{delegate.active ? "acting" : "not acting"}</Pill>
+          <span style={{ fontSize: 13, minWidth: 0, overflowWrap: "anywhere" }}>{name}</span>
+        </Row>
+      ) : (
+        <Muted>No delegated approver: a team member approves.</Muted>
+      )}
+      {delegate && !delegate.active ? <Muted style={{ color: tokens.fg }}>Not acting because: {delegate.inactiveReason ?? "a check failed"}. A team member approves until then.</Muted> : null}
+      {candidates.length === 0 ? <Muted>No agent can be picked here right now.</Muted> : null}
+      <Row style={{ flexWrap: "wrap" }}>
+        {candidates.length > 0 ? (
+          <Select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Delegated approver" disabled={busy} style={{ minWidth: 0, maxWidth: "100%" }}>
+            <option value="">Choose an agent</option>
+            {delegate && !candidates.some((c) => c.id === delegate.agentId) ? <option value={delegate.agentId}>{name}</option> : null}
+            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        ) : null}
+        {candidates.length > 0 ? (
+          <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={busy || !pick || pick === current} onClick={() => void send(pick)}>Save</Button>
+        ) : null}
+        {delegate ? <SmallButton disabled={busy} onClick={() => void send(null)}>Clear</SmallButton> : null}
+      </Row>
+      {error ? <Banner tone="error" title="The delegated approver was not saved">{error}</Banner> : null}
+      <RecheckNote failed={failed} />
+      <Muted>Only on scopes an instance admin allowed. Own brands only.</Muted>
+    </div>
   );
 }
 

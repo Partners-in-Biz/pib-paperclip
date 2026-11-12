@@ -8,13 +8,38 @@ const { authenticate, ISSUE_RE } = require('./auth.cjs');
 const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
 const { redactText, parseRegion } = require('./redact.cjs');
 const { checkFill: defaultCheckFill } = require('./fill-rules.cjs');
+const { createErrorLog } = require('./errlog.cjs');
 
 const COMMANDS = Object.freeze(['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
+
+// How long to wait for a text that the page renders after its document has loaded.
+const OPEN_EXPECT_WAIT_MS = 15000;
+const SHOT_EXPECT_WAIT_MS = 5000;
+
+// Sort a driver error into a reason that names the cause (PAR-9187). Only a dead
+// browser/context ends the session; a missing or ambiguous target, a slow page or
+// any other page-level error leaves it open so the agent can retry or close.
+function classifyDriverError(e) {
+  const msg = String(e?.message || '');
+  const name = e?.name || '';
+  if (e?.code === 'NO_BROWSER') return { exit: EXIT.NO_BROWSER, reason: 'browser_launch_failed', drop: true };
+  if (name === 'TargetClosedError' || /Target page, context or browser has been closed|Browser has been closed|browser has disconnected/i.test(msg))
+    return { exit: EXIT.NO_BROWSER, reason: 'browser_closed', drop: true };
+  if (/strict mode violation/i.test(msg)) return { exit: EXIT.EXPECT_MISSING, reason: 'target_ambiguous', drop: false };
+  if (name === 'TimeoutError' || /Timeout \d+ms exceeded/i.test(msg)) return { exit: EXIT.EXPECT_MISSING, reason: 'timeout', drop: false };
+  return { exit: EXIT.NO_BROWSER, reason: `internal: ${name || 'Error'}`, drop: false };
+}
 
 function createDispatcher(deps = {}) {
   const sessions = new Map();
   const shotCounters = new Map();
   const { verifyApproval, handoff } = deps;
+  const errorLog = deps.errorLog || createErrorLog({ path: deps.errorLogPath });
+  const logError = (request, phase, error) => {
+    try {
+      errorLog.record({ cmd: request?.cmd, issue: request?.issue, identity: request?.identity, phase, error });
+    } catch (e) {}
+  };
   const noopHandoff = { isActive: () => false };
 
   const makeGuard = (origins) => (url, kind) => {
@@ -123,7 +148,13 @@ function createDispatcher(deps = {}) {
           const violation = await afterOp(ctx, sessionKey);
           if (violation) return violation;
 
-          if (!(await ctx.hasText(site.loggedIn.expect))) {
+          // The logged-in text can render a moment after the document: wait for it before calling the session expired.
+          const loggedIn = await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS });
+          // The page can navigate or open a popup while we wait. Check the origin wall again before deciding
+          // anything: a refused origin is reported as such, and never keeps a session or hides behind "expired".
+          const lateViolation = await afterOp(ctx, sessionKey);
+          if (lateViolation) return lateViolation;
+          if (!loggedIn) {
             await ctx.close();
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }
@@ -131,7 +162,9 @@ function createDispatcher(deps = {}) {
           sessions.set(sessionKey, { ctx, site, auth });
           return { exit: EXIT.DONE, ok: true };
         } catch (e) {
-          return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
+          logError(request, 'open', e);
+          const c = classifyDriverError(e);
+          return { exit: EXIT.NO_BROWSER, ok: false, reason: c.reason };
         }
       }
 
@@ -169,13 +202,21 @@ function createDispatcher(deps = {}) {
             return { exit: EXIT.USAGE, ok: false, reason: 'selector_required' };
           }
 
+          // The element's own label (aria-label / visible text) also counts toward
+          // the destructive check, so `#btn-3` that reads "Save" still needs approval.
+          let label;
+          if (typeof ctx.label === 'function') {
+            try { label = await ctx.label(selector, text); } catch (e) { label = undefined; }
+          }
+          const click = { selector, text, label };
+
           const authResult = authorise({
             policy,
             sites,
             agentId,
             identity: identityStr,
             url: site.loggedIn.url,
-            click: { selector, text },
+            click,
             approved: false
           });
 
@@ -201,7 +242,7 @@ function createDispatcher(deps = {}) {
               agentId,
               identity: identityStr,
               url: site.loggedIn.url,
-              click: { selector, text },
+              click,
               approved: true
             });
             if (!authResult2.ok) {
@@ -209,7 +250,9 @@ function createDispatcher(deps = {}) {
               return { exit: authResult2.exit, ok: false, reason: authResult2.reason };
             }
           } else if (!authResult.ok) {
-            await dropSession(ctx, sessionKey);
+            // No approval offered: nothing was attempted, so the session stays open
+            // and the agent can still shot/close (PAR-9187). Policy refusals still drop it.
+            if (authResult.exit !== EXIT.NEEDS_APPROVAL) await dropSession(ctx, sessionKey);
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
 
@@ -285,7 +328,7 @@ function createDispatcher(deps = {}) {
 
           let expectMatched = false;
           if (expect) {
-            if (!(await ctx.hasText(expect))) {
+            if (!(await ctx.hasText(expect, { timeoutMs: SHOT_EXPECT_WAIT_MS }))) {
               return { exit: EXIT.EXPECT_MISSING, ok: false, reason: 'expect_missing' };
             }
             expectMatched = true;
@@ -336,7 +379,10 @@ function createDispatcher(deps = {}) {
             };
           } catch (e) {
             try { if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); } catch (cleanup) {}
-            return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
+            logError(request, 'shot', e);
+            const c = classifyDriverError(e);
+            if (c.drop) await dropSession(ctx, sessionKey);
+            return { exit: c.drop ? c.exit : EXIT.NO_SCREENSHOT, ok: false, reason: c.reason };
           }
         }
 
@@ -348,18 +394,18 @@ function createDispatcher(deps = {}) {
 
         return { exit: EXIT.USAGE, ok: false, reason: 'unknown_command' };
       } catch (e) {
-        try {
-          await ctx.close();
-        } catch (closeErr) {}
-        sessions.delete(sessionKey);
-        return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
+        logError(request, cmd, e);
+        const c = classifyDriverError(e);
+        if (c.drop || cmd === 'close') await dropSession(ctx, sessionKey);
+        return { exit: c.exit, ok: false, reason: c.reason };
       }
     } catch (e) {
-      return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal' };
+      logError(request, 'dispatch', e);
+      return { exit: EXIT.NO_BROWSER, ok: false, reason: 'internal: dispatch' };
     }
   }
 
   return { dispatch, sessions, COMMANDS };
 }
 
-module.exports = { createDispatcher, COMMANDS };
+module.exports = { createDispatcher, classifyDriverError, COMMANDS };

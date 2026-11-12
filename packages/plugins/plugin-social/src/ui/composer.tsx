@@ -250,7 +250,7 @@ export function Composer({ snapshot, post, run, onClose }: {
     <Modal
       open
       title={post ? "Edit post" : "New post"}
-      description={snapshot.space === "me" ? "Write once, then adjust per platform. Only you can approve, schedule or publish your posts." : "Write once, then adjust per platform. A person approves every post; approval schedules it at the proposed time."}
+      description={snapshot.space === "me" ? "Write once, then adjust per platform. Only you can approve, schedule or publish your posts." : "Write once, then adjust per platform. A person, or the scope's delegated approver, approves every post; approval schedules it at the proposed time."}
       onClose={onClose}
       footer={(
         <>

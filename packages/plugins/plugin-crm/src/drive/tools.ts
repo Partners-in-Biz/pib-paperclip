@@ -2,15 +2,17 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Viewer } from "../domain.js";
 import { CrmError } from "../domain.js";
-import { type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { type Broker, type DriveEntityType, BrokerError, DriveNotBoundError } from "./broker.js";
+import { driveKeyAfterAuthFailure, driveServiceAccountKey } from "./sa-secret.js";
 import { createGoogleDriveBroker, CLIENTS_PATH } from "./google-broker.js";
 import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
-import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
+import { driveJobStatus, type DriveJobView } from "./jobs.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
@@ -32,14 +34,14 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "drive_file_save",
     displayName: "Save file to Drive",
-    description: "Save a file to a Paperclip project's Google Drive folder (a client's project saves into the client's folder). Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths (max 5 MB). Exactly one source required: contentBase64 or path.",
+    description: "Save a file to a Paperclip project's Google Drive folder (a client's project saves into the client's folder). Validates name, content, computes sha256, deduplicates, and uploads. Returns the URL. Binary-safe for base64 or local file paths. Exactly one source required: contentBase64 or path. Up to 5 MB the file is saved at once. Over 5 MB, path only, up to 200 MB: returns status started with a jobId; call drive_transfer_status until done. path must be inside this run's workspace or $PAPERCLIP_TMPDIR (not $TMPDIR). Dotfiles, keys and credential files are refused.",
     parametersSchema: schema(["projectId", "fileKind", "name", "mimeType"], {
       projectId: text("The Paperclip project id (determines the Drive folder).", 100),
       fileKind: text("File kind for classification (e.g. client, product, book, marketing, company, seo, social, campaigns, ads, ops; stored in the Drive file record).", 50),
       name: text("File name: YYYY-MM-DD <what> v<n>.<ext> or <ISSUE>-<step>-<ts>.<ext> (e.g. 2026-10-20 report v1.pdf or PAR-4059-login-1760000000.png).", 300),
       mimeType: text("MIME type (e.g. application/pdf, image/png).", 100),
       contentBase64: text("File content as base64 (mutually exclusive with path). Binary-safe."),
-      path: text("Absolute local file path (mutually exclusive with contentBase64). Must be inside an allowed root. Max 5 MB."),
+      path: text("Local file path (mutually exclusive with contentBase64), inside this run's workspace or $PAPERCLIP_TMPDIR (not $TMPDIR). Up to 200 MB; over 5 MB the save runs in the background (see drive_transfer_status). Dotfiles, keys and credential files are refused."),
       sha256: text("Optional: hex-encoded sha256 to verify the file content after decode/read.", 64),
       subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder of the project's Drive folder. A client's folder has Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client; a product's has Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally. A name the project's folder does not have is refused (invalid_subfolder lists the real ones); book, company and marketing folders have none, so the file goes into the folder itself. Omit to save into the folder itself."),
       requestId: text("Optional: request ID for correlation.", 100),
@@ -74,6 +76,21 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Check Shared Drive binding status",
     description: "read-only: check whether this company's Shared Drive is bound, whether the Drive service account key is set, and whether the service account is a member of the drive. Does not modify anything.",
     parametersSchema: schema([], {}),
+  },
+  {
+    name: "drive_transfer_status",
+    displayName: "Drive transfer status",
+    description: "Check a Drive transfer that runs in the background. A drive_file_save over 5 MB (up to 200 MB) and every drive_file_fetch return a jobId at once; call this with that jobId until status is done (result holds the file) or failed (code and hint say why). running shows bytesDone of bytesTotal; a slow chunk is slow, not dead, so keep calling every 20-30 s. not_found: the transfer is gone (the CRM restarted); start it again, a finished copy is not made twice. Only the agent that started the transfer can see it, and a fetch only from the same run. Read-only.",
+    parametersSchema: schema(["jobId"], { jobId: text("The jobId a Drive save or fetch returned.", 100) }),
+  },
+  {
+    name: "drive_file_fetch",
+    displayName: "Fetch Drive file",
+    description: "Copy a file from a Paperclip project's Google Drive folder (or one of its sub-folders) into this run's scratch dir ($PAPERCLIP_TMPDIR), up to 200 MB. Always returns status started with a jobId at once; call drive_transfer_status with it every 20-30 s until it is done. Its result holds path (the local file), size, sha256, name, mimeType and runId. The file lives only as long as this run: the scratch dir is deleted when the run ends. Google Docs files are refused (export them in Drive first). Works only from a run on this server. fileId is the Google Drive file id.",
+    parametersSchema: schema(["projectId", "fileId"], {
+      projectId: text("The Paperclip project whose Drive folder holds the file.", 100),
+      fileId: text("The Google Drive file id (from the file's Drive link), not a name or URL.", 200),
+    }),
   },
 ];
 
@@ -189,9 +206,57 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
     throw new DriveNotBoundError();
   }
 
-  const serviceAccountJson = await new SecretResolver(ctx, companyId, cfg).get("driveServiceAccountJson");
+  // Cached per company (PAR-9358): the host allows 30 secret lookups a minute for the whole plugin.
+  const serviceAccountJson = await driveServiceAccountKey(ctx, companyId, cfg);
   if (!serviceAccountJson) return null;
-  return createGoogleDriveBroker(fetch, parseServiceAccountKey(serviceAccountJson), sharedDriveId);
+  return withKeyRefresh(ctx, companyId, cfg, serviceAccountJson, sharedDriveId);
+}
+
+const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
+
+/** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
+const REPLAYABLE = ["resolve", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
+const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
+
+/**
+ * The broker on the cached key. When Google refuses the key, the secret is read once more; a different key (rotated
+ * since it was cached) gets one retry of a replayable call. A streamed call is not retried, but the next call uses the new key.
+ */
+function withKeyRefresh(ctx: PluginContext, companyId: string, cfg: Record<string, unknown>, keyJson: string, sharedDriveId: string): Broker {
+  let currentKey = keyJson;
+  let inner = createGoogleDriveBroker(fetch, parseServiceAccountKey(keyJson), sharedDriveId);
+  const refresh = async (): Promise<boolean> => {
+    const next = await driveKeyAfterAuthFailure(ctx, companyId, cfg, currentKey);
+    if (!next) return false;
+    currentKey = next;
+    inner = createGoogleDriveBroker(fetch, parseServiceAccountKey(next), sharedDriveId);
+    return true;
+  };
+  const broker: Record<string, unknown> = {};
+  for (const name of REPLAYABLE) {
+    if (typeof (inner as unknown as Record<string, unknown>)[name] !== "function") continue;
+    broker[name] = async (...args: unknown[]) => {
+      const call = () => ((inner as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name])(...args);
+      try {
+        return await call();
+      } catch (e) {
+        if (!isBadCredential(e) || !(await refresh())) throw e;
+        return call();
+      }
+    };
+  }
+  for (const name of ONE_SHOT) {
+    if (typeof (inner as unknown as Record<string, unknown>)[name] !== "function") continue;
+    broker[name] = async (...args: unknown[]) => {
+      try {
+        return await ((inner as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[name])(...args);
+      } catch (e) {
+        if (isBadCredential(e)) await refresh().catch(() => false);
+        throw e;
+      }
+    };
+  }
+  return broker as unknown as Broker;
 }
 
 /**
@@ -421,6 +486,10 @@ export async function driveProjectKindList(ctx: PluginContext, viewer: Viewer, p
   }
 
   return { projects: result, total: result.length };
+}
+
+export function driveTransferStatus(viewer: Viewer, params: Record<string, unknown>): DriveJobView {
+  return driveJobStatus({ companyId: viewer.companyId, agentId: viewer.agentId, runId: viewer.runId ?? null }, params.jobId);
 }
 
 export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<SaveDriveFileResult> {

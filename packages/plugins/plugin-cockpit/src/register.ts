@@ -29,6 +29,7 @@ import { nightlyAcceptance, onPluginVersion, requestAcceptanceNow } from "./acce
 import { ACCEPTANCE_TOOL_SET, runAcceptanceTool } from "./acceptance-tools.js";
 import { EVAL_TOOL_SET, runEvalTool } from "./eval-tools.js";
 import { buildSkillPolicy, isReflectionCoach } from "./skill-policy.js";
+import { ACCESS_TOOL_SET, handleAccessInventory, runAccessTool } from "./access.js";
 import { AGENT_TOOL_NAMES, runAgentTool } from "./agent-tools.js";
 import { REVIEW_FINDING_TOOL_SET, runReviewFindingTool } from "./review-findings.js";
 import { AGENT_READ_TOOL_NAMES, runAgentReadTool } from "./agent-read-tools.js";
@@ -83,6 +84,7 @@ import { registerBrowserStatus } from "./browser-status.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
+import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -218,6 +220,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   registerW1cEdge(env);
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
+  registerOwnerDigest(env);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env);
 
@@ -584,6 +587,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       "Ask deadline sweep",
       await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),
     );
+    // The owner's one daily digest rides on this sweep: from 16:00 SAST, once a day, caught up after a missed sweep.
+    try {
+      const digest = await ownerDigestTick(env);
+      if (digest.posted || digest.failed) ctx.logger.info("Owner digest", digest);
+    } catch (error) {
+      ctx.logger.warn("Owner digest: the sweep failed", { error: message(error) });
+    }
   });
 
   registerMemoryActions(env);
@@ -664,6 +674,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       await env.skills.ensure(run.companyId).catch(() => undefined);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
         ? await runMemoryTool(env, tool.name, params, run)
+        : ACCESS_TOOL_SET.has(tool.name)
+          ? await runAccessTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
           : AGENT_READ_TOOL_NAMES.has(tool.name)
@@ -801,6 +813,7 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
       // agent_already_paused, governor_active, not_paused -> 409
       return { status: 409, body: result };
     }
+    if (input.routeKey === "access-inventory") return await handleAccessInventory(env, input);
     if (input.routeKey === "owner-push") {
       return await handleOwnerPush(env, input);
     }

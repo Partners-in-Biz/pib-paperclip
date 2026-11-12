@@ -64,6 +64,12 @@ export const SOURCE_BASIS_NOTICE = "Made from the page source: header and script
 const RENDER_START_BY_MS = 12_000;
 const RENDER_TIMEOUT_MS = 15_000;
 
+/** Pause before asking a busy render service (503) again. */
+const RENDER_BUSY_WAIT_MS = 1_500;
+const RENDER_BUSY_TRIES = 6;
+const askRender = (env: Env, url: string) =>
+  env.fetch(PREVIEW_RENDER_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }), signal: AbortSignal.timeout(RENDER_TIMEOUT_MS) });
+
 const basisOf = (stats: { basis?: unknown } | null | undefined): "rendered" | "source" => (stats?.basis === "rendered" ? "rendered" : "source");
 
 /**
@@ -76,8 +82,15 @@ async function renderedLive(env: Env, url: string, source: string, selector: str
   if (elapsed >= RENDER_START_BY_MS) return fallback(`${Math.round(elapsed / 1000)} s already spent fetching the page`);
   let html: unknown;
   try {
-    const r = await env.fetch(PREVIEW_RENDER_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }), signal: AbortSignal.timeout(RENDER_TIMEOUT_MS) });
-    if (r.status !== 200) return fallback(`the render service answered ${r.status}`);
+    const waitFrom = Date.now();
+    let r = await askRender(env, url);
+    // 503 = another render is running (one at a time, a few seconds each): wait for it while there is still room,
+    // rather than build from the source on a busy minute (PAR-9945: a source-built preview lost the page's tabs).
+    for (let tries = 1; r.status === 503 && tries < RENDER_BUSY_TRIES && Date.now() - waitFrom + RENDER_BUSY_WAIT_MS < RENDER_START_BY_MS - elapsed; tries++) {
+      await new Promise((done) => setTimeout(done, RENDER_BUSY_WAIT_MS));
+      r = await askRender(env, url);
+    }
+    if (r.status !== 200) return fallback(`the render service answered ${r.status}${r.status === 503 ? " (busy with another render)" : ""}`);
     const text = await r.text();
     try {
       html = (JSON.parse(text) as { html?: unknown } | null)?.html;

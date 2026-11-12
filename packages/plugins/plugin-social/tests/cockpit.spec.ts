@@ -200,3 +200,76 @@ describe("cockpit route and job tracking (SDK harness)", () => {
     expect(record).toMatchObject({ consecutiveFailures: 1, lastError: "Unsafe identifier", lastOkAt: null });
   });
 });
+
+describe("delegated approver in the cockpit (PAR-9687)", () => {
+  const CO = "co";
+  const SCOPE = "company:0b5c3a52-9a0f-4c8e-8a1e-1d2f3a4b5c6d";
+  const REVIEW_POST = { id: "p1", body: "Rhea's post", client_kind: "company", client_ref: "0b5c3a52-9a0f-4c8e-8a1e-1d2f3a4b5c6d", client_name: "Brand", review_issue_id: "iss-r1", owner_user_id: null, updated_at: "2026-09-26T08:00:00Z" };
+
+  function build(o: { status?: string; allow?: string[]; reviewer?: boolean; assignee?: string; noAgent?: boolean; delegateStored?: boolean } = {}) {
+    const state: State = {
+      "social-approval:delegates": o.delegateStored === false ? null : { [SCOPE]: { agentId: "ag-d", setBy: "u1", setAt: "2026-11-01T00:00:00Z" } },
+      "pib-cockpit:roles": { companyId: CO, operatorAgentId: null, reviewerAgentId: "ag-v", reviewerStatus: o.reviewer === false ? "paused" : "active", ownerUserId: "u1", reviewOutward: true, updatedAt: "2026-11-01T00:00:00Z" },
+    };
+    const rows = (sql: string) => {
+      if (sql.includes("status = 'review'")) return [REVIEW_POST];
+      if (sql.includes("approval_policies")) return [];
+      return [];
+    };
+    return ctxWith(rows, state, {
+      config: { get: vi.fn(async () => ({ delegatableScopes: o.allow ?? [SCOPE] })) },
+      agents: {
+        get: vi.fn(async (id: string) => (o.noAgent && id === "ag-d" ? null : { id, companyId: CO, name: id === "ag-d" ? "Rhea" : "Vera", status: id === "ag-d" ? (o.status ?? "idle") : "active" })),
+        managed: { get: vi.fn(async () => ({ agentId: null })) },
+      },
+      issues: { get: vi.fn(async () => ({ id: "iss-r1", status: "todo", assigneeAgentId: o.assignee ?? "ag-v" })), list: vi.fn(async () => []) },
+    });
+  }
+  const check = (snap: Awaited<ReturnType<typeof cockpitSnapshot>>) => snap.health.find((h) => h.key === "approval-delegate");
+
+  it("says who the waiting item waits for", async () => {
+    const snap = await cockpitSnapshot(build(), CO);
+    const item = snap.waiting.find((w) => w.key === "social:review:p1");
+    expect(item?.title).toBe("[Brand] Waiting for the delegated approver (Rhea): Rhea's post");
+    expect(check(snap)).toBeUndefined();
+  });
+
+  it("falls back to Approve post when the delegate is paused", async () => {
+    const snap = await cockpitSnapshot(build({ status: "paused" }), CO);
+    expect(snap.waiting.find((w) => w.key === "social:review:p1")?.title).toContain("Approve post");
+  });
+
+  it("health: delegate paused, and its review issue still assigned to it", async () => {
+    const c = check(await cockpitSnapshot(build({ status: "paused", assignee: "ag-d" }), CO));
+    expect(c?.detail).toContain("the delegate is paused");
+    expect(c?.detail).toContain("1 review issue still assigned to an inactive delegate");
+  });
+
+  it("health: delegate terminated or archived", async () => {
+    expect(check(await cockpitSnapshot(build({ status: "terminated" }), CO))?.detail).toContain("the delegate is terminated");
+    expect(check(await cockpitSnapshot(build({ status: "archived" }), CO))?.detail).toContain("the delegate is archived");
+  });
+
+  it("health: scope removed from the allowlist", async () => {
+    expect(check(await cockpitSnapshot(build({ allow: [] }), CO))?.detail).toContain("removed from the delegatable scopes list");
+  });
+
+  it("health: no running Reviewer, with the way out", async () => {
+    const c = check(await cockpitSnapshot(build({ reviewer: false }), CO));
+    expect(c?.detail).toContain("no Reviewer is running (clear the delegated approver, then turn the Reviewer's pass off)");
+  });
+
+  it("health: a delegate that cannot be read counts as not found", async () => {
+    expect(check(await cockpitSnapshot(build({ noAgent: true }), CO))?.detail).toContain("the delegate was not found");
+  });
+
+  it("falls back to Approve post when the delegate state cannot be read", async () => {
+    const ctx = build();
+    (ctx.state.get as ReturnType<typeof vi.fn>).mockImplementation(async (k: { namespace?: string }) => {
+      if (k.namespace === "social-approval") throw new Error("state down");
+      return null;
+    });
+    const snap = await cockpitSnapshot(ctx, CO);
+    expect(snap.waiting.find((w) => w.key === "social:review:p1")?.title).toContain("Approve post");
+  });
+});

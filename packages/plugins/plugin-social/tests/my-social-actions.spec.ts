@@ -511,4 +511,14 @@ describe("My Social page wiring", () => {
       for (const m of text.matchAll(/\brun\(\s*"((?:social|my-social)\.[a-z-]+)"/g)) expect(listed.has(m[1]!), `${file}: ${m[1]}`).toBe(true);
     }
   });
+
+  it("the delegated approver block shows on own work (null scope) and guards Clear", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/ui/approvals.tsx", import.meta.url), "utf8");
+    const guard = src.split("\n").find((l) => l.includes("!snapshot.viewer.userId || policy.requireClient"));
+    expect(guard).toBeDefined();
+    expect(guard).not.toContain("snapshot.scope");
+    expect(src).toContain("if (candidates.length === 0 && !delegate) return null;");
+    expect(src).toContain("<SmallButton disabled={busy} onClick={() => void send(null)}>");
+  });
 });

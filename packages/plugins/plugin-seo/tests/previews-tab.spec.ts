@@ -1,4 +1,4 @@
-/** 0.41.0 (PAR-9131 T4, PAR-9145): the Previews tab words, filters and badge. */
+/** 0.46.0 (PAR-9131 T4, PAR-9145): the Previews tab words, filters and badge. */
 import { describe, expect, it } from "vitest";
 import { isPreviewFilter, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "../src/ui/words.js";
 
@@ -31,5 +31,28 @@ describe("previews tab words", () => {
     expect(previewStatus({ ...base, expired: true }).label).toBe("Expired");
     expect(previewStatus({ ...base, status: "approved", decisionSource: "email" }).label).toBe("Client approved");
     expect(previewStatus({ ...base, status: "approved", appliedAt: "2026-11-11" }).label).toBe("Applied");
+  });
+});
+
+describe("previews tab filters and badge (PAR-9145)", async () => {
+  const { previewsFor, awaitingCount } = await import("../src/ui/words.js");
+  const p = (o: Record<string, unknown>) => ({ id: "x", status: "pending", reviewStatus: "passed", expired: false, superseded: false, appliedAt: null, ...o }) as never;
+  const all = [
+    p({ id: "await" }), p({ id: "notpassed", reviewStatus: "pending" }), p({ id: "exp", expired: true }),
+    p({ id: "sup", superseded: true }), p({ id: "appr", status: "approved" }), p({ id: "dec", status: "declined" }),
+    p({ id: "chg", status: "changes_requested" }), p({ id: "app", status: "approved", appliedAt: "2026-11-01T00:00:00Z" }),
+    p({ id: "appsup", status: "approved", appliedAt: "2026-11-01T00:00:00Z", superseded: true }),
+  ];
+  const ids = (f: string) => previewsFor(all, f as never).map((r: { id: string }) => r.id);
+  it("filters each tab and drops superseded rows except under applied", () => {
+    expect(ids("awaiting")).toEqual(["await", "notpassed"]);
+    expect(ids("approved")).toEqual(["appr"]);
+    expect(ids("declined")).toEqual(["dec", "chg"]);
+    expect(ids("applied")).toEqual(["app", "appsup"]);
+    expect(ids("expired")).toEqual(["exp"]);
+  });
+  it("badge counts pending, passed, not expired, not superseded", () => {
+    expect(awaitingCount(all)).toBe(1);
+    expect(awaitingCount(undefined)).toBe(0);
   });
 });

@@ -37,6 +37,7 @@ import {
   type AgentLite,
   type ApprovalLite,
   type CockpitSnapshot,
+  type WaitingItem,
   type IssueLite,
   type RunStat,
   type WaitingEntry,
@@ -70,11 +71,71 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
   }
 }
 
+/** Statuses that mean the work is over: nothing waits on the owner any more. */
+const CLOSED_ISSUE = new Set(["done", "cancelled", "hidden"]);
+
+/** `<prefix>:(review|task):<id>`, e.g. `seo:needs-you:<sprintId>:review:<taskId>`, `social:review:<postId>`. Prefix keeps sprints apart. */
+const REVIEW_OR_TASK_KEY = /^(.*):(review|task):([^:]+)$/;
+
+function dedupeId(w: WaitingItem): string {
+  return `${w.kind}|${w.title.trim().replace(/\s+/g, " ").toLowerCase()}`;
+}
+
+function sinceTime(w: WaitingItem): number {
+  const t = w.since ? Date.parse(w.since) : Number.NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * Plugins list their own waiting rows and can leave stale ones behind. Drop a row whose linked issue is done,
+ * cancelled, hidden or gone (`statuses` has no entry), and a `<prefix>:task:<id>` row when the same sign-off already shows as `<prefix>:review:<id>`.
+ * Then, among the rows left, a sign-off (`…:review:<id>` / `…:task:<id>` key) repeated under the same kind and title is listed once, newest kept.
+ * Other rows (e.g. two quote approvals of the same size) are never merged by title.
+ * `statuses` is null when the lookup failed: then only the duplicate rules run (never hide a row on a failed read).
+ */
+export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<string, string> | null): CockpitSnapshot[] {
+  return snapshots.map((snapshot) => {
+    const reviewKeys = new Set<string>();
+    for (const w of snapshot.waiting) {
+      const m = REVIEW_OR_TASK_KEY.exec(w.key);
+      if (m && m[2] === "review") reviewKeys.add(`${m[1]}|${m[3]}`);
+    }
+    // Stale first, so a closed newer row cannot hide a still-open older one.
+    const live = snapshot.waiting.filter((w) => {
+      const m = REVIEW_OR_TASK_KEY.exec(w.key);
+      if (m && m[2] === "task" && reviewKeys.has(`${m[1]}|${m[3]}`)) return false;
+      if (statuses && w.issueId) {
+        const status = statuses.get(w.issueId);
+        if (status === undefined || CLOSED_ISSUE.has(status)) return false;
+      }
+      return true;
+    });
+    const newest = new Map<string, WaitingItem>();
+    for (const w of live) {
+      if (!REVIEW_OR_TASK_KEY.test(w.key)) continue;
+      const id = dedupeId(w);
+      const cur = newest.get(id);
+      if (!cur || sinceTime(w) > sinceTime(cur)) newest.set(id, w);
+    }
+    const waiting = live.filter((w) => !REVIEW_OR_TASK_KEY.test(w.key) || newest.get(dedupeId(w)) === w);
+    return waiting.length === snapshot.waiting.length ? snapshot : { ...snapshot, waiting };
+  });
+}
+
+export async function issueStatuses(ctx: PluginContext, companyId: string, ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!ids.length) return out;
+  // The ids go as one JSON value: the host binds each array element as its own parameter, so an array cannot be cast to text[].
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, CASE WHEN hidden_at IS NOT NULL THEN 'hidden' ELSE status END AS status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
+  for (const row of rows) out.set(String(row.id), String(row.status ?? ""));
+  return out;
+}
+
 /** Most owner issues listed; past this the rest are counted but not shown. */
 export const OWNER_ISSUE_CEILING = 500;
 const OWNER_ISSUE_PAGE = 100;
 
-/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. `total` is the real count; `more` is set when some are not shown. */
+/** Open issues assigned to a person (core read of public.issues): every one, paged, up to {@link OWNER_ISSUE_CEILING}. The owner's daily digest issue is a list of work, not work, so it is left out. `total` is the real count; `more` is set when some are not shown. */
 export async function listUserIssues(ctx: PluginContext, companyId: string, userId: string | null): Promise<{ items: IssueLite[]; total: number; more: boolean }> {
   if (!userId) return { items: [], total: 0, more: false };
   const items: IssueLite[] = [];
@@ -86,6 +147,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
       const rows = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
           WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
+            AND origin_kind IS DISTINCT FROM '${ORIGIN.digest}'
           ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
         [companyId, userId, Math.min(OWNER_ISSUE_PAGE, OWNER_ISSUE_CEILING - offset), offset],
       );
@@ -261,6 +323,8 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
   const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
+  const linked = [...new Set(stored.flatMap((s) => s.snapshot.waiting.map((w) => w.issueId ?? "")).filter(Boolean))];
+  const waitingIssueStatuses = await guard("waitingIssues", () => issueStatuses(env.ctx, companyId, linked), null as Map<string, string> | null);
   const now = env.now().getTime();
   const ownerIssues = ownerList.items.map((i) => {
     const since = Date.parse(i.updatedAt ?? i.createdAt ?? "");
@@ -272,7 +336,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     ? null
     : setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
-    snapshots: [...stored.map((s) => s.snapshot), own],
+    snapshots: pruneStaleWaiting([...stored.map((s) => s.snapshot), own], waitingIssueStatuses),
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
     agents,
     runStats,

@@ -357,16 +357,16 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
   const items: WaitingItem[] = [];
   for (const row of rows) {
     const title = `${clientPrefix(row.client_ref ? row.client_name : null)}Approve campaign ${row.name}`;
-    const href = `/issues/${row.approval_issue_id}`;
+    const href = `/campaigns?campaign=${row.id}`;
     if (row.issue_status === "done") {
       items.push({
         key: `launch:${row.id}`,
         title: `${clientPrefix(row.client_ref ? row.client_name : null)}Launch approved campaign ${row.name}`,
         why: row.launch_error
-          ? `Approved, but it could not launch: ${row.launch_error}`
-          : "Approved, not launched yet. It launches on the next check (within 5 minutes); if it stays here, open Campaigns and click Launch.",
-        href: "/campaigns?tab=campaigns",
-        issueId: row.approval_issue_id,
+          ? `Approved, but it could not launch: ${row.launch_error}. Open the campaign to approve or send back.`
+          : "Approved, not launched yet. It launches on the next check (within 5 minutes); if it stays here, open the campaign to approve or send back.",
+        href,
+        // No issueId: this issue is always done, and the Cockpit drops waiting rows whose issue is closed.
         kind: "review",
         since: row.updated_at ?? row.created_at,
       });
@@ -378,7 +378,7 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
       items.push({
         key: `approval:${row.approval_issue_id}`,
         title,
-        why: "An agent (the Reviewer) has held this launch approval for over a day. Check it yourself: mark the issue done to approve, or cancel it.",
+        why: "An agent (the Reviewer) has held this launch approval for over a day. Open the campaign to approve or send back.",
         href,
         issueId: row.approval_issue_id,
         kind: "review",
@@ -390,8 +390,8 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
       key: `approval:${row.approval_issue_id}`,
       title,
       why: row.launch_error
-        ? `It could not launch after the last approval: ${row.launch_error} Fix it, then mark the issue done again.`
-        : "A person approves every campaign. Mark the issue done and it launches by itself.",
+        ? `It could not launch after the last approval: ${row.launch_error} Open the campaign to approve or send back.`
+        : "Open the campaign to approve or send back.",
       href,
       issueId: row.approval_issue_id,
       kind: "review",

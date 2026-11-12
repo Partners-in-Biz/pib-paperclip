@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { contentHashOf } from "../src/content-hash.js";
-import { currentSignoffs, postKind, postTypeOf, recordOutcome, reviewStats, summariseOutcomes, type StatRow } from "../src/review-outcomes.js";
+import { currentSignoffs, ladderRows, postKind, postTypeOf, recordOutcome, reviewStats, summariseOutcomes, withoutDelegate, type StatRow } from "../src/review-outcomes.js";
 import { approvalWorld, postRow, T } from "./world.js";
 
 const img = { url: "https://m/a.png", kind: "image", altText: "x" };
@@ -82,6 +82,26 @@ describe("recording a verdict", () => {
     expect(await recordOutcome(patched, { companyId: "co", post: postRow(raced), platforms: [], stage: "owner", outcome: "approved", contentHash: "h", via: "ui" })).toMatchObject({ recorded: true });
     const never = { ...raced.ctx, db: { ...raced.ctx.db, execute: async () => ({ rowCount: 0 }) } } as typeof raced.ctx;
     expect(await recordOutcome(never, { companyId: "co", post: postRow(raced), platforms: [], stage: "owner", outcome: "approved", contentHash: "h", via: "ui" })).toEqual({ recorded: false, round: 0 });
+  });
+});
+
+describe("delegate rows", () => {
+  const row = (outcome: "approved" | "changes", via: string, day: number, round = 1): StatRow => ({
+    post_type: "original:text", stage: "owner", outcome, round, post_id: `p${day}-${via}`, created_at: new Date(Date.UTC(2026, 9, day)).toISOString(), via,
+  });
+  const own = [row("approved", "ui", 1), row("approved", "ui", 2), row("changes", "ui", 3), row("approved", "ui", 4)];
+
+  it("a delegate approval does not extend the owner streak; a delegate send-back ends it", () => {
+    const streak = (rows: StatRow[]) => summariseOutcomes(ladderRows(rows))[0]!.streak;
+    expect(streak(own)).toBe(1);
+    expect(streak([...own, row("approved", "delegate", 5)])).toBe(1);
+    expect(streak([...own, row("changes", "delegate", 5)])).toBe(0);
+    expect(ladderRows([row("approved", "auto", 6)])).toEqual([]);
+  });
+
+  it("type counts and first-pass rate equal the fixture without delegate rows", () => {
+    const withDelegate = [...own, row("approved", "delegate", 5), row("changes", "delegate", 6)];
+    expect(summariseOutcomes(withoutDelegate(withDelegate))).toEqual(summariseOutcomes(own));
   });
 });
 

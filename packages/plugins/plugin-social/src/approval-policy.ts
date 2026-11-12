@@ -65,7 +65,7 @@ function flag(value: unknown, fallback: boolean): boolean {
  * the client, or both: a Reviewer pass alone is a check, not an approval), and
  * only a client scope can require the client. Pure.
  */
-export function normalizePolicy(scope: ClientScope, input: PolicyInput, current: ApprovalPolicy = defaultPolicy(scope)): ApprovalPolicy {
+export function normalizePolicy(scope: ClientScope, input: PolicyInput, current: ApprovalPolicy = defaultPolicy(scope), delegated = false): ApprovalPolicy {
   const requireReviewer = flag(input.requireReviewer, current.requireReviewer);
   const requireOwner = flag(input.requireOwner, current.requireOwner);
   const requireClient = flag(input.requireClient, current.requireClient);
@@ -79,6 +79,10 @@ export function normalizePolicy(scope: ClientScope, input: PolicyInput, current:
     throw new SocialError("Someone has to approve: the owner, the client, or both. A Reviewer pass is a check, not an approval.");
   }
   if (requireClient && !scope) throw new SocialError("PiB's own work has no client to approve it. Turn the client off, or set this on a client.");
+  // A delegated approver stands in for the team member, after the Reviewer's pass, and never for the client (PAR-9561).
+  if (delegated && (!requireReviewer || requireClient || !requireOwner)) {
+    throw new SocialError("This scope has a delegated approver, so the Reviewer's pass and a team member's approval stay on and the client stays off. Clear the delegated approver first.");
+  }
   return { ...current, requireReviewer, requireOwner, requireClient, linkExpiryDays: days, custom: true };
 }
 
@@ -101,12 +105,27 @@ export function stageList(stages: Stage[]): string {
   return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 }
 
+/** The scope's delegated approver as the page and the tools show it. */
+export interface PolicyDelegate {
+  agentId: string;
+  /** The agent's name; null when it could not be read. */
+  name: string | null;
+  /** False when a check fails (paused agent, scope off the allowlist, ...): a person approves then. */
+  active: boolean;
+  /** The first failed check when not active. */
+  inactiveReason: string | null;
+}
+
 /** One line saying who approves in this scope, for the page and for issue text. Pure. */
-export function policySummary(policy: ApprovalPolicy): string {
+export function policySummary(policy: ApprovalPolicy, delegate: PolicyDelegate | null = null): string {
+  if (delegate?.active && policy.requireOwner && !policy.requireClient) {
+    return `the delegated approver (${delegate.name ?? delegate.agentId}) approves${policy.requireReviewer ? ", after the Reviewer passes it" : ""}; a team member can still approve`;
+  }
   const needs = requiredStages(policy);
   const approvers = needs.filter((stage) => stage !== "reviewer");
   const who = approvers.length === 2 ? "a team member and the client both approve" : approvers[0] === "client" ? "the client approves" : "a team member approves";
-  return `${who}${policy.requireReviewer ? ", after the Reviewer passes it" : ""}${policy.custom ? "" : " (the default)"}`;
+  const idle = delegate && !delegate.active ? `; the delegated approver (${delegate.name ?? delegate.agentId}) is not acting: ${delegate.inactiveReason ?? "a check failed"}` : "";
+  return `${who}${policy.requireReviewer ? ", after the Reviewer passes it" : ""}${policy.custom ? "" : " (the default)"}${idle}`;
 }
 
 interface PolicyRow {
@@ -138,31 +157,45 @@ function fromRow(row: PolicyRow): ApprovalPolicy {
   };
 }
 
+/**
+ * The scope's policy, or the default when no row is saved. Throws when the
+ * table cannot be read: an authority check (the delegated approver) refuses
+ * then, instead of acting on the default.
+ */
+export async function getPolicyStrict(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ApprovalPolicy> {
+  const rows = await ctx.db.query<PolicyRow>(
+    `SELECT scope_key, require_reviewer, require_owner, require_client, link_expiry_days, updated_by, updated_at
+       FROM ${table(ctx, "approval_policies")} WHERE company_id = $1 AND scope_key = $2 LIMIT 1`,
+    [companyId, scopeKeyOf(scope)],
+  );
+  return rows[0] ? fromRow(rows[0]) : defaultPolicy(scope);
+}
+
 /** The scope's policy, or the default. Never throws: an unreadable table means the strictest old behaviour (the owner approves). */
 export async function getPolicy(ctx: PluginContext, companyId: string, scope: ClientScope): Promise<ApprovalPolicy> {
   try {
-    const rows = await ctx.db.query<PolicyRow>(
-      `SELECT scope_key, require_reviewer, require_owner, require_client, link_expiry_days, updated_by, updated_at
-         FROM ${table(ctx, "approval_policies")} WHERE company_id = $1 AND scope_key = $2 LIMIT 1`,
-      [companyId, scopeKeyOf(scope)],
-    );
-    return rows[0] ? fromRow(rows[0]) : defaultPolicy(scope);
+    return await getPolicyStrict(ctx, companyId, scope);
   } catch (error) {
     ctx.logger.info("Social approval policy unreadable; the owner approves", { companyId, error: error instanceof Error ? error.message : String(error) });
     return defaultPolicy(scope);
   }
 }
 
-/** Saves a policy. `by` is the person who set it (never an agent). */
+/**
+ * Saves a policy. `by` is the person who set it (never an agent). `delegated`:
+ * the scope has a delegated approver (the caller reads it, strictly), which
+ * locks the Reviewer's pass and the team member on and the client off.
+ */
 export async function savePolicy(
   ctx: PluginContext,
   companyId: string,
   target: { scope: ClientScope; clientName: string | null },
   input: PolicyInput,
   by: string,
+  delegated = false,
 ): Promise<ApprovalPolicy> {
   const current = await getPolicy(ctx, companyId, target.scope);
-  const next = normalizePolicy(target.scope, input, current);
+  const next = normalizePolicy(target.scope, input, current, delegated);
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "approval_policies")}
        (company_id, scope_key, client_kind, client_ref, client_name, require_reviewer, require_owner, require_client, link_expiry_days, updated_by, updated_at)
@@ -178,8 +211,8 @@ export async function savePolicy(
   return { ...next, updatedBy: by, updatedAt: new Date().toISOString() };
 }
 
-/** What the page and `get-approval-policy` show. */
-export function policyOut(policy: ApprovalPolicy) {
+/** What the page, `get-approval-policy` and `get-approval-status` show. Pure: the caller reads the delegate. */
+export function policyOut(policy: ApprovalPolicy, delegate: PolicyDelegate | null) {
   return {
     scope: policy.scopeKey === "own" ? null : policy.scopeKey,
     requireReviewer: policy.requireReviewer,
@@ -187,7 +220,8 @@ export function policyOut(policy: ApprovalPolicy) {
     requireClient: policy.requireClient,
     linkExpiryDays: policy.linkExpiryDays,
     custom: policy.custom,
-    summary: policySummary(policy),
+    summary: policySummary(policy, delegate),
+    delegate,
     updatedBy: policy.updatedBy,
     updatedAt: policy.updatedAt,
   };

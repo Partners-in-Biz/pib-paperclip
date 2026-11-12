@@ -1,6 +1,6 @@
 /**
  * Manifest capabilities test: verifies that every ctx method used by
- * ladder.ts, watch.ts and the pib-plugin-kit escalate function is covered
+ * ladder.ts, watch.ts, digest.ts and the pib-plugin-kit escalate function is covered
  * by the manifest's declared capabilities.
  */
 
@@ -22,6 +22,8 @@ const USED_METHODS_TO_CAPABILITIES: Record<string, PluginCapability[]> = {
   "ctx.issues.get": ["issues.read"],
   "ctx.issues.listComments": ["issue.comments.read"],
   "ctx.issues.relations.get": ["issue.relations.read"],
+  // digest.ts - the host's approval cards that wait on the owner
+  "ctx.issues.listInteractions": ["issue.interactions.read"],
 
   // ladder.ts / escalate - issue write operations
   "ctx.issues.create": ["issues.create"],

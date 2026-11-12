@@ -71,7 +71,7 @@ const post: Record<string, JsonSchema> = {
   replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>; not m.twitter.com). X only. \"\" clears."),
   quoteUrl: text("X post link to quote. X only; not with replyToUrl. \"\" clears."),
   note: text("Internal note, e.g. \"HOLD until PAR-1\"; never published. Max 500. \"\" clears."),
-  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
+  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when the post is approved.`),
   overrides: OVERRIDES,
   tags: {
     type: "array",
@@ -108,7 +108,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-connected-accounts",
     displayName: "List connected accounts",
-    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry.${OWN}`,
+    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry. \`manual: true\` marks an account with no publishing link: use it like any other, and at the publish time a person posts it by hand from the post page.${OWN}`,
     parametersSchema: schema([], { ...scope, platform: choice(ALL_PLATFORMS, "Only accounts on this platform") }),
   },
   {
@@ -219,7 +219,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "get-approval-policy",
     displayName: "Get approval policy",
-    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. Read it before you promise anyone a timeline. Only a person sets it; you cannot.${OWN}`,
+    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. \`delegate\` names the agent a person chose as the scope's delegated approver (null: none), and \`delegate.active\` says whether it may act now (\`inactiveReason\` says why not). Read it before you promise anyone a timeline. Only a person sets the policy or the delegate; you cannot.${OWN}`,
     parametersSchema: schema([], { ...scope }),
   },
   {
@@ -253,6 +253,20 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "approve-post-as-delegate",
+    displayName: "Approve post as delegate",
+    description:
+      "Delegated approver only: the agent a person named for this post's scope (Social page, Approvals, Who approves). Your yes is the owner's approval. Before you call it, read the post (get-post) and get-approval-status, and check: the Reviewer passed THIS version; the text, media and alt text match the brand and the playbook; facts, prices and dates are right; nothing promises what the client has not agreed; the time is right. Anything wrong: do not approve, return it with return-post-as-delegate and one line per problem. Refused when the post is not in review, personal, yours, created before you were named, the Reviewer's pass is missing, stale, unscored or yours, the scope asks for the client, you are the Reviewer, or anything cannot be read: then a person approves. Approving schedules the post at its proposed time and closes the review issue. Never use set-post-status to approve.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "return-post-as-delegate",
+    displayName: "Return post as delegate",
+    description:
+      "Delegated approver only: send a post in review back to draft with notes (required: one line per problem, so the Social agent can fix each). Use it when what you checked in approve-post-as-delegate's list is wrong. The post goes to draft, the review issue is handed back to the Social agent with your notes, and nothing is posted. Same refusals as approve-post-as-delegate (not the delegate, personal post, your own post, you are the Reviewer, the scope asks for the client, anything unreadable): then a person decides.",
+    parametersSchema: schema(["postId", "notes"], { postId: POST_ID, notes: text("What has to change, one line per problem (required).") }),
+  },
+  {
     name: "request-creative",
     displayName: "Request creative",
     description:
@@ -281,6 +295,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     displayName: "Schedule post",
     description: "Schedule an approved post that has no time yet. Fails if a destination would certainly fail (see validate-post).",
     parametersSchema: schema(["postId", "scheduledAt"], { postId: POST_ID, scheduledAt: text(`Publish time, ${ISO_TIME}; now or earlier publishes within 5 minutes`) }),
+  },
+  {
+    name: "unschedule-post",
+    displayName: "Unschedule post",
+    description: "Take a scheduled post back to draft so update-post works on it: body, media and accounts stay, the publish time is cleared. A reason is required; who and why are logged on the post's note. Only a scheduled post qualifies.",
+    parametersSchema: schema(["postId", "reason"], { postId: POST_ID, reason: text("Why the post is taken off the schedule") }),
   },
   {
     name: "bulk-schedule",

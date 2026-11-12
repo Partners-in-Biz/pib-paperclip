@@ -18,6 +18,8 @@ import type { PluginEvent, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { askAnsweredKey, askCardProblems, askEffectComment, askEffectKeys, emitAskAnswered, runAskEffect, type AskAnswered, type AskEffectResult } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
 import { askComment, AskError, ASK_LIMITS, describeEffect, INTERNAL_EFFECTS, parseAskInput, wakeReason, type AskEffect, type AskInput, type AskKind, type AskView } from "./ask-model.js";
+import { readDecisionRights, routeAskToSeat } from "./decision-rights.js";
+import { askText, classify, DECISION_CLASS_LABEL, DEFAULT_APPLY_HOURS, defaultAnswer, HARD_STOPS, routeAsk, type HardStopKey } from "./decision-rights-model.js";
 import { crmClient } from "./clients.js";
 import { assignableUser } from "./constants.js";
 import { getRoles } from "./db.js";
@@ -28,6 +30,18 @@ import { currentRoles, routeFromRoles } from "./roles.js";
 const TABLE = `${NAMESPACE}.asks`;
 const CLOSED = new Set(["done", "cancelled"]);
 const GONE = new Set(["terminated", "archived", "deleted"]);
+
+/** `default_policy` of an ask whose asker named a hard stop (`hard-stop:money`). */
+export const DECLARED_HARD_STOP_PREFIX = "hard-stop:";
+
+/** The hard stop an open ask is: the one its asker named, else what its words say. Null when it is none. */
+export function askHardStop(ask: Pick<AskRow, "kind" | "question" | "options" | "why" | "steps" | "issueTitle" | "clientRef" | "effect" | "defaultPolicy">, ownProducts: readonly string[] = []): HardStopKey | null {
+  const declared = ask.defaultPolicy?.startsWith(DECLARED_HARD_STOP_PREFIX) ? ask.defaultPolicy.slice(DECLARED_HARD_STOP_PREFIX.length) : null;
+  return classify(
+    { kind: ask.kind, text: askText({ question: ask.question, options: ask.options, why: ask.why, steps: ask.steps }), context: ask.issueTitle, clientRef: ask.clientRef, hasEffect: !!ask.effect, declaredHardStop: declared && declared in HARD_STOPS ? (declared as HardStopKey) : null },
+    ownProducts,
+  ).hardStop;
+}
 
 export const NO_OWNER_MESSAGE =
   "Nobody receives questions yet: this company has no owner set (Setup → Team → Who gets the daily brief). Say on the issue exactly what you need and from whom, set the issue to blocked, and carry on with other work. The Cockpit shows a health warning so the owner gets set.";
@@ -205,7 +219,7 @@ export async function insertAsk(env: Env, row: AskRow): Promise<void> {
 }
 
 /** Asking again on the same issue: the new question replaces the old one; the age counts from the first ask. */
-async function updateOpenAsk(env: Env, ask: AskRow, input: AskInput, agentId: string, runId: string | null, ownerUserId: string, now: string, defaultAfterHours?: number | null, recommended?: string | null, policyClass?: string | null): Promise<void> {
+async function updateOpenAsk(env: Env, ask: AskRow, input: AskInput, agentId: string, runId: string | null, ownerUserId: string, now: string, defaultAfterHours?: number | null, recommended?: string | null, policyClass?: string | null, mustWait = false): Promise<void> {
   // Compute candidate deadline (only if defaultAfterHours supplied); NULL keeps existing deadline unchanged
   let candidateDeadlineAt: string | null = null;
   if (defaultAfterHours) {
@@ -225,6 +239,8 @@ async function updateOpenAsk(env: Env, ask: AskRow, input: AskInput, agentId: st
       WHERE company_id = $1 AND id = $2 AND status = 'open'`,
     [ask.companyId, ask.id, input.question, JSON.stringify(input.options), input.why, input.kind, JSON.stringify(input.links), JSON.stringify(input.steps), input.client ?? ask.clientRef, input.dueBy, ownerUserId, agentId, runId, ask.askedCount + 1, now, input.effect ? JSON.stringify(input.effect) : null, defaultAfterHours ?? null, recommendedForUpdate, policyClass ?? null, candidateDeadlineAt],
   );
+  // The question changed into one that must wait for a person (a hard stop): a deadline set by an earlier version is dropped.
+  if (mustWait && !defaultAfterHours) await env.ctx.db.execute(`UPDATE ${TABLE} SET deadline_at = NULL WHERE company_id = $1 AND id = $2 AND status = 'open'`, [ask.companyId, ask.id]);
 }
 
 export async function setCommentId(env: Env, ask: Pick<AskRow, "companyId" | "id">, commentId: string | null): Promise<void> {
@@ -323,13 +339,20 @@ async function clientLabel(env: Env, companyId: string, ref: string | null): Pro
 // ---------------------------------------------------------------------------
 
 export interface AskOwnerResult {
-  askId: string;
+  /** Null when the question went to a deciding seat: no ask is stored for the owner. */
+  askId: string | null;
   issueId: string;
   identifier: string | null;
   href: string;
-  status: "asked" | "updated";
+  status: "asked" | "updated" | "routed";
   handedToOwner: boolean;
   next: string;
+  /** Set when the question was not a hard stop and went to the seat that decides its class. */
+  routedTo?: { agentId: string; name: string; decisionClass: string; decisionIssue: string };
+  /** The hard stop the question was read as, when it is one. */
+  hardStop?: HardStopKey | null;
+  /** Set when the answer applies by itself if nobody replies. */
+  autoApply?: { answer: string; at: string } | null;
 }
 
 /** The tool. Throws AskError with a message the agent can act on. */
@@ -349,6 +372,37 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
   if (!issue) throw new AskError(`Issue ${input.issueId} was not found in this company. Pass the issue you are working on (id or identifier, e.g. PIB-23).`);
   if (CLOSED.has(String(issue.status))) throw new AskError(`Issue ${issue.identifier ?? issue.id} is closed. Ask on an open issue: the one waiting for the answer.`);
   const now = env.now().toISOString();
+
+  // Decision rights: only a hard stop reaches the owner. Anything else goes to the seat that decides its class, here and now.
+  const rights = await readDecisionRights(env, companyId);
+  const route = routeAsk(
+    { kind: input.kind, text: askText({ question: input.question, options: input.options, why: input.why, steps: input.steps }), context: issue.title ?? null, clientRef: input.client, hasEffect: !!input.effect, declaredHardStop: input.hardStop },
+    rights,
+    agentId,
+  );
+  if (route.to === "seat") {
+    const [prefix, askerName] = await Promise.all([prefixOf(env, companyId), agentName(env, companyId, agentId)]);
+    const routed = await routeAskToSeat(env, { companyId, issue, ask: input, askerAgentId: agentId, askerName, route, prefix });
+    if (routed) {
+      const ref = issue.identifier ?? issue.id;
+      const decisionRef = routed.decisionIdentifier ?? routed.decisionIssueId;
+      // An open question to the owner on this issue is over: the seat decides it now.
+      const stale = await openAskForIssue(env, companyId, issue.id);
+      if (stale) await closeAsk(env, stale, { status: "resolved" }, now).catch(() => false);
+      return {
+        askId: null,
+        issueId: issue.id,
+        identifier: issue.identifier ?? null,
+        href: prefix ? `/${prefix}/issues/${ref}` : `/issues/${ref}`,
+        status: "routed",
+        handedToOwner: false,
+        routedTo: { agentId: routed.seatAgentId, name: routed.seatName, decisionClass: routed.decisionClass, decisionIssue: decisionRef },
+        hardStop: null,
+        next: `This is not one of the six hard stops, so it does not go to the owner. ${routed.seatName} decides it (${DECISION_CLASS_LABEL[routed.decisionClass]}): ${decisionRef} is open for them${routed.blocked ? ` and blocks ${ref}` : ""}. You are woken on ${ref} when ${routed.seatName} closes it; the decision is a comment on ${ref} starting DECISION. Meanwhile do the parts that do not depend on it, then end your run. Do not ask the owner about this. Only a hard stop goes to the owner: ${Object.values(HARD_STOPS).map((h) => h.text).join("; ")}. If this truly is one, ask again with hardStop set to which.`,
+      };
+    }
+  }
+
   const roles = await getRoles(env.ctx, companyId);
   const owner = assignableUser(roles?.ownerUserId ?? null);
   if (!owner) {
@@ -363,18 +417,22 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
     throw new AskError(NO_OWNER_MESSAGE);
   }
 
+  // The 24-hour rule: a question that is not a hard stop and has a recommended answer applies it when nobody replies. A hard stop never does.
+  const auto = defaultAnswer({ kind: input.kind, options: input.options, recommended: input.recommended, hasEffect: !!input.effect, hardStop: route.hardStop });
+  const defaultAfterHours = input.defaultAfterHours ?? (auto ? DEFAULT_APPLY_HOURS : null);
+  const recommended = auto ?? input.recommended;
   const existing = await openAskForIssue(env, companyId, issue.id);
   // The issue goes back to whoever worked on it: its agent when it has one, else the agent asking.
   const holder = issue.assigneeAgentId && !issue.assigneeUserId ? issue.assigneeAgentId : null;
   let ask: AskRow;
   if (existing) {
-    await updateOpenAsk(env, existing, input, agentId, run.runId ?? null, owner, now, input.defaultAfterHours, input.recommended, input.policyClass);
+    await updateOpenAsk(env, existing, input, agentId, run.runId ?? null, owner, now, defaultAfterHours, recommended, input.policyClass, !!route.hardStop);
     ask = (await getAsk(env, companyId, existing.id)) ?? existing;
   } else {
     // Calculate deadline if defaultAfterHours is supplied
     let deadlineAt: string | null = null;
-    if (input.defaultAfterHours) {
-      const deadline = new Date(Date.parse(now) + input.defaultAfterHours * 3_600_000);
+    if (defaultAfterHours) {
+      const deadline = new Date(Date.parse(now) + defaultAfterHours * 3_600_000);
       deadlineAt = deadline.toISOString();
     }
     ask = {
@@ -413,10 +471,11 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
       effectAnnouncedCount: 0,
       effectResultAt: null,
       handedBackAt: null,
-      defaultAfterHours: input.defaultAfterHours,
-      recommended: input.recommended,
+      defaultAfterHours,
+      recommended,
       defaultAppliedAt: null,
-      defaultPolicy: input.policyClass,
+      // A hard stop the asker named is kept here, so the deadline sweep never applies an answer to it.
+      defaultPolicy: input.hardStop ? `${DECLARED_HARD_STOP_PREFIX}${input.hardStop}` : input.policyClass,
       deadlineAt,
     };
     try {
@@ -425,7 +484,7 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
       // Two asks at once on the same issue: the other one won; update it instead.
       const raced = await openAskForIssue(env, companyId, issue.id);
       if (!raced) throw error;
-      await updateOpenAsk(env, raced, input, agentId, run.runId ?? null, owner, now, input.defaultAfterHours, input.recommended, input.policyClass);
+      await updateOpenAsk(env, raced, input, agentId, run.runId ?? null, owner, now, defaultAfterHours, recommended, input.policyClass, !!route.hardStop);
       ask = (await getAsk(env, companyId, raced.id)) ?? raced;
     }
   }
@@ -436,7 +495,9 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
     agentName(env, companyId, agentId),
     clientLabel(env, companyId, ask.clientRef),
   ]);
-  const body = askComment({ ask: input, agentName: returnName ?? "the agent", from: askerName, clientLabel: label, prefix, again: !!existing });
+  // Said on the card only when it will happen: the stored deadline is at least the 24 hours, and the sweep reads the same rule.
+  const autoApply = auto && ask.deadlineAt && ask.recommended === auto ? { answer: auto, at: new Date(Math.max(Date.parse(ask.deadlineAt), Date.parse(ask.askedAt) + DEFAULT_APPLY_HOURS * 3_600_000)).toISOString() } : null;
+  const body = askComment({ ask: input, agentName: returnName ?? "the agent", from: askerName, clientLabel: label, prefix, again: !!existing, autoApply: autoApply ? { answer: autoApply.answer, hours: DEFAULT_APPLY_HOURS } : null });
   const comment = await env.ctx.issues.createComment(issue.id, body, companyId, { authorAgentId: agentId });
   await setCommentId(env, ask, String((comment as { id?: unknown }).id ?? "") || null);
 
@@ -457,9 +518,13 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
     href: prefix ? `/${prefix}/issues/${ref}` : `/issues/${ref}`,
     status: existing ? "updated" : "asked",
     handedToOwner,
-    next: handedToOwner
-      ? `${ref} is with the owner now (in review) and shows first in the Cockpit's Waiting on you and the daily brief. You are woken on ${ref} with the answer. Meanwhile do the parts that do not depend on it; do not ask again unless the question changes.`
-      : `The question is posted and shows in the Cockpit's Waiting on you, but ${ref} could not be handed to the owner. Leave it as it is; you are woken on ${ref} with the answer.`,
+    hardStop: route.hardStop,
+    autoApply,
+    next:
+      (handedToOwner
+        ? `${ref} is with the owner now (in review). It reaches them in the one daily digest (16:00) and shows in the Cockpit's Waiting on you. You are woken on ${ref} with the answer. Meanwhile do the parts that do not depend on it; do not ask again unless the question changes.`
+        : `The question is posted and shows in the Cockpit's Waiting on you, but ${ref} could not be handed to the owner. Leave it as it is; you are woken on ${ref} with the answer.`) +
+      (autoApply ? ` With no reply in ${DEFAULT_APPLY_HOURS} hours your recommended answer ("${autoApply.answer}") applies by itself and you are woken with it.` : ""),
   };
 }
 
@@ -468,7 +533,7 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
 // ---------------------------------------------------------------------------
 
 /** Hand the issue back with the answer and wake the agent. `effect` is what the answer's effect did, told to the agent in the wake reason. */
-async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null): Promise<{ agentId: string | null; woke: boolean }> {
+async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null, byDefault = false): Promise<{ agentId: string | null; woke: boolean }> {
   const companyId = ask.companyId;
   let target = (await usableAgent(env, companyId, ask.returnAgentId)) ?? (await usableAgent(env, companyId, ask.agentId));
   if (!target) {
@@ -489,7 +554,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
   await env.ctx.issues.createComment(ask.issueId, `Answer recorded. Handed back to **${target.name}**, who carries on.`, companyId).catch(() => undefined);
   let woke = false;
   try {
-    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect }), idempotencyKey: `ask:${ask.id}:answered` });
+    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect, byDefault }), idempotencyKey: `ask:${ask.id}:answered` });
     woke = true;
   } catch (error) {
     env.ctx.logger.info("ask-owner: wake skipped", { issueId: ask.issueId, error: message(error) });
@@ -498,7 +563,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
     key: `ask:${ask.id}:answered`,
     kind: "ask_answered",
     at: env.now().toISOString(),
-    text: `The owner answered ${target.name}'s question on ${ref}`,
+    text: byDefault ? `${target.name}'s question on ${ref} got no reply, so the recommended answer was applied` : `The owner answered ${target.name}'s question on ${ref}`,
     href: `/issues/${ref}`,
     agentId: target.id,
   }).catch(() => false);
@@ -555,7 +620,7 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
     await startEffect(env, { ...ask, status, answer, answeredByUserId, closedAt: answeredAt }, answeredAt);
     return true;
   }
-  if (!closedIssue) await handBack(env, ask, answer);
+  if (!closedIssue) await handBack(env, ask, answer, null, source.kind === "policy");
   return true;
 }
 

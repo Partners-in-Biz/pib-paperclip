@@ -166,6 +166,8 @@ describe("verifyOutput", () => {
 });
 
 describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)", () => {
+  // Each case copies fake media and runs the pipeline against Postgres; on the loaded CI runner some take ~5 s, over vitest's default (PAR-9343).
+  vi.setConfig({ testTimeout: 30_000 });
   it("downloads inputs by their rows, compiles, runs, verifies, uploads and records the asset", async () => {
     await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4.05, audio: true }) });
     const done = await render(doc("src-a"));

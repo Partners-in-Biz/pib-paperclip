@@ -11,6 +11,7 @@ import { putToR2 } from "./r2-put.js";
 import { R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { DriveNotBoundError, type Broker, type DriveFileInfo } from "./broker.js";
 import { createBrokerForCompany, driveFolderEnsure, resolveProducerSaveProject } from "./tools.js";
+import { acquireTransferSlot } from "./transfer-slots.js";
 
 export const READ_MAX_BYTES = 5 * 1024 * 1024;
 const LIST_MAX = 200;
@@ -209,13 +210,19 @@ export async function copyAssetFileToR2(
   if (meta.size > DRIVE_TRANSFER_MAX_BYTES) {
     return { status: "too_large", hint: `This file is ${mb(meta.size)}. Drive transfers take files up to ${mb(DRIVE_TRANSFER_MAX_BYTES)}, the largest file Studio keeps.` };
   }
-  const dl = await b.broker.downloadStream(fileId);
-  if (dl.size !== null && dl.size !== meta.size) {
-    await dl.body.cancel().catch(() => undefined);
-    return { status: "size_mismatch", hint: "Drive sent a different size than it lists for this file. Try again." };
+  // Counted in the shared transfer slots (PAR-9219 C.4), never refused: a producer route keeps its behaviour.
+  const releaseSlot = acquireTransferSlot();
+  try {
+    const dl = await b.broker.downloadStream(fileId);
+    if (dl.size !== null && dl.size !== meta.size) {
+      await dl.body.cancel().catch(() => undefined);
+      return { status: "size_mismatch", hint: "Drive sent a different size than it lists for this file. Try again." };
+    }
+    const { sha256 } = await putToR2(r2PutUrl, meta.size, dl.body, { mimeType: meta.mimeType, fetchFn, onProgress: (done) => onProgress(done, meta.size) });
+    return { status: "ok", file: out(meta), size: meta.size, sha256 };
+  } finally {
+    releaseSlot();
   }
-  const { sha256 } = await putToR2(r2PutUrl, meta.size, dl.body, { mimeType: meta.mimeType, fetchFn, onProgress: (done) => onProgress(done, meta.size) });
-  return { status: "ok", file: out(meta), size: meta.size, sha256 };
 }
 
 function errorReason(e: unknown): { reason: string; hint: string } {

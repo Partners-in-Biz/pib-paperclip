@@ -1,3 +1,4 @@
+import { guardChildStdin } from "@paperclipai/adapter-utils";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -44,6 +45,9 @@ import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
+import type { StorageService } from "../storage/types.js";
+import { createRunResponseCapture } from "./run-response-capture.js";
+import { binarySpillRunScope, findBinarySpillCandidates, spillBinaryLeaves } from "./tool-gateway-binary-spill.js";
 import {
   assertValidConnectionAuthorizationPayload,
   connectionAuthorizationTargetKey,
@@ -1214,9 +1218,38 @@ export function createToolGatewayService(
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
     now?: () => number;
+    /** Test seam for run-scoped binary result files. */
+    storage?: StorageService;
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
+  /**
+   * Saves oversized binary result leaves as files of the session's running
+   * run (PAR-9905). No run, another state or an approved execution: the
+   * result is unchanged and `validateToolContent` withholds as before.
+   */
+  async function spillBinaryResult(session: ToolGatewaySession, result: unknown, approvedAction: boolean, invocationId: string) {
+    const unchanged = { value: result, savedFiles: [] };
+    const scope = binarySpillRunScope(session, approvedAction);
+    if (!scope || !asRecord(result)) return unchanged;
+    const { companyId, agentId, runId } = scope;
+    const candidates = findBinarySpillCandidates(result);
+    if (!candidates.length) return unchanged;
+    const runOfSession = and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId));
+    const [current] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(runOfSession).limit(1);
+    if (!current || !ACTIVE_GATEWAY_RUN_STATUSES.has(current.status)) return unchanged;
+    const authorize = async (tx: Db) => {
+      const [run] = await tx.select().from(heartbeatRuns).where(runOfSession).for("update");
+      if (!run || !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status)) {
+        throw new ToolGatewayHttpError(403, "Run is not active", "run_inactive");
+      }
+      return { run };
+    };
+    return spillBinaryLeaves(result, candidates, (bytes, contentType) => createRunResponseCapture({
+      db, storage: options.storage, companyId, agentId, runId, issueId: null, source: "tool_gateway", authorize,
+    }).captureOnce(bytes, contentType, bytes.length), error => logger.warn({ err: error, invocationId }, "tool gateway binary result capture failed"));
+  }
+
   function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
     { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
     // Approved actions retain historical run attribution, not that run's lifetime.
@@ -5409,6 +5442,39 @@ export function createToolGatewayService(
         reject: (error: Error) => void;
       }
     >();
+    let exited = false;
+    let exitedCode: number | null = null;
+    let exitedSignal: NodeJS.Signals | null = null;
+    const exitedError = (code: number | null, signal: NodeJS.Signals | null) =>
+      new ToolGatewayHttpError(
+        502,
+        "Local stdio MCP command exited before responding",
+        "local_stdio_process_exited",
+        {
+          connectionId: input.connection.id,
+          catalogEntryId: input.entry?.id ?? null,
+          code,
+          signal,
+          stderr,
+        },
+      );
+    guardChildStdin(
+      child,
+      "tool-gateway:stdio-mcp",
+      (error) => {
+        const gatewayError = new ToolGatewayHttpError(
+          502,
+          "Local stdio MCP command stdin failed",
+          "local_stdio_stdin_failed",
+          { connectionId: input.connection.id, message: error.message },
+        );
+        for (const { reject: rejectPending } of pending.values()) {
+          rejectPending(gatewayError);
+        }
+        pending.clear();
+      },
+      { includePipeClosed: true },
+    );
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       for (const { reject } of pending.values()) {
@@ -5497,25 +5563,15 @@ export function createToolGatewayService(
         reject(gatewayError);
       });
       child.on("exit", (code, signal) => {
+        exited = true;
+        exitedCode = code;
+        exitedSignal = signal;
         if (pending.size === 0) {
           resolve();
           return;
         }
         for (const { reject: rejectPending } of pending.values()) {
-          rejectPending(
-            new ToolGatewayHttpError(
-              502,
-              "Local stdio MCP command exited before responding",
-              "local_stdio_process_exited",
-              {
-                connectionId: input.connection.id,
-                catalogEntryId: input.entry?.id ?? null,
-                code,
-                signal,
-                stderr,
-              },
-            ),
-          );
+          rejectPending(exitedError(code, signal));
         }
         pending.clear();
         resolve();
@@ -5524,9 +5580,11 @@ export function createToolGatewayService(
     const request = (method: string, params: Record<string, unknown>) => {
       const id = nextId;
       nextId += 1;
+      if (exited) return Promise.reject(exitedError(exitedCode, exitedSignal));
       const promise = new Promise<unknown>((resolve, reject) => {
         pending.set(id, { resolve, reject });
       });
+      if (!child.stdin.writable) return promise;
       child.stdin.write(
         `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
       );
@@ -5538,9 +5596,11 @@ export function createToolGatewayService(
         capabilities: {},
         clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
       });
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
-      );
+      if (child.stdin.writable) {
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
+        );
+      }
       return await request(
         input.protocolMethod ?? "tools/call",
         input.protocolParams ?? {
@@ -11272,8 +11332,9 @@ export function createToolGatewayService(
                 executionTimeoutMs,
               ));
 
+        const spilled = await spillBinaryResult(session, result, Boolean(input.approvedActionRequestId), invocationId);
         const resultValidation = await validateToolContent({
-          value: result,
+          value: spilled.value,
           direction: "result",
           sensitiveMode: "redact",
           promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, { approvedAction: Boolean(input.approvedActionRequestId), signal: input.signal }),
@@ -11383,7 +11444,9 @@ export function createToolGatewayService(
           status: "completed" as const,
           tool: virtualToolName ?? tool.name,
           targetTool: virtualToolName ? tool.name : undefined,
-          result: resultValidation.value,
+          result: spilled.savedFiles.length
+            ? { ...asRecord(resultValidation.value), savedFiles: spilled.savedFiles }
+            : resultValidation.value,
         };
       } catch (err) {
         const normalizedError =

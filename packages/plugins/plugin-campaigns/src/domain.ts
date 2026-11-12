@@ -46,6 +46,13 @@ export interface CampaignDraft {
   launchedAt?: string | null;
   /** Why the last launch on approval failed (cleared on a launch). */
   launchError?: string | null;
+  /** Where the client said yes to this copy (a link to the comment or email), who recorded it and when. Cleared by an edit that cancels the approval. */
+  clientYesRef?: string | null;
+  clientYesBy?: string | null;
+  clientYesAt?: string | null;
+  /** Who a launch would have enrolled when approval was requested: the count and a hash of the sorted contact ids. */
+  approvalAudienceCount?: number | null;
+  approvalAudienceHash?: string | null;
 }
 
 export const CAMPAIGN_DELIVERIES = ["issue", "email", "auto"] as const;
@@ -507,16 +514,17 @@ export function campaignClientSummary(counts: { total: number; active: number; e
 
 /**
  * The arm a new enrollment gets: the declared winner, else an even split by
- * a stable hash of campaign and contact when any step has a B version, else A.
+ * a stable hash of campaign and recipient id when any step has a B version, else A.
+ * The id is hashed as the enrollment stores it, so a `member:` id splits the same way.
  */
 export function pickVariant(
   campaign: Pick<CampaignDraft, "id" | "winnerVariant">,
   steps: Array<Pick<CampaignStepDraft, "variant">>,
-  contactId: string,
+  recipientId: string,
 ): "a" | "b" {
   if (campaign.winnerVariant) return campaign.winnerVariant;
   if (!steps.some((step) => step.variant === "b")) return "a";
-  const byte = createHash("sha256").update(`${campaign.id}:${contactId}`).digest()[0]!;
+  const byte = createHash("sha256").update(`${campaign.id}:${recipientId}`).digest()[0]!;
   return byte % 2 === 0 ? "a" : "b";
 }
 

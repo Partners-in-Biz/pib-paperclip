@@ -2,7 +2,7 @@
  * What approval does to a post's time.
  *
  * A draft carries a proposed publish time (`scheduled_at` while it is in
- * draft or review). When a person approves it:
+ * draft or review). When it is approved (by a person or the scope's delegated approver):
  * - the time is still ahead and every destination passes `validate-post` →
  *   the post goes straight to `scheduled` at that time;
  * - otherwise (no time, the time has passed, or a destination fails) it stays

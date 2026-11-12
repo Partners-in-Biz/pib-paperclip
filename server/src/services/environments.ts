@@ -1,4 +1,5 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { preserveSshRunLeaseFacts } from "./ssh-run-lease.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
@@ -1893,7 +1894,7 @@ export function environmentService(db: Db) {
         await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: id });
         return tx.update(environmentLeases)
         .set({
-          metadata: preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata)),
+          metadata: preserveSshRunLeaseFacts(lease.metadata, preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata))),
           lastUsedAt: new Date(),
           updatedAt: new Date(),
         })

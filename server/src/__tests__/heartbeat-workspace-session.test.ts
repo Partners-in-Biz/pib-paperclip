@@ -2845,6 +2845,22 @@ describe("effective run session config freshness", () => {
     expect(freshness(await metadata("/replacement-controller", "sha256:entry-v1", "skill-version-2")).changedCategories).toContain("runtimeSkills");
   });
 
+  it("leaves the config fingerprint unchanged by skillId on versioned and unversioned skill entries", async () => {
+    const fingerprint = async (skillId?: string) => {
+      const id = skillId ? { skillId } : {};
+      const runtimeSkills = [
+        { key: "acme/deploy", runtimeName: "deploy--0123456789", versionId: "v1", currentVersionId: "v1",
+          source: "/skills/__versions__/s1/v1", sourceStatus: "available", ...id },
+        { key: "acme/local", runtimeName: "local--0123456789", versionId: null, currentVersionId: null,
+          source: "/repo/skills/local", sourceStatus: "available", ...id },
+      ];
+      const metadata = await buildSessionConfigMetadata({
+        effectiveAdapterConfig: { command: "codex", paperclipRuntimeSkills: runtimeSkills }, runtimeSkills });
+      return metadata.fingerprint;
+    };
+    expect(await fingerprint("s1")).toBe(await fingerprint());
+  });
+
   it("retains a legacy managed-instruction session after verified import removes the old home", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "legacy-instruction-session-"));
     const body = "Preserve this exact agent identity and instructions.\n";

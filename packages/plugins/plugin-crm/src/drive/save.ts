@@ -5,11 +5,17 @@ import { relative } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, isSha256Hex, normalizeUrl, safeFetchBytes } from "@partnersinbiz/pib-plugin-kit";
 import type { Viewer } from "../domain.js";
-import { BrokerError, DriveNotBoundError } from "./broker.js";
+import { BrokerError, DriveNotBoundError, type Broker } from "./broker.js";
 import { r2Chunks, R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
 import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
 import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
+import { acquireTransferSlot } from "./transfer-slots.js";
+import { openRunFile, resolveRunRoots, type RunScopeRefusal } from "./run-scope.js";
+import { fileChunks, hashFile, sameFile } from "./file-stream.js";
+import { DriveJobFailure, TEXTS, saveJobKey, startDriveJob } from "./jobs.js";
+import type { FileHandle } from "node:fs/promises";
+import type { Stats } from "node:fs";
 
 const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo", "social", "campaigns", "ads", "ops"] as const;
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
@@ -62,8 +68,13 @@ function tooLargeHint(size: number): string {
   return `This file is ${mb(size)} MB. Drive transfers take files up to ${mb(DRIVE_TRANSFER_MAX_BYTES)} MB, the largest file Studio keeps.`;
 }
 
+/** Row 1 of the path decision table (PAR-9219 A): a file over 5 MB that only the old root holds. */
+export const OVER_5MB_PATH_HINT = "Over 5 MB, Drive saves by path take files from this run's workspace or $PAPERCLIP_TMPDIR, up to 200 MB.";
+const STARTED_HINT = "The file is being saved in the background. Call drive_transfer_status with this jobId every 20-30 s until it is done.";
+const PATH_HINT = "Path not allowed: source must be a file inside the permitted drive root";
+
 export interface SaveDriveFileResult {
-  status: "saved" | "drive_not_bound" | "invalid_name" | "invalid_input" | "invalid_kind" | "too_large" | "sha_mismatch" | "broker_error" | "project_not_found" | "path_not_allowed" | "fetch_failed" | "invalid_subfolder";
+  status: "saved" | "started" | "busy" | "drive_not_bound" | "invalid_name" | "invalid_input" | "invalid_kind" | "too_large" | "sha_mismatch" | "broker_error" | "project_not_found" | "path_not_allowed" | "fetch_failed" | "invalid_subfolder";
   driveFileId?: string;
   url?: string;
   name?: string;
@@ -73,9 +84,23 @@ export interface SaveDriveFileResult {
   code?: string;
   retryable?: boolean;
   hint?: string;
+  /** A save by path over 5 MB (PAR-9219): the background transfer to ask drive_transfer_status about. */
+  jobId?: string;
+  bytesTotal?: number;
+  alreadyRunning?: true;
 }
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
+  // A run file's handle is closed here on every return, unless a job took it over (the job closes it).
+  const held: { fh?: FileHandle; handedOff?: boolean } = {};
+  try {
+    return await saveDriveFileInner(ctx, viewer, input, held, opts);
+  } finally {
+    if (held.fh && !held.handedOff) await held.fh.close().catch(() => undefined);
+  }
+}
+
+async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: { fh?: FileHandle; handedOff?: boolean }, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
@@ -131,17 +156,18 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   }
 
   let bytes: Uint8Array = new Uint8Array(0);
+  // A file over 5 MB in the calling run's own workspace or scratch dir (PAR-9219 A rows 2-3): its open handle goes to a job.
+  let local: { fh: FileHandle; stat: Stats } | null = null;
   if (!large) try {
     if (contentBase64) {
       bytes = new Uint8Array(Buffer.from(contentBase64, "base64"));
     } else if (publicUrl) {
       bytes = await fetchPublicBytes(ctx, publicUrl);
     } else {
-      const fileBytes = await loadFileFromPath(filePath!, opts?.allowedRoots);
-      if (fileBytes === null) {
-        return { status: "path_not_allowed", hint: "Path not allowed: source must be a file inside the permitted drive root" };
-      }
-      bytes = fileBytes;
+      const picked = await pathSource(ctx, viewer, filePath!, opts?.allowedRoots);
+      if ("status" in picked) return picked;
+      if ("bytes" in picked) bytes = picked.bytes;
+      else held.fh = (local = picked).fh;
     }
   } catch (e) {
     if (e instanceof Error && e.message === "too_large") {
@@ -161,12 +187,12 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
     return { status: "invalid_input", hint: "Failed to load file from path" };
   }
 
-  if (!large && bytes.byteLength > MAX_FILE_BYTES) {
+  if (!large && !local && bytes.byteLength > MAX_FILE_BYTES) {
     return { status: "too_large" };
   }
 
-  const computedSha256 = large ? inputSha256!.toLowerCase() : createHash("sha256").update(bytes).digest("hex");
-  if (!large && inputSha256 && inputSha256.toLowerCase() !== computedSha256) {
+  const computedSha256 = large ? inputSha256!.toLowerCase() : local ? "" : createHash("sha256").update(bytes).digest("hex");
+  if (!large && !local && inputSha256 && inputSha256.toLowerCase() !== computedSha256) {
     return { status: "sha_mismatch", hint: `Expected ${inputSha256}, got ${computedSha256}` };
   }
 
@@ -223,9 +249,14 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
   }
 
   const uploadFolderId = resolvedSubfolderId ?? folderId;
+  if (local) {
+    held.handedOff = true;
+    return startLocalSave(ctx, viewer, input, local, { broker, uploadFolderId, savedSubfolder, subfolder });
+  }
+
   const existing = await findDriveFile(ctx, companyId, { folderId: uploadFolderId, name, sha256: computedSha256 });
   if (existing) {
-    return { status: "saved", driveFileId: existing.id, url: stripSignedUrl(existing.webUrl), name: existing.name, sha256: existing.sha256, subfolder: existing.subfolder, duplicate: true };
+    return savedResult(existing, true);
   }
 
   let uploadResult;
@@ -234,11 +265,17 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
       if (!broker.uploadFileStream) {
         return { status: "broker_error", code: "unsupported", retryable: false, hint: "This Drive connection cannot take files over 5 MB." };
       }
-      uploadResult = await broker.uploadFileStream({
-        name, mimeType, parentFolderId: uploadFolderId, size: large.size, sha256: computedSha256,
-        chunks: r2Chunks(large.url, large.size, opts?.r2FetchFn ? { fetchFn: opts.r2FetchFn } : {}),
-        onProgress: input.onProgress ? (done) => input.onProgress!(done, large!.size) : undefined,
-      });
+      // Counted in the shared transfer slots (PAR-9219 C.4), never refused: a producer route keeps its behaviour.
+      const releaseSlot = acquireTransferSlot();
+      try {
+        uploadResult = await broker.uploadFileStream({
+          name, mimeType, parentFolderId: uploadFolderId, size: large.size, sha256: computedSha256,
+          chunks: r2Chunks(large.url, large.size, opts?.r2FetchFn ? { fetchFn: opts.r2FetchFn } : {}),
+          onProgress: input.onProgress ? (done) => input.onProgress!(done, large!.size) : undefined,
+        });
+      } finally {
+        releaseSlot();
+      }
     } else {
       uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
     }
@@ -260,13 +297,107 @@ export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: S
       companyId, projectId, kind: fileKind, folderId: uploadFolderId, name, sha256: computedSha256,
       driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null, subfolder: savedSubfolder,
     });
-    return { status: "saved", driveFileId: inserted.id, url: stripSignedUrl(inserted.webUrl), name: inserted.name, sha256: inserted.sha256, subfolder: inserted.subfolder, duplicate: false };
+    return savedResult(inserted, false);
   } catch (e) {
     return { status: "broker_error", code: "db_error", retryable: false, hint: "Failed to store file metadata" };
   }
 }
 
-async function loadFileFromPath(filePath: string, allowedRootsInput?: string[]): Promise<Uint8Array | null> {
+const savedResult = (f: { id: string; webUrl: string; name: string; sha256: string; subfolder: string | null }, duplicate: boolean): SaveDriveFileResult =>
+  ({ status: "saved", driveFileId: f.id, url: stripSignedUrl(f.webUrl), name: f.name, sha256: f.sha256, subfolder: f.subfolder, duplicate });
+
+/**
+ * Where a `path` file is read from (PAR-9219 A decision table). The old root is checked first, reading nothing. The
+ * calling run's roots are read only when that refuses or the file is over 5 MB, and only for a call with a runId:
+ * a call without one never reads the database and gets today's result.
+ */
+async function pathSource(ctx: PluginContext, viewer: Viewer, filePath: string, allowedRoots?: string[]): Promise<SaveDriveFileResult | { bytes: Uint8Array } | { fh: FileHandle; stat: Stats }> {
+  let old: { size: number } | null = null;
+  let oldError: unknown = null;
+  try {
+    old = await oldRootFile(filePath, allowedRoots);
+  } catch (e) {
+    oldError = e;
+  }
+  if (old && old.size <= MAX_FILE_BYTES) {
+    // Rows 1-2, up to 5 MB: unchanged. Errors are the caller's to map, as today.
+    const fileBytes = await loadFileFromPath(filePath, allowedRoots);
+    return fileBytes === null ? { status: "path_not_allowed", hint: PATH_HINT } : { bytes: fileBytes };
+  }
+  const refused = (r: RunScopeRefusal): SaveDriveFileResult => (old ? { status: "too_large", hint: OVER_5MB_PATH_HINT } : { status: "path_not_allowed", hint: r.hint });
+  if (!viewer.runId) {
+    if (oldError) throw oldError;
+    return old ? { status: "too_large", hint: OVER_5MB_PATH_HINT } : { status: "path_not_allowed", hint: PATH_HINT };
+  }
+  const run = await resolveRunRoots(ctx, viewer);
+  if (!run.ok) return refused(run);
+  const file = await openRunFile(run.roots, filePath);
+  if (!file.ok) return refused(file);
+  const size = file.stat.size;
+  if (size > MAX_FILE_BYTES && size <= DRIVE_TRANSFER_MAX_BYTES) return { fh: file.fh, stat: file.stat };
+  try {
+    if (size > DRIVE_TRANSFER_MAX_BYTES) return { status: "too_large", hint: tooLargeHint(size) };
+    let bytes: Uint8Array = new Uint8Array(0);
+    for await (const chunk of fileChunks(file.fh, size, MAX_FILE_BYTES)) bytes = chunk;
+    return { bytes };
+  } catch {
+    return { status: "invalid_input", hint: "Failed to load file from path" };
+  } finally {
+    await file.fh.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Rows 2-3 over 5 MB: a background job on the open handle. Pass 1 hashes it, pass 2 streams it to a Google resumable
+ * upload. fstat is compared before pass 1, after pass 1 and after pass 2's last read (before its last chunk is sent),
+ * and the broker hashes pass 2 again, so a file that changes fails as `file_changed` and no Drive file is made.
+ * Synchronous up to `startDriveJob`, which owns the handle from then on.
+ */
+function startLocalSave(
+  ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, local: { fh: FileHandle; stat: Stats },
+  target: { broker: { uploadFileStream?: Broker["uploadFileStream"] }; uploadFolderId: string; savedSubfolder: string | null; subfolder: string | undefined },
+): SaveDriveFileResult {
+  const { fh, stat } = local;
+  const { size } = stat;
+  const { companyId, projectId, fileKind, name, mimeType } = input;
+  const check = async () => {
+    if (!sameFile(stat, await fh.stat())) throw new DriveJobFailure("file_changed", TEXTS.fileChanged);
+  };
+  async function* chunks(): AsyncGenerator<Uint8Array> {
+    let read = 0;
+    for await (const chunk of fileChunks(fh, size)) {
+      read += chunk.byteLength;
+      if (read === size) await check();
+      yield chunk;
+    }
+  }
+  const started = startDriveJob({ companyId, agentId: viewer.agentId, runId: viewer.runId ?? null }, {
+    kind: "save",
+    key: saveJobKey(companyId, projectId, target.subfolder, name),
+    bytesTotal: size,
+    logger: ctx.logger,
+    cleanup: () => fh.close(),
+    work: async (progress) => {
+      await check();
+      const sha256 = await hashFile(fh, size);
+      await check();
+      if (input.sha256 && input.sha256.toLowerCase() !== sha256) throw new DriveJobFailure("sha_mismatch", "The file's sha256 is not the one you gave.");
+      const existing = await findDriveFile(ctx, companyId, { folderId: target.uploadFolderId, name, sha256 });
+      if (existing) return savedResult(existing, true);
+      if (!target.broker.uploadFileStream) throw new DriveJobFailure("unsupported", "This Drive connection cannot take files over 5 MB.");
+      const uploaded = await target.broker.uploadFileStream({ name, mimeType, parentFolderId: target.uploadFolderId, size, sha256, chunks: chunks(), onProgress: progress });
+      const { file } = await upsertDriveFile(ctx, {
+        companyId, projectId, kind: fileKind, folderId: target.uploadFolderId, name, sha256,
+        driveFileId: uploaded.fileId, webUrl: uploaded.webViewLink, sourcePlugin: null, subfolder: target.savedSubfolder,
+      });
+      return savedResult(file, false);
+    },
+  });
+  return started.status === "busy" ? started : { ...started, hint: STARTED_HINT };
+}
+
+/** Today's old-root check, reading nothing: the file's real path and size, or null when it is outside every root. */
+async function oldRootFile(filePath: string, allowedRootsInput?: string[]): Promise<{ resolved: string; size: number } | null> {
   let allowedRoots = allowedRootsInput;
   if (!allowedRoots) {
     const envRoots = process.env.PIB_DRIVE_ALLOWED_ROOTS || "/home/paperclip/.paperclip/instances/default/companies";
@@ -296,7 +427,18 @@ async function loadFileFromPath(filePath: string, allowedRootsInput?: string[]):
 
     const stat = statSync(resolved);
     if (!stat.isFile()) throw new Error("Not a regular file");
-    if (stat.size > MAX_FILE_BYTES) throw new Error("too_large");
+    return { resolved, size: stat.size };
+  } catch (e) {
+    throw e;
+  }
+}
+
+async function loadFileFromPath(filePath: string, allowedRootsInput?: string[]): Promise<Uint8Array | null> {
+  try {
+    const found = await oldRootFile(filePath, allowedRootsInput);
+    if (!found) return null;
+    const { resolved } = found;
+    if (found.size > MAX_FILE_BYTES) throw new Error("too_large");
 
     const { readFile } = await import("node:fs/promises");
     const buffer = await readFile(resolved);

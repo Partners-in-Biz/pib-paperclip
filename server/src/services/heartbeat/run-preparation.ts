@@ -130,6 +130,10 @@ export const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 
+export const UNBLOCK_ACTION_CONTEXT_KEY = "unblockAction";
+
+const MAX_UNBLOCK_ACTION_CHARS = 2_000;
+
 export const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 
 export const PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY =
@@ -1722,6 +1726,14 @@ export function enrichWakeContextSnapshot(input: {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
+  // PAR-9390: the unblock owner's action travels from the wake payload into
+  // the run context; buildPaperclipWakePayload copies it into paperclipWake.
+  // Only the payload of an unblock wake may set it.
+  delete contextSnapshot[UNBLOCK_ACTION_CONTEXT_KEY];
+  const unblockAction = readNonEmptyString(payload?.["action"]);
+  if (reason === "issue_unblock_requested" && unblockAction) {
+    contextSnapshot[UNBLOCK_ACTION_CONTEXT_KEY] = unblockAction.trim().slice(0, MAX_UNBLOCK_ACTION_CHARS);
+  }
 
   return {
     contextSnapshot,
@@ -2718,6 +2730,7 @@ export async function buildPaperclipWakePayload(input: {
     : [];
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    unblockOwnerAction: readNonEmptyString(input.contextSnapshot[UNBLOCK_ACTION_CONTEXT_KEY]),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,

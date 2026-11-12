@@ -10,6 +10,7 @@ import { actorId, num, reqStr, SeoError, errorMessage, type Actor, type Env, typ
 import { ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
 import { APPROVAL_VALID_DAYS } from "../constants.js";
 import { assertWritable, loadSprintContext } from "./context.js";
+import { loadSeoConfig } from "../config.js";
 import { commentOn } from "./issues.js";
 
 export const SIGNOFF_EVENT = "site.signoff";
@@ -51,8 +52,13 @@ export async function liftWriteLock(env: Env, sprint: Pick<db.Sprint, "companyId
  * statement time is at or before the snapshot, so a sync that starts after a commit (an undo) has a later seq and sees the
  * commit (amended Q13). An empty set is the close. What was sent is recorded in `apply_windows` for the 5-minute job. The
  * board's whole-site grant (approveSiteWrites) is separate and untouched. Returns the pages sent.
+ *
+ * PAR-9493 T1: open page apply grants on the site's tasks are a second source (same task and issue rules). An agent's grant counts
+ * only while the agent is in `signoffDelegateAgentIds`; a failed config read is the empty list, so agent grants fail closed and
+ * emptying the list closes every agent-opened window at the next sync. A person's grant (no agent id) always counts.
  */
 export async function syncSiteWindow(env: Env, companyId: string, siteId: string, by: string): Promise<{ pages: string[]; until: string | null; seq: string }> {
+  const delegates = await delegateAgentIds(env, companyId);
   // One row even when the set is empty (the LEFT JOIN on a one-row select), so the close carries a seq too.
   const rows = await env.ctx.db.query(
     `SELECT w.page_url, w.apply_until, o.seq
@@ -62,8 +68,14 @@ export async function syncSiteWindow(env: Env, companyId: string, siteId: string
            JOIN ${t("sprint_tasks")} k ON k.company_id = p.company_id AND k.id = p.task_id
           WHERE p.company_id = $1 AND s.site_id = $2 AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now()
             AND COALESCE(k.issue_status, '') NOT IN ('done', 'cancelled') AND k.status NOT IN ('done', 'skipped', 'na')
+         UNION ALL
+         SELECT g.page_url, g.apply_until FROM ${t("page_apply_grants")} g
+           JOIN ${t("sprint_tasks")} k ON k.company_id = g.company_id AND k.id = g.task_id
+          WHERE g.company_id = $1 AND g.site_id = $2 AND g.revoked_at IS NULL AND g.apply_until > now()
+            AND COALESCE(k.issue_status, '') NOT IN ('done', 'cancelled') AND k.status NOT IN ('done', 'skipped', 'na')
+            AND (g.granted_by_agent_id IS NULL OR g.granted_by_agent_id IN (SELECT jsonb_array_elements_text($3::jsonb)))
        ) w ON true`,
-    [companyId, siteId],
+    [companyId, siteId, JSON.stringify(delegates)],
   );
   const open = rows.filter((r) => r.page_url != null);
   const pages = [...new Set(open.map((r) => normalisePageUrl(String(r.page_url))).filter((u): u is string => u !== null))].sort();
@@ -84,6 +96,16 @@ export async function syncSiteWindow(env: Env, companyId: string, siteId: string
   return { pages, until, seq };
 }
 
+/** The company's sign-off delegate agents (host settings form). A failed read is the empty list (fail closed). */
+export async function delegateAgentIds(env: Env, companyId: string): Promise<string[]> {
+  try {
+    return (await loadSeoConfig(env.ctx, companyId)).config.signoffDelegateAgentIds;
+  } catch (error) {
+    env.ctx.logger.info("SEO config read failed; agent page grants are not counted", { companyId, error: errorMessage(error) });
+    return [];
+  }
+}
+
 /** syncSiteWindow for the sprint's site. A sprint without a site id has no lock to open, so nothing is sent (null). */
 export async function syncApplyWindow(env: Env, sprint: Pick<db.Sprint, "companyId" | "siteId">, by: string) {
   if (!sprint.siteId) return null;
@@ -94,14 +116,18 @@ export async function syncApplyWindow(env: Env, sprint: Pick<db.Sprint, "company
  * The 5-minute backstop. It re-sends the window of every site whose last sent window was open or closed under an hour ago (from
  * `apply_windows`, so an undone last page, a lost undo-path sync or a restart still gets its close), and of every site with an
  * approved, handed-over preview whose window is open or ended under an hour ago (a hand-over whose emit never went out). So a
- * task closed without an `issue.updated` reaching us, or an `apply_until` that passed, still closes it.
+ * task closed without an `issue.updated` reaching us, or an `apply_until` that passed, still closes it. Grant sites count the same
+ * way (open or ended under an hour ago), and so does a grant revoked under an hour ago, so a lost revoke emit is re-sent.
  */
 export async function syncApplyWindows(env: Env): Promise<number> {
   const sites = await env.ctx.db.query(
     `SELECT company_id, site_id FROM ${t("apply_windows")} WHERE is_open OR closed_at > now() - interval '1 hour'
      UNION
      SELECT p.company_id, s.site_id FROM ${t("previews")} p JOIN ${t("sprints")} s ON s.company_id = p.company_id AND s.id = p.sprint_id
-      WHERE s.site_id IS NOT NULL AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now() - interval '1 hour'`,
+      WHERE s.site_id IS NOT NULL AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now() - interval '1 hour'
+     UNION
+     SELECT company_id, site_id FROM ${t("page_apply_grants")}
+      WHERE (revoked_at IS NULL AND apply_until > now() - interval '1 hour') OR revoked_at > now() - interval '1 hour'`,
   );
   let sent = 0;
   for (const row of sites) {
@@ -117,13 +143,17 @@ export async function syncApplyWindows(env: Env): Promise<number> {
 
 /**
  * A task issue changed (done, cancelled, reopened): re-send the window of each site where its task has an open approved preview.
- * The task's current issue counts as well as the preview's own (a long thread moves the task to a continuation issue).
+ * The task's current issue counts as well as the preview's own (a long thread moves the task to a continuation issue). A site
+ * with an open page grant on a task whose issue is this one is re-sent too.
  */
 export async function syncWindowForIssue(env: Env, companyId: string, issueId: string): Promise<number> {
   const sites = await env.ctx.db.query(
     `SELECT DISTINCT s.site_id FROM ${t("previews")} p JOIN ${t("sprints")} s ON s.company_id = p.company_id AND s.id = p.sprint_id
        LEFT JOIN ${t("sprint_tasks")} k ON k.company_id = p.company_id AND k.id = p.task_id
-      WHERE p.company_id = $1 AND (p.issue_id = $2 OR k.issue_id = $2) AND s.site_id IS NOT NULL AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now()`,
+      WHERE p.company_id = $1 AND (p.issue_id = $2 OR k.issue_id = $2) AND s.site_id IS NOT NULL AND p.status = 'approved' AND p.handed_at IS NOT NULL AND p.apply_until > now()
+     UNION
+     SELECT g.site_id FROM ${t("page_apply_grants")} g JOIN ${t("sprint_tasks")} k ON k.company_id = g.company_id AND k.id = g.task_id
+      WHERE g.company_id = $1 AND k.issue_id = $2 AND g.revoked_at IS NULL AND g.apply_until > now()`,
     [companyId, issueId],
   );
   for (const row of sites) await syncSiteWindow(env, companyId, String(row.site_id), `seo:issue:${issueId}`);

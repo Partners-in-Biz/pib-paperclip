@@ -1862,6 +1862,56 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
   });
 
+  it("fails a local stdio MCP call at once when the child exits after initialize, with no uncaught stdin error", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const localTool = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "local-exits",
+      toolName: "echo",
+      stdioScript: `
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "exits", version: "0.0.0" } } }) + "\\n", () => process.exit(0));
+  }
+});
+`,
+    });
+    const expectedName = expectedConnectedToolName({
+      applicationKey: "local-exits",
+      connectionId: localTool.connection.id,
+      toolName: "echo",
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: localTool.catalogEntry.id,
+    });
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown) => { uncaught.push(error); };
+    process.on("uncaughtException", onUncaught);
+    const startedAt = Date.now();
+    let outcome: unknown;
+    try {
+      outcome = await gateway.executeTool({ sessionToken: session.token, tool: expectedName, parameters: { message: "x" } })
+        .catch((error: unknown) => ({ rejected: error }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(uncaught).toEqual([]);
+    expect(JSON.stringify(outcome)).toMatch(/local_stdio_process_exited|exited before responding/);
+  });
+
   it("passes only approved env values to local stdio MCP processes", async () => {
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://server-secret.example/paperclip";

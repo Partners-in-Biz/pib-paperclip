@@ -55,6 +55,7 @@ export * from "./drive.js";
 export * from "./drive-transfer.js";
 export * from "./drive-read.js";
 export * from "./brand-kit.js";
+export * from "./brand-extract.js";
 export * from "./preferences.js";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";

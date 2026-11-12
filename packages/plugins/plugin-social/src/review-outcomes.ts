@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, type ClientScope, formatOf } from "@partnersinbiz/pib-plugin-kit";
 import { scopeOfRow } from "./clients.js";
+import { ladderDelegation } from "./approval-delegate.js";
 import { getPolicy } from "./approval-policy.js";
 import { AUTO_APPROVE_STREAK, autoApprovalDecision } from "./autonomy.js";
 import { postMedia, table, type PostRow } from "./db.js";
@@ -64,7 +65,7 @@ export interface RecordOutcomeInput {
   outcome: Outcome;
   contentHash: string | null;
   /** How it was recorded: `tool` (an agent), `ui` (a person on the page), `link` (the client's approval page), `recorded` (a person on the client's behalf). */
-  via: "tool" | "ui" | "link" | "recorded" | "auto";
+  via: "tool" | "ui" | "link" | "recorded" | "auto" | "delegate" | "unscored";
   actor?: OutcomeActor;
   note?: string | null;
 }
@@ -113,6 +114,7 @@ export interface OutcomeRow {
   content_hash: string | null;
   note: string | null;
   via: string;
+  actor_agent_id: string | null;
   actor_name: string | null;
   created_at: unknown;
 }
@@ -120,7 +122,7 @@ export interface OutcomeRow {
 /** A post's verdicts, newest first. */
 export async function outcomesForPost(ctx: PluginContext, companyId: string, postId: string): Promise<OutcomeRow[]> {
   return ctx.db.query<OutcomeRow>(
-    `SELECT stage, outcome, round, content_hash, note, via, actor_name, created_at FROM ${table(ctx, "review_outcomes")}
+    `SELECT stage, outcome, round, content_hash, note, via, actor_agent_id, actor_name, created_at FROM ${table(ctx, "review_outcomes")}
       WHERE post_id = $1 AND company_id = $2 ORDER BY created_at DESC, round DESC LIMIT 60`,
     [postId, companyId],
   );
@@ -228,31 +230,49 @@ export async function statRows(ctx: PluginContext, companyId: string, scope: Cli
   );
 }
 
-/** The streak counts people's verdicts only: an auto-approval must not extend its own streak. */
-export function humanRows(rows: StatRow[]): StatRow[] {
-  return rows.filter((row) => row.via !== "auto");
+/**
+ * The ladder streak: people's verdicts only. An auto-approval and a delegate approval must not
+ * extend the owner streak; a delegate send-back is kept, so it still ends it.
+ */
+export function ladderRows(rows: StatRow[]): StatRow[] {
+  return rows.filter((row) => row.via !== "auto" && !(row.via === "delegate" && row.outcome === "approved"));
+}
+
+/** Every row except a delegate's: the type counts and the first-pass rate stay the owner's own. */
+export function withoutDelegate(rows: StatRow[]): StatRow[] {
+  return rows.filter((row) => row.via !== "delegate");
 }
 
 /** What `review-outcomes` returns for one scope. */
 export async function reviewStats(ctx: PluginContext, companyId: string, scope: ClientScope, days = 90) {
   const rows = await statRows(ctx, companyId, scope, days);
-  const stats = summariseOutcomes(rows);
+  const stats = summariseOutcomes(withoutDelegate(rows));
   const { requireClient } = await getPolicy(ctx, companyId, scope);
-  const owner = summariseOutcomes(humanRows(rows)).filter((row) => row.stage === "owner");
+  // Q8: a stored delegate switches the ladder off in this scope; an unreadable store says so too (fail closed).
+  const delegation = await ladderDelegation(ctx, companyId, scope);
+  const owner = summariseOutcomes(ladderRows(rows)).filter((row) => row.stage === "owner");
   const ladder = owner.map((row) => {
     const [kind = "", format = ""] = row.postType.split(":");
     const decision = autoApprovalDecision({ kind, format, requireClient, missing: ["owner"], validateOk: true, streak: row.streak });
-    return { postType: row.postType, streak: row.streak, enabled: decision.eligible };
+    return { postType: row.postType, streak: row.streak, enabled: decision.eligible && delegation === null };
   });
+  const off =
+    delegation === "delegated"
+      ? " Off in this scope: it has a delegated approver, who decides every post here."
+      : delegation === "unreadable"
+        ? " Off for now: the delegated approvers could not be read."
+        : "";
   return {
     days,
     scope: scope ? `${scope.kind}:${scope.id}` : null,
     types: stats,
     autonomy: {
       enabled: ladder.some((row) => row.enabled),
+      /** Why the ladder is off for the whole scope: `delegated` (Q8), `delegate-unreadable`, or null. */
+      reason: delegation === "delegated" ? ("delegated" as const) : delegation === "unreadable" ? ("delegate-unreadable" as const) : null,
       streakRequired: AUTO_APPROVE_STREAK,
       types: ladder,
-      note: `Only a low-risk post (original or repurpose, text or one image, scope without client approval, validate-post passing) whose owner streak is ${AUTO_APPROVE_STREAK} approvals in a row skips the team member's click. Every other type is approved by a person.`,
+      note: `Only a low-risk post (original or repurpose, text or one image, scope without client approval, validate-post passing) whose owner streak is ${AUTO_APPROVE_STREAK} approvals in a row skips the team member's click. Every other type is approved by a person.${off}`,
     },
   };
 }

@@ -77,7 +77,7 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(7);
+    expect(manifest.apiRoutes).toHaveLength(8);
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });
@@ -98,6 +98,7 @@ describe("manifest and migration", () => {
       "memory-recall", "memory-add", "memory-update", "memory-search", "memory-feedback", "memory-review",
       "measure-report", "open-closeout-review", "improvement-propose", "improvement-list", "improvement-resolve", "goal-set", "goal-list", "credential-list", "credential-record", "evidence-record", "evidence-save", "record-metric", "growth-ledger", "ledger-upsert",
       "acceptance-run", "acceptance-report", "skill-eval", "propose-skill-change", "review-finding-record", "review-outcome-set",
+      "access-check", "access-request", "access-grant",
     ]);
     // Every tool parameter says what it is; fixed values are enums.
     for (const tool of manifest.tools ?? []) {
@@ -398,7 +399,11 @@ describe("Operator tools", () => {
   function seeded() {
     const s = setup({
       approvals: [{ id: "ap1", companyId: A, type: "budget_override_required", status: "pending", payload: { agentName: "SEO" }, createdAt: "2026-09-25T10:00:00.000Z" }],
-      coreIssues: [{ id: "i1", company_id: A, assignee_user_id: "user-1", status: "in_review", title: "Approve post", identifier: "PIB-7", updated_at: "2026-09-26T08:00:00.000Z" }],
+      coreIssues: [
+        { id: "i1", company_id: A, assignee_user_id: "user-1", status: "in_review", title: "Approve post", identifier: "PIB-7", updated_at: "2026-09-26T08:00:00.000Z" },
+        // The open issue behind Billing's waiting row: a row whose issue is done, cancelled or gone is dropped (pruneStaleWaiting).
+        { id: "i-inv", company_id: A, assignee_agent_id: "op", status: "in_progress", title: "Invoice run", identifier: "PIB-8", updated_at: "2026-09-26T08:00:00.000Z" },
+      ],
       runs: [{ company_id: A, agent_id: "op", status: "succeeded", started_at: "2026-09-26T07:00:00.000Z" }, { company_id: A, agent_id: "op", status: "failed", started_at: "2026-09-25T07:00:00.000Z", error: "boom" }],
     });
     s.store.snapshots = [{
@@ -443,7 +448,7 @@ describe("Operator tools", () => {
     registerCockpit(ctx, env);
     await saveTeam(env, A, { operatorAgentId: "op" }, "user-1");
     const run = { agentId: "op", runId: "r1", companyId: A, projectId: "p1" };
-    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert", "review-finding-record", "review-outcome-set"]);
+    const writes = new Set<string>([TOOL_NAMES.postBrief, TOOL_NAMES.askOwner, TOOL_NAMES.updateProfile, "open-closeout-review", "improvement-propose", "improvement-resolve", "goal-set", "credential-record", "evidence-record", "evidence-save", "acceptance-run", "skill-eval", "propose-skill-change", "record-metric", "ledger-upsert", "review-finding-record", "review-outcome-set", "access-request", "access-grant"]);
     for (const tool of COCKPIT_TOOLS.filter((t) => !writes.has(t.name) && !t.name.startsWith("memory-"))) {
       const result = (await tools.get(tool.name)!({}, run)) as { content: string; data: Record<string, unknown>; error?: string };
       expect(result.error).toBeUndefined();

@@ -55,8 +55,8 @@ describe("escalate-model", () => {
       { name: "pass: exactly 24h", existing: [{ originId: "escalate:issue-123:L1", createdAt: at(24), open: false }], expectReason: null },
       { name: "pass: 25h", existing: [{ originId: "escalate:issue-123:L1", createdAt: at(25), open: false }], expectReason: null },
       { name: "pass: other level's recent item", existing: [{ originId: "escalate:issue-123:L2", createdAt: at(23), open: false }], expectReason: null },
-      { name: "cap: 20 today", todayCount: 20, expectReason: "cap" as const },
-      { name: "pass: 19 today", todayCount: 19, expectReason: null },
+      { name: "cap: 60 today", todayCount: 60, expectReason: "cap" as const },
+      { name: "pass: 59 today", todayCount: 59, expectReason: null },
     ] as const)("$name", ({ existing, todayCount, expectReason }) => {
       const input = { issueId: "issue-123", existing: existing ?? [], now: new Date(), todayCount: todayCount ?? 0, level };
       const result = escalationDecide(input);
@@ -152,14 +152,16 @@ describe("escalate-model", () => {
       expect(check(result.description)).toBe(true);
     });
 
-    it("four ways out + deadline = now+24h", () => {
+    it("four ways out + deadline = now+8h", () => {
       const now = new Date("2026-10-19T12:00:00Z");
       const result = buildUnblockIssue({ ...baseInput(), now });
-      const expected = new Date(now.getTime() + 24 * 3600_000).toISOString();
+      const expected = new Date(now.getTime() + 8 * 3600_000).toISOString();
       expect(result.deadline).toBe(expected);
       expect(result.description).toContain(`**Deadline:** ${expected}`);
       expect(result.description).toMatch(/Reassign/);
-      expect(result.description).toMatch(/Split/);
+      expect(result.description).toMatch(/split/);
+      expect(result.description).toMatch(/Do it yourself/);
+      expect(result.description).toMatch(/goes to your manager/);
       expect(result.description).toMatch(/Cancel/);
       expect(result.description).toMatch(/ask-owner/);
     });
@@ -218,7 +220,7 @@ describe("escalate-model", () => {
       const result = buildUnblockIssue(baseInput());
       expect(result.description).toContain("\n\n**Error code:**");
       expect(result.description).toContain("\n\n**Last failed run:**");
-      expect(result.description).toContain("\n\n**Ways out:**");
+      expect(result.description).toContain("\n\n**You are the next one up. Do not hand it back unchanged.**");
     });
 
     it("no comments shows '_No comments._'", () => {

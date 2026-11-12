@@ -5,7 +5,7 @@
  * - With a Reviewer in the Cockpit roles and "review outward-facing work" on, a
  *   post sent for review opens an issue for the Reviewer with concrete checks.
  *   The Reviewer records its verdict with `record-review-verdict`; the plugin
- *   hands the issue on (the person who approves, or the Social agent when the
+ *   hands the issue on (the person or delegated approver who approves, or the Social agent when the
  *   client has to approve).
  * - With no Reviewer nothing opens, as before, except when the scope's policy
  *   needs the client: then the Social agent gets the issue, to send the client
@@ -16,6 +16,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { activeDelegateEntry, type DelegateEntry } from "./approval-delegate.js";
 import { defaultPolicy, getPolicy, policySummary, type ApprovalPolicy } from "./approval-policy.js";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { destinationsForPost, getAccountsByIds, postMedia, table, type PostRow } from "./db.js";
@@ -81,14 +82,14 @@ export function postReviewDescription(input: {
   post: Pick<PostRow, "id" | "body" | "first_comment" | "client_kind" | "client_ref" | "client_name" | "media"> & Partial<Pick<PostRow, "reply_to_url" | "quote_url">>;
   destinations: string[];
   pagePath: string | null;
-  handTo: { userId: string | null; label: string };
+  handTo: HandTo;
   policy?: ApprovalPolicy;
   /** The Reviewer's brief; defaults to `reviewerVerdictBrief`. */
   brief?: string;
 }): string {
   const media = postMedia(input.post);
   const lines = [
-    "A social post was sent for review. Check it before the person approves it.",
+    "A social post was sent for review. Check it before it is approved.",
     "",
     `**Destinations:** ${input.destinations.length ? input.destinations.join(", ") : "none yet (the post needs at least one account before it can be scheduled)"}`,
     `**Media:** ${media.length ? media.map((m) => `${m.kind}${m.altText ? "" : " (no alt text)"}`).join(", ") : "none"}`,
@@ -106,7 +107,9 @@ export function postReviewDescription(input: {
   );
   if (input.policy) lines.push(`Who approves here: ${policySummary(input.policy)}.`);
   lines.push(
-    "Only a person approves: they click **Approve** on the post (or, when the scope's policy says so, the client approves on their link). Closing this issue does not approve it.",
+    input.handTo.delegateAgentId
+      ? "A person approves (they click **Approve** on the post), or, after your scored pass, the scope's delegated approver does. Closing this issue does not approve it."
+      : "Only a person approves: they click **Approve** on the post (or, when the scope's policy says so, the client approves on their link). Closing this issue does not approve it.",
     input.brief ?? reviewerVerdictBrief(input.policy ?? defaultPolicy(null), input.handTo),
   );
   return lines.join("\n");
@@ -117,16 +120,64 @@ export function postReviewDescription(input: {
  * the plugin hand the issue on (kit `reviewerBrief` says "reassign it yourself",
  * which would undo the hand-off to the Social agent when the client approves). Pure.
  */
-export function reviewerVerdictBrief(policy: ApprovalPolicy, handTo: { userId: string | null; label: string }): string {
+export function reviewerVerdictBrief(policy: ApprovalPolicy, handTo: HandTo): string {
+  const delegated = Boolean(handTo.delegateAgentId) && !policy.requireClient;
   const next = policy.requireClient ? "the Social agent, who asks the client to approve" : handTo.label;
   return [
     "",
-    "## Reviewer: check before the person approves",
+    delegated ? "## Reviewer: check before the delegated approver approves" : "## Reviewer: check before the person approves",
     "You are reviewing: a social post before it is approved and scheduled.",
     "Check:",
     ...POST_REVIEW_CHECKS.map((c) => `- ${c}`),
     "",
     `Then record your verdict with \`partnersinbiz.social:record-review-verdict\` (verdict \`pass\` or \`changes\`, one line per problem in \`notes\`) and comment **PASS** or **CHANGES NEEDED** here. The tool hands this issue on: after a pass to ${next}; after changes back to the Social agent, with the post returned to draft. Do not reassign it yourself, and do not approve, schedule, send or mark it done.`,
+  ].join("\n");
+}
+
+/** Who a passed post goes to next, as the Reviewer's issue says it. `delegateAgentId`: the scope's delegated approver would take it. */
+export interface HandTo {
+  userId: string | null;
+  label: string;
+  delegateAgentId?: string | null;
+}
+
+/**
+ * The scope's delegated approver when it would take this post after a pass (PAR-9561 T7a): set and able to act now, not the
+ * post's creator, and named before the post was created (D3). Null otherwise: a person approves. Never throws.
+ */
+export async function delegateForPost(ctx: PluginContext, companyId: string, post: PostRow, policy: Pick<ApprovalPolicy, "requireOwner" | "requireClient">): Promise<DelegateEntry | null> {
+  if (post.scope === "personal" || !policy.requireOwner || policy.requireClient) return null;
+  const entry = await activeDelegateEntry(ctx, companyId, scopeOfRow(post));
+  if (!entry || entry.agentId === post.created_by_agent_id) return null;
+  return createdAfter(post, entry) ? entry : null;
+}
+
+/** The post was created at or after the delegate was named (D3). Unparseable times are "no". Pure. */
+export function createdAfter(post: Pick<PostRow, "created_at">, entry: Pick<DelegateEntry, "setAt">): boolean {
+  const raw = post.created_at as unknown;
+  const created = raw instanceof Date ? raw.getTime() : typeof raw === "string" && raw ? Date.parse(raw) : Number.NaN;
+  const setAt = Date.parse(entry.setAt);
+  return Number.isFinite(created) && Number.isFinite(setAt) && created >= setAt;
+}
+
+/** Issue text for the scope's delegated approver when a passed post opens a fresh issue for it. Pure. */
+export function delegateApprovalTaskDescription(input: {
+  post: Pick<PostRow, "id" | "body" | "first_comment" | "client_kind" | "client_ref" | "client_name" | "media">;
+  destinations: string[];
+  pagePath: string | null;
+  note: string;
+}): string {
+  return [
+    input.note,
+    "",
+    `**Destinations:** ${input.destinations.length ? input.destinations.join(", ") : "none"}`,
+    scopeLine(input.post),
+    `Post id: \`${input.post.id}\``,
+    "",
+    "> " + clip(input.post.body, 2000).replace(/\n/g, "\n> "),
+    "",
+    input.pagePath ? `Open it: [Social → Posts](${input.pagePath})` : "Open it on the Social page → Posts.",
+    "Closing this issue does not approve the post: only `approve-post-as-delegate` (or a person's click) does.",
   ].join("\n");
 }
 
@@ -268,6 +319,38 @@ export async function handToSocialAgent(
   }
 }
 
+/**
+ * Gives the scope's delegated approver the post's review issue after the Reviewer's pass, and wakes it (PAR-9561 T7a, findings 4).
+ * An open review issue is reassigned to it; a closed one or none at all is replaced by a fresh issue for the same post
+ * (`review:<postId>`). Never the person's weekly issue. Returns the issue id, or null when the hand-off failed (the caller then
+ * hands the post to the person, as without a delegate). Never throws.
+ */
+export async function handToDelegate(ctx: PluginContext, companyId: string, post: PostRow, agentId: string, note: string): Promise<string | null> {
+  const wakeReason = "Social post needs the delegated approver";
+  try {
+    const existing = await reviewIssueOf(ctx, companyId, post.id);
+    if (existing && (await issueOpen(ctx, companyId, existing))) {
+      return (await handReviewIssue(ctx, companyId, post, { agentId }, note, wakeReason)) ? existing : null;
+    }
+    const issue = await createIssueSafely(ctx, {
+      companyId,
+      projectId: await projectIdForRow(ctx, companyId, post),
+      title: `${clientPrefix(post)}Approve or return social post: ${clip(post.body.replace(/\s+/g, " ").trim(), 60)}`,
+      description: delegateApprovalTaskDescription({ post, destinations: await destinationNames(ctx, companyId, post), pagePath: await socialPath(ctx, companyId, { tab: "posts" }, scopeOfRow(post)), note }),
+      priority: "medium",
+      originKind: ORIGIN_KIND,
+      originId: `${SOCIAL_ORIGINS.review}${post.id}`,
+      assigneeAgentId: agentId,
+      wakeReason,
+    });
+    await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = $3 WHERE id = $1 AND company_id = $2`, [post.id, companyId, issue.id]);
+    return issue.id;
+  } catch (error) {
+    ctx.logger.info("Social delegate hand-off skipped", { postId: post.id, error: errorMessage(error) });
+    return null;
+  }
+}
+
 /** Who a hand-off to "the Social agent" or "the approving person" goes to. */
 export async function handoffTargets(ctx: PluginContext, companyId: string, post: Pick<PostRow, "owner_user_id">): Promise<{ social: { agentId: string } | { userId: string } | null; person: { userId: string } | null }> {
   const assignee = await socialAssignee(ctx, companyId, post.owner_user_id);
@@ -282,12 +365,16 @@ export async function routePostReview(ctx: PluginContext, actor: ReviewActor, po
   try {
     const policy = await getPolicy(ctx, companyId, scopeOfRow(post));
     const reviewer = await reviewerAgentId(ctx, companyId);
-    // No Reviewer: nothing opens (a person approves from the Social page and the Cockpit lists the post), unless the client
+    // No Reviewer: nothing opens (a person, or the scope's delegated approver, approves from the Social page and the Cockpit lists the post), unless the client
     // has to approve: then the Social agent gets the issue, to send the client their link.
     if (!reviewer && !policy.requireClient) return null;
     const social = reviewer ? null : (await handoffTargets(ctx, companyId, post)).social;
     const person = (await personAssignee(ctx, companyId, post.owner_user_id)) ?? null;
-    const handTo = { userId: person, label: person ? `user \`${person}\` (who approves this post)` : "a board user who approves posts" };
+    const personLabel = person ? `user \`${person}\` (who approves this post)` : "a board user who approves posts";
+    const delegate = reviewer ? await delegateForPost(ctx, companyId, post, policy) : null;
+    const handTo: HandTo = delegate
+      ? { userId: person, delegateAgentId: delegate.agentId, label: `the scope's delegated approver, agent \`${delegate.agentId}\` (or ${personLabel} if it cannot take it)` }
+      : { userId: person, label: personLabel };
     const existing = await reviewIssueOf(ctx, companyId, post.id);
     if (existing && (await issueOpen(ctx, companyId, existing))) {
       if (reviewer) {

@@ -5,7 +5,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { applyEdit, cleanField, fillEmpty, missingFields, normalizeUrl, parseProfile, parseWordList, PROFILE_FIELDS, ProfileError } from "../src/profile-model.js";
+import { CEO_AGENT_ID, applyEdit, cleanField, fillEmpty, missingFields, normalizeUrl, parseProfile, parseWordList, PROFILE_FIELDS, ProfileError } from "../src/profile-model.js";
 import { ownSetupStatus } from "../src/own.js";
 import { createEnv, registerCockpit } from "../src/register.js";
 import { agentNote, draftErrors, draftFrom, ProfileForm } from "../src/ui/profile.js";
@@ -53,6 +53,13 @@ describe("profile fields", () => {
     expect(current).toEqual({ legalName: "Partners in Biz (Pty) Ltd", bannedWords: ["cheap"] });
   });
 
+  it("the CEO seat may overwrite a set field; the model lists the old value", () => {
+    const result = fillEmpty({ whatWeSell: "Websites from R5000" }, { whatWeSell: "Websites; quoted after a call" }, true);
+    expect(result.filled).toEqual(["whatWeSell"]);
+    expect(result.kept).toEqual([]);
+    expect(result.overwritten).toEqual([{ field: "whatWeSell", previous: "Websites from R5000", next: "Websites; quoted after a call" }]);
+  });
+
   it("people set or clear any field", () => {
     const { profile, changed } = applyEdit({ legalName: "Old", website: "https://a.co.za" }, { legalName: "New", website: "", audience: "SMEs in KZN" });
     expect(changed).toEqual(["legalName", "website", "audience"]);
@@ -67,7 +74,7 @@ describe("profile tools and actions", () => {
     const s = setup();
     const empty = await s.tool("company-profile", {});
     expect(empty.error).toBeUndefined();
-    expect(empty.content).toMatch(/^Company profile: 0 of 14 fields set/);
+    expect(empty.content).toMatch(/^Company profile: 0 of 21 fields set/);
     expect(empty.data).toMatchObject({ href: "/PIB/cockpit?tab=profile", missing: expect.arrayContaining(["legalName", "brandVoice"]) });
 
     const filled = await s.tool("update-company-profile", { website: "partnersinbiz.online", brandVoice: "Plain, warm, South African English.", issueId: "PIB-3" });
@@ -79,13 +86,29 @@ describe("profile tools and actions", () => {
     await s.actions.get("profile.save")!({ profile: { legalName: "Partners in Biz (Pty) Ltd" } }, user);
     const kept = await s.tool("update-company-profile", { legalName: "PiB", senderName: "Peet" });
     expect(kept.content).toContain("Filled sender name.");
-    expect(kept.content).toContain('Kept as they are (already set; only the owner changes them, so ask with ask-owner and quote the new value): Legal name is "Partners in Biz (Pty) Ltd"');
+    expect(kept.content).toContain('Kept as they are (already set; only PiB (the CEO seat) changes a set value: ask PiB in an issue and quote the new value): Legal name is "Partners in Biz (Pty) Ltd"');
     expect((await s.tool("update-company-profile", { vatNumber: "12" })).error).toMatch(/10 digits/);
     expect((await s.tool("update-company-profile", {})).error).toMatch(/at least one field/);
 
     const read = await s.tool("company-profile", {});
     expect(read.data.profile).toMatchObject({ legalName: "Partners in Biz (Pty) Ltd", website: "https://partnersinbiz.online", senderName: "Peet" });
     expect(read.data.filledByAgents).toEqual(["website", "brandVoice", "senderName"]);
+  });
+
+  it("PiB overwrites a filled field and the old value stays in history; others are told to ask PiB", async () => {
+    const s = setup();
+    await s.actions.get("profile.save")!({ profile: { whatWeSell: "Websites from R5000" } }, user);
+    const other = await s.tool("update-company-profile", { whatWeSell: "Websites; quoted after a call" });
+    expect(other.content).toContain("ask PiB in an issue");
+    expect(other.content).not.toContain("ask-owner");
+    expect((await s.tool("company-profile", {})).data.history).toEqual([]);
+
+    const pib = (await s.tools.get("update-company-profile")!({ whatWeSell: "Websites; quoted after a call", issueId: "PIB-9" }, { ...RUN, agentId: CEO_AGENT_ID })) as { content: string; data: Record<string, any> };
+    expect(pib.content).toContain('Overwrote (old value kept in history, so it can be reverted): What we sell was "Websites from R5000"');
+    const read = (await s.tools.get("company-profile")!({}, RUN)) as { content: string; data: Record<string, any> };
+    expect(read.data.profile.whatWeSell).toBe("Websites; quoted after a call");
+    expect(read.data.history).toEqual([{ field: "whatWeSell", previous: "Websites from R5000", next: "Websites; quoted after a call", by: CEO_AGENT_ID, at: "2026-09-26T10:00:00.000Z", issueId: "PIB-9" }]);
+    expect(read.content).toContain("Websites from R5000");
   });
 
   it("company-profile returns company, owner and ownerTitle with fallbacks", async () => {
@@ -129,7 +152,7 @@ describe("the Profile tab", () => {
 
   it("renders every field in its group, marks agent-filled ones and what is still needed", () => {
     const html = render();
-    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 14 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
+    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 21 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
     expect(html).toContain("cheap\nguaranteed");
     // Phone-friendly: fields wrap to one column; no fixed widths.
     expect(html).toContain("minmax(min(260px, 100%), 1fr)");

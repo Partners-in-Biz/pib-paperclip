@@ -224,6 +224,52 @@ function BlueskyModal({ snapshot, run, account, onClose, onDone }: {
   );
 }
 
+function ManualAccountModal({ snapshot, run, onClose }: { snapshot: Snapshot; run: RunAction; onClose: () => void }) {
+  const [platform, setPlatform] = useState<SocialPlatform>("tiktok");
+  const [handle, setHandle] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal
+      open
+      title="Add a manual account"
+      description="Use this while a platform has not approved our app, or when you want to post there yourself. Nothing is signed in and no password is stored."
+      onClose={onClose}
+      footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button
+            type="button"
+            disabled={busy || !handle.trim()}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await run("social.add-manual-account", { platform, handle, displayName: displayName.trim() || undefined, ...scopeParams(snapshot) }, "Manual account added");
+                onClose();
+              } catch {
+                // shown by run()
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Adding…" : "Add account"}
+          </Button>
+        </>
+      )}
+    >
+      <Field label="Platform">
+        <select value={platform} onChange={(e) => setPlatform(e.target.value as SocialPlatform)} style={{ height: 34, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, padding: "0 8px", fontFamily: "inherit", fontSize: 13 }}>
+          {snapshot.platforms.map((p) => <option key={p.platform} value={p.platform}>{p.label}</option>)}
+        </select>
+      </Field>
+      <Field label="Handle"><Input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="@yourbrand or the profile link" autoComplete="off" /></Field>
+      <Field label="Name shown here (optional)"><Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your brand on TikTok" /></Field>
+      <Muted>The account belongs to {scopeName(snapshot)}.</Muted>
+    </Modal>
+  );
+}
+
 function EditAccountModal({ account, snapshot, run, onClose }: { account: Account; snapshot: Snapshot; run: RunAction; onClose: () => void }) {
   const current = account.client ?? "";
   const [belongsTo, setBelongsTo] = useState(current);
@@ -313,6 +359,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
   const [mastodonInstance, setMastodonInstance] = useState(snapshot.config.mastodonDefaultInstance ?? "https://mastodon.social");
   const [redditSubreddit, setRedditSubreddit] = useState("");
   const [bluesky, setBluesky] = useState<{ account: Account | null } | null>(null);
+  const [manual, setManual] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
   const [busy, setBusy] = useState("");
   // On another address than the redirect URI's (e.g. the sslip.io host) a sign-in cannot finish: SetupBanners explains, buttons stay off.
@@ -434,6 +481,13 @@ export function AccountsTab({ snapshot, companyId, run }: {
         </div>
       </SectionCard>
 
+      <SectionCard title="Add a manual account" icon={Plug} subtitle="For a platform that has not approved our app yet, such as TikTok">
+        <Muted>
+          A manual account has no publishing link. Posts for it are drafted, reviewed, approved and scheduled like any other. At the publish time you get a task: the post page copies the caption, hands you the media and opens the platform, and you mark it as posted.
+        </Muted>
+        <Row><SmallButton disabled={!snapshot.config.saved} onClick={() => setManual(true)}>Add a manual account</SmallButton></Row>
+      </SectionCard>
+
       {accounts.length === 0 ? (
         <EmptyState
           icon={Plug}
@@ -443,7 +497,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {accounts.map((account) => {
-            const canRefresh = account.connected && !["bluesky", "mastodon", "dribbble"].includes(account.platform);
+            const canRefresh = account.connected && !account.manual && !["bluesky", "mastodon", "dribbble"].includes(account.platform);
             return (
               <Card key={account.id} style={{ gap: 8, borderLeft: `3px solid ${tone(toneOf(ACCOUNT_TONE, account.status)).solid}` }}>
                 <Row style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -460,7 +514,9 @@ export function AccountsTab({ snapshot, companyId, run }: {
                         {account.pageName ? ` · via ${account.pageName}` : ""}
                       </Muted>
                       <Muted>
-                        Token {account.tokenExpiresAt ? `expires ${fmtDate(account.tokenExpiresAt, snapshot.config.timezone, false)}` : "does not expire"}
+                        {account.manual
+                          ? "Manual: a person posts by hand from the post page"
+                          : `Token ${account.tokenExpiresAt ? `expires ${fmtDate(account.tokenExpiresAt, snapshot.config.timezone, false)}` : "does not expire"}`}
                       </Muted>
                     </div>
                   </Row>
@@ -468,18 +524,21 @@ export function AccountsTab({ snapshot, companyId, run }: {
                 </Row>
                 {account.lastError ? <Muted style={{ color: account.status === "connected" ? tokens.muted : tone("bad").fg }}>{account.lastError}</Muted> : null}
                 <Row>
-                  <SmallButton disabled={!ready || busy !== ""} onClick={() => void reconnect(account)}>Reconnect</SmallButton>
+                  {account.manual ? null : <SmallButton disabled={!ready || busy !== ""} onClick={() => void reconnect(account)}>Reconnect</SmallButton>}
                   {canRefresh ? <SmallButton onClick={() => run("social.refresh-account", { accountId: account.id }, "Token refreshed").catch(ignore)}>Refresh token</SmallButton> : null}
                   <SmallButton onClick={() => setEditing(account)}>Edit</SmallButton>
                   {account.status !== "disabled" ? (
                     <SmallButton
                       onClick={() => {
-                        if (window.confirm(`Disconnect ${account.displayName}? Its tokens are removed; publishing history stays.`)) {
-                          run("social.disconnect-account", { accountId: account.id }, "Account disconnected").catch(ignore);
+                        const question = account.manual
+                          ? `Switch off ${account.displayName}? Posts can no longer be sent to it; publishing history stays.`
+                          : `Disconnect ${account.displayName}? Its tokens are removed; publishing history stays.`;
+                        if (window.confirm(question)) {
+                          run("social.disconnect-account", { accountId: account.id }, account.manual ? "Account switched off" : "Account disconnected").catch(ignore);
                         }
                       }}
                     >
-                      Disconnect
+                      {account.manual ? "Switch off" : "Disconnect"}
                     </SmallButton>
                   ) : (
                     <SmallButton
@@ -502,6 +561,7 @@ export function AccountsTab({ snapshot, companyId, run }: {
       {bluesky ? (
         <BlueskyModal snapshot={snapshot} run={run} account={bluesky.account} onClose={() => setBluesky(null)} onDone={() => setBluesky(null)} />
       ) : null}
+      {manual ? <ManualAccountModal snapshot={snapshot} run={run} onClose={() => setManual(false)} /> : null}
       {editing ? <EditAccountModal account={editing} snapshot={snapshot} run={run} onClose={() => setEditing(null)} /> : null}
     </div>
   );

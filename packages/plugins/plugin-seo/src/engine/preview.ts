@@ -36,8 +36,11 @@ export interface PreviewStats {
 
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
 
-/** Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced). */
-function stripElements(html: string, openRe: RegExp): string {
+/**
+ * Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced).
+ * `keep` turns the removed element into the text left in its place (default: nothing).
+ */
+function stripElements(html: string, openRe: RegExp, keep: (element: string) => string = () => ""): string {
   const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
   let out = "";
   let pos = 0;
@@ -58,7 +61,7 @@ function stripElements(html: string, openRe: RegExp): string {
         if (depth === 0) { end = t.index + t[0].length; break; }
       }
     }
-    out += html.slice(pos, m.index) + " ";
+    out += html.slice(pos, m.index) + " " + keep(html.slice(m.index, end)) + " ";
     pos = end;
     openRe.lastIndex = end;
   }
@@ -76,14 +79,33 @@ function stripGoogleTranslateWidget(html: string): string {
   return html;
 }
 
-/** Visible words of a page: no scripts, styles, tags or the preview's own bar. */
+/**
+ * WooCommerce's related, upsell and cross-sell product strips: the shop picks their products at random on every page
+ * load, so two loads of the same page differ by a whole strip of names and excerpts (PAR-9945: 83% "kept" for a
+ * title-only change). The word count keeps only the strip's heading; the screenshots still show the strip.
+ */
+const VOLATILE_PRODUCT_STRIP = /<(section|div)\b[^>]*\bclass\s*=\s*["'](?=[^"']*\bproducts\b)(?=[^"']*\b(?:related|upsells|up-sells|cross-sells)\b)[^"']*["'][^>]*>/gi;
+
+export function hasVolatileProductStrip(html: string): boolean {
+  VOLATILE_PRODUCT_STRIP.lastIndex = 0;
+  return VOLATILE_PRODUCT_STRIP.test(html);
+}
+
+function collapseVolatileStrips(html: string): string {
+  return stripElements(html, VOLATILE_PRODUCT_STRIP, (el) => /<h[1-6]\b[^>]*>[\s\S]*?<\/h[1-6]\s*>/i.exec(el)?.[0] ?? "");
+}
+
+/** Visible words of a page: no scripts, styles, tags, the preview's own bar or the products of a random product strip. */
 export function visibleWords(html: string): string[] {
-  const text = stripGoogleTranslateWidget(html)
+  const text = collapseVolatileStrips(stripGoogleTranslateWidget(html))
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
     .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;|&#160;/g, " ")
+    // A browser shows &#82; as R and &ldquo; as a quote mark: decode numbers, drop other named entities (never a word).
+    .replace(/&#(\d{1,7});|&#x([0-9a-f]{1,6});/gi, (_m, d, x) => { const n = d ? Number(d) : parseInt(x, 16); return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : " "; })
+    .replace(/&(?!amp;)[a-z][a-z0-9]{1,31};/gi, " ")
     .replace(/&amp;/g, "&");
   return (text.toLowerCase().match(WORD) ?? []).slice(0, 200_000);
 }
@@ -409,6 +431,16 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     if (!area) notes.push("No content area was found on the live page, so the copy was placed relative to the page's first heading.");
   }
 
+  // WooCommerce product tabs: its script shows the first panel and hides the rest. A page built from the source has
+  // no script left, so every panel would be open at once (PAR-9945); this keeps the visitor's view. A rendered page
+  // already carries display:none on the hidden panels, so the rule changes nothing there.
+  if (/\bwc-tabs-wrapper\b/.test(html) && /\bwc-tab\b/.test(html)) {
+    html = html.replace(/<\/head\s*>/i, `<style id="pib-wc-tabs">.wc-tabs-wrapper .wc-tab ~ .wc-tab{display:none}</style></head>`);
+  }
+  if (hasVolatileProductStrip(html)) {
+    notes.push("The page has a WooCommerce related, upsell or cross-sell products strip: the shop picks its products at random on every load, so other products in the live screenshot are not a change. The kept-text figure counts only the strip's heading.");
+  }
+
   if (changes.css) {
     html = html.replace(/<\/head\s*>/i, `<style id="pib-redesign-css">${sanitizeCss(changes.css)}</style></head>`);
     applied.push("css");
@@ -435,7 +467,17 @@ export function thanksHtml(decision: "approved" | "changes_requested"): string {
 }
 
 /** What a visitor sees of a page's head and heading: compared later to tell whether the live page moved since a preview was made (PAR-9006). */
-export interface LiveFingerprint { title: string; metaDescription: string; h1: string; words: number | null }
+export interface LiveFingerprint {
+  title: string;
+  metaDescription: string;
+  h1: string;
+  words: number | null;
+  /** How `words` was counted (WORD_COUNTER); a count made another way is not compared. Missing on rows before PAR-9945. */
+  counter?: number;
+}
+
+/** Bump when visibleWords changes how it counts, so stored fingerprints are not flagged as a changed page. 2 = PAR-9945. */
+export const WORD_COUNTER = 2;
 
 const decodeText = (v: string) => v.replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
 
@@ -450,13 +492,13 @@ export function liveFingerprint(html: string, opts: { skipWords?: boolean } = {}
     break;
   }
   const h1 = /<h1\b[^>]*>([\s\S]*?)<\/h1\s*>/i.exec(html)?.[1] ?? "";
-  return { title: decodeText(title), metaDescription: decodeText(meta), h1: decodeText(h1), words: skipWords ? null : visibleWords(html).length };
+  return { title: decodeText(title), metaDescription: decodeText(meta), h1: decodeText(h1), words: skipWords ? null : visibleWords(html).length, counter: WORD_COUNTER };
 }
 
-/** Fields that differ between the stored and the current fingerprint (words only when both counted them). */
+/** Fields that differ between the stored and the current fingerprint (words only when both counted them the same way). */
 export function fingerprintChanges(stored: LiveFingerprint, now: LiveFingerprint): string[] {
   const out: string[] = [];
   for (const k of ["title", "metaDescription", "h1"] as const) if (stored[k] !== now[k]) out.push(k);
-  if (stored.words != null && now.words != null && stored.words !== now.words) out.push("words");
+  if (stored.words != null && now.words != null && stored.counter === now.counter && stored.words !== now.words) out.push("words");
   return out;
 }

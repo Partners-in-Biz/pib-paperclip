@@ -1,3 +1,4 @@
+import { extractBrandFromSiteTool } from "./brand-from-site.js";
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
@@ -205,7 +206,8 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, createBrokerForCompany } from "./drive/tools.js";
+import { driveFileFetch } from "./drive/fetch.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { registerDriveSaveRoute } from "./drive/save-route.js";
 import { reportsDriveCatchup } from "./report-drive-catchup.js";
@@ -335,6 +337,8 @@ const plugin = definePlugin({
     registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
     registerAction("crm.set-email-status", (params, context) => emailStatusAction(ctx, context, params));
     registerAction("crm.update-client-profile", async (params, context) => updateClientProfile(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    // The page only reads the site and puts what it finds in the form: the person saves (apply is always off here).
+    registerAction("crm.extract-brand-from-site", async (params, context) => extractBrandFromSiteTool(ctx, await actionViewer(ctx, context), { ...params, apply: false }, actionSource(context)));
     registerAction("crm.link-contact", (params, context) => linkAction(ctx, context, params));
     registerAction("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
     registerAction("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
@@ -826,6 +830,8 @@ async function dispatch(
     }
     case "update-client-profile":
       return updateClientProfile(ctx, viewer, body, source);
+    case "extract-brand-from-site":
+      return extractBrandFromSiteTool(ctx, viewer, body, source);
     case "set-email-status":
       return setEmailStatusRecord(ctx, viewer, body, source);
     case "list-client-sites":
@@ -872,6 +878,10 @@ async function dispatch(
       return driveBindingSet(ctx, viewer, body);
     case "drive_binding_status":
       return driveBindingStatus(ctx, viewer);
+    case "drive_transfer_status":
+      return driveTransferStatus(viewer, body);
+    case "drive_file_fetch":
+      return driveFileFetch(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);

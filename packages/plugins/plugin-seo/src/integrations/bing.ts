@@ -57,9 +57,14 @@ export interface BingUserSite {
   dnsVerificationCode: string | null;
 }
 
-async function bingCall(fetchImpl: FetchLike, apiKey: string, method: string, body?: Record<string, unknown>): Promise<unknown> {
+// PAR-9853: Bing VerifySite can take well over 10 s. The tool declares a 60 s budget (the gateway
+// maximum); the VerifySite call itself aborts at 40 s so the follow-up GetUserSites still fits.
+export const BING_VERIFY_SITE_TOOL_TIMEOUT_MS = 60_000;
+export const BING_VERIFY_SITE_CALL_TIMEOUT_MS = 40_000;
+
+async function bingCall(fetchImpl: FetchLike, apiKey: string, method: string, body?: Record<string, unknown>, timeoutMs = 20_000): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetchImpl(`${BASE}/${method}?apikey=${encodeURIComponent(apiKey)}`, {
       method: body ? "POST" : "GET",
@@ -113,7 +118,7 @@ export async function bingAddSite(fetchImpl: FetchLike, apiKey: string, siteUrl:
 }
 
 export async function bingVerifySite(fetchImpl: FetchLike, apiKey: string, siteUrl: string): Promise<boolean> {
-  const result = await bingCall(fetchImpl, apiKey, "VerifySite", { siteUrl });
+  const result = await bingCall(fetchImpl, apiKey, "VerifySite", { siteUrl }, BING_VERIFY_SITE_CALL_TIMEOUT_MS);
   if (result === true) return true;
   const site = (await bingGetUserSites(fetchImpl, apiKey)).find((s) => sameSite(s.url, siteUrl));
   return Boolean(site?.isVerified);

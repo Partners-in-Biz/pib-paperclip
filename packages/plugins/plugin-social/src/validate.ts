@@ -5,7 +5,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { inScope, scopeLabel, scopeOfRow } from "./clients.js";
-import { accountMeta, destinationsForPost, getAccount, type PostRow, postMedia } from "./db.js";
+import { accountMeta, destinationsForPost, getAccount, isManual, type PostRow, postMedia } from "./db.js";
 import { foreignMedia } from "./media.js";
 import { isSocialPlatform, PLATFORM_LABELS, type SocialPlatform } from "./platforms.js";
 import { buildPublishRequest, validateDestination } from "./publish.js";
@@ -34,7 +34,7 @@ export async function validatePostRow(ctx: PluginContext, companyId: string, pos
     }
     const list = validateDestination(account.platform, buildPublishRequest(post, account.platform), accountMeta(account));
     if (!inScope(account, scopeOfRow(post))) list.unshift(`${account.display_name} belongs to ${scopeLabel(account)}, not ${scopeLabel(post)}. Remove it from this post`);
-    if (!account.token_enc || account.status === "disabled") list.push(`${account.display_name} is disconnected`);
+    if (account.status === "disabled" || (!isManual(account) && !account.token_enc)) list.push(`${account.display_name} is disconnected`);
     else if (account.status === "needs_reconnect") list.push(`${account.display_name} needs to be reconnected`);
     results.push({ accountId: account.id, platform: account.platform, accountName: account.display_name, problems: list, published: false });
     problems.push(...list.map((p) => `${PLATFORM_LABELS[account.platform as SocialPlatform]} (${account.display_name}): ${p}`));

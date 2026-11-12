@@ -13,6 +13,7 @@ import { CARE_TOOLS } from "../src/care-tools.js";
 import { NPS_COOLDOWN_DAYS, SLA_HOURS } from "../src/support.js";
 import { SKILLS } from "../src/skills.js";
 import { CRM_TOOLS } from "../src/tools.js";
+import { DRIVE_TOOLS } from "../src/drive/tools.js";
 import { MAX_NEW_STEPS_PER_RUN } from "../src/service-onboarding.js";
 import { ATTRIBUTION_REFERENCE, ESIGN_REFERENCE, GROWTH_REFERENCE_FILES, GROWTH_SECTION, SITE_EVENTS_REFERENCE } from "../src/skills-growth.js";
 import { ESIGN_TOOLS } from "../src/esign-tools.js";
@@ -221,5 +222,17 @@ describe("the guidance for documents to sign, attribution and site counters", ()
     expect(DRIVE_REFERENCE).toMatch(/drive\.sharedDriveId/);
     expect(DRIVE_REFERENCE).toMatch(/drive_not_bound[^\n]*once[^\n]*stop/);
     expect(records.markdown).toMatch(/references\/drive\.md/);
+  });
+
+  it("PAR-9262: the drive_file_save tool, the Drive reference and the skill state the path limits", () => {
+    const tool = DRIVE_TOOLS.find((t) => t.name === "drive_file_save")!;
+    for (const text of [tool.description, DRIVE_REFERENCE]) {
+      expect(text).toMatch(/5 MB/);
+      expect(text).toMatch(/200 MB/);
+      expect(text).toMatch(/\$PAPERCLIP_TMPDIR`? \(not `?\$TMPDIR/);
+      expect(text).toMatch(/[Dd]otfiles, keys and credential files are refused/);
+      expect(text).toMatch(/drive_transfer_status/);
+    }
+    expect(records.markdown).toMatch(/drive_file_save[^\n]*Over 5 MB: `path` only, up to 200 MB/);
   });
 });

@@ -20,8 +20,13 @@ export function PostStatus({ status }: { status: string }) {
   return <Pill tone={toneOf(POST_TONE, status)} dot>{status === "review" ? "in review" : status.replace(/_/g, " ")}</Pill>;
 }
 
+/** A destination status in plain words. */
+export function destinationLabel(status: string): string {
+  return status === "awaiting_manual" ? "post by hand" : status.replace(/_/g, " ");
+}
+
 export function DestinationStatus({ status }: { status: string }) {
-  return <Pill tone={toneOf(DEST_TONE, status)} dot size="sm">{status}</Pill>;
+  return <Pill tone={toneOf(DEST_TONE, status)} dot size="sm">{destinationLabel(status)}</Pill>;
 }
 
 export function AccountStatus({ status }: { status: string }) {

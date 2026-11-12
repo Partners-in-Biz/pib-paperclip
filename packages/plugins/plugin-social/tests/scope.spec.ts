@@ -26,7 +26,7 @@ function account(id: string, scope: { kind: "company" | "contact"; id: string; n
     id, company_id: "co", platform: "facebook", scope: "org", owner_user_id: null, status: "connected", secret_ref: null, display_name: `Page ${id}`,
     external_id: `ext-${id}`, handle: null, avatar_url: null, token_enc: "v1.x", refresh_token_enc: null, token_expires_at: null, scopes: [],
     client_kind: scope?.kind ?? null, client_ref: scope?.id ?? null, client_name: scope?.name ?? null, last_error: null, meta: {}, key_version: 1,
-    created_by_user_id: "user-1", reconnect_issue_id: null, last_refreshed_at: null, created_at: new Date(), updated_at: new Date(),
+    created_by_user_id: "user-1", reconnect_issue_id: null, last_refreshed_at: null, manual: false, created_at: new Date(), updated_at: new Date(),
     ...extra,
   };
 }

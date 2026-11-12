@@ -1,5 +1,8 @@
 /**
  * "Needs you" push trigger: fires when an issue becomes assigned to the owner.
+ * - While the owner's daily digest is on (the default), only two things push:
+ *   the digest issue itself and an issue with priority critical. Everything
+ *   else that lands on the owner waits for the one digest at 16:00.
  * - Subscribes to issue.updated and issue.created events.
  * - Checks if the assignee became the owner.
  * - Calls notifyOwner with class "needs_you" if the transition occurs.
@@ -8,7 +11,7 @@
 
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import type { NotifyOwnerDeps } from "./notify.js";
-import { assignableUser } from "../constants.js";
+import { assignableUser, ORIGIN } from "../constants.js";
 import { getRoles } from "../db.js";
 import { message, type Env } from "../env.js";
 import { notifyOwner } from "./notify.js";
@@ -78,6 +81,12 @@ export async function onIssueNeedsYou(env: Env, event: PluginEvent, deps?: Notif
   } catch {
     config = undefined;
   }
+
+  // One digest a day, not a push per card: only the digest itself and a critical issue reach the owner's phone.
+  const digest = config?.ownerDigest && typeof config.ownerDigest === "object" ? (config.ownerDigest as Record<string, unknown>) : null;
+  const digestOn = digest?.enabled !== false;
+  const isDigest = (issue as { originKind?: string | null }).originKind === ORIGIN.digest;
+  if (digestOn && !isDigest && (issue as { priority?: string | null }).priority !== "critical") return;
   let publicBaseUrl = typeof config?.publicBaseUrl === "string" && config.publicBaseUrl ? config.publicBaseUrl : "https://paperclip.partnersinbiz.online";
   publicBaseUrl = publicBaseUrl.replace(/\/+$/, ""); // Remove trailing slashes
 
@@ -91,7 +100,7 @@ export async function onIssueNeedsYou(env: Env, event: PluginEvent, deps?: Notif
     companyId,
     class: "needs_you",
     title: issue.title ?? "Issue",
-    body: `Needs you: ${identifier}`,
+    body: isDigest ? "Everything that waits on you, in one list." : `Needs you: ${identifier}`,
     issueRef: identifier,
     ownerUserId,
     url,

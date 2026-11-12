@@ -121,6 +121,11 @@ export function fakeCtx(options: {
       [/jsonb_typeof\(i\.unblock_descriptor\)/i, (_params, s) => seeded(s.watch_blocked)],
       [/i\.status = 'in_progress'/i, (_params, s) => seeded(s.watch_stalled)],
       [/FROM public\.issues/i, (params, s, sql) => {
+        if (/id::text IN \(SELECT jsonb_array_elements_text\(\$2::jsonb\)\)/i.test(sql)) {
+          // Issues by id, whatever their status (the ids come as one JSON value, as the host needs them).
+          const ids = JSON.parse(String(params[1])) as string[];
+          return (s.core_issues ?? []).filter((row) => row.company_id === params[0] && ids.includes(String(row.id)));
+        }
         if (/origin_kind = \$2/i.test(sql)) {
           // Open issues of one origin kind (backlog counts as open), oldest first.
           return (s.core_issues ?? [])
@@ -283,7 +288,11 @@ export function fakeCtx(options: {
     },
     authorization: {
       grants: {
-        list: async ({ principalId }: { principalId: string }) => grants.get(principalId) ?? [],
+        // Like the host: one principal's grants, or (with no principal) the whole company's, each row naming its principal.
+        list: async ({ principalId }: { principalId?: string }) =>
+          principalId
+            ? (grants.get(principalId) ?? []).map((g) => ({ principalType: "agent", principalId, ...g }))
+            : [...grants.entries()].flatMap(([id, rows]) => rows.map((g) => ({ principalType: "agent", principalId: id, ...g }))),
         set: async ({ principalId, grants: next }: { principalId: string; grants: Array<{ permissionKey: string; scope: unknown }> }) => {
           grants.set(principalId, next);
           return next;

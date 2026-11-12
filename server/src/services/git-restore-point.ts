@@ -1,4 +1,5 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
+import { writeChildStdin } from "@paperclipai/adapter-utils";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -112,7 +113,7 @@ async function git(cwd: string, args: string[], options: GitOptions = {}): Promi
     timeout: 120_000,
     signal: options.signal,
   });
-  if (options.input !== undefined) child.child.stdin?.end(options.input);
+  if (options.input !== undefined) writeChildStdin(child.child, options.input, "git-restore-point:git");
   const { stdout } = await child;
   return stdout as Buffer;
 }

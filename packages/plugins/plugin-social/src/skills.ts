@@ -25,7 +25,7 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 ## Ground rules
 
 - **Clients come from the CRM.** Call \`list-clients\` for companies and contacts. Never invent a client or type a name instead of an id.
-- **You draft and schedule. A person approves** (for a client the policy can name the client: see Approvals below). You create and edit drafts, give each a proposed time and request review. You never approve, and never change who approves. Approval schedules the post at its proposed time. You schedule approved posts that have no time. Never claim a post is published: the \`publish-due\` job publishes it and records the result.
+- **You draft and schedule. A person approves** (or the delegated approver after a scored Reviewer pass; for a client, the client: see Approvals). You create and edit drafts, give each a proposed time and request review. You never approve, and never change who approves. Approval schedules the post at its proposed time. You schedule approved posts that have no time. Never claim a post is published: the \`publish-due\` job publishes it and records the result.
 - **Accounts are connected by a person** (signing in to the platform is a one-time grant). When an account shows \`needs_reconnect\`, the plugin has already opened a "Reconnect …" issue for a person; do not schedule to it until it is \`connected\` again. If you need an account the scope does not have, call \`connect-account\` with the issue you are working on, then ask once with \`${ASK_OWNER_TOOL}\`: the platform, why, and the link and steps it returns (plus its \`effect\`, when ask-owner takes one). When the account is connected the plugin comments on your issue and wakes you: do not poll.
 - \`visibility\` is \`org\` (the default: company and client pages) or \`personal\` (a person's own profile, only for that person). An organisation post cannot target a personal account.
 - Never paste tokens, secrets or passwords into posts, comments or issues.
@@ -34,25 +34,25 @@ Every account, post, media asset, feed and inbox item belongs to exactly one sco
 ## Workflow for a post
 
 1. Decide the scope (own work, or the client from the issue / \`list-clients\`). \`list-connected-accounts\` in that scope → choose destination account ids. Only use accounts with status \`connected\`.
+   - **Manual accounts** (\`manual: true\`, for example TikTok before its app approval) have no publishing link. Use them like any account. At the publish time a person gets a "Post by hand" task and posts from the post page; the destination shows \`awaiting_manual\` until they mark it. That is waiting on a person, not a failure: do not retry it. Record its numbers with \`record-post-metrics\`.
 2. Media: reuse \`list-media-assets\` (same scope), or \`import-media-from-url\` with the same client (public https image or MP4, stored on R2). A file you made yourself (a carousel slide, a branded image, a short video): attach it to your issue, \`list-issue-attachments\`, then \`import-media-from-attachment\` (asset id back). How to make them: \`references/media-studio.md\` in the social-content skill. Pass asset ids as \`mediaAssetIds\` (order = carousel order). Do not paste raw URLs as media.
 3. \`create-post\` with \`body\`, the scope (\`client\`, or nothing for own work), \`accountIds\`, \`mediaAssetIds\`, a proposed time \`scheduledAt\` (ISO with offset, e.g. \`2026-10-05T07:30:00+02:00\`; pick it from the playbook and the calendar), optional \`firstComment\` and \`overrides\`. Load the \`social-content\` skill to write platform-native copy.
 4. \`overrides\` is keyed by platform: \`{ "x": { "text": "…" }, "youtube": { "title": "…", "privacy": "unlisted" }, "reddit": { "subreddit": "smallbusiness", "title": "…" }, "pinterest": { "boardId": "…", "link": "https://…" }, "tiktok": { "privacy": "SELF_ONLY" } }\`. Fields: text, title, link, privacy, subreddit, boardId. Anything not overridden falls back to the main body.
 5. \`validate-post\` → fix every problem it lists (usually text too long for X/Bluesky/Threads/Mastodon, or missing media for Instagram/TikTok/YouTube/Pinterest).
 6. \`request-review\`. The post waits in the approval queue (the Cockpit shows it to the approver; the Reviewer checks it first when there is one). Nothing else is needed from you.
-7. When a person approves, the post is scheduled at its proposed time if that is still ahead and every destination passes \`validate-post\`. Otherwise you get one **"Schedule approved social posts"** issue per scope: pick a time for each approved post (\`list-posts\` status approved) and \`schedule-post\` (or \`bulk-schedule\` for several at one time). Do not change approved content.
+7. Once approved, it is scheduled at its proposed time if that is still ahead and every destination passes \`validate-post\`. Otherwise you get one **"Schedule approved social posts"** issue per scope: pick a time for each approved post (\`list-posts\` status approved) and \`schedule-post\` (or \`bulk-schedule\` for several at one time). Do not change approved content.
 
 ## My Social (personal space)
 
-A person's My Social space holds personal profile drafts: posts only they can see before publishing to their personal accounts. Personal accounts (scope=personal) belong to one user. Create drafts in personal space with \`create-personal-draft\` (agent tool only; a person uses create-post with no client instead). Only the owner or an agent can draft to personal accounts. Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands; only the owner can approve).
+A person's My Social space holds personal profile drafts, visible only to them before publishing to their personal accounts (scope=personal, one user each). Create them with \`create-personal-draft\` (agent tool only; a person uses create-post). Approval is owner-only through the My Social page (\`get-approval-status\` shows where it stands).
 
 ## Approvals
 
-- \`request-review\` opens the post's review issue by the scope's policy (\`get-approval-policy\`). Sign-offs: the Reviewer's pass (a check), a team member's approval, the client's approval. The post is approved when every sign-off the policy needs is in **for its current version**: editing it makes earlier sign-offs stale. \`get-approval-status\` shows where one post stands.
-- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`: it returns the client's link, the people at the client and a ready email. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Then ask the owner once to send it. Changes requested: the post is back in draft; fix it, \`request-review\` again and make a new link.
-- **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue: the plugin hands it on.
-- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post for the Creative Producer, else you; a repeat call returns it. Attach the asset, then \`request-review\`.
-- \`review-outcomes\` gives first-pass rates and streaks per post type. Only a low-risk post with a team streak of 5 skips the team click.
-Full flow, statuses and edge cases: \`references/approvals.md\`.
+- **Who approves.** The scope's policy (\`get-approval-policy\`) names the sign-offs: Reviewer's pass (a check), a team member, the client. The post is approved when every sign-off is in **for its current version**; editing makes earlier ones stale (\`get-approval-status\`).
+- **Client approval.** On an issue "Get client approval for social post…" call \`request-client-approval\`. Make a Mailbox DRAFT (\`partnersinbiz.mailbox:create-draft\`) and never send it: a person does. Ask the owner once to send it. Changes requested: fix it, \`request-review\`, make a new link.
+- **Reviewer:** check the post, then \`record-review-verdict\` (pass, or changes with notes). Do not reassign the issue.
+- **Media.** Missing or weak? \`request-creative\` (postId, brief, format, durationS ≤ 30) opens one hand-off issue per post. Attach the asset, then \`request-review\`.
+Who approves, statuses, outcomes: \`references/approvals.md\`.
 
 ## After scheduling
 
@@ -72,7 +72,7 @@ Full flow, statuses and edge cases: \`references/approvals.md\`.
 ## Hand-offs
 
 - You own repurposing. When an SEO page is live (it answers 200) you get one **"Repurpose for social: …"** issue in that page's scope: draft a LinkedIn post, an X post with a first-comment reply (X takes one post plus one reply, not a thread) and an Instagram post from the page, with the link, following the playbook. Pass the issue's \`handoffKey\` to \`create-post\` so each draft is linked to the page (and stays in its scope). Drafts with proposed times, then \`request-review\`. Close the issue with the post ids; the SEO agent links them.
-- With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before a person approves. Fix what it lists, then re-send for review.
+- With a Reviewer set in the Cockpit, posts in review get a check from the Reviewer before they are approved. Fix what it lists, then re-send for review.
 
 ## Analytics and feeds
 
@@ -95,7 +95,7 @@ Each scope (own work, each client) has a Growth program: a goal ("engagement rat
 
 ## Tool list
 
-list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, review-outcomes, media-compliance, request-creative, schedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, store-rendered-asset, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, recollect-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
+list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, approve-post-as-delegate, return-post-as-delegate, review-outcomes, media-compliance, request-creative, schedule-post, unschedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, store-rendered-asset, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, recollect-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
 `;
 
 const CONTENT_DESCRIPTION =
@@ -108,7 +108,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 ## Before you write
 
 1. Know who you write for: your own company (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
-2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines.
+2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines. **Read \`references/social-craft.md\` before you draft**: brand kit first, one real thing per post, format before words, write the way the brand talks, never repeat the account's last ten posts.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
 5. Use the first comment (\`firstComment\`) for extra hashtags or a link on Instagram, Facebook and LinkedIn when it keeps the caption clean.
@@ -149,7 +149,7 @@ For each scope with connected accounts (own work first, then each client):
 
 ## Media studio (pib-media-studio)
 
-Posts need visuals: carousels, branded images, short videos. Make them yourself from the client's brand (their profile, and the colours, fonts and logo from their site): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
+Posts need visuals: carousels, branded images, short videos. Make them yourself from the brand kit (\`partnersinbiz.crm:get-client-profile\` for a client, \`partnersinbiz.cockpit:company-profile\` for own work; fill a missing kit first with \`partnersinbiz.crm:extract-brand-from-site\`): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
 
 **The media rule.** The scope's playbook can carry a \`media-rule\` block (\`get-playbook\` shows it; with none the default applies: LinkedIn, Instagram and Facebook posts need an image or a video, a video counts only up to 30 seconds, every image needs alt text, and question, thread and quote posts need no media). The Reviewer checks it when it records a verdict, and with \`enforce: block\` a post that misses it cannot pass. Write the post's media in the same pass as its copy. If you cannot make it yourself, or the Reviewer sends the post back for missing or weak media, call \`request-creative\`: the full route is in the \`pib-creative-studio\` skill.
 
@@ -254,7 +254,7 @@ export const APPROVALS_REFERENCE = `# Approvals reference
 Each scope (own work, each client) has an approval policy a PERSON sets on Social → Posts → "Who approves". \`get-approval-policy\` shows it; you cannot change it. It lists which sign-offs a post needs:
 
 - **Reviewer's pass** (optional): the Reviewer agent checked this version. A pass is a check, never an approval.
-- **Team member** (default): a person clicks Approve on the Social page.
+- **Team member** (default): a person clicks Approve on the Social page. Where a person named a delegated approver for the scope, that agent's approval counts as this sign-off, only after a scored Reviewer pass on this version; a person still can. The delegate never edits the post it approves, and an edit makes both the pass and its yes stale. The Social agent is never the delegate.
 - **Client** (client scopes only): the client approves on their link, or a person records that they approved elsewhere (with a note saying how).
 
 No policy set = a team member approves, as before. At least one of team member or client always approves.
@@ -273,7 +273,7 @@ No policy set = a team member approves, as before. At least one of team member o
 8. The link is the client's. Never open it to answer, and never submit its form: the page records whoever answers as the client. (Where only the client approves, the link IS the approval.)
 
 ## The Reviewer
-\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person who approves; after changes it returns the post to draft and hands the issue to the Social agent.
+\`record-review-verdict\` with \`pass\` or \`changes\` (notes: one line per problem). Only the Reviewer agent set in the Cockpit can. After a pass the plugin hands the issue to the Social agent (client approval) or to the person or delegated approver who approves; after changes it returns the post to draft and hands the issue to the Social agent.
 
 ## Autonomy inputs
 Every Reviewer, team member and client verdict is stored with the post's type (original, repurpose, rss or reply, by format: text, image, carousel, video) and the scope. \`review-outcomes\` returns first-pass approval rates and approval streaks. Nothing graduates on its own: auto-approval is off outside one ladder: a low-risk post (original or repurpose, text or one image, no client approval, validate-post passing) with a team streak of 5 skips the team click.
@@ -325,7 +325,7 @@ ffmpeg -y -framerate 1/3 -i out/slide-%02d.png -vf "scale=1080:1920,format=yuv42
 Add a voice-over or music track you have the rights to with \`-i track.m4a -shortest -c:a aac\`. Screen recordings and B-roll the client supplied can be concatenated the same way. Check the result: \`ffprobe -v error -show_entries stream=width,height,duration -of csv=p=0 out/reel.mp4\` must say 1080,1920 and the length you planned.
 
 ## 4. Look at it
-Open the first and last slide as images and read the text at phone size. Fix overflow, low contrast, anything outside the safe area, a wrong name or number. A person approves the post, but the Reviewer will send back a visual that is wrong.
+Open the first and last slide as images and read the text at phone size. Fix overflow, low contrast, anything outside the safe area, a wrong name or number. A person or the delegated approver approves the post, but the Reviewer will send back a visual that is wrong.
 
 ## 5. Attach, import, post
 1. Attach each file to the issue you are working on (the paperclip skill: \`POST /api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments\`, multipart field \`file\`). A file in your workspace reaches the plugin only this way.
@@ -410,6 +410,60 @@ export const PIB_ONLY_SKILLS: SocialSkill[] = [
   },
 ];
 
+/** `references/social-craft.md` of the content skill: what makes a post worth stopping for. No company names or numbers: every company gets this text. */
+export const SOCIAL_CRAFT_REFERENCE = `# Social craft: how to make a post worth stopping for
+
+Read before you plan, draft or make any social post, for own work or for a client. A post that only passes the mechanical checks (length, one ask, alt text) is not done: it must also be worth stopping for. Text-only posts with a general tip are the usual failure.
+
+## 1. Start from the brand kit
+- Own work: \`partnersinbiz.cockpit:company-profile\` (voice, audience, banned words, and the brand kit: tagline, colours, fonts, logo address, visual style).
+- A client: \`partnersinbiz.crm:get-client-profile\` (voice, audience, banned words, brand kit).
+- Colours, fonts or logo missing and there is a website: fill the kit first. A client: \`partnersinbiz.crm:extract-brand-from-site\` with \`client\` (it saves the empty colour and font fields). Own work: the same tool with \`url\` and no client, then save what it found with \`partnersinbiz.cockpit:update-company-profile\`. Check the picks against the site once, import the logo, and write the voice and tone examples from the site's own words.
+- Every image and video uses that kit: the same colours, the same fonts, the logo. One look per brand, the same every time. A reader should know whose post it is before they read a word.
+
+## 2. One real thing per post
+A post carries exactly one of these:
+- a result, with the number and where it comes from;
+- a before and after;
+- a short story: one customer, one day, one build (names and faces only with consent on file);
+- an opinion we will defend, said plainly;
+- a how-to someone can use today, with the actual steps;
+- behind the scenes: a real screen, a real build, a real mistake.
+
+General advice ("automate the work that repeats", "your site should book a call") is none of these. If the post could be on any agency's feed, it is not ours yet. Ask for the missing fact (a client result, a screenshot, a number) before you write around it.
+
+## 3. The first line earns the second
+- Write five first lines and keep the one that would stop you mid-scroll.
+- Specific beats clever: a number, a name, a place, a price, a surprise, a tension between two things.
+- A question mark alone is not a hook. "Which decision does your team wait on most?" is a survey; "We cut <client>'s <task> from <before> to <after>. Here is the one change that did it." is a hook, once the blanks hold real, sourced facts. Never fill them with invented ones.
+
+## 4. Format first, then words
+Per brand, per week, at least:
+- one carousel (5 to 8 slides, slide 1 is the hook in 6 words or fewer, one idea per slide, the last slide is the ask);
+- one short video (15 to 40 seconds, the product or a face in the first 2 seconds, captions burned in, 9:16);
+- the rest as image posts with a real picture: a real screen, a real place, a real person, or a designed card in the brand kit.
+
+Text only is for X and for replies. Make motion with the tools that cost nothing first: HTML slides rendered to PNG, Remotion, ffmpeg, the Studio video editor. Use generation when the idea needs a real scene, and read your limit with \`studio-usage\` first.
+
+## 5. Write the way the brand talks
+The plain-writing rules (short, exact, no hedges) are for reports, comments and briefs. Marketing copy follows the brand voice instead: rhythm, contractions, warmth, and humour where the brand has it. Read the post aloud. If it sounds like a notice or a manual, rewrite it.
+
+## 6. Our process is never the subject
+Rules from reviews (UTM tags, one ask, card layout, "a notice is not a lead") shape the work. They are never what a post is about. Readers do not care how we check posts.
+
+## 7. Do not repeat yourself
+Before you draft, read the account's last ten posts (\`list-posts\`). Do not reuse an opening, a structure or an ask from them. "Reply and tell me" at most once in five posts.
+
+## 8. One ask, and a reason
+One thing to do, fitted to the platform, and why it is worth their time ("Book 20 minutes: you leave with a fixed quote").
+
+## 9. Learn from each post
+At 48 hours and at 7 days read \`post-analytics\`. Write one line in the playbook (\`propose-playbook-change\`): what the post was, what it got, what you will change.
+
+## What stays as it is
+Every gate still applies: review before anything goes out, sourced numbers only, no fake proof, consent for real people, the brand's banned words, UTM tags on links. This file changes what we make, not who approves it.
+`;
+
 export const SKILLS: SocialSkill[] = [
   {
     skillKey: "social-publish",
@@ -428,6 +482,7 @@ export const SKILLS: SocialSkill[] = [
     files: [
       { path: "references/platforms.md", content: PLATFORMS_REFERENCE },
       { path: "references/media-studio.md", content: MEDIA_STUDIO_REFERENCE },
+      { path: "references/social-craft.md", content: SOCIAL_CRAFT_REFERENCE },
     ],
   },
   {

@@ -1789,6 +1789,10 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+`PAPERCLIP_EXIT_ON_STREAM_WRITE_ERROR=1` makes the server exit (code 1) on an uncaught `EPIPE` / `ERR_STREAM_DESTROYED` instead of logging `[paperclip] stream-write-error-net: kept running` and staying up. It is read when the error happens.
+
+`PAPERCLIP_GITHUB_OWNERLESS_DELEGATION=0` switches off a fork behaviour (PAR-9963): a run whose identity cause is `company_default` (nobody started it by hand) may use a person's GitHub grant when a connection manager has delegated that grant to exactly that agent (`POST /api/tool-connections/:connectionId/grants/:grantId/delegations`). Without a delegation row such a run gets no GitHub login, as upstream. A grant dedicated to the agent still wins, low-trust runs get nothing, and runs with a responsible person never read delegations. It is read on every credential resolution.
+
 ### One-command isolated manual test drive
 
 Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA

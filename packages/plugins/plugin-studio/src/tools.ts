@@ -222,6 +222,20 @@ export const STUDIO_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["assetId"], { assetId: text("Asset id") }),
   },
   {
+    name: "studio-drive-save",
+    displayName: "Save a Studio asset to Drive",
+    description:
+      "Copy a Studio asset into its client's Drive `02 Assets` folder. A file up to 5 MB is saved at once and the answer holds the Drive url. A bigger file, up to 200 MB, runs as a transfer: the answer holds a transferId and status running. Then call studio-drive-transfer with that transferId until its status is done (it holds the Drive url) or failed. Saving the same file again makes no second copy.",
+    parametersSchema: schema(["assetId"], { assetId: text("Asset id, from studio-list-assets") }),
+  },
+  {
+    name: "studio-drive-transfer",
+    displayName: "Check a Studio Drive transfer",
+    description:
+      "How far a studio-drive-save transfer (a file over 5 MB, up to 200 MB) has got: status running, done or failed, with the bytes moved. When done, the answer holds the Drive url. Poll it every half minute or so until it is done or failed.",
+    parametersSchema: schema(["transferId"], { transferId: text("The transferId from studio-drive-save") }),
+  },
+  {
     name: "studio-import-from-attachment",
     displayName: "Save an attachment to Studio",
     description: "Save a file you made as a Studio asset: attach it to the issue, then pass its attachment id. Images (JPEG, PNG, GIF, WebP) and videos (MP4, MOV). Importing the same attachment again returns the same asset.",

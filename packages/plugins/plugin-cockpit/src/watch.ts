@@ -143,8 +143,15 @@ export async function readStorms(ctx: PluginContext, companyId: string, now: Dat
  * descriptor, no open blocker issue, no open question to the owner, and not
  * held by a person. The oldest `limit` come back with the full count.
  */
-export async function readBlocked(ctx: PluginContext, companyId: string, now: Date, limit?: number): Promise<{ total: number; items: BlockedIssue[] }> {
+export async function readBlocked(
+  ctx: PluginContext,
+  companyId: string,
+  now: Date,
+  limit?: number,
+  opts: { ladder?: boolean } = {},
+): Promise<{ total: number; items: BlockedIssue[] }> {
   const queryLimit = Math.trunc(limit ?? WATCH.named);
+  if (opts.ladder) return readBlockedForLadder(ctx, companyId, now, queryLimit);
   const rows = await ctx.db.query<Raw>(
     `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total,
             (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
@@ -159,6 +166,56 @@ export async function readBlocked(ctx: PluginContext, companyId: string, now: Da
       ORDER BY coalesce(i.blocked_transition_at, i.updated_at), i.id
       LIMIT ${queryLimit}`,
     [companyId, ago(now, WATCH.blockedHours)],
+  );
+  return {
+    total: rows.length ? num(rows[0]!.total) : 0,
+    items: rows.map((r) => ({ id: String(r.id), identifier: text(r.identifier), title: String(r.title ?? ""), since: iso(r.since) ?? now.toISOString(), closedBlockers: num(r.closed_blockers) })),
+  };
+}
+
+/**
+ * SQL test, with the lookback time as the given parameter: the host's
+ * blocked-issue sweeper handed this issue back to its assignee inside the
+ * lookback window and the assignee blocked it again. The assignee had a second
+ * look and still has no way out, so the ladder does not wait any longer.
+ * (The sweeper repeats every 24 hours and each re-block moves
+ * `blocked_transition_at`, so a plain "blocked for N hours" test never comes
+ * true for these: PAR-8362 sat for three days.)
+ */
+function reblockedAfterSweepSql(param: string): string {
+  // The sweeper's wake is a run on the issue with context source `blocked_issue_sweeper`
+  // (heartbeat_runs is a core table this plugin may read; activity_log is not).
+  return `EXISTS (SELECT 1 FROM public.heartbeat_runs hr
+          WHERE hr.company_id = i.company_id AND hr.context_snapshot ->> 'issueId' = i.id::text
+            AND hr.context_snapshot ->> 'source' = 'blocked_issue_sweeper'
+            AND coalesce(hr.started_at, hr.created_at) > ${param}::timestamptz
+            AND coalesce(hr.started_at, hr.created_at) <= coalesce(i.blocked_transition_at, i.updated_at))`;
+}
+
+/**
+ * Ladder candidates: blocked issues with no open blocker and nobody else named
+ * to act. That is no unblock descriptor at all, or a descriptor whose owner is
+ * the assignee itself (the host refuses any other owner from an agent, so a
+ * self-owned block is the normal shape of "I cannot do this": PAR-8362). They
+ * qualify once blocked for `WATCH.ladderBlockedHours`, or at once when the
+ * assignee re-blocked after a sweep. Oldest first.
+ */
+async function readBlockedForLadder(ctx: PluginContext, companyId: string, now: Date, queryLimit: number): Promise<{ total: number; items: BlockedIssue[] }> {
+  const rows = await ctx.db.query<Raw>(
+    `SELECT i.id, i.identifier, i.title, coalesce(i.blocked_transition_at, i.updated_at) AS since, count(*) OVER () AS total,
+            (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
+              WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status IN ('done', 'cancelled'))::text AS closed_blockers
+       FROM public.issues i
+      WHERE i.company_id = $1 AND i.status = 'blocked' AND i.hidden_at IS NULL AND i.assignee_user_id IS NULL
+        AND (jsonb_typeof(i.unblock_descriptor) IS DISTINCT FROM 'object'
+             OR (i.assignee_agent_id IS NOT NULL AND i.unblock_descriptor -> 'owner' ->> 'agentId' = i.assignee_agent_id::text))
+        AND (coalesce(i.blocked_transition_at, i.updated_at) < $2::timestamptz OR ${reblockedAfterSweepSql("$3")})
+        AND NOT EXISTS (SELECT 1 FROM public.issue_relations r JOIN public.issues b ON b.id = r.issue_id
+                         WHERE r.company_id = i.company_id AND r.related_issue_id = i.id AND r.type = 'blocks' AND b.status NOT IN ('done', 'cancelled'))
+        AND NOT EXISTS (SELECT 1 FROM ${NAMESPACE}.asks a WHERE a.company_id = i.company_id::text AND a.issue_id = i.id::text AND a.status = 'open')
+      ORDER BY coalesce(i.blocked_transition_at, i.updated_at), i.id
+      LIMIT ${queryLimit}`,
+    [companyId, ago(now, WATCH.ladderBlockedHours), ago(now, WATCH.reblockLookbackHours)],
   );
   return {
     total: rows.length ? num(rows[0]!.total) : 0,
@@ -402,7 +459,7 @@ export async function readMarkerIssues(ctx: PluginContext, companyId: string): P
  */
 export async function readLadderIssues(ctx: PluginContext, companyId: string, now: Date): Promise<LadderIssue[]> {
   const [blocked, storms, markerRows] = await Promise.all([
-    readBlocked(ctx, companyId, now, LADDER_CANDIDATES),
+    readBlocked(ctx, companyId, now, LADDER_CANDIDATES, { ladder: true }),
     readStorms(ctx, companyId, now),
     readMarkerIssues(ctx, companyId),
   ]);
@@ -446,13 +503,14 @@ export async function readLadderIssues(ctx: PluginContext, companyId: string, no
     const idParams = idArray.map((_, i) => `$${i + 2}`).join(", ");
     rows = await ctx.db.query<Raw>(
       `SELECT i.id, i.identifier, i.status, coalesce(i.blocked_transition_at, i.updated_at) AS blocked_since,
+              (${reblockedAfterSweepSql(`$${idArray.length + 2}`)}) AS reblocked,
               (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
                 WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status NOT IN ('done', 'cancelled'))::text AS open_blockers,
               (SELECT count(*) FROM public.issue_relations r2 JOIN public.issues b2 ON b2.id = r2.issue_id
                 WHERE r2.company_id = i.company_id AND r2.related_issue_id = i.id AND r2.type = 'blocks' AND b2.status IN ('done', 'cancelled'))::text AS closed_blockers
          FROM public.issues i
         WHERE i.company_id = $1 AND i.id IN (${idParams})`,
-      [companyId, ...idArray],
+      [companyId, ...idArray, ago(now, WATCH.reblockLookbackHours)],
     );
   }
 
@@ -467,6 +525,7 @@ export async function readLadderIssues(ctx: PluginContext, companyId: string, no
       identifier: text(r.identifier) || id,
       status: String(r.status),
       blockedSince: iso(r.blocked_since) ?? now.toISOString(),
+      reblockedAfterSweep: r.reblocked === true || r.reblocked === "t" || r.reblocked === "true",
       openBlockers: num(r.open_blockers),
       closedBlockers: num(r.closed_blockers),
     };

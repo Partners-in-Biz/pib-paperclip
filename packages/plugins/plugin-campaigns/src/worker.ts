@@ -16,6 +16,7 @@ import {
   campaignStats,
   claimLaunch,
   clearApproval,
+  setApprovalAudience,
   clientCampaignCounts,
   closedStepIssues,
   crmContactsByIds,
@@ -44,6 +45,7 @@ import {
   saveEnrollment,
   setLaunchError,
   setStepHtml,
+  updateStepText,
   stepEventStats,
   stopEnrollment,
   stopEnrollmentsForContact,
@@ -88,8 +90,10 @@ import {
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
-import { nextSend } from "./detail.js";
+import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
+import { audienceChangedMessage, audienceFingerprint, CLIENT_YES_MISSING, customerCount } from "./approval-audience.js";
+import { approveAction, reviewApprovalTool, sendBackAction, type ApprovalPaths } from "./approve.js";
 import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "./channels.js";
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
@@ -207,6 +211,8 @@ const plugin = definePlugin({
     ctx.actions.register("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
     ctx.actions.register("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
     ctx.actions.register("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
+    ctx.actions.register("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
+    ctx.actions.register("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
     ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     ctx.actions.register("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
@@ -378,11 +384,13 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-stats") return stats(ctx, companyId, body);
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
+  if (name === "review-campaign-approval") return reviewApprovalTool(ctx, companyId, run.agentId, body, APPROVAL_PATHS);
   if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
+  if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
   if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId });
@@ -456,19 +464,41 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
     enrollmentViews(ctx, campaign.id),
     campaign.approvalIssueId ? ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : Promise.resolve(null),
   ]);
-  const audience = await launchAudience(ctx, companyId, campaign, steps).catch(() => null);
+  // The same resolution (and country) as the approve action, so the hash the bar sends matches when nothing changed.
+  const setup = await messagingSetup(ctx, companyId).catch(() => null);
+  const audience = await launchAudience(ctx, companyId, campaign, steps, [], setup?.config.defaultCountry).catch(() => null);
   // Who it goes out as and what is wrong, without asking the web: the page shows this before anyone approves.
   const preflight = await gatherPreflight(ctx, companyId, campaign, steps, { network: false, audience: false }).catch(() => null);
   const running = enrollments.filter((row) => row.status === "running");
+  const fingerprint = audience ? audienceFingerprint(audience.eligible.map((contact) => contact.id)) : null;
+  // The approval bar (plan 5.1): for an own campaign, how many of the people are current clients.
+  const deciding = campaign.status === "draft" && Boolean(campaign.approvalIssueId);
+  const customers = deciding && fingerprint && !campaign.clientRef ? await customerCount(ctx, companyId, fingerprint.contactIds).catch(() => null) : null;
   return {
-    campaign: { ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null },
+    campaign: {
+      ...publicCampaign(campaign),
+      steps,
+      stats,
+      approvalStatus: approval?.status ?? null,
+      clientYes: campaign.clientYesRef ? { ref: campaign.clientYesRef, by: campaign.clientYesBy ?? null, at: campaign.clientYesAt ?? null } : null,
+    },
     sender: preflight ? { sentAs: preflight.sentAs, channels: preflight.channels } : null,
     preflight: preflight ? { errors: preflight.errors, warnings: preflight.warnings } : null,
     approval: approval
       ? { issueId: approval.id, identifier: approval.identifier ?? null, status: approval.status, withPerson: Boolean(approval.assigneeUserId), withAgent: Boolean(approval.assigneeAgentId) }
       : null,
     audience: audience
-      ? { matching: audience.contacts.length, willGet: audience.eligible.length, leftOut: audience.suppressedCount, notReachable: audience.notReachable, reach: audience.reach, sample: audience.eligible.slice(0, 5).map((contact) => contact.name) }
+      ? {
+          matching: audience.contacts.length,
+          willGet: audience.eligible.length,
+          leftOut: audience.suppressedCount,
+          notReachable: audience.notReachable,
+          reach: audience.reach,
+          sample: audience.eligible.slice(0, 5).map((contact) => contact.name),
+          firstNames: audience.eligible.slice(0, 8).map((contact) => firstName(contact.name)),
+          customers,
+          hash: fingerprint!.hash,
+        }
       : null,
     enrolled: {
       total: stats.enrolled,
@@ -677,6 +707,8 @@ async function launchCampaign(
   options: { contactIds?: string[]; approvedByUserId: string | null },
 ): Promise<LaunchResult> {
   assertCanLaunch(campaign.status);
+  // A client's campaign launches the first time only with the client's written yes on record (plan 5.1): a hand-marked issue is not enough.
+  if (campaign.status === "draft" && campaign.clientRef && !(campaign.clientYesRef && campaign.clientYesAt)) throw new CampaignError(CLIENT_YES_MISSING);
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch. Add one with add-campaign-step.");
   // Things change between approval and launch (a sender removed, a provider switched off): check again, without the web.
@@ -699,6 +731,12 @@ async function launchCampaign(
     if (!approval?.description?.includes(ALL_CONTACTS_MARK)) {
       throw new CampaignError(`This campaign would email every CRM contact (${contacts.length}), but its approval did not say "${ALL_CONTACTS_MARK}${contacts.length})". Add audience tags, or request approval again so the approver sees who gets it.`);
     }
+  }
+  // A draft launches only to the people its approval was for (F5): someone tagged since, or an issue marked done by hand
+  // after the audience grew, is refused. An approval opened before these columns existed has no hash and is not compared.
+  if (campaign.status === "draft" && campaign.approvalIssueId && campaign.approvalAudienceHash) {
+    const now = audienceFingerprint(eligible.map((contact) => contact.id));
+    if (now.hash !== campaign.approvalAudienceHash) throw new CampaignError(audienceChangedMessage(campaign.approvalAudienceCount, now.count));
   }
   const audience = audienceLine(campaign, eligible.length);
   const start = enrollmentStart(new Date(), campaign.startAt);
@@ -753,13 +791,18 @@ async function launchOnApproval(ctx: PluginContext, companyId: string, campaign:
     const userId = approvedByUserId ?? (await approverUserId(ctx, companyId, campaign));
     try {
       await ctx.issues.update(issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, companyId);
-      await commentOn(ctx, companyId, issueId, `Approved, but the campaign could not launch: ${error.message}\n\nFix that, then mark this issue **done** again to launch it. Cancel the issue to drop the launch.`);
+      const next = campaign.clientRef
+        ? "Open the campaign, record where the client said yes, then click **Approve and launch** there. Marking this issue done does not launch a client's campaign."
+        : "Fix that, then click **Launch** on the campaign (or mark this issue **done** again).";
+      await commentOn(ctx, companyId, issueId, `Approved, but the campaign could not launch: ${error.message}\n\n${next} Cancel the issue to drop the launch.`);
     } catch (updateError) {
       ctx.logger.info("Could not hand the approval back after a failed launch", { issueId, error: updateError instanceof Error ? updateError.message : String(updateError) });
     }
     return null;
   }
 }
+
+const APPROVAL_PATHS: ApprovalPaths = { launchOnApproval, onApprovalRefused };
 
 /** A person refused the launch: the draft can be fixed and sent for approval again; its agent gets a task to do that. */
 async function onApprovalRefused(ctx: PluginContext, companyId: string, campaign: CampaignDraft, issueId: string): Promise<void> {
@@ -1095,7 +1138,9 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
       ? "- **Delivery:** email. The Mailbox sends each due step as marketing mail (with an unsubscribe header). {{first_name}} and the other tokens are filled in per contact."
       : "- **Delivery:** issue. Each due step opens an issue and the campaign's agent sends the email.";
   const description = [
-    `Mark this issue **done** to approve campaign **${campaign.name}**: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
+    campaign.clientRef
+      ? `To approve campaign **${campaign.name}**, open it on the Campaigns page, record where the client said yes and click **Approve and launch**. Marking this issue done does not launch a client's campaign. Cancel the issue to refuse it (its agent gets a task to revise it).`
+      : `Mark this issue **done** to approve campaign **${campaign.name}**, or click **Approve and launch** on the campaign: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
     "",
     `See every email, who gets it and when on the Campaigns page: [${campaign.name}](${await campaignPageLink(ctx, companyId, campaign)}).`,
     "",
@@ -1121,12 +1166,15 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
     projectId: await projectForCampaign(ctx, companyId, campaign),
     outward: true,
     actorUserId: campaign.ownerUserId,
-    reviewerBrief: (route) => launchReviewBrief(campaign, route.approverUserId),
+    reviewerBrief: (route) =>
+      `${launchReviewBrief(campaign, route.approverUserId)}\nGive the verdict with the tool \`review-campaign-approval\` (campaignId \`${campaign.id}\`, verdict pass or changes, your note): it comments and reassigns for you.`,
     wakeReason: "Review a campaign launch before a person approves it",
   });
   campaign.approvalIssueId = approval.id;
   await saveCampaign(ctx, campaign);
   await setLaunchError(ctx, campaign.id, null);
+  // Who this approval is for: a launch compares against it, so someone added to the audience meanwhile is noticed.
+  await setApprovalAudience(ctx, campaign.id, audienceFingerprint(eligible.map((contact) => contact.id)));
   return {
     campaignId: campaign.id,
     approvalIssueId: approval.id,
@@ -1243,6 +1291,28 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
   return { campaignId: campaign.id, position, variant, htmlSet: true, approvalReset };
+}
+
+async function editCampaignStepAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign's steps can change. Pause it and create a new draft instead.");
+  const position = integer(params.position, "position");
+  const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
+  const subject = params.subject == null ? undefined : requiredString(params, "subject");
+  const text = params.body == null ? undefined : requiredString(params, "body");
+  if (subject === undefined && text === undefined) throw new CampaignError("Give a subject, a body, or both.");
+  const steps = await listSteps(ctx, campaign.id);
+  const target = steps.find((step) => step.position === position && step.variant === variant);
+  if (!target) throw new CampaignError("No step found at that position and variant");
+  await updateStepText(ctx, { companyId, campaignId: campaign.id, position, variant, subject, body: text });
+  await markEdited(ctx, campaign.id);
+  const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the text of step ${position}${variant === "b" ? "B" : ""} changed`);
+  // Preflight on the edited steps (no link check over the network), so the writer sees at once whether the fix holds.
+  const result = await gatherPreflight(ctx, companyId, campaign, await listSteps(ctx, campaign.id), { network: false });
+  return {
+    campaignId: campaign.id, position, variant, subjectSet: subject !== undefined, bodySet: text !== undefined, approvalReset,
+    preflight: { ok: result.ok, errors: result.errors, warnings: result.warnings, sentAs: result.sentAs, channels: result.channels },
+  };
 }
 
 async function createTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {

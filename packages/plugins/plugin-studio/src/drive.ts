@@ -57,7 +57,8 @@ function mb(bytes: number): string {
 /** Plain words for a refusal from the kit, the CRM or Google. */
 export function refusalText(result: Exclude<DriveSaveResult, { status: "saved" }>): string {
   if (result.status === "no_ack") return `CRM didn't answer within ${DRIVE_TIMEOUT_MS / 1000} seconds, so the file may not be in Drive. Check that the CRM plugin is running, then try again. A retry does not make a second copy.`;
-  const hint = result.hint ? ` (${result.hint})` : "";
+  // A hint can echo a thrown message; a signed link (or any URL) must never reach a page or an agent (PAR-9264).
+  const hint = result.hint ? ` (${result.hint.replace(/https?:\/\/\S+/gi, "[link removed]")})` : "";
   switch (result.reason) {
     case "too_large":
       return `Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps. Download the file and add it to Drive by hand.`;

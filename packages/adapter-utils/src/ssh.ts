@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { pipeIntoChildStdin, writeChildStdin } from "./child-stdin.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
@@ -322,8 +323,12 @@ async function spawnText(
       }));
     });
 
-    if (options.stdin != null && child.stdin) {
-      child.stdin.end(options.stdin);
+    if (options.stdin != null) {
+      // Pipe-closed codes are left to the close handler; other codes reject.
+      writeChildStdin(child, options.stdin, "ssh.spawnText", (error) => {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(error, { code: null }));
+      });
     }
   });
 }
@@ -649,7 +654,8 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
   }
 }
 
-async function streamLocalFileToSsh(input: {
+/** @internal Exported for tests only. */
+export async function streamLocalFileToSsh(input: {
   spec: SshConnectionConfig;
   localFile: string;
   remoteScript: string;
@@ -688,11 +694,13 @@ async function streamLocalFileToSsh(input: {
     ssh.on("error", fail);
     if (input.progress) {
       input.progress.counter.on("error", fail);
-      source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source.pipe(input.progress.counter), ssh, "ssh.streamLocalFileToSsh", fail);
     } else {
-      source.pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source, ssh, "ssh.streamLocalFileToSsh", fail);
     }
     ssh.on("close", (code) => {
+      // ssh may close before reading the whole file; free the read stream.
+      source.destroy();
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
@@ -1344,15 +1352,189 @@ export async function runSshCommand(
   }
 }
 
+// Run record, format version 1 (PAR-9960). The ssh spawn script writes it to
+// `<remoteRunDir>/record` before `exec`, so after a server exit the host can
+// find the remote process group. Three `key=value` lines, newline after each:
+// `v=1`, `pgid=<decimal>` (from `ps -o pgid=`), `lstart=<text>` (from
+// `ps -o lstart=`, compared as an exact string on the same machine, never
+// parsed to a date). Readers: PAR-9917 (lease) and PAR-9399 (stopRemote).
+export const SSH_RUN_RECORD_FILE = "record";
+export const SSH_RUN_RECORD_VERSION = "1";
+export const SSH_RUN_RECORD_EXCLUDE_PATTERN = "/.paperclip-runs/";
+export const SSH_RUN_DIR_REFUSED_EXIT_CODE = 125;
+
+export type SshRunRecordParseResult =
+  | { status: "readable"; pgid: number; lstart: string }
+  | { status: "unreadable" };
+
+/** Pure parser of the version-1 run record. Never throws. */
+export function parseSshRunRecord(text: unknown): SshRunRecordParseResult {
+  const unreadable = { status: "unreadable" } as const;
+  if (typeof text !== "string" || !text.endsWith("\n")) return unreadable;
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length !== 3) return unreadable;
+  const fields = new Map<string, string>();
+  for (const line of lines) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) return unreadable;
+    const key = line.slice(0, eq);
+    if (fields.has(key)) return unreadable;
+    fields.set(key, line.slice(eq + 1));
+  }
+  const pgidText = fields.get("pgid");
+  const lstart = fields.get("lstart");
+  if (fields.get("v") !== SSH_RUN_RECORD_VERSION || pgidText == null || lstart == null) return unreadable;
+  if (!/^[0-9]+$/.test(pgidText)) return unreadable;
+  const pgid = Number(pgidText);
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return unreadable;
+  if (lstart.trim().length === 0 || lstart !== lstart.trim()) return unreadable;
+  return { status: "readable", pgid, lstart };
+}
+
+function trimTrailingSlashes(value: string): string {
+  const trimmed = value.replace(/\/+$/, "");
+  return trimmed.length > 0 ? trimmed : "/";
+}
+
+// POSIX sh block run in a subshell (so `umask` and `LC_ALL` do not reach the
+// agent command). Exit 125 with one stderr line when the run dir is not
+// confined to the workspace: lexically before `mkdir`, then physically
+// (symlinks resolved) on the deepest existing ancestor and on the made dir.
+function buildSshRunRecordScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  const exclude = shellQuote(SSH_RUN_RECORD_EXCLUDE_PATTERN);
+  return [
+    "(",
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `refuse() { printf '%s\\n' "paperclip: remote run dir refused: $1" >&2; exit ${SSH_RUN_DIR_REFUSED_EXIT_CODE}; }`,
+    'case "$rd" in /*) ;; *) refuse "not absolute";; esac',
+    'case "$rd/" in */./*|*/../*|*//*) refuse "dot or empty path part";; esac',
+    'case "$rd" in "$ws"/?*) ;; *) refuse "outside workspace";; esac',
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || refuse "workspace missing"',
+    'inws() { r=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1; case "$r" in "$wsp"|"$wsp"/*) return 0;; esac; return 1; }',
+    'p=$rd; while [ -n "$p" ] && [ ! -d "$p" ]; do p=${p%/*}; done',
+    'inws "${p:-/}" || refuse "outside workspace after resolving links"',
+    'umask 077',
+    'mkdir -p "$rd" || exit 1',
+    'inws "$rd" || refuse "outside workspace after resolving links"',
+    "pg=$(ps -o pgid= -p $$ | tr -d ' ')",
+    "st=$(ps -o lstart= -p \"$pg\" | sed 's/^ *//;s/ *$//')",
+    `printf 'v=${SSH_RUN_RECORD_VERSION}\\npgid=%s\\nlstart=%s\\n' "$pg" "$st" > "$rd/record.tmp.$$" || exit 1`,
+    `mv -f "$rd/record.tmp.$$" "$rd/${SSH_RUN_RECORD_FILE}" || exit 1`,
+    'if top=$(git -C "$ws" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$wsp" ] &&',
+    '  ex=$(git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null); then',
+    '  case "$ex" in /*) ;; *) ex="$ws/$ex";; esac',
+    `  grep -qxF ${exclude} "$ex" 2>/dev/null || { mkdir -p "\${ex%/*}" && printf '\\n%s\\n' ${exclude} >> "$ex"; } || true`,
+    "fi",
+    ")",
+  ].join("\n");
+}
+
+// The run directory layout of plan 13.9: `<remoteWorkspacePath>/.paperclip-runs/<runId>`.
+// One function, so the adapter and the lease (PAR-9917) name the same path.
+// Null for a run id that is not a plain token: no record, no stopRemote.
+export const SSH_RUN_DIR_PARENT = ".paperclip-runs";
+export function sshRemoteRunDirFor(remoteWorkspacePath: string, runId: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(runId) || !remoteWorkspacePath.startsWith("/")) return null;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return `${ws === "/" ? "" : ws}/${SSH_RUN_DIR_PARENT}/${runId}`;
+}
+
+// PAR-9399: a signal to the local ssh client never reaches the remote process
+// group. stopRemote reads the version-1 record over a second ssh connection
+// and signals that group.
+export type SshRemoteStopSignal = "TERM" | "KILL";
+export type SshRemoteStopOutcome =
+  | "signalled"
+  | "gone"
+  | "leader-gone"
+  | "mismatch"
+  | "refused"
+  | "missing"
+  | "unreadable"
+  | "failed"
+  | "error";
+export type SshRemoteCommandRunner = (script: string, timeoutMs: number) => Promise<SshCommandResult>;
+
+export const SSH_REMOTE_STOP_TIMEOUT_MS = 10_000;
+const SSH_REMOTE_STOP_OUTCOMES = new Set<string>([
+  "signalled", "gone", "leader-gone", "mismatch", "refused", "missing", "unreadable", "failed",
+]);
+
+// Reads `<runDir>/record` with the rules of parseSshRunRecord (exactly the
+// three keys once each, newline-terminated, `v=1`, decimal pgid, lstart with
+// no edge spaces; the shell is stricter on a leading zero or over 15 digits).
+// Then: refuses group 0/1 and its own group, requires the group to exist and
+// the leader's start time to equal the recorded one, so a reused id is never
+// signalled. Prints one outcome token. `kill -s SIG -- -pgid`, because dash
+// (Ubuntu's /bin/sh) rejects `kill -SIG -- -pgid`.
+export function buildSshRemoteStopScript(remoteRunDir: string, signal: SshRemoteStopSignal): string {
+  return [
+    "export LC_ALL=C",
+    `f=${shellQuote(`${remoteRunDir}/${SSH_RUN_RECORD_FILE}`)}`,
+    'if [ ! -f "$f" ]; then echo missing; exit 0; fi',
+    "bad() { echo unreadable; exit 0; }",
+    "n=0; v=; pg=; want=; hv=; hp=; hl=",
+    "while IFS= read -r l; do",
+    "  n=$((n+1))",
+    "  case \"$l\" in",
+    "    v=*) [ -z \"$hv\" ] || bad; hv=1; v=${l#v=};;",
+    "    pgid=*) [ -z \"$hp\" ] || bad; hp=1; pg=${l#pgid=};;",
+    "    lstart=*) [ -z \"$hl\" ] || bad; hl=1; want=${l#lstart=};;",
+    "    *) bad;;",
+    "  esac",
+    "done < \"$f\"",
+    "[ -z \"$l\" ] || bad",
+    `[ "$n" -eq 3 ] && [ "$v" = ${SSH_RUN_RECORD_VERSION} ] || bad`,
+    "case \"$pg\" in ''|0?*|*[!0-9]*|????????????????*) bad;; esac",
+    "case \"$want\" in ''|[[:space:]]*|*[[:space:]]) bad;; esac",
+    'if [ "$pg" -le 1 ]; then echo refused; exit 0; fi',
+    "self=$(ps -o pgid= -p $$ | tr -d ' ')",
+    'if [ "$pg" = "$self" ]; then echo refused; exit 0; fi',
+    'if ! kill -s 0 -- "-$pg" 2>/dev/null; then echo gone; exit 0; fi',
+    "have=$(ps -o lstart= -p \"$pg\" 2>/dev/null | sed 's/^ *//;s/ *$//')",
+    'if [ -z "$have" ]; then echo leader-gone; exit 0; fi',
+    'if [ "$have" != "$want" ]; then echo mismatch; exit 0; fi',
+    `if kill -s ${signal} -- "-$pg"; then echo signalled; else echo failed; fi`,
+  ].join("\n");
+}
+
+// Run-end removal (AC 4, temporary until PAR-9961 moves it into the lease
+// release). Deletes inside the user's workspace, so it removes only
+// `<ws>/.paperclip-runs/<runId>` after resolving links: a `.paperclip-runs`
+// that resolves outside the workspace, or a run dir that is a link, is left.
+export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `case "$rd" in "$ws"/${SSH_RUN_DIR_PARENT}/?*) ;; *) echo refused; exit 0;; esac`,
+    'name=${rd##*/}',
+    `case "$name" in ''|*[!A-Za-z0-9_-]*) echo refused; exit 0;; esac`,
+    `[ "$rd" = "$ws/${SSH_RUN_DIR_PARENT}/$name" ] || { echo refused; exit 0; }`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo refused; exit 0;; esac',
+    'if [ -L "$base/$name" ]; then echo refused; exit 0; fi',
+    'if [ ! -e "$base/$name" ]; then echo absent; exit 0; fi',
+    'rm -rf -- "$base/$name" && echo removed',
+  ].join("\n");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
   args: string[];
   env: Record<string, string>;
+  /** Absolute run directory under `spec.remoteWorkspacePath`; absent: script unchanged. */
+  remoteRunDir?: string;
+  /** Test seam: runs a stop/removal script on the remote. Defaults to ssh. */
+  remoteRunner?: SshRemoteCommandRunner;
 }): Promise<{
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote?: (signal: SshRemoteStopSignal) => Promise<SshRemoteStopOutcome>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
@@ -1381,24 +1563,155 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...(input.remoteRunDir != null
+      ? [buildSshRunRecordScript(input.spec.remoteWorkspacePath, input.remoteRunDir)]
+      : []),
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
-  sshArgs.push(
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
-  );
+  const destination = ["-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`];
+  sshArgs.push(...destination, `sh -c ${shellQuote(remoteScript)}`);
+
+  const remoteRunDir = input.remoteRunDir;
+  if (remoteRunDir == null) {
+    return { command: "ssh", args: sshArgs, cleanup: auth.cleanup };
+  }
+
+  // Stop and removal connections reuse the spawn's auth files and skip the
+  // login profiles. After cleanup the auth files are gone: stopRemote is "error".
+  let authCleaned = false;
+  let cleanupPromise: Promise<void> | null = null;
+  const runRemote: SshRemoteCommandRunner =
+    input.remoteRunner ??
+    ((script, timeoutMs) =>
+      execFileText("ssh", [...auth.args, ...destination, `sh -c ${shellQuote(script)}`], {
+        timeout: timeoutMs,
+      }));
+  const stopRemote = async (signal: SshRemoteStopSignal): Promise<SshRemoteStopOutcome> => {
+    if (authCleaned) return "error";
+    try {
+      const result = await runRemote(buildSshRemoteStopScript(remoteRunDir, signal), SSH_REMOTE_STOP_TIMEOUT_MS);
+      const token = result.stdout.trim().split(/\s+/).at(-1) ?? "";
+      return SSH_REMOTE_STOP_OUTCOMES.has(token) ? (token as SshRemoteStopOutcome) : "error";
+    } catch {
+      return "error";
+    }
+  };
 
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    stopRemote,
+    cleanup: () =>
+      (cleanupPromise ??= (async () => {
+        authCleaned = true;
+        try {
+          await runRemote(
+            buildSshRunDirRemoveScript(input.spec.remoteWorkspacePath, remoteRunDir),
+            SSH_REMOTE_STOP_TIMEOUT_MS,
+          );
+        } catch {
+          // Best effort: a leftover dir holds one small 0600 file, git-excluded.
+        } finally {
+          await auth.cleanup();
+        }
+      })()),
   };
+}
+
+// Remote run check (PAR-9917, plan 13.9 finding 2). The remote part only
+// prints facts; `decideSshRunCheck` decides on the host.
+export type SshRunCheckBasis =
+  | "never_spawned" | "no_record" | "legacy_lease" | "group_empty"
+  | "leader_gone_members_live" | "leader_live" | "group_reused" | "check_failed" | "refused";
+export interface SshRunCheck {
+  result: "alive" | "gone" | "unknown";
+  basis: SshRunCheckBasis;
+  pgid?: number;
+  leaderStart?: string;
+  checkedAt: string;
+}
+type SshRunCheckDecision = Omit<SshRunCheck, "checkedAt">;
+const SSH_RUN_CHECK_HEADER = "paperclip-run-check 1\n";
+const SSH_RUN_CHECK_TIMEOUT_MS = 10_000;
+
+/** Lexical: absolute, no `.`/`..`/empty parts, strictly below the workspace. */
+export function sshRunDirIsConfined(remoteWorkspacePath: string, remoteRunDir: string): boolean {
+  if (!remoteRunDir.startsWith("/") || /(^|\/)\.{0,2}(\/|$)/.test(remoteRunDir.slice(1))) return false;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return remoteRunDir.length > ws.length + 1 && remoteRunDir.startsWith(ws === "/" ? "/" : `${ws}/`);
+}
+
+export function buildSshRunCheckScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `printf '${SSH_RUN_CHECK_HEADER.trim()}\\n'`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { printf "refused\\nend\\n"; exit 0; }',
+    'if r=$(cd -P "$rd" 2>/dev/null && pwd -P); then case "$r" in "$wsp"/?*) ;; *) printf "refused\\nend\\n"; exit 0;; esac; fi',
+    'if [ ! -f "$rd/record" ]; then printf "norecord\\nend\\n"; exit 0; fi',
+    `printf 'record\\n'; cat "$rd/record" || exit 1; printf '\\037\\n'`,
+    `pg=$(sed -n 's/^pgid=\\([0-9][0-9]*\\)$/\\1/p' "$rd/record" | head -n 1)`,
+    'if [ -n "$pg" ]; then',
+    "  all=$(ps -A -o pgid=) || exit 1",
+    `  printf 'pgid=%s\\n' "$pg"`,
+    `  printf '%s\\n' "$all" | awk -v g="$pg" '$1==g{n++} END{printf "members=%d total=%d\\n", n, NR}'`,
+    `  printf 'leader=%s\\n' "$(ps -o lstart= -p "$pg" 2>/dev/null | sed 's/^ *//;s/ *$//')"`,
+    "fi",
+    "printf 'end\\n'",
+  ].join("\n");
+}
+
+/** Pure decision over the lease facts and the remote output. Never throws. */
+export function decideSshRunCheck(input: { spawnMarked: boolean; stdout: string | null }): SshRunCheckDecision {
+  const failed = { result: "unknown", basis: "check_failed" } as const;
+  const noRecord: SshRunCheckDecision = input.spawnMarked
+    ? { result: "unknown", basis: "no_record" } : { result: "gone", basis: "never_spawned" };
+  const at = input.stdout?.indexOf(SSH_RUN_CHECK_HEADER) ?? -1;
+  if (input.stdout == null || at < 0 || (at > 0 && input.stdout[at - 1] !== "\n")) return failed;
+  const out = input.stdout.slice(at + SSH_RUN_CHECK_HEADER.length);
+  if (!out.endsWith("end\n")) return failed;
+  if (out === "refused\nend\n") return { result: "unknown", basis: "refused" };
+  if (out === "norecord\nend\n") return noRecord;
+  const sep = out.indexOf("\x1f\n");
+  if (!out.startsWith("record\n") || sep < 0) return failed;
+  const record = parseSshRunRecord(out.slice("record\n".length, sep));
+  if (record.status !== "readable") return noRecord;
+  const facts = /^pgid=(\d+)\nmembers=(\d+) total=(\d+)\nleader=([^\n]*)\nend\n$/.exec(out.slice(sep + 2));
+  if (!facts || Number(facts[1]) !== record.pgid || Number(facts[3]) === 0) return failed;
+  const leaderStart = facts[4]!;
+  const base = { pgid: record.pgid, ...(leaderStart ? { leaderStart } : {}) };
+  if (Number(facts[2]) === 0) return { result: "gone", basis: "group_empty", ...base };
+  if (!leaderStart) return { result: "alive", basis: "leader_gone_members_live", ...base };
+  return leaderStart === record.lstart
+    ? { result: "alive", basis: "leader_live", ...base }
+    : { result: "gone", basis: "group_reused", ...base };
+}
+
+/** One ssh command, 10 s limit, never throws. `lease` is the ssh lease's metadata. */
+export async function checkRemoteRun(
+  config: SshConnectionConfig,
+  lease: { remoteRunDir?: unknown; remoteSpawnStartedAt?: unknown } | null,
+  options: { run?: typeof runSshCommand; now?: () => Date } = {},
+): Promise<SshRunCheck> {
+  const checkedAt = (options.now ?? (() => new Date()))().toISOString();
+  const runDir = lease?.remoteRunDir;
+  if (typeof runDir !== "string" || runDir.length === 0) return { result: "unknown", basis: "legacy_lease", checkedAt };
+  if (!sshRunDirIsConfined(config.remoteWorkspacePath, runDir)) return { result: "unknown", basis: "refused", checkedAt };
+  let stdout: string | null = null;
+  try {
+    const result = await (options.run ?? runSshCommand)(
+      config, buildSshRunCheckScript(config.remoteWorkspacePath, runDir), { timeoutMs: SSH_RUN_CHECK_TIMEOUT_MS });
+    stdout = result.stdout;
+  } catch {
+    stdout = null;
+  }
+  const spawnMarked = typeof lease?.remoteSpawnStartedAt === "string" && lease.remoteSpawnStartedAt.length > 0;
+  return { ...decideSshRunCheck({ spawnMarked, stdout }), checkedAt };
 }
 
 export async function syncDirectoryToSsh(input: {
@@ -1470,7 +1783,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
+      if (!tarStopped && (tarExitCode ?? 0) !== 0) {
         reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
@@ -1491,11 +1804,21 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
-    if (progress) {
-      progress.counter.on("error", fail);
-      tar.stdout?.pipe(progress.counter).pipe(ssh.stdin ?? null);
-    } else {
-      tar.stdout?.pipe(ssh.stdin ?? null);
+    // Peer-kill rule: when ssh stops reading, tar blocks on a full pipe and
+    // never exits. Stop tar and let maybeFinish report ssh's own exit code and
+    // stderr, rather than failing with a bare EPIPE. A tar whose output already
+    // ended is exiting by itself and keeps its own exit code; a stopped one's
+    // exit code is ignored.
+    let tarStopped = false;
+    const stopTar = () => {
+      if (tarExited || tar.stdout?.readableEnded) return;
+      tarStopped = true;
+      tar.kill("SIGTERM");
+    };
+    if (tar.stdout) {
+      const tarOut = progress ? tar.stdout.pipe(progress.counter) : tar.stdout;
+      progress?.counter.on("error", fail);
+      pipeIntoChildStdin(tarOut, ssh, "ssh.syncDirectoryToSsh", stopTar, { includePipeClosed: true });
     }
     tar.stderr?.on("data", (chunk) => {
       tarStderr += String(chunk);
@@ -1514,6 +1837,7 @@ export async function syncDirectoryToSsh(input: {
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
+      stopTar();
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1583,7 +1907,7 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
+        if (!sshStopped && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
@@ -1602,11 +1926,19 @@ export async function syncDirectoryFromSsh(input: {
         reject(error);
       };
 
-      if (progress) {
-        progress.counter.on("error", fail);
-        ssh.stdout?.pipe(progress.counter).pipe(tar.stdin ?? null);
-      } else {
-        ssh.stdout?.pipe(tar.stdin ?? null);
+      // Peer-kill rule (see syncDirectoryToSsh): when tar stops reading, ssh
+      // blocks on a full pipe. Stop ssh and let tar's exit decide: OpenSSH
+      // exits 255 on SIGTERM, so a stopped ssh's exit code is ignored.
+      let sshStopped = false;
+      const stopSsh = () => {
+        if (sshExited || ssh.stdout?.readableEnded) return;
+        sshStopped = true;
+        ssh.kill("SIGTERM");
+      };
+      if (ssh.stdout) {
+        const sshOut = progress ? ssh.stdout.pipe(progress.counter) : ssh.stdout;
+        progress?.counter.on("error", fail);
+        pipeIntoChildStdin(sshOut, tar, "ssh.syncDirectoryFromSsh", stopSsh, { includePipeClosed: true });
       }
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
@@ -1625,6 +1957,7 @@ export async function syncDirectoryFromSsh(input: {
       tar.on("close", (code) => {
         tarExited = true;
         tarExitCode = code;
+        stopSsh();
         maybeFinish();
       });
     });

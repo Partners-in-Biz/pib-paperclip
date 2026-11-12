@@ -88,7 +88,7 @@ export function RoutineSwitchOn({ routine, info, onClose, onSwitched, report }: 
         <Banner tone="info" title="It is already on">Every Monday at 07:00 the Social agent reviews last week and drafts next week's posts for approval.</Banner>
       ) : (
         <>
-          <Muted>Every Monday at 07:00 the Social agent reviews last week's results, proposes experiments and drafts next week's posts for each client and for PiB. Nothing is published until a person approves it.</Muted>
+          <Muted>Every Monday at 07:00 the Social agent reviews last week's results, proposes experiments and drafts next week's posts for each client and for PiB. Nothing is published until a person, or the scope's delegated approver, approves it.</Muted>
           <Muted>This sets the routine active and switches its Monday trigger on. You can pause it any time under Routines.</Muted>
           {!info ? <Muted>Reading the routine…</Muted> : null}
         </>

@@ -48,8 +48,19 @@ export function agentRouteFor(item: Pick<NeedsYouItem, "key" | "kind" | "title" 
   const title = item.title.replace(/\s+/g, " ").trim();
   if (PERSON_WORDS.test(title)) return null;
   if (THEME_WORDS.test(title)) return site.siteAccess === "wordpress" && site.connectorConnected && site.sftp ? "theme" : null;
-  const content = (CONTENT_VERB.test(title) && CONTENT_NOUN.test(title)) || CONTENT_ANYWHERE.test(title);
-  return content && canWriteContent(site) ? "content" : null;
+  return isPageChangeTitle(title) && canWriteContent(site) ? "content" : null;
+}
+
+/** Whether an item title reads as a change to a page's copy, meta or links (a change set), not a person's job or markup. */
+export function isPageChangeTitle(raw: string): boolean {
+  const title = raw.replace(/\s+/g, " ").trim();
+  if (PERSON_WORDS.test(title) || THEME_WORDS.test(title)) return false;
+  return (CONTENT_VERB.test(title) && CONTENT_NOUN.test(title)) || CONTENT_ANYWHERE.test(title);
+}
+
+/** A pr_only WordPress sprint with manual client sign-off: its page change sets wait for an apply window. */
+export function needsPageWindow(site: Pick<HandoffSite, "siteAccess" | "changePolicy" | "clientSignoff">): boolean {
+  return site.siteAccess === "wordpress" && site.changePolicy === "pr_only" && site.clientSignoff === "manual";
 }
 
 /** What the agent is told to do with an item it was given. */

@@ -8,32 +8,15 @@ import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, IssueLink, shortUrl } from "./parts.js";
 import type { PreviewItem, PreviewFilter, SprintBundle } from "./types.js";
-import { PREVIEW_FILTER_LABEL, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
+import { PREVIEW_FILTER_LABEL, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
+
+export { awaitingCount, previewsFor };
 
 const MIN_REASON = 10;
 const REVIEW_LABEL: Record<string, string> = { pending: "Reviewer: being checked", passed: "Reviewer: passed", changes_needed: "Reviewer: sent back" };
 
 type Skipped = { id: string; reason: string };
 type Reply = { skipped?: Skipped[] } | null;
-
-/** The previews each filter shows. Awaiting is pending, not expired. */
-export function previewsFor(previews: PreviewItem[], filter: PreviewFilter): PreviewItem[] {
-  return previews.filter((p) => {
-    if (p.superseded && filter !== "applied") return false;
-    switch (filter) {
-      case "awaiting": return p.status === "pending" && !p.expired;
-      case "approved": return p.status === "approved" && !p.appliedAt;
-      case "declined": return p.status === "declined" || p.status === "changes_requested";
-      case "applied": return Boolean(p.appliedAt);
-      case "expired": return p.expired;
-    }
-  });
-}
-
-/** The badge: pending, passed and not expired. */
-export function awaitingCount(previews: PreviewItem[] | undefined): number {
-  return (previews ?? []).filter((p) => p.status === "pending" && p.reviewStatus === "passed" && !p.expired && !p.superseded).length;
-}
 
 export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: SprintBundle; filter: PreviewFilter; onFilter: (f: PreviewFilter) => void; onChanged: () => Promise<void> }) {
   const narrow = useIsNarrow();
@@ -89,7 +72,7 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
         const open = g.items.filter((p) => p.status === "pending" && !p.expired);
         const approvable = open.filter((p) => p.reviewStatus === "passed");
         return (
-          <SectionCard key={g.key} title={g.issueId ? "Task issue" : "Task"} subtitle={`${g.items.length} preview${g.items.length === 1 ? "" : "s"}`}>
+          <SectionCard key={g.key} title={g.issueIdentifier ?? (g.issueId ? "Task issue" : "No task")} subtitle={`${g.items.length} preview${g.items.length === 1 ? "" : "s"}`}>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between", marginBottom: 8 }}>
               <span style={{ fontSize: 13 }}>{g.issueId ? <IssueLink id={g.issueId} identifier={g.issueIdentifier} /> : "No issue yet"}</span>
               {open.length > 0 ? (
@@ -116,12 +99,12 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
   );
 }
 
-function PreviewRow({ p, manual, narrow, busy, error, onApprove, onDecline, onUndo, onConfirm }: {
-  p: PreviewItem; manual: boolean; narrow: boolean; busy: string | null; error?: string;
+function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onApprove, onDecline, onUndo, onConfirm }: {
+  p: PreviewItem; manual: boolean; narrow: boolean; busy: string | null; error?: string; now?: number;
   onApprove: () => void; onDecline: () => void; onUndo: () => void; onConfirm: () => void;
 }) {
   const status = previewStatus(p);
-  const left = previewDaysLeft(p.expiresAt);
+  const left = previewDaysLeft(p.expiresAt, now);
   const open = p.status === "pending" && !p.expired;
   const decided = p.status === "approved" || p.status === "declined" || p.status === "changes_requested";
   const clientApproved = p.status === "approved" && p.decisionSource === "email" && !p.confirmedAt;

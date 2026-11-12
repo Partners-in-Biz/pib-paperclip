@@ -19,12 +19,23 @@ import { ALREADY_ANSWERED, DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, NOT_
 import { seoHost, SPRINT, type Row, type Route } from "./helpers/seo-host.js";
 
 const requireFromDb = createRequire(new URL("../../../db/package.json", import.meta.url));
-const postgres = requireFromDb("postgres") as (url: string, o?: Record<string, unknown>) => any;
-const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
-const { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as {
+type Postgres = (url: string, o?: Record<string, unknown>) => any;
+type EmbeddedDbHelper = {
   getEmbeddedPostgresTestSupport(): Promise<{ supported: boolean }>;
   startEmbeddedPostgresTestDatabase(prefix: string): Promise<{ connectionString: string; cleanup(): Promise<void> }>;
 };
+// The deploy host installs only this plugin's dependencies: when the db package or `postgres` is missing, these specs skip.
+let postgres: Postgres = (() => { throw new Error("postgres is not installed"); }) as never;
+let getEmbeddedPostgresTestSupport: EmbeddedDbHelper["getEmbeddedPostgresTestSupport"] = async () => ({ supported: false });
+let startEmbeddedPostgresTestDatabase: EmbeddedDbHelper["startEmbeddedPostgresTestDatabase"] = async () => { throw new Error("embedded postgres is not available"); };
+try {
+  postgres = requireFromDb("postgres") as Postgres;
+  // Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
+  const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
+  ({ getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as EmbeddedDbHelper);
+} catch {
+  // keep the skipping stubs
+}
 type EmbeddedPostgresTestDatabase = Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -52,9 +63,7 @@ describe("decision.mjs (no database)", () => {
     expect(server).toContain("pool.query(DECISION_SQL, [token, decision, note])");
     expect(server).toContain("send(res, 409, page(refusedAnswer(rows[0]?.status)))");
     expect(server).not.toMatch(/UPDATE \$\{SCHEMA\}\.previews SET status = \$2/);
-    const declined = server.indexOf('rows[0].status === "declined") return send(res, 410, page(DECLINED_PAGE))');
-    expect(declined).toBeGreaterThan(0);
-    expect(declined).toBeLessThan(server.indexOf("rows[0].expired && rows[0].approved_live"));
+    expect(server).toContain('state === "declined") return send(res, 410, page(DECLINED_PAGE))');
     expect(DECLINED_PAGE).toBe("This proposal is not going ahead.");
   });
 

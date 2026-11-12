@@ -33,6 +33,7 @@ import {
 import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
 import { clientAnswersJob } from "./client-approval.js";
 import { scopeFromParams } from "./clients.js";
+import { addManualAccountRecord, markDestinationPostedRecord, skipDestinationRecord } from "./manual.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { CONNECT_EFFECT_KEY, connectEffect } from "./connect-requests.js";
 import { eraseSubject } from "./erasure.js";
@@ -109,6 +110,8 @@ import {
   recordInboxRecord,
   recordMetricsRecord,
   recordReviewVerdictRecord,
+  approvePostAsDelegateRecord,
+  returnPostAsDelegateRecord,
   refreshAccountRecord,
   replyInboxRecord,
   requestClientApprovalRecord,
@@ -119,11 +122,13 @@ import {
   reviewOutcomesRecord,
   mediaComplianceRecord,
   schedulePost,
+  setApprovalDelegateRecord,
   setApprovalPolicyRecord,
   setRssActiveRecord,
   transitionPost,
   updateAccountRecord,
   updatePostRecord,
+  unschedulePostRecord,
   validatePostRecord,
   type Viewer,
 } from "./service.js";
@@ -222,6 +227,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return detachDestination(ctx, viewer, p);
     case "request-review":
       return transitionPost(ctx, viewer, requiredString(p, "postId"), "review");
+    case "unschedule-post":
+      return unschedulePostRecord(ctx, viewer, p);
     case "schedule-post":
       return schedulePost(ctx, viewer, p);
     case "bulk-schedule":
@@ -253,6 +260,10 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return requestClientApprovalRecord(ctx, viewer, p);
     case "record-review-verdict":
       return recordReviewVerdictRecord(ctx, viewer, p);
+    case "approve-post-as-delegate":
+      return approvePostAsDelegateRecord(ctx, viewer, p);
+    case "return-post-as-delegate":
+      return returnPostAsDelegateRecord(ctx, viewer, p);
     case "request-creative":
       return requestCreativeRecord(ctx, viewer, p);
     case "review-outcomes":
@@ -364,6 +375,9 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.get-post": (ctx, v, p) => getPostDetail(ctx, v, requiredString(p, "postId")),
   "social.validate-post": (ctx, v, p) => validatePostRecord(ctx, v, requiredString(p, "postId")),
   "social.mark-posted": (ctx, v, p) => markPostPostedRecord(ctx, v, p),
+  "social.mark-destination-posted": (ctx, v, p) => markDestinationPostedRecord(ctx, v, p),
+  "social.skip-destination": (ctx, v, p) => skipDestinationRecord(ctx, v, p),
+  "social.add-manual-account": (ctx, v, p) => addManualAccountRecord(ctx, v, p),
   "social.delete-post": (ctx, v, p) => deletePostRecord(ctx, v, requiredString(p, "postId")),
   "social.attach": (ctx, v, p) => attachDestination(ctx, v, p),
   "social.detach": (ctx, v, p) => detachDestination(ctx, v, p),
@@ -376,6 +390,8 @@ const ACTIONS: Record<string, ActionHandler> = {
   // Who approves posts (people only: a policy delegates authority), the client's link, the client's approval recorded by hand.
   "social.approval-policy": (ctx, v, p) => getApprovalPolicyRecord(ctx, v, p),
   "social.set-approval-policy": (ctx, v, p) => setApprovalPolicyRecord(ctx, v, p),
+  // The delegated approver of a scope (PAR-9561): a page action only, never an agent tool.
+  "social.set-approval-delegate": (ctx, v, p) => setApprovalDelegateRecord(ctx, v, p),
   "social.approval-status": (ctx, v, p) => approvalStatusRecord(ctx, v, requiredString(p, "postId")),
   "social.request-client-approval": (ctx, v, p) => {
     requireUser(v, "make the client's approval link");

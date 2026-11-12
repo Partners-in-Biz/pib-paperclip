@@ -2,6 +2,25 @@
 const path = require('path');
 const fs = require('fs');
 
+// How long goto lets the network settle after the document has loaded (PIB_BROWSER_SETTLE_MS).
+// Playwright reads `timeout: 0` as "no timeout", so 0 here means "do not wait at all", never "wait for ever".
+// Unset, empty, negative and non-numeric values give the default; the most is 30 s.
+const DEFAULT_SETTLE_MS = 8000;
+const MAX_SETTLE_MS = 30000;
+function settleMs(env = {}) {
+  const raw = env.PIB_BROWSER_SETTLE_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_SETTLE_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTLE_MS;
+  return Math.min(Math.floor(n), MAX_SETTLE_MS);
+}
+
+// A dead page, context or browser. Never swallow it: the dispatcher sorts it into `browser_closed` and drops the session.
+function isClosedTargetError(e) {
+  return e?.name === 'TargetClosedError'
+    || /Target page, context or browser has been closed|Browser has been closed|browser has disconnected/i.test(String(e?.message || ''));
+}
+
 function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   const pw = playwright || require('playwright-core');
   const defaultProfileRoot = profileRoot || env.PIB_BROWSER_PROFILES || '/var/lib/pib-browser/profiles';
@@ -56,7 +75,14 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             executablePath: env.PIB_BROWSER_CHROMIUM || undefined,
             acceptDownloads: false,
             serviceWorkers: 'block',
-            permissions: []
+            permissions: env.PIB_BROWSER_FAKE_MIC === '1' ? ['microphone'] : [],
+            args: env.PIB_BROWSER_FAKE_MIC === '1'
+              ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']
+              : [],
+            ...(env.PIB_BROWSER_MOBILE === '1'
+              ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+                  userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' }
+              : {})
           });
         } catch (e) {
           const err = new Error(e.message);
@@ -80,20 +106,25 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             scheme = '';
           }
 
+          // Swallow route errors: a request still in flight when the page or context
+          // closes rejects, and an unhandled rejection would kill the daemon (PAR-9187).
+          const safe = (fn) => {
+            try { return Promise.resolve(fn()).catch(() => {}); } catch (e) { return Promise.resolve(); }
+          };
           if (!['http:', 'https:'].includes(scheme) && url !== 'about:blank') {
             checkGuard(url, 'request');
-            route.abort();
+            return safe(() => route.abort());
           } else if (checkGuard(url, 'request')) {
-            route.continue();
+            return safe(() => route.continue());
           } else {
-            route.abort();
+            return safe(() => route.abort());
           }
         });
 
         context.on('page', (popup) => {
           const url = popup.url();
           if (!checkGuard(url, 'popup')) {
-            popup.close();
+            Promise.resolve().then(() => popup.close()).catch(() => {});
           }
         });
 
@@ -114,7 +145,16 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
       return {
         goto: async (url) => {
           await ensureInitialized();
-          await page.goto(url, { waitUntil: 'networkidle' });
+          // A live board never goes network-idle (polling, event streams). Waiting for "networkidle" alone
+          // timed out on a healthy, logged-in page and was reported as an expired session (2026-11-12).
+          // Load the document, then give the network a bounded moment to settle.
+          await page.goto(url, { waitUntil: 'domcontentloaded' });
+          const settle = settleMs(env);
+          if (settle > 0 && typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('networkidle', { timeout: settle }).catch((e) => {
+              if (isClosedTargetError(e)) throw e;
+            });
+          }
         },
 
         click: async (selector, text) => {
@@ -124,6 +164,26 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             locator = locator.filter({ hasText: text });
           }
           await locator.click();
+        },
+
+        // Short read of the click target's label for the destructive-word check.
+        // Returns '' when the target is missing; never waits the full action timeout.
+        label: async (selector, text) => {
+          await ensureInitialized();
+          let locator = page.locator(selector);
+          if (text) {
+            locator = locator.filter({ hasText: text });
+          }
+          if ((await locator.count()) === 0) return '';
+          const first = locator.first();
+          const opts = { timeout: 2000 };
+          const parts = await Promise.all([
+            first.getAttribute('aria-label', opts).catch(() => null),
+            first.getAttribute('title', opts).catch(() => null),
+            first.getAttribute('value', opts).catch(() => null),
+            first.innerText(opts).then((t) => t.slice(0, 200)).catch(() => null)
+          ]);
+          return parts.filter(Boolean).join(' ');
         },
 
         fill: async (selector, value) => {
@@ -140,10 +200,29 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           }
         },
 
-        hasText: async (text) => {
+        // timeoutMs > 0 re-reads the page until the text shows or the time is up: a single-page app renders
+        // after the document has loaded. The default (0) is one read that throws as before. Inside a wait a
+        // failed read is tried again, but a closed page, context or browser always throws.
+        hasText: async (text, opts) => {
           await ensureInitialized();
-          const bodyText = await page.locator('body').innerText();
-          return bodyText.includes(text);
+          const timeoutMs = Math.max(0, Number(opts && opts.timeoutMs) || 0);
+          if (timeoutMs === 0) {
+            const bodyText = await page.locator('body').innerText();
+            return bodyText.includes(text);
+          }
+          const deadline = Date.now() + timeoutMs;
+          for (;;) {
+            const remaining = Math.max(1, deadline - Date.now());
+            let bodyText = '';
+            try {
+              bodyText = await page.locator('body').innerText({ timeout: remaining });
+            } catch (e) {
+              if (isClosedTargetError(e)) throw e;
+            }
+            if (bodyText.includes(text)) return true;
+            if (Date.now() >= deadline) return false;
+            await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))));
+          }
         },
 
         describe: async (selector) => {
@@ -198,4 +277,4 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   };
 }
 
-module.exports = { createPlaywrightBrowser };
+module.exports = { createPlaywrightBrowser, settleMs, isClosedTargetError };

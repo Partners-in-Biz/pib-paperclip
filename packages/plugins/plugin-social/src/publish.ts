@@ -12,6 +12,9 @@
  *    Published destinations are never published again.
  * 5. Roll the post up to published / partially_published / failed and open
  *    one issue on the first final failure.
+ * 6. A manual account has no publishing link: its destination moves to
+ *    `awaiting_manual` and one task asks a person to post it by hand. The
+ *    post stays `publishing` until that person marks it as posted.
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -31,6 +34,10 @@ import {
   duePostRefs,
   getAccount,
   getPost,
+  isManual,
+  parkForHand,
+  postsAwaitingHandWithoutIssue,
+  getAccountsByIds,
   iso,
   postMedia,
   postOverrides,
@@ -39,6 +46,7 @@ import {
   saveDestinationOutcome,
   scheduledPostsWithoutWork,
   setDestinationIssue,
+  setManualIssue,
   setPostFailureIssue,
   setPostOutcome,
   setPostStatus,
@@ -47,7 +55,7 @@ import {
   type PostRow,
 } from "./db.js";
 import { assertDestination, needsRefreshBeforePublish, nextDestinationState, rollupPostStatus, SocialError } from "./domain.js";
-import { openPublishFailureIssue } from "./issues.js";
+import { openManualPostIssue, openPublishFailureIssue } from "./issues.js";
 import { graphemeLength } from "./oauth/providers/bluesky.js";
 import { xWeightedLength } from "./oauth/providers/x.js";
 import { ProviderHttpError } from "./oauth/http.js";
@@ -110,7 +118,8 @@ export function validateDestination(platform: SocialPlatform, request: PublishRe
 }
 
 function publishable(account: AccountRow): string | null {
-  if (!account.token_enc || account.status === "disabled") return `${account.display_name} is disconnected`;
+  if (account.status === "disabled") return `${account.display_name} is disconnected`;
+  if (!isManual(account) && !account.token_enc) return `${account.display_name} is disconnected`;
   return null;
 }
 
@@ -119,7 +128,7 @@ async function publishDestination(
   config: SocialConfig,
   post: PostRow,
   destination: DestinationRow,
-): Promise<{ outcome: PublishOutcome; account: AccountRow | null }> {
+): Promise<{ outcome: PublishOutcome; account: AccountRow | null; manual?: boolean }> {
   const companyId = post.company_id;
   const account = await getAccount(ctx, companyId, destination.account_id);
   if (!account) return { outcome: { ok: false, retryable: false, error: "The destination account was removed" }, account: null };
@@ -149,6 +158,12 @@ async function publishDestination(
   }
   if (!isSocialPlatform(account.platform)) return { outcome: { ok: false, retryable: false, error: `Unsupported platform ${account.platform}` }, account };
   const platform = account.platform;
+  if (isManual(account)) {
+    // Checked like any other destination, then handed to a person instead of a provider.
+    const targetProblem = unsupportedTargetProblem(platform, buildPublishRequest(post, platform));
+    if (targetProblem) return { outcome: { ok: false, retryable: false, error: targetProblem }, account };
+    return { outcome: { ok: false, retryable: false }, account, manual: true };
+  }
   const provider = providerFor(platform);
   try {
     const keyring = await config.keyring();
@@ -248,9 +263,15 @@ export async function publishPost(ctx: PluginContext, config: SocialConfig, post
   const claimed = await claimDestinations(ctx, postId, claimToken);
   const accounts = new Map<string, AccountRow | null>();
   let published = 0;
+  const byHand: Array<{ destination: DestinationRow; account: AccountRow }> = [];
   for (const destination of claimed) {
-    const { outcome, account } = await publishDestination(ctx, config, post, destination);
+    const { outcome, account, manual } = await publishDestination(ctx, config, post, destination);
     accounts.set(destination.account_id, account);
+    if (manual && account) {
+      await parkForHand(ctx, destination.id);
+      byHand.push({ destination, account });
+      continue;
+    }
     const next = nextDestinationState(destination.attempts, { ok: outcome.ok, retryable: outcome.retryable });
     if (outcome.ok) published += 1;
     await saveDestinationOutcome(ctx, destination.id, {
@@ -268,8 +289,40 @@ export async function publishPost(ctx: PluginContext, config: SocialConfig, post
       },
     });
   }
+  if (byHand.length) await ensureManualIssue(ctx, companyId, post, byHand);
   await settlePost(ctx, companyId, postId, accounts);
   return { attempted: claimed.length, published };
+}
+
+/**
+ * One post-by-hand task per post. A destination that came due later joins the task its waiting siblings already
+ * have (`parkForHand` cleared its own id, so only a live task is found here). When the task cannot be opened the
+ * destinations keep no id and the next job run tries again.
+ */
+async function ensureManualIssue(ctx: PluginContext, companyId: string, post: PostRow, waiting: Array<{ destination: DestinationRow; account: AccountRow }>): Promise<void> {
+  const known = (await destinationsForPost(ctx, post.id)).find((d) => d.status === "awaiting_manual" && d.issue_id)?.issue_id ?? null;
+  const issueId = known ?? (await openManualPostIssue(ctx, { companyId, post, waiting }));
+  if (issueId) await setManualIssue(ctx, post.id, issueId);
+}
+
+/** Open the task for posts whose hand-post destinations still have none (the host refused it at the publish time). */
+async function openMissingManualIssues(ctx: PluginContext, on: (companyId: string) => Promise<boolean>): Promise<void> {
+  for (const ref of await postsAwaitingHandWithoutIssue(ctx)) {
+    try {
+      if (!(await on(ref.company_id))) continue;
+      const post = await getPost(ctx, ref.company_id, ref.id);
+      if (!post) continue;
+      const waiting = (await destinationsForPost(ctx, post.id)).filter((d) => d.status === "awaiting_manual" && !d.issue_id);
+      const accounts = new Map((await getAccountsByIds(ctx, ref.company_id, [...new Set(waiting.map((d) => d.account_id))])).map((a) => [a.id, a]));
+      const rows = waiting.flatMap((destination) => {
+        const account = accounts.get(destination.account_id);
+        return account ? [{ destination, account }] : [];
+      });
+      if (rows.length) await ensureManualIssue(ctx, ref.company_id, post, rows);
+    } catch (error) {
+      ctx.logger.info("Could not open a post-by-hand task", { postId: ref.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
 
 export interface PublishRunSummary {
@@ -288,6 +341,7 @@ export async function publishDueJob(ctx: PluginContext, ensureCompany: (companyI
     if (!(await on(stuck.company_id))) continue;
     await settlePost(ctx, stuck.company_id, stuck.id, new Map());
   }
+  await openMissingManualIssues(ctx, on);
   const due = await duePostRefs(ctx);
   const byCompany = new Map<string, string[]>();
   for (const row of due) byCompany.set(row.company_id, [...(byCompany.get(row.company_id) ?? []), row.id]);

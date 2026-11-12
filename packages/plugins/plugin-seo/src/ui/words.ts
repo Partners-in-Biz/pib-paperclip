@@ -5,7 +5,7 @@
 import type { ToneName } from "@partnersinbiz/pib-plugin-ui";
 import type { NextTask, TaskState } from "../engine/due.js";
 import { plural } from "../engine/plain.js";
-import type { PreviewFilter } from "./types.js";
+import type { PreviewFilter, PreviewItem } from "./types.js";
 
 /** A task's state as people read it (engine/due.ts decides the state). */
 export const STATE_LABEL: Record<TaskState, string> = {
@@ -149,4 +149,23 @@ export function previewStatus(p: { status: string; expired: boolean; appliedAt: 
   if (p.status === "declined") return { label: "Declined", tone: "bad" };
   if (p.status === "changes_requested") return { label: "Changes requested", tone: "warn" };
   return p.reviewStatus === "passed" ? { label: "Awaiting a decision", tone: "warn" } : { label: "Not ready", tone: "neutral" };
+}
+
+/** The previews each filter shows. Awaiting is pending, not expired. */
+export function previewsFor(previews: PreviewItem[], filter: PreviewFilter): PreviewItem[] {
+  return previews.filter((p) => {
+    if (p.superseded && filter !== "applied") return false;
+    switch (filter) {
+      case "awaiting": return p.status === "pending" && !p.expired;
+      case "approved": return p.status === "approved" && !p.appliedAt;
+      case "declined": return p.status === "declined" || p.status === "changes_requested";
+      case "applied": return Boolean(p.appliedAt);
+      case "expired": return p.expired;
+    }
+  });
+}
+
+/** The badge: pending, passed and not expired. */
+export function awaitingCount(previews: PreviewItem[] | undefined): number {
+  return (previews ?? []).filter((p) => p.status === "pending" && p.reviewStatus === "passed" && !p.expired && !p.superseded).length;
 }

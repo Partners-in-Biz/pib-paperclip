@@ -127,7 +127,7 @@ describe("reviewer routing for posts", () => {
   it("a person's approval closes the Reviewer's issue; agents still cannot approve", async () => {
     const w = world({ reviewer: "rev-1", reviewIssue: "iss-9" });
     w.post.status = "review";
-    await expect(transitionPost(w.ctx, AGENT, "p1", "approved")).rejects.toThrow("A person approves");
+    await expect(transitionPost(w.ctx, AGENT, "p1", "approved")).rejects.toThrow("never approves");
     const result = await transitionPost(w.ctx, PERSON, "p1", "approved") as { approval?: { scheduled: boolean; reason?: string; issueId?: string | null } };
     // No proposed time: it stays approved and the Social agent (here: the post owner, no agent) gets a task to pick one.
     expect(result.approval).toMatchObject({ scheduled: false, reason: "no_time", issueId: "iss-1" });

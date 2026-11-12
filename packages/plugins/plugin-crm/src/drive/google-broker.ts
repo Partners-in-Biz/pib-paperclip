@@ -387,13 +387,15 @@ export function createGoogleDriveBroker(
   }
 
   async function fileMeta(fileId: string): Promise<DriveFileInfo | null> {
-    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,name,mimeType,size,parents,driveId,trashed")}`);
+    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,name,mimeType,size,parents,driveId,trashed,appProperties")}`);
     if (res.status === 404) return null;
     if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
     const file = JSON.parse(res.text) as DriveFile & { driveId?: string; trashed?: boolean };
     // Only this company's Shared Drive: a file the service account can see elsewhere is not reachable here.
     if (typeof file.id !== "string" || file.trashed || file.driveId !== sharedDriveId) return null;
-    return fileInfo(file);
+    // A streamed save stores the file's sha256 (uploadFileStream); a fetch checks the bytes against it.
+    const sha = file.appProperties?.pibSha256;
+    return { ...fileInfo(file), ...(typeof sha === "string" && /^[0-9a-f]{64}$/i.test(sha) ? { sha256: sha.toLowerCase() } : {}) };
   }
 
   async function bearer(): Promise<string> {

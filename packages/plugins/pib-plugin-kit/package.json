@@ -25,9 +25,9 @@
     "./handoff": "./src/handoff.ts"
   },
   "scripts": {
-    "test": "vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",
+    "test": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && vitest run --config ./vitest.config.ts && vitest run --config ./vitest.contract.config.ts",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
-    "test:contract": "vitest run --config ./vitest.contract.config.ts"
+    "test:contract": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && vitest run --config ./vitest.contract.config.ts"
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",

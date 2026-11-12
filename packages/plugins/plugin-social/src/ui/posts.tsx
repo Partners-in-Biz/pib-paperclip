@@ -4,7 +4,8 @@ import { editableViaDraft, PLATFORM_LABELS, isSocialPlatform, xReplyIntentUrl } 
 import { ApprovalPolicyCard, PostApproval } from "./approvals.js";
 import { Thumb } from "./composer.js";
 import { MediaViewer } from "./media-viewer.js";
-import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
+import { canPostByHand, HandPost } from "./hand-post.js";
+import { Banner, Card, chipStyle, destinationLabel, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
 import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
 import { PostTarget } from "./target.js";
 import type { ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
@@ -16,18 +17,23 @@ const FILTERS = [
   { id: "approved", label: "Approved" },
   { id: "scheduled", label: "Scheduled" },
   { id: "published", label: "Published" },
+  { id: "by_hand", label: "Post by hand" },
   { id: "problems", label: "Failed" },
 ];
+
+/** The publish time came and a person still has to post it on a manual account. */
+const waitsForHand = (post: Post): boolean => post.destinations.some((d) => d.status === "awaiting_manual");
 
 export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; run: RunAction; onOpen: (post: Post) => void; onNew: () => void }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const q = search.trim().toLowerCase();
-  const count = (id: string) => id === "all" ? posts.length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
+  const count = (id: string) => id === "all" ? posts.length : id === "by_hand" ? posts.filter(waitsForHand).length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
   const rows = useMemo(() => posts.filter((post) => {
     if (filter === "problems" && post.status !== "failed" && post.status !== "partially_published") return false;
     if (filter === "published" && post.status !== "published") return false;
-    if (!["all", "problems", "published"].includes(filter) && post.status !== filter) return false;
+    if (filter === "by_hand" && !waitsForHand(post)) return false;
+    if (!["all", "problems", "published", "by_hand"].includes(filter) && post.status !== filter) return false;
     return !q || post.body.toLowerCase().includes(q);
   }), [posts, filter, q]);
   return (
@@ -35,7 +41,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
       {snapshot.space === "me" ? null : <ApprovalPolicyCard snapshot={snapshot} run={run} />}
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
-          <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
+          <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}), ...(f.id === "by_hand" && count(f.id) && filter !== f.id ? { color: tone("warn").fg, borderColor: tone("warn").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
         {snapshot.canPost === false ? null : <Button type="button" onClick={onNew}>+ New post</Button>}
       </Toolbar>
@@ -53,6 +59,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
               <Row style={{ justifyContent: "space-between" }}>
                 <Row>
                   <PostStatus status={post.status} />
+                  {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
                   {post.source !== "manual" ? <Muted>{post.source.replace("_", " ")}</Muted> : null}
                 </Row>
                 <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
@@ -61,7 +68,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
               <div style={{ fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{post.body}</div>
               <Row>
                 {post.destinations.map((d) => (
-                  <Pill key={d.id} size="sm" variant="outline" tone={toneOf(DEST_TONE, d.status)} dot>{platformLabel(d.platform)} · {d.status}</Pill>
+                  <Pill key={d.id} size="sm" variant="outline" tone={toneOf(DEST_TONE, d.status)} dot>{platformLabel(d.platform)} · {destinationLabel(d.status)}</Pill>
                 ))}
                 {post.media.length ? <Muted>{post.media.length} media</Muted> : null}
               </Row>
@@ -116,7 +123,10 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     <>
     <Sheet open title="Post" onClose={onClose}>
       <Row style={{ justifyContent: "space-between" }}>
-        <PostStatus status={post.status} />
+        <Row>
+          <PostStatus status={post.status} />
+          {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
+        </Row>
         <Muted>{snapshot.space === "me" ? "My Social" : post.clientName ?? "Own work"}</Muted>
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
@@ -162,9 +172,12 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
               Attempts {d.attempts}
               {d.nextAttemptAt && d.status === "retrying" ? ` · next try ${fmtDate(d.nextAttemptAt, tz)}` : ""}
               {d.publishedAt ? ` · published ${fmtDate(d.publishedAt, tz)}` : ""}
+              {d.manual && d.status === "pending" ? " · a person posts this by hand at the publish time" : ""}
             </Muted>
-            {d.externalUrl ? <ExternalLink href={d.externalUrl}>View on {platformLabel(d.platform)}</ExternalLink> : null}
             {d.lastError ? <Muted style={{ color: tone("bad").fg }}>{d.lastError}</Muted> : null}
+            {canPostByHand(post, d, isUser)
+              ? <HandPost post={post} destination={d} run={run} />
+              : d.externalUrl ? <ExternalLink href={d.externalUrl}>View on {platformLabel(d.platform)}</ExternalLink> : null}
           </div>
         ))}
       </Card>

@@ -13,8 +13,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
-import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
+import { approvalView, approvePostByDelegate, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
+import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -45,7 +46,10 @@ import {
   destinationsForPost,
   destinationsForScope,
   deleteDisabledAccount,
+  disableManualAccount,
   disconnectAccount,
+  isManual,
+  accountMeta,
   getAccount,
   getAccountsByIds,
   getInboxItem,
@@ -112,6 +116,7 @@ import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
 import {
   ALL_PLATFORMS,
+  composeIntent,
   CONNECT_MODE,
   isSocialPlatform,
   OVERRIDE_FIELDS,
@@ -122,7 +127,8 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
-import { retryPost } from "./publish.js";
+import { closeManualPostIssue } from "./issues.js";
+import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { mediaCompliance } from "./media-compliance.js";
@@ -291,13 +297,46 @@ export function requireUser(viewer: Viewer, what: string): string {
 
 // ── output shapes ───────────────────────────────────────────────────────────
 
-function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
+/**
+ * What a person needs to post this destination by hand: the text as that platform gets it and the platform's own
+ * composer. Present while the destination is not published and its account still exists.
+ */
+function handPostOut(d: DestinationRow, account: AccountRow | undefined, post: PostRow | undefined) {
+  if (!post || !account || d.status === "published" || d.status === "publishing" || !isSocialPlatform(account.platform)) return null;
+  // Only where a person can act on it: a manual account, or a destination whose automatic publish failed.
+  if (!isManual(account) && d.status !== "failed") return null;
+  const request = buildPublishRequest(post, account.platform);
+  const meta = accountMeta(account);
+  const text = request.text;
+  const intent = composeIntent(account.platform, {
+    text,
+    title: request.title ?? null,
+    link: request.link ?? null,
+    subreddit: request.subreddit ?? (typeof meta.defaultSubreddit === "string" ? meta.defaultSubreddit : null),
+    imageUrl: request.media.find((m) => m.kind === "image")?.url ?? null,
+    instanceUrl: typeof meta.instanceUrl === "string" ? meta.instanceUrl : null,
+  });
+  return {
+    /** The caption to copy: the text, then the link when the platform shows links. */
+    text: request.link && !text.includes(request.link) ? `${text}\n\n${request.link}` : text,
+    title: request.title ?? null,
+    firstComment: request.firstComment ?? null,
+    url: intent.url,
+    prefilled: intent.prefilled,
+    mediaByHand: intent.mediaByHand,
+  };
+}
+
+function destinationOut(d: DestinationRow, account: AccountRow | undefined, post?: PostRow) {
   return {
     id: d.id,
     accountId: d.account_id,
     platform: account?.platform ?? null,
     accountName: account?.display_name ?? "Removed account",
     accountStatus: account?.status ?? null,
+    /** The account has no publishing link: a person posts this destination by hand. */
+    manual: account ? isManual(account) : false,
+    handPost: handPostOut(d, account, post),
     status: d.status,
     attempts: d.attempts,
     nextAttemptAt: iso(d.next_attempt_at),
@@ -344,7 +383,7 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     failureIssueId: row.failure_issue_id,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id))),
+    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id), row)),
   };
 }
 
@@ -458,6 +497,11 @@ export function changedTarget(params: Record<string, unknown>) {
   return fields;
 }
 
+/** The delegate scope a post sits in: `personal` for a person's own post (never delegatable). */
+function postDelegateScope(post: PostRow): DelegateScope {
+  return post.scope === "personal" ? "personal" : rowScope(post).scope;
+}
+
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
   const params = postParams(input);
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
@@ -472,6 +516,8 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const requested = scopeInput(params);
   const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
   const moving = !sameClient(target.scope, current.scope);
+  // Q10: the delegate of the post's scope, or of the scope it moves to, does not change another's post.
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post), ...(moving ? [target.scope] : [])]);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
   if (viewer.isAgent && (body !== undefined || moving || params.overrides !== undefined || params.firstComment !== undefined)) {
     await assertClientFiling(ctx, viewer.companyId, {
@@ -577,6 +623,7 @@ export async function attachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only attach destinations to personal drafts they created");
   }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
   const accounts = await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]);
   // When viewer is agent and post is personal, account must be personal and owned by post owner
@@ -598,8 +645,16 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only detach destinations from personal drafts they created");
   }
-  const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  const accountId = requiredString(params, "accountId");
+  const before = await destinationsForPost(ctx, post.id);
+  const target = before.find((d) => d.account_id === accountId);
+  const removed = await deleteDestination(ctx, viewer.companyId, post.id, accountId);
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
+  // It waited to be posted by hand and was the last one on its task: the task has nothing left to ask.
+  if (target?.status === "awaiting_manual" && target.issue_id && !before.some((d) => d.id !== target.id && d.status === "awaiting_manual" && d.issue_id === target.issue_id)) {
+    await closeManualPostIssue(ctx, viewer.companyId, target.issue_id, "The account was removed from this post. Closing this issue.");
+  }
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
@@ -655,6 +710,34 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
     if (state) await recordSignoff(ctx, viewer.companyId, post, state.hash, "owner", "changes", "ui", { userId: viewer.userId });
   }
   await closePostReview(ctx, viewer, post, to);
+  return getPostDetail(ctx, viewer, post.id);
+}
+
+/**
+ * Takes a scheduled post back to draft so it can be edited (update-post): body, media and accounts stay, the time is
+ * cleared. A reason is required; who and why are logged and appended to the post's internal note.
+ */
+export async function unschedulePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const reason = requiredString(params, "reason").trim();
+  if (!reason) throw new SocialError("A reason is required to unschedule a post.");
+  // Same scope rules as update-post.
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only unschedule personal posts that they created");
+  }
+  if (post.status !== "scheduled") {
+    throw new SocialError(`Only a scheduled post can be unscheduled; this one is ${post.status.replace("_", " ")}.`);
+  }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostStatus(ctx, viewer.companyId, post.id, ["scheduled"], "draft", null))) {
+    throw new SocialError("The post changed while you were unscheduling it (it may be publishing now). Reload and try again.");
+  }
+  const who = viewer.isAgent ? `agent ${viewer.agentId ?? "unknown"}${viewer.runId ? ` (run ${viewer.runId})` : ""}` : `user ${viewer.userId ?? "unknown"}`;
+  const line = `Unscheduled by ${who}: ${reason}`;
+  const note = [post.note, line].filter(Boolean).join("\n");
+  await updatePostContent(ctx, viewer.companyId, post.id, { note: note.length > 500 ? note.slice(note.length - 500) : note });
+  ctx.logger.info("Social post unscheduled", { companyId: viewer.companyId, postId: post.id, by: who, reason });
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
 
@@ -756,6 +839,10 @@ export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, p
 export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   requireUser(viewer, "delete a post");
   const post = await requirePost(ctx, viewer, postId);
+  // Part of it is already out (posted by hand before its time): deleting would lose the record of what was published.
+  if ((await destinationsForPost(ctx, post.id)).some((d) => d.status === "published")) {
+    throw new SocialError("Part of this post is already published, so it cannot be deleted. Remove the accounts that are not posted yet instead.");
+  }
   if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review, approved or failed posts can be deleted");
   return { deleted: post.id };
 }
@@ -764,7 +851,8 @@ export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postI
 
 export async function getApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
-  return policyOut(await getPolicy(ctx, viewer.companyId, scope));
+  const [policy, delegate] = await Promise.all([getPolicy(ctx, viewer.companyId, scope), delegateView(ctx, viewer.companyId, scope)]);
+  return policyOut(policy, delegate);
 }
 
 /** A person sets who approves posts in a scope. An agent cannot: the policy delegates authority. */
@@ -774,33 +862,86 @@ export async function setApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer
   if (params.requireReviewer === true && !(await reviewerAgentId(ctx, viewer.companyId))) {
     throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
   }
-  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId);
+  // A delegated approver locks the Reviewer and the team member on and the client off. Read strictly: an unreadable store refuses.
+  const delegated = (await getDelegateStrict(ctx, viewer.companyId, target.scope)) !== null;
+  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId, delegated);
   // A looser policy can leave posts in review with every sign-off already in: approve those now.
-  const { approved, routed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
-  return { ...policyOut(saved), approved, routed };
+  const { approved, routed, failed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...policyOut(saved, await delegateView(ctx, viewer.companyId, target.scope)), approved, routed, failed };
 }
+
+/**
+ * A person names (or clears, `agentId: null`) the agent whose yes will count as the team member's approval in one scope,
+ * after the Reviewer's pass (PAR-9561). An agent cannot, not even with a responsible user on its run. Setting it turns the
+ * Reviewer's pass on; clearing it leaves the policy as it is.
+ */
+export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const userId = requireUser(viewer, "name a delegated approver");
+  const target = await readScope(ctx, viewer, params);
+  const scope: DelegateScope = spaceOf(params) === "me" ? "personal" : target.scope;
+  if (!("agentId" in params)) throw new SocialError("agentId is required (null clears the delegated approver)");
+  const agentId = params.agentId;
+  if (agentId === null) {
+    if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+    // Read strictly first: the review issues the cleared agent holds go back to the person (T7b, findings 13).
+    const cleared = (await getDelegateStrict(ctx, viewer.companyId, scope))?.agentId;
+    await clearDelegate(ctx, viewer.companyId, scope, userId);
+    ctx.logger.info("Social delegated approver cleared by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), by: userId });
+    const recheck = cleared ? await reevaluateReviewPosts(ctx, viewer, target.scope, cleared) : { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+    return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
+  }
+  if (typeof agentId !== "string" || !agentId.trim()) throw new SocialError("agentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, agentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+  if (!(await reviewerAgentId(ctx, viewer.companyId))) {
+    throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
+  }
+  // The delegate approves only after the Reviewer's pass: turn it on first, so a failed save leaves no delegate behind.
+  // Nothing is re-routed on set: a post created before the delegate was named stays with the person (check 9, Quinn 2.4).
+  await savePolicy(ctx, viewer.companyId, { scope, clientName: target.client?.name ?? null }, { requireReviewer: true }, userId);
+  await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
+  ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
+  return getApprovalPolicyRecord(ctx, viewer, params);
+}
+
+/** What the re-check of a scope's posts in review did. `failed` counts posts that threw (and 1 when the list itself could not be read). */
+export interface RecheckResult { approved: number; routed: number; handedBack: number; failed: number }
+
+/** Posts in review the re-check reads in one go (Quinn 2.4: 50 left the rest of a busy scope unchecked). */
+const RECHECK_LIMIT = 1000;
 
 /**
  * Posts in review in a scope whose sign-offs are all in under the current policy are approved. A post that still waits on an agent's
  * step with no open review issue to say so (the policy began to ask for the client after the post went to review) gets its issue.
+ * With `clearedDelegate`, a review issue that agent holds for a passed post waiting on the owner goes back to the person (T7b).
+ * One post that throws is logged at warn and counted in `failed`; the others are still checked.
  */
-async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope): Promise<{ approved: number; routed: number }> {
-  let approved = 0;
-  let routed = 0;
+async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope, clearedDelegate?: string): Promise<RecheckResult> {
+  const result: RecheckResult = { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+  let posts: PostRow[];
   try {
-    for (const post of (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: 50 })).filter((p) => postVisible(viewer, p))) {
+    posts = (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: RECHECK_LIMIT })).filter((p) => postVisible(viewer, p));
+  } catch (error) {
+    ctx.logger.warn("Social policy re-check could not list posts in review", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
+    return { ...result, failed: 1 };
+  }
+  for (const post of posts) {
+    try {
       const state = await signoffState(ctx, viewer.companyId, post);
       if (state.missing.length > 0) {
-        if (await routeWaitingPost(ctx, viewer, post)) routed += 1;
+        if (clearedDelegate && (await handBackFromDelegate(ctx, viewer, post, state, clearedDelegate))) result.handedBack += 1;
+        else if (await routeWaitingPost(ctx, viewer, post)) result.routed += 1;
         continue;
       }
       await completeApproval(ctx, viewer, post, "A person (the policy changed)");
-      approved += 1;
+      result.approved += 1;
+    } catch (error) {
+      result.failed += 1;
+      ctx.logger.warn("Social policy re-check failed for a post", { companyId: viewer.companyId, postId: post.id, error: error instanceof Error ? error.message : String(error) });
     }
-  } catch (error) {
-    ctx.logger.info("Social policy re-check skipped", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
   }
-  return { approved, routed };
+  return result;
 }
 
 /** Where a post's approval stands: the policy, each sign-off for the current version, what is missing, and the client's links (never the links themselves). */
@@ -833,6 +974,22 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
     throw new SocialError("toneScore must be a whole number from 0 to 20");
   }
   return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `approve-post-as-delegate`: only the agent a person named as the scope's delegated approver (checks in `approvePostByDelegate`). */
+export async function approvePostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const progress = await approvePostByDelegate(ctx, viewer, post);
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
+}
+
+/** `return-post-as-delegate`: the delegated approver sends a post in review back to draft with notes (checks in `returnPostByDelegate`). */
+export async function returnPostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await returnPostByDelegate(ctx, viewer, post, optionalString(params, "notes"));
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...result };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */
@@ -895,7 +1052,7 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
   let status: string | undefined;
   if (params.enabled === false) status = "disabled";
   if (params.enabled === true) {
-    if (!account.token_enc) throw new SocialError("This account has no token; reconnect it instead");
+    if (!account.token_enc && !isManual(account)) throw new SocialError("This account has no token; reconnect it instead");
     status = "connected";
   }
   const move = target ? await moveAccountScope(ctx, viewer.companyId, account, target) : null;
@@ -912,7 +1069,8 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
 export async function disconnectAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const userId = requireUser(viewer, "disconnect an account");
   const account = await requireAccount(ctx, viewer, accountId);
-  await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
+  if (isManual(account)) await disableManualAccount(ctx, viewer.companyId, account.id, `Switched off by a person (${userId})`);
+  else await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
   return { accountId: account.id, status: "disabled" };
 }
 
@@ -928,6 +1086,7 @@ export async function deleteAccountRecord(ctx: PluginContext, viewer: Viewer, ac
 export async function refreshAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const account = await requireAccount(ctx, viewer, accountId);
   if (!isSocialPlatform(account.platform)) throw new SocialError("Unsupported platform");
+  if (isManual(account)) return { accountId: account.id, refreshed: false, reason: "A manual account has no token: a person posts for it by hand" };
   const provider = providerFor(account.platform);
   if (!provider.refresh || provider.refreshKind === "none") {
     return { accountId: account.id, refreshed: false, reason: `${PLATFORM_LABELS[account.platform]} tokens do not expire or cannot be refreshed` };
@@ -961,7 +1120,7 @@ export function connectInstructions(platformInput: string, redirectUri: string |
     label,
     link: accountsPath,
     steps,
-    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected.`,
+    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected. Where ${label} has not approved our app yet, the person can add it as a manual account on the same page ("Add a manual account"): you draft, review and schedule as usual, and a person posts it by hand at the time.`,
     redirectUri,
   };
 }
@@ -1314,6 +1473,10 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
+  // The scope's delegated approver; the agents a person may pick (never shown to an agent).
+  const [delegate, candidates] = me
+    ? [null, []]
+    : await Promise.all([delegateView(ctx, viewer.companyId, scope), viewer.isAgent || !viewer.userId ? Promise.resolve([]) : delegateCandidates(ctx, viewer.companyId, scope)]);
   // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
   const routine = scope || me ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
@@ -1360,7 +1523,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     inbox: inbox.map(inboxOut),
     experiments,
     stats,
-    approvalPolicy: policyOut(policy),
+    approvalPolicy: policyOut(policy, delegate),
+    delegateCandidates: candidates,
     agent,
     pendingPickers: pickers
       .filter((p) => (jsonObject(p.extra).accountScope === "personal") === Boolean(me))

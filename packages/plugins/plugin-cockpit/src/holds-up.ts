@@ -50,7 +50,7 @@ export async function readHoldsUp(ctx: PluginContext, companyId: string, issueId
     const rows = await ctx.db.query<{ from_id: string; to_id: string; open: boolean }>(
       `WITH RECURSIVE walk(from_id, to_id) AS (
          SELECT r.issue_id, r.related_issue_id FROM public.issue_relations r
-          WHERE r.company_id = $1 AND r.type = 'blocks' AND r.issue_id = ANY($2::uuid[])
+          WHERE r.company_id = $1 AND r.type = 'blocks' AND r.issue_id IN (SELECT (jsonb_array_elements_text($2::jsonb))::uuid)
          UNION
          SELECT r.issue_id, r.related_issue_id FROM walk w
            JOIN public.issues wi ON wi.id = w.to_id AND wi.status NOT IN ('done', 'cancelled') AND wi.hidden_at IS NULL
@@ -58,7 +58,8 @@ export async function readHoldsUp(ctx: PluginContext, companyId: string, issueId
        )
        SELECT w.from_id::text AS from_id, w.to_id::text AS to_id, (i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL) AS open
          FROM walk w JOIN public.issues i ON i.id = w.to_id AND i.company_id = $1`,
-      [companyId, issueIds],
+      // The ids go as one JSON value: the host binds each array element as its own parameter, so an array cannot be cast to uuid[].
+      [companyId, JSON.stringify(issueIds)],
     );
     return holdsUpCounts(issueIds, rows.map((r) => ({ from: r.from_id, to: r.to_id, toOpen: r.open === true })));
   } catch {

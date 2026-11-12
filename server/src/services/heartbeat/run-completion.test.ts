@@ -470,6 +470,89 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
   });
 
+  describe("host cleanup after a terminal success result (PAR-9393)", () => {
+    const cleanupEvidence = (terminalResultSeen: boolean) => ({
+      kind: "terminal_result_cleanup", stopped: true, stopReason: "unmanaged_background_task_stopped",
+      reason: "unmanaged background task stopped; no durable live path", terminalResultSeen, signal: "SIGTERM", forceKilled: false,
+    });
+    async function cleanupFixture(adapterPatch: Partial<CompleteHeartbeatRunInput["adapterResult"]> = {}, terminalResultSeen = true) {
+      const f = await fixture();
+      f.input.adapterResult = {
+        ...f.input.adapterResult, exitCode: null, signal: "SIGTERM",
+        resultJson: { finalResponse: "Completed the work.", unmanagedBackgroundTask: cleanupEvidence(terminalResultSeen) },
+        ...adapterPatch,
+      };
+      return f;
+    }
+
+    it.each([
+      ["a signal", { exitCode: null, signal: "SIGTERM" }],
+      ["an exit code", { exitCode: 143, signal: null }],
+      ["a signal and an exit code", { exitCode: 143, signal: "SIGKILL" }],
+    ] as const)("records %s after the terminal result as success and keeps the evidence", async (_label, patch) => {
+      const f = await cleanupFixture(patch);
+      await f.completion.completeRun(f.input);
+      const saved = await read(f.run.id);
+      expect(saved).toMatchObject({ status: "succeeded", error: null, errorCode: null });
+      expect(saved.resultJson).toMatchObject({ unmanagedBackgroundTask: cleanupEvidence(true) });
+      expect(f.deps.classifyAndPersistRunLiveness).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id, status: "succeeded" }), expect.anything());
+      expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
+    });
+
+    it("keeps a timed out run timed out", async () => {
+      const f = await cleanupFixture({ timedOut: true });
+      await f.completion.completeRun(f.input);
+      expect(await read(f.run.id)).toMatchObject({ status: "timed_out", errorCode: "timeout" });
+    });
+
+    it("keeps a real adapter error message a failure", async () => {
+      const f = await cleanupFixture({ errorMessage: "Claude exited with code 1" });
+      await f.completion.completeRun(f.input);
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "Claude exited with code 1" });
+    });
+
+    it("keeps an adapter error code a failure", async () => {
+      const f = await cleanupFixture({ errorCode: "duplex_channel_lost" });
+      await f.completion.completeRun(f.input);
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "duplex_channel_lost" });
+    });
+
+    it.each([{ status: "error" }, { status: "failed" }, { is_error: true }])("keeps an error result %o a failure", async resultPatch => {
+      const f = await cleanupFixture();
+      f.input.adapterResult.resultJson = { ...f.input.adapterResult.resultJson, ...resultPatch };
+      await f.completion.completeRun(f.input);
+      expect((await read(f.run.id)).status).toBe("failed");
+    });
+
+    it("keeps a cancelled run cancelled", async () => {
+      const f = await cleanupFixture();
+      f.controller.abort();
+      await f.completion.completeRun(f.input);
+      expect((await read(f.run.id)).status).toBe("cancelled");
+    });
+
+    it("does not treat a run with a process cancellation as host cleanup", async () => {
+      const f = await cleanupFixture();
+      f.deps.completedProcessRunCancellations.set(f.run.id, { settled: Promise.resolve(), failed: false });
+      await f.completion.completeRun(f.input);
+      expect((await read(f.run.id)).status).toBe("failed");
+    });
+
+    it("keeps a signal without the evidence a failure", async () => {
+      const f = await cleanupFixture({ resultJson: { finalResponse: "Completed the work." } });
+      await f.completion.completeRun(f.input);
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "Adapter failed" });
+    });
+
+    it("keeps the evidence with terminalResultSeen false a failure", async () => {
+      const f = await cleanupFixture({}, false);
+      await f.completion.completeRun(f.input);
+      const saved = await read(f.run.id);
+      expect(saved.status).toBe("failed");
+      expect(saved.resultJson).toMatchObject({ unmanagedBackgroundTask: cleanupEvidence(false) });
+    });
+  });
+
   it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
     const f = await fixture({ runtimeMode: "native" });
     const runnerInstanceId = randomUUID();

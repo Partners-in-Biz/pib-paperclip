@@ -30,6 +30,8 @@ export interface Account extends Scoped {
   externalId: string | null;
   avatarUrl: string | null;
   connected: boolean;
+  /** No publishing link: a person posts for this account by hand. Absent from older workers. */
+  manual?: boolean;
   tokenExpiresAt: string | null;
   lastRefreshedAt: string | null;
   lastError: string | null;
@@ -57,7 +59,11 @@ export interface Destination {
   platform: SocialPlatform | null;
   accountName: string;
   accountStatus: string | null;
-  status: "pending" | "publishing" | "retrying" | "published" | "failed";
+  status: "pending" | "publishing" | "retrying" | "awaiting_manual" | "published" | "failed";
+  /** The account has no publishing link. Absent from older workers. */
+  manual?: boolean;
+  /** What a person needs to post this destination by hand; null once it is published. */
+  handPost?: { text: string; title: string | null; firstComment: string | null; url: string; prefilled: boolean; mediaByHand: boolean } | null;
   attempts: number;
   nextAttemptAt: string | null;
   externalId: string | null;
@@ -206,6 +212,8 @@ export interface Snapshot {
   stats?: ScopeStats;
   /** Who approves posts in this scope; missing from an older worker. */
   approvalPolicy?: ApprovalPolicyView;
+  /** Agents a person may name as this scope's delegated approver; empty for an agent, an off-list scope or a failed read. */
+  delegateCandidates?: Array<{ id: string; name: string }>;
   agent: SocialAgent;
   pendingPickers: Array<{ pickerId: string; platform: string }>;
   /** Own page: the weekly plan routine and its last trigger report (null until the agent is linked). */
@@ -232,6 +240,8 @@ export interface ApprovalPolicyView {
   /** False for a scope nobody has set: the default (a team member approves). */
   custom: boolean;
   summary: string;
+  /** The scope's delegated approver (an agent a person named); null when none is set. */
+  delegate?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
   updatedBy: string | null;
   updatedAt: string | null;
 }

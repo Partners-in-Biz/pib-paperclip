@@ -20,13 +20,23 @@ import { DECISION_SQL } from "../ops/preview-server/decision.mjs";
 import { seoHost, SPRINT, taskRow, type Row, type Route } from "./helpers/seo-host.js";
 
 const requireFromDb = createRequire(new URL("../../../db/package.json", import.meta.url));
-const postgres = requireFromDb("postgres") as (url: string, o?: Record<string, unknown>) => any;
-// Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
-const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
-const { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as {
+type Postgres = (url: string, o?: Record<string, unknown>) => any;
+type EmbeddedDbHelper = {
   getEmbeddedPostgresTestSupport(): Promise<{ supported: boolean }>;
   startEmbeddedPostgresTestDatabase(prefix: string): Promise<{ connectionString: string; cleanup(): Promise<void> }>;
 };
+// The deploy host installs only this plugin's dependencies: when the db package or `postgres` is missing, these specs skip.
+let postgres: Postgres = (() => { throw new Error("postgres is not installed"); }) as never;
+let getEmbeddedPostgresTestSupport: EmbeddedDbHelper["getEmbeddedPostgresTestSupport"] = async () => ({ supported: false });
+let startEmbeddedPostgresTestDatabase: EmbeddedDbHelper["startEmbeddedPostgresTestDatabase"] = async () => { throw new Error("embedded postgres is not available"); };
+try {
+  postgres = requireFromDb("postgres") as Postgres;
+  // Loaded by path at run time: the db package is outside this plugin's tsconfig rootDir.
+  const dbHelperPath = new URL("../../../db/src/test-embedded-postgres.ts", import.meta.url).pathname;
+  ({ getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } = (await import(/* @vite-ignore */ dbHelperPath)) as EmbeddedDbHelper);
+} catch {
+  // keep the skipping stubs
+}
 type EmbeddedPostgresTestDatabase = Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -167,7 +177,7 @@ describePg("cancelled previews", () => {
       await put("sp", { status: "pending", ...expired });
       const server = readFileSync(join(import.meta.dirname, "../ops/preview-server/server.mjs"), "utf8");
       expect(server).toContain("We are applying it.");
-      expect(server.indexOf("rows[0].expired && rows[0].approved_live")).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
+      expect(server.indexOf('state === "approved"')).toBeLessThan(server.indexOf('state === "expired") return send(res, 410'));
       const get = server.match(/SELECT html, status, review_status[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
       const read = async (id: string) => (await sql.unsafe(get.replace("$1", `'${id}'`)))[0];
       expect(await read("s10")).toMatchObject({ expired: true, approved_live: true });
@@ -302,9 +312,9 @@ describePg("cancelled previews", () => {
     await reset();
     await put("srv", { status: "cancelled", cancelled_prev_status: "pending", expires_at: ago(-HOURS) });
     const server = readFileSync(join(import.meta.dirname, "../ops/preview-server/server.mjs"), "utf8");
-    const cancelledAt = server.indexOf('rows[0].status === "cancelled"');
+    const cancelledAt = server.indexOf('state === "cancelled"');
     expect(cancelledAt).toBeGreaterThan(0);
-    expect(cancelledAt).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
+    expect(cancelledAt).toBeLessThan(server.indexOf('state === "expired") return send(res, 410'));
     expect(server).toContain("This preview was replaced by a newer version. We will send you the current link.");
     const post = DECISION_SQL;
     const r = await sql.unsafe(post, ["srv", "approved", null]);

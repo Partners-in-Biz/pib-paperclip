@@ -27,7 +27,6 @@ import {
   isModuleEnabled,
   outboxStatus,
   getCrmCompany,
-  getCrmContact,
   mailSenderFields,
   MAIL_EVENTS,
   receiveOnce,
@@ -42,7 +41,6 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import {
   abEvents,
-  crmContactsByEmail,
   enrollmentById,
   enrollmentsForContacts,
   enrollmentsWithFailedSend,
@@ -91,6 +89,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { replyOrigin, sendFailedOrigin } from "./origins.js";
 import { assigneeFields, workOwner } from "./owner.js";
 import { projectForCampaign } from "./projects.js";
+import { recipientsByEmail, resolveRecipient } from "./recipient.js";
 import { resolveEmailSender, senderDisplayName, type EmailSender } from "./sender.js";
 import { announceSuppression, suppressAddress, suppressionPayload } from "./suppress.js";
 import { saveSendRecord } from "./drive.js";
@@ -240,7 +239,7 @@ export async function sendCampaignStep(
   input: { campaign: CampaignDraft; enrollment: EnrollmentDraft; step: CampaignStepDraft; issueFallback: (note: string) => Promise<void>; sender?: EmailSender },
 ): Promise<"sent" | "stopped" | "issue" | "held"> {
   const { campaign, enrollment, step } = input;
-  const contact = await getCrmContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId);
+  const contact = await resolveRecipient(ctx, enrollment.companyId, enrollment.contactId);
   const to = campaignAddress(contact?.emails);
   if (!contact || !to) {
     await input.issueFallback("This contact has no email address in the CRM, so the step was not emailed. Reach them another way, then mark this issue done.");
@@ -419,7 +418,7 @@ async function applySendResult(ctx: PluginContext, row: OutboxRow, result: MailS
 export async function failStep(ctx: PluginContext, enrollment: EnrollmentDraft, steps: CampaignStepDraft[], error: string): Promise<void> {
   const [campaign, contact] = await Promise.all([
     getCampaign(ctx, enrollment.campaignId),
-    getCrmContact(ctx, ctx.db.namespace, enrollment.companyId, enrollment.contactId).catch(() => null),
+    resolveRecipient(ctx, enrollment.companyId, enrollment.contactId).catch(() => null),
   ]);
   const raw = stepFor(steps, enrollment.stepPosition, enrollment.variant);
   const step = raw ? personalStep(raw, await personalVars(ctx, enrollment.companyId, campaign, contact)) : null;
@@ -552,7 +551,7 @@ export async function matchEnrollment(ctx: PluginContext, companyId: string, mai
   }
   const byReplyTo = await matchByReplyTo(ctx, companyId, mail);
   if (byReplyTo) return { ...byReplyTo, via: "reply-to" };
-  const contacts = await crmContactsByEmail(ctx, companyId, mail.from.email);
+  const contacts = await recipientsByEmail(ctx, companyId, mail.from.email);
   if (contacts.length === 0) return null;
   const enrollments = await enrollmentsForContacts(ctx, companyId, contacts.map((contact) => contact.id));
   if (enrollments.length === 0) return null;
@@ -632,7 +631,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
   if (plan.suppress) {
     // A bounce comes from a mailer daemon: suppress the address we sent to, not the sender.
     const address = plan.suppress === "bounce"
-      ? (typeof sent?.meta.to === "string" ? sent.meta.to : null) ?? campaignAddress((await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null))?.emails)
+      ? (typeof sent?.meta.to === "string" ? sent.meta.to : null) ?? campaignAddress((await resolveRecipient(ctx, companyId, enrollment.contactId).catch(() => null))?.emails)
       : mail.from.email;
     if (address) {
       const scope = plan.suppress === "bounce" ? "all" : "marketing";
@@ -653,7 +652,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
 
   let issueId: string | null = null;
   if (plan.issue) {
-    const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null);
+    const contact = await resolveRecipient(ctx, companyId, enrollment.contactId).catch(() => null);
     const name = contact?.name ?? mail.from.name ?? mail.from.email;
     const subject = mail.subject.trim() || "(no subject)";
     const followUp = plan.issue === "follow-up";
