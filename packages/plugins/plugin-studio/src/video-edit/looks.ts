@@ -8,8 +8,11 @@
  * - `colortemperature` multiplies RGB by `kelvinRgb(T)` and does NOT normalise: 6500 K is not neutral (b = 0.98),
  *   6600 K is exactly (1,1,1). `NEUTRAL_ADJUST.temperature` is therefore 6600.
  * - `vignette=angle=A` multiplies by cos(A * d / dmax)^4, d = distance from the centre, dmax = half the diagonal.
- * - `eq` brightness/contrast/saturation work on luma / chroma (here BT.709 luma, full range). Luma is clamped to 0..1
- *   before the chroma is added back; the SVG matrix is linear and clamps only at the end, so the two differ for
+ * - `eq` works on the code values of the decoded frame, which in production is yuv420p BT.709 TV range (Y 16..235).
+ *   Brightness adds b*256 code values on a 219-wide range (measured on ffmpeg 6.1.1), so in full-scale terms it adds b*256/219 (`EQ_BRIGHTNESS_K`),
+ *   and contrast pivots on code 128, which is 112/219 in full scale (`EQ_PIVOT`). Saturation scales chroma about
+ *   luma, unchanged by range. The compile step must therefore NOT convert to full range before `eq`.
+ *   Luma is clamped to 0..1 before the chroma is added back; the SVG matrix is linear and clamps only at the end, so the two differ for
  *   colours whose luma leaves 0..1 (bright colours with +brightness). Parity tests use colours that stay inside.
  */
 
@@ -27,6 +30,9 @@ export const NEUTRAL_ADJUST: Readonly<Adjust> = { brightness: 0, contrast: 1, sa
 export const BLUR_REF_WIDTH = 1080;
 const LUMA = [0.2126, 0.7152, 0.0722] as const;
 const IDENTITY: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+/** `eq` on TV-range code values, in full-scale units: brightness gain and contrast pivot (see header). */
+const EQ_BRIGHTNESS_K = 256 / 219;
+const EQ_PIVOT = 112 / 219;
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 /** Saturation matrix about BT.709 luma (s = 1 is identity, 0 is mono). */
@@ -135,9 +141,16 @@ export function vignetteStops(v: number, n = 9): { offset: number; gain: number 
   return Array.from({ length: n }, (_, i) => ({ offset: i / (n - 1), gain: vignetteGain(v, i / (n - 1)) }));
 }
 
+const ADJUST_RANGE: Readonly<Record<keyof Adjust, readonly [number, number]>> = {
+  brightness: [-1, 1], contrast: [0, 2], saturation: [0, 3], temperature: [1000, 40000], blur: [0, 50], vignette: [0, 1],
+};
+
 function fill(a?: Partial<Adjust>): Adjust {
   const o = { ...NEUTRAL_ADJUST, ...a };
-  for (const [k, v] of Object.entries(o)) if (!Number.isFinite(v)) throw new Error(`looks: adjust.${k} must be finite`);
+  for (const [k, [lo, hi]] of Object.entries(ADJUST_RANGE)) {
+    const v = o[k as keyof Adjust];
+    if (!Number.isFinite(v) || v < lo || v > hi) throw new Error(`looks: adjust.${k} must be finite and within ${lo}..${hi}, got ${v}`);
+  }
   return o;
 }
 
@@ -145,7 +158,7 @@ function fill(a?: Partial<Adjust>): Adjust {
 export function applyAdjust(rgb: Rgb, adjust: Partial<Adjust>): Rgb {
   const a = fill(adjust);
   const y = LUMA[0] * rgb[0] + LUMA[1] * rgb[1] + LUMA[2] * rgb[2];
-  const y2 = clamp01((y - 0.5) * a.contrast + 0.5 + a.brightness);
+  const y2 = clamp01((y - EQ_PIVOT) * a.contrast + EQ_PIVOT + a.brightness * EQ_BRIGHTNESS_K);
   const g = temperatureGain(a.temperature);
   return [0, 1, 2].map((i) => clamp01(clamp01(y2 + (rgb[i]! - y) * a.saturation) * g[i]!)) as unknown as Rgb;
 }
@@ -223,11 +236,11 @@ export function toSvgPrimitives(x: LookRef | Partial<Adjust>, opts: { displayWid
   }
   const a = fill(x);
   if (a.brightness !== 0 || a.contrast !== 1 || a.saturation !== 1) {
-    // out_i = s*in_i + (c - s)*Y + (0.5 - 0.5c + b): linear in RGB, so one matrix (brightness is additive, as eq).
+    // out_i = s*in_i + (c - s)*Y + (p - p*c + k*b): linear in RGB, so one matrix (brightness is additive, as eq).
     const v: number[] = [];
     for (let i = 0; i < 3; i++) {
       for (let j = 0; j < 3; j++) v.push((i === j ? a.saturation : 0) + (a.contrast - a.saturation) * LUMA[j]!);
-      v.push(0, 0.5 - 0.5 * a.contrast + a.brightness);
+      v.push(0, EQ_PIVOT * (1 - a.contrast) + a.brightness * EQ_BRIGHTNESS_K);
     }
     out.push({ kind: "matrix", values: [...v, 0, 0, 0, 1, 0] });
   }

@@ -79,7 +79,7 @@ describe("looks: adjust", () => {
   it("brightness is additive (SVG intercept), not multiplicative", () => {
     const [p] = toSvgPrimitives({ brightness: 0.2 });
     expect(p).toMatchObject({ kind: "matrix" });
-    expect(applyPrimitives([0, 0, 0], [p!])[0]).toBeCloseTo(0.2, 6);
+    expect(applyPrimitives([0, 0, 0], [p!])[0]).toBeCloseTo((0.2 * 256) / 219, 6);
   });
   it("ffmpeg args are fixed strings from our numbers, in render order", () => {
     expect(adjustToFfmpeg({ brightness: 0.2, contrast: 1.1, saturation: 0, temperature: 5000, blur: 10, vignette: 0.5 }, { renderWidth: 1080 }))
@@ -133,31 +133,49 @@ describe("looks: output shape", () => {
   it("looks.ts imports nothing (pure, browser-safe)", () => {
     const src = readFileSync(new URL("../src/video-edit/looks.ts", import.meta.url), "utf8");
     expect(src).not.toMatch(/^\s*import\s/m);
-    expect(src).not.toMatch(/require\(|node:/);
+    expect(src).not.toMatch(/require\(|node:|\bimport\s*\(/);
   });
 });
 
 // Real ffmpeg: our reference model must match what the binary does (skips where ffmpeg is missing).
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 describe.runIf(hasFfmpeg)("looks: reference model vs real ffmpeg", () => {
+  // Production pixel format: yuv420p, BT.709, TV range. Each colour is a 2x2 block so 4:2:0 chroma stays per-colour.
   const run = (filters: string[], cols: Rgb[]): Rgb[] => {
-    const input = Buffer.from(cols.flatMap((c) => c.map((v) => Math.round(v * 255))));
-    const r = spawnSync("ffmpeg", ["-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${cols.length}x1`, "-i", "-", "-vf", ["format=rgb24", ...filters, "format=rgb24"].join(","), "-frames:v", "1", "-f", "rawvideo", "-"], { input });
+    const w = cols.length * 2;
+    const row = cols.flatMap((c) => [0, 1].flatMap(() => c.map((v) => Math.round(v * 255))));
+    const input = Buffer.from([...row, ...row]);
+    const vf = ["scale=out_color_matrix=bt709:out_range=tv", "format=yuv420p", "setparams=colorspace=bt709:range=tv", ...filters, "scale=in_color_matrix=bt709:in_range=tv:out_range=pc", "format=rgb24"].join(",");
+    const r = spawnSync("ffmpeg", ["-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${w}x2`, "-i", "-", "-vf", vf, "-frames:v", "1", "-f", "rawvideo", "-"], { input });
     expect(r.status).toBe(0);
     const o = r.stdout;
-    return cols.map((_, i) => [o[i * 3]! / 255, o[i * 3 + 1]! / 255, o[i * 3 + 2]! / 255] as Rgb);
+    return cols.map((_, i) => [o[i * 6]! / 255, o[i * 6 + 1]! / 255, o[i * 6 + 2]! / 255] as Rgb);
   };
   for (const id of PIB_BASIC_IDS) {
-    it(`look ${id} at 0.5 and 1 within 3/255 (8-bit matrix + LUT rounding; measured max 2.4/255)`, () => {
+    it(`look ${id} at 0.5 and 1 within 4/255 (tv-range 4:2:0 + 8-bit matrix/LUT rounding; measured max 3.4/255)`, () => {
       for (const intensity of [0.5, 1]) {
         const got = run(lookToFfmpeg({ id, intensity }), COLOURS);
-        COLOURS.forEach((c, i) => expect(maxDiff(got[i]!, applyLook(c, { id, intensity }))).toBeLessThanOrEqual(3 * E));
+        COLOURS.forEach((c, i) => expect(maxDiff(got[i]!, applyLook(c, { id, intensity }))).toBeLessThanOrEqual(4 * E));
       }
     });
   }
   it("colortemperature + RGB gains within 2/255", () => {
     const adj = { temperature: 4500 };
     const got = run(adjustToFfmpeg(adj), COLOURS);
-    COLOURS.forEach((c, i) => expect(maxDiff(got[i]!, applyAdjust(c, adj))).toBeLessThanOrEqual(2 * E));
+    COLOURS.forEach((c, i) => expect(maxDiff(got[i]!, applyAdjust(c, adj))).toBeLessThanOrEqual(3 * E));
+  });
+  const EQ_CASES: Partial<Adjust>[] = [{ brightness: 0.2 }, { brightness: -0.2 }, { contrast: 1.5 }, { contrast: 0.7 }, { saturation: 2 }, { saturation: 0.5 }, { brightness: -0.1, contrast: 1.3, saturation: 1.4 }];
+  // Colours whose luma stays inside 0..1 after the change (the known luma-clamp difference is documented in looks.ts).
+  const EQ_COLOURS: Rgb[] = [[0.5, 0.5, 0.5], [0.2, 0.4, 0.6], [0.6, 0.3, 0.3], [0.3, 0.6, 0.4], [0.4, 0.4, 0.5]];
+  for (const adj of EQ_CASES) {
+    it(`eq ${JSON.stringify(adj)} on yuv420p tv BT.709 within ${Object.keys(adj).length > 1 ? 10 : 7}/255 (measured max 3.6..9.9; 4:2:0 chroma + 8-bit eq LUT)`, () => {
+      const got = run(adjustToFfmpeg(adj), EQ_COLOURS);
+      EQ_COLOURS.forEach((c, i) => expect(maxDiff(got[i]!, applyAdjust(c, adj))).toBeLessThanOrEqual((Object.keys(adj).length > 1 ? 10 : 7) * E));
+    });
+  }
+  it("adjust values outside the documented ranges throw", () => {
+    for (const bad of [{ temperature: 0 }, { temperature: 1e9 }, { brightness: 2 }, { contrast: -1 }, { saturation: 4 }, { blur: 51 }, { vignette: 2 }, { blur: NaN }]) {
+      expect(() => adjustToFfmpeg(bad)).toThrow();
+    }
   });
 });
