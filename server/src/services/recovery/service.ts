@@ -231,6 +231,21 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// PAR-10283: a manual or system pause (e.g. a release restart) is usually short.
+// Stranded-work recovery leaves the paused agent's tasks alone for this long;
+// nothing moves an escalated task back on resume.
+export const PAUSED_AGENT_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000;
+type PausedAgentFields = Pick<typeof agents.$inferSelect, "status" | "companyId" | "pauseReason" | "pausedAt" | "updatedAt">;
+function pausedAgentGraceEndsAt(agent: PausedAgentFields | null | undefined, companyId: string) {
+  if (agent?.status !== "paused" || agent.companyId !== companyId) return null;
+  if (agent.pauseReason !== "manual" && agent.pauseReason !== "system") return null;
+  return (agent.pausedAt ?? agent.updatedAt).getTime() + PAUSED_AGENT_RECOVERY_GRACE_MS;
+}
+export function isDeliberateShortPause(agent: PausedAgentFields | null | undefined, companyId: string, now = new Date()) {
+  const endsAt = pausedAgentGraceEndsAt(agent, companyId);
+  return endsAt !== null && now.getTime() < endsAt;
+}
+
 // PAR-1838: cap on consecutive automatic continuation wakes the stranded-issue
 // sweeper queues for one `in_progress` issue without a status change. Read per
 // sweep so a restart with a new env value (and tests) pick it up. Clamped 1..10;
@@ -4906,6 +4921,14 @@ export function recoveryService(
 
       const agent = await getAgent(agentId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
+        result.skipped += 1;
+        continue;
+      }
+      // PAR-10283: `agentId` is the current reviewer for `in_review` and the
+      // assignee otherwise; every paused-agent escalation below is deferred.
+      // Resume notifies this queue; the deadline covers a pause that lasts.
+      if (isDeliberateShortPause(agent, issue.companyId)) {
+        opts?.onDeferredDeadline?.(pausedAgentGraceEndsAt(agent, issue.companyId)!);
         result.skipped += 1;
         continue;
       }
