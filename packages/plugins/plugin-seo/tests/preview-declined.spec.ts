@@ -63,9 +63,7 @@ describe("decision.mjs (no database)", () => {
     expect(server).toContain("pool.query(DECISION_SQL, [token, decision, note])");
     expect(server).toContain("send(res, 409, page(refusedAnswer(rows[0]?.status)))");
     expect(server).not.toMatch(/UPDATE \$\{SCHEMA\}\.previews SET status = \$2/);
-    const declined = server.indexOf('rows[0].status === "declined") return send(res, 410, page(DECLINED_PAGE))');
-    expect(declined).toBeGreaterThan(0);
-    expect(declined).toBeLessThan(server.indexOf("rows[0].expired && rows[0].approved_live"));
+    expect(server).toContain('state === "declined") return send(res, 410, page(DECLINED_PAGE))');
     expect(DECLINED_PAGE).toBe("This proposal is not going ahead.");
   });
 

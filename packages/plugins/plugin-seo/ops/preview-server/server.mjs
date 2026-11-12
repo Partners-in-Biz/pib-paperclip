@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, refusedAnswer, SCHEMA } from "./decision.mjs";
-import { captureMismatch } from "./capture.mjs";
+import { guardShot, proposalState } from "./capture.mjs";
 import { startEgressProxy } from "./egress.mjs";
 import { createRenderService, keptTextFigure, RENDER_PORT } from "./render.mjs";
 import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
@@ -214,11 +214,7 @@ async function shotFor(row, token, which, mobile = false) {
   } catch {}
   const url = which === "live" ? row.page_url : `http://127.0.0.1:${PORT}/p/${token}?key=${encodeURIComponent(row.review_key)}`;
   // Fail loudly rather than save a picture of an error page or another site (PAR-9042).
-  const got = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(20_000), headers: { "user-agent": "pib-preview-shot-check" } }).then(
-    async (r) => ({ status: r.status, url: r.url, html: await r.text() }),
-  );
-  const why = captureMismatch(got, which === "live" ? { host: new URL(row.page_url).hostname } : { host: "127.0.0.1", title: row.html });
-  if (why) throw new Error(`shot refused for ${which}${mobile ? "-mobile" : ""}: ${why}`);
+  await guardShot({ which, mobile, liveUrl: row.page_url, proposalUrl: url, proposalHtml: row.html });
   await screenshot(url, file, mobile);
   return readFile(file);
 }
@@ -268,19 +264,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && sub === "") {
       const { rows } = await pool.query(`SELECT html, status, review_status, review_key, decided_at, expires_at < now() AS expired, (status = 'approved' AND decided_at > now() - interval '30 days') AS approved_live FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
-      if (rows[0].status === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
-      if (rows[0].status === "declined") return send(res, 410, page(DECLINED_PAGE));
+      const state = proposalState(rows[0], key);
+      if (state === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
+      if (state === "declined") return send(res, 410, page(DECLINED_PAGE));
       // An approved answer stays valid 30 days after it was given (APPROVAL_VALID_DAYS), whatever the link's expiry; no form, POST stays refused.
-      // The review page's own screenshots open the proposal with the review key; an expired link must not turn them into the "expired" page (PAR-9042).
-      const staffView = Boolean(key) && key === rows[0].review_key;
-      if (rows[0].expired && staffView) return send(res, 200, rewriteFormAction(rows[0].html, PREVIEW_ORIGIN));
-      if (rows[0].expired && rows[0].approved_live) return send(res, 200, page(`You approved this on ${new Date(rows[0].decided_at).toISOString().slice(0, 10)}. We are applying it.`));
-      if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
-      let html = rows[0].html;
-      html = rewriteFormAction(html, PREVIEW_ORIGIN);
-      if (key && key === rows[0].review_key) return send(res, 200, html);
-      if (rows[0].review_status !== "passed") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
-      return send(res, 200, html);
+      if (state === "approved") return send(res, 200, page(`You approved this on ${new Date(rows[0].decided_at).toISOString().slice(0, 10)}. We are applying it.`));
+      if (state === "expired") return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
+      if (state === "hold") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
+      return send(res, 200, rewriteFormAction(rows[0].html, PREVIEW_ORIGIN));
     }
     if (req.method === "GET" && sub === "/review") {
       const row = await staff();
