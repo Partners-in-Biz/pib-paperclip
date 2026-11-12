@@ -42,6 +42,8 @@ export const SOCIAL_ORIGINS = {
   plan: "plan:",
   /** The Social agent's request for an image or video: `creative:<postId>` (Creative Producer, else the Social agent). */
   creative: "creative:",
+  /** A post a person publishes by hand on a manual account: `post-by-hand:<postId>` (a person). */
+  manualPost: "post-by-hand:",
 } as const;
 
 /** The company's default person, then the Cockpit owner: who gets person-only work nobody else owns. */
@@ -221,6 +223,68 @@ export async function openPublishFailureIssue(
   } catch (error) {
     ctx.logger.info("Could not open the publish failure issue", { companyId, postId: post.id, error: error instanceof Error ? error.message : String(error) });
     return null;
+  }
+}
+
+/**
+ * The publish time came for a manual account: one task for a person, who posts from the post page (caption copied,
+ * media shared or saved, the platform's composer opened) and marks each account as posted. Returns the issue id.
+ */
+export async function openManualPostIssue(
+  ctx: PluginContext,
+  input: { companyId: string; post: PostRow; waiting: Array<{ destination: DestinationRow; account: AccountRow }> },
+): Promise<string | null> {
+  const { companyId, post } = input;
+  // Posting by hand is a person's step: whoever owns the post, else who added the account, else the default person.
+  const assigneeUserId = await personAssignee(ctx, companyId, post.owner_user_id ?? input.waiting[0]?.account.created_by_user_id ?? null);
+  const accounts = input.waiting.map(({ account }) => `- **${label(account.platform)} · ${account.display_name}**${account.handle ? ` (${account.handle})` : ""}`);
+  const excerpt = post.body.length > 280 ? `${post.body.slice(0, 280)}…` : post.body;
+  const where = post.scope === "personal"
+    ? "Open My Social, then Posts, and open this post."
+    : post.client_ref
+      ? "Open the client's workspace from the CRM, go to Social, then Posts, and open this post."
+      : "Open the Social page, go to Posts, and open this post.";
+  try {
+    const issue = await createWorkIssue(ctx, {
+      companyId,
+      projectId: await projectIdForRow(ctx, companyId, post),
+      title: `${clientPrefix(post)}Post by hand: ${input.waiting.map(({ account }) => label(account.platform)).join(", ")}`,
+      description: [
+        `An approved post is ready. ${input.waiting.length === 1 ? "This account has" : "These accounts have"} no publishing link, so a person posts it:`,
+        "",
+        ...accounts,
+        "",
+        scopeLine(post),
+        `Post id: \`${post.id}\``,
+        "",
+        "> " + excerpt.replace(/\n/g, "\n> "),
+        "",
+        "What to do:",
+        `1. ${where}`,
+        "2. Under each account, press **Post by hand**: the caption is copied, the media is shared or saved, and the platform opens (with the text in the box where the platform allows it).",
+        "3. Post it there, then press **Mark as posted** and paste the link to the post.",
+        "This issue closes itself when every account is marked.",
+      ].join("\n"),
+      priority: "medium",
+      originKind: ORIGIN_KIND,
+      originId: `${SOCIAL_ORIGINS.manualPost}${post.id}`,
+      assigneeUserId,
+      wake: false,
+    });
+    return issue.id;
+  } catch (error) {
+    ctx.logger.info("Could not open the post-by-hand issue", { companyId, postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+/** Every hand-post destination of the post is marked: close its task (never fails the caller). */
+export async function closeManualPostIssue(ctx: PluginContext, companyId: string, issueId: string): Promise<void> {
+  try {
+    await ctx.issues.createComment(issueId, "Every account is marked as posted. Closing this issue.", companyId);
+    await ctx.issues.update(issueId, { status: "done" }, companyId);
+  } catch (error) {
+    ctx.logger.info("Could not close the post-by-hand issue", { companyId, issueId, error: error instanceof Error ? error.message : String(error) });
   }
 }
 

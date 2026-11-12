@@ -166,6 +166,19 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.11.0: manual accounts and posting by hand
+
+A **manual account** is a platform account with no publishing link: the platform has not approved our app yet (TikTok), or a person wants to post there themselves. A person adds it on Accounts ("Add a manual account": platform and handle; nothing is signed in and no token is stored). It works in every space: own work, a client's workspace, and My Social.
+
+- Posts to a manual account are drafted, validated, reviewed, approved and scheduled like any other. `list-connected-accounts` shows it with `manual: true` and `connected: true`.
+- At the publish time the destination moves to `awaiting_manual` (migration 020) instead of going to a provider, and one **"Post by hand"** issue per post goes to a person (the post's owner, else who added the account, else the default person). The post stays `publishing` until then; the publish job leaves it alone.
+- The post page shows a panel per such destination: copy the caption, send the media to the platform's app through the phone's share sheet (or save it), open the platform's own composer, and **Mark as posted** with the link. `composeIntent` (`platforms.ts`) builds the composer link: the text is in the box on X, LinkedIn, Threads, Bluesky, Mastodon, Reddit and Pinterest. TikTok, Instagram, YouTube, Facebook and Dribbble document no link that fills in a post, so the caption is copied and the upload page opens.
+- `social.mark-destination-posted` records one destination (a person only). The post rolls up as after a publish run, and the issue closes when nothing waits. A destination whose automatic publish **failed** gets the same panel, so a person can post it themselves and settle it.
+- **Skip** on a waiting destination (`social.skip-destination`) records it as not posted, so the post leaves `publishing` and can be edited or deleted. No failure issue is opened.
+- A post can be hand-posted before its time; it keeps its status until the last destination is out.
+- No metrics come from the platform for a manual account: agents record what a person gives them with `record-post-metrics`.
+- When the platform later approves the app, connect the account the normal way and switch the manual one off. Posts already attached to the manual account stay with it.
+
 ## 0.10.37: delegated approver, agent text and docs (PAR-9688)
 
 In a scope with a delegated approver (named by a person under Social → Posts → Who approves), the delegate approves after a scored Reviewer pass, a person still can, the Social agent never does, and the delegate does not edit what it approves. The skills, the hire text, the composer and routine copy, the tool help and `references/approvals.md` now say so. Growth autopilot lines (experiments) are unchanged: a person approves those. Release: src-only (no migration, no capabilities or coreReadTables change).

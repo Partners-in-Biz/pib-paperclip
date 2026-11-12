@@ -21,7 +21,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { checkEffectParams, clientWhere, formatClientParam, wakeIssue, type AskEffectHandler, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { randomUUID } from "node:crypto";
-import { listAccounts, table } from "./db.js";
+import { accountUsable, listAccounts, table } from "./db.js";
 import { isSocialPlatform, PLATFORM_LABELS, ALL_PLATFORMS } from "./platforms.js";
 
 export const CONNECT_EFFECT_KEY = "social.connect-account";
@@ -195,7 +195,7 @@ export const connectEffect: AskEffectHandler = {
     const platform = String(ask.effect.params?.platform);
     const client = typeof ask.effect.params?.client === "string" ? ask.effect.params.client : "own";
     const scope: ClientScope = client === "own" ? null : { kind: client.startsWith("contact:") ? "contact" : "company", id: client.slice(client.indexOf(":") + 1) };
-    const live = (await listAccounts(ctx, companyId, scope)).filter((a) => a.platform === platform && a.token_enc && (a.status === "connected" || a.status === "expiring"));
+    const live = (await listAccounts(ctx, companyId, scope)).filter((a) => a.platform === platform && accountUsable(a) && (a.status === "connected" || a.status === "expiring"));
     if (live.length === 0) {
       const stale = (await listAccounts(ctx, companyId, scope)).filter((a) => a.platform === platform);
       const why = stale.length ? `${stale.length} ${platformName(platform)} account(s) exist but ${stale[0]!.status === "needs_reconnect" ? "need reconnecting" : "are not connected"}` : `no ${platformName(platform)} account is connected`;
@@ -207,6 +207,6 @@ export const connectEffect: AskEffectHandler = {
     const platform = String(ask.effect.params?.platform);
     const client = typeof ask.effect.params?.client === "string" ? ask.effect.params.client : "own";
     const scope: ClientScope = client === "own" ? null : { kind: client.startsWith("contact:") ? "contact" : "company", id: client.slice(client.indexOf(":") + 1) };
-    return (await listAccounts(ctx, companyId, scope)).some((a) => a.platform === platform && a.token_enc && (a.status === "connected" || a.status === "expiring"));
+    return (await listAccounts(ctx, companyId, scope)).some((a) => a.platform === platform && accountUsable(a) && (a.status === "connected" || a.status === "expiring"));
   },
 };

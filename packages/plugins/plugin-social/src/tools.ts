@@ -108,7 +108,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-connected-accounts",
     displayName: "List connected accounts",
-    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry.${OWN}`,
+    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry. \`manual: true\` marks an account with no publishing link: use it like any other, and at the publish time a person posts it by hand from the post page.${OWN}`,
     parametersSchema: schema([], { ...scope, platform: choice(ALL_PLATFORMS, "Only accounts on this platform") }),
   },
   {

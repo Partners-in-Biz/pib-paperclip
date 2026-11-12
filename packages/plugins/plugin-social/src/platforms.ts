@@ -111,7 +111,8 @@ export const POST_STATUSES = [
 ] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
-export const DESTINATION_STATUSES = ["pending", "publishing", "retrying", "published", "failed"] as const;
+/** `awaiting_manual`: the publish time came on a manual account; a person posts it by hand and marks it as posted. */
+export const DESTINATION_STATUSES = ["pending", "publishing", "retrying", "awaiting_manual", "published", "failed"] as const;
 export type DestinationStatus = (typeof DESTINATION_STATUSES)[number];
 
 /** Per-platform override fields. */
@@ -212,4 +213,85 @@ export function xReplyIntentUrl(postId: string | null | undefined, text: string)
   if (!postId || !/^\d+$/.test(postId)) return null;
   const trimmed = text.trim();
   return `https://x.com/intent/post?in_reply_to=${postId}${trimmed ? `&text=${encodeURIComponent(trimmed)}` : ""}`;
+}
+
+/** What a hand-posted destination carries to the platform's own composer. */
+export interface ComposeIntentInput {
+  text: string;
+  title?: string | null;
+  link?: string | null;
+  subreddit?: string | null;
+  /** Public address of the first image (Pinterest takes it). */
+  imageUrl?: string | null;
+  /** The Mastodon instance of the account. */
+  instanceUrl?: string | null;
+}
+
+export interface ComposeIntent {
+  /** The platform's own composer or upload page. */
+  url: string;
+  /** True when `url` opens with the text already in the box. False: the person pastes the copied caption. */
+  prefilled: boolean;
+  /** True when the media cannot ride along in `url` and the person adds it there (always, except a Pinterest image). */
+  mediaByHand: boolean;
+}
+
+const enc = encodeURIComponent;
+
+/**
+ * Where a person posts by hand, signed in to the platform in their own browser or app. A platform that documents a
+ * share link gets the text in the box; TikTok, Instagram, YouTube, Facebook (without a link) and Dribbble document
+ * none, so the page copies the caption and opens the upload screen. No platform takes a video or an uploaded image
+ * through a link: the post page shares or saves the file.
+ */
+export function composeIntent(platform: SocialPlatform, input: ComposeIntentInput): ComposeIntent {
+  const text = input.text.trim();
+  const link = input.link?.trim() || null;
+  const withLink = link && !text.includes(link) ? `${text}${text ? "\n\n" : ""}${link}` : text;
+  switch (platform) {
+    case "x":
+      return { url: `https://x.com/intent/post?text=${enc(withLink)}`, prefilled: true, mediaByHand: true };
+    case "linkedin":
+      return { url: `https://www.linkedin.com/feed/?shareActive=true&text=${enc(withLink)}`, prefilled: true, mediaByHand: true };
+    case "threads":
+      return { url: `https://www.threads.net/intent/post?text=${enc(text)}${link ? `&url=${enc(link)}` : ""}`, prefilled: true, mediaByHand: true };
+    case "bluesky":
+      return { url: `https://bsky.app/intent/compose?text=${enc(withLink)}`, prefilled: true, mediaByHand: true };
+    case "mastodon": {
+      const base = (input.instanceUrl?.trim() || "https://mastodon.social").replace(/\/+$/, "");
+      return { url: `${base}/share?text=${enc(withLink)}`, prefilled: true, mediaByHand: true };
+    }
+    case "reddit": {
+      const sub = input.subreddit?.trim().replace(/^\/?r\//i, "");
+      const title = (input.title?.trim() || text.split("\n")[0] || "").slice(0, 300);
+      const base = sub ? `https://www.reddit.com/r/${enc(sub)}/submit` : "https://www.reddit.com/submit";
+      return { url: `${base}?title=${enc(title)}${link ? `&url=${enc(link)}` : `&type=TEXT&text=${enc(text)}`}`, prefilled: true, mediaByHand: true };
+    }
+    case "pinterest": {
+      if (!input.imageUrl) return { url: "https://www.pinterest.com/pin-creation-tool/", prefilled: false, mediaByHand: true };
+      return {
+        url: `https://www.pinterest.com/pin/create/button/?media=${enc(input.imageUrl)}&description=${enc(text)}${link ? `&url=${enc(link)}` : ""}`,
+        prefilled: true,
+        mediaByHand: false,
+      };
+    }
+    case "facebook":
+      // Facebook's share dialog takes a link only; it ignores prefilled text.
+      return link
+        ? { url: `https://www.facebook.com/sharer/sharer.php?u=${enc(link)}`, prefilled: false, mediaByHand: true }
+        : { url: "https://www.facebook.com/", prefilled: false, mediaByHand: true };
+    case "tiktok":
+      return { url: "https://www.tiktok.com/upload", prefilled: false, mediaByHand: true };
+    case "youtube":
+      return { url: "https://www.youtube.com/upload", prefilled: false, mediaByHand: true };
+    case "instagram":
+      return { url: "https://www.instagram.com/", prefilled: false, mediaByHand: true };
+    case "dribbble":
+      return { url: "https://dribbble.com/uploads/new", prefilled: false, mediaByHand: true };
+  }
+}
+
+/** `manual:<handle>`: the stable external id of a manual account (it has no platform id). */
+export function manualExternalId(handle: string): string {
+  return `manual:${handle.trim().replace(/^@+/, "").toLowerCase()}`;
 }

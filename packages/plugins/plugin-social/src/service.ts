@@ -46,7 +46,10 @@ import {
   destinationsForPost,
   destinationsForScope,
   deleteDisabledAccount,
+  disableManualAccount,
   disconnectAccount,
+  isManual,
+  accountMeta,
   getAccount,
   getAccountsByIds,
   getInboxItem,
@@ -113,6 +116,7 @@ import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
 import {
   ALL_PLATFORMS,
+  composeIntent,
   CONNECT_MODE,
   isSocialPlatform,
   OVERRIDE_FIELDS,
@@ -123,7 +127,7 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
-import { retryPost } from "./publish.js";
+import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
 import { mediaCompliance } from "./media-compliance.js";
@@ -292,13 +296,44 @@ export function requireUser(viewer: Viewer, what: string): string {
 
 // ── output shapes ───────────────────────────────────────────────────────────
 
-function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
+/**
+ * What a person needs to post this destination by hand: the text as that platform gets it and the platform's own
+ * composer. Present while the destination is not published and its account still exists.
+ */
+function handPostOut(d: DestinationRow, account: AccountRow | undefined, post: PostRow | undefined) {
+  if (!post || !account || d.status === "published" || d.status === "publishing" || !isSocialPlatform(account.platform)) return null;
+  const request = buildPublishRequest(post, account.platform);
+  const meta = accountMeta(account);
+  const text = request.text;
+  const intent = composeIntent(account.platform, {
+    text,
+    title: request.title ?? null,
+    link: request.link ?? null,
+    subreddit: request.subreddit ?? (typeof meta.defaultSubreddit === "string" ? meta.defaultSubreddit : null),
+    imageUrl: request.media.find((m) => m.kind === "image")?.url ?? null,
+    instanceUrl: typeof meta.instanceUrl === "string" ? meta.instanceUrl : null,
+  });
+  return {
+    /** The caption to copy: the text, then the link when the platform shows links. */
+    text: request.link && !text.includes(request.link) ? `${text}\n\n${request.link}` : text,
+    title: request.title ?? null,
+    firstComment: request.firstComment ?? null,
+    url: intent.url,
+    prefilled: intent.prefilled,
+    mediaByHand: intent.mediaByHand,
+  };
+}
+
+function destinationOut(d: DestinationRow, account: AccountRow | undefined, post?: PostRow) {
   return {
     id: d.id,
     accountId: d.account_id,
     platform: account?.platform ?? null,
     accountName: account?.display_name ?? "Removed account",
     accountStatus: account?.status ?? null,
+    /** The account has no publishing link: a person posts this destination by hand. */
+    manual: account ? isManual(account) : false,
+    handPost: handPostOut(d, account, post),
     status: d.status,
     attempts: d.attempts,
     nextAttemptAt: iso(d.next_attempt_at),
@@ -345,7 +380,7 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     failureIssueId: row.failure_issue_id,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id))),
+    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id), row)),
   };
 }
 
@@ -975,7 +1010,7 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
   let status: string | undefined;
   if (params.enabled === false) status = "disabled";
   if (params.enabled === true) {
-    if (!account.token_enc) throw new SocialError("This account has no token; reconnect it instead");
+    if (!account.token_enc && !isManual(account)) throw new SocialError("This account has no token; reconnect it instead");
     status = "connected";
   }
   const move = target ? await moveAccountScope(ctx, viewer.companyId, account, target) : null;
@@ -992,7 +1027,8 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
 export async function disconnectAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const userId = requireUser(viewer, "disconnect an account");
   const account = await requireAccount(ctx, viewer, accountId);
-  await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
+  if (isManual(account)) await disableManualAccount(ctx, viewer.companyId, account.id, `Switched off by a person (${userId})`);
+  else await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
   return { accountId: account.id, status: "disabled" };
 }
 
@@ -1008,6 +1044,7 @@ export async function deleteAccountRecord(ctx: PluginContext, viewer: Viewer, ac
 export async function refreshAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const account = await requireAccount(ctx, viewer, accountId);
   if (!isSocialPlatform(account.platform)) throw new SocialError("Unsupported platform");
+  if (isManual(account)) return { accountId: account.id, refreshed: false, reason: "A manual account has no token: a person posts for it by hand" };
   const provider = providerFor(account.platform);
   if (!provider.refresh || provider.refreshKind === "none") {
     return { accountId: account.id, refreshed: false, reason: `${PLATFORM_LABELS[account.platform]} tokens do not expire or cannot be refreshed` };
@@ -1041,7 +1078,7 @@ export function connectInstructions(platformInput: string, redirectUri: string |
     label,
     link: accountsPath,
     steps,
-    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected.`,
+    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected. Where ${label} has not approved our app yet, the person can add it as a manual account on the same page ("Add a manual account"): you draft, review and schedule as usual, and a person posts it by hand at the time.`,
     redirectUri,
   };
 }

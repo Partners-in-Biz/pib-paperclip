@@ -106,14 +106,27 @@ export interface AccountRow {
   created_by_user_id: string | null;
   reconnect_issue_id: string | null;
   last_refreshed_at: unknown;
+  /** No API link: a person posts for this account by hand (`isManual`). It never holds a token. */
+  manual: boolean;
   created_at: unknown;
   updated_at: unknown;
+}
+
+/** A manual account: posts to it wait for a person, who posts them by hand from the post page. */
+export function isManual(row: Pick<AccountRow, "manual">): boolean {
+  return row.manual === true;
+}
+
+/** Usable as a destination: a live token, or a manual account that is not switched off. */
+export function accountUsable(row: Pick<AccountRow, "manual" | "token_enc" | "status">): boolean {
+  if (row.status === "disabled") return false;
+  return isManual(row) || Boolean(row.token_enc);
 }
 
 const ACCOUNT_COLS = [
   "id", "company_id", "platform", "scope", "owner_user_id", "status", "secret_ref", "display_name", "external_id", "handle",
   "avatar_url", "token_enc", "refresh_token_enc", "token_expires_at", "scopes", "client_kind", "client_ref", "client_name", "last_error", "meta",
-  "key_version", "created_by_user_id", "reconnect_issue_id", "last_refreshed_at", "created_at", "updated_at",
+  "key_version", "created_by_user_id", "reconnect_issue_id", "last_refreshed_at", "manual", "created_at", "updated_at",
 ].join(", ");
 
 export function accountMeta(row: AccountRow): Record<string, unknown> {
@@ -267,6 +280,51 @@ export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Pr
   return { id, created: true };
 }
 
+export interface ManualAccountWrite {
+  company_id: string;
+  platform: SocialPlatform;
+  display_name: string;
+  external_id: string;
+  handle: string;
+  meta: Record<string, unknown>;
+  scope: "org" | "personal";
+  owner_user_id: string | null;
+  client_kind: string | null;
+  client_ref: string | null;
+  client_name: string | null;
+  created_by_user_id: string | null;
+}
+
+/**
+ * Add a manual account (no token). `secret_ref = 'manual'` is a second marker beside the `manual` column: code from
+ * before 0.11.0 deletes a row with neither a token nor a secret ref, so a rolled-back deploy leaves these rows alone.
+ */
+export async function insertManualAccount(ctx: PluginContext, input: ManualAccountWrite): Promise<{ id: string }> {
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "accounts")}
+      (id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name, external_id, handle, avatar_url,
+       token_enc, refresh_token_enc, token_expires_at, scopes, meta, key_version, client_kind, client_ref, client_name,
+       created_by_user_id, manual)
+     VALUES ($1, $2, $3, $4, $5, 'connected', 'manual', $6, $7, $8, NULL, NULL, NULL, NULL, '[]'::jsonb, $9::jsonb, NULL, $10, $11, $12, $13, true)`,
+    [
+      id, input.company_id, input.platform, input.scope, input.owner_user_id, input.display_name, input.external_id, input.handle,
+      JSON.stringify(input.meta), input.client_kind, input.client_ref, input.client_name, input.created_by_user_id,
+    ],
+  );
+  return { id };
+}
+
+/** Switch a manual account off (it has no token to remove). It can then be deleted like any disabled account. */
+export async function disableManualAccount(ctx: PluginContext, companyId: string, id: string, note: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "accounts")} SET status = 'disabled', last_error = $3, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND manual = true`,
+    [id, companyId, note],
+  );
+  return result.rowCount;
+}
+
 export async function saveAccountToken(ctx: PluginContext, id: string, fields: {
   tokenEnc: string;
   keyVersion: number;
@@ -374,7 +432,7 @@ export async function unpublishedDestinationsOutside(
     `SELECT p.id AS post_id, p.status AS post_status, p.client_ref, p.client_name
        FROM ${table(ctx, "destinations")} d
        JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
-      WHERE d.account_id = $1 AND d.company_id = $2 AND d.status IN ('pending', 'retrying', 'publishing')
+      WHERE d.account_id = $1 AND d.company_id = $2 AND d.status IN ('pending', 'retrying', 'publishing', 'awaiting_manual')
         AND NOT COALESCE((${w.sql}), false)
       ORDER BY p.created_at DESC
       LIMIT 50`,
@@ -445,7 +503,7 @@ export async function flagLegacyTokens(ctx: PluginContext, companyId: string): P
 export async function deleteJunkAccounts(ctx: PluginContext, companyId: string): Promise<number> {
   const result = await ctx.db.execute(
     `DELETE FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND token_enc IS NULL AND secret_ref IS NULL AND status <> 'disabled'`,
+      WHERE company_id = $1 AND token_enc IS NULL AND secret_ref IS NULL AND manual = false AND status <> 'disabled'`,
     [companyId],
   );
   return result.rowCount;
@@ -874,7 +932,7 @@ export async function scheduledPostsWithoutWork(ctx: PluginContext): Promise<Arr
       WHERE p.status IN ('scheduled', 'publishing') AND p.scheduled_at IS NOT NULL AND p.scheduled_at <= now() - interval '2 minutes'
         AND NOT EXISTS (
           SELECT 1 FROM ${table(ctx, "destinations")} d
-           WHERE d.post_id = p.id AND d.status IN ('pending', 'retrying', 'publishing')
+           WHERE d.post_id = p.id AND d.status IN ('pending', 'retrying', 'publishing', 'awaiting_manual')
         )
       LIMIT 200`,
   );
@@ -961,7 +1019,7 @@ export async function insertDestination(ctx: PluginContext, input: { companyId: 
 export async function deleteDestination(ctx: PluginContext, companyId: string, postId: string, accountId: string): Promise<number> {
   const result = await ctx.db.execute(
     `DELETE FROM ${table(ctx, "destinations")}
-      WHERE post_id = $1 AND account_id = $2 AND company_id = $3 AND status IN ('pending', 'failed')`,
+      WHERE post_id = $1 AND account_id = $2 AND company_id = $3 AND status IN ('pending', 'failed', 'awaiting_manual')`,
     [postId, accountId, companyId],
   );
   return result.rowCount;
@@ -1017,6 +1075,14 @@ export async function saveDestinationOutcome(ctx: PluginContext, id: string, fie
 export async function setDestinationIssue(ctx: PluginContext, postId: string, issueId: string): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "destinations")} SET issue_id = $2, updated_at = now() WHERE post_id = $1 AND status = 'failed' AND issue_id IS NULL`,
+    [postId, issueId],
+  );
+}
+
+/** Point a post's hand-post destinations at the task that asks a person to post them. */
+export async function setManualIssue(ctx: PluginContext, postId: string, issueId: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")} SET issue_id = $2, updated_at = now() WHERE post_id = $1 AND status = 'awaiting_manual' AND issue_id IS NULL`,
     [postId, issueId],
   );
 }
@@ -1720,7 +1786,7 @@ export async function scopeSummary(ctx: PluginContext, companyId: string, scope:
   const rows = await ctx.db.query<ScopeSummaryRow>(
     `SELECT
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql}
-          AND token_enc IS NOT NULL AND status IN ('connected', 'expiring')) AS connected,
+          AND (token_enc IS NOT NULL OR manual = true) AND status IN ('connected', 'expiring')) AS connected,
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql} AND status = 'needs_reconnect') AS needs_reconnect,
        (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status = 'scheduled'
           AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days') AS scheduled_week,

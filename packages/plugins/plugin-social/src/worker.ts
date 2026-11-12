@@ -33,6 +33,7 @@ import {
 import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
 import { clientAnswersJob } from "./client-approval.js";
 import { scopeFromParams } from "./clients.js";
+import { addManualAccountRecord, markDestinationPostedRecord, skipDestinationRecord } from "./manual.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { CONNECT_EFFECT_KEY, connectEffect } from "./connect-requests.js";
 import { eraseSubject } from "./erasure.js";
@@ -371,6 +372,9 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.get-post": (ctx, v, p) => getPostDetail(ctx, v, requiredString(p, "postId")),
   "social.validate-post": (ctx, v, p) => validatePostRecord(ctx, v, requiredString(p, "postId")),
   "social.mark-posted": (ctx, v, p) => markPostPostedRecord(ctx, v, p),
+  "social.mark-destination-posted": (ctx, v, p) => markDestinationPostedRecord(ctx, v, p),
+  "social.skip-destination": (ctx, v, p) => skipDestinationRecord(ctx, v, p),
+  "social.add-manual-account": (ctx, v, p) => addManualAccountRecord(ctx, v, p),
   "social.delete-post": (ctx, v, p) => deletePostRecord(ctx, v, requiredString(p, "postId")),
   "social.attach": (ctx, v, p) => attachDestination(ctx, v, p),
   "social.detach": (ctx, v, p) => detachDestination(ctx, v, p),
