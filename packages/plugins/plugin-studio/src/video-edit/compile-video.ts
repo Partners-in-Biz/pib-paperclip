@@ -62,9 +62,8 @@ export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset",
  * Lossless intermediate between passes, so a multi-pass render is pixel-identical to the single pass. Any lossy
  * intermediate re-enters the final encoder's own noise: on the T7 equivalence fixtures crf 12 gave mean PSNR 41.0 to
  * 42.4 dB against the single pass and crf 4 gave 42.8 (bar: 42), while qp 0 gives identical frames (PAR-10465). Cost at
- * 1080x1920 30 fps: about 180 MiB/min (crf 12: 44 to 70), same encode time, lower VmPeak; a 180 s full-length layer pass
- * is about 540 MiB. The default 200 MiB `FSIZE_BYTES` (ffmpeg.ts) caps a pass near 66 s of that, so the render pipeline
- * (T3, PAR-10466) must pass a 2 GiB `fsizeBytes` for intermediates.
+ * 1080x1920 30 fps: 2 to 3 MiB/s ungraded, about 14 MB/s graded (the vignette adjust dithers every pixel), so a 180 s
+ * full-length pass is up to about 2.5 GB. The render pipeline passes `INTERMEDIATE_FSIZE_BYTES` (render-pipeline.ts).
  */
 export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-qp", "0", "-pix_fmt", "yuv420p"] as const;
 export const DECODE_THREADS = 2;

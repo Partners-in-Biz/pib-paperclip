@@ -64,8 +64,12 @@ export interface PipelineOptions {
   now?: () => number;
 }
 
-/** Intermediate pass outputs may reach 2 GiB (a lossless 180 s 1080x1920 layer pass is about 540 MiB, PAR-10465). */
-export const INTERMEDIATE_FSIZE_BYTES = 2 * 1024 * 1024 * 1024;
+/**
+ * The `--fsize` cap of an intermediate pass. Lossless intermediates (compile-video.ts) of graded footage measured about
+ * 14 MB/s on pib-vps (the vignette adjust dithers every pixel), so a full-length 180 s pass is about 2.5 GB; ungraded
+ * footage is 2 to 3 MiB/s (PAR-10466 acceptance). 6 GiB is 2.4x the measured worst over `LIMITS.maxDuration`.
+ */
+export const INTERMEDIATE_FSIZE_BYTES = 6 * 1024 * 1024 * 1024;
 /** A pass that would start with less than this left before the render deadline fails `timeout` without spawning. */
 export const MIN_PASS_SEC = 60;
 
