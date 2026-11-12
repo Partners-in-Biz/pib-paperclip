@@ -1,7 +1,7 @@
 // PAR-9945: a title-and-meta-only preview of a WooCommerce product page showed 99% kept in create-preview and 83% on
 // the review page. The review page measures a fresh load of the live page, and WooCommerce picks the "Related courses"
 // products at random on every load; a page built from the source also lost the script that hides all tabs but one.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
@@ -104,7 +104,7 @@ describe("create-preview waits for a busy render service", () => {
     last_daily_on: null, last_weekly_on: null, audit_days_done: [0], seeded_at: "2026-09-01T00:00:00Z", created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
   };
   const seo: Actor = { kind: "agent", agentId: "seo-1", runId: "r", responsibleUserId: null };
-  function host(fetch: (url: string) => Promise<Response>) {
+  function host(fetch: (url: string) => Promise<Response>, siteMs = 0) {
     const executes: Array<{ sql: string; params: unknown[] }> = [];
     const ctx = {
       db: {
@@ -121,7 +121,8 @@ describe("create-preview waits for a busy render service", () => {
       issues: { create: vi.fn(async () => ({ id: "rev-1" })), createComment: vi.fn(async () => ({ id: "c" })), requestWakeup: vi.fn(async () => ({ queued: true })), update: vi.fn(async () => ({})) },
       logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
     } as unknown as PluginContext;
-    const site = vi.fn(async () => ({ status: 200, url: "https://acme.co.za/product/hydroponics-course/", redirects: [], headers: {}, text: LOAD_A, ms: 1 }));
+    // `siteMs`: how long the page fetch took (moves the clock, fake timers only).
+    const site = vi.fn(async () => (siteMs > 0 && vi.advanceTimersByTime(siteMs), { status: 200, url: "https://acme.co.za/product/hydroponics-course/", redirects: [], headers: {}, text: LOAD_A, ms: 1 }));
     const f = vi.fn(fetch);
     return { env: createEnv(ctx, { now: () => new Date(), site: site as never, fetch: f as never }), executes, fetch: f };
   }
@@ -141,5 +142,32 @@ describe("create-preview waits for a busy render service", () => {
     (listHost.env.ctx.db as { query: (sql: string) => Promise<unknown[]> }).query = async () => [row];
     const list = (await listPreviews(listHost.env, "co-1", { sprintId: "sp-1" })) as { previews: Array<Record<string, unknown>> };
     expect(list.previews[0]).toMatchObject({ keptPct: out.stats.rendered.keptPct, basis: "rendered" });
+  });
+
+  // Worst case: the one-slot render service stays busy. The loop must stop at its cap and never outlive the budget.
+  const busy = async () => new Response(JSON.stringify({ error: "a render is already running" }), { status: 503 });
+  const create = (h: ReturnType<typeof host>) => createPreview(h.env, "co-1", seo, { sprintId: "sp-1", pageUrl: "/product/hydroponics-course/", ...meta }) as Promise<{ basis: string; notes: string[] }>;
+  afterEach(() => vi.useRealTimers());
+
+  it("a render service that answers 503 every time is asked exactly 6 times, then the preview is built from the source", async () => {
+    vi.useFakeTimers();
+    const h = host(busy);
+    const run = create(h);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const out = await run;
+    expect(h.fetch).toHaveBeenCalledTimes(6);
+    expect(out.basis).toBe("source");
+    expect(out.notes.join(" ")).toContain("the render service answered 503 (busy with another render)");
+  });
+
+  it("does not ask again when the page fetch already used up the time budget (11 s of 12 s)", async () => {
+    vi.useFakeTimers();
+    const h = host(busy, 11_000);
+    const run = create(h);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const out = await run;
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(out.basis).toBe("source");
+    expect(out.notes.join(" ")).toContain("answered 503 (busy with another render)");
   });
 });
