@@ -10,6 +10,11 @@ import { PREVIEW_BASE, previewSlug } from "../service/preview-links.js";
 /** before = added above the page's existing content (default), after = added below it, replace = takes the place of ALL of it. */
 export type BodyMode = "before" | "after" | "replace";
 
+export interface LinkEdit {
+  text: string;
+  href: string;
+}
+
 export interface PreviewChanges {
   title?: string;
   metaDescription?: string;
@@ -21,6 +26,8 @@ export interface PreviewChanges {
   css?: string;
   /** Optional CSS-like selector (#id, .class, tag, tag.class, tag#id) naming the element that is the content area; overrides the automatic search. */
   contentSelector?: string;
+  /** Inline links: each `text` (one exact plain-text occurrence in the content area) is wrapped in `<a href>`. No new block (PAR-10109). */
+  linkEdits?: LinkEdit[];
   /** One client-facing sentence on why the change helps (shown in the approval email; not part of the page). */
   why?: string;
 }
@@ -342,12 +349,13 @@ export function withDoctype(html: string): string {
   return /^\s*<!doctype\b/i.test(html) ? html : `<!DOCTYPE html>\n${html}`;
 }
 
-function findContentArea(html: string, boundary: number, selector?: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {
+function findContentArea(html: string, boundary: number, selector?: string, descend = true): { innerStart: number; innerEnd: number; listing?: boolean } | null {
   if (selector) return findBySelector(html, selector);
   // A pasted document's card, one level down, is where the copy goes (PAR-10107); otherwise the area itself.
+  // Link edits look at the whole area (what post_content holds), so they skip the descent.
   const area = (innerStart: number, innerEnd: number) => {
     const a = { innerStart, innerEnd };
-    return pastedCard(html, a) ?? a;
+    return (descend ? pastedCard(html, a) : null) ?? a;
   };
   for (const c of contentCandidates()) {
     const m = c.re.exec(html);
@@ -429,6 +437,64 @@ function setTitle(html: string, value: string): string {
   });
 }
 
+const LINK_TEXT = /^[\p{L}\p{N}](?:[\p{L}\p{N} ,.:-]*[\p{L}\p{N}])?$/u;
+const LINK_BLOCKED_TAGS = new Set(["a", "h1", "h2", "h3", "h4", "h5", "h6", "button", "title", "option"]);
+
+/** The link text is matched against the page, never inserted from input; only characters WordPress and the DOM serializer leave alone. */
+export function checkLinkText(text: string): void {
+  if (text.length < 3 || text.length > 200) throw new SeoError(`Link text "${text.slice(0, 60)}" must be 3 to 200 characters.`);
+  if (/["'\u2018\u2019\u201c\u201d&<>]/.test(text) || text.includes("--")) {
+    throw new SeoError(`Link text "${text.slice(0, 60)}" has a quote, apostrophe, & , < , > or --; WordPress rewrites these, so the phrase could not be applied exactly. Pick a phrase without them.`);
+  }
+  if (!LINK_TEXT.test(text) || /  /.test(text)) {
+    throw new SeoError(`Link text "${text.slice(0, 60)}" may only hold letters, digits, single spaces, commas, full stops, colons and hyphens, starting and ending with a letter or digit.`);
+  }
+}
+
+/** Wrap the single plain-text occurrence of each edit's text in the area (before descent) in <a href>. Returns the new html and the area's new end. */
+export function applyLinkEdits(html: string, area: { innerStart: number; innerEnd: number }, edits: LinkEdit[]): { html: string; innerEnd: number } {
+  let out = html;
+  let end = area.innerEnd;
+  for (const edit of edits) {
+    checkLinkText(edit.text);
+    const inner = out.slice(area.innerStart, end);
+    const hits: Array<{ at: number; blocked: string | null }> = [];
+    const stack: string[] = [];
+    const tokens = /<!--[\s\S]*?-->|<(script|style)\b[\s\S]*?<\/\1\s*>|<(\/?)([a-z][a-z0-9]*)\b((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/gi;
+    let last = 0;
+    const scan = (from: number, to: number) => {
+      const node = inner.slice(from, to);
+      const entities = [...node.matchAll(/&#?[a-z0-9]+;/gi)].map((e) => [e.index!, e.index! + e[0].length] as const);
+      for (let i = node.indexOf(edit.text); i !== -1; i = node.indexOf(edit.text, i + 1)) {
+        const j = i + edit.text.length;
+        if (entities.some(([s0, e0]) => i < e0 && j > s0)) continue;
+        if ((i > 0 && /[\p{L}\p{N}]/u.test(node[i - 1]!)) || (j < node.length && /[\p{L}\p{N}]/u.test(node[j]!))) continue;
+        hits.push({ at: from + i, blocked: stack.find((t) => LINK_BLOCKED_TAGS.has(t)) ?? null });
+      }
+    };
+    for (let m = tokens.exec(inner); m; m = tokens.exec(inner)) {
+      scan(last, m.index);
+      last = m.index + m[0].length;
+      const tag = m[3]?.toLowerCase();
+      if (!tag || m[5]) continue;
+      if (m[2]) {
+        const open = stack.lastIndexOf(tag);
+        if (open !== -1) stack.length = open;
+      } else if (!/^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr|p|li)$/.test(tag)) stack.push(tag);
+    }
+    scan(last, inner.length);
+    if (hits.length === 0) throw new SeoError(`Link phrase "${edit.text}": phrase not found as plain text in one paragraph; copy it from the page, no tags or entities.`);
+    if (hits.length > 1) throw new SeoError(`Link phrase "${edit.text}": phrase occurs ${hits.length} times; use a longer phrase that occurs once.`);
+    const hit = hits[0]!;
+    if (hit.blocked) throw new SeoError(`Link phrase "${edit.text}" sits inside a <${hit.blocked}> (a link, heading, button or similar); pick a phrase in ordinary body text.`);
+    const at = area.innerStart + hit.at;
+    const link = `<a href="${escapeHtml(edit.href)}">${edit.text}</a>`;
+    out = `${out.slice(0, at)}${link}${out.slice(at + edit.text.length)}`;
+    end += link.length - edit.text.length;
+  }
+  return { html: out, innerEnd: end };
+}
+
 export interface PreviewResult {
   html: string;
   applied: string[];
@@ -456,6 +522,13 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     html = setMeta(html, "property", "og:description", changes.metaDescription);
     html = setMeta(html, "name", "twitter:description", changes.metaDescription);
     applied.push("metaDescription");
+  }
+  // Inline links first, on the page as it is live: the phrase must occur once in what post_content holds.
+  if (changes.linkEdits?.length) {
+    const area = findContentArea(html, contentBoundary(html), changes.contentSelector, false);
+    if (!area) throw new SeoError(NO_AREA);
+    html = applyLinkEdits(html, area, changes.linkEdits).html;
+    applied.push("links");
   }
   // The page's heading: replace an H1 that sits inside the content area (the page's own title). An H1 outside it
   // belongs to the theme (a header or footer heading shared by every page): never overwrite that; the new heading
