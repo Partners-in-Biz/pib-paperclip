@@ -9,7 +9,7 @@ import { LIPSYNC } from "./providers/registry.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
 import { CAPTION_STYLES, EASES, LIMITS, SIZES, TRANSITIONS } from "./video-edit/timeline.js";
-import { DEFAULT_VOICE, XAI_VOICES } from "./video-edit/tts.js";
+import { ELEVENLABS_VOICES, XAI_VOICES } from "./video-edit/tts.js";
 import { MAX_SCRIPT_CHARS, ttsCredits } from "./video-edit/tts-price.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -109,16 +109,16 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     name: "video-edit-voiceover",
     displayName: "Add a voiceover to a video edit",
     description:
-      `Speak a script (up to ${MAX_SCRIPT_CHARS} characters) with xAI Grok voice, save it as a sound asset in the Library and put it on the edit's audio track at \`at\` seconds, at the revision you read. Charged: ${ttsCredits(1000)} credits per 1,000 characters, counted against the monthly cap and your run's limit; nothing is charged if it fails before the sound is saved.`,
+      `Speak a script (up to ${MAX_SCRIPT_CHARS} characters) with the chosen text to speech provider (xAI Grok voice by default, or ElevenLabs), save it as a sound asset in the Library and put it on the edit's audio track at \`at\` seconds, at the revision you read. Charged: ${ttsCredits(1000)} credits per 1,000 characters with xAI, ${ttsCredits(1000, "elevenlabs")} with ElevenLabs, counted against the monthly cap and your run's limit; nothing is charged if it fails before the sound is saved.`,
     parametersSchema: schema(["editId", "baseRevision", "script"], {
       editId: EDIT_ID,
       baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
       script: { type: "string", minLength: 1, maxLength: MAX_SCRIPT_CHARS, description: "The words to speak" } as JsonSchema,
-      voice: { type: "string", enum: [...XAI_VOICES], description: `Voice; default ${DEFAULT_VOICE}` } as JsonSchema,
+      voice: { type: "string", description: `Voice of the chosen provider; default is its first. xAI: ${XAI_VOICES.join(", ")}. ElevenLabs voice ids: ${ELEVENLABS_VOICES.join(", ")}.` } as JsonSchema,
       language: text("Optional language code, e.g. en, af or pt-BR, or auto; default en"),
       at: { type: "number", minimum: 0, description: "Where on the timeline it starts, in seconds; default 0 (moved past any sound already there)" } as JsonSchema,
       name: text("Optional Library name for the sound"),
-      provider: text("Optional text to speech provider key, e.g. xai; default: the company's setting"),
+      provider: text("Optional text to speech provider key, xai or elevenlabs; default: the company's setting"),
       issueId: ISSUE,
     }),
   },

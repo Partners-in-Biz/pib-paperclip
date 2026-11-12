@@ -74,6 +74,7 @@ interface ProviderChoice {
   price: string;
   qualityNote: string;
   isDefault: boolean;
+  configured?: boolean;
 }
 
 interface Overview {
@@ -1205,6 +1206,13 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
               </span>
             </div>
           ))}
+          {(data.providerOptions?.tts ?? []).filter((o) => !o.isDefault).map((o) => (
+            <div key={o.key} style={{ ...row, padding: "4px 0" }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                Text to speech option: {o.label} - {o.configured ? "key set" : "not configured"}
+              </span>
+            </div>
+          ))}
           {data.providerOptions?.lipsync?.length ? (
             <>
               {(["audio", "line"] as const).map((input) => {
@@ -1219,7 +1227,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
               })}
             </>
           ) : null}
-          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
+          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice", "ElevenLabs voice" and "Voice providers" in Studio's plugin settings.</p>
         </Section>
       ) : null}
       <Section title="Monthly credit caps">

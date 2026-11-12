@@ -14,14 +14,14 @@ import { StudioConfig } from "../config.js";
 import { table } from "../db.js";
 import { StudioError } from "../errors.js";
 import { assertFits, assertRunFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "../ledger.js";
-import { ttsFor } from "../providers/registry.js";
+import { PROVIDERS, resolveProvider, ttsFor } from "../providers/registry.js";
 import { objectUrl } from "../storage.js";
 import { applyOpsAction } from "./actions.js";
 import { addAudioOps } from "./audio-ops.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
 import { getVideoEdit } from "./store.js";
 import { LIMITS } from "./timeline.js";
-import { DEFAULT_VOICE, type TextToSpeech } from "./tts.js";
+import { type TextToSpeech } from "./tts.js";
 import { MAX_SCRIPT_CHARS, ttsEstimate } from "./tts-price.js";
 
 export interface VoiceoverActor {
@@ -52,7 +52,7 @@ function validate(params: Record<string, unknown>) {
   if (script.length > MAX_SCRIPT_CHARS) bad(`script is ${script.length} characters; a voiceover takes at most ${MAX_SCRIPT_CHARS}.`);
   const base = Number(params.baseRevision);
   if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision these changes start from.");
-  const voice = (typeof params.voice === "string" && params.voice.trim().toLowerCase()) || DEFAULT_VOICE;
+  const voice = typeof params.voice === "string" ? params.voice.trim() : ""; // "" = the provider's first voice
   const language = (typeof params.language === "string" && params.language.trim()) || "en";
   if (!LANGUAGE.test(language)) bad("language must be a language code like en or pt-BR, or auto.");
   const at = params.at === undefined || params.at === null ? 0 : Number(params.at);
@@ -65,10 +65,14 @@ export async function voiceoverAction(ctx: PluginContext, companyId: string, par
   const v = validate(params);
   const edit = await getVideoEdit(ctx, companyId, v.editId);
   if (edit.revision !== v.base) throw new StudioError(`Someone saved this video edit since you opened it (now revision ${edit.revision}). Reload to see their changes.`, "edit_conflict");
-  const estimate = ttsEstimate(v.script.length, deps.ceiling); // over the ceiling: refused here, nothing reserved or sent
   const config = new StudioConfig(ctx, companyId);
-  const tts = deps.tts ?? (await ttsFor(params.provider, config));
-  if (!tts.voices.includes(v.voice)) bad(`voice must be one of: ${tts.voices.join(", ")}.`);
+  const providerKey = deps.tts?.key ?? resolveProvider("tts", params.provider, await config.providerDefault("tts")).key;
+  const estimate = ttsEstimate(v.script.length, deps.ceiling, providerKey); // over the ceiling: refused here, nothing reserved or sent
+  const tts = deps.tts ?? (await ttsFor(params.provider, config)); // no key: refused here, nothing reserved
+  const voice = v.voice ? tts.voices.find((x) => x.toLowerCase() === v.voice.toLowerCase()) : tts.voices[0];
+  if (!voice) bad(`voice must be one of: ${tts.voices.join(", ")}.`);
+  v.voice = voice!;
+  const ledgerProvider = PROVIDERS.tts.some((p) => p.key === providerKey) ? providerKey : "xai";
   const scope: ClientScope = edit.client ? ({ kind: edit.client.kind, id: edit.client.id } as ClientScope) : null;
   const id = randomUUID();
   const period = currentPeriod();
@@ -82,7 +86,7 @@ export async function voiceoverAction(ctx: PluginContext, companyId: string, par
     await ctx.db.execute(
       `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits)
        VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, 'synthesizing', $16, $17)`,
-      [id, companyId, ledger.clientKind, ledger.clientRef, edit.client?.name ?? null, edit.projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, "xai", tts.model, `Voiceover, ${v.script.length} characters`, JSON.stringify({ editId: edit.id, voice: v.voice, language: v.language, chars: v.script.length }), name, period, estimate],
+      [id, companyId, ledger.clientKind, ledger.clientRef, edit.client?.name ?? null, edit.projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, ledgerProvider, tts.model, `Voiceover, ${v.script.length} characters`, JSON.stringify({ editId: edit.id, voice: v.voice, language: v.language, chars: v.script.length }), name, period, estimate],
     );
     await reserve(ctx, ledger, estimate);
   });
