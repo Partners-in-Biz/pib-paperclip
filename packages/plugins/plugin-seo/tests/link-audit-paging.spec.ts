@@ -106,17 +106,17 @@ describe("internal link audit paging across calls (PAR-9952)", () => {
   });
 
   it("loads the home page while a cold sitemap is read, and crawls more than the home page in the first call", async () => {
-    // Pages slow down when many load at once, as on a small shared host: 2.5 s alone, +0.5 s per extra page in flight.
+    // Pages slow down when many load at once, as on a small shared host: 1.3 s alone, +0.3 s per extra page in flight (budget cut to 7.5 s in PAR-10088).
     // Live on agristudies.co.za: ~2.3 s alone, 5.5-6.5 s with 10 at once.
     let inFlight = 0;
-    const base = slowWordPressSite({ sitemapMs: 2_300 });
+    const base = slowWordPressSite({ sitemapMs: 1_500 });
     const fetcher: SiteFetcher = async (url, init) => {
       const path = new URL(url).pathname;
       if (path.endsWith(".xml") || path === "/robots.txt") return base.fetcher(url, init);
       base.calls.push(path);
       inFlight += 1;
       await new Promise((r) => setTimeout(r, 0)); // let the rest of the batch start
-      const ms = 2_000 + 500 * inFlight;
+      const ms = 1_000 + 300 * inFlight;
       await new Promise((r) => setTimeout(r, ms));
       inFlight -= 1;
       return { status: 200, url, redirects: [], headers: {}, text: `<a href="/">home</a>`, ms };

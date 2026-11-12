@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
-import { clearLinkAuditCache, runInternalLinkAudit, type LinkAuditResult, type SiteFetcher } from "../src/checks/site.js";
+import { clearLinkAuditCache, isBareSitePath, LINK_AUDIT_MAX_MS, runInternalLinkAudit, type LinkAuditResult, type SiteFetcher } from "../src/checks/site.js";
 import { internalLinkAuditTool } from "../src/service/checks.js";
 import type { Env } from "../src/service/common.js";
 
-// PAR-6558: the tool gateway kills agent MCP calls after 10 s, so the audit must answer within 9 s.
+// PAR-6558: the tool gateway kills agent MCP calls after 10 s, so the audit must answer within 8 s (budget 7.5 s, PAR-10088).
 const ORIGIN = "https://acme.test";
 
 /** A site of `count` pages. Home links to every page but the last (the orphan); every page links home. */
@@ -61,24 +61,24 @@ describe("internal link audit within the 10 s gateway limit", () => {
     expect(result.note).toBeUndefined();
   });
 
-  it("returns a partial result within 9.5 s on a slow site, and continues from nextStartAt without repeats", async () => {
+  it("returns a partial result within 8 s on a slow site, and continues from nextStartAt without repeats", async () => {
     const site = fakeSite(60, { page: 3_000 });
     const first = await timed(() => runInternalLinkAudit(site.fetcher, { siteUrl: ORIGIN, maxPages: 40, deadlineMs: 60_000 }));
-    expect(first.elapsed).toBeLessThanOrEqual(9_500);
+    expect(first.elapsed).toBeLessThanOrEqual(8_000);
     const r1: LinkAuditResult = first.result;
     expect(r1.partial).toBe(true);
     expect(r1.pagesRequested).toBe(40);
-    // The home page loads while the sitemap is read (PAR-9952), then 10 at a time: 1 + 20 pages.
-    expect(r1.pagesCrawled).toBe(21);
-    expect(r1.nextStartAt).toBe(21);
-    expect(r1.note).toContain("startAt 21 (nextStartAt)");
+    // The home page loads while the sitemap is read (PAR-9952), then 10 at a time: 1 + 19 pages.
+    expect(r1.pagesCrawled).toBe(20);
+    expect(r1.nextStartAt).toBe(20);
+    expect(r1.note).toContain("startAt 20 (nextStartAt)");
     expect(r1).not.toHaveProperty("orphans");
     expect(r1.findings.filter((f) => f.category === "links")).toEqual([]);
 
     const second = await timed(() => runInternalLinkAudit(site.fetcher, { siteUrl: ORIGIN, maxPages: 40, startAt: r1.nextStartAt! }));
-    expect(second.elapsed).toBeLessThanOrEqual(9_500);
+    expect(second.elapsed).toBeLessThanOrEqual(8_000);
     const r2 = second.result;
-    expect(r2.startAt).toBe(21);
+    expect(r2.startAt).toBe(20);
     expect(r2.pagesCrawled).toBeGreaterThan(0);
     expect(r2.crawledPages.filter((p) => r1.crawledPages.includes(p))).toEqual([]);
     expect(r2.crawledPages).not.toContain(`${ORIGIN}/`);
@@ -104,7 +104,32 @@ describe("internal link audit within the 10 s gateway limit", () => {
     expect(result).not.toHaveProperty("orphans");
     expect(result.findings.some((f) => f.category === "links")).toBe(false);
     expect(result.stored).toEqual({ recorded: 0, resolved: 0 });
-    expect(result.nextStartAt).toBe(21);
+    expect(result.nextStartAt).toBe(20);
     expect(result.note).toContain("nextStartAt");
+  });
+
+  it("PAR-10088: the crawl budget leaves room for the gateway round trip", () => {
+    expect(LINK_AUDIT_MAX_MS).toBeLessThanOrEqual(7_500);
+  });
+
+  it("PAR-10088: a relative sitemapUrl resolves against the site, not DNS", async () => {
+    expect(isBareSitePath("sitemap_index.xml")).toBe(true);
+    expect(isBareSitePath("wp/sitemap.xml")).toBe(true);
+    expect(isBareSitePath("example.com")).toBe(false);
+    expect(isBareSitePath("example.com/sitemap.xml")).toBe(false);
+    expect(isBareSitePath("https://example.com/sitemap.xml")).toBe(false);
+    const requested: string[] = [];
+    const fetcher: SiteFetcher = async (url) => {
+      requested.push(url);
+      const path = new URL(url).pathname;
+      const text = path === "/sitemap_index.xml" ? `<urlset><url><loc>${ORIGIN}/a</loc></url></urlset>` : "<html></html>";
+      return { status: path === "/robots.txt" ? 404 : 200, url, redirects: [], headers: {}, text, ms: 1 };
+    };
+    const env = { site: fetcher } as unknown as Env;
+    const { result } = await timed(() => internalLinkAuditTool(env, "company-1", { url: ORIGIN, sitemapUrl: "sitemap_index.xml" }));
+    expect(result.sitemapUrl).toBe(`${ORIGIN}/sitemap_index.xml`);
+    expect(requested).toContain(`${ORIGIN}/sitemap_index.xml`);
+    expect(requested.some((u) => u.includes("//sitemap_index.xml"))).toBe(false);
+    expect(result.crawledPages).toContain(`${ORIGIN}/a`);
   });
 });
