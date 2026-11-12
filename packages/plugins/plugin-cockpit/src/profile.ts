@@ -19,6 +19,8 @@ import {
   type CompanyProfile,
   type FilledBy,
   type FillResult,
+  CEO_AGENT_ID,
+  type ProfileRevision,
   type ProfileFieldKey,
 } from "./profile-model.js";
 
@@ -82,11 +84,25 @@ export async function saveProfileEdit(ctx: PluginContext, companyId: string, inp
   return { profile, filledBy, updatedAt: now, changed };
 }
 
-/** An agent fills empty fields (`update-company-profile`); set values stay as they are. */
-export async function fillProfile(ctx: PluginContext, companyId: string, input: Record<string, unknown>, agentId: string | null, now: string): Promise<FillResult> {
+const HISTORY_KEY = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "cockpit", stateKey: "profileHistory" });
+const HISTORY_MAX = 200;
+
+/** Overwritten values, newest first. */
+export async function readProfileHistory(ctx: PluginContext, companyId: string): Promise<ProfileRevision[]> {
+  const raw = await ctx.state.get(HISTORY_KEY(companyId));
+  return Array.isArray(raw) ? (raw as ProfileRevision[]) : [];
+}
+
+/** An agent fills empty fields (`update-company-profile`); set values stay as they are, except for the CEO seat, whose overwrites keep the old value in history. */
+export async function fillProfile(ctx: PluginContext, companyId: string, input: Record<string, unknown>, agentId: string | null, now: string, issueId: string | null = null): Promise<FillResult> {
   const current = await readProfile(ctx, companyId);
-  const result = fillEmpty(current.profile, input);
+  const result = fillEmpty(current.profile, input, agentId === CEO_AGENT_ID);
   if (result.filled.length) {
+    if (result.overwritten?.length) {
+      const revisions: ProfileRevision[] = result.overwritten.map((o) => ({ ...o, by: agentId, at: now, issueId }));
+      const history = await readProfileHistory(ctx, companyId);
+      await ctx.state.set(HISTORY_KEY(companyId), [...revisions, ...history].slice(0, HISTORY_MAX));
+    }
     const filledBy: FilledBy = { ...current.filledBy };
     for (const key of result.filled) filledBy[key] = { by: "agent", id: agentId, at: now };
     await writeProfile(ctx, companyId, result.profile, filledBy, now);
