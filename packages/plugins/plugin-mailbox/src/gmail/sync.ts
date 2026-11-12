@@ -22,7 +22,6 @@ import {
   PIB_PLUGINS,
   redeliver,
   resolveClientProjectId,
-  RISK_THRESHOLDS,
   routeWork,
   wakeIssueWhenIdle,
   type ClientScope,
@@ -48,7 +47,7 @@ import { errorMessage, type Env } from "./env.js";
 import { decodeEncodedWords, headerMap, isBounceMail, isBulkMail, parseAddressList, parseMessageIds } from "./headers.js";
 import { ensureLabelIds } from "./labels.js";
 import { withGmail } from "./tokens.js";
-import { REPLY_ISSUE_CATEGORIES, triageMessage, type TriageRunContext } from "./triage.js";
+import { opensReplyTask, triageMessage, type TriageRunContext } from "./triage.js";
 import type { AccountRow, AttachmentMeta, BounceInfo, ClientMapRow, CrmClientRow, MessageRow, NewGmailMessage } from "./types.js";
 import { suppressFromInbound } from "../suppression.js";
 import { replyOrigin, unansweredMessage } from "../done-checks.js";
@@ -496,10 +495,9 @@ export async function replyAssignee(env: Env, loaded: LoadedConfig): Promise<{ a
 /** A follow-up older than this (a backlog after a reconnect) does not reopen anything. */
 const FOLLOW_UP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-function wantsReply(row: MessageRow): boolean {
+export function wantsReply(row: MessageRow): boolean {
   const triage = row.triage;
-  if (!triage?.category || !REPLY_ISSUE_CATEGORIES.has(triage.category)) return false;
-  return (triage.needsReply ?? 0) >= RISK_THRESHOLDS.update && (triage.phishing ?? 0) < 0.9 && !row.bulk;
+  return opensReplyTask({ category: triage?.category, needsReply: triage?.needsReply ?? 0, phishing: triage?.phishing ?? 0, bulk: Boolean(row.bulk), clientSource: triage?.clientSource });
 }
 
 const receivedMs = (row: MessageRow) => Date.parse(row.received_at ?? row.created_at) || 0;

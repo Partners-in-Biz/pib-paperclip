@@ -68,6 +68,27 @@ export const URGENCY_LEVELS = [
 /** Categories where a reply issue may be opened. */
 export const REPLY_ISSUE_CATEGORIES = new Set<MailCategory>(["lead", "client", "support"]);
 
+/** A client match a person set up (a client mail mapping or a correction): reliable enough to act on sooner. */
+export const RELIABLE_CLIENT_SOURCES = new Set<string>(["mapping", "correction"]);
+
+/**
+ * Whether inbound mail opens (or keeps open) a reply task. Lead, client and
+ * support mail at 0.7 needs-reply. A known client (mapped or corrected) also
+ * counts when answering mail we sent (a go-ahead, a bug in what we shipped)
+ * and from 0.5, because missing a client's ask costs more than an extra task.
+ * Replies from anyone else stay with the plugin that sent the mail.
+ */
+export function opensReplyTask(t: { category: string | null | undefined; needsReply: number; phishing: number; bulk: boolean; clientSource: string | null | undefined }): boolean {
+  if (!t.category || t.bulk || t.phishing >= 0.9) return false;
+  const knownClient = Boolean(t.clientSource && RELIABLE_CLIENT_SOURCES.has(t.clientSource));
+  if (t.category === "reply") {
+    if (!knownClient) return false;
+  } else if (!REPLY_ISSUE_CATEGORIES.has(t.category as MailCategory)) {
+    return false;
+  }
+  return t.needsReply >= (knownClient ? RISK_THRESHOLDS.read : RISK_THRESHOLDS.update);
+}
+
 export { isFreeMailDomain };
 
 export function isCategory(value: unknown): value is MailCategory {
@@ -214,10 +235,10 @@ export function triageQuestions(options: ClientOptions | null): JevQuestions {
     },
     needs_reply: {
       type: "noul",
-      instructions: "Does this email need a written reply from us?",
+      instructions: "Does this email need a written reply or any action from us?",
       criteria: {
-        true: "A person asks a question, asks for something, or expects an answer.",
-        false: "Automated, bulk or informational mail, or a thank-you that needs no answer.",
+        true: "A person asks a question, asks for something, expects an answer, reports a problem or bug, asks for a change or fix, or approves or declines something we proposed. A thank-you that also reports or asks something counts.",
+        false: "Automated, bulk or informational mail, or only a thank-you with nothing asked or reported.",
       },
     },
     phishing: {

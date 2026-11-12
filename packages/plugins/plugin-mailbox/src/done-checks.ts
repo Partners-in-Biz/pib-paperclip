@@ -12,9 +12,9 @@
  *
  * The reconnect issue is a person's job (a Google sign-in) and has no check.
  */
-import { RISK_THRESHOLDS, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule, type MailCategory } from "@partnersinbiz/pib-plugin-kit";
+import type { DoneCheckIssue, DoneCheckResult, DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
 import type { GmailStore } from "./db.js";
-import { REPLY_ISSUE_CATEGORIES } from "./gmail/triage.js";
+import { opensReplyTask } from "./gmail/triage.js";
 import type { MessageRow } from "./gmail/types.js";
 
 export const REPLY_ORIGIN_PREFIX = "mailbox:reply:";
@@ -46,8 +46,7 @@ function timeOf(row: MessageRow): number {
 export function needsReply(row: MessageRow): boolean {
   if (row.direction !== "inbound") return false;
   const category = row.category ?? row.triage?.category ?? null;
-  if (!category || !REPLY_ISSUE_CATEGORIES.has(category as MailCategory)) return false;
-  return num(row.needs_reply) >= RISK_THRESHOLDS.update && num(row.phishing) < 0.9 && !row.bulk;
+  return opensReplyTask({ category, needsReply: num(row.needs_reply), phishing: num(row.phishing), bulk: Boolean(row.bulk), clientSource: row.triage?.clientSource });
 }
 
 /** Our answer in the thread: a draft, queued or sent reply. */
