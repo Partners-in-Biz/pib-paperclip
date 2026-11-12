@@ -46,6 +46,7 @@ import {
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { ownerFilter, type OwnerFilterResult } from "./owner-filter.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
 import { mondayLabel, weekKey } from "./week.js";
@@ -195,16 +196,17 @@ export interface UnassignedIssue {
  * ago: the count and the first 50 (most urgent, then oldest). The page and the
  * brief leave out the ones listed on their own row and show five.
  */
-export async function listUnassigned(ctx: PluginContext, companyId: string): Promise<{ count: number; items: UnassignedIssue[] }> {
+export async function listUnassigned(ctx: PluginContext, companyId: string, excludeIds: string[] = []): Promise<{ count: number; items: UnassignedIssue[] }> {
   const where = `company_id = $1 AND assignee_agent_id IS NULL AND assignee_user_id IS NULL AND hidden_at IS NULL
-        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'`;
+        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'
+        AND NOT (id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))::uuid[]))`;
   try {
     const [count, rows] = await Promise.all([
-      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId]),
+      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId, JSON.stringify(excludeIds)]),
       ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, created_at FROM public.issues WHERE ${where}
           ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at LIMIT 50`,
-        [companyId],
+        [companyId, JSON.stringify(excludeIds)],
       ),
     ]);
     return {
@@ -302,6 +304,8 @@ export interface CompanyData {
   asks: AskView[];
   /** Open issues nobody is assigned to (older than a day). */
   unassigned: { count: number; items: UnassignedIssue[] };
+  /** Open issues that never belong on the owner's list (containers, standing queue, canary); see owner-filter.ts. */
+  hiddenIssueIds?: string[];
   /** Repair rows for escalation tracking. */
   repairs: RepairRow[];
 }
@@ -309,6 +313,8 @@ export interface CompanyData {
 /** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
+  // Started first: the unassigned count leaves out the hidden issues, so it waits on this one query only.
+  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], degraded: [] } as OwnerFilterResult);
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
@@ -318,11 +324,13 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     guard("approvals", () => listApprovals(env.ctx, companyId), []),
     guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
     guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
-    guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
+    guard("unassigned", async () => listUnassigned(env.ctx, companyId, (await hiddenRead).hiddenIssueIds), { count: 0, items: [] }),
     guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
     guard("setupSummary", () => readSetupSummaryThrows(env, companyId), null),
     guard("ownerRoles", () => getRoles(env.ctx, companyId), null),
   ]);
+  const hidden = await hiddenRead;
+  for (const name of hidden.degraded) if (!budget.degraded.includes(name)) budget.degraded.push(name);
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
   const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
@@ -354,6 +362,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     asks,
     unassigned,
     repairs,
+    hiddenIssueIds: hidden.hiddenIssueIds,
   };
 }
 
@@ -362,7 +371,7 @@ export function waitingFrom(data: WaitingData, now: Date = new Date()): WaitingE
   return waitingSplit(data, now).owner;
 }
 
-type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents">>;
+type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds">>;
 
 /** The one owner-list rule: what waits on the owner, and what waits on others (a seat that can act, or the client). */
 export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner: WaitingEntry[]; others: WaitingEntry[] } {
@@ -380,7 +389,7 @@ export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
   const merged = mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
-  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: [] }, now);
+  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [] }, now);
 }
 
 // ---------------------------------------------------------------------------

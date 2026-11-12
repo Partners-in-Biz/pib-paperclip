@@ -134,6 +134,13 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     },
+    standingQueueIssues: {
+      type: "array",
+      title: "Standing queue issues (never on the owner's list)",
+      description: "Issue identifiers, e.g. PAR-9356. An open issue listed here is left out of the owner's waiting list and the unassigned count: it is a queue that is worked through, not a decision.",
+      items: { type: "string", pattern: "^[A-Z][A-Z0-9]*-\\d+$" },
+      default: [],
+    },
     access: {
       type: "object",
       title: "Access look-up and requests",
