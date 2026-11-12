@@ -12,6 +12,7 @@
  * - Money is integer minor units of the account's currency.
  */
 import type { AdPlatform, AdPolicyStatus, StoredPlatform } from "../platforms.js";
+import type { GoogleAppSettings } from "./google-app.js";
 
 export type { AdPolicyStatus };
 
@@ -102,11 +103,13 @@ export interface AccountRef {
 
 export interface CreateCampaignRequest {
   name: string;
-  /** Meta ODAX objective (`OUTCOME_LEADS`...), or Google channel (`SEARCH`). */
+  /** Meta ODAX objective (`OUTCOME_LEADS`...), or Google channel (`SEARCH`, or `MULTI_CHANNEL` for an App campaign). */
   objective: string;
   dailyBudgetMinor: number;
   /** Meta only. */
   specialAdCategories?: string[];
+  /** Google `MULTI_CHANNEL` only: the app, the install goal and where it shows (`./google-app.ts`). */
+  app?: GoogleAppSettings;
   /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
   status?: "PAUSED";
 }

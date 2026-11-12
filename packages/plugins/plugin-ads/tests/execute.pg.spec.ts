@@ -419,6 +419,16 @@ describe.skipIf(!available)("running approved ad groups and keywords", () => {
     expect(w.mock.writes).toEqual([]);
   });
 
+  it("an App campaign is checked when proposed and created PAUSED with its app, goal and locations", async () => {
+    await expect(propose(w, CREATE(accountId, { name: "Velox installs", objective: "MULTI_CHANNEL", appStore: "GOOGLE_APP_STORE", appId: "com.velox.app" }))).rejects.toThrow(/locationIds is required/);
+    const app = { appStore: "GOOGLE_APP_STORE", appId: "com.velox.app", targetInstallCostMinor: 1000, locationIds: ["2710"] };
+    const { id, approvalId } = await approved(w, CREATE(accountId, { name: "Velox installs", objective: "multi_channel", ...app }));
+    expect((await getProposal(w.ctx, COMPANY, id))!.payload).toMatchObject({ objective: "MULTI_CHANNEL", app });
+    expect(await executeProposal(w.rt(), agent, { proposalId: id, approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, what: 'Created "Velox installs" (paused)' }] });
+    expect(w.mock.writes).toEqual([expect.objectContaining({ op: "create", objective: "MULTI_CHANNEL", dailyBudgetMinor: 5000, status: "paused", app })]);
+    expect(w.mock.createStatuses).toEqual([{ op: "create", status: "PAUSED" }]);
+  });
+
   it("create the ad group and the keywords PAUSED, once each, and use the approval up", async () => {
     const g = await approved(w, { kind: "create_ad_group", scopeKey: "own", accountId, campaignExternalId: "c1", name: "Brand", cpcBidMinor: 1500, reason: "Structure." });
     expect(await executeProposal(w.rt(), agent, { proposalId: g.id, approvalId: g.approvalId })).toMatchObject({ status: "executed" });

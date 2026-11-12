@@ -289,6 +289,40 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
     expect(ops[1].campaignOperation.create.campaignBudget).toBe(ops[0].campaignBudgetOperation.create.resourceName);
   });
 
+  it("creates an App campaign: budget, PAUSED MULTI_CHANNEL campaign with app settings, and its locations in one request", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignBudgetResult: { resourceName: "customers/5556667777/campaignBudgets/1" } }, { campaignResult: { resourceName: "customers/5556667777/campaigns/4343" } }, { campaignCriterionResult: {} }] } }]]);
+    const app = { appStore: "GOOGLE_APP_STORE" as const, appId: "com.velox.app", targetInstallCostMinor: 1_500, locationIds: ["2710"] };
+    const made = await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Velox installs", objective: "MULTI_CHANNEL", dailyBudgetMinor: 20_000, app, status: "PAUSED" });
+    expect(made).toEqual({ externalId: "4343", name: "Velox installs" });
+    expect(seen).toHaveLength(1);
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[0].campaignBudgetOperation.create).toMatchObject({ amountMicros: "200000000", explicitlyShared: false });
+    const campaign = ops[1].campaignOperation.create;
+    expect(campaign).toMatchObject({
+      status: "PAUSED",
+      advertisingChannelType: "MULTI_CHANNEL",
+      advertisingChannelSubType: "APP_CAMPAIGN",
+      campaignBudget: ops[0].campaignBudgetOperation.create.resourceName,
+      appCampaignSetting: { appStore: "GOOGLE_APP_STORE", appId: "com.velox.app", biddingStrategyGoalType: "OPTIMIZE_INSTALLS_TARGET_INSTALL_COST" },
+      targetCpa: { targetCpaMicros: "15000000" },
+    });
+    expect(campaign.manualCpc).toBeUndefined();
+    expect(ops[2].campaignCriterionOperation.create).toEqual({ campaign: campaign.resourceName, location: { geoTargetConstant: "geoTargetConstants/2710" } });
+  });
+
+  it("an App campaign with no target cost per install maximizes installs; an unknown channel or a missing app is refused before any call", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignResult: { resourceName: "customers/5556667777/campaigns/9" } }] } }]]);
+    const app = { appStore: "APPLE_APP_STORE" as const, appId: "1234567890", targetInstallCostMinor: null, locationIds: ["2710", "2826"] };
+    await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Lumen installs", objective: "MULTI_CHANNEL", dailyBudgetMinor: 10_000, app });
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[1].campaignOperation.create).toMatchObject({ maximizeConversions: {}, appCampaignSetting: { appStore: "APPLE_APP_STORE", appId: "1234567890", biddingStrategyGoalType: "OPTIMIZE_INSTALLS_WITHOUT_TARGET_INSTALL_COST" } });
+    expect(ops[1].campaignOperation.create.targetCpa).toBeUndefined();
+    expect(ops.slice(2)).toHaveLength(2);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "MULTI_CHANNEL", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "VIDEO", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    expect(seen).toHaveLength(1);
+  });
+
   it("changes status with an update mask", async () => {
     const { fetchImpl, seen } = scripted([[/campaigns:mutate/, { body: { results: [{}] } }]]);
     await googleProvider.setCampaignStatus(env(googleApp(), fetchImpl), gToken, ref, "4242", "paused");

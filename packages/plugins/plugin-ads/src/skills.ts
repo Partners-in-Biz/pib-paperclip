@@ -108,7 +108,7 @@ export const PLATFORMS_REFERENCE = `# What the platforms report, and what versio
 
 ## Changing (only through an approved proposal)
 
-- **create_campaign**: Meta creates a campaign with an objective, a daily campaign budget and \`PAUSED\` status (special ad categories declared); Google creates a search campaign and its budget in one request, paused. Audiences, ad sets, creatives and ads are built in the platform in version 0.1. A created campaign is never switched on by the same change.
+- **create_campaign**: Meta creates a campaign with an objective, a daily campaign budget and \`PAUSED\` status (special ad categories declared); Google creates a search campaign, or an App campaign (\`objective\` MULTI_CHANNEL with \`appStore\`, \`appId\`, \`locationIds\` and an optional \`targetInstallCostMinor\`), with its own budget in one request, paused. Audiences, ad sets, creatives and ads are built in the platform in version 0.1. A created campaign is never switched on by the same change.
 - **change_budget**: the campaign's daily budget. Refused (with the reason) for a lifetime budget, a budget set on ad sets (Meta) and a budget shared by several campaigns (Google).
 - **pause_campaign / resume_campaign**: status only.
 - **create_ad_group** (Google only): creates an ad group in a campaign with a max CPC bid, paused. Keywords are added separately.
