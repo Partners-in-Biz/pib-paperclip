@@ -7,9 +7,15 @@
  * into the tool, so the group is `timeout` + ffmpeg. Cancel kills the group (`-pgid`): SIGTERM, then SIGKILL after
  * 10 s. When the run ends the group gets one more SIGKILL so nothing in it outlives the run. Never kill by name,
  * pattern or port.
+ *
+ * Tool "node" (PAR-10126 D5b) runs the ML runner the same way: `... nice -n 10 <process.execPath> dist/ml/runner.mjs ...`.
+ * The runner starts its own ffmpeg children through `src/ml/io.ts`, not detached, so they stay in this group.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const TIMEOUT_SEC = 1200;
 export const KILL_AFTER_SEC = 30;
@@ -23,13 +29,32 @@ export const CANCEL_GRACE_MS = 10_000;
 export const STDERR_TAIL_BYTES = 4096;
 const STDOUT_MAX_BYTES = 1024 * 1024;
 
-export const BINS = { timeout: "/usr/bin/timeout", prlimit: "/usr/bin/prlimit", nice: "/usr/bin/nice", ffmpeg: "ffmpeg", ffprobe: "ffprobe" };
+export const BINS = { timeout: "/usr/bin/timeout", prlimit: "/usr/bin/prlimit", nice: "/usr/bin/nice", ffmpeg: "ffmpeg", ffprobe: "ffprobe", node: process.execPath };
 
 /** ok; timeout (the 20-minute wall clock); rlimit (FSIZE, AS or an unexplained kill); nonzero (ffmpeg failed); cancelled (we asked). */
 export type RunOutcome = "ok" | "timeout" | "rlimit" | "nonzero" | "cancelled";
 
+/** Env keys a "node" run may get from the caller or the worker env (PAR-10126 D5b). Nothing else, so never a secret. */
+export const ML_ENV_KEY = /^PIB_ML_[A-Z0-9_]+$/;
+
+/**
+ * `dist/ml/runner.mjs`: beside the built worker (`dist/worker.js`), or the package's `dist/ml` when running from source.
+ * Throws when neither exists, so a broken build fails with a clear message.
+ */
+export function mlRunnerPath(): string {
+  for (const url of [new URL("./ml/runner.mjs", import.meta.url), new URL("../../dist/ml/runner.mjs", import.meta.url)]) {
+    const path = fileURLToPath(url);
+    if (existsSync(path)) return path;
+  }
+  throw new Error("The Studio ML runner is missing: expected dist/ml/runner.mjs beside the worker (check the plugin build).");
+}
+
 export interface RunOptions {
-  tool?: "ffmpeg" | "ffprobe";
+  tool?: "ffmpeg" | "ffprobe" | "node";
+  /** Tool "node": the script to run (default `mlRunnerPath()`). */
+  runnerPath?: string;
+  /** Tool "node": extra env, `PIB_ML_*` keys only. */
+  env?: Record<string, string>;
   timeoutSec?: number;
   killAfterSec?: number;
   asLimitBytes?: number;
@@ -70,7 +95,10 @@ export function containedArgv(toolArgs: string[], opts: RunOptions = {}): string
   for (const [name, n] of [["asLimitBytes", as], ["fsizeBytes", fsize]] as const) {
     if (!Number.isSafeInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer`);
   }
-  const head = tool === "ffmpeg" ? [bins.ffmpeg, "-nostdin", "-hide_banner", "-threads", String(opts.threads ?? THREADS)] : [bins.ffprobe, "-hide_banner"];
+  const head =
+    tool === "ffmpeg" ? [bins.ffmpeg, "-nostdin", "-hide_banner", "-threads", String(opts.threads ?? THREADS)]
+    : tool === "ffprobe" ? [bins.ffprobe, "-hide_banner"]
+    : [bins.node, opts.runnerPath ?? mlRunnerPath()];
   return [
     bins.timeout, "-k", String(opts.killAfterSec ?? KILL_AFTER_SEC), String(opts.timeoutSec ?? TIMEOUT_SEC),
     bins.prlimit, `--as=${as}`, `--fsize=${fsize}`, "--",
@@ -121,6 +149,26 @@ function killGroup(kill: (pid: number, signal: NodeJS.Signals) => void, pgid: nu
   }
 }
 
+/**
+ * The child env, an allowlist. ffmpeg/ffprobe: PATH and LC_ALL=C (the worker env is PATH/NODE_PATH/TZ/NODE_ENV only; ffmpeg
+ * needs nothing else, and never the worker's secrets). node: PATH, LANG and `PIB_ML_*` (from the worker env, then `opts.env`).
+ */
+export function containedEnv(opts: Pick<RunOptions, "tool" | "env"> = {}, from: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const path = from.PATH || "/usr/bin:/bin";
+  if ((opts.tool ?? "ffmpeg") !== "node") {
+    if (opts.env && Object.keys(opts.env).length) throw new Error("env is only for tool \"node\"");
+    return { PATH: path, LC_ALL: "C" };
+  }
+  const env: Record<string, string> = { PATH: path };
+  if (from.LANG) env.LANG = from.LANG;
+  for (const [k, v] of Object.entries(from)) if (ML_ENV_KEY.test(k) && v !== undefined) env[k] = v;
+  for (const [k, v] of Object.entries(opts.env ?? {})) {
+    if (!ML_ENV_KEY.test(k)) throw new Error(`env key ${k} is not allowed (PIB_ML_* only)`);
+    env[k] = String(v);
+  }
+  return env;
+}
+
 export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHandle {
   const argv = containedArgv(toolArgs, opts);
   const spawnImpl = opts.spawnImpl ?? nodeSpawn;
@@ -137,8 +185,7 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
     detached: true,
     cwd: opts.cwd,
     stdio: ["ignore", opts.captureStdout ? "pipe" : "ignore", "pipe"],
-    // The worker env is PATH/NODE_PATH/TZ/NODE_ENV only; ffmpeg needs nothing else, and never the worker's secrets.
-    env: { PATH: process.env.PATH || "/usr/bin:/bin", LC_ALL: "C" },
+    env: containedEnv(opts),
   });
   const pgid = child.pid ?? 0;
 
@@ -201,4 +248,27 @@ export async function pidsInGroup(pgid: number, procRoot = "/proc"): Promise<num
     if (rest[2] === String(pgid) && rest[0] !== "Z") out.push(Number(name));
   }
   return out;
+}
+
+/** True when an argument of `/proc/<pid>/cmdline` is `workdir` or a path inside it (Linux). */
+export async function cmdlineHasWorkdir(pid: number, workdir: string, procRoot = "/proc"): Promise<boolean> {
+  const dir = workdir.replace(/\/+$/, "");
+  const cmd = await readFile(`${procRoot}/${pid}/cmdline`, "utf8").catch(() => "");
+  return cmd.split("\0").some((a) => a === dir || a.startsWith(`${dir}/`) || a.includes(`=${dir}/`) || a.endsWith(`=${dir}`));
+}
+
+/**
+ * Recovery kill for a runner group this worker no longer tracks (PAR-10126 D5b): SIGKILLs `-pid` only when
+ * `/proc/<pid>/cmdline` still names `workdir`, so a recycled pid is never hit. Never by name, pattern or port.
+ */
+export async function killIfOurs(
+  pid: number,
+  workdir: string,
+  opts: { procRoot?: string; killImpl?: (pid: number, signal: NodeJS.Signals) => void } = {},
+): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  if (!isAbsolute(workdir) || workdir.replace(/\/+$/, "").length <= 8) return false;
+  if (!(await cmdlineHasWorkdir(pid, workdir, opts.procRoot))) return false;
+  killGroup(opts.killImpl ?? ((p, sig) => process.kill(p, sig)), pid, "SIGKILL");
+  return true;
 }
