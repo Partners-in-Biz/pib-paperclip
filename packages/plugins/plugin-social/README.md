@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.11.4: Drive ack before the gateway cut
+
+Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy wait 8 s for the CRM's ack (the kit's `DRIVE_ACK_TIMEOUT_MS`; was 30 s and 10 s). The tool gateway cuts a call at about 10 s, so a slow Drive now answers `drive.ok: false` (`no_ack`) instead of a 504; the R2 asset is kept either way.
+
 ## 0.11.3: Facebook video reach, published history kept on account delete
 
 - Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.

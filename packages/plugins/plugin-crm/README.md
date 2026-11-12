@@ -64,6 +64,10 @@ Agents put people on the desk instead of listing them in an issue: `set-next-act
 - **No duplicates:** `create-contact` and `import-contacts` match on email, then on phone (last 9 digits); `create-company` matches on the website domain, then the name. A match fills only empty fields, adds missing emails, phones and tags, logs a note, and returns `matched: true`.
 - **Skills:** `pib-sales-lead`, `pib-inbound-qualify`, `pib-data-steward`, `pib-deal-desk`.
 
+## Drive save timing logs (0.45.1)
+
+Src-only (PAR-10212). Each Drive save a producer plugin asks for writes info lines to the journal, with elapsed ms: `Drive save request received` (requestId, producer, kind, sub-folder, mode, base64 length), `Drive folder ensure` (outcome `exists`, `ensured`, `resolve_failed` or `ensure_failed`, with `brokerMs`, `resolveMs`, `ensureMs`, `steps`) and `Drive save finished` (outcome, `resolveProjectMs`, `saveMs`, `elapsedMs`). A save that logs `received` and nothing after it hung; a slow one shows which step took the time. No file name, bytes or signed link is logged. Producers now wait 8 s for the reply (the kit's `DRIVE_ACK_TIMEOUT_MS`, under the tool gateway's ~10 s cut); the CRM still finishes a save the producer stopped waiting for.
+
 ## Drive read-back and evidence names (0.45.0)
 - **`drive_files_list`** (agent tool, read-only): the files the CRM saved to Drive for one Paperclip project, newest first, with name, Drive link, sub-folder and the folder's Drive id, plus the project's own Drive folder (path and link; a client's project is the client's folder). Optional `subfolder` and `nameContains` filters. It reads the CRM's `drive_files` rows, so a check can prove a producer's save landed even when the producer's tool answer timed out at the gateway (a save waits up to 30 s for Drive). The Cockpit's `drive-producers-canary` journey uses it (PAR-7712).
 - **Evidence names.** The Drive name check now accepts the Cockpit's evidence names, `ISSUE-step-YYYYMMDDTHHMMSSZ.ext` (for example `PAR-123-login-20261021T101500Z.png`). Before, it took only `ISSUE-<digits>.ext`, so every `evidence-save` copy was refused as `invalid_name`.
