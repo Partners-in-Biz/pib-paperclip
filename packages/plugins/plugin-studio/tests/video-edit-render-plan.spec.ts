@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { hasClipAudio } from "../src/video-edit/compile-audio.js";
-import { compileVideo, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { compileVideo, frameAt, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { AUDIO_WEIGHT, editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
 import { clipDuration, editDuration, normalizeEdit, type EditDoc, type MediaClip } from "../src/video-edit/timeline.js";
 
+const ms = (n: number) => Math.round(n * 1000) / 1000;
 const WD = "/srv/studio/render-1";
 const fhd = (name: string, extra: object = {}) => ({ path: `${WD}/${name}`, kind: "video" as const, hasAudio: false, width: 1080, height: 1920, fps: 30, ...extra });
 const inputs: CompileInputs = {
@@ -81,15 +82,15 @@ describe("main-track chunks", () => {
     const finals = mainOf(p.final.doc);
     const end = Math.max(...main.map((c) => c.start + c.out));
     for (const [i, f] of finals.entries()) {
-      expect(Math.abs(f.start * 30 - Math.round(f.start * 30))).toBeLessThan(0.02); // on the 30 fps grid (ms-rounded)
-      if (i > 0) expect(f.start).toBeCloseTo(finals[i - 1].start + finals[i - 1].out, 9);
-      if (i < finals.length - 1) expect(Math.round(f.out * 30)).toBe(p.passes[i].frames);
+      const pass = p.passes[i];
+      // The final clip plays the chunk where its clips were; the chunk starts on the frame the previous one stops on.
+      expect(f.start).toBe(pass.origin);
+      expect(f.out).toBe(pass.duration);
+      expect(frameAt(ms(f.start + f.out), 30) - frameAt(f.start, 30)).toBe(pass.frames);
+      if (i > 0) expect(frameAt(f.start, 30)).toBe(frameAt(ms(finals[i - 1].start + finals[i - 1].out), 30));
     }
-    const total = finals.reduce((s, f) => s + f.out, 0);
-    expect(total).toBeCloseTo(end, 9);
-    expect(finals.reduce((s, f) => s + Math.round(f.out * 30), 0)).toBe(Math.round(end * 30));
+    expect(p.passes.reduce((s, x) => s + x.frames, 0)).toBe(frameAt(end, 30));
     expect(editDuration(p.final.doc)).toBe(editDuration(doc));
-    for (const x of p.passes) expect(x.frames).toBe(Math.ceil(x.duration * 30 - 1e-6));
   });
 
   it("AC5: gaps inside a chunk, and before its first clip, are black in that chunk", () => {

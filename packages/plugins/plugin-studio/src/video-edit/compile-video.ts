@@ -41,6 +41,11 @@ export interface CompileOptions {
   loudnorm?: boolean;
   /** A multi-pass intermediate: near-lossless H.264 plus PCM sound. The caller names the output `.mov`. Default: the delivery encode. */
   intermediate?: boolean;
+  /**
+   * The edit time of this doc's 0 (a render-plan chunk pass): main-track segments are cut on the whole edit's frame grid,
+   * `frameAt(origin + t)`, so the chunk renders the same frames as that stretch of the single pass. Default 0.
+   */
+  origin?: number;
 }
 
 export const GRAPH_FILE = "video.graph";
@@ -53,8 +58,15 @@ export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset",
  * the 6 GiB `--as` cap: three 10 s clips with a look reached 186 threads and failed at VmPeak 6143 MiB, and plain
  * 30 s edits already peaked at 5695 MiB. With these caps (and `MALLOC_ARENAS` in ffmpeg.ts) they peak near 2.5 GiB.
  */
-/** Near-lossless intermediate between passes (PAR-10460: mean PSNR >= 52 dB against the single pass). */
-export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p"] as const;
+/**
+ * Lossless intermediate between passes, so a multi-pass render is pixel-identical to the single pass. Any lossy
+ * intermediate re-enters the final encoder's own noise: on the T7 equivalence fixtures crf 12 gave mean PSNR 41.0 to
+ * 42.4 dB against the single pass and crf 4 gave 42.8 (bar: 42), while qp 0 gives identical frames (PAR-10465). Cost at
+ * 1080x1920 30 fps: about 180 MiB/min (crf 12: 44 to 70), same encode time, lower VmPeak; a 180 s full-length layer pass
+ * is about 540 MiB. The default 200 MiB `FSIZE_BYTES` (ffmpeg.ts) caps a pass near 66 s of that, so the render pipeline
+ * (T3, PAR-10466) must pass a 2 GiB `fsizeBytes` for intermediates.
+ */
+export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-qp", "0", "-pix_fmt", "yuv420p"] as const;
 export const DECODE_THREADS = 2;
 export const FILTER_THREADS = 4;
 export const ENCODE_THREADS = 4;
@@ -73,6 +85,23 @@ const unsupported = (name: string): never => {
   throw new CompileError("unsupported_feature", name);
 };
 const ms = (n: number) => Math.round(n * 1000) / 1000;
+/**
+ * The project frame grid: the first frame whose (millisecond) time is at or after `t`. A main-track segment over
+ * `[s, e)` gets `frameAt(e) - frameAt(s)` frames, so every cut lands on the frame at or after its time and nothing drifts
+ * across cuts (a 0.35 s clip at 30 fps is 10 or 11 frames, not always 11). The render planner cuts chunks on this grid.
+ */
+export function frameAt(t: number, fps: number): number {
+  let f = Math.max(0, Math.ceil(t * fps - 1e-6));
+  while (f > 0 && ms((f - 1) / fps) >= t - 1e-9) f--;
+  return f;
+}
+/** Frames `color=d=` gives on its own: those that start before the end. */
+const ownFrames = (length: number, fps: number) => Math.max(0, Math.ceil(ms(length) * fps - 1e-6));
+/**
+ * Frames `trim=duration` keeps after `fps`: the duration in the 1/fps timebase, rounded to nearest (`av_rescale_q`), so
+ * 0.167 s at 30 fps is 5 frames, not the 6 the grid may need; then the segment gets `trim=end_frame` (PAR-10465).
+ */
+const trimFrames = (length: number, fps: number) => Math.floor((Math.round(length * 1000) * fps + 500) / 1000);
 /** A number for the graph: millisecond precision, never exponent notation (all values are range-checked by normalizeEdit). */
 export const num = (n: number) => {
   const v = ms(n);
@@ -132,11 +161,12 @@ class Graph {
     return { index: this.inputs++, kind: source.kind };
   }
 
-  /** Black for `duration` seconds at project size and rate. */
-  black(duration: number): string {
+  /** Black for `duration` seconds at project size and rate; `frames`: its grid length when that differs. */
+  black(duration: number, frames = ownFrames(duration, this.doc.project.fps)): string {
     const { width, height, fps } = this.doc.project;
     const out = this.label("blk");
-    this.filters.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${num(duration)},format=yuv420p,setsar=1[${out}]`);
+    const cut = frames === ownFrames(duration, fps) ? "" : `,trim=end_frame=${frames}`;
+    this.filters.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${num(duration)}${cut},format=yuv420p,setsar=1[${out}]`);
     return out;
   }
 
@@ -256,8 +286,8 @@ class Graph {
   }
 
   /** One main-track clip as a full-frame yuv420p segment of exactly its timeline length. */
-  mainClip(clip: MediaClip, fadeInFromBlack: number): string {
-    const { width, height } = this.doc.project;
+  mainClip(clip: MediaClip, fadeInFromBlack: number, frames?: number): string {
+    const { width, height, fps } = this.doc.project;
     const { index, kind } = this.input(clip);
     const length = clipDuration(clip);
     const fades: string[] = [];
@@ -265,7 +295,8 @@ class Graph {
     if (fadeIn > 0) fades.push(`fade=t=in:st=0:d=${num(fadeIn)}`);
     if (clip.fadeOut > 0) fades.push(`fade=t=out:st=${num(length - clip.fadeOut)}:d=${num(clip.fadeOut)}`);
     const out = this.label("seg");
-    const tail = ["format=yuv420p", "setsar=1", ...fades, `trim=duration=${num(length)}`];
+    const cut = frames === undefined || frames === trimFrames(length, fps) ? `trim=duration=${num(length)}` : `trim=end_frame=${Math.max(1, frames)}`;
+    const tail = ["format=yuv420p", "setsar=1", ...fades, cut];
     const t = clip.transform;
     if (isIdentity(t) && !animated(clip) && !fadesOpacity(clip)) {
       // The common case: fit inside the frame, letterbox with black.
@@ -340,32 +371,49 @@ class Graph {
   }
 }
 
-/** Builds the picture graph. Throws `CompileError` for what Phase A can't render. */
-export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: CompileOptions = {}): VideoGraph {
+/**
+ * One piece of the main track in join order: a clip (`clip`) or black (`clip: null`), `length` s long, `frames` frames on
+ * the grid of `origin` (CompileOptions), joined by concat or, with `xfade`, crossfaded into what comes before it.
+ */
+export interface MainSegment { clip: MediaClip | null; length: number; frames: number; xfade: null | { type: TransitionType; offset: number; duration: number }; fromBlack: number }
+
+/** The main track as segments: gaps, the lead-in and the tail up to the edit's end are black. Throws `CompileError`. */
+export function mainSegments(doc: EditDoc, origin = 0): MainSegment[] {
   const videoTracks = doc.tracks.filter((t) => t.kind === "video" && t.clips.length > 0);
   if (videoTracks.length > 1) unsupported("multiple_video_tracks");
   const duration = editDuration(doc);
-  if (duration <= 0) unsupported("empty_edit");
-
-  const g = new Graph(doc, sources);
   const main = videoTracks[0]?.kind === "video" ? [...videoTracks[0].clips].sort((a, b) => a.start - b.start) : [];
-  const parts: Parameters<Graph["join"]>[0] = [];
+  const out: MainSegment[] = [];
   let end = 0; // timeline end of what is joined so far
+  const { fps } = doc.project;
+  const span = (from: number, to: number) => frameAt(ms(origin + to), fps) - frameAt(ms(origin + from), fps);
+  const black = (from: number, to: number) => ({ clip: null, length: to - from, frames: span(from, to), xfade: null, fromBlack: 0 });
   for (const clip of main) {
     const overlap = ms(end - clip.start);
     const xfade = clip.transitionIn && overlap > EPS ? { type: clip.transitionIn.type, offset: clip.start, duration: overlap } : null;
     if (overlap > EPS && !xfade) unsupported("overlapping_clips");
     if (clip.start - end > EPS) {
-      parts.push({ label: g.black(clip.start - end), xfade: null });
+      if (span(end, clip.start) > 0) out.push(black(end, clip.start));
       end = clip.start;
     }
     // A transition with nothing before it to cross into fades in from black.
     const fromBlack = clip.transitionIn && !xfade ? clip.transitionIn.duration : 0;
-    parts.push({ label: g.mainClip(clip, fromBlack), xfade });
-    end = ms(clip.start + clipDuration(clip));
+    const clipEnd = ms(clip.start + clipDuration(clip));
+    out.push({ clip, length: clipDuration(clip), frames: span(clip.start, clipEnd), xfade, fromBlack });
+    end = clipEnd;
   }
-  if (duration - end > EPS) parts.push({ label: g.black(duration - end), xfade: null });
+  if (duration - end > EPS && span(end, duration) > 0) out.push(black(end, duration));
+  return out;
+}
 
+/** Builds the picture graph. Throws `CompileError` for what Phase A can't render. */
+export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: CompileOptions = {}): VideoGraph {
+  const segments = mainSegments(doc, options.origin ?? 0);
+  const duration = editDuration(doc);
+  if (duration <= 0) unsupported("empty_edit");
+
+  const g = new Graph(doc, sources);
+  const parts = segments.map((s) => ({ label: s.clip ? g.mainClip(s.clip, s.fromBlack, s.frames) : g.black(s.length, s.frames), xfade: s.xfade }));
   let base = g.join(parts);
   for (const track of doc.tracks) {
     if (track.kind !== "overlay") continue;

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CompileError, compileVideo, ENCODER_ARGS, GRAPH_FILE, INTERMEDIATE_ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { CompileError, compileVideo, ENCODER_ARGS, frameAt, GRAPH_FILE, INTERMEDIATE_ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { editDuration, normalizeEdit, TRANSITIONS } from "../src/video-edit/timeline.js";
 
 const inputs: CompileInputs = {
@@ -108,6 +108,18 @@ describe("compileVideo snapshots", () => {
   });
 });
 
+describe("main-track frame grid (PAR-10465)", () => {
+  it("frameAt: the first frame at or after t, in the graph's millisecond time", () => {
+    expect([0, 0.35, 0.7, 1.05, 10.5].map((t) => frameAt(t, 30))).toEqual([0, 11, 21, 32, 315]);
+    expect(frameAt(0.367, 30)).toBe(11); // 11/30 s prints as 0.367
+  });
+  it("cuts non-aligned clips on the grid, so no drift accumulates; aligned clips keep trim=duration", () => {
+    const g = graph(compile([video(...[0, 1, 2, 3].map((i) => clip(`c${i}`, "a", i * 0.35, 0, 0.35)))]));
+    expect([...g.matchAll(/trim=(duration=[\d.]+|end_frame=\d+)\[seg/g)].map((m) => m[1])).toEqual(["duration=0.35", "end_frame=10", "duration=0.35", "end_frame=10"]);
+    expect(graph(compile([video(clip("c1", "a", 0, 0, 1), clip("c2", "b", 1.35, 0, 1))]))).toContain("color=c=black:s=1080x1920:r=30:d=0.35,format=yuv420p");
+  });
+});
+
 describe("compileVideo intermediate option", () => {
   const withSound: CompileInputs = { ...inputs, [inputKey("a", 1)]: { path: "in/a.mp4", kind: "video", hasAudio: true } };
   const doc = edit([video(clip("c1", "a", 0, 0, 2), clip("c2", "b", 2, 1, 3))]);
@@ -119,8 +131,8 @@ describe("compileVideo intermediate option", () => {
     expect(r).toMatchSnapshot();
     const base = compileVideo(doc, withSound, "out.mov");
     expect(r.files).toEqual(base.files);
-    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset veryfast -crf 12 -pix_fmt yuv420p`);
-    expect(r.args.join(" ")).toContain("-c:a pcm_s16le -ar 48000 -ac 2");
+    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset veryfast -qp 0 -pix_fmt yuv420p`);
+    expect(r.args.join(" ")).toContain("-c:a pcm_f32le -ar 48000 -ac 2");
     expect(r.args.at(-1)).toBe("file:out.mov");
     const strip = (a: string[]) => a.join(" ").replace(ENCODER_ARGS.join(" "), "V").replace(INTERMEDIATE_ENCODER_ARGS.join(" "), "V").replace(/-c:a \S+( -b:a \S+)? -ar 48000 -ac 2/, "A");
     expect(strip(r.args)).toBe(strip(base.args));

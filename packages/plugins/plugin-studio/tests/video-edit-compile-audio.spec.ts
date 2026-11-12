@@ -73,7 +73,7 @@ describe("compile audio snapshots", () => {
     expect(g).toContain("[4:a]");
     expect(g).not.toContain("[5:a]");
     expect(g).toContain("volume=0.3,afade=t=out:st=5:d=1[aud1]");
-    expect(g).toContain("volume=1.5,adelay=delays=1500:all=1[aud2]");
+    expect(g).toContain("volume=1.5,adelay=delays=1500:all=1,asetpts=N/SR/TB[aud2]");
     expect(g).toContain("afade=t=in:st=0:d=0.5[aud0]");
     expect(g).toContain("[aud0][aud1][aud2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]");
     expect(g).not.toContain("loudnorm");
@@ -154,7 +154,7 @@ describe("compileAudioStem", () => {
   it("emits PCM WAV with no loudnorm and the same per-clip chain as buildAudioGraph", () => {
     const r = compileAudioStem(doc, inputs, "stem.wav");
     expect(r).toMatchSnapshot();
-    expect(r.args.join(" ")).toContain("-c:a pcm_s16le -ar 48000 -ac 2");
+    expect(r.args.join(" ")).toContain("-c:a pcm_f32le -ar 48000 -ac 2");
     expect(r.args).not.toContain("-c:v");
     expect(r.args.at(-1)).toBe("file:stem.wav");
     expect(r.files[0].content).not.toContain("loudnorm");
@@ -177,7 +177,7 @@ describe("compileAudioStem", () => {
       expect(res.outcome).toBe("ok");
       const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name,sample_rate,channels:format=duration", "-of", "json", "stem.wav"], { cwd: d, encoding: "utf8" });
       const info = JSON.parse(probe.stdout) as { streams: Record<string, string | number>[]; format: { duration: string } };
-      expect(info.streams).toEqual([{ codec_name: "pcm_s16le", sample_rate: "48000", channels: 2 }]);
+      expect(info.streams).toEqual([{ codec_name: "pcm_f32le", sample_rate: "48000", channels: 2 }]);
       expect(Math.abs(Number(info.format.duration) - 2)).toBeLessThan(0.05);
     } finally {
       rmSync(d, { recursive: true, force: true });

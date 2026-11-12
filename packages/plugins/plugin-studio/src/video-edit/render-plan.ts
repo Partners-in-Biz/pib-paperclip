@@ -11,11 +11,15 @@
  * final doc swaps the main track for one plain clip per chunk output and keeps every other track. If that main track is
  * still heavier than its share of the budget, it is chunked again (recursion); passes are listed leaves first.
  *
- * Frame grid: a chunk renders a whole number of frames (`-t` keeps frames that start before the end), so each chunk
- * after the first starts at the frame where the previous chunk's picture stops, and gaps become lead-in black of the
- * next chunk (an edit doc can't hold trailing black). A chunk whose first clip starts less than a frame from the
- * chunk start is shifted so that clip sits at 0. An xfade across a boundary stays in the final doc: chunk B's copy of
- * the clip drops `transitionIn`, the final clip for chunk B carries it and overlaps chunk A by the same amount.
+ * Frame grid: the single pass cuts every main segment on the edit's frame grid (`frameAt` in compile-video.ts). A chunk
+ * pass keeps its clips' exact times, shifted by its `origin` (the edit time of its 0), and is compiled with that
+ * `origin`, so it cuts on the same grid and renders exactly the frames of that stretch of the single pass. A chunk
+ * after the first starts on the frame where the previous chunk's picture stops: its origin is that frame's time, or its
+ * first clip's start when that is earlier (the same frame). A gap before its first clip becomes lead-in black (an edit
+ * doc can't hold trailing black). The final doc places each chunk output at its origin, so its clip audio lands on the
+ * same sample, and the sub-frame gaps between chunk clips there span no frames. An xfade across a boundary stays in the
+ * final doc: chunk B starts at its first clip, whose copy drops `transitionIn`; the final clip for chunk B carries it
+ * and overlaps chunk A by the same amount.
  *
  * Audio stems (step 2): if the audio tracks (music included) weigh more than `passBudget / 2`, their clips are cut, in
  * time order, into stems of weight <= `passBudget`. A stem pass mixes its clips (shifted to the stem start) to one WAV
@@ -31,7 +35,7 @@
  */
 import { join } from "node:path";
 import { clipHasSound, hasClipAudio } from "./compile-audio.js";
-import { CompileError, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
+import { CompileError, frameAt, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
 /** Defaults until the T1 spike measures them (PAR-10436). */
@@ -45,9 +49,10 @@ const MAX_LEVELS = 8;
 export interface PlanOptions { workdir: string; passBudget?: number; audioWeight?: number; ext?: string }
 /**
  * One intermediate render: compile `doc` with `sources` to `output`; `frames` long, an audio stream iff `hasAudio`.
- * `stem` passes render sound only (a WAV, `compileAudioStem`); `chunk` and `layer` passes render with `compileVideo`.
+ * `stem` passes render sound only (a WAV, `compileAudioStem`); `chunk` and `layer` passes render with `compileVideo`
+ * and `{ intermediate: true, origin }`: `origin` is the edit time of the doc's 0 (0 for stems and layers).
  */
-export interface RenderPass { kind: "chunk" | "stem" | "layer"; id: string; level: number; doc: EditDoc; sources: CompileInputs; output: string; duration: number; frames: number; hasAudio: boolean; weight: number }
+export interface RenderPass { kind: "chunk" | "stem" | "layer"; id: string; level: number; doc: EditDoc; sources: CompileInputs; output: string; origin: number; duration: number; frames: number; hasAudio: boolean; weight: number }
 export type RenderPlan =
   | { kind: "single"; weight: number }
   | { kind: "tooComplex"; weight: number; input: string; inputWeight: number }
@@ -55,8 +60,6 @@ export type RenderPlan =
 
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 const NO_TRANSFORM = { x: 0, y: 0, scale: 1, rotate: 0, crop: { left: 0, top: 0, right: 0, bottom: 0 } };
-/** Frames a `-t t` render at `fps` writes (frames that start before `t`). */
-const framesIn = (t: number, fps: number) => Math.max(0, Math.ceil(t * fps - 1e-6));
 /** A plain clip that plays a whole pass output from `start`. */
 const plain = (id: string, start: number, out: number) => ({ id, assetId: id, version: 1, start, in: 0, out, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0 });
 
@@ -136,45 +139,38 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     load += w;
   }
 
-  const framesBelow = (t: number) => framesIn(t, fps);
   const end = (c: MediaClip) => ms(c.start + clipDuration(c));
-  const mainEnd = Math.max(...clips.map(end));
   const passes: RenderPass[] = [];
   const finals: MediaClip[] = [];
   const outputs: CompileInputs = {};
-  let prev: { start: number; dur: number; endFrame: number; clipEnd: number } | null = null;
+  let clipEnd: number | null = null; // where the previous chunk's clips end
   for (const [c, group] of groups.entries()) {
     const first = group[0];
-    const overlap = prev ? ms(prev.clipEnd - first.start) : 0;
+    const overlap = clipEnd === null ? 0 : ms(clipEnd - first.start);
     const xfade = overlap > EPS && first.transitionIn !== null;
     if (overlap > EPS && !xfade) throw new CompileError("unsupported_feature", "overlapping_clips");
-    // Where the chunk sits in the joined main track, and the frame its picture starts on.
-    const start: number = !prev ? 0 : xfade ? ms(prev.start + prev.dur - overlap) : ms(prev.endFrame / fps);
-    const startFrame: number = !prev ? 0 : xfade ? framesBelow(start) : prev.endFrame;
-    const shift = xfade || first.start - start < 1 / fps ? first.start : start;
+    // The chunk's 0 in edit time: the frame where the previous chunk's picture stops (`frameAt(origin) == frameAt(clipEnd)`).
+    const origin = xfade ? first.start : Math.min(first.start, ms(frameAt(clipEnd ?? 0, fps) / fps));
 
     const sub: EditDoc = {
       schemaVersion: doc.schemaVersion,
       project: { ...doc.project },
-      tracks: [{ id: track.id, kind: "video", clips: group.map((clip, i) => ({ ...structuredClone(clip), start: ms(clip.start - shift), ...(i === 0 && xfade ? { transitionIn: null } : {}) })) }],
+      tracks: [{ id: track.id, kind: "video", clips: group.map((clip, i) => ({ ...structuredClone(clip), start: ms(clip.start - origin), ...(i === 0 && xfade ? { transitionIn: null } : {}) })) }],
     };
     const subSources = sourcesFor(sub, sources);
     const duration = editDuration(sub);
-    const frames = framesBelow(duration);
-    const endFrame: number = startFrame + frames;
-    const last = c === groups.length - 1;
-    const dur: number = last ? ms(Math.max(mainEnd - start, 1 / fps)) : ms(ms(endFrame / fps) - start);
+    clipEnd = Math.max(...group.map(end)); // == ms(origin + duration)
+    const frames = frameAt(clipEnd, fps) - frameAt(origin, fps);
 
     const id = `chunk-${level}-${c}`;
     const output = join(opts.workdir, id, `out.${opts.ext}`);
     const hasAudio = hasClipAudio(sub, subSources);
-    passes.push({ kind: "chunk", id, level, doc: sub, sources: subSources, output, duration, frames, hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
+    passes.push({ kind: "chunk", id, level, doc: sub, sources: subSources, output, origin, duration, frames, hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
     outputs[inputKey(id, 1)] = { path: output, kind: "video", hasAudio, width, height, fps };
     finals.push({
-      ...plain(id, start, dur),
+      ...plain(id, origin, duration),
       transform: structuredClone(NO_TRANSFORM), transitionIn: xfade && first.transitionIn ? { ...first.transitionIn } : null,
     });
-    prev = { start, dur, endFrame, clipEnd: Math.max(...group.map(end)) };
   }
 
   const finalDoc: EditDoc = {
@@ -213,7 +209,7 @@ function stemAudio(doc: EditDoc, sources: CompileInputs, opts: Required<PlanOpti
       const duration = editDuration(sub);
       const id = `stem-${level}-${s}`;
       const output = join(opts.workdir, id, "out.wav");
-      passes.push({ kind: "stem", id, level, doc: sub, sources: subSources, output, duration, frames: framesIn(duration, fps), hasAudio: true, weight: editWeight(sub, subSources, opts.audioWeight) });
+      passes.push({ kind: "stem", id, level, doc: sub, sources: subSources, output, origin: 0, duration, frames: frameAt(duration, fps), hasAudio: true, weight: editWeight(sub, subSources, opts.audioWeight) });
       outputs[inputKey(id, 1)] = { path: output, kind: "audio", hasAudio: true };
       stems.push(plain(id, start, duration));
     }
@@ -258,7 +254,7 @@ function layerOverlays(doc: EditDoc, sources: CompileInputs, opts: Required<Plan
     const duration = editDuration(sub);
     const hasAudio = hasClipAudio(sub, subSources);
     const output = join(opts.workdir, id, `out.${opts.ext}`);
-    passes.push({ kind: "layer", id, level: passes.length, doc: sub, sources: subSources, output, duration, frames: framesIn(duration, fps), hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
+    passes.push({ kind: "layer", id, level: passes.length, doc: sub, sources: subSources, output, origin: 0, duration, frames: frameAt(duration, fps), hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
     known[inputKey(id, 1)] = { path: output, kind: "video", hasAudio, width, height, fps };
     base = { id: base?.id ?? BASE_TRACK, kind: "video", clips: [{ ...plain(id, 0, duration), transform: structuredClone(NO_TRANSFORM), transitionIn: null }] };
   };
