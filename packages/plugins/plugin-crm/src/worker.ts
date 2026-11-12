@@ -71,6 +71,8 @@ import {
   enrollmentsForContact,
   enrollmentsForSequence,
   ensurePipeline,
+  listCompanyStages,
+  listPipelines,
   getAccount,
   getContact,
   getDeal,
@@ -902,13 +904,14 @@ const DESK_DEPS: DeskDeps = {
 
 async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const [accounts, contacts, deals, links, sequences, stages] = await Promise.all([
+  const [accounts, contacts, deals, links, sequences, stages, pipelines] = await Promise.all([
     listAccounts(ctx, viewer.companyId),
     listContacts(ctx, viewer.companyId),
     listDeals(ctx, viewer.companyId),
     listLinks(ctx, viewer.companyId),
     listSequences(ctx, viewer.companyId),
-    listStages(ctx, pipeline.pipelineId),
+    listCompanyStages(ctx, viewer.companyId),
+    listPipelines(ctx, viewer.companyId),
   ]);
   const [accountGrants, contactGrants, dealGrants] = await Promise.all([
     grantsFor(ctx, "company", viewer.companyId),
@@ -920,7 +923,7 @@ async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
   const contactIds = new Set(visibleContacts.map((row) => row.id));
   const visibleLinks = links.filter((link) => contactIds.has(link.contactId));
-  return { pipeline, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
+  return { pipeline, defaultPipelineId: pipeline.pipelineId, pipelines, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
 }
 
 async function load(ctx: PluginContext, context: PluginPerformActionContext) {
@@ -929,7 +932,11 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
     visibleRecords(ctx, viewer),
     listProducts(ctx, viewer.companyId),
   ]);
-  const { visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages } = records;
+  const { visibleAccounts, visibleContacts, visibleLinks, sequences } = records;
+  // The board and the figures show the default pipeline only; a deal belongs to the pipeline of its stage.
+  const stages = records.stages.filter((stage) => stage.pipeline_id === records.defaultPipelineId);
+  const boardStageIds = new Set(stages.map((stage) => stage.id));
+  const visibleDeals = records.visibleDeals.filter((deal) => boardStageIds.has(deal.stageId));
 
   const linkedContactIds = new Set(visibleLinks.map((link) => link.contactId));
   const openStageIds = new Set(stages.filter((stage) => stage.kind === "open").map((stage) => stage.id));
@@ -1013,6 +1020,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       sequenceCount: sequences.length,
       openDealCount: openDeals.length,
       openPipelineByCurrency,
+      defaultPipelineName: records.pipelines.find((row) => row.isDefault)?.name ?? null,
+      pipelineCount: records.pipelines.length,
       byStage,
       accountLifecycle,
       contactLifecycle,

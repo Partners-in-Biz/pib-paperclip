@@ -2,6 +2,7 @@
  * Presentational pieces of the CRM pages: the overview dashboard, toned
  * statuses, the activity timeline and the lead score card. No host hooks.
  */
+import { openPipelineLabel } from "../pipeline-label.js";
 import type { ReactNode } from "react";
 import {
   BarChart,
@@ -78,6 +79,8 @@ export interface OverviewSummary {
   dealCount: number;
   openDealCount: number;
   openPipelineByCurrency: Record<string, number>;
+  defaultPipelineName?: string | null;
+  pipelineCount?: number;
   byStage: Record<string, { count: number; amountMinor: number }>;
   accountLifecycle: Record<string, number>;
   contactLifecycle: Record<string, number>;
@@ -156,7 +159,7 @@ export function CrmOverview({ summary, series, stages, contacts, needs, unlinked
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 10 }}>
         <KpiCard
-          label="Open pipeline"
+          label={openPipelineLabel(summary)}
           value={formatMoney(openPipeline, currency)}
           hint={`${summary?.openDealCount ?? 0} open ${summary?.openDealCount === 1 ? "deal" : "deals"}${otherCurrencies.length ? ` · also ${otherCurrencies.join(", ")}` : ""}`}
           icon={Funnel}

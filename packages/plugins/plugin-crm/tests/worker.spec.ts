@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
+import { openPipelineLabel } from "../src/pipeline-label.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { CRM_MUTATIONS } from "../src/sync.js";
@@ -31,7 +32,7 @@ function fakeDb(store: Store) {
       if (/WHERE id = \$1/.test(sql)) return rows.filter((row) => row.id === params[0]);
       if (name === "record_grants") return [];
       if (name === "pipeline_stages") {
-        return rows.filter((row) => row.pipeline_id === params[0]).sort((a, b) => Number(a.position) - Number(b.position));
+        return rows.filter((row) => row.pipeline_id === params[0] || row.company_id === params[0]).sort((a, b) => Number(a.position) - Number(b.position));
       }
       if (name === "activities") {
         return rows.filter((row) => row.record_type === params[0] && row.record_id === params[1]);
@@ -285,5 +286,26 @@ describe("client workspace actions", () => {
     await expect(
       harness.performAction("crm.client-workspace", {}, { companyId: CO, actor: OWNER }),
     ).rejects.toThrow(/required/);
+  });
+});
+
+describe("crm.load with two pipelines", () => {
+  it("returns only the default pipeline's stages, deals and open figures, and names it", async () => {
+    const { harness, store } = await boot();
+    store.pipelines!.push({ id: "pipe-2", company_id: CO, name: "Sponsors", created_at: "2026-12-01T00:00:00Z" }, { id: "pipe-x", company_id: "other", name: "Theirs" });
+    store.pipeline_stages!.push({ id: "sp-open", company_id: CO, pipeline_id: "pipe-2", name: "Pitched", kind: "open", position: 1 });
+    store.deals!.push({ ...store.deals![1]!, id: "d-spons", stage_id: "sp-open", pipeline_id: "pipe-2" });
+    const data = await harness.performAction<Record<string, any>>("crm.load", {}, { companyId: CO, actor: OWNER });
+    expect(data.stages.map((stage: { id: string }) => stage.id)).toEqual(["stage-open", "stage-won"]);
+    expect(data.deals.map((row: { id: string }) => row.id)).not.toContain("d-spons");
+    expect(Object.keys(data.summary.byStage).sort()).toEqual(["stage-open", "stage-won"]);
+    expect(data.summary).toMatchObject({ defaultPipelineName: "Sales", pipelineCount: 2 });
+  });
+
+  it("labels the open-pipeline card by pipeline only when there are two or more", () => {
+    const base = { defaultPipelineName: "Sales" };
+    expect(openPipelineLabel({ ...base, pipelineCount: 2 })).toBe("Open pipeline · Sales");
+    expect(openPipelineLabel({ ...base, pipelineCount: 1 })).toBe("Open pipeline");
+    expect(openPipelineLabel(undefined)).toBe("Open pipeline");
   });
 });
