@@ -39,7 +39,7 @@ describe("pruneStaleWaiting", () => {
   });
 
   it("keeps two distinct approvals that share a title", () => {
-    const ap = (key: string, issueId: string): WaitingItem => ({ key, title: "Approve sending quote to Hunt and Gun (R 6,860.00)", why: "w", kind: "approval", issueId });
+    const ap = (key: string, issueId: string): WaitingItem => ({ key, title: "Approve sending quote to Hunt and Gun (R 6,860.00)", why: "w", kind: "money", issueId });
     const st = new Map([["i1", "in_review"], ["i2", "in_review"]]);
     expect(keys(pruneStaleWaiting([snap([ap("approval:i1", "i1"), ap("approval:i2", "i2")])], st))).toEqual(["approval:i1", "approval:i2"]);
   });
