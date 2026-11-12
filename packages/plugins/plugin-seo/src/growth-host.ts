@@ -63,7 +63,7 @@ export interface SeoGrowthEnv {
 }
 
 export function seoGrowthStore(ctx: PluginContext): GrowthStore {
-  return createGrowthStore({
+  const store = createGrowthStore({
     db: ctx.db,
     table: (name) => t(name),
     subjectKind: SUBJECT_KIND,
@@ -73,6 +73,8 @@ export function seoGrowthStore(ctx: PluginContext): GrowthStore {
       autopilot: AUTOPILOT_MODES.includes(p.autopilot as Autopilot) ? p.autopilot : "safe",
     }),
   }) as GrowthStore;
+  // SEO has no tagged posts. The kit's reject path untags posts and calls these unguarded, so reject threw without them.
+  return Object.assign(store, { experimentPosts: async () => [], setPostExperiment: async () => false }) as GrowthStore;
 }
 
 /** `client` / `clientKind`+`clientRef` to a CRM-checked scope. A client the CRM does not know is refused before any read or write. */
@@ -312,6 +314,9 @@ export function seoGrowthEnv(ctx: PluginContext, companyId: string, store: Growt
           `The SEO agent's weekly review for **${label(program)}** has items for you. Experiments change one thing at a time on real pages; playbook changes edit the rules the agent follows when it optimises pages.`,
           "",
           ...lines,
+          program.clientRef
+            ? `Approve or reject each experiment on the SEO page: open any SEO sprint for ${label(program)}, Growth tab.`
+            : "Approve or reject each experiment on the SEO page: open any of our own SEO sprints (not linked to a client), Growth tab.",
           `Autopilot: **${program.autopilot}** (off: agents only read; safe: a person approves; reviewed: the Reviewer decides what stays internal; full: the agent approves and wins are kept automatically).`,
         ].join("\n"),
         priority: "medium",

@@ -78,6 +78,7 @@ import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
+import { growthAbandon, growthApprove, growthExperiments, growthReject } from "./growth-actions.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { routineViews, saveRoutineReport } from "./service/routines.js";
@@ -577,6 +578,10 @@ function registerActions(e: Env) {
   });
 
   // "Re-sync": wires the linked agent again. It never creates an agent.
+  action("seo.growth-experiments", async (companyId, actor, params) => growthExperiments(e, companyId, requireUser(actor), params));
+  action("seo.growth-approve-experiment", async (companyId, actor, params) => growthApprove(e, companyId, requireUser(actor), params));
+  action("seo.growth-reject-experiment", async (companyId, actor, params) => growthReject(e, companyId, requireUser(actor), params));
+  action("seo.growth-abandon-experiment", async (companyId, actor, params) => growthAbandon(e, companyId, requireUser(actor), params));
   action("seo.activate-agent", async (companyId, actor) => resyncAgent(e, companyId, requireUser(actor)));
   action("seo.sync-skills", async (companyId, actor) => {
     requireUser(actor);
