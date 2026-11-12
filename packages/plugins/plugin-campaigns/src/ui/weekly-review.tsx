@@ -35,6 +35,8 @@ export interface WeeklyReviewData {
   playbookVersion: number;
   experiments: ReviewExperiment[];
   changes: ReviewChange[];
+  /** Emails sent so far by this scope's campaigns; null or absent when unknown. */
+  sent?: number | null;
 }
 
 const card = { display: "grid", gap: 6, padding: 12, border: `1px solid ${tokens.border}`, borderRadius: 8 } as const;
@@ -160,7 +162,19 @@ export function WeeklyReview({ client }: { client: string | null }) {
         </Section>
       ) : null}
 
-      {others.length ? (
+      {others.length && data.sent === 0 ? (
+        <Section title="Running and measured">
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
+            {others.length === 1 ? "1 experiment is" : `${others.length} experiments are`} approved, but no campaign email has gone out yet, so there is nothing to measure. Counting starts with the first send.
+          </p>
+          <details>
+            <summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: tokens.primary }}>Show {others.length === 1 ? "it" : "them"}</summary>
+            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              {list(others.map((e) => <ExperimentCard key={e.experimentId} experiment={e} busy={busy} onApprove={() => undefined} onReject={() => undefined} />))}
+            </div>
+          </details>
+        </Section>
+      ) : others.length ? (
         <Section title="Running and measured">
           {list(others.map((e) => <ExperimentCard key={e.experimentId} experiment={e} busy={busy} onApprove={() => undefined} onReject={() => undefined} />))}
         </Section>

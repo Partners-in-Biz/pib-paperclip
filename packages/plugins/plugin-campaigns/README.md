@@ -171,3 +171,30 @@ A reply that arrives at a mailbox the Mailbox does not read (a Reply-To that is 
 ### Needs elsewhere
 
 None. Opens and clicks stay at 0 unless somebody switches tracking on for the domain in the provider's dashboard; nothing here does.
+
+## See it clearly: the campaign screen, plain statuses and what needs attention (0.12.0)
+
+First release of the Campaigns overhaul (wiki `campaigns-overhaul-2026-11`, Release A). Screens and reads only: no migration, no new capability, no tool or skill change. **Deploy: src-only.**
+
+- **A campaign opens as a page, not a side sheet**, with four tabs. `?campaign=<id>` links keep working.
+  - **Summary:** where it stands, who it goes out as, the audience, the next send, the approval and the checks before it goes out. The approval bar stays above the tabs.
+  - **People:** everyone enrolled (the first 500), searchable, with where each person stands ("Email 2 sent", "Email 1 held", "Email 1 sent, replied"), what comes next, a link to the open step task, a link to the contact in the CRM and a per-person history of step events. Before launch it lists who would get the campaign (the same audience the approver sees).
+  - **Emails:** every step in order, as before.
+  - **Results:** totals and one row per step (sent, delivered, clicked, replied, opted out, bounced), version A against B where a step has both. Delivered shows only when the email provider reported; clicked only when something was tracked. A line says what is and is not measured.
+- **One plain-word state per campaign** (`src/attention.ts`, `campaignState`): Draft, Sent back, With the reviewer, Needs your approval, Approval asked (its task could not be read), Could not launch, Approved, Running, Stuck, Active (could not be checked), Scheduled, Paused, Finished, each with one sentence. The list, the "Needs attention" strip and the campaign page read the same function.
+  - **Stuck** is an active campaign with blocked step tasks, step tasks waiting on the agent for over a day, a failed send, or (while nothing was sent yet or something is waiting) a step that still holds a placeholder such as `NOT-ISSUED-YET`.
+  - **Sent back** is a draft with no approval request and an open `campaigns:revise:` task.
+- **"Needs attention" strip** above the tabs: one line per campaign that needs a person (needs approval, could not launch, stuck), with Open.
+- **The list** shows Campaign (with its audience), Where it stands, Emails, People, Replies and the one next step. The Delivery column moved into the campaign.
+- **Hand-sent emails are counted.** When a step task is marked done, a `sent` step event is recorded once (`source_key` `hand:step:<enrollment>:<position>`, `meta.by = "task"`). Before this a campaign with delivery "Task for the agent" showed 0 sent however many emails went out, and its A/B numbers and the Growth Lab had nothing to measure. A cancelled task records nothing.
+  - The version is the one the task carried (`stepFor`): a step with no B text counts under A whatever arm the person is on, as an automatic send records it.
+  - The event's time is when the task was closed, not when the email left.
+  - Steps sent by hand before 0.12.0 are not back-filled: a campaign that ran earlier under-counts in Results.
+  - A reply from someone who got a hand-sent email is now matched to that enrollment and step through the "most recently emailed" rule (`latestSends`). Before, it fell back to a running enrollment or to nothing. The event has no `to`, so the Reply-To match (`sendsToAddress`) never picks it.
+- **A read that fails is not shown as a fact.** `sent` is `number | null` in the state: when the events cannot be counted the sentence leaves the number out and the "nothing sent yet" rule does not apply. When the open step tasks or the failed sends cannot be read an active campaign shows "Active: could not be checked", never "Running". An approval task that cannot be read shows "Approval asked", neither approved nor a request for action.
+- **Weekly review** says when approved experiments have nothing to measure because no campaign email has gone out yet in that scope (`sent` on `campaigns.growth-load`), and folds them away.
+- The page message from an action clears when you switch tab or open a campaign.
+- New reads (`src/people.ts`): `enrollmentPeople`, `resultRows`, `stepTaskCounts`; `openReviseCampaigns` in `src/attention.ts`. All take the company id and are scoped by it. `unfilledPlaceholders` is now exported from `src/preflight.ts` and shared with the check before approval.
+- `campaigns.load` adds `state` per campaign; `campaigns.detail` adds `state`, `people`, `peopleCapped`, `audiencePeople` and `results`. Existing keys are unchanged. A read that fails returns null for that part and the page says it could not be read.
+
+Tests: `attention.spec.ts`, `people.spec.ts`, `people.pg.spec.ts` (real Postgres: the joins to the CRM copy and `public.issues`, company scoping), and two cases in `graph.spec.ts` for the hand-sent count.

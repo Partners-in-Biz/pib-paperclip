@@ -31,7 +31,6 @@ import {
   Select,
   Send,
   Settings,
-  Sheet,
   Tabs,
   TextArea,
   Toolbar,
@@ -47,10 +46,11 @@ import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientS
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
-import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
+import { approvalState, DELIVERY_LABEL } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
 import { CampaignDetail, audienceText, type CampaignDetailData } from "./detail.js";
+import type { CampaignState } from "../attention.js";
 
 const PLUGIN_ID = "partnersinbiz.campaigns";
 const MAILBOX_ID = "partnersinbiz.mailbox";
@@ -76,6 +76,8 @@ interface Campaign {
   launchedAt?: string | null;
   /** Why the last launch on approval failed (the approval went back to the approver). */
   launchError?: string | null;
+  /** Where it stands in plain words, and what needs a person. Absent from an older worker. */
+  state?: CampaignState | null;
 }
 
 interface AbSuggestion {
@@ -135,6 +137,30 @@ function Banner({ text, link, linkProps }: { text: string; link: { label: string
       <span style={{ flex: "1 1 200px", minWidth: 0 }}>{text}</span>
       <a {...linkProps(link.href)} style={{ fontWeight: 600, color: tokens.primary, whiteSpace: "nowrap" }}>{link.label} →</a>
     </div>
+  );
+}
+
+/** What needs a person, above everything else: one line per campaign, with the way in. Nothing when all is well. */
+function NeedsAttention({ campaigns, onOpen }: { campaigns: Campaign[]; onOpen: (id: string) => void }) {
+  const items = campaigns.filter((campaign) => campaign.state?.attention);
+  if (items.length === 0) return null;
+  return (
+    <section aria-label="Needs attention" style={{ display: "grid", gap: 6, padding: "10px 12px", borderRadius: 10, border: `1px solid ${tone("warn").border}`, background: tokens.card, minWidth: 0 }}>
+      <h2 style={{ margin: 0, fontSize: 12, fontWeight: 650, letterSpacing: "0.06em", textTransform: "uppercase", color: tokens.muted, display: "flex", gap: 6, alignItems: "center" }}>
+        <TriangleAlert size={13} aria-hidden="true" style={{ color: tone("warn").solid }} /> Needs attention ({items.length})
+      </h2>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
+        {items.map((campaign) => (
+          <li key={campaign.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13, lineHeight: 1.45, minWidth: 0 }}>
+            <span style={{ flex: "1 1 260px", minWidth: 0, overflowWrap: "anywhere" }}>
+              <strong style={{ fontWeight: 600 }}>{campaign.name}</strong>
+              <span style={{ color: campaign.state!.tone === "bad" ? tone("bad").fg : tokens.muted }}> · {campaign.state!.attention}</span>
+            </span>
+            <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12.5 }} onClick={() => onOpen(campaign.id)}>Open</Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -253,9 +279,11 @@ function CampaignsPageMain({ context }: PluginPageProps) {
     return `Approved and launched: ${outcome.enrolled ?? 0} enrolled.`;
   }
   function openCampaign(id: string) {
+    setMessage("");
     navigation.navigate(`/campaigns${withParam(location.search, "campaign", id)}`);
   }
   function closeCampaign() {
+    setMessage("");
     navigation.navigate(`/campaigns${withParam(location.search, "campaign", null)}`, { replace: true });
   }
 
@@ -306,18 +334,24 @@ function CampaignsPageMain({ context }: PluginPageProps) {
 
   /** The one next step for a campaign in the list; everything else is in its detail. */
   function rowAction(campaign: Campaign): ReactNode {
-    if (campaign.status !== "draft") return null;
-    const state = approvalState(campaign);
     const small = { height: 30, fontSize: 12.5 };
+    if (campaign.status !== "draft") {
+      return campaign.state?.key === "stuck" ? <Button type="button" variant="secondary" style={small} onClick={() => openCampaign(campaign.id)}>See what is stuck</Button> : null;
+    }
+    const state = approvalState(campaign);
+    // Sent back: the agent is fixing it and asks again itself.
+    if (campaign.state?.key === "sent-back") return null;
     if (campaign.steps.length === 0) return <Button type="button" variant="secondary" style={small} onClick={() => openAddStep(campaign.id)}>Add the first email</Button>;
     if (state.key === "not-requested") return <Button type="button" style={small} disabled={busy} onClick={() => void run(() => requestApproval({ campaignId: campaign.id }), approvalRequested)}>Request approval</Button>;
     if (state.key === "approved") return <Button type="button" style={small} disabled={busy} onClick={() => void run(() => launch({ campaignId: campaign.id }), "Campaign launched")}>Launch now</Button>;
-    if (state.key === "could-not-launch") return <span title={campaign.launchError ?? undefined}><Pill tone="bad" dot>Could not launch</Pill></span>;
-    return <Pill tone="warn" dot>Waiting for approval</Pill>;
+    if (state.key === "could-not-launch") return <Button type="button" variant="secondary" style={small} onClick={() => openCampaign(campaign.id)}>See why</Button>;
+    if (campaign.state?.key === "with-reviewer") return null;
+    return <Button type="button" style={small} onClick={() => openCampaign(campaign.id)}>Review and approve</Button>;
   }
 
   /** A needs-you marker for a phone row. */
   function rowFlag(campaign: Campaign): ReactNode {
+    if (campaign.state) return <Pill tone={campaign.state.tone} dot>{campaign.state.label}</Pill>;
     const state = approvalState(campaign);
     if (campaign.status !== "draft") return null;
     if (state.key === "could-not-launch") return <Pill tone="bad" dot>Could not launch</Pill>;
@@ -335,6 +369,39 @@ function CampaignsPageMain({ context }: PluginPageProps) {
       {snapshot && snapshot.settingsSaved === false ? (
         <Banner text="Due emails won't go out until the Campaigns settings are saved once." link={{ label: "Open settings", href: settingsItem?.href ?? "/company/settings/instance/plugins" }} linkProps={linkProps} />
       ) : null}
+      {openId ? (
+        <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+            <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={closeCampaign}>← All campaigns</Button>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" }}>{detail?.campaign.name ?? "Campaign"}</h2>
+          </div>
+          {detail ? (
+          <CampaignDetail
+            key={detail.campaign.id}
+            data={detail}
+            initialTab={detail.state?.key === "stuck" ? "people" : "summary"}
+            linkFor={linkProps}
+            actions={{
+              busy,
+              onRequestApproval: () => void run(() => requestApproval({ campaignId: detail.campaign.id }), approvalRequested),
+              onLaunch: () => void run(() => launch({ campaignId: detail.campaign.id }), "Campaign launched"),
+              onAddStep: () => openAddStep(detail.campaign.id),
+              onPause: () => void run(() => pause({ campaignId: detail.campaign.id }), "Campaign paused"),
+              onResume: () => void run(() => resume({ campaignId: detail.campaign.id }), "Campaign resumed"),
+              onEnrollNew: () => void run(() => launch({ campaignId: detail.campaign.id }), "New audience contacts enrolled and the campaign is running"),
+              onComplete: () => {
+                if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
+              },
+              onAb: () => openAb(detail.campaign.id),
+              onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
+              onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
+            }}
+          />
+          ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
+        </div>
+      ) : (
+        <>
+          <NeedsAttention campaigns={all} onOpen={openCampaign} />
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -343,7 +410,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
           ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
         ]}
         active={tab}
-        onChange={(id) => { setTab(id as TabId); setSearch(""); }}
+        onChange={(id) => { setTab(id as TabId); setSearch(""); setMessage(""); }}
       />
 
       {tab === "overview" ? <GetStarted status={setupStatus} hasData={all.length > 0} moduleName="Campaigns" linkFor={linkProps} /> : null}
@@ -387,7 +454,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
               label="Campaigns"
               rows={campaigns}
               title={(c) => c.name}
-              meta={(c) => `${STATUS_LABEL[c.status] ?? c.status} · ${deliveryLabel(c.delivery)} · ${c.stats.enrolled} enrolled`}
+              meta={(c) => c.state?.detail ?? `${STATUS_LABEL[c.status] ?? c.status} · ${c.stats.enrolled} enrolled`}
               trailing={rowFlag}
               onOpen={(c) => openCampaign(c.id)}
               empty="No campaigns match."
@@ -407,51 +474,38 @@ function CampaignsPageMain({ context }: PluginPageProps) {
                       >
                         {String(value)}
                       </button>
-                      {campaign.launchError && campaign.status === "draft" ? <span style={{ fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" }}>Could not launch: {campaign.launchError}</span> : null}
+                      <span style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere" }}>{audienceText(campaign)}</span>
                     </div>
                   );
                 } },
-                { key: "status", header: "Status", render: (value) => <StatusPill status={String(value)} /> },
-                { key: "deliveryLabel", header: "Delivery" },
-                { key: "audience", header: "Audience" },
+                { key: "status", header: "Where it stands", render: (value, row) => {
+                  const campaign = row as unknown as Campaign;
+                  if (!campaign.state) return <StatusPill status={String(value)} />;
+                  return (
+                    <div style={{ display: "grid", gap: 3, minWidth: 0, justifyItems: "start" }}>
+                      <Pill tone={campaign.state.tone} dot>{campaign.state.label}</Pill>
+                      {campaign.state.detail ? <span style={{ fontSize: 12.5, color: tokens.muted, lineHeight: 1.4, overflowWrap: "anywhere" }}>{campaign.state.detail}</span> : null}
+                    </div>
+                  );
+                } },
                 { key: "stepCount", header: "Emails", width: "70px" },
-                { key: "enrolled", header: "Enrolled", width: "80px" },
-                { key: "replyRate", header: "Replies", render: (_value, row) => {
+                { key: "enrolled", header: "People", width: "70px", render: (value, row) => (row.status === "draft" ? <span style={{ color: tokens.muted }} title="Nobody is enrolled until it launches. Open it to see who would get it.">—</span> : String(value)) },
+                { key: "replyRate", header: "Replies", width: "110px", render: (_value, row) => {
                   const counts = byCampaign[String(row.id)];
                   return counts?.sent ? <span style={{ fontVariantNumeric: "tabular-nums" }}>{percent(counts.replies / counts.sent)} <span style={{ color: tokens.muted }}>of {counts.sent}</span></span> : <span style={{ color: tokens.muted }}>—</span>;
                 } },
                 { key: "id", header: "Next step", width: "180px", render: (_value, row) => rowAction(row as unknown as Campaign) },
               ]}
-              rows={campaigns.map((c) => ({ ...c, audience: audienceText(c), deliveryLabel: deliveryLabel(c.delivery), enrolled: c.stats.enrolled, stepCount: new Set(c.steps.map((s) => s.position)).size }))}
+              rows={campaigns.map((c) => ({ ...c, enrolled: c.stats.enrolled, stepCount: new Set(c.steps.map((s) => s.position)).size }))}
               emptyMessage="No campaigns match."
             />
           )}
         </div>
       ) : null}
 
-      <Sheet open={Boolean(openId)} title={detail?.campaign.name ?? "Campaign"} onClose={closeCampaign}>
-        {detail ? (
-          <CampaignDetail
-            data={detail}
-            linkFor={linkProps}
-            actions={{
-              busy,
-              onRequestApproval: () => void run(() => requestApproval({ campaignId: detail.campaign.id }), approvalRequested),
-              onLaunch: () => void run(() => launch({ campaignId: detail.campaign.id }), "Campaign launched"),
-              onAddStep: () => openAddStep(detail.campaign.id),
-              onPause: () => void run(() => pause({ campaignId: detail.campaign.id }), "Campaign paused"),
-              onResume: () => void run(() => resume({ campaignId: detail.campaign.id }), "Campaign resumed"),
-              onEnrollNew: () => void run(() => launch({ campaignId: detail.campaign.id }), "New audience contacts enrolled and the campaign is running"),
-              onComplete: () => {
-                if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
-              },
-              onAb: () => openAb(detail.campaign.id),
-              onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
-              onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
-            }}
-          />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
-      </Sheet>
+        </>
+      )}
+
 
       <Modal
         open={create === "campaign"}

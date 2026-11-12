@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.11.1");
-    expect(PLUGIN_VERSION).toBe("0.11.1");
-    expect(pkg.version).toBe("0.11.1");
+    expect(manifest.version).toBe("0.12.0");
+    expect(PLUGIN_VERSION).toBe("0.12.0");
+    expect(pkg.version).toBe("0.12.0");
   });
 
   it("declares the activity.log.write capability", () => {
