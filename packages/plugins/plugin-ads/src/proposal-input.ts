@@ -7,13 +7,14 @@ import { addDays, isDay, todayIn } from "./dates.js";
 import { getAccount, getCampaign, type AccountRow, type ScopeRow } from "./db.js";
 import { validateResponsiveSearchAd } from "./rsa.js";
 import { appSettingsFrom, GOOGLE_APP_CHANNEL } from "./providers/google-app.js";
+import { GOOGLE_VIDEO_CHANNEL, videoObjective, videoSettingsFrom } from "./providers/google-video.js";
 import { asksForActive } from "./owner-route.js";
 import { PROPOSAL_KINDS, type ProposalKind } from "./platforms.js";
 import type { SpendAddition } from "./budgets.js";
 import type { AdsRuntime } from "./runtime.js";
 
 export const META_OBJECTIVES = ["OUTCOME_LEADS", "OUTCOME_TRAFFIC", "OUTCOME_SALES", "OUTCOME_AWARENESS", "OUTCOME_ENGAGEMENT", "OUTCOME_APP_PROMOTION"] as const;
-export const GOOGLE_CHANNELS = ["SEARCH", GOOGLE_APP_CHANNEL] as const;
+export const GOOGLE_CHANNELS = ["SEARCH", GOOGLE_APP_CHANNEL, GOOGLE_VIDEO_CHANNEL] as const;
 export const META_SPECIAL_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING", "FINANCIAL_PRODUCTS_SERVICES"] as const;
 export const OPTIMIZATION_GOALS = ["LINK_CLICKS", "LANDING_PAGE_VIEWS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS", "APP_INSTALLS"] as const;
 export const BILLING_EVENTS = ["IMPRESSIONS", "LINK_CLICKS"] as const;
@@ -101,9 +102,11 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     const account = await accountFor(rt, scope, requiredString(input, "accountId"));
     const name = requiredString(input, "name", 120);
     if (name.length < 3) throw new AdsError("name is too short");
-    const objective = (optionalString(input, "objective", 40) ?? (account.platform === "google" ? "SEARCH" : "OUTCOME_LEADS")).toUpperCase();
+    const asked = (optionalString(input, "objective", 40) ?? (account.platform === "google" ? "SEARCH" : "OUTCOME_LEADS")).toUpperCase();
+    // Google's API cannot create a VIDEO campaign; a YouTube video campaign is a YouTube-only Demand Gen campaign.
+    const objective = account.platform === "google" ? videoObjective(asked) : asked;
     const allowed: readonly string[] = account.platform === "google" ? GOOGLE_CHANNELS : account.platform === "meta" ? META_OBJECTIVES : [...META_OBJECTIVES, ...GOOGLE_CHANNELS];
-    if (!allowed.includes(objective)) throw new AdsError(`objective must be one of ${allowed.join(", ")} for ${account.platform === "google" ? "Google Ads (SEARCH, or MULTI_CHANNEL for an App campaign)" : "this platform"}`);
+    if (!allowed.includes(objective)) throw new AdsError(`objective must be one of ${allowed.join(", ")} for ${account.platform === "google" ? "Google Ads (SEARCH, MULTI_CHANNEL for an App campaign, or DEMAND_GEN for a YouTube video campaign)" : "this platform"}`);
     const dailyBudgetMinor = minorField(input, "dailyBudgetMinor", { required: true })!;
     if (dailyBudgetMinor <= 0) throw new AdsError("dailyBudgetMinor must be more than zero");
     const startDate = optionalString(input, "startDate", 10);
@@ -117,6 +120,8 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     const creative = creativeFrom(input.creative);
     // An App campaign names its app, install goal and locations up front: Google needs them to create it.
     const app = objective === GOOGLE_APP_CHANNEL ? appSettingsFrom(input, dailyBudgetMinor) : null;
+    // A YouTube video campaign names its bidding and locations up front: they go on the campaign and its YouTube-only ad group.
+    const video = objective === GOOGLE_VIDEO_CHANNEL ? videoSettingsFrom(input, dailyBudgetMinor) : null;
     const days = startDate && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1 : null;
     return {
       kind,
@@ -139,6 +144,7 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
         audience: optionalString(input, "audience", 1000) ?? null,
         creative,
         app,
+        video,
         notes: optionalString(input, "notes", 2000) ?? null,
         reason,
         // The plugin creates the campaign PAUSED with its budget. Ad sets, audiences and ads are built in the platform (version 0.1).

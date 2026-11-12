@@ -6,6 +6,8 @@ import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, isAgentLimitKey, listCaps, usage } from "./ledger.js";
 import { StudioConfig } from "./config.js";
 import { providerOptions, providerStatus } from "./providers/registry.js";
+import { musicCapCredits, musicUsage, STABLE_AUDIO_MONTHLY_USD_CAP } from "./music/stable-audio-price.js";
+import { USD_PER_CREDIT } from "./seedance-price.js";
 import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
 
 const LOCAL_BOARD = "local-board";
@@ -51,6 +53,18 @@ export async function usageView(ctx: PluginContext, companyId: string, scope: Cl
   };
 }
 
+/** Stable Audio's shared USD 25 monthly cap. A failed read is "unknown", never a guess, and never hides the rest. */
+async function musicUsageView(ctx: PluginContext, period: string) {
+  try {
+    const used = await musicUsage(ctx, period);
+    const cents = (credits: number) => Math.round(credits * USD_PER_CREDIT * 100) / 100;
+    const usedUsd = cents(used);
+    return { status: "ok" as const, provider: "stability" as const, period, usedUsd, capUsd: STABLE_AUDIO_MONTHLY_USD_CAP, remainingUsd: Math.max(0, cents(musicCapCredits() - used)) };
+  } catch {
+    return { status: "unknown" as const };
+  }
+}
+
 /** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
 export async function overview(ctx: PluginContext, companyId: string) {
   const period = currentPeriod();
@@ -81,6 +95,7 @@ export async function overview(ctx: PluginContext, companyId: string) {
     balance,
     providers,
     providerOptions: providerChoices,
+    musicUsage: await musicUsageView(ctx, period),
     caps,
     clientUsage,
     history,

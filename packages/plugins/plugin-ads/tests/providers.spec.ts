@@ -323,6 +323,37 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
     expect(seen).toHaveLength(1);
   });
 
+  it("creates a YouTube video campaign: budget, PAUSED Demand Gen campaign, a paused YouTube-only ad group and its locations in one request", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignBudgetResult: {} }, { campaignResult: { resourceName: "customers/5556667777/campaigns/5151" } }, { adGroupResult: {} }, { adGroupCriterionResult: {} }] } }]]);
+    const video = { targetCpaMinor: 2_500, bidFor: "CONVERSIONS" as const, locationIds: ["2710"] };
+    const made = await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Velox YouTube", objective: "DEMAND_GEN", dailyBudgetMinor: 30_000, video, status: "PAUSED" });
+    expect(made).toEqual({ externalId: "5151", name: "Velox YouTube" });
+    expect(seen).toHaveLength(1);
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[0].campaignBudgetOperation.create).toMatchObject({ amountMicros: "300000000", explicitlyShared: false });
+    const campaign = ops[1].campaignOperation.create;
+    expect(campaign).toMatchObject({ status: "PAUSED", advertisingChannelType: "DEMAND_GEN", campaignBudget: ops[0].campaignBudgetOperation.create.resourceName, targetCpa: { targetCpaMicros: "25000000" } });
+    expect(campaign.advertisingChannelSubType).toBeUndefined();
+    const group = ops[2].adGroupOperation.create;
+    expect(group).toMatchObject({ campaign: campaign.resourceName, status: "PAUSED" });
+    expect(group.demandGenAdGroupSettings.channelControls.selectedChannels).toEqual({ youtubeInStream: true, youtubeInFeed: true, youtubeShorts: true, discover: false, gmail: false, display: false, maps: false });
+    expect(ops[3].adGroupCriterionOperation.create).toEqual({ adGroup: group.resourceName, location: { geoTargetConstant: "geoTargetConstants/2710" } });
+  });
+
+  it("a YouTube video campaign without a target bids for conversions or clicks; missing settings are refused before any call", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignResult: { resourceName: "customers/5556667777/campaigns/9" } }] } }]]);
+    const create = (bidFor: "CONVERSIONS" | "CLICKS") => googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Lumen YouTube", objective: "DEMAND_GEN", dailyBudgetMinor: 10_000, video: { targetCpaMinor: null, bidFor, locationIds: ["2710", "2826"] } });
+    await create("CONVERSIONS");
+    await create("CLICKS");
+    const [conv, clicks] = seen.map((s) => JSON.parse(s.body!).mutateOperations);
+    expect(conv[1].campaignOperation.create).toMatchObject({ maximizeConversions: {} });
+    expect(clicks[1].campaignOperation.create).toMatchObject({ targetSpend: {} });
+    expect(clicks[1].campaignOperation.create.targetCpa).toBeUndefined();
+    expect(clicks.slice(3)).toHaveLength(2);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "DEMAND_GEN", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    expect(seen).toHaveLength(2);
+  });
+
   it("changes status with an update mask", async () => {
     const { fetchImpl, seen } = scripted([[/campaigns:mutate/, { body: { results: [{}] } }]]);
     await googleProvider.setCampaignStatus(env(googleApp(), fetchImpl), gToken, ref, "4242", "paused");

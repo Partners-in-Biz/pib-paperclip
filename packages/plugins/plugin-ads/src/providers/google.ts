@@ -3,8 +3,8 @@
  * against Google yet, so the first live read is a check (the Setup item says so).
  *
  * Reading: `customers:listAccessibleCustomers`, GAQL through `googleAds:search` (campaign and customer resources).
- * Writing (only through `execute.ts`): one atomic `googleAds:mutate` that creates a budget and a PAUSED search or App campaign
- * (`./google-app.ts`);
+ * Writing (only through `execute.ts`): one atomic `googleAds:mutate` that creates a budget and a PAUSED search, App
+ * (`./google-app.ts`) or YouTube video campaign (Demand Gen, `./google-video.ts`);
  * `campaigns:mutate` for status; `campaignBudgets:mutate` for the daily amount.
  *
  * Facts this relies on (Google's docs, checked 2026-10): the OAuth scope is `https://www.googleapis.com/auth/adwords`; developer tokens
@@ -17,6 +17,7 @@ import { AdsError } from "../domain.js";
 import { validateResponsiveSearchAd } from "../rsa.js";
 import { microsToMinor, minorToMicros } from "../money.js";
 import { appCampaignOperations, GOOGLE_APP_CHANNEL } from "./google-app.js";
+import { GOOGLE_VIDEO_CHANNEL, videoCampaignOperations } from "./google-video.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
 import type { AccountRef, AccountCaps, AddKeywordsRequest, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
@@ -304,7 +305,7 @@ export const googleProvider: AdsProvider = {
     const customer = digits(account.externalId);
     const temp = `customers/${customer}/campaignBudgets/-1`;
     const objective = (req.objective || "SEARCH").toUpperCase();
-    if (objective !== "SEARCH" && objective !== GOOGLE_APP_CHANNEL) throw new AdsError(`Google campaigns of type ${objective} are not supported by this plugin yet; SEARCH and MULTI_CHANNEL (App) are.`);
+    if (objective !== "SEARCH" && objective !== GOOGLE_APP_CHANNEL && objective !== GOOGLE_VIDEO_CHANNEL) throw new AdsError(`Google campaigns of type ${objective} are not supported by this plugin yet; SEARCH, MULTI_CHANNEL (App) and DEMAND_GEN (YouTube video) are.`);
     const res = await call<{ mutateOperationResponses?: Array<{ campaignResult?: { resourceName?: string } }> }>(
       env,
       token,
@@ -313,7 +314,7 @@ export const googleProvider: AdsProvider = {
         loginCustomerId: account.loginCustomerId,
         body: {
           // One request, so the budget and the campaign are created together or not at all.
-          mutateOperations: objective === GOOGLE_APP_CHANNEL ? appCampaignOperations(customer, req, account.currency, Date.now()) : [
+          mutateOperations: objective === GOOGLE_APP_CHANNEL ? appCampaignOperations(customer, req, account.currency, Date.now()) : objective === GOOGLE_VIDEO_CHANNEL ? videoCampaignOperations(customer, req, account.currency, Date.now()) : [
             { campaignBudgetOperation: { create: { resourceName: temp, name: `${req.name} budget ${Date.now()}`, deliveryMethod: "STANDARD", amountMicros: String(minorToMicros(req.dailyBudgetMinor, account.currency)), explicitlyShared: false } } },
             {
               campaignOperation: {

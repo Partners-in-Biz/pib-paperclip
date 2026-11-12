@@ -20,6 +20,7 @@ export interface MockWrite {
   name?: string;
   objective?: string;
   app?: unknown;
+  video?: unknown;
   filename?: string;
   imageHash?: string | null;
   videoUrl?: string;
@@ -156,7 +157,7 @@ export class MockAdsProvider implements AdsProvider {
     this.createStatuses.push({ op: "create", status: request.status });
     this.maybeFail("create");
     const externalId = `mock-cmp-${(this.seq += 1)}`;
-    this.writes.push({ op: "create", accountExternalId: account.externalId, campaignExternalId: externalId, name: request.name, objective: request.objective, dailyBudgetMinor: request.dailyBudgetMinor, status: "paused", ...(request.app ? { app: request.app } : {}) });
+    this.writes.push({ op: "create", accountExternalId: account.externalId, campaignExternalId: externalId, name: request.name, objective: request.objective, dailyBudgetMinor: request.dailyBudgetMinor, status: "paused", ...(request.app ? { app: request.app } : {}), ...(request.video ? { video: request.video } : {}) });
     (this.campaigns[account.externalId] ??= []).push({ externalId, name: request.name, status: "paused", rawStatus: "PAUSED", objective: request.objective, channel: this.platform, dailyBudgetMinor: request.dailyBudgetMinor, lifetimeBudgetMinor: null });
     return { externalId, name: request.name };
   }

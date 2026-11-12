@@ -43,6 +43,12 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
       lines.push(app.targetInstallCostMinor ? `Bidding: target cost per install **${money(app.targetInstallCostMinor, currency)}**` : "Bidding: as many installs as the budget buys (no target cost per install)");
       lines.push(`Shows in: Google location ids ${app.locationIds.join(", ")}`);
     }
+    const video = x.video as { targetCpaMinor: number | null; bidFor: string; locationIds: string[] } | null | undefined;
+    if (video) {
+      lines.push("Type: YouTube video campaign (Google Demand Gen, YouTube in-stream, in-feed and Shorts only); the video ads are built in the platform");
+      lines.push(video.targetCpaMinor ? `Bidding: target cost per conversion **${money(video.targetCpaMinor, currency)}**` : video.bidFor === "CLICKS" ? "Bidding: as many clicks as the budget buys" : "Bidding: as many conversions as the budget buys (needs conversion tracking)");
+      lines.push(`Shows in: Google location ids ${video.locationIds.join(", ")}`);
+    }
   } else if (p.kind === "change_budget") {
     lines.push(`Campaign: **${String(x.campaignName)}** on ${String(x.accountName)} (${String(x.platform)}), currently ${String(x.campaignStatus)}`);
     lines.push(`Daily budget: ${money(x.currentDailyBudgetMinor, currency)} to **${money(x.newDailyBudgetMinor, currency)}**`);
