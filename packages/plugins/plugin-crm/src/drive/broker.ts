@@ -26,6 +26,8 @@ export interface EnsureResult {
   folder: RegistryFolder;
   created: boolean;
   tree: Array<{ path: string; folderId: string; created: boolean }>;
+  /** Stage timing of this ensure (PAR-10249): the wait for the per-folder lock, the Drive lookups made and the untagged sub-folders adopted. */
+  stats?: { lockWaitMs: number; driveLookups: number; adoptedUntagged: number };
 }
 
 export interface UploadResult {

@@ -2,9 +2,9 @@
  * W5 C35: a rendered image goes to R2, the scope's Drive "02 Assets" folder and the post. The broker is a fake `driveSave`;
  * R2 is a stubbed fetch. The file is a real-size PNG (over 100 KB), not an empty body.
  */
-import { DRIVE_ACK_TIMEOUT_MS, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { storeRenderedAsset, type AssetPathDeps } from "../src/asset-path.js";
+import { storeRenderedAsset, STORE_ASSET_DRIVE_ACK_MS, type AssetPathDeps } from "../src/asset-path.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { fakeCtx, mockFetch } from "./helpers.js";
 
@@ -74,7 +74,7 @@ describe("store-rendered-asset", () => {
     const sent = driveSave.mock.calls[0]![1] as Record<string, unknown>;
     expect(sent).toMatchObject({ companyId: "co", kind: "social", subfolder: "02 Assets", mimeType: "image/png", client: { kind: "company", ref: "c1" }, name: "2026-10-21 Acme spring-banner v01.png" });
     // PAR-10212: answer before the tool gateway's ~10 s cut.
-    expect(sent.timeoutMs).toBe(DRIVE_ACK_TIMEOUT_MS);
+    expect(sent.timeoutMs).toBe(STORE_ASSET_DRIVE_ACK_MS);
     expect(Buffer.from(sent.bytes as Uint8Array).equals(png)).toBe(true);
     expect(out.drive).toEqual({ ok: true, url: saved.url, driveFileId: "drv-1" });
     // Attach keeps the post's current media and adds the new asset.

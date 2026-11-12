@@ -73,6 +73,11 @@ PAR-10822. A lead source now has an `intake`: `lead` (the default; every existin
 - puts every submitted field in one plain-text code block the visitor cannot close, so links and HTML are shown as text.
 The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`, named CHECK `lead_sources_intake`: `lead` or `issue`; a later mode drops and re-adds that one constraint), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
 
+
+## Drive save budgets and timing (0.46.1)
+
+src-only (PAR-10249). `drive_file_save`, `drive_folder_ensure` and `drive_files_list` declare `timeoutMs` 25 s (the gateway cut them at 10 s). Each save that reaches Drive logs one `drive save timing` line: `resolveMs`, `siblingsMs`, `ensureMs`, `ensureLockWaitMs`, `driveLookups`, `adoptedUntagged`, `dedupeMs`, `uploadMs`, `totalMs`, `deduplicated`, `path` (`full` or `exists`). Numbers only.
+
 ## Drive save timing logs (0.45.1)
 
 Src-only (PAR-10212). Each Drive save a producer plugin asks for writes info lines to the journal, with elapsed ms: `Drive save request received` (requestId, producer, kind, sub-folder, mode, base64 length), `Drive folder ensure` (outcome `exists`, `ensured`, `resolve_failed` or `ensure_failed`, with `brokerMs`, `resolveMs`, `ensureMs`, `steps`) and `Drive save finished` (outcome, `resolveProjectMs`, `saveMs`, `elapsedMs`). A save that logs `received` and nothing after it hung; a slow one shows which step took the time. No file name, bytes or signed link is logged. Producers now wait 8 s for the reply (the kit's `DRIVE_ACK_TIMEOUT_MS`, under the tool gateway's ~10 s cut); the CRM still finishes a save the producer stopped waiting for.

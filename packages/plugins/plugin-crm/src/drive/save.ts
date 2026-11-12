@@ -8,7 +8,7 @@ import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError, type Broker } from "./broker.js";
 import { r2Chunks, R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
-import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
+import { createBrokerForCompany, driveFolderEnsure, type EnsureTiming } from "./tools.js";
 import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
 import { acquireTransferSlot } from "./transfer-slots.js";
 import { openRunFile, resolveRunRoots, type RunScopeRefusal } from "./run-scope.js";
@@ -93,15 +93,29 @@ export interface SaveDriveFileResult {
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   // A run file's handle is closed here on every return, unless a job took it over (the job closes it).
-  const held: { fh?: FileHandle; handedOff?: boolean } = {};
+  const held: SaveHeld = { timing: {} };
+  const startedAt = Date.now();
+  let result: SaveDriveFileResult | undefined;
   try {
-    return await saveDriveFileInner(ctx, viewer, input, held, opts);
+    result = await saveDriveFileInner(ctx, viewer, input, held, opts);
+    return result;
   } finally {
+    // One line per save that reached Drive (PAR-10249): numbers and two flags only, no bytes, names or clients.
+    if (held.reachedDrive) {
+      const t = held.timing;
+      ctx.logger.info("drive save timing", {
+        resolveMs: t.resolveMs ?? 0, siblingsMs: t.siblingsMs ?? 0, ensureMs: t.ensureMs ?? 0, ensureLockWaitMs: t.ensureLockWaitMs ?? 0,
+        driveLookups: t.driveLookups ?? 0, adoptedUntagged: t.adoptedUntagged ?? 0, dedupeMs: held.dedupeMs ?? 0, uploadMs: held.uploadMs ?? 0,
+        totalMs: Date.now() - startedAt, deduplicated: result?.status === "saved" && result.duplicate === true, path: held.ensurePath ?? "full",
+      });
+    }
     if (held.fh && !held.handedOff) await held.fh.close().catch(() => undefined);
   }
 }
 
-async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: { fh?: FileHandle; handedOff?: boolean }, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
+interface SaveHeld { fh?: FileHandle; handedOff?: boolean; timing: EnsureTiming; reachedDrive?: boolean; ensurePath?: "full" | "exists"; dedupeMs?: number; uploadMs?: number }
+
+async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: SaveHeld, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
@@ -214,7 +228,8 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
   // The sub-folder the file really goes into (null: the folder itself, also when the folder has no sub-folders and the requested one is ignored)
   let savedSubfolder: string | null = null;
   // Pass include_tree when subfolder is set, so already-ensured projects return tree with subfolders
-  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, ...(subfolder ? { include_tree: true } : {}) });
+  held.reachedDrive = true;
+  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, timing: held.timing, ...(subfolder ? { include_tree: true } : {}) });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
   }
@@ -226,6 +241,7 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: folderAny.status as any, hint: folderAny.hint };
   }
 
+  held.ensurePath = folderAny.status === "exists" ? "exists" : "full";
   const folderId = folderAny.folder_id;
   if (!folderId) {
     return { status: "invalid_input", hint: "No folder_id from ensure result" };
@@ -255,12 +271,15 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return startLocalSave(ctx, viewer, input, local, { broker, uploadFolderId, savedSubfolder, subfolder });
   }
 
+  const dedupeStart = Date.now();
   const existing = await findDriveFile(ctx, companyId, { folderId: uploadFolderId, name, sha256: computedSha256 });
+  held.dedupeMs = Date.now() - dedupeStart;
   if (existing) {
     return savedResult(existing, true);
   }
 
   let uploadResult;
+  const uploadStart = Date.now();
   try {
     if (large) {
       if (!broker.uploadFileStream) {
@@ -280,6 +299,7 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     } else {
       uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
     }
+    held.uploadMs = Date.now() - uploadStart;
   } catch (e) {
     if (e instanceof R2StreamError) {
       return { status: "fetch_failed", code: e.code, retryable: e.code === "fetch_failed", hint: e.message };

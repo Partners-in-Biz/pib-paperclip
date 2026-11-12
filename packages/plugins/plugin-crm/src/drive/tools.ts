@@ -18,6 +18,9 @@ const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema =>
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
 const oneOf = (vals: readonly string[], d: string): JsonSchema => ({ type: "string", enum: [...vals], description: d });
 
+/** Gateway budget of the tools that wait on Drive (PAR-10249); the gateway cuts a tool at 10 s otherwise. */
+export const DRIVE_TOOL_TIMEOUT_MS = 25_000;
+
 export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
     name: "drive_folder_resolve",
@@ -30,6 +33,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Ensure Drive folder",
     description: "Create (once) the standard Drive folder for a project or CRM company, with its standard sub-folders, and return its path and URL. A client's project uses the client's folder (Clients/<Company (Contact)> with Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client); a product project gets Products/<Product> (Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally). Call drive_folder_resolve first; call this only when resolve says not_found. It is safe to call again: an existing folder (also one a person made by hand) is used as it is and nothing is duplicated. Never hard-code a Drive ID. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.",
     parametersSchema: schema(["entity_type", "entity_id"], { entity_type: oneOf(["project", "crm_company"], "The kind of entity: Paperclip project or CRM company."), entity_id: text("The entity's id: a project id or a CRM company record id.", 100) }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
   {
     name: "drive_file_save",
@@ -46,6 +50,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder of the project's Drive folder. A client's folder has Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client; a product's has Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally. A name the project's folder does not have is refused (invalid_subfolder lists the real ones); book, company and marketing folders have none, so the file goes into the folder itself. Omit to save into the folder itself."),
       requestId: text("Optional: request ID for correlation.", 100),
     }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
   {
     name: "drive_project_kind_set",
@@ -102,6 +107,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       nameContains: text("Optional: only files whose name contains this text (case-sensitive).", 200),
       limit: { type: "integer", minimum: 1, maximum: 100, description: "Optional: at most this many files (default 20)." },
     }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
 ];
 
@@ -163,10 +169,18 @@ async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: D
   }
 }
 
+/** Stage timing of one folder ensure (PAR-10249); numbers only. */
+export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number }
+
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
   const id = params.entity_id as string;
   const include_tree = params.include_tree as boolean | undefined; // Internal param: get tree for already-ensured folders
+  // Internal param (PAR-10249): the save fills it with this ensure's stage timing.
+  const stage = params.timing && typeof params.timing === "object" ? (params.timing as EnsureTiming) : undefined;
+  const clock = Date.now;
+  let mark = clock();
+  const lap = (): number => { const n = clock(); const d = n - mark; mark = n; return d; };
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
@@ -195,8 +209,10 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
   let existing: any;
   const resolveStartedAt = Date.now();
+  lap();
   try {
     existing = await broker.resolve(target.entityType, target.entityId);
+    if (stage) stage.resolveMs = lap();
   } catch (e) {
     timing("resolve_failed", { brokerMs, resolveMs: Date.now() - resolveStartedAt });
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
@@ -216,7 +232,9 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     facts = { ...facts, contactName: (await getPrimaryContact(ctx, viewer.companyId, facts.companyEntityId))?.name };
   }
   // Collisions are checked for the folder that is actually made: a client's project is checked as its company (against the other companies).
+  lap();
   const siblings = await loadDriveSiblings(ctx, viewer, target.entityType, target.entityId);
+  if (stage) stage.siblingsMs = lap();
   const plan = planFolders(facts, siblings, viewer.runId ?? undefined);
 
   if (plan.kind === "invalid_name") return { status: "invalid_name", problem: plan.problem, name: plan.name, hint: "rename the project/company to a plain human-readable name (no ID, issue key or slash) and retry" };
@@ -225,7 +243,15 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   let lastResult = null;
   const ensureStartedAt = Date.now();
   try {
-    for (const step of plan.steps) lastResult = await broker.ensure(step);
+    for (const step of plan.steps) {
+      lastResult = await broker.ensure(step);
+      if (stage && lastResult.stats) {
+        stage.ensureLockWaitMs = (stage.ensureLockWaitMs ?? 0) + lastResult.stats.lockWaitMs;
+        stage.driveLookups = (stage.driveLookups ?? 0) + lastResult.stats.driveLookups;
+        stage.adoptedUntagged = (stage.adoptedUntagged ?? 0) + lastResult.stats.adoptedUntagged;
+      }
+    }
+    if (stage) stage.ensureMs = lap();
   } catch (e) {
     timing("ensure_failed", { brokerMs, resolveMs, steps: plan.steps.length, ensureMs: Date.now() - ensureStartedAt });
     if (e instanceof BrokerError && e.retryable) {

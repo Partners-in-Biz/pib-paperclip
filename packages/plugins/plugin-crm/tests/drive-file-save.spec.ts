@@ -51,6 +51,27 @@ async function setup(google = fakeGoogle(), prepare?: (st: ReturnType<typeof see
 beforeEach(() => clearServiceAccountTokenCache());
 afterEach(() => vi.unstubAllGlobals());
 
+describe("PAR-10249: save stage timing", () => {
+  const FIELDS = ["resolveMs", "siblingsMs", "ensureMs", "ensureLockWaitMs", "driveLookups", "adoptedUntagged", "dedupeMs", "uploadMs", "totalMs"];
+  const timingLines = (harness: Awaited<ReturnType<typeof setup>>["harness"]) =>
+    (harness.logs ?? []).filter((l: { message: string }) => l.message === "drive save timing");
+
+  it("logs exactly one line per save, with every numeric field, then deduplicated on a repeat", async () => {
+    const { harness, saveDirect } = await setup();
+    expect(await saveDirect()).toMatchObject({ status: "saved" });
+    let lines = timingLines(harness);
+    expect(lines).toHaveLength(1);
+    const first = lines[0].meta as Record<string, unknown>;
+    for (const f of FIELDS) expect(typeof first[f]).toBe("number");
+    expect(first).toMatchObject({ deduplicated: false, path: "full" });
+    expect(Object.keys(first).sort()).toEqual([...FIELDS, "deduplicated", "path"].sort());
+    await saveDirect();
+    lines = timingLines(harness);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].meta).toMatchObject({ deduplicated: true, path: "exists" });
+  });
+});
+
 describe("drive_file_save into a client's folder", () => {
   it("PAR-7733: the canary dry-run report name passes the name gate and saves; a 'DRY RUN - ' prefix is refused", async () => {
     const { saveDirect } = await setup();
