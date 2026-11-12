@@ -2,7 +2,6 @@
  * Presentational pieces of the CRM pages: the overview dashboard, toned
  * statuses, the activity timeline and the lead score card. No host hooks.
  */
-import { openPipelineLabel } from "../pipeline-label.js";
 import type { ReactNode } from "react";
 import {
   BarChart,
@@ -39,6 +38,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { LEAD_DIMENSION_LABELS, LEAD_DIMENSIONS, leadBand, leadLevelLabel, type LeadScore } from "../lead-levels.js";
 import { leadBands, recentDelta, type CrmSeries } from "../series.js";
+import { openPipelineLabel } from "../pipeline-label.js";
 
 // ---------------------------------------------------------------------------
 // Status tones (one mapping for every CRM page)
