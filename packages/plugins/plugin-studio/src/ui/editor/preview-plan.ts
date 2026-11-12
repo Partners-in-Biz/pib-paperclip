@@ -8,9 +8,12 @@
  * slide/zoom, a black/white matte for fadeblack/fadewhite, opacity for fade/dissolve). Each layer's clip is moved,
  * scaled, rotated and faded by its keyframes through `valueAt`, the evaluator the render uses (plan Q9: `t` counts from
  * the clip's own start). A transition with no overlapping clip before it previews as a fade from black, as before.
+ * Looks and colour adjust (PAR-10159): `previewGrade` turns a clip's look and adjust into an SVG filter on its video,
+ * from the same `looks.ts` primitives the render's ffmpeg filters come from (see there for the formulas).
  */
 import type { EditDoc, Keyframes, MediaClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
 import { valueAt } from "../../video-edit/keyframes.js";
+import { toSvgPrimitives, vignetteStops, type Adjust, type LookRef, type SvgPrimitive } from "../../video-edit/looks.js";
 import { clipLength } from "./player-clips.js";
 
 export interface PreviewSegment {
@@ -33,6 +36,9 @@ export interface PreviewSegment {
   /** Static transform: centre offset in output px, scale (1 = fit), rotation in degrees. */
   transform: { x: number; y: number; scale: number; rotate: number };
   keyframes: Keyframes;
+  /** Schema v3 grade: the clip's look and its non-neutral adjust fields (null when absent). */
+  look: LookRef | null;
+  adjust: Partial<Adjust> | null;
 }
 
 export interface PreviewPlan {
@@ -115,6 +121,8 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
         transitionDuration: xfade ? Math.min(tr!.duration, prev!.end - c.start) : 0,
         transform: { x: c.transform?.x ?? 0, y: c.transform?.y ?? 0, scale: c.transform?.scale ?? 1, rotate: c.transform?.rotate ?? 0 },
         keyframes: c.keyframes ?? NONE,
+        look: c.look ?? null,
+        adjust: c.adjust ?? null,
       });
       prev = { id: c.id, end: c.start + length };
     }
@@ -222,6 +230,63 @@ function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number): Prev
 /** CSS transform placing a layer's clip in the frame like the render does: centre offset, then scale, then rotation. */
 export function clipTransform(l: Pick<PreviewLayer, "x" | "y" | "scale" | "rotate">, project: { width: number; height: number }): string {
   return `translate(${pct(l.x / project.width)}, ${pct(l.y / project.height)}) scale(${r4(l.scale)}) rotate(${r4(l.rotate)}deg)`;
+}
+
+/**
+ * ffmpeg `vignette` (run on yuv420p TV range) multiplies the luma code, black's 16 included, and the chroma about 127,
+ * so on full-scale RGB it is `gain*in - VIGNETTE_K*(1 - gain)`: corners go below black (measured on ffmpeg 6.1.1, a
+ * black frame's corner Y fell from 16 to 1). The preview composites the same line with feComposite arithmetic.
+ */
+export const VIGNETTE_K = 16 / 219;
+/** Gradient stops for the vignette mask: 33 keep the linear interpolation of cos^4 well under 1/255. */
+const VIGNETTE_STOPS = 33;
+
+export interface Box { x: number; y: number; width: number; height: number }
+
+/** A clip's grade as an SVG filter on its `<video>` (CSS px of the element, before the layer's transform). */
+export interface PreviewGrade {
+  /** The picture inside the element (`object-fit: contain`), so letterbox bars stay out of blur and vignette. */
+  region: Box;
+  /** Look then eq, colortemperature and gblur in render order; blur std in CSS px of the picture's width. */
+  primitives: SvgPrimitive[];
+  /** The radial gain image to lay on `region`, composited as `gain*in - k*(1 - gain)`. */
+  vignette: { href: string; k: number } | null;
+}
+
+/** Where `object-fit: contain` puts a source of `source` size inside `box`; the whole box until the size is known. */
+export function containBox(box: { width: number; height: number }, source: { width: number; height: number } | null): Box {
+  if (!source || !(source.width > 0) || !(source.height > 0)) return { x: 0, y: 0, width: box.width, height: box.height };
+  const s = Math.min(box.width / source.width, box.height / source.height);
+  const width = source.width * s;
+  const height = source.height * s;
+  return { x: (box.width - width) / 2, y: (box.height - height) / 2, width, height };
+}
+
+/** The vignette's gain as an SVG image of the picture's size: radius half its diagonal, the `looks.ts` falloff. */
+export function vignetteImage(v: number, width: number, height: number): string {
+  const [w, h] = [r4(width), r4(height)];
+  const stops = vignetteStops(v, VIGNETTE_STOPS).map(({ offset, gain }) => {
+    const g = pct(gain);
+    return `<stop offset='${r4(offset)}' stop-color='rgb(${g},${g},${g})'/>`;
+  });
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' viewBox='0 0 ${w} ${h}' preserveAspectRatio='none'>`
+    + `<radialGradient id='v' gradientUnits='userSpaceOnUse' cx='${r4(w / 2)}' cy='${r4(h / 2)}' r='${r4(Math.hypot(w, h) / 2)}'>${stops.join("")}</radialGradient>`
+    + `<rect width='${w}' height='${h}' fill='url(#v)'/></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * The preview filter for a segment's look and adjust inside an element of `box` CSS px showing a source of `source`
+ * px. Blur scales with the picture's displayed width (the render blurs at render width, plan parity method). `null`
+ * when the grade changes nothing.
+ */
+export function previewGrade(s: Pick<PreviewSegment, "look" | "adjust">, box: { width: number; height: number }, source: { width: number; height: number } | null): PreviewGrade | null {
+  if (!s.look && !s.adjust) return null;
+  const region = containBox(box, source);
+  const primitives = [...(s.look ? toSvgPrimitives(s.look) : []), ...(s.adjust ? toSvgPrimitives(s.adjust, { displayWidth: region.width }) : [])];
+  const v = s.adjust?.vignette ?? 0;
+  const vignette = v > 0 && region.width > 0 && region.height > 0 ? { href: vignetteImage(v, region.width, region.height), k: VIGNETTE_K } : null;
+  return primitives.length || vignette ? { region, primitives, vignette } : null;
 }
 
 /** A text clip at t with its x/y/opacity keyframes applied (text scale and rotate are not rendered, plan Q14). */

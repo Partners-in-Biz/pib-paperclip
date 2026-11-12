@@ -7,11 +7,11 @@
  * Transitions and keyframes (PAR-8449): inside a transition window both slots play, each in a layer styled by the plan
  * (`PreviewLayers`); the clip inside each layer is placed by its keyframes.
  */
-import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
-import { assignSlots, buildPreviewPlan, clipTransform, frameAt, type PreviewFrame, type PreviewSlots } from "./preview-plan.js";
+import { assignSlots, buildPreviewPlan, clipTransform, frameAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
@@ -194,30 +194,91 @@ export function PreviewLayers({ frame, slots, urls, project, setVideo, onLoaded 
   setVideo?: (i: 0 | 1, el: HTMLVideoElement | null) => void;
   onLoaded?: () => void;
 }) {
+  // Looks and adjust (PAR-10159): the filter works in the element's CSS px, so it needs the box and each source's size.
+  const box = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [sources, setSources] = useState<[Size | null, Size | null]>([null, null]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setSize((s) => (s.width === el.clientWidth && s.height === el.clientHeight ? s : { width: el.clientWidth, height: el.clientHeight })));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const filterId = `pg${useId().replace(/[^\w-]/g, "")}`;
+  const loaded = (i: 0 | 1, v: HTMLVideoElement) => {
+    const s = { width: v.videoWidth, height: v.videoHeight };
+    setSources((prev) => (prev[i]?.width === s.width && prev[i]?.height === s.height ? prev : (i ? [prev[0], s] : [s, prev[1]])));
+    onLoaded?.();
+  };
   return (
-    <>
+    <div ref={box} data-preview-layers style={{ position: "absolute", inset: 0 }}>
       {([0, 1] as const).map((i) => {
         const at = frame.layers.findIndex((l) => l.segment.clipId === slots[i]);
         const layer = at >= 0 ? frame.layers[at] : null;
+        const grade = layer && size.width > 0 ? previewGrade(layer.segment, size, sources[i]) : null;
         return urls[i] ? (
           <div key={i} data-preview-layer={i} style={{ position: "absolute", inset: 0, overflow: "hidden", zIndex: layer ? 1 + 2 * at : 0, opacity: layer ? layer.opacity : 0, clipPath: layer?.clipPath ?? undefined, transform: layer?.transform ?? undefined }}>
+            {grade ? <GradeFilter id={`${filterId}-${i}`} grade={grade} /> : null}
             <video
               ref={(el) => setVideo?.(i, el)}
               src={urls[i]}
               data-preview-slot={i}
               data-clip-id={slots[i] ?? ""}
               data-showing={layer ? "true" : "false"}
+              data-graded={grade ? "true" : undefined}
               playsInline
               muted={!layer}
               preload="auto"
-              onLoadedMetadata={onLoaded}
+              onLoadedMetadata={(e) => loaded(i, e.currentTarget)}
               onSeeked={onLoaded}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: layer ? layer.alpha : 0, transform: layer ? clipTransform(layer, project) : undefined }}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: layer ? layer.alpha : 0, transform: layer ? clipTransform(layer, project) : undefined, filter: grade ? `url(#${filterId}-${i})` : undefined }}
             />
           </div>
         ) : null;
       })}
       {frame.matte ? <div data-preview-matte={frame.matte.color} style={{ position: "absolute", inset: 0, zIndex: 2, background: frame.matte.color, opacity: frame.matte.opacity }} /> : null}
-    </>
+    </div>
   );
+}
+
+type Size = { width: number; height: number };
+const n4 = (n: number) => String(Math.round(n * 10000) / 10000 || 0);
+const list = (a: readonly number[]) => a.map(n4).join(" ");
+
+/**
+ * The grade as an SVG filter (PAR-10159), primitives from `looks.ts` in render order, sRGB maths as ffmpeg's. The
+ * region is the picture, so blur reads no letterbox: its edge alpha is reset to 1, which divides by the weights that
+ * fell inside (an edge-normalised blur). The vignette lays the gain image on the picture and composites
+ * `k1*in*gain + k3*gain + k4` = `gain*in - k*(1 - gain)`, the line ffmpeg's TV-range vignette draws.
+ */
+function GradeFilter({ id, grade }: { id: string; grade: PreviewGrade }) {
+  const { region: r, primitives, vignette } = grade;
+  const last = primitives.length ? "graded" : "SourceGraphic";
+  return (
+    <svg aria-hidden width={0} height={0} style={{ position: "absolute" }}>
+      <filter id={id} filterUnits="userSpaceOnUse" x={n4(r.x)} y={n4(r.y)} width={n4(r.width)} height={n4(r.height)} colorInterpolationFilters="sRGB">
+        {primitives.map((p, k) => {
+          const result = k === primitives.length - 1 ? last : undefined;
+          switch (p.kind) {
+            case "matrix": return <feColorMatrix key={k} type="matrix" values={list(p.values)} result={result} />;
+            case "linear": return <feComponentTransfer key={k} result={result}>{p.slope.map((s, c) => <Func key={c} c={c} type="linear" slope={n4(s)} intercept={n4(p.intercept[c]!)} />)}</feComponentTransfer>;
+            case "table": return <feComponentTransfer key={k} result={result}>{p.tables.map((t, c) => <Func key={c} c={c} type="table" tableValues={list(t)} />)}</feComponentTransfer>;
+            case "blur": return [
+              <feGaussianBlur key={k} stdDeviation={n4(p.std)} />,
+              <feComponentTransfer key={`${k}a`} result={result}><feFuncA type="table" tableValues="1 1" /></feComponentTransfer>,
+            ];
+          }
+        })}
+        {vignette ? [
+          <feImage key="vi" href={vignette.href} x={n4(r.x)} y={n4(r.y)} width={n4(r.width)} height={n4(r.height)} preserveAspectRatio="none" result="vignette" />,
+          <feComposite key="vc" in={last} in2="vignette" operator="arithmetic" k1="1" k2="0" k3={n4(vignette.k)} k4={n4(-vignette.k)} />,
+        ] : null}
+      </filter>
+    </svg>
+  );
+}
+
+function Func({ c, ...props }: { c: number; type: string; slope?: string; intercept?: string; tableValues?: string }) {
+  return c === 0 ? <feFuncR {...props} /> : c === 1 ? <feFuncG {...props} /> : <feFuncB {...props} />;
 }
