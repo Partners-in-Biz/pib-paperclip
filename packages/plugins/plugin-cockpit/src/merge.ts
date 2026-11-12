@@ -85,6 +85,7 @@ function parseWaiting(row: Record<string, unknown>): WaitingItem | null {
   const key = str(row.key);
   const title = str(row.title);
   if (!key || !title) return null;
+  const waitsOn = parseWaitsOn(row.waitsOn);
   return {
     key,
     title,
@@ -93,7 +94,7 @@ function parseWaiting(row: Record<string, unknown>): WaitingItem | null {
     issueId: str(row.issueId),
     kind: WAITING_KINDS.includes(row.kind as WaitingItem["kind"]) ? (row.kind as WaitingItem["kind"]) : "other",
     since: isoOrNull(row.since),
-    ...(parseWaitsOn(row.waitsOn) ? { waitsOn: parseWaitsOn(row.waitsOn) } : {}),
+    ...(waitsOn ? { waitsOn } : {}),
   };
 }
 
