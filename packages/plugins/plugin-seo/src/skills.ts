@@ -6,7 +6,7 @@
 import type { JsonSchema, PluginManagedSkillDeclaration } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, withFrontmatter } from "@partnersinbiz/pib-plugin-kit";
 import { OWN_SKILL_KEY, OWN_SKILL_SLUG, SKILL_KEY, SKILL_SLUG } from "./constants.js";
-import { ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "./apply-guidance.js";
+import { ARCHIVE_APPLY_GUIDANCE, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "./apply-guidance.js";
 import { PHASE_NAMES, dueDayFor, type SeoTaskTemplate, type SprintPhase } from "./templates/outrank-90.js";
 import { BUSINESS_TYPES, PLANS, allPlanTasks, type BusinessType } from "./templates/plans.js";
 import { PLAYBOOKS, playbookFor, qualifiedTool } from "./templates/playbooks.js";
@@ -382,7 +382,7 @@ Verify on the live page with \`check-meta\` (with \`sprintId\`, so findings reso
 
 ## 6. Page copy and new pages
 
-- **Editing existing copy:** \`wp-content\` op \`get\` first, change the smallest thing that does the job, then op \`update\` with only the fields that change and a \`reason\`. The content is block markup; \`update\` replaces the whole \`content\`, so start from what \`get\` returned. The site refuses scripts, iframes, forms and event handlers that are not already in the content, and keeps the last 5 versions (\`wp-undo\` restores one). A changed \`slug\` on a page with traffic also needs a \`wp-redirects\` entry. Never touch status, author or password: the Connector ignores them. ${ARCHIVE_APPLY_GUIDANCE} ${LIVE_CHECK_GUIDANCE}
+- **Editing existing copy:** \`wp-content\` op \`get\` first, change the smallest thing that does the job, then op \`update\` with only the fields that change and a \`reason\`. The content is block markup; \`update\` replaces the whole \`content\`, so start from what \`get\` returned. The site refuses scripts, iframes, forms and event handlers that are not already in the content, and keeps the last 5 versions (\`wp-undo\` restores one). A changed \`slug\` on a page with traffic also needs a \`wp-redirects\` entry. Never touch status, author or password: the Connector ignores them. ${ARCHIVE_APPLY_GUIDANCE} ${LIVE_CHECK_GUIDANCE} ${LINK_EDITS_APPLY_GUIDANCE}
 - **New pages and posts:** \`wp-content\` op \`create\` (a \`page\` by default) makes a **draft**, never a live page. Check it at the \`previewUrl\`. Publish it with op \`publish\` only when the task says to publish, and only for a draft the Connector created; anything else it refuses. A page that is not yours to publish goes on Needs you with the link to review.
 - Put internal links inside the copy with \`update\` (category \`internal_links\`). Verify live pages with \`check-meta\` and \`crawler-sim\`; a new page also with \`check-sitemap\`.
 
