@@ -452,7 +452,7 @@ export interface LinkAuditResult {
   startAt: number;
   /** Pass as startAt to continue; null when nothing is left. Always greater than startAt when pages remain. */
   nextStartAt: number | null;
-  /** Pages skipped because the first page of the batch did not load within the budget (the cursor still advances). */
+  /** Pages skipped because the first page of the batch did not load within the budget, or a page fetch failed (the cursor still advances past them). */
   skippedPages: string[];
   totalInternalLinks: number;
   /** Only on a complete crawl (partial: false): on a partial crawl orphans are not knowable. */
@@ -520,6 +520,10 @@ export async function runInternalLinkAudit(
   const advanceTo = firstUndone > 0 ? startAt + firstUndone : firstUndone === 0 ? startAt + 1 : startAt + pages.length;
   const nextStartAt = advanceTo < crawlList.length ? advanceTo : null;
   const reported = crawled.results.slice(0, firstUndone >= 0 ? firstUndone : pages.length);
+  // A page whose fetch failed (rejected, not just slow) counts as done with a null result. It is inside
+  // [startAt, nextStartAt), so list it: every advanced URL is crawled or in skippedPages (PAR-10132).
+  const failedPages = pages.slice(0, reported.length).filter((_, i) => reported[i] === null);
+  skippedPages.push(...failedPages);
   for (const entry of reported) {
     if (!entry) continue;
     const seen = new Set<string>();
@@ -548,7 +552,7 @@ export async function runInternalLinkAudit(
   const note = partial
     ? [
       `Partial crawl: ${crawledPages.length} of ${pages.length} requested pages crawled from startAt ${startAt} (${crawlList.length} pages in the crawl list: home page, then sitemap URLs).`,
-      skippedPages.length > 0 ? `Skipped ${skippedPages[0]}: it did not load within the time limit.` : "",
+      skippedPages.length > 0 ? `Skipped ${skippedPages.length === 1 ? skippedPages[0] : `${skippedPages.length} pages`}: ${skippedPages.length === 1 ? "it" : "they"} did not load within the time limit or failed to load. Check them directly.` : "",
       nextStartAt !== null ? `Call again with startAt ${nextStartAt} (nextStartAt) to continue.` : "No pages left after this batch.",
       sitemap.partial ? `The sitemap was not read in full (more than ${LINK_AUDIT_MAX_CHILD_SITEMAPS} child sitemaps, or a child sitemap failed).` : "",
       "Orphans are only reported by one complete crawl from startAt 0, so none are listed or stored.",

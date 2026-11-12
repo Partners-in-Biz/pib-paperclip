@@ -194,4 +194,38 @@ describe("internal link audit paging across calls (PAR-9952)", () => {
     const second = await timed(() => runInternalLinkAudit(fetcher, { siteUrl: ORIGIN, maxPages: 5 }));
     expect(second.result.pagesInSitemap).toBe(42);
   });
+
+  it("every URL in [startAt, nextStartAt) is crawled or in skippedPages; unfinished pages are retried (PAR-10132)", async () => {
+    const base = slowWordPressSite({ sitemapMs: 100, robotsMs: 100, pageMs: 100 });
+    const failing = new Set(["/post-2", "/post-3"]);
+    // Late pages are expected in a later call's crawledPages, not in the first call.
+    const lateOnce = new Set(["/post-4", "/post-5"]);
+    const fetcher: SiteFetcher = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (failing.has(path)) throw new Error("fetch failed");
+      if (lateOnce.has(path)) {
+        lateOnce.delete(path);
+        await new Promise((r) => setTimeout(r, 60_000)); // finishes long after the deadline
+      }
+      return base.fetcher(url, init);
+    };
+    const accounted = new Set<string>();
+    let startAt = 0;
+    let loops = 0;
+    for (;;) {
+      loops += 1;
+      expect(loops).toBeLessThanOrEqual(20);
+      const { result } = await timed(() => runInternalLinkAudit(fetcher, { siteUrl: ORIGIN, maxPages: 15, startAt, concurrency: 5 }));
+      const end = result.nextStartAt ?? 43;
+      const covered = new Set([...result.crawledPages, ...result.skippedPages]);
+      expect(covered.size).toBe(end - startAt);
+      for (const page of covered) accounted.add(page);
+      if (result.nextStartAt === null) break;
+      expect(result.nextStartAt).toBeGreaterThan(startAt);
+      startAt = result.nextStartAt;
+    }
+    expect(accounted.size).toBe(43);
+    expect([...accounted].some((x) => x.includes("/post-4"))).toBe(true);
+    expect([...accounted].some((x) => x.includes("/post-5"))).toBe(true);
+  });
 });
