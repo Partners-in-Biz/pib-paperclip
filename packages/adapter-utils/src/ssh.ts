@@ -1352,11 +1352,92 @@ export async function runSshCommand(
   }
 }
 
+// Run record, format version 1 (PAR-9960). The ssh spawn script writes it to
+// `<remoteRunDir>/record` before `exec`, so after a server exit the host can
+// find the remote process group. Three `key=value` lines, newline after each:
+// `v=1`, `pgid=<decimal>` (from `ps -o pgid=`), `lstart=<text>` (from
+// `ps -o lstart=`, compared as an exact string on the same machine, never
+// parsed to a date). Readers: PAR-9917 (lease) and PAR-9399 (stopRemote).
+export const SSH_RUN_RECORD_FILE = "record";
+export const SSH_RUN_RECORD_VERSION = "1";
+export const SSH_RUN_RECORD_EXCLUDE_PATTERN = "/.paperclip-runs/";
+export const SSH_RUN_DIR_REFUSED_EXIT_CODE = 125;
+
+export type SshRunRecordParseResult =
+  | { status: "readable"; pgid: number; lstart: string }
+  | { status: "unreadable" };
+
+/** Pure parser of the version-1 run record. Never throws. */
+export function parseSshRunRecord(text: unknown): SshRunRecordParseResult {
+  const unreadable = { status: "unreadable" } as const;
+  if (typeof text !== "string" || !text.endsWith("\n")) return unreadable;
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length !== 3) return unreadable;
+  const fields = new Map<string, string>();
+  for (const line of lines) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) return unreadable;
+    const key = line.slice(0, eq);
+    if (fields.has(key)) return unreadable;
+    fields.set(key, line.slice(eq + 1));
+  }
+  const pgidText = fields.get("pgid");
+  const lstart = fields.get("lstart");
+  if (fields.get("v") !== SSH_RUN_RECORD_VERSION || pgidText == null || lstart == null) return unreadable;
+  if (!/^[0-9]+$/.test(pgidText)) return unreadable;
+  const pgid = Number(pgidText);
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return unreadable;
+  if (lstart.trim().length === 0 || lstart !== lstart.trim()) return unreadable;
+  return { status: "readable", pgid, lstart };
+}
+
+function trimTrailingSlashes(value: string): string {
+  const trimmed = value.replace(/\/+$/, "");
+  return trimmed.length > 0 ? trimmed : "/";
+}
+
+// POSIX sh block run in a subshell (so `umask` and `LC_ALL` do not reach the
+// agent command). Exit 125 with one stderr line when the run dir is not
+// confined to the workspace: lexically before `mkdir`, then physically
+// (symlinks resolved) on the deepest existing ancestor and on the made dir.
+function buildSshRunRecordScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  const exclude = shellQuote(SSH_RUN_RECORD_EXCLUDE_PATTERN);
+  return [
+    "(",
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `refuse() { printf '%s\\n' "paperclip: remote run dir refused: $1" >&2; exit ${SSH_RUN_DIR_REFUSED_EXIT_CODE}; }`,
+    'case "$rd" in /*) ;; *) refuse "not absolute";; esac',
+    'case "$rd/" in */./*|*/../*|*//*) refuse "dot or empty path part";; esac',
+    'case "$rd" in "$ws"/?*) ;; *) refuse "outside workspace";; esac',
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || refuse "workspace missing"',
+    'inws() { r=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1; case "$r" in "$wsp"|"$wsp"/*) return 0;; esac; return 1; }',
+    'p=$rd; while [ -n "$p" ] && [ ! -d "$p" ]; do p=${p%/*}; done',
+    'inws "${p:-/}" || refuse "outside workspace after resolving links"',
+    'umask 077',
+    'mkdir -p "$rd" || exit 1',
+    'inws "$rd" || refuse "outside workspace after resolving links"',
+    "pg=$(ps -o pgid= -p $$ | tr -d ' ')",
+    "st=$(ps -o lstart= -p \"$pg\" | sed 's/^ *//;s/ *$//')",
+    `printf 'v=${SSH_RUN_RECORD_VERSION}\\npgid=%s\\nlstart=%s\\n' "$pg" "$st" > "$rd/record.tmp.$$" || exit 1`,
+    `mv -f "$rd/record.tmp.$$" "$rd/${SSH_RUN_RECORD_FILE}" || exit 1`,
+    'if top=$(git -C "$ws" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$wsp" ] &&',
+    '  ex=$(git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null); then',
+    '  case "$ex" in /*) ;; *) ex="$ws/$ex";; esac',
+    `  grep -qxF ${exclude} "$ex" 2>/dev/null || { mkdir -p "\${ex%/*}" && printf '\\n%s\\n' ${exclude} >> "$ex"; } || true`,
+    "fi",
+    ")",
+  ].join("\n");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
   args: string[];
   env: Record<string, string>;
+  /** Absolute run directory under `spec.remoteWorkspacePath`; absent: script unchanged. */
+  remoteRunDir?: string;
 }): Promise<{
   command: string;
   args: string[];
@@ -1389,6 +1470,9 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...(input.remoteRunDir != null
+      ? [buildSshRunRecordScript(input.spec.remoteWorkspacePath, input.remoteRunDir)]
+      : []),
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
