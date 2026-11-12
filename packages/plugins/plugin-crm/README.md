@@ -64,6 +64,10 @@ Agents put people on the desk instead of listing them in an issue: `set-next-act
 - **No duplicates:** `create-contact` and `import-contacts` match on email, then on phone (last 9 digits); `create-company` matches on the website domain, then the name. A match fills only empty fields, adds missing emails, phones and tags, logs a note, and returns `matched: true`.
 - **Skills:** `pib-sales-lead`, `pib-inbound-qualify`, `pib-data-steward`, `pib-deal-desk`.
 
+## Sign-off lock: `site.changed` and its replay (0.43.0)
+- **Event:** after each successful agent write that an open page grant allows (one of the 4 page endpoints by `url`, or `wp-undo` of a change on an approved page), the CRM emits `site.changed` `{ siteId, url (normalised), endpoint, changeId, at }`. A person's write, or a write only the whole-site grant allows, emits nothing. The row in `site_changes` keeps the page in `page_url` (migration 021).
+- **Replay:** the 5-minute `site-monitor` job re-emits `site.changed` for those rows since the grant opened (`pages_opened_at`) on sites whose page grant is open or closed less than 1 hour ago (`pages_closed_at`, else `pages_until`), oldest first, at most 50 per site. The SEO consumer is idempotent.
+
 ## Sign-off lock: page-scoped approval (0.39.0)
 - **Two grants on `site_signoff`** (migration 020): the whole-site grant (`site.write-approved` without `scope`, and the board button) is unchanged. A `site.write-approved` event with `scope: "pages"`, `pages`, `until`, `seq` and `by` replaces the approved page set as a whole, only when `seq` is newer than the stored one; `pages: []` or a past `until` closes it. An unknown `scope` is ignored, never read as whole-site.
 - **What a page grant allows:** only `posts/update`, `posts/img-alt`, `seo/set` and `schema/set`, with `url` alone naming the page (no `postId`, `termId`, `taxonomy`, `postTypeArchive` or `site`), no `?` or `#`, on the site's own host, and the page in the set (kit `normalisePageUrl`). `wp-undo` passes for an ok change on this site of one of those endpoints whose target is an approved page. Everything else is refused with the reason.
