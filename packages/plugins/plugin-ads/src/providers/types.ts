@@ -14,6 +14,7 @@
 import type { AdPlatform, AdPolicyStatus, StoredPlatform } from "../platforms.js";
 import type { GoogleAppSettings } from "./google-app.js";
 import type { GoogleVideoSettings } from "./google-video.js";
+import type { GoogleVideoAd } from "./google-video-ad.js";
 
 export type { AdPolicyStatus };
 
@@ -150,7 +151,10 @@ export interface CreateAdCreativeRequest {
 export interface CreateAdRequest {
   name: string;
   adSetExternalId: string;
+  /** Meta only; Google has no standalone creative (the copy and media are in `videoAd`). */
   creativeExternalId: string;
+  /** Google only: the Demand Gen video responsive ad made in the ad group `adSetExternalId` (`./google-video-ad.ts`). */
+  videoAd?: GoogleVideoAd;
   /** Always "PAUSED" from execute.ts (PAR-6684); a payload asking for ACTIVE is refused before any request is built. */
   status?: "PAUSED" | "ACTIVE";
 }
