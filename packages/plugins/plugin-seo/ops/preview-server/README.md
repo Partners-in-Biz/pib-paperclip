@@ -10,7 +10,7 @@ Public page for client sign-off links (`https://preview.partnersinbiz.online/p/<
 
 ### Before the 0.37.0 server goes live
 
-From plugin-seo 0.47.1 migration 029 applies the grants below itself (when role pib_preview exists); the manual GRANT is only needed if that migration logged "grant skipped". In this order: plugin-seo 0.37.0 (migration 026) is installed and `previews.decision_source` exists; then, as the database owner, `GRANT UPDATE (decision_source, decided_by) ON plugin_seo_8099f8879a.previews TO pib_preview;` (without it every client answer fails with a 500); then copy the files and restart as below. Rollback: copy the previous `server.mjs` back and restart (it does not use `decision.mjs`; the grant can stay).
+In this order: plugin-seo 0.37.0 (migration 026) is installed and `previews.decision_source` exists; then, as the database owner, `GRANT USAGE ON SCHEMA plugin_seo_8099f8879a TO pib_preview; GRANT SELECT ON plugin_seo_8099f8879a.previews TO pib_preview; GRANT UPDATE (status, decision_note, decided_at, notified_at, decision_source, decided_by, stats) ON plugin_seo_8099f8879a.previews TO pib_preview;` (without UPDATE on all of those columns every client Approve or Request changes answer fails with a 500; a plugin migration cannot do this, the host rejects GRANT and DO blocks); then copy the files and restart as below. Rollback: copy the previous `server.mjs` back and restart (it does not use `decision.mjs`; the grant can stay).
 - Links expire after 30 days.
 
 ## Screenshots and Chromium: what is kept, what is deleted
