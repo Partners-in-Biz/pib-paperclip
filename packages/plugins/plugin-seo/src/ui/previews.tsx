@@ -158,11 +158,11 @@ function PreviewActions({ p, manual, narrow, busy, onApprove, onDecline, onUndo,
   );
 }
 
-function Field({ label, value }: { label: string; value: string | null }) {
+function Field({ label, value, empty = "Not changed" }: { label: string; value: string | null; empty?: string }) {
   return (
     <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
       <span style={{ fontSize: 12, color: tokens.muted }}>{label}</span>
-      <span style={{ fontSize: 13, ...breakAnywhere }}>{value ?? "Not changed"}</span>
+      <span style={{ fontSize: 13, ...breakAnywhere }}>{value ?? empty}</span>
     </div>
   );
 }
@@ -190,8 +190,8 @@ function PreviewDrawer({ p, onClose, error, ...actions }: ActionProps & { error?
       <div style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 13 }}>Evidence</strong>
         <Field label="Reviewer" value={`${REVIEW_LABEL[p.reviewStatus]?.replace("Reviewer: ", "") ?? p.reviewStatus}${p.reviewNote ? `: ${p.reviewNote}` : ""}`} />
-        <Field label="Against the live page" value={p.keptPct != null ? `Keeps ${p.keptPct}% of the live text, adds ${p.addedWords ?? 0} words (${p.renderedChecked ? "as a visitor sees it" : "page source"})` : null} />
-        <Field label="Why" value={p.why} />
+        <Field empty="Not measured yet" label="Against the live page" value={p.keptPct != null ? `Keeps ${p.keptPct}% of the live text, adds ${p.addedWords ?? 0} words (${p.renderedChecked ? "as a visitor sees it" : "page source"})` : null} />
+        <Field empty="No reason recorded" label="Why" value={p.why} />
         {p.decisionNote ? <Field label="Decision note" value={`${previewDecider(p)} · "${p.decisionNote}"`} /> : null}
       </div>
       {p.overlapIds.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>{p.overlapIds.length} other pending preview{p.overlapIds.length === 1 ? "" : "s"} for this page.</span> : null}
