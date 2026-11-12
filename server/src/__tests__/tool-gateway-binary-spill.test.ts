@@ -18,6 +18,7 @@ import { acquireRunnerApiResponseSlot, RunnerApiResponseLimitError } from "../se
 import { validateToolContent } from "../services/tool-content-guards.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
+import type { StorageService } from "../storage/types.js";
 import { assetRoutes } from "../routes/assets.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -40,6 +41,12 @@ function driveShape(base64: string, mimeType = "image/jpeg") {
   const file = { content: base64, id: "1AbCdEfG", mimeType, title: "Hero shot.jpg" };
   return { content: [{ type: "text", text: JSON.stringify(file) }], structuredContent: file };
 }
+
+type McpPart = { type?: string; text?: string; data?: string; mimeType?: string };
+type DriveFile = { content: string; id: string; mimeType: string; title: string };
+type McpShape = { content: McpPart[]; structuredContent: DriveFile };
+type SavedFile = { artifactId: string; url: string; contentType: string; byteSize: number; sha256: string };
+type GatewayCallOut = { status: string; result: { savedFiles?: SavedFile[]; content: string; data: McpShape } };
 
 function fakeArtifact(bytes: Buffer, contentType: string) {
   const artifactId = randomUUID();
@@ -78,7 +85,7 @@ describe("binary spill leaves", () => {
     expect(capture).toHaveBeenCalledTimes(1);
     expect(capture.mock.calls[0]![0].equals(bytes)).toBe(true);
     expect(savedFiles).toEqual([expect.objectContaining({ contentType: "image/png", byteSize: bytes.length })]);
-    expect((value as any).content[0].data).toMatch(SAVED_NOTE);
+    expect((value as McpShape).content[0]!.data).toMatch(SAVED_NOTE);
   });
 
   it.each([
@@ -127,10 +134,10 @@ describe("binary spill leaves", () => {
     const out = await spillBinaryLeaves(value, findBinarySpillCandidates(value), async () => { throw error; }, onError);
     expect(onError).toHaveBeenCalledWith(error);
     expect(out.savedFiles).toEqual([]);
-    const content = (out.value as any).structuredContent.content as string;
+    const content = (out.value as McpShape).structuredContent.content;
     expect(content).toMatch(new RegExp(`^\\[Paperclip withheld this file \\(${bytes.length} bytes, image/jpeg\\): `));
     expect(content).toContain(note);
-    expect(JSON.parse((out.value as any).content[0].text).content).toBe(content);
+    expect(JSON.parse((out.value as McpShape).content[0]!.text!).content).toBe(content);
   });
 });
 
@@ -187,14 +194,14 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
     const session = await gateway.createSession({ companyId, agentId: agent.id, runId: run!.id });
     const tool = (await gateway.listToolsForSession(session.token)).find(candidate => candidate.connectionId === connection!.id)!;
     expect(tool).toBeDefined();
-    const call = () => gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { fileId: "1AbCdEfG" } });
+    const call = async () => await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { fileId: "1AbCdEfG" } }) as unknown as GatewayCallOut;
     const companyAssets = () => db.select().from(assets).where(eq(assets.companyId, companyId));
     return { companyId, agent, run: run!, issue: issue!, connection: connection!, gateway, call, newAgent, companyAssets };
   }
 
-  function assetApp(actor: Record<string, unknown>) {
+  function assetApp(actor: Express.Request["actor"]) {
     const app = express();
-    app.use((req, _res, next) => { (req as any).actor = actor; next(); });
+    app.use((req, _res, next) => { req.actor = actor; next(); });
     app.use("/api", assetRoutes(db, storage()));
     app.use(errorHandler);
     return app;
@@ -205,23 +212,23 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
     const base64 = bytes.toString("base64");
     expect(base64).toHaveLength(263_460);
     const f = await fixture(() => driveShape(base64));
-    const out = await f.call() as any;
+    const out = await f.call();
     expect(out.status).toBe("completed");
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    expect(out.result.savedFiles).toEqual([{ artifactId: expect.any(String), url: `/api/assets/${out.result.savedFiles[0].artifactId}/content`,
+    expect(out.result.savedFiles).toEqual([{ artifactId: expect.any(String), url: `/api/assets/${out.result.savedFiles![0]!.artifactId}/content`,
       contentType: "image/jpeg", byteSize: 197_593, sha256 }]);
-    const { artifactId } = out.result.savedFiles[0];
-    const note = out.result.data.structuredContent.content as string;
+    const { artifactId } = out.result.savedFiles![0]!;
+    const note = out.result.data.structuredContent.content;
     expect(note).toMatch(SAVED_NOTE);
     expect(note).toContain(artifactId);
-    for (const text of [out.result.content, out.result.data.content[0].text]) {
+    for (const text of [out.result.content, out.result.data.content[0]!.text!]) {
       expect(JSON.parse(text)).toEqual({ content: note, id: "1AbCdEfG", mimeType: "image/jpeg", title: "Hero shot.jpg" });
     }
     expect(JSON.stringify(out.result)).not.toContain(base64.slice(0, 64));
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.companyId));
     expect(invocation!.resultSizeBytes).toBeLessThan(10_000);
 
-    const ownActor = { type: "agent", agentId: f.agent.id, companyId: f.companyId, runId: f.run.id, keyScope: { kind: "standard" }, source: "agent_jwt" };
+    const ownActor: Express.Request["actor"] = { type: "agent", agentId: f.agent.id, companyId: f.companyId, runId: f.run.id, keyScope: { kind: "standard" }, source: "agent_jwt" };
     const res = await request(assetApp(ownActor)).get(`/api/assets/${artifactId}/content`).buffer(true).parse((r, cb) => {
       const chunks: Buffer[] = [];
       r.on("data", (c: Buffer) => chunks.push(c));
@@ -238,9 +245,9 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
   it("saves the same bytes once when two parts carry them", async () => {
     const base64 = jpeg().toString("base64");
     const f = await fixture(() => ({ content: [{ type: "image", data: base64, mimeType: "image/jpeg" }, { type: "image", data: base64, mimeType: "image/jpeg" }] }));
-    const out = await f.call() as any;
+    const out = await f.call();
     expect(out.result.savedFiles).toHaveLength(1);
-    expect(out.result.data.content.map((part: any) => part.data)).toEqual([expect.stringMatching(SAVED_NOTE), expect.stringMatching(SAVED_NOTE)]);
+    expect(out.result.data.content.map(part => part.data)).toEqual([expect.stringMatching(SAVED_NOTE), expect.stringMatching(SAVED_NOTE)]);
     expect(await f.companyAssets()).toHaveLength(1);
   }, 60_000);
 
@@ -249,7 +256,7 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
     const f = await fixture(() => driveShape(base64));
     const releases = [acquireRunnerApiResponseSlot(f.companyId), acquireRunnerApiResponseSlot(f.companyId)];
     try {
-      const out = await f.call() as any;
+      const out = await f.call();
       expect(out.status).toBe("completed");
       expect(out.result.savedFiles).toBeUndefined();
       expect(out.result.data.structuredContent.content).toContain("file capture is busy, retry this call in a moment.");
@@ -259,9 +266,9 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
 
   it("withholds with the failed note when storage fails", async () => {
     const base64 = jpeg().toString("base64");
-    const failing = { ...storage(), putFile: async () => { throw new Error("disk gone"); } };
-    const f = await fixture(() => driveShape(base64), { storage: failing as any });
-    const out = await f.call() as any;
+    const failing: StorageService = { ...storage(), putFile: async () => { throw new Error("disk gone"); } };
+    const f = await fixture(() => driveShape(base64), { storage: failing });
+    const out = await f.call();
     expect(out.status).toBe("completed");
     expect(out.result.data.structuredContent.content).toContain("file capture failed.");
   }, 60_000);
@@ -274,7 +281,7 @@ describe.skipIf(!support.supported)("gateway binary spill", () => {
       return driveShape(base64);
     });
     runId = f.run.id;
-    const out = await f.call() as any;
+    const out = await f.call();
     expect(out.status).toBe("completed");
     expect(out.result.savedFiles).toBeUndefined();
     expect(JSON.stringify(out.result)).not.toContain(base64.slice(0, 64));
