@@ -1079,6 +1079,41 @@ export async function setDestinationIssue(ctx: PluginContext, postId: string, is
   );
 }
 
+/**
+ * Park a claimed destination for a person to post by hand. Its issue id is cleared: an id left from an earlier
+ * failure issue or a closed post-by-hand task must not stand in for a live task.
+ */
+export async function parkForHand(ctx: PluginContext, id: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET status = 'awaiting_manual', next_attempt_at = NULL, last_error = NULL, claim_token = NULL, issue_id = NULL,
+            result = $2::jsonb, updated_at = now()
+      WHERE id = $1 AND status <> 'published'`,
+    [id, JSON.stringify({ ok: false, manual: true, awaiting: true, at: new Date().toISOString() })],
+  );
+}
+
+/** Remove a destination that waits to be posted by hand (a person skipped it). */
+export async function deleteAwaitingDestination(ctx: PluginContext, companyId: string, id: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "destinations")} WHERE id = $1 AND company_id = $2 AND status = 'awaiting_manual'`,
+    [id, companyId],
+  );
+  return result.rowCount;
+}
+
+/** Posts with a destination that waits for a person but has no task yet (the task could not be opened at the time). */
+export async function postsAwaitingHandWithoutIssue(ctx: PluginContext, limit = 50): Promise<Array<{ id: string; company_id: string }>> {
+  return ctx.db.query<{ id: string; company_id: string }>(
+    `SELECT DISTINCT p.id, p.company_id
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
+      WHERE d.status = 'awaiting_manual' AND d.issue_id IS NULL AND d.updated_at <= now() - interval '4 minutes'
+      LIMIT $1`,
+    [limit],
+  );
+}
+
 /** Point a post's hand-post destinations at the task that asks a person to post them. */
 export async function setManualIssue(ctx: PluginContext, postId: string, issueId: string): Promise<void> {
   await ctx.db.execute(

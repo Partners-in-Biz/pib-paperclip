@@ -10,6 +10,7 @@ import { resolveConnectRequests } from "./connect-requests.js";
 import {
   type DestinationRow,
   type PostRow,
+  deleteAwaitingDestination,
   destinationsForPost,
   findAccountByExternal,
   getAccountsByIds,
@@ -112,8 +113,9 @@ export async function markDestinationPostedRecord(ctx: PluginContext, viewer: Vi
 }
 
 /**
- * A person decides not to post a destination that waits for them: it is recorded as failed ("skipped by a person"),
- * so the post leaves `publishing` and can be edited, retried or deleted. No failure issue is opened: nothing broke.
+ * A person decides not to post a destination that waits for them: the account is removed from the post. Nothing
+ * failed, so nothing is recorded as a failure and a retry cannot bring it back. With no destination left the post
+ * returns to `approved`, where a person can add another account or delete it.
  */
 export async function skipDestinationRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const userId = requireUser(viewer, "skip a post");
@@ -122,20 +124,20 @@ export async function skipDestinationRecord(ctx: PluginContext, viewer: Viewer, 
   const destination = (await destinationsForPost(ctx, post.id)).find((d) => d.id === destinationId);
   if (!destination) throw new SocialError("That destination is not on this post");
   if (destination.status !== "awaiting_manual") throw new SocialError("Only a destination that waits to be posted by hand can be skipped");
-  await saveDestinationOutcome(ctx, destination.id, {
-    status: "failed",
-    nextAttemptAt: null,
-    externalId: null,
-    externalUrl: null,
-    lastError: "Not posted: skipped by a person",
-    result: { ok: false, manual: true, skipped: true, at: new Date().toISOString(), by: userId },
-  });
+  if (!(await deleteAwaitingDestination(ctx, viewer.companyId, destination.id))) throw new SocialError("That destination no longer waits to be posted by hand");
+  ctx.logger.info("Hand-post skipped", { postId: post.id, accountId: destination.account_id, by: userId });
   return settleAfterHand(ctx, viewer, post, destination);
 }
 
 /** Roll the post up after a person settled one destination, and close the post-by-hand task when nothing waits. */
 async function settleAfterHand(ctx: PluginContext, viewer: Viewer, post: PostRow, destination: DestinationRow) {
   const after = await destinationsForPost(ctx, post.id);
+  if (after.length === 0) {
+    // The only destination was skipped: nothing went out and nothing failed.
+    await setPostOutcome(ctx, post.id, { status: "approved", error: null, publishedAt: false });
+    if (destination.issue_id) await closeManualPostIssue(ctx, viewer.companyId, destination.issue_id);
+    return getPostDetail(ctx, viewer, post.id);
+  }
   const status = rollupPostStatus(after.map((d) => d.status));
   const published = after.filter((d) => d.status === "published").length;
   const failed = after.filter((d) => d.status === "failed").length;

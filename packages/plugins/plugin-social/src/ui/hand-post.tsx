@@ -139,7 +139,7 @@ export function HandPost({ post, destination: d, run }: { post: Post; destinatio
           <SmallButton
             disabled={busy}
             onClick={() => {
-              if (window.confirm(`Skip ${label} for this post? It is recorded as not posted.`)) {
+              if (window.confirm(`Skip ${label} for this post? The account is removed from the post.`)) {
                 run("social.skip-destination", { postId: post.id, destinationId: d.id }, `Skipped ${label}`).catch(ignore);
               }
             }}

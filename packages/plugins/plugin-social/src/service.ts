@@ -127,6 +127,7 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
+import { closeManualPostIssue } from "./issues.js";
 import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
 import { closePostReview, routePostReview } from "./review.js";
@@ -302,6 +303,8 @@ export function requireUser(viewer: Viewer, what: string): string {
  */
 function handPostOut(d: DestinationRow, account: AccountRow | undefined, post: PostRow | undefined) {
   if (!post || !account || d.status === "published" || d.status === "publishing" || !isSocialPlatform(account.platform)) return null;
+  // Only where a person can act on it: a manual account, or a destination whose automatic publish failed.
+  if (!isManual(account) && d.status !== "failed") return null;
   const request = buildPublishRequest(post, account.platform);
   const meta = accountMeta(account);
   const text = request.text;
@@ -643,8 +646,15 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
     throw new SocialError("Agents can only detach destinations from personal drafts they created");
   }
   await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
-  const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
+  const accountId = requiredString(params, "accountId");
+  const before = await destinationsForPost(ctx, post.id);
+  const target = before.find((d) => d.account_id === accountId);
+  const removed = await deleteDestination(ctx, viewer.companyId, post.id, accountId);
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
+  // It waited to be posted by hand and was the last one on its task: the task has nothing left to ask.
+  if (target?.status === "awaiting_manual" && target.issue_id && !before.some((d) => d.id !== target.id && d.status === "awaiting_manual" && d.issue_id === target.issue_id)) {
+    await closeManualPostIssue(ctx, viewer.companyId, target.issue_id, "The account was removed from this post. Closing this issue.");
+  }
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
@@ -801,6 +811,10 @@ export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, p
 export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   requireUser(viewer, "delete a post");
   const post = await requirePost(ctx, viewer, postId);
+  // Part of it is already out (posted by hand before its time): deleting would lose the record of what was published.
+  if ((await destinationsForPost(ctx, post.id)).some((d) => d.status === "published")) {
+    throw new SocialError("Part of this post is already published, so it cannot be deleted. Remove the accounts that are not posted yet instead.");
+  }
   if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review, approved or failed posts can be deleted");
   return { deleted: post.id };
 }

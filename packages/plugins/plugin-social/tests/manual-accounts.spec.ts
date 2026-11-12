@@ -27,6 +27,12 @@ describe("composeIntent: the platform's own composer for a hand-posted destinati
     expect(composeIntent("tiktok", { text: "x" }).url).toBe("https://www.tiktok.com/upload");
   });
 
+  it("never throws on half an emoji left by a length cut", () => {
+    const title = `${"a".repeat(299)}😀 tail`;
+    expect(() => composeIntent("reddit", { text: "body", title })).not.toThrow();
+    expect(() => composeIntent("x", { text: "bad \uD83D end" })).not.toThrow();
+  });
+
   it("Facebook shares a link only; Reddit and Pinterest take their own fields", () => {
     expect(composeIntent("facebook", { text: "Hi", link: "https://a.example" })).toEqual({ url: "https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Fa.example", prefilled: false, mediaByHand: true });
     expect(composeIntent("facebook", { text: "Hi" }).url).toBe("https://www.facebook.com/");

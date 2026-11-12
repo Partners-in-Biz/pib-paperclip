@@ -236,7 +236,14 @@ export interface ComposeIntent {
   mediaByHand: boolean;
 }
 
-const enc = encodeURIComponent;
+/** `encodeURIComponent` that cannot throw: a lone surrogate (half an emoji, cut by a length limit) is dropped. */
+function enc(value: string): string {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return encodeURIComponent(value.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, ""));
+  }
+}
 
 /**
  * Where a person posts by hand, signed in to the platform in their own browser or app. A platform that documents a
@@ -263,7 +270,7 @@ export function composeIntent(platform: SocialPlatform, input: ComposeIntentInpu
     }
     case "reddit": {
       const sub = input.subreddit?.trim().replace(/^\/?r\//i, "");
-      const title = (input.title?.trim() || text.split("\n")[0] || "").slice(0, 300);
+      const title = Array.from(input.title?.trim() || text.split("\n")[0] || "").slice(0, 300).join("");
       const base = sub ? `https://www.reddit.com/r/${enc(sub)}/submit` : "https://www.reddit.com/submit";
       return { url: `${base}?title=${enc(title)}${link ? `&url=${enc(link)}` : `&type=TEXT&text=${enc(text)}`}`, prefilled: true, mediaByHand: true };
     }

@@ -279,9 +279,9 @@ export async function openManualPostIssue(
 }
 
 /** Every hand-post destination of the post is marked: close its task (never fails the caller). */
-export async function closeManualPostIssue(ctx: PluginContext, companyId: string, issueId: string): Promise<void> {
+export async function closeManualPostIssue(ctx: PluginContext, companyId: string, issueId: string, note = "Nothing on this post waits to be posted by hand any more. Closing this issue."): Promise<void> {
   try {
-    await ctx.issues.createComment(issueId, "Every account is marked as posted. Closing this issue.", companyId);
+    await ctx.issues.createComment(issueId, note, companyId);
     await ctx.issues.update(issueId, { status: "done" }, companyId);
   } catch (error) {
     ctx.logger.info("Could not close the post-by-hand issue", { companyId, issueId, error: error instanceof Error ? error.message : String(error) });

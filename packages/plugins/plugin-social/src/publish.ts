@@ -35,6 +35,9 @@ import {
   getAccount,
   getPost,
   isManual,
+  parkForHand,
+  postsAwaitingHandWithoutIssue,
+  getAccountsByIds,
   iso,
   postMedia,
   postOverrides,
@@ -265,14 +268,7 @@ export async function publishPost(ctx: PluginContext, config: SocialConfig, post
     const { outcome, account, manual } = await publishDestination(ctx, config, post, destination);
     accounts.set(destination.account_id, account);
     if (manual && account) {
-      await saveDestinationOutcome(ctx, destination.id, {
-        status: "awaiting_manual",
-        nextAttemptAt: null,
-        externalId: null,
-        externalUrl: null,
-        lastError: null,
-        result: { ok: false, manual: true, awaiting: true, at: new Date().toISOString() },
-      });
+      await parkForHand(ctx, destination.id);
       byHand.push({ destination, account });
       continue;
     }
@@ -293,14 +289,40 @@ export async function publishPost(ctx: PluginContext, config: SocialConfig, post
       },
     });
   }
-  if (byHand.length) {
-    // One task per post: a destination that came due later joins the task its siblings already have.
-    const known = (await destinationsForPost(ctx, postId)).find((d) => d.status === "awaiting_manual" && d.issue_id)?.issue_id ?? null;
-    const issueId = known ?? (await openManualPostIssue(ctx, { companyId, post, waiting: byHand }));
-    if (issueId) await setManualIssue(ctx, postId, issueId);
-  }
+  if (byHand.length) await ensureManualIssue(ctx, companyId, post, byHand);
   await settlePost(ctx, companyId, postId, accounts);
   return { attempted: claimed.length, published };
+}
+
+/**
+ * One post-by-hand task per post. A destination that came due later joins the task its waiting siblings already
+ * have (`parkForHand` cleared its own id, so only a live task is found here). When the task cannot be opened the
+ * destinations keep no id and the next job run tries again.
+ */
+async function ensureManualIssue(ctx: PluginContext, companyId: string, post: PostRow, waiting: Array<{ destination: DestinationRow; account: AccountRow }>): Promise<void> {
+  const known = (await destinationsForPost(ctx, post.id)).find((d) => d.status === "awaiting_manual" && d.issue_id)?.issue_id ?? null;
+  const issueId = known ?? (await openManualPostIssue(ctx, { companyId, post, waiting }));
+  if (issueId) await setManualIssue(ctx, post.id, issueId);
+}
+
+/** Open the task for posts whose hand-post destinations still have none (the host refused it at the publish time). */
+async function openMissingManualIssues(ctx: PluginContext, on: (companyId: string) => Promise<boolean>): Promise<void> {
+  for (const ref of await postsAwaitingHandWithoutIssue(ctx)) {
+    try {
+      if (!(await on(ref.company_id))) continue;
+      const post = await getPost(ctx, ref.company_id, ref.id);
+      if (!post) continue;
+      const waiting = (await destinationsForPost(ctx, post.id)).filter((d) => d.status === "awaiting_manual" && !d.issue_id);
+      const accounts = new Map((await getAccountsByIds(ctx, ref.company_id, [...new Set(waiting.map((d) => d.account_id))])).map((a) => [a.id, a]));
+      const rows = waiting.flatMap((destination) => {
+        const account = accounts.get(destination.account_id);
+        return account ? [{ destination, account }] : [];
+      });
+      if (rows.length) await ensureManualIssue(ctx, ref.company_id, post, rows);
+    } catch (error) {
+      ctx.logger.info("Could not open a post-by-hand task", { postId: ref.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
 
 export interface PublishRunSummary {
@@ -319,6 +341,7 @@ export async function publishDueJob(ctx: PluginContext, ensureCompany: (companyI
     if (!(await on(stuck.company_id))) continue;
     await settlePost(ctx, stuck.company_id, stuck.id, new Map());
   }
+  await openMissingManualIssues(ctx, on);
   const due = await duePostRefs(ctx);
   const byCompany = new Map<string, string[]>();
   for (const row of due) byCompany.set(row.company_id, [...(byCompany.get(row.company_id) ?? []), row.id]);

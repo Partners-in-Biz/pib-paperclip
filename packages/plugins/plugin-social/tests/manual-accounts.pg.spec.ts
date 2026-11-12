@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { SocialConfig } from "../src/config.js";
-import { deleteJunkAccounts, duePostRefs, getPost, scheduledPostsWithoutWork } from "../src/db.js";
+import { deleteJunkAccounts, duePostRefs, getPost, postsAwaitingHandWithoutIssue, resetFailedDestinations, scheduledPostsWithoutWork } from "../src/db.js";
 import { addManualAccountRecord, markDestinationPostedRecord, skipDestinationRecord } from "../src/manual.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { publishPost } from "../src/publish.js";
-import { getPostDetail, listAccountsRecord, type Viewer } from "../src/service.js";
+import { deletePostRecord, getPostDetail, listAccountsRecord, type Viewer } from "../src/service.js";
 import { validatePostRow } from "../src/validate.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations/", import.meta.url));
@@ -28,6 +28,7 @@ describe.skipIf(!available)("manual accounts: add, publish hand-off, mark as pos
   let ctx: PluginContext;
   let issues: Array<{ title: string; assigneeUserId?: string }>;
   let closed: string[];
+  let refuseIssues = false;
   const q = async (sql: string, params: unknown[] = []) => (await client.query(sql, params)).rows;
   const dests = async () => q(`SELECT id, account_id, status, external_url, issue_id, result FROM ${T("destinations")} WHERE post_id = 'p1' ORDER BY id`);
 
@@ -56,6 +57,7 @@ describe.skipIf(!available)("manual accounts: add, publish hand-off, mark as pos
       companies: { get: async () => ({ defaultResponsibleUserId: "owner-1" }) },
       issues: {
         create: async (input: { title: string; assigneeUserId?: string }) => {
+          if (refuseIssues) throw new Error("the host refused the assignee");
           issues.push(input);
           return { id: `issue-${issues.length}` };
         },
@@ -156,16 +158,62 @@ describe.skipIf(!available)("manual accounts: add, publish hand-off, mark as pos
     expect((await markDestinationPostedRecord(ctx, viewer, { postId: "p1", destinationId: "d1", url: "https://www.facebook.com/page/posts/1" })).status).toBe("published");
   });
 
-  it("skipping records it as not posted, so the post leaves publishing and no failure issue is opened", async () => {
+  it("skipping removes the account from the post: nothing is recorded as failed and the task closes", async () => {
     const { id } = await addManualAccountRecord(ctx, viewer, { platform: "tiktok", handle: "@veloxmath" });
     await seedPost("scheduled", [id]);
     await publishPost(ctx, config, "p1");
     const detail = await skipDestinationRecord(ctx, viewer, { postId: "p1", destinationId: "d1" });
-    expect(detail.status).toBe("failed");
-    expect(detail.destinations[0]).toMatchObject({ status: "failed", lastError: "Not posted: skipped by a person" });
+    // It was the only destination: nothing went out, so the post is back to approved with no account.
+    expect(detail.status).toBe("approved");
+    expect(detail.destinations).toEqual([]);
+    expect(await dests()).toEqual([]);
     expect(issues).toHaveLength(1);
     expect(closed).toEqual(["issue-1"]);
-    await expect(skipDestinationRecord(ctx, viewer, { postId: "p1", destinationId: "d1" })).rejects.toThrow(/waits to be posted by hand/);
+    await expect(skipDestinationRecord(ctx, viewer, { postId: "p1", destinationId: "d1" })).rejects.toThrow(/not on this post/);
+  });
+
+  it("skipping beside a published destination leaves the post published, and a retry cannot bring the skip back", async () => {
+    const { id } = await addManualAccountRecord(ctx, viewer, { platform: "tiktok", handle: "@veloxmath" });
+    await client.query(`INSERT INTO ${T("accounts")} (id, company_id, platform, scope, display_name, handle, status, token_enc) VALUES ('afb', 'co', 'facebook', 'org', 'FB', 'page', 'connected', 'enc')`);
+    await seedPost("publishing", [id, "afb"]);
+    await client.query(`UPDATE ${T("destinations")} SET status = 'published', published_at = now() WHERE id = 'd2'`);
+    await publishPost(ctx, config, "p1");
+    expect((await skipDestinationRecord(ctx, viewer, { postId: "p1", destinationId: "d1" })).status).toBe("published");
+    expect(await resetFailedDestinations(ctx, "co", "p1")).toBe(0);
+  });
+
+  it("a destination that waits again gets a live task, never the id of an old issue", async () => {
+    const { id } = await addManualAccountRecord(ctx, viewer, { platform: "tiktok", handle: "@veloxmath" });
+    await seedPost("scheduled", [id]);
+    // It failed once for another reason and carries that failure issue's id; then it was reset for a retry.
+    await client.query(`UPDATE ${T("destinations")} SET issue_id = 'old-failure-issue' WHERE id = 'd1'`);
+    await publishPost(ctx, config, "p1");
+    const [d] = await dests();
+    expect(d).toMatchObject({ status: "awaiting_manual", issue_id: "issue-1" });
+    await markDestinationPostedRecord(ctx, viewer, { postId: "p1", destinationId: "d1" });
+    expect(closed).toEqual(["issue-1"]);
+  });
+
+  it("a task that could not be opened is opened by a later job run", async () => {
+    const { id } = await addManualAccountRecord(ctx, viewer, { platform: "tiktok", handle: "@veloxmath" });
+    await seedPost("scheduled", [id]);
+    refuseIssues = true;
+    await publishPost(ctx, config, "p1");
+    expect((await dests())[0]).toMatchObject({ status: "awaiting_manual", issue_id: null });
+    expect(await postsAwaitingHandWithoutIssue(ctx)).toEqual([]);
+    await client.query(`UPDATE ${T("destinations")} SET updated_at = now() - interval '10 minutes' WHERE id = 'd1'`);
+    expect(await postsAwaitingHandWithoutIssue(ctx)).toEqual([{ id: "p1", company_id: "co" }]);
+    refuseIssues = false;
+  });
+
+  it("a published part blocks deleting the post; a hand-post panel is only given where a person can act", async () => {
+    const a = await addManualAccountRecord(ctx, viewer, { platform: "tiktok", handle: "@one" });
+    await client.query(`INSERT INTO ${T("accounts")} (id, company_id, platform, scope, display_name, handle, status, token_enc) VALUES ('afb', 'co', 'facebook', 'org', 'FB', 'page', 'connected', 'enc')`);
+    await seedPost("approved", [a.id, "afb"]);
+    const before = await getPostDetail(ctx, viewer, "p1");
+    expect(before.destinations.map((d) => Boolean(d.handPost))).toEqual([true, false]);
+    await markDestinationPostedRecord(ctx, viewer, { postId: "p1", destinationId: "d1" });
+    await expect(deletePostRecord(ctx, viewer, "p1")).rejects.toThrow(/already published/);
   });
 
   it("a switched-off manual account blocks validation like a disconnected one", async () => {
