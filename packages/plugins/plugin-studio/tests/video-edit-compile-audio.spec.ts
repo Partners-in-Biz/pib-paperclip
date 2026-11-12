@@ -73,7 +73,7 @@ describe("compile audio snapshots", () => {
     expect(g).toContain("[4:a]");
     expect(g).not.toContain("[5:a]");
     expect(g).toContain("volume=0.3,afade=t=out:st=5:d=1[aud1]");
-    expect(g).toContain("volume=1.5,adelay=delays=1500:all=1[aud2]");
+    expect(g).toContain("volume=1.5,adelay=delays=1500:all=1,asetpts=N/SR/TB[aud2]");
     expect(g).toContain("afade=t=in:st=0:d=0.5[aud0]");
     expect(g).toContain("[aud0][aud1][aud2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]");
     expect(g).not.toContain("loudnorm");

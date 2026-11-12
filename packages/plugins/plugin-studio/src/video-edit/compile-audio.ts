@@ -111,7 +111,9 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
     if (fadeIn > 0) steps.push(`afade=t=in:st=0:d=${num(fadeIn)}`);
     if (clip.fadeOut > 0) steps.push(`afade=t=out:st=${num(length - clip.fadeOut)}:d=${num(clip.fadeOut)}`);
     const delay = Math.round(clip.start * 1000);
-    if (delay > 0) steps.push(`adelay=delays=${delay}:all=1`);
+    // adelay gives its lead-in silence no timestamps (ffmpeg 6.1 to 9.0), so the `atrim` in the tail dropped it and a
+    // lone delayed clip (no amix to re-time it) played from 0, cut short; numbering samples again keeps it (PAR-10465).
+    if (delay > 0) steps.push(`adelay=delays=${delay}:all=1`, "asetpts=N/SR/TB");
     const label = `aud${labels.length}`;
     filters.push(`[${index}:a]${steps.join(",")}[${label}]`);
     labels.push(label);
