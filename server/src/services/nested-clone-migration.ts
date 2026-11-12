@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { writeChildStdin } from "@paperclipai/adapter-utils";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -62,7 +63,7 @@ async function git(cwd: string, args: string[], options: { signal?: AbortSignal;
     timeout: options.timeout ?? 120_000, signal: options.signal, maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...options.auth?.env },
   });
-  if (options.input !== undefined) child.child.stdin?.end(options.input);
+  if (options.input !== undefined) writeChildStdin(child.child, options.input, "nested-clone-migration:git");
   return (await child).stdout;
 }
 

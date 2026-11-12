@@ -1,3 +1,4 @@
+import { writeChildStdin } from "@paperclipai/adapter-utils";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import { enqueueFastResponse, supersedeFastResponse } from "../services/fast-responses.js";
 import { Router } from "express";
@@ -403,8 +404,15 @@ export function boardChatRoutes(
     });
 
     // Feed the prompt to the CLI via stdin.
-    proc.stdin.write(prompt);
-    proc.stdin.end();
+    writeChildStdin(proc, prompt, "board-chat:prompt", (error) => {
+      clearTimeout(timeout);
+      releaseSlot();
+      console.error("[board/chat/stream stdin error]", error);
+      if (res.writable) {
+        res.write(`data: ${JSON.stringify({ type: "error", message: "Could not send the prompt to the board assistant." })}\n\n`);
+        res.end();
+      }
+    });
   });
 
   return router;

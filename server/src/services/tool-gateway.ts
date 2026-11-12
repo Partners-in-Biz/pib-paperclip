@@ -1,3 +1,4 @@
+import { guardChildStdin } from "@paperclipai/adapter-utils";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -5409,6 +5410,39 @@ export function createToolGatewayService(
         reject: (error: Error) => void;
       }
     >();
+    let exited = false;
+    let exitedCode: number | null = null;
+    let exitedSignal: NodeJS.Signals | null = null;
+    const exitedError = (code: number | null, signal: NodeJS.Signals | null) =>
+      new ToolGatewayHttpError(
+        502,
+        "Local stdio MCP command exited before responding",
+        "local_stdio_process_exited",
+        {
+          connectionId: input.connection.id,
+          catalogEntryId: input.entry?.id ?? null,
+          code,
+          signal,
+          stderr,
+        },
+      );
+    guardChildStdin(
+      child,
+      "tool-gateway:stdio-mcp",
+      (error) => {
+        const gatewayError = new ToolGatewayHttpError(
+          502,
+          "Local stdio MCP command stdin failed",
+          "local_stdio_stdin_failed",
+          { connectionId: input.connection.id, message: error.message },
+        );
+        for (const { reject: rejectPending } of pending.values()) {
+          rejectPending(gatewayError);
+        }
+        pending.clear();
+      },
+      { includePipeClosed: true },
+    );
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       for (const { reject } of pending.values()) {
@@ -5497,25 +5531,15 @@ export function createToolGatewayService(
         reject(gatewayError);
       });
       child.on("exit", (code, signal) => {
+        exited = true;
+        exitedCode = code;
+        exitedSignal = signal;
         if (pending.size === 0) {
           resolve();
           return;
         }
         for (const { reject: rejectPending } of pending.values()) {
-          rejectPending(
-            new ToolGatewayHttpError(
-              502,
-              "Local stdio MCP command exited before responding",
-              "local_stdio_process_exited",
-              {
-                connectionId: input.connection.id,
-                catalogEntryId: input.entry?.id ?? null,
-                code,
-                signal,
-                stderr,
-              },
-            ),
-          );
+          rejectPending(exitedError(code, signal));
         }
         pending.clear();
         resolve();
@@ -5524,9 +5548,11 @@ export function createToolGatewayService(
     const request = (method: string, params: Record<string, unknown>) => {
       const id = nextId;
       nextId += 1;
+      if (exited) return Promise.reject(exitedError(exitedCode, exitedSignal));
       const promise = new Promise<unknown>((resolve, reject) => {
         pending.set(id, { resolve, reject });
       });
+      if (!child.stdin.writable) return promise;
       child.stdin.write(
         `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
       );
@@ -5538,9 +5564,11 @@ export function createToolGatewayService(
         capabilities: {},
         clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
       });
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
-      );
+      if (child.stdin.writable) {
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
+        );
+      }
       return await request(
         input.protocolMethod ?? "tools/call",
         input.protocolParams ?? {
