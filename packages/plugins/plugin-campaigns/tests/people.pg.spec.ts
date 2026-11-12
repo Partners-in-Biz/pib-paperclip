@@ -129,9 +129,18 @@ describe.skipIf(!available)("campaigns people, results and attention SQL (postgr
     // The same facts through the state: stuck, with the count and the age.
     const state = campaignState({
       status: "active", stepCount: 1, approvalIssueId: null, approvalStatus: null, approvalWithAgent: false, launchError: null,
-      stats: { enrolled: 3, running: 2, done: 0 }, sent: 0, tasks: counts.get("camp")!, failedSends: 0, placeholders: [], reviseOpen: false,
+      stats: { enrolled: 3, running: 2, done: 0 }, sent: 0, tasks: counts.get("camp")!, failedSends: 0, sendsChecked: true, placeholders: [], reviseOpen: false,
     }, new Date("2026-11-12T12:00:00Z"));
     expect(state).toMatchObject({ key: "stuck", detail: "1 email held for 1 day: its task is blocked." });
+  });
+
+  it("a task of another company never counts or shows, even when an enrollment points at it", async () => {
+    await issue(20, "blocked", { company: OTHER, identifier: "OTH-20" });
+    await enroll("e-cross", "camp", "carl", { issue: uuid(20) });
+    const cross = (await enrollmentPeople(ctx, CO, "camp")).find((p) => p.enrollmentId === "e-cross")!;
+    expect(cross.task).toMatchObject({ identifier: null, status: "todo" });
+    expect(JSON.stringify(cross)).not.toContain("OTH-20");
+    expect((await stepTaskCounts(ctx, CO)).get("camp")).toMatchObject({ waiting: 2, blocked: 1 });
   });
 
   it("finds drafts a person sent back by their open revise task, per company", async () => {

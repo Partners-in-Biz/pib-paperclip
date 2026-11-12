@@ -415,18 +415,19 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const now = new Date();
   const ids = new Set(campaigns.map((campaign) => campaign.id));
   const [counts, days, suppressed, attention] = await Promise.all([
-    eventCounts(ctx, companyId).catch(() => []),
+    // null = the counts could not be read: the page then claims no number, never 0.
+    eventCounts(ctx, companyId).catch(() => null),
     eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
     suppressionCount(ctx, companyId).catch(() => 0),
     attentionFacts(ctx, companyId),
   ]);
-  const byCampaign = eventTotals(counts, ids);
+  const byCampaign = eventTotals(counts ?? [], ids);
   const result = [];
   for (const campaign of campaigns) {
     const steps = await listSteps(ctx, campaign.id);
     const stats = await campaignStats(ctx, campaign.id);
     const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
-    const state = campaignState(stateFacts(campaign, steps, stats, approval, byCampaign[campaign.id]?.sent ?? 0, attention), now);
+    const state = campaignState(stateFacts(campaign, steps, stats, approval, counts ? byCampaign[campaign.id]?.sent ?? 0 : null, attention), now);
     result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null, state });
   }
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
@@ -440,14 +441,18 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   };
 }
 
-/** What the list and the "Needs attention" strip need beyond the campaign rows: open step tasks, failed sends and drafts a person sent back. A part that cannot be read counts as nothing wrong, so the page still loads. */
-interface AttentionFacts { tasks: Map<string, TaskCounts>; failed: Map<string, number>; revise: Set<string> }
+/**
+ * What the list and the "Needs attention" strip need beyond the campaign rows: open step tasks, failed sends and
+ * drafts a person sent back. A part that cannot be read is null, and the state then says it could not be checked:
+ * a failed read is never shown as "nothing wrong".
+ */
+interface AttentionFacts { tasks: Map<string, TaskCounts> | null; failed: Map<string, number> | null; revise: Set<string> | null }
 
 async function attentionFacts(ctx: PluginContext, companyId: string): Promise<AttentionFacts> {
   const [tasks, failed, revise] = await Promise.all([
-    stepTaskCounts(ctx, companyId).catch(() => new Map<string, TaskCounts>()),
-    enrollmentsWithFailedSend(ctx).then((rows) => failedByCampaign(rows.filter((row) => row.companyId === companyId))).catch(() => new Map<string, number>()),
-    openReviseCampaigns(ctx, companyId).catch(() => new Set<string>()),
+    stepTaskCounts(ctx, companyId).catch(() => null),
+    enrollmentsWithFailedSend(ctx).then((rows) => failedByCampaign(rows.filter((row) => row.companyId === companyId))).catch(() => null),
+    openReviseCampaigns(ctx, companyId).catch(() => null),
   ]);
   return { tasks, failed, revise };
 }
@@ -457,7 +462,8 @@ function stateFacts(
   steps: CampaignStepDraft[],
   stats: { enrolled: number; running: number; done: number },
   approval: { status: string; assigneeAgentId?: string | null } | null,
-  sent: number,
+  /** Emails sent so far, or null when they could not be counted. */
+  sent: number | null,
   attention: AttentionFacts,
 ): CampaignFacts {
   const numbers = stepNumbers(steps);
@@ -470,13 +476,14 @@ function stateFacts(
     launchError: campaign.launchError ?? null,
     stats,
     sent,
-    tasks: attention.tasks.get(campaign.id) ?? null,
-    failedSends: attention.failed.get(campaign.id) ?? 0,
+    tasks: attention.tasks?.get(campaign.id) ?? null,
+    failedSends: attention.failed?.get(campaign.id) ?? 0,
+    sendsChecked: Boolean(attention.tasks && attention.failed),
     // Only a running campaign is judged on leftover placeholders here: a draft's are caught by the check before approval.
     placeholders: campaign.status === "active"
       ? steps.map((step) => ({ number: numbers.get(step.position) ?? step.position, items: unfilledPlaceholders(step) })).filter((entry) => entry.items.length > 0)
       : [],
-    reviseOpen: attention.revise.has(campaign.id),
+    reviseOpen: attention.revise?.has(campaign.id) ?? false,
   };
 }
 
@@ -559,7 +566,7 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       sample: enrollments.slice(0, 5).map((row) => ({ name: row.name, status: row.status, stepPosition: row.stepPosition, nextDueAt: row.nextDueAt, waiting: row.waiting })),
     },
     next: nextSend(running),
-    state: campaignState(stateFacts(campaign, steps, stats, approval, (results ?? []).filter((row) => row.eventType === "sent").reduce((total, row) => total + row.count, 0), attention), now),
+    state: campaignState(stateFacts(campaign, steps, stats, approval, results ? results.filter((row) => row.eventType === "sent").reduce((total, row) => total + row.count, 0) : null, attention), now),
     people: peopleRows ? peopleView(peopleRows, steps, now) : null,
     peopleCapped: (peopleRows?.length ?? 0) < stats.enrolled,
     // Before launch nobody is enrolled: the People tab lists who would get it (the same audience the approver sees).
@@ -1078,18 +1085,19 @@ async function closeStep(ctx: PluginContext, enrollment: EnrollmentDraft, status
     await saveEnrollment(ctx, { ...enrollment, status: "stopped", nextDueAt: null, openIssueId: null });
     return;
   }
+  const steps = await listSteps(ctx, enrollment.campaignId);
   // The agent sent this step by hand: count it, once, so Results and the A/B numbers include emails sent from a task.
+  // The version is the one the task carried: a step with no B text sends A, whatever arm the person is on (as an automatic send records it).
   await insertStepEventOnce(ctx, {
     companyId: enrollment.companyId,
     campaignId: enrollment.campaignId,
     enrollmentId: enrollment.id,
     stepPosition: enrollment.stepPosition,
     eventType: "sent",
-    variant: enrollment.variant ?? "a",
+    variant: stepFor(steps, enrollment.stepPosition, enrollment.variant)?.variant ?? "a",
     sourceKey: handSentKey(enrollment.id, enrollment.stepPosition),
     meta: { by: "task" },
   }).catch((error) => ctx.logger.warn("A hand-sent campaign step could not be counted", { enrollmentId: enrollment.id, error: error instanceof Error ? error.message : String(error) }));
-  const steps = await listSteps(ctx, enrollment.campaignId);
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }
 

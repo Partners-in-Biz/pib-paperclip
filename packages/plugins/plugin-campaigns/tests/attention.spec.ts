@@ -10,7 +10,7 @@ const NOW = new Date("2026-11-12T12:00:00Z");
 function facts(over: Partial<CampaignFacts> = {}): CampaignFacts {
   return {
     status: "draft", stepCount: 2, approvalIssueId: null, approvalStatus: null, approvalWithAgent: false, launchError: null,
-    stats: { enrolled: 0, running: 0, done: 0 }, sent: 0, tasks: null, failedSends: 0, placeholders: [], reviseOpen: false, ...over,
+    stats: { enrolled: 0, running: 0, done: 0 }, sent: 0, tasks: null, failedSends: 0, sendsChecked: true, placeholders: [], reviseOpen: false, ...over,
   };
 }
 
@@ -41,8 +41,14 @@ describe("drafts", () => {
     expect(state.attention).toBe("Waiting for your approval");
   });
 
-  it("an approval whose task could not be read is still shown as waiting, never as approved", () => {
-    expect(campaignState(facts({ approvalIssueId: "i-1", approvalStatus: null }), NOW).key).toBe("waiting-approval");
+  it("an approval whose task could not be read says so: neither approved nor a request for action", () => {
+    const state = campaignState(facts({ approvalIssueId: "i-1", approvalStatus: null }), NOW);
+    expect(state).toMatchObject({ key: "approval-unknown", label: "Approval asked", attention: null });
+    expect(state.detail).toMatch(/could not be read/);
+  });
+
+  it("an approval an agent closed is not shown as approved: it is handed to a person first", () => {
+    expect(campaignState(facts({ approvalIssueId: "i-1", approvalStatus: "done", approvalWithAgent: true }), NOW).key).toBe("with-reviewer");
   });
 
   it("approved but could not launch is bad, with the reason, and wins over the done approval", () => {
@@ -51,8 +57,10 @@ describe("drafts", () => {
     expect(state.attention).toContain("The audience changed");
   });
 
-  it("approved and about to launch", () => {
-    expect(campaignState(facts({ approvalIssueId: "i-1", approvalStatus: "done" }), NOW)).toMatchObject({ key: "launching", attention: null });
+  it("approved by a person: says approved, and promises no time", () => {
+    const state = campaignState(facts({ approvalIssueId: "i-1", approvalStatus: "done" }), NOW);
+    expect(state).toMatchObject({ key: "launching", label: "Approved", attention: null });
+    expect(state.detail).not.toMatch(/minutes/);
   });
 });
 
@@ -97,6 +105,25 @@ describe("running campaigns", () => {
     const state = campaignState(running({ sent: 12, stats: { enrolled: 10, running: 7, done: 3 }, tasks: { waiting: 2, blocked: 0, oldestAt: "2026-11-12T10:00:00Z" } }), NOW);
     expect(state).toMatchObject({ key: "running", label: "Running", tone: "ok", attention: null });
     expect(state.detail).toBe("12 emails sent to 10 people, 3 finished, 2 waiting on the agent.");
+  });
+
+  it("sends that could not be counted are never shown as 0, and never make a campaign stuck", () => {
+    const state = campaignState(running({ sent: null, stats: { enrolled: 12, running: 12, done: 0 } }), NOW);
+    expect(state).toMatchObject({ key: "running", detail: "12 people enrolled." });
+    expect(state.detail).not.toMatch(/0 emails/);
+    // A leftover placeholder with an unknown send count is not proof that nothing went out.
+    expect(campaignState(running({ sent: null, placeholders: [{ number: 1, items: ["TBC"] }] }), NOW).key).toBe("running");
+    expect(campaignState(facts({ status: "completed", sent: null, stats: { enrolled: 3, running: 0, done: 3 } }), NOW).detail).toBe("It went to 3 people.");
+  });
+
+  it("when the tasks or failed sends could not be read it claims neither running nor all-clear", () => {
+    const state = campaignState(running({ sendsChecked: false, tasks: null, sent: 4 }), NOW);
+    expect(state).toMatchObject({ key: "unchecked", label: "Active", tone: "neutral", attention: null });
+    expect(state.detail).toMatch(/could not be checked/);
+  });
+
+  it("a problem that was read is still reported when another read failed", () => {
+    expect(campaignState(running({ sendsChecked: false, failedSends: 2, sent: null }), NOW)).toMatchObject({ key: "stuck", detail: "2 emails could not be sent." });
   });
 
   it("an active campaign with nobody in it says so", () => {

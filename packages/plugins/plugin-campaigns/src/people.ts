@@ -164,7 +164,7 @@ export async function enrollmentPeople(ctx: PluginContext, companyId: string, ca
             c.name, c.emails, i.identifier AS issue_identifier, i.status AS issue_status
        FROM ${table(ctx, "campaign_enrollments")} e
        LEFT JOIN ${table(ctx, "crm_contacts")} c ON c.id = e.contact_id AND c.company_id = e.company_id
-       LEFT JOIN public.issues i ON i.id::text = e.open_issue_id
+       LEFT JOIN public.issues i ON i.id::text = e.open_issue_id AND i.company_id::text = e.company_id
       WHERE e.company_id = $1 AND e.campaign_id = $2
       ORDER BY (e.status = 'running') DESC, e.next_due_at ASC NULLS LAST, e.created_at
       LIMIT ${cap}`,
@@ -320,7 +320,7 @@ export interface TaskCounts { waiting: number; blocked: number; oldestAt: string
 export async function stepTaskCounts(ctx: PluginContext, companyId: string): Promise<Map<string, TaskCounts>> {
   const rows = await ctx.db.query<{ campaign_id: string; waiting: string | number; blocked: string | number; oldest: unknown }>(
     `SELECT e.campaign_id, count(*) AS waiting, count(*) FILTER (WHERE i.status = 'blocked') AS blocked, min(i.created_at) AS oldest
-       FROM ${table(ctx, "campaign_enrollments")} e JOIN public.issues i ON i.id::text = e.open_issue_id
+       FROM ${table(ctx, "campaign_enrollments")} e JOIN public.issues i ON i.id::text = e.open_issue_id AND i.company_id::text = e.company_id
       WHERE e.company_id = $1 AND e.status = 'running' AND i.status NOT IN ('done', 'cancelled')
       GROUP BY e.campaign_id`,
     [companyId],
