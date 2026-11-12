@@ -22,7 +22,7 @@ import { delegateBlockers, delegateFacts, delegateView, getDelegate, ladderDeleg
 import { getPolicy, getPolicyStrict, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
 import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
-import { destinationsForPost, getAccountsByIds, getPost, setPostStatus, table, type PostRow } from "./db.js";
+import { destinationsForPost, getAccountsByIds, getPost, postMedia, setPostStatus, table, type PostRow } from "./db.js";
 import { SocialError } from "./domain.js";
 import { requireCanActOnPost } from "./ownership.js";
 import { closePostReview, delegateForPost, handReviewIssue, handToDelegate, handToSocialAgent, handoffTargets, issueOpen, reviewIssueOf, routePostReview, type ReviewActor } from "./review.js";
@@ -432,6 +432,53 @@ export async function mediaExperimentForPost(
   }
 }
 
+/** Days a picture or video stays "used": the same file on another post of the scope inside this time cannot pass review. */
+export const MEDIA_REUSE_DAYS = 60;
+
+/**
+ * Media of this post that another post of the same scope already carries on one of the same accounts (created inside
+ * `MEDIA_REUSE_DAYS`, any status but draft). The same picture on another platform's account is the same content told
+ * elsewhere, not a repeat, so it is allowed; a post with no accounts yet is compared with every post of the scope.
+ * The two arms of one experiment may share media: there the picture is the thing held constant.
+ */
+export async function reusedMedia(ctx: PluginContext, companyId: string, post: PostRow): Promise<Array<{ kind: string; day: string; excerpt: string }>> {
+  const media = postMedia(post);
+  if (media.length === 0) return [];
+  // The same scope: own work or the same client; in My Social, the same person's posts.
+  const params: unknown[] = [companyId, post.id, post.scope, MEDIA_REUSE_DAYS];
+  let who = "p.client_ref IS NULL";
+  if (post.client_ref) {
+    params.push(post.client_ref);
+    who = `p.client_ref = $${params.length}`;
+  }
+  if (post.scope === "personal") {
+    params.push(post.owner_user_id);
+    who += ` AND p.owner_user_id = $${params.length}`;
+  }
+  const accounts = (await destinationsForPost(ctx, post.id)).map((d) => d.account_id);
+  if (accounts.length) {
+    // The id list goes as JSON text: the host binds an array parameter element by element.
+    params.push(JSON.stringify(accounts));
+    who += ` AND EXISTS (SELECT 1 FROM ${table(ctx, "destinations")} d WHERE d.post_id = p.id AND d.account_id IN (SELECT jsonb_array_elements_text($${params.length}::jsonb)))`;
+  }
+  const rows = await ctx.db.query<{ id: string; body: string; media: unknown; created_at: unknown; experiment_id: string | null }>(
+    `SELECT p.id, p.body, p.media, p.created_at, p.experiment_id FROM ${table(ctx, "posts")} p
+      WHERE p.company_id = $1 AND p.id <> $2 AND p.status <> 'draft' AND p.scope = $3 AND ${who}
+        AND p.created_at >= now() - make_interval(days => $4)
+      ORDER BY p.created_at DESC LIMIT 300`,
+    params,
+  );
+  const out: Array<{ kind: string; day: string; excerpt: string }> = [];
+  for (const m of media) {
+    const other = rows.find((r) => {
+      if (post.experiment_id && r.experiment_id === post.experiment_id) return false;
+      return postMedia({ media: r.media } as PostRow).some((x) => (m.assetId && x.assetId === m.assetId) || x.url === m.url);
+    });
+    if (other) out.push({ kind: m.kind === "video" ? "video" : "image", day: new Date(String(other.created_at)).toISOString().slice(0, 10), excerpt: other.body.replace(/\s+/g, " ").trim().slice(0, 60) });
+  }
+  return out;
+}
+
 export async function recordReviewerVerdict(ctx: PluginContext, companyId: string, post: PostRow, input: VerdictInput): Promise<{ recorded: boolean; verdict: string; next: string; refused?: boolean; blockers?: string[]; score?: number; warnings?: string[] }> {
   const reviewer = await reviewerAgentId(ctx, companyId);
   if (!reviewer) throw new SocialError("This company has no Reviewer set (Setup → Team), so there is nobody to record a review verdict.");
@@ -440,6 +487,15 @@ export async function recordReviewerVerdict(ctx: PluginContext, companyId: strin
   const notes = input.notes?.trim() || null;
   if (input.verdict === "changes" && !notes) throw new SocialError("Say what has to change (notes): the Social agent works from your list.");
   const before = await signoffState(ctx, companyId, post);
+
+  // A picture that was on another post cannot pass: a feed that repeats its images looks abandoned.
+  if (input.verdict === "pass") {
+    const reused = await reusedMedia(ctx, companyId, post);
+    if (reused.length) {
+      const blockers = reused.map((r) => `The ${r.kind} was already used on a post of ${r.day} ("${r.excerpt}"). Make a new one that shows what this post says.`);
+      return { recorded: false, verdict: "pass", refused: true, blockers, next: "Not recorded: this post reuses a picture or video. Return it with record-review-verdict verdict changes, and ask for new media (request-creative)." };
+    }
+  }
 
   // For "pass", run the creative rubric and check media rule enforcement
   if (input.verdict === "pass") {

@@ -96,6 +96,7 @@ const ACTION_KEYS = [
   "social.growth-load",
   "social.growth-update-program",
   "social.growth-save-playbook",
+  "social.growth-set-focus",
   "social.growth-approve-experiment",
   "social.growth-reject-experiment",
   "social.growth-abandon-experiment",

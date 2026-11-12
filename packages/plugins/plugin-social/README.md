@@ -166,6 +166,16 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.0: one focus a month, hooks tested and doubled down
+
+Src-only (no migration, no new capability). **Changes what agents do for every company's own work and its clients**: the skill text, the weekly plan and the reviewer's checks.
+
+- **Focus.** Each scope (own work, each client) has one focus a month: theme, audience, the ask, the real proof to build from and the number that says it worked. It lives in the scope's Growth program (`constraints.focus`, closed ones in `constraints.focusLog`, 12 at most). Tool `set-focus` (the current month only; a focus of another month is closed with `learned`), page action `social.growth-set-focus` (a person). `get-playbook` returns `focus` with its state (`none`, `current`, `next`, `expired`) and what to do.
+- **Parts.** A post names its parts in its tags: `hook:<name>`, `body:<name>`, `cta:<name>`. An edit keeps a post's tags (and its platform overrides) unless it sends new ones: before, any `update-post` without `overrides` and every save in the page's editor wiped them. Many hooks are tried over a few bodies and asks. Once a scope has a focus for the month, an agent's post without a hook tag is refused at `request-review` (replies, quotes and My Social are exempt).
+- **Hook board.** Tool `hook-board` (and the Growth tab): per part, the posts, people reached, actions per 100 reached, and a verdict (double down, keep testing, drop, too little reach). Under 100 people a part gets no verdict. It names the control: the best hook, body and ask so far.
+- **No reused pictures.** The Reviewer's pass is refused when the post's image or video was on another post of the same scope, on one of the same accounts, in the last 60 days (the same picture on another platform's account is allowed, and the two arms of one experiment may share media). The reply lists the earlier post and asks for new media.
+- **Guidance.** `references/social-craft.md` gains "One focus a month" and "Hooks, bodies, asks: test many, then double down"; the weekly plan routine starts from the focus and the board; three reviewer checks are new (worth stopping for, the picture itself, the hook tag).
+
 ## 0.12.0: post preview, account picker, ask for changes
 
 Src-only (no migration, no new capability). Three things for a person on the Social page:

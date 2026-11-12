@@ -447,7 +447,52 @@ export interface RankedType {
   observedPosts: number;
 }
 
+export interface GrowthFocus {
+  month: string;
+  theme: string;
+  audience: string;
+  offer: string;
+  proof: string[];
+  metric: string;
+  setBy?: string;
+  setAt?: string;
+  learned?: string | null;
+}
+
+export interface GrowthFocusView {
+  focus: GrowthFocus | null;
+  state: "none" | "current" | "next" | "expired";
+  thisMonth: string;
+  note?: string;
+  past: GrowthFocus[];
+}
+
+export interface GrowthPartRow {
+  name: string;
+  posts: number;
+  reach: number;
+  actions: number;
+  rate: number | null;
+  verdict: "double down" | "keep testing" | "drop" | "too little reach";
+}
+
+export interface GrowthHookBoard {
+  periodDays: number;
+  published: number;
+  tagged: number;
+  reach: number;
+  minReach: number;
+  control: { hook: string | null; body: string | null; cta: string | null };
+  hooks: GrowthPartRow[];
+  bodies: GrowthPartRow[];
+  ctas: GrowthPartRow[];
+  notes: string[];
+}
+
 export interface GrowthSnapshot {
+  /** Since 0.13.0; absent from an older worker. */
+  focus?: GrowthFocusView;
+  hookBoard?: GrowthHookBoard;
   program: GrowthProgram;
   periodDays: number;
   summary: { postsScored: number; postsWithLift: number; medianLift: number | null };

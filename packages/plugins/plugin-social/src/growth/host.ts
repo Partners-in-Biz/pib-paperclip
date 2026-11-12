@@ -3,6 +3,7 @@
  * Wires the kit environment with Social-specific issue tracking, scopes,
  * features storage, and configuration.
  */
+import { focusOf } from "../focus.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   starterPlaybook,
@@ -76,6 +77,8 @@ export function programOut(program: Program) {
     brandVoice: program.constraints.brandVoice ?? null,
     platforms: program.constraints.platforms ?? null,
     cadence: program.constraints.cadence ?? null,
+    /** This month's focus as stored (`get-playbook` and the Growth tab add its state and what to do). */
+    focus: focusOf(program),
     playbookVersion: program.playbookVersion,
     scoreboard: program.scoreboard,
     featureQuestions: program.featureQuestions,
