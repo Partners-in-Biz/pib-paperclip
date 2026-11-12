@@ -40,7 +40,7 @@ import { planRender, type PlanOptions, type RenderPass } from "./render-plan.js"
 import type { ClaimedRender } from "./render-queue.js";
 import { failureFromRun, RenderFailure, type RenderControl, type RenderExecutor } from "./runner.js";
 import { editDuration, normalizeEdit, type EditDoc } from "./timeline.js";
-import { downloadObjectToWorkdir, withRenderWorkdir } from "./workdir.js";
+import { assertDiskSpace, downloadObjectToWorkdir, MIN_FREE_BYTES, withRenderWorkdir } from "./workdir.js";
 
 export const OUTPUT_FILE = "out.mp4";
 export const OUTPUT_MIME = "video/mp4";
@@ -172,7 +172,12 @@ async function passProblem(pass: RenderPass, fps: number, run: RunOptions): Prom
 }
 
 export interface PassReport { plan: "single" | "multi"; weight: number; passes: string[] }
-export type PassOptions = Pick<PipelineOptions, "run" | "fontsDir" | "plan" | "deadlineSec" | "now">;
+export type PassOptions = Pick<PipelineOptions, "run" | "fontsDir" | "plan" | "deadlineSec" | "now" | "statfs">;
+
+/** Free space a multi-pass render needs: two intermediates at their size cap, plus 2 GiB, never under the single-pass floor. */
+export function multiPassMinFreeBytes(): number {
+  return Math.max(MIN_FREE_BYTES, 2 * INTERMEDIATE_FSIZE_BYTES + 2 * 1024 ** 3);
+}
 
 /**
  * Renders `doc` from local `sources` to `dir/OUTPUT_FILE`: one pass when the edit fits the pass budget, else the planned
@@ -227,6 +232,8 @@ export async function renderPasses(doc: EditDoc, sources: CompileInputs, dir: st
     await run(compileVideo(doc, sources, OUTPUT_FILE, { fontsDir: options.fontsDir }), dir, FSIZE_BYTES);
     return { plan: "single", weight: plan.weight, passes: [] };
   }
+  // Before any pass spawns: intermediates can fill the shared disk mid-render (PAR-10764).
+  await assertDiskSpace(dir, 0, options.statfs, multiPassMinFreeBytes());
   // How many passes still read each intermediate: its folder goes once the last reader has succeeded.
   const made = new Set(plan.passes.map((p) => p.output));
   const reads = (s: CompileInputs) => [...new Set(Object.values(s).map((i) => i.path))].filter((p) => made.has(p));

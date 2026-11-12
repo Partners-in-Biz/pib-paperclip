@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { classifyExit, containedArgv, DEFAULT_AS_LIMIT_BYTES, FSIZE_BYTES, pidsInGroup, runContained, Tail, type RunOptions } from "../src/video-edit/ffmpeg.js";
 import { failureFromRun } from "../src/video-edit/runner.js";
 import { parseProbe, probeArgs, probeMedia } from "../src/video-edit/probe.js";
+import { multiPassMinFreeBytes } from "../src/video-edit/render-pipeline.js";
 import { assertDiskSpace, downloadToWorkdir, MIN_FREE_BYTES, rendersRoot, sweepRenderWorkdirs, withRenderWorkdir } from "../src/video-edit/workdir.js";
 
 function fakeChild(pid = 4242) {
@@ -204,6 +205,14 @@ describe("render workdir", () => {
     await expect(assertDiskSpace("/", 0, disk(MIN_FREE_BYTES))).resolves.toBe(MIN_FREE_BYTES);
     await expect(assertDiskSpace("/", 3 * GB, disk(10 * GB))).rejects.toMatchObject({ code: "disk_low" });
     await expect(assertDiskSpace("/", 2 * GB, disk(10 * GB))).resolves.toBe(10 * GB);
+  });
+
+  it("PAR-10764: a multi-pass floor (14 GiB) is stricter; the single-pass 8 GiB rule is unchanged", async () => {
+    const multi = multiPassMinFreeBytes();
+    expect(multi).toBe(14 * GB);
+    await expect(assertDiskSpace("/", 0, disk(10 * GB), multi)).rejects.toMatchObject({ code: "disk_low" });
+    await expect(assertDiskSpace("/", 0, disk(15 * GB), multi)).resolves.toBe(15 * GB);
+    await expect(assertDiskSpace("/", 0, disk(9 * GB))).resolves.toBe(9 * GB);
   });
 
   it("makes a private folder under <localRoot>/renders and removes it even on failure", async () => {
