@@ -406,6 +406,7 @@ export function boardChatRoutes(
     // Feed the prompt to the CLI via stdin.
     writeChildStdin(proc, prompt, "board-chat:prompt", (error) => {
       clearTimeout(timeout);
+      proc.kill("SIGTERM");
       releaseSlot();
       console.error("[board/chat/stream stdin error]", error);
       if (res.writable) {
