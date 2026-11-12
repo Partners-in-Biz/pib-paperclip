@@ -11,7 +11,13 @@ import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
-import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import {
+  buildSshSpawnTarget,
+  sshRemoteRunDirFor,
+  type SshRemoteExecutionSpec,
+  type SshRemoteStopOutcome,
+  type SshRemoteStopSignal,
+} from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { boundWakePayloadJson } from "./wake-payload-bound.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
@@ -90,10 +96,14 @@ export interface TerminalResultCleanupEvidence {
   forceKilled: boolean;
 }
 
+type StopRemote = (signal: SshRemoteStopSignal) => Promise<SshRemoteStopOutcome>;
+
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  /** ssh targets only: signals the remote process group (PAR-9399). */
+  stopRemote?: StopRemote;
 }
 
 interface SpawnTarget {
@@ -102,6 +112,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stopRemote?: StopRemote;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -3701,6 +3712,7 @@ async function resolveSpawnTarget(
     remoteExecution?: RemoteExecutionSpec | null;
     remoteEnv?: Record<string, string> | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
+    runId?: string;
   } = {},
 ): Promise<SpawnTarget> {
   const remote = options.remoteExecution ?? null;
@@ -3718,12 +3730,20 @@ async function resolveSpawnTarget(
           (entry): entry is [string, string] => typeof entry[1] === "string",
         ),
       ),
+      // PAR-9399: the plan 13.9 run dir; PAR-9917 records the same path in the lease.
+      ...(() => {
+        const remoteRunDir = options.runId
+          ? sshRemoteRunDirFor(remote.remoteWorkspacePath, options.runId)
+          : null;
+        return remoteRunDir ? { remoteRunDir } : {};
+      })(),
     });
     return {
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stopRemote: spawnTarget.stopRemote,
     };
   }
 
@@ -4824,6 +4844,7 @@ export async function runChildProcess(
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
+      runId,
     })
       .then(async (target): Promise<SpawnTarget> => {
         // PAR-7678: optional systemd slice (memory ceiling) for local children.
@@ -4837,13 +4858,19 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const child = spawn(target.command, target.args, {
-          cwd: target.cwd ?? opts.cwd,
-          env: childEnv,
-          detached: process.platform !== "win32",
-          shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-        }) as ChildProcessWithEvents;
+        let child: ChildProcessWithEvents;
+        try {
+          child = spawn(target.command, target.args, {
+            cwd: target.cwd ?? opts.cwd,
+            env: childEnv,
+            detached: process.platform !== "win32",
+            shell: false,
+            stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          }) as ChildProcessWithEvents;
+        } catch (err) {
+          void target.cleanup?.();
+          throw err;
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
@@ -4864,6 +4891,7 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          ...(target.stopRemote ? { stopRemote: target.stopRemote } : {}),
         });
 
         let timedOut = false;
@@ -4878,6 +4906,52 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let closed = false;
+        let timeoutKillTimer: NodeJS.Timeout | null = null;
+        const stopRemote = target.stopRemote;
+
+        // PAR-9399: on an ssh target the local signal only reaches the ssh
+        // client, so stop the remote group first and signal the client only
+        // when that fails, or at KILL after graceSec. Local targets keep the
+        // old sequence: local SIGTERM now, local SIGKILL after graceSec.
+        const reportRemoteStop = (signal: SshRemoteStopSignal, outcome: SshRemoteStopOutcome) => {
+          if (closed) return;
+          logChain = logChain
+            .then(() =>
+              opts.onLog("stderr", `[paperclip] remote process group stop ${signal}: ${outcome}\n`),
+            )
+            .catch((err) => onLogError(err, runId, "failed to append remote stop log line"));
+        };
+        const stopProcess = (onKill?: () => void): NodeJS.Timeout => {
+          if (stopRemote) {
+            void stopRemote("TERM")
+              .catch((): SshRemoteStopOutcome => "error")
+              .then((outcome) => {
+                reportRemoteStop("TERM", outcome);
+                if (outcome !== "signalled" && !closed) {
+                  signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                }
+              });
+          } else {
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          }
+          return setTimeout(
+            () => {
+              onKill?.();
+              if (!stopRemote) {
+                signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                return;
+              }
+              void stopRemote("KILL")
+                .catch((): SshRemoteStopOutcome => "error")
+                .then((outcome) => {
+                  reportRemoteStop("KILL", outcome);
+                  if (!closed) signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                });
+            },
+            Math.max(1, opts.graceSec) * 1000,
+          );
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -4931,16 +5005,11 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             terminalCleanupSignal = "SIGTERM";
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
-            terminalCleanupKillTimer = setTimeout(
-              () => {
-                terminalCleanupKillTimer = null;
-                terminalCleanupSignal = "SIGKILL";
-                terminalCleanupForceKilled = true;
-                signalRunningProcess({ child, processGroupId }, "SIGKILL");
-              },
-              Math.max(1, opts.graceSec) * 1000,
-            );
+            terminalCleanupKillTimer = stopProcess(() => {
+              terminalCleanupKillTimer = null;
+              terminalCleanupSignal = "SIGKILL";
+              terminalCleanupForceKilled = true;
+            });
           }, graceMs);
         };
 
@@ -4949,13 +5018,9 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(
-                  () => {
-                    signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                  },
-                  Math.max(1, opts.graceSec) * 1000,
-                );
+                timeoutKillTimer = stopProcess(() => {
+                  timeoutKillTimer = null;
+                });
               }, opts.timeoutSec * 1000)
             : null;
 
@@ -5025,7 +5090,9 @@ export async function runChildProcess(
         }
 
         child.on("error", (err: Error) => {
+          closed = true;
           if (timeout) clearTimeout(timeout);
+          if (timeoutKillTimer) clearTimeout(timeoutKillTimer);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
@@ -5045,7 +5112,9 @@ export async function runChildProcess(
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
+            closed = true;
             if (timeout) clearTimeout(timeout);
+            if (timeoutKillTimer) clearTimeout(timeoutKillTimer);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
             void logChain.finally(() => {
