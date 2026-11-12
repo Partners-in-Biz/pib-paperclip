@@ -29,7 +29,7 @@ export interface ResponsiveSearchAdCopy {
 const PATH_PATTERN = /^[\p{L}\p{N}_-]+$/u;
 const chars = (text: string) => [...text].length;
 
-function textList(raw: unknown, label: string, min: number, max: number, maxChars: number): string[] {
+export function textList(raw: unknown, label: string, min: number, max: number, maxChars: number): string[] {
   const items = Array.isArray(raw) ? raw : [];
   if (items.length < min || items.length > max) throw new AdsError(`${label}s must have ${min} to ${max} items, not ${items.length}`);
   const out: string[] = [];
@@ -55,7 +55,7 @@ function pathField(raw: unknown, label: string): string | undefined {
   return text;
 }
 
-function finalUrlOf(raw: unknown): string {
+export function finalUrlOf(raw: unknown): string {
   const text = typeof raw === "string" ? raw.trim() : "";
   if (text.length === 0) throw new AdsError("finalUrl is required");
   if (text.length > RSA_LIMITS.finalUrlChars) throw new AdsError(`finalUrl is too long (${RSA_LIMITS.finalUrlChars} characters at most)`);

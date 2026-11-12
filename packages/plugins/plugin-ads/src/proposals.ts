@@ -35,6 +35,7 @@ import { ADS_ORIGINS, OPEN_PROPOSAL_STATUSES, PROPOSAL_KIND_LABELS, SPEND_KINDS,
 import { normalizeProposal, type Normalized } from "./proposal-input.js";
 import { appInput } from "./providers/google-app.js";
 import { videoInput } from "./providers/google-video.js";
+import { videoAdInput } from "./providers/google-video-ad.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
 import { assertCampaignCap } from "./campaignCap.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
@@ -472,7 +473,7 @@ export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
   if (p.kind === "add_keywords") return { kind: p.kind, accountId: x.accountId, adGroupExternalId: x.adGroupExternalId, keywords: x.keywords, reason: x.reason };
   if (p.kind === "creative_check") return { kind: p.kind, platform: x.platform, name: x.name, creative: x.creative, specialAdCategories: x.specialAdCategories, notes: x.notes, reason: x.reason };
   if (p.kind === "create_ad_creative") return { kind: p.kind, accountId: x.accountId, name: x.name, pageId: x.pageId, imageHash: x.imageHash, videoId: x.videoId, link: x.link, headline: x.headline, body: x.body, cta: x.cta, notes: x.notes, reason: x.reason };
-  if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, notes: x.notes, reason: x.reason };
+  if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, ...videoAdInput(x.videoAd), notes: x.notes, reason: x.reason };
   return { kind: p.kind, targets: ((x.targets as Array<{ accountId: string; campaignExternalId: string }>) ?? []).map((t) => ({ accountId: t.accountId, campaignExternalId: t.campaignExternalId })), reason: x.reason, trigger: x.trigger };
 }
 

@@ -207,7 +207,7 @@ export class MockAdsProvider implements AdsProvider {
   async createAd(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdRequest) {
     this.createStatuses.push({ op: "create_ad", status: request.status });
     const externalId = `mock-ad-${(this.seq += 1)}`;
-    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
+    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, ...(request.videoAd ? { videoAd: request.videoAd } : {}), status: request.status === "ACTIVE" ? "active" : "paused" });
     return { externalId, name: request.name };
   }
 

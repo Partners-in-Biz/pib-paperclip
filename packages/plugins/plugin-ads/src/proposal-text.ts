@@ -67,9 +67,20 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
     lines.push(`Link: ${String(x.link)}`);
   } else if (p.kind === "create_ad") {
     lines.push(`Ad: **${String(x.name)}** on ${String(x.accountName)} (${String(x.platform)})`);
-    lines.push(`Ad set: ${String(x.adSetExternalId)}`);
-    lines.push(`Creative: ${String(x.creativeExternalId)}`);
-    lines.push("It is created **paused**; Meta reviews it before it can deliver.");
+    const v = x.videoAd as { videoAssets: string[]; logoImageAsset: string; businessName: string; headlines: string[]; longHeadlines: string[]; descriptions: string[]; finalUrl: string } | undefined;
+    if (v) {
+      lines.push(`Ad group: ${String(x.adSetExternalId)} (Demand Gen video ad)`);
+      lines.push(`Videos: ${v.videoAssets.join(", ")}; logo: ${v.logoImageAsset}; business name: "${v.businessName}"`);
+      lines.push(`Headlines: ${v.headlines.map((h) => `"${h}"`).join(", ")}`);
+      lines.push(`Long headlines: ${v.longHeadlines.map((h) => `"${h}"`).join(", ")}`);
+      lines.push(`Descriptions: ${v.descriptions.map((d) => `"${d}"`).join(", ")}`);
+      lines.push(`Final URL: ${v.finalUrl}`);
+      lines.push("It is created **paused**; Google reviews it before it can serve.");
+    } else {
+      lines.push(`Ad set: ${String(x.adSetExternalId)}`);
+      lines.push(`Creative: ${String(x.creativeExternalId)}`);
+      lines.push("It is created **paused**; Meta reviews it before it can deliver.");
+    }
   } else if (p.kind === "create_ad_group") {
     lines.push(`Campaign: **${String(x.campaignName)}** on ${String(x.accountName)} (${String(x.platform)})`);
     lines.push(`Ad group: **${String(x.name)}**`);
@@ -146,7 +157,7 @@ export function reviewerChecks(kind: ProposalKind): string[] {
   if (kind === "create_campaign") return [...common, ...copy, "It is created paused and has a sensible daily budget for the client's size."];
   if (kind === "creative_check") return [...common.slice(2), ...copy];
   if (kind === "create_ad_creative") return [...common.slice(2), ...copy, "The creative is ready to use in ads but serves nothing until an ad is created to use it."];
-  if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved."];
+  if (kind === "create_ad") return [...common, "The ad set and creative specified are already created and approved (Google: the ad group exists, and the videos and logo are the client's own).", "Google: the copy passes the copy checks above and the final URL lands on the right page with every UTM tag."];
   if (kind === "create_ad_group") return [...common, "The max CPC bid is sensible for the campaign and client size.", "The ad group is created paused and a person switches it on in the ad platform."];
   if (kind === "create_responsive_search_ad") return [...common, ...copy, "The final URL lands on the right page and every UTM tag is correct.", "The ad group named exists and its keywords fit these headlines.", "The ad is created paused and a person switches it on in the ad platform."];
   if (kind === "add_keywords") return [...common, "The keywords match the campaign's topic and intent.", "Negative keywords (marked) are sensible and won't block other good searches."];

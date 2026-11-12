@@ -377,12 +377,19 @@ describe.skipIf(!available)("running ad creatives and ads", () => {
 
   it("rejects an ad creative proposal on a Google account", async () => {
     const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
-    expect(await refusal(propose(w, CREATE_AD_CREATIVE(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ad creatives are only supported on Meta") });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(google.accountId)))).toMatchObject({ message: expect.stringContaining("Google has no standalone creatives") });
   });
 
-  it("rejects an ad proposal on a Google account", async () => {
-    const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
-    expect(await refusal(propose(w, CREATE_AD(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ads are only supported on Meta") });
+  it("creates a Google video ad PAUSED from its own copy and assets (no creative id), PAR-6697", async () => {
+    const google = await syncedAccount(w, { externalId: "555-666-7777", platform: "google", connectionPlatform: "mock" });
+    const videoAd = { videoAssets: ["customers/5556667777/assets/11"], logoImageAsset: "customers/5556667777/assets/12", businessName: "Velox", headlines: ["Read faster"], longHeadlines: ["Read faster with Velox"], descriptions: ["Train your reading speed."], finalUrl: "https://velox.example/?utm_source=google&utm_medium=video&utm_campaign=q4" };
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "77", creativeExternalId: undefined })))).toMatchObject({ message: expect.stringContaining("videoAssets") });
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "77", ...videoAd, videoAssets: ["customers/1/assets/11"] })))).toMatchObject({ message: expect.stringContaining("another Google Ads account") });
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "as1", ...videoAd })))).toMatchObject({ message: expect.stringContaining("ad group") });
+    const { id, approvalId } = await approved(w, CREATE_AD(google.accountId, { adSetExternalId: "77", creativeExternalId: undefined, ...videoAd }));
+    const result = await executeProposal(w.rt(), agent, { proposalId: id, approvalId });
+    expect(result).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("(paused)") }] });
+    expect(w.mock.writes).toEqual([{ op: "create_ad", accountExternalId: "555-666-7777", name: "Q4 ad", adSetExternalId: "77", creativeExternalId: "", videoAd, status: "paused" }]);
   });
 
   it("validates creative input: exactly one of image or video, non-https link, headline and body lengths", async () => {
