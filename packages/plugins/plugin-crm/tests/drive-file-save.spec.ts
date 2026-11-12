@@ -60,6 +60,32 @@ describe("drive_file_save into a client's folder", () => {
     expect((await saveDirect({ name: `DRY RUN - ${reportFileName("Acme Ltd", "2026-10", 1)}` })).status).toBe("invalid_name");
   });
 
+  it("PAR-7712: the Cockpit's evidence name (ISSUE-step-timestamp) passes the name gate and lands in Meetings & Notes; a step with no timestamp is refused", async () => {
+    const { saveDirect } = await setup();
+    for (const name of ["PAR-811-drive-journey-20261112T081500Z.png", "PAR-4059-login-1760000000.png", "PAR-4059-1760000000.png"]) {
+      expect(await saveDirect({ name, mimeType: "image/png", subfolder: "05 Evidence" })).toMatchObject({ status: "saved", name, subfolder: "Meetings & Notes" });
+    }
+    for (const name of ["PAR-811-login.png", "PAR-811-Login-20261112T081500Z.png", "par-811-login-1760000000.png", "PAR-811-login-20261112T0815Z.png"]) {
+      expect((await saveDirect({ name, mimeType: "image/png" })).status).toBe("invalid_name");
+    }
+  });
+
+  it("PAR-7712: drive_files_list reads back what was saved for a project (sub-folder, folder id, link) with the client's folder, filtered by sub-folder and name", async () => {
+    const { harness, rows } = await setup();
+    expect((await toolRaw(harness, "drive_file_save", save({ name: "2026-11-12 PiB Canary Co run-42 v01.png", subfolder: "Assets/Social" }))).data?.status).toBe("saved");
+    expect((await toolRaw(harness, "drive_file_save", save({ name: "PAR-811-run-42-20261112T081500Z.png", subfolder: "Meetings & Notes" }))).data?.status).toBe("saved");
+    expect((await toolRaw(harness, "drive_file_save", save({ name: "2026-11-12 other v01.png", subfolder: "Assets/Social" }))).data?.status).toBe("saved");
+    const social = (await toolRaw(harness, "drive_files_list", { projectId: "p1", subfolder: "Assets/Social", nameContains: "run-42" })).data!;
+    expect(social.count).toBe(1);
+    const row = rows().find((r) => r.name === "2026-11-12 PiB Canary Co run-42 v01.png")!;
+    expect(social.files[0]).toMatchObject({ name: row.name, subfolder: "Assets/Social", folderId: row.folder_id, url: expect.stringMatching(/^https:\/\//) });
+    expect(social.folder).toMatchObject({ status: "found", path: expect.stringMatching(/\/Clients\/Acme Ltd \(Primary Contact\)$/) });
+    expect((await toolRaw(harness, "drive_files_list", { projectId: "p1" })).data!.count).toBe(3);
+    expect((await toolRaw(harness, "drive_files_list", { projectId: "p1", subfolder: "Meetings & Notes" })).data!.files.map((f: { name: string }) => f.name)).toEqual(["PAR-811-run-42-20261112T081500Z.png"]);
+    expect((await toolRaw(harness, "drive_files_list", { projectId: "p2" })).data!.count).toBe(0);
+    expect((await toolRaw(harness, "drive_files_list", { projectId: "no-such-project" })).error).toMatch(/Project not found/);
+  });
+
   it("(d) subfolder 'Assets/Social' lands in that folder of the client, and the stored row keeps the sub-folder and the folder id", async () => {
     const { harness, google, rows } = await setup();
     const r = await toolRaw(harness, "drive_file_save", save({ subfolder: "Assets/Social" }));
