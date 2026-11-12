@@ -114,7 +114,28 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect(await editDoc(animated.id)).toMatchObject({ schemaVersion: 1 });
     await saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 1, doc: v2("asset-own") }, USER);
     expect(await editDoc(plain.id)).toMatchObject({ schemaVersion: 2 });
-    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 3 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
+    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 4 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
+  });
+
+  it("v3 writer: create, save, version snapshot and restore keep adjust + look as v3; neutral adjust saves v1", async () => {
+    await addAsset("asset-own", CO, null);
+    const base = timeline("asset-own");
+    const v3 = { ...base, tracks: [{ ...base.tracks[0], clips: [{ ...base.tracks[0].clips[0], adjust: { blur: 10, vignette: 0 }, look: { id: "sepia", intensity: 0.5 } }] }] };
+    const neutral = { ...base, schemaVersion: 3, tracks: [{ ...base.tracks[0], clips: [{ ...base.tracks[0].clips[0], adjust: { contrast: 1 } }] }] };
+    const styled = { schemaVersion: 3, tracks: [{ clips: [{ adjust: { blur: 10 }, look: { pack: "pib-basic", id: "sepia", intensity: 0.5 } }] }] };
+    const made = await createVideoEdit(ctx, CO, { title: "Looks", doc: v3 }, USER);
+    expect(await editDoc(made.id)).toMatchObject(styled);
+    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "graded" }, USER);
+    expect(await rawDoc("SELECT doc FROM $T.video_edit_versions WHERE id = $1", version.id)).toMatchObject(styled);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: neutral }, USER);
+    expect(await editDoc(made.id)).toMatchObject({ schemaVersion: 1 });
+    expect(JSON.stringify(await editDoc(made.id))).not.toContain("adjust");
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 2, doc: v3 }, USER);
+    expect(await editDoc(made.id)).toMatchObject(styled);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: base }, USER);
+    await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 4, versionId: version.id }, USER);
+    expect(await editDoc(made.id)).toMatchObject(styled);
+    expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(3);
   });
 
   it("v2 writer: volume keyframes on a picture are refused with no_audio", async () => {
