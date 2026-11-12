@@ -186,30 +186,107 @@ function topLevelArticles(html: string, limit = html.length): Array<{ start: num
   return out;
 }
 
+/** The content-area landmarks, most specific first (fresh regexes: they are global and keep lastIndex). */
+function contentCandidates(): Array<{ re: RegExp; tag: string }> {
+  return [
+    { re: /<(div|section)\b[^>]*class\s*=\s*"[^"]*\b(entry-content|post-content|wp-block-post-content)\b[^"]*"[^>]*>/gi, tag: "" },
+    { re: /<(main)\b[^>]*>/gi, tag: "main" },
+    { re: /<([a-z][a-z0-9]*)\b[^>]*\brole\s*=\s*["']main["'][^>]*>/gi, tag: "" },
+  ];
+}
+
 /**
- * Where the page's own content stops: the earliest of the first <footer> that is not inside an <article>, the second
+ * Where the page's own content stops: the earliest of the first <footer> that is not inside an <article>, a second
  * <html> or <body> open tag (a pasted document, such as a theme's partner widget after the footer), and the end of the
- * document. Anything after it is theme, never page content.
+ * document. Anything after it is theme, never page content. A stray <html>/<body> inside the content area itself (a
+ * whole HTML document pasted into a WordPress page, PAR-10107) is not a boundary: the copy after it is the page's. The
+ * area is capped at that footer, so an unclosed tag in the paste never pulls the theme footer into it.
  */
 function contentBoundary(html: string): number {
   let end = html.search(/<\/body\s*>(?![\s\S]*<\/body\s*>)/i);
   if (end === -1) end = html.length;
-  const nth = (re: RegExp, n: number): number => {
-    let i = 0;
-    for (let m = re.exec(html); m; m = re.exec(html)) if (++i === n) return m.index;
-    return -1;
-  };
-  const second = [nth(/<html\b/gi, 2), nth(/<body\b/gi, 2)].filter((i) => i !== -1);
-  let boundary = Math.min(end, ...second);
+  let footer = end;
   const articles = topLevelArticles(html);
   const re = /<footer\b/gi;
-  for (let m = re.exec(html); m && m.index < boundary; m = re.exec(html)) {
+  for (let m = re.exec(html); m && m.index < end; m = re.exec(html)) {
     if (!articles.some((a) => m!.index > a.start && m!.index < a.end)) {
+      footer = m.index;
+      break;
+    }
+  }
+  let area: [number, number] | null = null;
+  for (const c of contentCandidates()) {
+    const m = c.re.exec(html);
+    if (!m || m.index >= footer) continue;
+    const range = elementEnd(html, m.index, c.tag || m[1]!.toLowerCase());
+    area = [m.index, Math.min(range?.innerEnd ?? footer, footer)];
+    break;
+  }
+  let boundary = Math.min(end, footer);
+  for (const tag of ["html", "body"]) {
+    const tagRe = new RegExp(`<${tag}\\b`, "gi");
+    let seen = 0;
+    for (let m = tagRe.exec(html); m && m.index < boundary; m = tagRe.exec(html)) {
+      if (++seen === 1 || (area && m.index > area[0] && m.index < area[1])) continue;
       boundary = m.index;
       break;
     }
   }
   return boundary;
+}
+
+// A content area holding a whole pasted HTML document (WordPress page text that starts with <style> and <body>, then
+// one wrapper div: the white card the copy sits on). Copy belongs inside that card, else it lands on the paste's own
+// body background and inherits its text colours (PAR-10107). Never stepped into: page-builder and layout wrappers.
+const PASTE_SKIP = /\s+|<!--[\s\S]*?-->|<(style|script)\b[^>]*>([\s\S]*?)<\/\1\s*>|<(?:link|meta)\b[^>]*>|<\/?(html|body)\b[^>]*>/iy;
+const LAYOUT_CLASS = /et_pb_|elementor|vc_|wpb|wp-block-|is-layout-|fl-|row|col|grid|flex/i;
+const LAYOUT_DISPLAY = /\bdisplay\s*:\s*(?:inline-)?(?:flex|grid)\b/i;
+
+/** Style text and stray tags from `at` on, up to the first other node: where that node starts. */
+function skipPasteNoise(html: string, at: number, end: number, seen: { styles: string[]; stray: boolean }): number {
+  const text = html.slice(0, end);
+  for (;;) {
+    PASTE_SKIP.lastIndex = at;
+    const m = PASTE_SKIP.exec(text);
+    if (!m) return at;
+    if (m[1]?.toLowerCase() === "style") seen.styles.push(m[2] ?? "");
+    if (m[3]) seen.stray = true;
+    at += m[0].length;
+  }
+}
+
+/** CSS rules (comments dropped) as [selector, body] pairs; @media blocks are read rule by rule. */
+function cssRules(css: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const m of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]*)\{([^{}]*)\}/g)) out.push([m[1]!.trim(), m[2]!]);
+  return out;
+}
+
+function pastedCard(html: string, area: { innerStart: number; innerEnd: number }): { innerStart: number; innerEnd: number } | null {
+  const lead = { styles: [] as string[], stray: false };
+  const at = skipPasteNoise(html, area.innerStart, area.innerEnd, lead);
+  const open = /<div\b[^>]*>/iy;
+  open.lastIndex = at;
+  const tag = open.exec(html)?.[0];
+  if (!tag) return null;
+  const card = elementEnd(html, at, "div");
+  const close = card ? html.indexOf(">", card.innerEnd) + 1 : 0;
+  if (!card || close === 0 || close > area.innerEnd) return null;
+  const trail = { styles: [] as string[], stray: false };
+  const single = skipPasteNoise(html, close, area.innerEnd, trail) === area.innerEnd;
+  const styles = [...lead.styles, ...trail.styles];
+  const rules = styles.flatMap(cssRules);
+  // The plan's rule: the card is the only element, next to a <style> or a stray tag. A paste whose leading style
+  // styles the page's own body (or that still has its <body> tag) is a whole document even with blocks after the card.
+  const wholeDocument = lead.stray || lead.styles.flatMap(cssRules).some(([sel]) => sel.split(",").some((s) => /^(html|body)(?![\w-])/i.test(s.trim())));
+  if (!(single ? styles.length > 0 || lead.stray || trail.stray : wholeDocument)) return null;
+  const attr = (name: string): string => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(tag)?.slice(1).find((v) => v !== undefined) ?? "";
+  const classes = attr("class").split(/\s+/).filter(Boolean);
+  if (classes.some((c) => LAYOUT_CLASS.test(c)) || LAYOUT_DISPLAY.test(attr("style"))) return null;
+  const names = [...classes.map((c) => `\\.${c.replace(/[^\w-]/g, "\\$&")}`), ...(attr("id").trim() ? [`#${attr("id").trim().replace(/[^\w-]/g, "\\$&")}`] : [])];
+  const named = names.length > 0 ? new RegExp(`(?:${names.join("|")})(?![\\w-])`) : null;
+  if (named && rules.some(([sel, body]) => named.test(sel) && LAYOUT_DISPLAY.test(body))) return null;
+  return card;
 }
 
 /**
@@ -267,22 +344,22 @@ export function withDoctype(html: string): string {
 
 function findContentArea(html: string, boundary: number, selector?: string): { innerStart: number; innerEnd: number; listing?: boolean } | null {
   if (selector) return findBySelector(html, selector);
-  const candidates: Array<{ re: RegExp; tag: string }> = [
-    { re: /<(div|section)\b[^>]*class\s*=\s*"[^"]*\b(entry-content|post-content|wp-block-post-content)\b[^"]*"[^>]*>/gi, tag: "" },
-    { re: /<(main)\b[^>]*>/gi, tag: "main" },
-    { re: /<([a-z][a-z0-9]*)\b[^>]*\brole\s*=\s*["']main["'][^>]*>/gi, tag: "" },
-  ];
-  for (const c of candidates) {
+  // A pasted document's card, one level down, is where the copy goes (PAR-10107); otherwise the area itself.
+  const area = (innerStart: number, innerEnd: number) => {
+    const a = { innerStart, innerEnd };
+    return pastedCard(html, a) ?? a;
+  };
+  for (const c of contentCandidates()) {
     const m = c.re.exec(html);
     if (!m || m.index >= boundary) continue;
     const range = elementEnd(html, m.index, c.tag || m[1]!.toLowerCase());
-    if (range) return { innerStart: range.innerStart, innerEnd: Math.min(range.innerEnd, boundary) };
+    if (range) return area(range.innerStart, Math.min(range.innerEnd, boundary));
   }
   const articles = topLevelArticles(html, boundary);
   if (articles.length === 1) {
     const only = articles[0]!;
     const range = elementEnd(html, only.start, "article");
-    if (range) return { innerStart: range.innerStart, innerEnd: Math.min(range.innerEnd, boundary) };
+    if (range) return area(range.innerStart, Math.min(range.innerEnd, boundary));
   }
   // The run of items can hold theme blocks between them (a partners section, an ad): headings in it are the theme's, not the page's.
   if (articles.length > 1) return { innerStart: articles[0]!.start, innerEnd: articles[articles.length - 1]!.end, listing: true };
@@ -388,7 +465,8 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     const area = findContentArea(html, contentBoundary(html), changes.contentSelector);
     let replaced = false;
     if (area && !area.listing) {
-      const inner = html.slice(area.innerStart, area.innerEnd);
+      // A commented-out <h1> is not the page's heading: blank comments out (same length, so offsets hold).
+      const inner = html.slice(area.innerStart, area.innerEnd).replace(/<!--[\s\S]*?-->/g, (c) => " ".repeat(c.length));
       const h = /(<h1\b[^>]*>)[\s\S]*?(<\/h1\s*>)/i.exec(inner);
       if (h) {
         const at = area.innerStart + h.index;
