@@ -10,6 +10,8 @@
  * Keyframes (schema v2, D1d1): x/y/scale/rotate keys on a main or overlay clip are evaluated per frame from the shared
  * `keyframes.ts` curve, in clip-local time (from the clip's `start`, transition overlap included), before xfade/overlay.
  * Opacity keys (D1d2) scale the clip's alpha per frame (`sendcmd` driving `colorchannelmixer aa`), times its fade alpha.
+ * Looks and colour adjust (schema v3, D2c) grade each clip right after its timing, before crop/rotate/scale, with the
+ * filters `looks.ts` derives (the preview reads the same module), so shape and alpha work on the graded picture.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
@@ -19,6 +21,7 @@ import { AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
 import { toFfmpegExpr } from "./keyframes.js";
+import { adjustToFfmpeg, lookToFfmpeg } from "./looks.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform, type TransitionType } from "./timeline.js";
 
 /** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
@@ -71,6 +74,20 @@ const reshapes = (clip: MediaClip) => Boolean(keysOf(clip, "scale") || keysOf(cl
 /** Any motion keys: the overlay position is evaluated per frame. */
 const animated = (clip: MediaClip) => reshapes(clip) || Boolean(keysOf(clip, "x") || keysOf(clip, "y"));
 const fadesOpacity = (clip: MediaClip) => Boolean(clip.keyframes?.opacity);
+/** A look or a colour adjust on the clip (normalizeEdit drops neutral adjust fields, so present means non-neutral). */
+const graded = (clip: MediaClip) => Boolean(clip.look || clip.adjust);
+
+/** Filters that take RGB only. Everything else in a grade runs on YUV (`eq`, `vignette`) or either (`gblur`). */
+const RGB_ONLY = /^(colorchannelmixer|curves|colortemperature)=/;
+/**
+ * YUV <-> RGB with BT.709 named on both sides. ffmpeg's automatic conversion picks the matrix per direction (frame tag
+ * one way, BT.601 the other), which moved Y by 2 (untagged) to 7 (BT.709-tagged) code values on a flat colour through
+ * an identity `colorchannelmixer`; the same matrix both ways is exact. Input range stays automatic (JPEG is full range).
+ * The alpha plane is kept for images only (a PNG may be transparent); video is graded opaque, which measured about
+ * 1.8 s cheaper per 10 s of 1080x1920 for a look.
+ */
+const toRgb = (alpha: boolean) => ["scale=in_color_matrix=bt709", alpha ? "format=gbrap" : "format=gbrp"];
+const toYuv = (alpha: boolean) => ["scale=out_color_matrix=bt709:out_range=tv", alpha ? "format=yuva420p" : "format=yuv420p"];
 
 class Graph {
   inputArgs: string[] = [];
@@ -107,6 +124,45 @@ class Graph {
     const speed = kind === "video" && clip.speed !== 1 ? `/${num(clip.speed)}` : "";
     const pts = speed ? `(PTS-STARTPTS)${speed}` : "PTS-STARTPTS";
     return [`setpts=${shift ? `${pts}+${num(shift)}/TB` : pts}`, `fps=${this.doc.project.fps}`];
+  }
+
+  /**
+   * The clip's look then adjust, in `looks.ts` order: look (mixer, curves), eq, colortemperature, gblur, vignette. Runs
+   * on the source frame before crop/shape. RGB-only filters get explicit BT.709 conversions around them and the chain
+   * always ends in YUV. Blur first scales the frame to the render width, so the `looks.ts` sigma (at render width) is a
+   * fixed fraction of the clip's own width whatever the source resolution. `vignette` has no alpha formats, so on an
+   * image it runs on a split copy and the source alpha is merged back (a PNG overlay keeps its transparency). `[]` when
+   * not graded.
+   */
+  private grade(clip: MediaClip, kind: CompileInput["kind"]): string[] {
+    if (!graded(clip)) return [];
+    const { width } = this.doc.project;
+    const alpha = kind === "image";
+    const out: string[] = [];
+    let rgb = false;
+    const yuv = () => {
+      if (rgb) out.push(...toYuv(alpha));
+      rgb = false;
+    };
+    for (const f of [...(clip.look ? lookToFfmpeg(clip.look) : []), ...(clip.adjust ? adjustToFfmpeg(clip.adjust, { renderWidth: width }) : [])]) {
+      if (RGB_ONLY.test(f)) {
+        if (!rgb) out.push(...toRgb(alpha));
+        rgb = true;
+        out.push(f);
+      } else if (f.startsWith("gblur=")) {
+        out.push(`scale=w=${width}:h=-2`, f);
+      } else if (f.startsWith("vignette=") && alpha) {
+        yuv();
+        const [a, b, c, d] = [this.label("vga"), this.label("vgb"), this.label("vgc"), this.label("vgd")];
+        if (out.at(-1) !== "format=yuva420p") out.push("format=yuva420p");
+        out.push(`split[${a}][${b}];[${a}]format=yuv420p,${f}[${c}];[${b}]alphaextract[${d}];[${c}][${d}]alphamerge`);
+      } else {
+        yuv();
+        out.push(f);
+      }
+    }
+    yuv();
+    return out;
   }
 
   private crop(t: Transform): string[] {
@@ -191,6 +247,7 @@ class Graph {
       // The common case: fit inside the frame, letterbox with black.
       const steps = [
         ...this.timing(clip, kind, 0),
+        ...this.grade(clip, kind),
         ...this.crop(t),
         `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
         `pad=w=${width}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black`,
@@ -204,7 +261,7 @@ class Graph {
     // alpha over that black frame; the fades after it then darken to black, so the picture is opacity x fade.
     const shaped = this.label("shp");
     const shape = reshapes(clip) ? this.keyedShape(clip, 0) : this.shape(t);
-    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...shape, ...this.opacity(clip, 0)].join(",")}[${shaped}]`);
+    this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...this.grade(clip, kind), ...shape, ...this.opacity(clip, 0)].join(",")}[${shaped}]`);
     const bg = this.black(length);
     this.filters.push(`[${bg}][${shaped}]overlay=${this.overlayAt(clip, 0)}:eof_action=pass,${tail.join(",")}[${out}]`);
     return out;
@@ -217,7 +274,7 @@ class Graph {
     const length = clipDuration(clip);
     // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
     const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : this.shape(clip.transform);
-    const steps = [...this.timing(clip, kind, clip.start), ...shape];
+    const steps = [...this.timing(clip, kind, clip.start), ...this.grade(clip, kind), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
     steps.push(...this.opacity(clip, clip.start));
