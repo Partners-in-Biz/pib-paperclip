@@ -20,12 +20,17 @@ for (const plugin of PLUGINS) {
   const manifest = (await import(`../../plugin-${plugin}/src/manifest.ts`)).default as { id: string; tools?: Tool[] };
   tools.set(manifest.id, new Map((manifest.tools ?? []).map((t) => [t.name, t])));
 }
+{
+  // The Cockpit's own tools (the producer Drive journey calls evidence-save): its manifest is this package's.
+  const manifest = (await import("../src/manifest.js")).default as { id: string; tools?: Tool[] };
+  tools.set(manifest.id, new Map((manifest.tools ?? []).map((t) => [t.name, t])));
+}
 
 const toolSteps = (j: Journey) => j.steps.filter((s) => s.kind === "tool").map((s) => ({ step: s, plugin: s.tool!.split(":")[0]!, name: s.tool!.split(":")[1]! }));
 
 describe("the shipped journeys", () => {
   it("are the five the audit asked for, the nightly lead capture, and (0.6.0) e-sign the site visit counter and (0.11.0) the support case with NPS feedback, each with its own key", () => {
-    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events", "support-case-nps", "browser-evidence-drive"]);
+    expect(JOURNEYS.map((j) => j.key)).toEqual(["lead-capture", "quote-to-invoice", "email-sequence-dry-run", "social-draft-review", "seo-sprint-draft", "client-report", "esign", "site-events", "support-case-nps", "browser-evidence-drive", "drive-producers-canary"]);
     expect(new Set(JOURNEYS.map((j) => j.key)).size).toBe(JOURNEYS.length);
     expect(journeyByKey("lead-capture")!.title).toBe("Lead captured and qualified");
     expect(journeyByKey("ghost")).toBeNull();
@@ -70,7 +75,7 @@ describe("the shipped journeys", () => {
   });
 
   it("never carry a real address or another client in what they send", () => {
-    const vars = { client: "company:canary-1a2b3c4d", companyRecordId: "canary-1a2b3c4d", runId: "r1", date: "2026-10-04", futureDate: "2027-11-08", period: "2026-09", contactId: "canary-contact-1a2b", dealId: "d1", quoteId: "q1", invoiceId: "i1", sequenceId: "s1", postId: "p1", sprintId: "sp1", leadCurl: "curl -d '{\"email\":\"canary@canary.invalid\"}'", acceptedBefore: 0, documentId: "doc-1", contentSha256: "a".repeat(64), keyId: "key-1", eventCurl: "curl -X POST 'https://paperclip.example/ev' -d '{\"k\":\"pibe_test\"}'", entrancesBefore: 0, pageviewsBefore: 0 };
+    const vars = { client: "company:canary-1a2b3c4d", companyRecordId: "canary-1a2b3c4d", runId: "r1", date: "2026-10-04", futureDate: "2027-11-08", period: "2026-09", contactId: "canary-contact-1a2b", dealId: "d1", quoteId: "q1", invoiceId: "i1", sequenceId: "s1", postId: "p1", sprintId: "sp1", leadCurl: "curl -d '{\"email\":\"canary@canary.invalid\"}'", acceptedBefore: 0, documentId: "doc-1", contentSha256: "a".repeat(64), keyId: "key-1", eventCurl: "curl -X POST 'https://paperclip.example/ev' -d '{\"k\":\"pibe_test\"}'", entrancesBefore: 0, pageviewsBefore: 0, driveProjectId: "proj-1" };
     for (const j of JOURNEYS) for (const s of j.steps) expect(guardInput(renderValue(s.input ?? {}, vars), "company:canary-1a2b3c4d"), `${j.key}: ${s.id}`).toEqual([]);
   });
 });
@@ -326,9 +331,9 @@ describe("what a trigger runs", () => {
 
   it("a release of a plugin runs the journeys that exercise it, and a release of an unrelated one runs none", () => {
     expect(journeysFor("release", "partnersinbiz.billing").map((j) => j.key)).toEqual(["quote-to-invoice"]);
-    expect(journeysFor("release", "partnersinbiz.social").map((j) => j.key)).toEqual(["social-draft-review"]);
+    expect(journeysFor("release", "partnersinbiz.social").map((j) => j.key)).toEqual(["social-draft-review", "drive-producers-canary"]);
     expect(journeysFor("release", "partnersinbiz.seo").map((j) => j.key)).toEqual(["seo-sprint-draft"]);
-    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["browser-evidence-drive", "client-report", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events", "support-case-nps"]);
+    expect(journeysFor("release", "partnersinbiz.crm").map((j) => j.key).sort()).toEqual(["browser-evidence-drive", "client-report", "drive-producers-canary", "email-sequence-dry-run", "esign", "lead-capture", "quote-to-invoice", "site-events", "support-case-nps"]);
     expect(journeysFor("release", "partnersinbiz.payroll")).toEqual([]);
   });
 
@@ -363,5 +368,52 @@ describe("the browser evidence journey", () => {
     const manifest = (await import("../src/manifest.js")).default as { tools?: Array<{ name: string }> };
     expect(manifest.tools?.map((t) => t.name)).toContain("evidence-record");
     expect(JSON.stringify(j.steps)).toContain("partnersinbiz.cockpit:evidence-record");
+  });
+});
+
+describe("the producer Drive journey (PAR-7712)", async () => {
+  const j = journeyByKey("drive-producers-canary")!;
+  const step = (id: string) => j.steps.find((s) => s.id === id)!;
+  const { LEGACY_SUBFOLDER_ALIASES } = await import("../../plugin-crm/src/drive/convention.js");
+  const { EVIDENCE_SUBFOLDER } = await import("../src/evidence-drive.js");
+  const socialSource = readFileSync(new URL("../../plugin-social/src/asset-path.ts", import.meta.url), "utf8");
+  const listSource = readFileSync(new URL("../../plugin-crm/src/drive/tools.ts", import.meta.url), "utf8");
+
+  it("runs on a release of the CRM, Social or the Cockpit and on demand, never at night: each run leaves two files in Drive", () => {
+    expect(j.schedule).toEqual(["release", "on-demand"]);
+    expect(j.plugins).toEqual(["partnersinbiz.crm", "partnersinbiz.social", "partnersinbiz.cockpit"]);
+    expect(journeysFor("nightly").map((x) => x.key)).not.toContain("drive-producers-canary");
+    for (const plugin of j.plugins) expect(journeysFor("release", plugin).map((x) => x.key)).toContain("drive-producers-canary");
+  });
+
+  it("saves through the producers' own tools for the canary only, then reads the CRM's rows for the canary's own project", () => {
+    expect(j.steps.map((s) => s.tool)).toEqual(["partnersinbiz.crm:create-canary-client", "partnersinbiz.crm:list-client-projects", "partnersinbiz.social:store-rendered-asset", "partnersinbiz.cockpit:evidence-save", "partnersinbiz.crm:drive_files_list", "partnersinbiz.crm:drive_files_list", "partnersinbiz.crm:cleanup-canary"]);
+    expect(step("ensure-canary").expect).toContainEqual({ path: "driveProject", equals: "linked" });
+    expect(step("canary-project").capture).toEqual({ driveProjectId: { path: "projects[0].projectId" } });
+    expect(step("social-save").input).toMatchObject({ client: "{{client}}", name: "drive-journey-{{runId}}" });
+    expect(step("evidence-save").input).toMatchObject({ client: { kind: "company", ref: "{{companyRecordId}}" }, step: "drive-journey-{{runId}}" });
+    for (const id of ["check-social", "check-evidence"]) expect(step(id).input).toMatchObject({ projectId: "{{driveProjectId}}", nameContains: "{{runId}}" });
+  });
+
+  it("checks each file in the sub-folder its producer asks for, as the CRM's alias map names it, under the canary's client folder", () => {
+    expect(socialSource).toContain('subfolder: "02 Assets"');
+    const expected = { "check-social": LEGACY_SUBFOLDER_ALIASES["02 Assets"], "check-evidence": LEGACY_SUBFOLDER_ALIASES[EVIDENCE_SUBFOLDER] };
+    expect(expected).toEqual({ "check-social": "Assets/Social", "check-evidence": "Meetings & Notes" });
+    for (const [id, subfolder] of Object.entries(expected)) {
+      expect(step(id).input!.subfolder, id).toBe(subfolder);
+      expect(step(id).expect, id).toContainEqual({ path: "files[0].subfolder", equals: subfolder });
+      expect(step(id).expect, id).toContainEqual({ path: "folder.path", endsWith: "/Clients/PiB Canary Co (Canary Contact)" });
+      expect(step(id).expect, id).toContainEqual({ path: "count", gte: 1 });
+    }
+  });
+
+  it("does not trust the producers' answers (a background save can time out at the gateway): only the read-back steps check the file", () => {
+    for (const id of ["social-save", "evidence-save"]) expect(step(id).expect, id).toEqual([{ path: "$", notEmpty: true }]);
+  });
+
+  it("reads fields the CRM's drive_files_list really returns", () => {
+    for (const id of ["check-social", "check-evidence"]) {
+      for (const e of step(id).expect) for (const word of e.path.replace(/\[[^\]]*\]/g, " ").split(/[.\s]+/).filter(Boolean)) expect(listSource, `${id}: ${e.path}`).toMatch(new RegExp(`\\b${word}\\b`));
+    }
   });
 });

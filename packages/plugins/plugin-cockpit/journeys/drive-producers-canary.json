@@ -1,0 +1,204 @@
+{
+  "key": "drive-producers-canary",
+  "version": 1,
+  "title": "Producer Drive saves",
+  "summary": "Social and evidence-save save a file for the canary; drive_files_list must find each in its folder.",
+  "schedule": [
+    "release",
+    "on-demand"
+  ],
+  "plugins": [
+    "partnersinbiz.crm",
+    "partnersinbiz.social",
+    "partnersinbiz.cockpit"
+  ],
+  "ownerRole": "operator",
+  "steps": [
+    {
+      "id": "ensure-canary",
+      "title": "Canary",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:create-canary-client",
+      "input": {
+        "runRef": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "runRef",
+          "equals": "{{runId}}"
+        },
+        {
+          "path": "client",
+          "equals": "{{client}}"
+        },
+        {
+          "path": "driveProject",
+          "equals": "linked"
+        }
+      ],
+      "ownerRole": "account-manager",
+      "note": "Make this call NOW with exactly the input above (it carries this run's id, which the answer must echo): an answer from an earlier call, or from the previous journey, is stale because that journey's last step removed the canary. driveProject other than linked means the CRM setting canary.driveProjectId is empty or wrong: that is the finding, do not link a project by hand."
+    },
+    {
+      "id": "canary-project",
+      "title": "Project",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:list-client-projects",
+      "input": {
+        "client": "{{client}}"
+      },
+      "expect": [
+        {
+          "path": "projects[0].projectId",
+          "notEmpty": true
+        },
+        {
+          "path": "projects[0].name",
+          "equals": "PiB Canary (test client)"
+        }
+      ],
+      "capture": {
+        "driveProjectId": {
+          "path": "projects[0].projectId"
+        }
+      },
+      "ownerRole": "account-manager",
+      "note": "The canary has exactly one project, the operator's test project. Any other name means a real project is linked to the canary: stop and report it."
+    },
+    {
+      "id": "social-save",
+      "title": "Social save",
+      "kind": "tool",
+      "tool": "partnersinbiz.social:store-rendered-asset",
+      "input": {
+        "client": "{{client}}",
+        "name": "drive-journey-{{runId}}",
+        "altText": "A plain red test square for the acceptance run on the canary client.",
+        "contentBase64": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4oRGFFTEMLQkAWChSgXZ/mz4AAAAASUVORK5CYII="
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
+      "ownerRole": "social",
+      "note": "Call it once. The tool waits up to 30 s for Drive, so the gateway may answer 504 or time out: then report {\"timedOut\": true} as the output and go on; check-social reads whether the file landed. Do not call it again: a second call stores a second asset."
+    },
+    {
+      "id": "evidence-save",
+      "title": "Evidence save",
+      "kind": "tool",
+      "tool": "partnersinbiz.cockpit:evidence-save",
+      "input": {
+        "issueId": "<the issue you run this journey under>",
+        "step": "drive-journey-{{runId}}",
+        "pngBase64": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4oRGFFTEMLQkAWChSgXZ/mz4AAAAASUVORK5CYII=",
+        "client": {
+          "kind": "company",
+          "ref": "{{companyRecordId}}"
+        }
+      },
+      "expect": [
+        {
+          "path": "$",
+          "notEmpty": true
+        }
+      ],
+      "ownerRole": "operator",
+      "note": "Put the identifier of the issue you run this journey under (PAR-123) in issueId: that issue has no project, so the client decides the folder. If it has a project, the project wins and the file goes elsewhere: report that as the error. A gateway 504 or time-out: report {\"timedOut\": true} and go on; check-evidence reads whether it landed. saved false with a reason (invalid_name, no_project) is the finding: report the answer as it came."
+    },
+    {
+      "id": "check-social",
+      "title": "Social file",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:drive_files_list",
+      "input": {
+        "projectId": "{{driveProjectId}}",
+        "subfolder": "Assets/Social",
+        "nameContains": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "count",
+          "gte": 1
+        },
+        {
+          "path": "files[0].url",
+          "matches": "^https://drive\\.google\\.com/"
+        },
+        {
+          "path": "files[0].subfolder",
+          "equals": "Assets/Social"
+        },
+        {
+          "path": "files[0].folderId",
+          "notEmpty": true
+        },
+        {
+          "path": "folder.path",
+          "endsWith": "/Clients/PiB Canary Co (Canary Contact)"
+        }
+      ],
+      "ownerRole": "social",
+      "note": "The save runs in the background. count 0: wait 30 s and call again, at most 4 times, then report the last answer. Put files[0].url and folder.path in the output: they are the evidence."
+    },
+    {
+      "id": "check-evidence",
+      "title": "Evidence file",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:drive_files_list",
+      "input": {
+        "projectId": "{{driveProjectId}}",
+        "subfolder": "Meetings & Notes",
+        "nameContains": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "count",
+          "gte": 1
+        },
+        {
+          "path": "files[0].url",
+          "matches": "^https://drive\\.google\\.com/"
+        },
+        {
+          "path": "files[0].subfolder",
+          "equals": "Meetings & Notes"
+        },
+        {
+          "path": "files[0].folderId",
+          "notEmpty": true
+        },
+        {
+          "path": "folder.path",
+          "endsWith": "/Clients/PiB Canary Co (Canary Contact)"
+        }
+      ],
+      "ownerRole": "operator",
+      "note": "The save runs in the background. count 0: wait 30 s and call again, at most 4 times, then report the last answer. Put files[0].url and folder.path in the output: they are the evidence."
+    },
+    {
+      "id": "cleanup",
+      "title": "Cleanup",
+      "kind": "tool",
+      "tool": "partnersinbiz.crm:cleanup-canary",
+      "input": {
+        "confirm": true
+      },
+      "expect": [
+        {
+          "path": "cleaned",
+          "equals": true
+        },
+        {
+          "path": "company",
+          "equals": "{{client}}"
+        }
+      ],
+      "always": true,
+      "ownerRole": "account-manager",
+      "note": "This removes the canary's CRM records and its project link. The two Drive files stay: agents never delete in Drive."
+    }
+  ]
+}

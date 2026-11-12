@@ -18,7 +18,8 @@ import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 
 const VALID_KINDS = ["client", "product", "book", "marketing", "company", "seo", "social", "campaigns", "ads", "ops"] as const;
-const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
+// Dated files, or evidence named ISSUE[-step]-ts: the Cockpit's evidence-save sends `PAR-123-login-20261021T101500Z.png` (PAR-7712).
+const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?(?:\d+|\d{8}T\d{6}Z)\.\w+)$/;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 export async function fetchPublicBytes(ctx: PluginContext, url: string): Promise<Uint8Array> {

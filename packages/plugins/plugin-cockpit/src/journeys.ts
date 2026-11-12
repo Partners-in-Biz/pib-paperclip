@@ -7,6 +7,7 @@
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import browserEvidenceDrive from "../journeys/browser-evidence-drive.json" with { type: "json" };
 import clientReport from "../journeys/client-report.json" with { type: "json" };
+import driveProducersCanary from "../journeys/drive-producers-canary.json" with { type: "json" };
 import emailSequenceDryRun from "../journeys/email-sequence-dry-run.json" with { type: "json" };
 import esign from "../journeys/esign.json" with { type: "json" };
 import leadCapture from "../journeys/lead-capture.json" with { type: "json" };
@@ -20,7 +21,7 @@ import { parseJourney, type Journey, type Trigger } from "./acceptance-model.js"
 /** Roles a failure can be routed to: the kit's team, the Operator, and the Acceptance agent itself. */
 export const JOURNEY_ROLES: readonly string[] = [...TEAM_ROLES.map((role) => role.key), "acceptance"];
 
-export const JOURNEYS: Journey[] = [leadCapture, quoteToInvoice, emailSequenceDryRun, socialDraftReview, seoSprintDraft, clientReport, esign, siteEvents, supportCaseNps, browserEvidenceDrive].map((raw) => parseJourney(raw, JOURNEY_ROLES));
+export const JOURNEYS: Journey[] = [leadCapture, quoteToInvoice, emailSequenceDryRun, socialDraftReview, seoSprintDraft, clientReport, esign, siteEvents, supportCaseNps, browserEvidenceDrive, driveProducersCanary].map((raw) => parseJourney(raw, JOURNEY_ROLES));
 
 export function journeyByKey(key: string): Journey | null {
   return JOURNEYS.find((j) => j.key === key) ?? null;

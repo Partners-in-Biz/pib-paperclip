@@ -10,7 +10,7 @@ import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSha
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
-import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
+import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds, listDriveFiles } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
 import { driveJobStatus, type DriveJobView } from "./jobs.js";
 
@@ -92,7 +92,39 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       fileId: text("The Google Drive file id (from the file's Drive link), not a name or URL.", 200),
     }),
   },
+  {
+    name: "drive_files_list",
+    displayName: "List saved Drive files",
+    description: "The files the CRM saved to Drive for a Paperclip project (newest first): name, Drive link, sub-folder and the Drive id of the folder it sits in, plus the project's own Drive folder (path and link). A client's project lists into the client's folder. Use it to check that a save landed (a producer's save runs in the background, so its tool answer can time out while the file still lands). Read-only.",
+    parametersSchema: schema(["projectId"], {
+      projectId: text("The Paperclip project id (list-client-projects shows a client's).", 100),
+      subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: only files in this sub-folder of the project's folder."),
+      nameContains: text("Optional: only files whose name contains this text (case-sensitive).", 200),
+      limit: { type: "integer", minimum: 1, maximum: 100, description: "Optional: at most this many files (default 20)." },
+    }),
+  },
 ];
+
+/** The files saved to a project's Drive folder (PAR-7712): what a check reads to prove a save landed, without trusting the producer's answer. */
+export async function driveFilesList(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (!projectId) throw new CrmError("projectId is required (list-client-projects shows a client's projects)");
+  const project = await ctx.projects.get(projectId, viewer.companyId);
+  if (!project) throw new CrmError("Project not found");
+  const subfolder = typeof params.subfolder === "string" && params.subfolder.trim() ? params.subfolder.trim() : undefined;
+  if (subfolder && !(DRIVE_SUBFOLDERS as readonly string[]).includes(subfolder)) throw new CrmError(`subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}`);
+  const nameContains = typeof params.nameContains === "string" && params.nameContains ? params.nameContains : null;
+  const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.max(1, Math.min(Math.floor(params.limit), 100)) : 20;
+  // Read wider than the limit when filtering by name, so a name match is not cut off by newer files of other names.
+  const rows = await listDriveFiles(ctx, viewer.companyId, { projectId, ...(subfolder ? { subfolder } : {}), limit: nameContains ? 500 : limit });
+  const files = rows
+    .filter((f) => !nameContains || f.name.includes(nameContains))
+    .slice(0, limit)
+    .map((f) => ({ name: f.name, url: f.webUrl, subfolder: f.subfolder, folderId: f.folderId, kind: f.kind, createdAt: f.createdAt }));
+  // The folder the files belong to; a Drive problem leaves it out, the stored rows still answer.
+  const folder = await driveFolderResolve(ctx, viewer, { entity_type: "project", entity_id: projectId }).catch(() => null);
+  return { projectId, folder, count: files.length, files };
+}
 
 export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
