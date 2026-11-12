@@ -318,7 +318,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
 
   describe("live fingerprint and checkLive (PAR-9006)", () => {
     const pageHtml = (title: string, h1 = "Old heading", extra = "") => `<html><head><title>${title}</title><meta name="description" content="Old description"></head><body><h1>${h1}</h1><main><div class="entry-content">${"<p>auction lot listing word </p>".repeat(40)}${extra}</div></main></body></html>`;
-    const fp = { title: "Old", metaDescription: "Old description", h1: "Old heading", words: 163 };
+    const fp = { title: "Old", metaDescription: "Old description", h1: "Old heading", words: 163, counter: 2 };
     const row = (stats: unknown) => ({ id: "p1", task_id: "t-1", page_url: "https://acme.co.za/", title: "Home", status: "approved", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: JSON.stringify(stats), changes: "{}" });
     const check = async (stats: unknown, live: string | Error, extra: Record<string, unknown> = { checkLive: true }) => {
       const h = host(row(stats));
@@ -330,7 +330,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     it("create-preview stores stats.liveFingerprint of the live page", async () => {
       const h = host();
       await createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
-      expect(stored(h).stats.liveFingerprint).toEqual({ title: "Old", metaDescription: "", h1: "Old heading", words: 163 });
+      expect(stored(h).stats.liveFingerprint).toEqual({ title: "Old", metaDescription: "", h1: "Old heading", words: 163, counter: 2 });
     });
 
     it("unchanged when the live page still matches", async () => {
@@ -351,7 +351,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     it("is not run unless asked, and a listing page skips the word count", async () => {
       expect(await check({ liveFingerprint: fp }, pageHtml("Old"), {})).not.toHaveProperty("liveCheck");
       const listing = `<html><head><title>Cat</title></head><body><h1>Cat</h1><article><p>a</p></article><article><p>b</p></article></body></html>`;
-      expect(liveFingerprint(listing)).toEqual({ title: "Cat", metaDescription: "", h1: "Cat", words: null });
+      expect(liveFingerprint(listing)).toEqual({ title: "Cat", metaDescription: "", h1: "Cat", words: null, counter: 2 });
       const out = await check({ liveFingerprint: { title: "Cat", metaDescription: "", h1: "Cat", words: null } }, listing.replace("<p>b</p>", "<p>b b b b</p>"));
       expect(out.liveCheck).toEqual({ result: "unchanged" });
     });

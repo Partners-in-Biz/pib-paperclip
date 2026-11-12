@@ -27,3 +27,4 @@ export function createRenderService(options: RenderOptions): {
   stop: () => void;
 };
 export function keptTextFigure(stats: unknown): string;
+export function wordsOf(html: string): string[];

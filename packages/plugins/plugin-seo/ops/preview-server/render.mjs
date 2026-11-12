@@ -139,6 +139,71 @@ export function createRenderService({ proxyPort, chrome, withChromium, resolve =
   };
 }
 
+const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+
+/** Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced). */
+function stripElements(html, openRe, keep = () => "") {
+  const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
+  let out = "";
+  let pos = 0;
+  openRe.lastIndex = 0;
+  let m;
+  while ((m = openRe.exec(html))) {
+    if (m.index < pos) continue;
+    let end = m.index + m[0].length;
+    if (!VOID.test(m[1]) && !/\/>$/.test(m[0])) {
+      const tagRe = new RegExp("<(/?)" + m[1] + "\\b[^>]*>", "gi");
+      tagRe.lastIndex = end;
+      let depth = 1;
+      let t;
+      end = html.length;
+      while ((t = tagRe.exec(html))) {
+        if (t[1]) depth--;
+        else if (!/\/>$/.test(t[0])) depth++;
+        if (depth === 0) { end = t.index + t[0].length; break; }
+      }
+    }
+    out += html.slice(pos, m.index) + " " + keep(html.slice(m.index, end)) + " ";
+    pos = end;
+    openRe.lastIndex = end;
+  }
+  return out + html.slice(pos);
+}
+
+/** Remove Google Translate widget elements to avoid counting their text as page content. */
+function stripGoogleTranslateWidget(html) {
+  // Main widget container
+  html = stripElements(html, /<(div)\b[^>]*\bid\s*=\s*["']?google_translate_element\b[^>]*>/gi);
+  // Elements with the skiptranslate class
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*skiptranslate[^"'>]*["']?[^>]*>/gi);
+  // Generated goog-te-* / VIpgJd UI
+  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*(?:goog-te|VIpgJd)[^"'>]*["']?[^>]*>/gi);
+  return html;
+}
+
+// Same as visibleWords in the plugin (src/engine/preview.ts): WooCommerce's related, upsell and cross-sell product
+// strips are picked at random on every load, so only their heading is counted (PAR-9945).
+const VOLATILE_PRODUCT_STRIP = /<(section|div)\b[^>]*\bclass\s*=\s*["'](?=[^"']*\bproducts\b)(?=[^"']*\b(?:related|upsells|up-sells|cross-sells)\b)[^"']*["'][^>]*>/gi;
+
+function collapseVolatileStrips(html) {
+  return stripElements(html, VOLATILE_PRODUCT_STRIP, (el) => /<h[1-6]\b[^>]*>[\s\S]*?<\/h[1-6]\s*>/i.exec(el)?.[0] ?? "");
+}
+
+/** The visible words of a page, counted exactly as the SEO plugin counts them (kept-text figure). */
+export function wordsOf(html) {
+  const text = collapseVolatileStrips(stripGoogleTranslateWidget(html))
+    .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    // A browser shows &#82; as R and &ldquo; as a quote mark: decode numbers, drop other named entities (never a word).
+    .replace(/&#(\d{1,7});|&#x([0-9a-f]{1,6});/gi, (_m, d, x) => { const n = d ? Number(d) : parseInt(x, 16); return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : " "; })
+    .replace(/&(?!amp;)[a-z][a-z0-9]{1,31};/gi, " ")
+    .replace(/&amp;/g, "&");
+  return (text.toLowerCase().match(WORD) ?? []).slice(0, 200_000);
+}
+
 const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 export const SOURCE_BASIS_NOTICE = "Made from the page source: header and scripted parts may differ.";
