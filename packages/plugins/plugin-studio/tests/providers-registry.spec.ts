@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providerStatus, resolveProvider, sttFor } from "../src/providers/registry.js";
+import { LOOK_PACKS, providerOptions, providerStatus, resolveLookPack, resolveProvider, sttFor } from "../src/providers/registry.js";
 
 const cfg = (def: Record<string, string | undefined>, key: string | null) =>
   ({
@@ -43,5 +43,17 @@ describe("providers registry", () => {
     } finally {
       delete process.env.PIB_STUDIO_FAKE_PROVIDER;
     }
+  });
+
+  it("looks kind: unknown pack refused, default resolves, options list it", async () => {
+    expect(resolveLookPack().key).toBe("pib-basic");
+    expect(resolveLookPack("pib-basic", "nope").key).toBe("pib-basic");
+    expect(resolveLookPack(undefined, "pib-basic").ids).toHaveLength(12);
+    expect(() => resolveLookPack("nope")).toThrow(/Unknown look pack/);
+    expect(() => resolveLookPack(undefined, "nope")).toThrow(/Unknown look pack/);
+    const opts = await providerOptions({ providerDefault: async (c: string) => (c === "looks" ? "pib-basic" : undefined) } as never);
+    expect(opts.looks).toEqual(LOOK_PACKS.map((p) => ({ key: p.key, label: p.label, ids: p.ids, isDefault: p.key === "pib-basic" })));
+    const broken = await providerOptions({ providerDefault: async (c: string) => (c === "looks" ? "nope" : undefined) } as never);
+    expect(broken.looks.filter((p) => p.isDefault).map((p) => p.key)).toEqual(["pib-basic"]);
   });
 });
