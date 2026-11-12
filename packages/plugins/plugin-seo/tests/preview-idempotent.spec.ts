@@ -262,6 +262,24 @@ describe("a retry finishes the first call's follow-up work", () => {
     expect(w.ctx.issues.create).not.toHaveBeenCalled();
     expect(w.ctx.issues.list).not.toHaveBeenCalled();
   });
+
+  it("the review issue lookup fails: opens none, writes nothing, still parks the task", async () => {
+    const w = world();
+    w.fails.create = true;
+    w.fails.park = true;
+    const first = await make(w);
+    w.fails.create = false;
+    w.fails.park = false;
+    vi.mocked(w.ctx.issues.list).mockRejectedValueOnce(new Error("issues API down"));
+    const createsBefore = vi.mocked(w.ctx.issues.create).mock.calls.length;
+    const second = await make(w);
+    expect(second).toMatchObject({ previewId: first.previewId, reused: true, reviewIssueId: null });
+    expect(w.ctx.issues.list).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(w.ctx.issues.create).mock.calls.length).toBe(createsBefore);
+    expect(w.issues).toEqual([]);
+    expect(w.previews[0]!.review_issue_id).toBeNull();
+    expect(w.parks).toEqual(["iss-1"]);
+  });
 });
 
 describe("the live page since the stored preview", () => {
@@ -282,6 +300,23 @@ describe("the live page since the stored preview", () => {
     const second = await make(w);
     expect(second).toMatchObject({ previewId: first.previewId, reused: true });
     expect(second.notes?.[1]).toMatch(/^Could not re-check the live page; reused the preview made at \d{4}-\d{2}-\d{2}T/);
+    expect(w.previews).toHaveLength(1);
+  });
+
+  it("hangs: the stored preview is reused after 10 s, not after the tool budget", async () => {
+    const w = world();
+    const first = await make(w);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    w.site.mockImplementationOnce(() => new Promise(() => {})); // the re-check never settles
+    let settled = false;
+    const pending = make(w).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const second = await pending;
+    expect(second).toMatchObject({ previewId: first.previewId, reused: true });
+    expect(second.notes?.[1]).toMatch(/^Could not re-check the live page; reused the preview made at \d{4}-\d{2}-\d{2}T/);
+    expect(w.site).toHaveBeenCalledTimes(2);
     expect(w.previews).toHaveLength(1);
   });
 });

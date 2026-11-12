@@ -276,7 +276,7 @@ const isoOf = (value: unknown): string => (value instanceof Date ? value : new D
 /** The newest pending, not sent-back, unexpired preview made for this exact request in the last REUSE_WINDOW_MINUTES. */
 export async function findReusablePreview(env: Env, companyId: string, requestKey: string): Promise<Record<string, unknown> | null> {
   const rows = await env.ctx.db.query(
-    `SELECT id, created_at, expires_at, stats, review_status, review_issue_id, review_key, title, task_id FROM ${t("previews")}
+    `SELECT id, created_at, expires_at, stats, review_status, review_issue_id, review_key, task_id FROM ${t("previews")}
       WHERE company_id = $1 AND request_key = $2 AND status = 'pending' AND review_status <> 'changes_needed'
         AND expires_at > now() AND created_at > now() - interval '${REUSE_WINDOW_MINUTES} minutes'
       ORDER BY created_at DESC LIMIT 1`,

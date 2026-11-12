@@ -44,7 +44,7 @@ describe.skipIf(!available)("findReusablePreview on Postgres", () => {
 
   it("returns the columns the reuse path reads", async () => {
     await row("p1", { stats: `'{"basis":"source"}'::jsonb`, review_key: "'rk'", task_id: "'t-1'" });
-    expect(await findReusablePreview(env, "co-1", "k1")).toMatchObject({ id: "p1", review_status: "pending", review_issue_id: null, review_key: "rk", title: "Home", task_id: "t-1", stats: { basis: "source" } });
+    expect(await findReusablePreview(env, "co-1", "k1")).toMatchObject({ id: "p1", review_status: "pending", review_issue_id: null, review_key: "rk", task_id: "t-1", stats: { basis: "source" } });
   });
 
   it("reuses a passed row", async () => {
