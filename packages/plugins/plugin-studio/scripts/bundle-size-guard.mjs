@@ -2,6 +2,8 @@
 // with FontFace by URL; inlining them (data URL / base64 / .ttf import) would bloat dist/ui/index.js.
 // BUDGET is the bundle size with the font loader in, plus 50 KB of headroom for fonts; raise it only with a reason.
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { checkMlDist, ML_BUDGET, mlBytes } from "./ml-dist-check.mjs";
 
 // 2026-11-08: raised to 1,050,000 for Studio 0.1.49 (lip-sync form, ClipInspector, transition picker, keyframe preview
 // grew the UI to 956,057 bytes with no font inlined; the font checks below still guard that). Next growth still fails loudly.
@@ -18,8 +20,11 @@ const files = readdirSync(fontsDir).filter((f) => f.endsWith(".ttf"));
 const expected = [...readFileSync(new URL("../src/ui/font-names.ts", import.meta.url), "utf8").matchAll(/"([\w-]+\.ttf)"/g)].map((m) => m[1]).sort();
 if (expected.length !== 6) problems.push(`found ${expected.length} font names in src/ui/font-names.ts, expected 6`);
 if (JSON.stringify([...files].sort()) !== JSON.stringify(expected)) problems.push(`dist/ui/fonts has [${files}], expected [${expected}]`);
+// The ML runtime under dist/ml (PAR-10126 D5b): CUDA/TensorRT, non-linux-x64 binaries, model hashes, the 60 MB cap.
+const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
+problems.push(...checkMlDist({ distDir, sumsFile: fileURLToPath(new URL("../ml-models/SHA256SUMS", import.meta.url)) }));
 if (problems.length) {
   console.error(`BUNDLE-SIZE-CHECK: FAIL\n- ${problems.join("\n- ")}`);
   process.exit(1);
 }
-console.log(`BUNDLE-SIZE-CHECK: PASS (dist/ui/index.js ${size} bytes of ${BUDGET}; ${files.length} served TTFs)`);
+console.log(`BUNDLE-SIZE-CHECK: PASS (dist/ui/index.js ${size} bytes of ${BUDGET}; ${files.length} served TTFs; dist/ml ${mlBytes(distDir)} bytes of ${ML_BUDGET})`);
