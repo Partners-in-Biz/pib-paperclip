@@ -35,6 +35,11 @@ export function instanceConfigSchema(): JsonSchema {
         title: "xAI voice",
         properties: { apiKey: secretField("API key", "console.x.ai key for voice: auto-captions (grok-voice-transcribe) and voiceover. The Voice plugin's key works here too.") },
       },
+      stability: {
+        type: "object",
+        title: "Stability AI",
+        properties: { apiKey: secretField("Stability AI key", "platform.stability.ai key for Stable Audio music.") },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
@@ -84,6 +89,12 @@ export class StudioConfig {
   async xaiKey(): Promise<string> {
     const key = await (await this.secrets).get("xai.apiKey");
     if (!key) throw new StudioError("Voice needs an xAI key: set it under \"xAI voice\" in Studio's plugin settings.", "not_configured");
+    return key;
+  }
+
+  async stabilityKey(): Promise<string> {
+    const key = await (await this.secrets).get("stability.apiKey");
+    if (!key) throw new StudioError("Music needs a Stability AI key: set it under \"Stability AI\" in Studio's plugin settings.", "not_configured");
     return key;
   }
 

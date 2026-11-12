@@ -11,8 +11,10 @@ import { isTablePriced, localCredits } from "../seedance-price.js";
 import { fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
 import { fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
 import { ttsCredits } from "../video-edit/tts-price.js";
+import { MUSIC_MAX_SECONDS, STABLE_AUDIO_USD_PER_GENERATION, musicCredits } from "../music/stable-audio-price.js";
+import { fakeMusic, stabilityMusic, type MusicGenerator } from "../music/stable-audio.js";
 
-export type Capability = "stt" | "tts";
+export type Capability = "stt" | "tts" | "music";
 
 export interface ProviderEntry {
   key: string;
@@ -23,7 +25,9 @@ export interface ProviderEntry {
 
 const XAI: ProviderEntry = { key: "xai", label: "xAI (Grok)", secret: "xai.apiKey" };
 
-export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI] };
+const STABILITY: ProviderEntry = { key: "stability", label: "Stability AI (Stable Audio)", secret: "stability.apiKey" };
+
+export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI], music: [STABILITY] };
 
 const clean = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
@@ -46,8 +50,10 @@ export interface ProviderStatus {
 /** The provider each capability uses by default, and whether its key is set. Never returns the key. */
 export async function providerStatus(config: StudioConfig): Promise<ProviderStatus[]> {
   const out: ProviderStatus[] = [];
-  for (const capability of ["stt", "tts"] as const) {
-    const entry = resolveProvider(capability, undefined, await config.providerDefault(capability).catch(() => undefined));
+  for (const capability of ["stt", "tts", "music"] as const) {
+    // Music has one provider and no company default setting.
+    const configured = capability === "music" ? undefined : await config.providerDefault(capability).catch(() => undefined);
+    const entry = resolveProvider(capability, undefined, configured);
     out.push({ capability, provider: entry.key, label: entry.label, configured: await config.hasSecret(entry.secret) });
   }
   return out;
@@ -113,6 +119,7 @@ export function lipsyncPrice(model: string): { credits: number | null; price: st
 const VOICE_NOTES: Record<Capability, Record<string, { price: string; qualityNote: string }>> = {
   stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` } },
   tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` } },
+  music: { stability: { price: `USD ${STABLE_AUDIO_USD_PER_GENERATION.toFixed(2)} (${musicCredits()} credits) per track, up to ${MUSIC_MAX_SECONDS} s`, qualityNote: "Stable Audio 2.5, instrumental music and sound beds" } },
 };
 
 /** Every option per capability with its price, quality note and whether it is the company's default. Never a key. */
@@ -126,7 +133,7 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
     }
   };
   const voice = async (cap: Capability) => {
-    const configured = await def(cap);
+    const configured = cap === "music" ? undefined : await def(cap);
     const chosen = safe(() => resolveProvider(cap, undefined, configured).key, () => PROVIDERS[cap][0].key);
     return PROVIDERS[cap].map((p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key], isDefault: p.key === chosen }));
   };
@@ -139,7 +146,7 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
     const input = lipsyncInputOf(e);
     return { key: e.key, label: e.label, model: e.model, input, ...lipsyncPrice(e.model), qualityNote: e.qualityNote, isDefault: chosen[input] === e.key };
   });
-  return { stt: await voice("stt"), tts: await voice("tts"), lipsync };
+  return { stt: await voice("stt"), tts: await voice("tts"), music: await voice("music"), lipsync };
 }
 
 /** Speech to text for `override` (or the company default). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
@@ -164,4 +171,11 @@ export async function ttsFor(override: unknown, config: StudioConfig): Promise<T
     default:
       throw new StudioError(`Unknown provider "${entry.key}".`, "bad_request");
   }
+}
+
+/** Music generator (Stable Audio). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
+export async function musicFor(config: StudioConfig, override?: unknown): Promise<MusicGenerator> {
+  resolveProvider("music", override);
+  if (fakeProviderOn()) return fakeMusic();
+  return stabilityMusic(await config.stabilityKey());
 }

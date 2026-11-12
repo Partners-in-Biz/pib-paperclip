@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { providerStatus, resolveProvider, sttFor } from "../src/providers/registry.js";
+import { musicFor, providerOptions, providerStatus, resolveProvider, sttFor } from "../src/providers/registry.js";
 
 const cfg = (def: Record<string, string | undefined>, key: string | null) =>
   ({
@@ -29,6 +29,7 @@ describe("providers registry", () => {
     expect(await providerStatus(cfg({}, "k"))).toEqual([
       { capability: "stt", provider: "xai", label: "xAI (Grok)", configured: true },
       { capability: "tts", provider: "xai", label: "xAI (Grok)", configured: true },
+      { capability: "music", provider: "stability", label: "Stability AI (Stable Audio)", configured: true },
     ]);
     expect((await providerStatus(cfg({}, null))).every((p) => !p.configured)).toBe(true);
   });
@@ -43,5 +44,38 @@ describe("providers registry", () => {
     } finally {
       delete process.env.PIB_STUDIO_FAKE_PROVIDER;
     }
+  });
+});
+
+describe("music capability (PAR-10255)", () => {
+  it("lists music/stability in status and options without a key", async () => {
+    const status = await providerStatus(cfg({}, "secret-key"));
+    expect(status.find((p) => p.capability === "music")).toEqual({ capability: "music", provider: "stability", label: "Stability AI (Stable Audio)", configured: true });
+    expect(JSON.stringify(status)).not.toContain("secret-key");
+    const options = await providerOptions({ providerDefault: async () => undefined });
+    expect(options.music).toEqual([
+      expect.objectContaining({ key: "stability", isDefault: true, price: "USD 0.08 (1.28 credits) per track, up to 180 s", qualityNote: "Stable Audio 2.5, instrumental music and sound beds" }),
+    ]);
+  });
+  it("resolveProvider only accepts stability", () => {
+    expect(resolveProvider("music").key).toBe("stability");
+    expect(resolveProvider("music", "stability").key).toBe("stability");
+    try {
+      resolveProvider("music", "nope");
+      expect.unreachable();
+    } catch (e) {
+      expect((e as { code?: string }).code).toBe("bad_request");
+    }
+  });
+  it("musicFor: missing key fails; the fake switch needs none", async () => {
+    const config = { stabilityKey: async () => { throw Object.assign(new Error("Music needs a Stability AI key"), { code: "not_configured" }); } } as never;
+    const prev = process.env.PIB_STUDIO_FAKE_PROVIDER;
+    delete process.env.PIB_STUDIO_FAKE_PROVIDER;
+    await expect(musicFor(config)).rejects.toThrow(/Stability AI key/);
+    await expect(musicFor(config, "nope")).rejects.toThrow(/Unknown provider/);
+    process.env.PIB_STUDIO_FAKE_PROVIDER = "1";
+    expect((await musicFor(config)).key).toBe("fake");
+    if (prev === undefined) delete process.env.PIB_STUDIO_FAKE_PROVIDER;
+    else process.env.PIB_STUDIO_FAKE_PROVIDER = prev;
   });
 });
