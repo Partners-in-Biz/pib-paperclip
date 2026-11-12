@@ -236,6 +236,20 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
   );
 }
 
+/**
+ * Moves a draft to another client scope (our own work or one of our own brands). Only while it is still a draft: a
+ * launch that landed meanwhile keeps its sender. Returns false when nothing changed.
+ */
+export async function moveDraft(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "companyId" | "clientKind" | "clientRef" | "clientName" | "audienceMode">): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")}
+        SET client_kind = $3, client_ref = $4, client_name = $5, audience_mode = $6, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND status = 'draft'`,
+    [campaign.id, campaign.companyId, campaign.clientRef ? campaign.clientKind : null, campaign.clientRef, campaign.clientRef ? campaign.clientName : null, campaign.audienceMode],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 /** The draft (or launched) campaign an approval issue belongs to. */
 export async function campaignByApprovalIssue(ctx: PluginContext, issueId: string): Promise<CampaignDraft | null> {
   const rows = await ctx.db.query<CampaignRow>(

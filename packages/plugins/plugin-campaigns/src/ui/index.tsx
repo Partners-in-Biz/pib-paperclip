@@ -210,6 +210,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const resume = usePluginAction("campaigns.resume");
   const complete = usePluginAction("campaigns.complete");
   const moveCampaign = usePluginAction("campaigns.move");
+  const setOwnBrand = usePluginAction("campaigns.set-own-brand");
   const abSuggestion = usePluginAction("campaigns.ab-suggestion");
   const declareWinner = usePluginAction("campaigns.declare-winner");
   const [ab, setAb] = useState<AbSuggestion | null>(null);
@@ -482,20 +483,43 @@ function CampaignsPageMain({ context }: PluginPageProps) {
               onAb: () => openAb(detail.campaign.id),
               onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
               onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
-              onMove: (client) => void run(async () => {
+              onMove: (client) => {
+                if (!window.confirm("Move this draft? It will go out as the new sender and use that sender's do-not-email list: someone who opted out of the old sender's emails is not on the new list. If approval was asked for, it is cancelled.")) return;
+                void run(async () => {
                 const moved = (await moveCampaign({ campaignId: detail.campaign.id, client: client ?? "own" })) as { client?: { kind: ClientKind; id: string } | null };
                 // It lives in another workspace now: follow it there.
                 navigation.navigate(`/campaigns${withParam(withParam(location.search, "client", moved.client ? formatClientParam(moved.client) : null), "campaign", detail.campaign.id)}`, { replace: true });
-              }, "Moved. If approval was asked for, ask again: the sender changed."),
+                }, "Moved. If approval was asked for, ask again: the sender changed.");
+              },
             }}
           />
           ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
         </div>
       ) : (
         <>
-          {scope && snapshot?.ownBrand ? (
-            <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5 }}>
-              {clientName} is one of our own brands. Its campaigns go out as {clientName}, keep their own do-not-email list, and are approved like our own campaigns.
+          {scope?.kind === "company" && snapshot ? (
+            <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ flex: "1 1 320px", minWidth: 0 }}>
+                {snapshot.ownBrand
+                  ? `${clientName} is one of our own brands. Its campaigns go out as ${clientName}, keep their own do-not-email list, and are approved like our own campaigns.`
+                  : `${clientName} is a client: its campaigns need the client's written yes and your approval.`}
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                style={{ height: 28, fontSize: 12.5 }}
+                disabled={busy}
+                title="Only a company owner or admin can change this."
+                onClick={() => {
+                  const own = !snapshot.ownBrand;
+                  const question = own
+                    ? `Mark ${clientName} as one of our own brands? Its campaigns will be approved like our own: no client's written yes.`
+                    : `${clientName} is a client after all? Its campaigns will need the client's written yes again.`;
+                  if (window.confirm(question)) void run(() => setOwnBrand({ client: formatClientParam(scope), own }), own ? `${clientName} is now one of our own brands.` : `${clientName} is a client again.`);
+                }}
+              >
+                {snapshot.ownBrand ? "Not one of ours" : "Mark as one of our own brands"}
+              </Button>
             </p>
           ) : null}
           <NeedsAttention campaigns={everything} brandOf={(id) => brandGroups.find((group) => group.campaigns.some((campaign) => campaign.id === id))?.client.name ?? null} onOpen={openCampaign} />

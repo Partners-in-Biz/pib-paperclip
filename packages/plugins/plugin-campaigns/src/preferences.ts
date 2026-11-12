@@ -34,9 +34,9 @@ export const campaignsPreferences = definePreferences({
     ownBrands: {
       type: "text",
       label: "Our own brands",
-      help: "CRM companies that are ours, not clients: one name per line, exactly as in the CRM. Their campaigns show on this page under the brand, go out as the brand, and are approved like our own campaigns (no client's written yes).",
+      help: "CRM companies that are ours, not clients. Add or remove one on that company's own Campaigns page (Mark as one of our own brands). One per line: the CRM company id, then its name; only the id counts. Their campaigns show on this page under the brand, go out as the brand, and are approved like our own campaigns (no client's written yes).",
       default: "",
-      max: 2000,
+      max: 5000,
     },
   },
   ownCompanyPins: { defaultFromName: "Partners in Biz" },
