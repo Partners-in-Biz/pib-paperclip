@@ -44,6 +44,9 @@ import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
+import type { StorageService } from "../storage/types.js";
+import { createRunResponseCapture } from "./run-response-capture.js";
+import { binarySpillRunScope, findBinarySpillCandidates, spillBinaryLeaves } from "./tool-gateway-binary-spill.js";
 import {
   assertValidConnectionAuthorizationPayload,
   connectionAuthorizationTargetKey,
@@ -1214,9 +1217,38 @@ export function createToolGatewayService(
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
     now?: () => number;
+    /** Test seam for run-scoped binary result files. */
+    storage?: StorageService;
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
+  /**
+   * Saves oversized binary result leaves as files of the session's running
+   * run (PAR-9905). No run, another state or an approved execution: the
+   * result is unchanged and `validateToolContent` withholds as before.
+   */
+  async function spillBinaryResult(session: ToolGatewaySession, result: unknown, approvedAction: boolean, invocationId: string) {
+    const unchanged = { value: result, savedFiles: [] };
+    const scope = binarySpillRunScope(session, approvedAction);
+    if (!scope || !asRecord(result)) return unchanged;
+    const { companyId, agentId, runId } = scope;
+    const candidates = findBinarySpillCandidates(result);
+    if (!candidates.length) return unchanged;
+    const runOfSession = and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId));
+    const [current] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(runOfSession).limit(1);
+    if (!current || !ACTIVE_GATEWAY_RUN_STATUSES.has(current.status)) return unchanged;
+    const authorize = async (tx: Db) => {
+      const [run] = await tx.select().from(heartbeatRuns).where(runOfSession).for("update");
+      if (!run || !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status)) {
+        throw new ToolGatewayHttpError(403, "Run is not active", "run_inactive");
+      }
+      return { run };
+    };
+    return spillBinaryLeaves(result, candidates, (bytes, contentType) => createRunResponseCapture({
+      db, storage: options.storage, companyId, agentId, runId, issueId: null, source: "tool_gateway", authorize,
+    }).captureOnce(bytes, contentType, bytes.length), error => logger.warn({ err: error, invocationId }, "tool gateway binary result capture failed"));
+  }
+
   function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
     { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
     // Approved actions retain historical run attribution, not that run's lifetime.
@@ -11272,8 +11304,9 @@ export function createToolGatewayService(
                 executionTimeoutMs,
               ));
 
+        const spilled = await spillBinaryResult(session, result, Boolean(input.approvedActionRequestId), invocationId);
         const resultValidation = await validateToolContent({
-          value: result,
+          value: spilled.value,
           direction: "result",
           sensitiveMode: "redact",
           promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, { approvedAction: Boolean(input.approvedActionRequestId), signal: input.signal }),
@@ -11383,7 +11416,9 @@ export function createToolGatewayService(
           status: "completed" as const,
           tool: virtualToolName ?? tool.name,
           targetTool: virtualToolName ? tool.name : undefined,
-          result: resultValidation.value,
+          result: spilled.savedFiles.length
+            ? { ...asRecord(resultValidation.value), savedFiles: spilled.savedFiles }
+            : resultValidation.value,
         };
       } catch (err) {
         const normalizedError =
