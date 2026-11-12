@@ -25,13 +25,15 @@ import {
   type TeamMemberReport,
   type Tone,
   type WaitingItem,
+  type WaitsOn,
 } from "@partnersinbiz/pib-plugin-kit";
-import { delegateFacts, delegateView, listDelegates } from "./approval-delegate.js";
-import { getPolicy, scopeKeyOf } from "./approval-policy.js";
+import { delegateFacts, listDelegates } from "./approval-delegate.js";
+import { delegateApprovalRefusal } from "./approval-flow.js";
+import { getPolicy, scopeKeyOf, type ApprovalPolicy } from "./approval-policy.js";
 import { approvalServiceHealth, checkedApprovalBase, clientApprovalCounts } from "./client-approval.js";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
-import { iso, table } from "./db.js";
+import { iso, POST_COLS, table, type PostRow } from "./db.js";
 import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
@@ -39,6 +41,7 @@ import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { agentStatusActive, socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
+import { delegateForPost } from "./review.js";
 import { isSocialPlatform, PLAN_ROUTINE_KEY, PLATFORM_LABELS, PLUGIN_ID } from "./platforms.js";
 import { TRIAGE_PURPOSE } from "./triage.js";
 
@@ -426,10 +429,40 @@ async function healthChecks(ctx: PluginContext, companyId: string, agentId: stri
 
 // ── waiting ─────────────────────────────────────────────────────────────────
 
+/**
+ * The scope's delegated approver this post waits for: the delegate `delegateForPost` would route it to, and only when
+ * that delegate's own approve gate (`delegateApprovalRefusal`) would say yes now. Null otherwise (the owner decides);
+ * any failed read is null.
+ */
+async function delegateWaitedFor(ctx: PluginContext, companyId: string, post: PostRow, policy: ApprovalPolicy): Promise<{ agentId: string; name: string | null } | null> {
+  try {
+    const entry = await delegateForPost(ctx, companyId, post, policy);
+    if (!entry) return null;
+    const refusal = await delegateApprovalRefusal(ctx, { companyId, agentId: entry.agentId, isAgent: true }, post);
+    if (refusal !== null) return null;
+    const agent = await ctx.agents.get(entry.agentId, companyId).catch(() => null);
+    return { agentId: entry.agentId, name: agent && typeof agent.name === "string" && agent.name ? agent.name : null };
+  } catch (error) {
+    ctx.logger.warn("Social cockpit: delegated approver check failed; the owner decides", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+/** The agent an open issue is assigned to, or null (closed, a person's, none, or unreadable). */
+async function openIssueAgent(ctx: PluginContext, companyId: string, issueId: string): Promise<string | null> {
+  try {
+    const issue = (await ctx.issues.get(issueId, companyId)) as { status?: string; assigneeAgentId?: string | null } | null;
+    return issue && OPEN_ISSUE.has(String(issue.status)) && typeof issue.assigneeAgentId === "string" && issue.assigneeAgentId ? issue.assigneeAgentId : null;
+  } catch {
+    return null;
+  }
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
-  const posts = await ctx.db.query<Scoped & { id: string; body: string; review_issue_id: string | null; owner_user_id: string | null; updated_at: string | null }>(
-    `SELECT id, body, client_kind, client_ref, client_name, review_issue_id, owner_user_id, updated_at::text AS updated_at
+  // `review_since`: the last status change or edit, i.e. when the post entered review (an edit in review moves it on).
+  const posts = await ctx.db.query<PostRow & { review_issue_id: string | null; review_since: string | null }>(
+    `SELECT ${POST_COLS}, review_issue_id, updated_at::text AS review_since
        FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
@@ -444,12 +477,13 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     // Where the client alone approves, nobody on the team has to: the item says who is waited for.
     const policy = await policyOf(post);
     const clientOnly = !policy.requireOwner && policy.requireClient;
-    // A scope with a delegated approver that may act: the item says who is waited for (a person can still approve).
-    const delegate = clientOnly || post.owner_user_id ? null : await delegateView(ctx, companyId, scopeOfRow(post));
-    const delegated = Boolean(delegate?.active);
+    // The delegated approver is waited for only when its own approve gate would say yes now (a person can still approve).
+    const delegate = clientOnly ? null : await delegateWaitedFor(ctx, companyId, post, policy);
+    const delegated = Boolean(delegate);
+    const waitsOn: WaitsOn | null = clientOnly ? { kind: "client" } : delegate ? { kind: "agent", agentId: delegate.agentId } : null;
     items.push({
       key: `social:review:${post.id}`,
-      title: `${clientPrefix(post)}${clientOnly ? "Waiting for the client" : delegated ? `Waiting for the delegated approver (${delegate?.name ?? delegate?.agentId})` : "Approve post"}: ${snippet(post.body)}`,
+      title: `${clientPrefix(post)}${clientOnly ? "Waiting for the client" : delegate ? `Waiting for the delegated approver (${delegate.name ?? delegate.agentId})` : "Approve post"}: ${snippet(post.body)}`,
       why: clientOnly
         ? "The client approves this post on their link; nobody on the team has to. The Social agent sends the link and is woken with the answer."
         : delegated
@@ -460,7 +494,8 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       href: path(POSTS, post),
       issueId: post.review_issue_id,
       kind: clientOnly || delegated ? "other" : "review",
-      since: post.updated_at,
+      since: post.review_since,
+      ...(waitsOn ? { waitsOn } : {}),
     });
   }
   // Approved, but no time: the Social agent has a task to pick one (or a person does, when there is no agent).
@@ -470,6 +505,7 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     [companyId],
   );
   for (const post of unscheduled) {
+    const scheduler = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
     items.push({
       key: `social:schedule:${post.id}`,
       title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,
@@ -480,6 +516,7 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
       issueId: post.schedule_issue_id,
       kind: "other",
       since: post.updated_at,
+      ...(scheduler ? { waitsOn: { kind: "agent" as const, agentId: scheduler } } : {}),
     });
   }
   // Signing in again is a person's one-time grant.

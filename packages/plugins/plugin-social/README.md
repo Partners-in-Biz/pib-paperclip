@@ -166,6 +166,14 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.1: the Cockpit waits on the delegate only when it could approve (PAR-10701)
+
+Src-only (no migration, no new capability). Who may approve does not change.
+
+- A post in review is labelled "Waiting for the delegated approver" and carries `waitsOn: {kind:"agent"}` only when the delegate's own approve gate would accept it now (`delegateApprovalRefusal`, the read-only part of `approve-post-as-delegate`: Reviewer pass of this version, scored, by another agent; post created after the delegate was named; not its own post; the delegate may act). Otherwise it is "Approve post" for the owner. Before, an active delegate alone was enough.
+- Client-only scopes carry `waitsOn: {kind:"client"}`. An approved post with no time waits on the agent of its open schedule issue; no issue, a closed one, a person's, or a failed read: no `waitsOn`.
+- The review item's `since` is when the post entered review (its last status change or edit).
+
 ## 0.13.0: one focus a month, hooks tested and doubled down
 
 Src-only (no migration, no new capability). **Changes what agents do for every company's own work and its clients**: the skill text, the weekly plan and the reviewer's checks.

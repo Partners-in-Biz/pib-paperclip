@@ -704,7 +704,7 @@ export interface PostRow {
   updated_at: unknown;
 }
 
-const POST_COLS = [
+export const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
   "schedule_issue_id", "reply_to_url", "quote_url", "note", "created_at", "updated_at",

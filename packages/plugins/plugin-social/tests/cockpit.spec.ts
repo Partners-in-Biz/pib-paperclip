@@ -4,7 +4,10 @@ import { accountChecks, cockpitSnapshot, formatLift, publishCockpitSnapshots, ra
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
+import { approvePostByDelegate, delegateApprovalRefusal } from "../src/approval-flow.js";
+import { delegateWorld, RHEA } from "./delegate-world.js";
 import { fakeCtx } from "./helpers.js";
+import { postRow } from "./world.js";
 
 const T = (name: string) => `${NAMESPACE}.${name}`;
 const HOUR = 3600_000;
@@ -227,10 +230,11 @@ describe("delegated approver in the cockpit (PAR-9687)", () => {
   }
   const check = (snap: Awaited<ReturnType<typeof cockpitSnapshot>>) => snap.health.find((h) => h.key === "approval-delegate");
 
-  it("says who the waiting item waits for", async () => {
+  it("an active delegate alone is not enough: with no Reviewer pass the owner approves (PAR-10701)", async () => {
     const snap = await cockpitSnapshot(build(), CO);
     const item = snap.waiting.find((w) => w.key === "social:review:p1");
-    expect(item?.title).toBe("[Brand] Waiting for the delegated approver (Rhea): Rhea's post");
+    expect(item?.title).toBe("[Brand] Approve post: Rhea's post");
+    expect(item?.waitsOn).toBeUndefined();
     expect(check(snap)).toBeUndefined();
   });
 
@@ -271,5 +275,127 @@ describe("delegated approver in the cockpit (PAR-9687)", () => {
     });
     const snap = await cockpitSnapshot(ctx, CO);
     expect(snap.waiting.find((w) => w.key === "social:review:p1")?.title).toContain("Approve post");
+  });
+});
+
+describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () => {
+  const SINCE = "2026-11-10T08:00:00.000Z";
+  type World = ReturnType<typeof delegateWorld>;
+
+  /** The delegate world, with the Cockpit's review and unscheduled queries answered from its post. */
+  function world(opts: Parameters<typeof delegateWorld>[0] = {}, approved: Array<Record<string, unknown>> = []): World {
+    const w = delegateWorld(opts);
+    const db = w.ctx.db as unknown as { query: (sql: string, params: unknown[]) => Promise<unknown[]> };
+    const base = db.query;
+    db.query = async (sql, params) => {
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at`)) {
+        return w.post.status === "review" ? [{ ...postRow(w), review_issue_id: "iss-9", review_since: SINCE }] : [];
+      }
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'approved'`)) return approved;
+      return base(sql, params);
+    };
+    return w;
+  }
+  const reviewItem = async (w: World) => (await cockpitSnapshot(w.ctx, "co")).waiting.find((i) => i.key === "social:review:p1");
+  async function owner(w: World) {
+    const item = await reviewItem(w);
+    expect(item?.title).toBe("[PiB Brand] Approve post: Spring sale starts Friday. Come and see.");
+    expect(item?.waitsOn).toBeUndefined();
+  }
+
+  it("1. the delegate's gate says yes: waits on the delegate, since the post entered review", async () => {
+    const w = world();
+    w.pass();
+    const item = await reviewItem(w);
+    expect(item).toMatchObject({ title: "[PiB Brand] Waiting for the delegated approver (ag-rhea): Spring sale starts Friday. Come and see.", waitsOn: { kind: "agent", agentId: "ag-rhea" }, since: SINCE });
+    // Read-only: the check wrote nothing.
+    expect(w.ownerRows()).toEqual([]);
+    expect(w.ctx.fakeDb.executes).toEqual([]);
+  });
+
+  it("2. no Reviewer pass: the owner", async () => owner(world()));
+
+  it("3. the Reviewer asked for changes: the owner", async () => {
+    const w = world();
+    w.pass();
+    w.pass({ outcome: "changes" });
+    await owner(w);
+  });
+
+  it("4. the pass is on an older version: the owner", async () => {
+    const w = world();
+    w.pass({ content_hash: "0".repeat(64) });
+    await owner(w);
+  });
+
+  it("5. an unscored pass: the owner", async () => {
+    const w = world();
+    w.pass({ via: "unscored" });
+    await owner(w);
+  });
+
+  it("6. a pass with no actor: the owner", async () => {
+    const w = world();
+    w.pass({ actor_agent_id: null });
+    await owner(w);
+  });
+
+  it("7. the pass was recorded by the delegate: the owner", async () => {
+    const w = world();
+    w.pass({ actor_agent_id: "ag-rhea" });
+    await owner(w);
+  });
+
+  it("8. the post was created before the delegate was named (D3): the owner", async () => {
+    const w = world({ setAt: new Date(Date.now() + HOUR).toISOString() });
+    w.pass();
+    await owner(w);
+  });
+
+  it("9. the delegate's own post: the owner", async () => {
+    const w = world();
+    w.post.created_by_agent_id = "ag-rhea";
+    w.pass();
+    await owner(w);
+  });
+
+  it("10. the delegate cannot act (scope off the delegatable list): the owner", async () => {
+    const w = world({ allowlist: [] });
+    w.pass();
+    await owner(w);
+  });
+
+  it("11. the client alone approves: waits on the client", async () => {
+    const w = world({ policy: { require_owner: false, require_client: true } });
+    expect(await reviewItem(w)).toMatchObject({ title: "[PiB Brand] Waiting for the client: Spring sale starts Friday. Come and see.", waitsOn: { kind: "client" } });
+  });
+
+  it("12. approved with no time: waits on the agent of an open schedule issue, else on nobody", async () => {
+    const row = (id: string, schedule: string | null) => ({ id, body: `Post ${id}`, client_kind: null, client_ref: null, client_name: null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
+    const w = world({}, [row("s1", "iss-open"), row("s2", null), row("s3", "iss-done"), row("s4", "iss-person"), row("s5", "iss-broken")]);
+    const issues = { "iss-open": { status: "todo", assigneeAgentId: "ag-social" }, "iss-done": { status: "done", assigneeAgentId: "ag-social" }, "iss-person": { status: "todo", assigneeAgentId: null, assigneeUserId: "u1" } } as Record<string, unknown>;
+    (w.ctx.issues as unknown as { get: unknown }).get = vi.fn(async (id: string) => {
+      if (id === "iss-broken") throw new Error("host down");
+      return issues[id] ? { id, ...(issues[id] as object) } : null;
+    });
+    const waiting = (await cockpitSnapshot(w.ctx, "co")).waiting;
+    const waitsOn = (id: string) => waiting.find((i) => i.key === `social:schedule:${id}`)?.waitsOn;
+    expect(waitsOn("s1")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("s2")).toBeUndefined();
+    expect(waitsOn("s3")).toBeUndefined();
+    expect(waitsOn("s4")).toBeUndefined();
+    expect(waitsOn("s5")).toBeUndefined();
+  });
+
+  it("13. delegateApprovalRefusal returns the sentence the approve tool throws, and null when it would approve", async () => {
+    const refusing = world();
+    const text = await delegateApprovalRefusal(refusing.ctx, RHEA, postRow(refusing));
+    expect(text).toBe("The Reviewer has not passed this post yet. Its pass comes first.");
+    await expect(approvePostByDelegate(refusing.ctx, RHEA, postRow(refusing))).rejects.toThrow(text!);
+    const ok = world();
+    ok.pass();
+    expect(await delegateApprovalRefusal(ok.ctx, RHEA, postRow(ok))).toBeNull();
+    expect(ok.post.status).toBe("review");
+    expect(ok.ownerRows()).toEqual([]);
   });
 });

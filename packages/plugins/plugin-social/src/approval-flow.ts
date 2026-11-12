@@ -315,6 +315,56 @@ async function delegateGate(ctx: PluginContext, caller: DelegateCaller, post: Po
   return { agentId, scope, entry, policy };
 }
 
+type DelegateApprovalCheck =
+  | { refusal: string }
+  | { refusal: null; agentId: string; policy: ApprovalPolicy; hash: string; rows: OutcomeRow[] };
+
+/**
+ * Steps 1 to 9 of the delegate's approval, read-only. A refusal is the sentence the approve tool throws; an error that is
+ * not a refusal (a failed content read) is thrown as before.
+ */
+async function delegateApprovalCheck(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<DelegateApprovalCheck> {
+  let gate: DelegateGate;
+  try {
+    gate = await delegateGate(ctx, caller, post);
+  } catch (error) {
+    if (error instanceof SocialError) return { refusal: error.message };
+    throw error;
+  }
+  const { agentId, entry, policy } = gate;
+  // 7. The Reviewer passed THIS version, scored, and the pass was not the caller's (read from the ledger whatever the policy says).
+  const { hash } = await postFingerprint(ctx, post);
+  let rows: OutcomeRow[];
+  try {
+    rows = await outcomesForPost(ctx, caller.companyId, post.id);
+  } catch {
+    return { refusal: "The sign-offs could not be read, so nothing was approved. Try again." };
+  }
+  const pass = rows.filter((row) => row.stage === "reviewer").sort((a, b) => b.round - a.round || String(b.created_at).localeCompare(String(a.created_at)))[0];
+  if (!pass) return { refusal: "The Reviewer has not passed this post yet. Its pass comes first." };
+  if (pass.outcome !== "approved") return { refusal: "The Reviewer asked for changes to this post. Return it instead of approving it." };
+  if (pass.content_hash !== hash) return { refusal: "The Reviewer passed an older version of this post. It has to pass this version first." };
+  if (pass.via === "unscored") return { refusal: "The Reviewer's pass scored nothing (no destination the rubric checks), so a person approves this post." };
+  if (!pass.actor_agent_id) return { refusal: "The Reviewer's pass does not say which agent gave it, so a person approves this post." };
+  if (pass.actor_agent_id === agentId) return { refusal: "You recorded the Reviewer's pass on this post, so you cannot also approve it. A person approves it." };
+  // 9. The post was created after the delegate was named (D3): older posts stay with the person.
+  const created = stampOf(post.created_at);
+  const setAt = Date.parse(entry.setAt);
+  if (!Number.isFinite(created) || !Number.isFinite(setAt) || created < setAt) {
+    return { refusal: "This post was created before you were named the delegated approver, so a person approves it." };
+  }
+  return { refusal: null, agentId, policy, hash, rows };
+}
+
+/**
+ * Why the caller (the scope's delegated approver) could not approve this post right now, as the sentence
+ * `approvePostByDelegate` would refuse with; null when it could. Read-only: the Cockpit uses it to say who a
+ * post waits for (PAR-10701). Errors that are not refusals are thrown.
+ */
+export async function delegateApprovalRefusal(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<string | null> {
+  return (await delegateApprovalCheck(ctx, caller, post)).refusal;
+}
+
 /**
  * The scope's delegated approver approves a post in review (PAR-9561): its yes is
  * the owner's sign-off. Every check refuses on its own sentence, and every input
@@ -324,28 +374,9 @@ async function delegateGate(ctx: PluginContext, caller: DelegateCaller, post: Po
  */
 export async function approvePostByDelegate(ctx: PluginContext, caller: DelegateCaller, post: PostRow): Promise<ApprovalProgress> {
   const companyId = caller.companyId;
-  const { agentId, entry, policy } = await delegateGate(ctx, caller, post);
-  // 7. The Reviewer passed THIS version, scored, and the pass was not the caller's (read from the ledger whatever the policy says).
-  const { hash } = await postFingerprint(ctx, post);
-  let rows: OutcomeRow[];
-  try {
-    rows = await outcomesForPost(ctx, companyId, post.id);
-  } catch {
-    throw new SocialError("The sign-offs could not be read, so nothing was approved. Try again.");
-  }
-  const pass = rows.filter((row) => row.stage === "reviewer").sort((a, b) => b.round - a.round || String(b.created_at).localeCompare(String(a.created_at)))[0];
-  if (!pass) throw new SocialError("The Reviewer has not passed this post yet. Its pass comes first.");
-  if (pass.outcome !== "approved") throw new SocialError("The Reviewer asked for changes to this post. Return it instead of approving it.");
-  if (pass.content_hash !== hash) throw new SocialError("The Reviewer passed an older version of this post. It has to pass this version first.");
-  if (pass.via === "unscored") throw new SocialError("The Reviewer's pass scored nothing (no destination the rubric checks), so a person approves this post.");
-  if (!pass.actor_agent_id) throw new SocialError("The Reviewer's pass does not say which agent gave it, so a person approves this post.");
-  if (pass.actor_agent_id === agentId) throw new SocialError("You recorded the Reviewer's pass on this post, so you cannot also approve it. A person approves it.");
-  // 9. The post was created after the delegate was named (D3): older posts stay with the person.
-  const created = stampOf(post.created_at);
-  const setAt = Date.parse(entry.setAt);
-  if (!Number.isFinite(created) || !Number.isFinite(setAt) || created < setAt) {
-    throw new SocialError("This post was created before you were named the delegated approver, so a person approves it.");
-  }
+  const check = await delegateApprovalCheck(ctx, caller, post);
+  if (check.refusal !== null) throw new SocialError(check.refusal);
+  const { agentId, policy, hash, rows } = check;
   // The row is the audit trail: no row, no approval.
   let written = false;
   try {
