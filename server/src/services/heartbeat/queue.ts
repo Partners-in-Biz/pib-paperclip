@@ -4631,6 +4631,32 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
+          // PAR-10086: the named unblock owner's run never takes or waits on
+          // the issue execution lock (claim binds it only for the assignee),
+          // so its wake does not park behind another agent's holder, whatever
+          // the holder's status. It is admitted against the owner's own live
+          // run on this issue instead: a repeat owner wake coalesces into it,
+          // so one agent never gets two runs on one issue.
+          const unblockOwnerAdmission =
+            activeExecutionRun?.agentId !== agentId &&
+            isSystemUnblockOwnerWake(
+              { reason, requestedByActorType: opts.requestedByActorType, requestedByActorId: opts.requestedByActorId },
+              enrichedContextSnapshot,
+              issue,
+              agentId,
+            );
+          if (unblockOwnerAdmission) {
+            activeExecutionRun = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            )).orderBy(
+              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+              asc(heartbeatRuns.createdAt),
+            ).limit(1).then((rows) => rows[0] ?? null);
+          }
+
           if (activeExecutionRun) {
             // The case ledger owns retry. Do not place its exact receipt in a
             // generic deferred queue that cannot retain handoff authority.
@@ -4709,7 +4735,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 issueId: issue.id,
                 agentId,
                 agentNameKey,
-                issueExecutionAgentNameKey: issue.executionAgentNameKey,
+                // The issue's key names the lock holder, not the owner's own run.
+                issueExecutionAgentNameKey: unblockOwnerAdmission ? null : issue.executionAgentNameKey,
                 activeExecutionRun: {
                   id: activeExecutionRun.id,
                   agentId: activeExecutionRun.agentId,
