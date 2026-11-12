@@ -14,7 +14,7 @@ import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
 import type { CockpitView, LoadResult } from "../view.js";
-import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, grid, type LinkPropsFor } from "./components.js";
+import { ActivityList, AgentsTable, Card, HealthList, HealthSummary, KpiGroup, Light, Muted, TodayCard, TodayHero, WaitingKinds, WaitingList, WaitingOthers, grid, type LinkPropsFor } from "./components.js";
 import { uiBase, useCockpitData, useSidebarView } from "./data.js";
 import { FlowsPanel, FlowsSummary } from "./flows.js";
 import { dedupeKpis, visibleKpis } from "./kpis.js";
@@ -296,6 +296,7 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onD
         actions={<WaitingKinds items={view.waiting} />}
       >
         <WaitingList items={view.waiting} linkFor={linkFor} now={now} onDismiss={onDismiss} />
+        <WaitingOthers items={view.waitingOthers ?? []} agents={view.agents} linkFor={linkFor} now={now} />
       </Card>
 
       <FlowsSummary view={view.flows} linkFor={linkFor} />
@@ -374,7 +375,7 @@ export function CompanyTodayWidget({ context }: PluginWidgetProps) {
   const data = useCockpitData(context.companyId, { light: true });
   const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.view) return null;
-  return <TodayCard waiting={data.view.waiting.filter(needsAction).length} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
+  return <TodayCard waiting={data.view.waiting.filter(needsAction).length} others={data.view.waitingOthers?.length ?? 0} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
 }
 
 export function CockpitSidebar({ context }: PluginSidebarProps) {
