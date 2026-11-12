@@ -381,7 +381,7 @@ setTimeout(() => {
       },
       passEnded: () => void (ended += 1),
     };
-    const options: PassOptions = { ...opts.options, plan: { passBudget: 3, ...opts.options?.plan }, run: {
+    const options: PassOptions = { statfs, ...opts.options, plan: { passBudget: 3, ...opts.options?.plan }, run: {
         bins: mpBins,
         killImpl: (pid, sig) => {
           kills.push([pid, sig]);
@@ -415,6 +415,17 @@ setTimeout(() => {
     // Intermediates may grow to INTERMEDIATE_FSIZE_BYTES (6 GiB), the delivery file to 200 MB; the address space cap is the same for all.
     expect(r.runs.map((x) => Number(x.fsize))).toEqual([...Array(6).fill(INTERMEDIATE_FSIZE_BYTES), FSIZE_BYTES]);
     expect(r.runs.every((x) => Number(x.as) === DEFAULT_AS_LIMIT_BYTES)).toBe(true);
+  });
+
+  it("PAR-10764: a multi-pass plan on a low disk fails disk_low before any pass spawns; single-pass is unchanged", async () => {
+    await steer({});
+    const low = (async () => ({ bavail: 10 * 1024 ** 3, bsize: 1 })) as never;
+    const r = await passes(8, { options: { statfs: low } });
+    expect(r.result).toMatchObject({ error: { code: "disk_low" } });
+    expect(r.started).toEqual([]);
+    expect(r.runs).toEqual([]);
+    const ok = await passes(2, { options: { statfs: low } });
+    expect(ok.result).toMatchObject({ ok: { plan: "single" } });
   });
 
   it("AC1: cancelling during pass 2 kills only that group and starts no later pass", async () => {
