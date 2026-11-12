@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`looks + adjust: compiled graph > main clip: timing -> look -> eq -> temperature -> blur -> vignette -> crop/fit, BT.709 around RGB filters 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=in_color_matrix=bt709,format=gbrp,colorchannelmixer=rr=1.0933:rg=-0.0393:rb=-0.004:gr=-0.0106:gg=1.0142:gb=-0.0036:br=-0.0096:bg=-0.0322:bb=0.9918,curves=r='0/0.01 0.5/0.52 1/1':b='0/0.03 0.5/0.49 1/0.97',scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,eq=brightness=0.1:contrast=1.2:saturation=0.8,scale=in_color_matrix=bt709,format=gbrp,colortemperature=temperature=4000,scale=w=1080:h=-2,gblur=sigma=10,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,vignette=angle=0.5236,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg0];
+[seg0]format=yuv420p,setsar=1[vout]
+"
+`;
+
+exports[`looks + adjust: compiled graph > overlay and shaped main clips grade after timing, before shape, fades and opacity; images keep alpha 1`] = `
+"[0:v]setpts=PTS-STARTPTS,fps=30,scale=in_color_matrix=bt709,format=gbrp,colorchannelmixer=rr=0.2126:rg=0.7152:rb=0.0722:gr=0.2126:gg=0.7152:gb=0.0722:br=0.2126:bg=0.7152:bb=0.0722,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,format=yuva420p,rotate=a=10*PI/180:ow=rotw(10*PI/180):oh=roth(10*PI/180):c=none,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,sendcmd=c=0-2 \\[expr\\] colorchannelmixer@op0 aa \\\\\\'clip(if(lt((TI*2)\\,0)\\,0\\,if(lt((TI*2)\\,2)\\,0+1*(((TI*2)-0)/2)\\,1))\\,0\\,1)\\\\\\',colorchannelmixer@op0[shp1];
+color=c=black:s=1080x1920:r=30:d=2,format=yuv420p,setsar=1[blk2];
+[blk2][shp1]overlay=x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass,format=yuv420p,setsar=1,trim=duration=2[seg0];
+[1:v]setpts=PTS-STARTPTS+0.5/TB,fps=30,format=gbrap,colorchannelmixer=rr=1.08:rg=0:rb=0:gr=0:gg=1:gb=0:br=0:bg=0:bb=0.9,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split[vga3][vgb4];[vga3]format=yuv420p,vignette=angle=1.0472[vgc5];[vgb4]alphaextract[vgd6];[vgc5][vgd6]alphamerge,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in:st=0.5:d=0.2:alpha=1[ov7];
+[seg0][ov7]overlay=x=(W-w)/2+0:y=(H-h)/2+0:eof_action=pass[base8];
+[base8]format=yuv420p,setsar=1[vout]
+"
+`;

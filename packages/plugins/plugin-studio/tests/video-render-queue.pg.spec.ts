@@ -57,7 +57,9 @@ describe.skipIf(!available)("Render queue against real Postgres", () => {
     expect(await stored({ project: { size: "1:1" }, tracks: [], junk: true })).toEqual({ schemaVersion: 1, project: { size: "1:1", width: 1080, height: 1080, fps: 30 }, tracks: [] });
     const clip = { id: "c", assetId: "a", version: 1, in: 0, out: 2, start: 0, keyframes: { scale: [{ t: 0, value: 1 }, { t: 2, value: 2 }] } };
     expect(await stored({ ...DOC, schemaVersion: 2, tracks: [{ id: "v", kind: "video", clips: [clip] }] })).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { scale: [{}, {}] } }] }] });
-    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 3 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
+    const styled = { ...clip, keyframes: undefined, adjust: { brightness: 0.2, contrast: 1 }, look: { id: "mono" } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "v", kind: "video", clips: [styled] }] })).toMatchObject({ schemaVersion: 3, tracks: [{ clips: [{ adjust: { brightness: 0.2 }, look: { pack: "pib-basic", id: "mono", intensity: 1 } }] }] });
+    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 4 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
   });
 
   let ctx: PluginContext;

@@ -101,14 +101,14 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
     expect(await getEditAction(ctx, CO, { editId: edit.id })).toMatchObject({ id: edit.id, revision: 1 });
   });
 
-  it("start-from-assets stores a schema v1 doc with no v2 fields (PAR-8442)", async () => {
+  it("start-from-assets stores a schema v1 doc with no v2 or v3 fields (PAR-8442, PAR-10157)", async () => {
     await addAsset("vid", CO, null);
     const { probe } = fakeProbe({ vid: probeResult(3) });
     const edit = await createEditAction(ctx, CO, { title: "Plain", assetIds: ["vid"] }, USER, { probe });
     const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(`SELECT doc FROM ${pg.db.namespace}.video_edits WHERE id = $1`, [edit.id]);
     const stored = typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
     expect(stored).toMatchObject({ schemaVersion: 1 });
-    expect(JSON.stringify(stored)).not.toMatch(/keyframes|transitionIn":\{/);
+    expect(JSON.stringify(stored)).not.toMatch(/keyframes|transitionIn":\{|adjust|look/);
   });
 
   it("caps a start-from-assets timeline at 180 s and refuses assets that do not fit at all", async () => {

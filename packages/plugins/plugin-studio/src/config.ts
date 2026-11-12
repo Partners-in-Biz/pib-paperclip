@@ -9,7 +9,7 @@ import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
-export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine";
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks";
 
 export function instanceConfigSchema(): JsonSchema {
   return {
@@ -50,6 +50,8 @@ export function instanceConfigSchema(): JsonSchema {
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
+          // Look pack keys: src/providers/registry.ts LOOK_PACKS (literal, same reason).
+          looks: { type: "string", title: "Look pack for video clips", enum: ["pib-basic"], default: "pib-basic" },
         },
       },
     },
