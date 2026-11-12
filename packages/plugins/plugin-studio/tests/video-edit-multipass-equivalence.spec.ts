@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { compileAudioStem } from "../src/video-edit/compile-audio.js";
+import { AUDIO_ENCODER_ARGS, compileAudioStem, INTERMEDIATE_AUDIO_ENCODER_ARGS } from "../src/video-edit/compile-audio.js";
 import { compileVideo, inputKey, type CompiledVideo, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { runContained } from "../src/video-edit/ffmpeg.js";
 import { planRender, type RenderPass } from "../src/video-edit/render-plan.js";
@@ -36,6 +36,21 @@ async function render(compiled: CompiledVideo, cwd: string): Promise<void> {
   mkdirSync(cwd, { recursive: true });
   for (const f of compiled.files) writeFileSync(join(cwd, f.name), f.content);
   await ff(compiled.args.filter((a) => a !== "-hide_banner" && a !== "-nostdin" && a !== "-y"), cwd);
+}
+
+/**
+ * The same render with float PCM sound in a `.mov` instead of AAC: the mix the delivery encoder receives. The audio bar
+ * is checked here. ffmpeg's AAC encoder turns a 1-ULP float difference (the stems sum in a different order) into a large
+ * one: case (d) is -142 dBFS before AAC but -39 dBFS after it on ffmpeg 8.1 (-58 on 6.1); with `-aac_pns 0` -52, with
+ * `-aac_coder fast` -77. That difference comes from the shared final encoder, not from the planner (PAR-10465).
+ */
+function withPcmSound(compiled: CompiledVideo, output: string): CompiledVideo {
+  const args = [...compiled.args];
+  const at = args.findIndex((_, i) => AUDIO_ENCODER_ARGS.every((a, j) => args[i + j] === a));
+  if (at < 0) throw new Error("no delivery audio encoder in the args");
+  args.splice(at, AUDIO_ENCODER_ARGS.length, ...INTERMEDIATE_AUDIO_ENCODER_ARGS);
+  args[args.length - 1] = `file:${output}`;
+  return { ...compiled, args };
 }
 
 /** 320x240 fixtures: `testsrc2` pictures (one with a 440 Hz tone), a music bed, a loud tone, a still. */
@@ -71,11 +86,14 @@ function edit(tracks: unknown[], fps = 30): EditDoc {
   return { ...doc, project: { ...doc.project, width: W, height: H } };
 }
 
-/** Single pass and multi-pass renders of `doc`; returns both output paths and the passes run. */
-async function renderBoth(name: string, doc: EditDoc, passBudget: number): Promise<{ single: string; multi: string; passes: RenderPass[] }> {
+/** Single pass and multi-pass renders of `doc` (delivery files, and the same final renders with PCM sound). */
+async function renderBoth(name: string, doc: EditDoc, passBudget: number) {
   const root = join(dir, name);
   const single = join(root, "single", "out.mp4");
-  await render(compileVideo(doc, sources, single), dirname(single));
+  const singleMix = join(root, "single", "mix.mov");
+  const singleRender = compileVideo(doc, sources, single);
+  await render(singleRender, dirname(single));
+  await render(withPcmSound(singleRender, singleMix), dirname(single));
   const plan = planRender(doc, sources, { workdir: join(root, "multi"), passBudget });
   if (plan.kind !== "multi") throw new Error(`${name}: expected a multi-pass plan, got ${plan.kind}`);
   for (const pass of plan.passes) {
@@ -83,8 +101,11 @@ async function renderBoth(name: string, doc: EditDoc, passBudget: number): Promi
     await render(compiled, dirname(pass.output));
   }
   const multi = join(root, "multi", "final", "out.mp4");
-  await render(compileVideo(plan.final.doc, plan.final.sources, multi), dirname(multi));
-  return { single, multi, passes: plan.passes };
+  const multiMix = join(root, "multi", "final", "mix.mov");
+  const finalRender = compileVideo(plan.final.doc, plan.final.sources, multi);
+  await render(finalRender, dirname(multi));
+  await render(withPcmSound(finalRender, multiMix), dirname(multi));
+  return { single, multi, singleMix, multiMix, passes: plan.passes };
 }
 
 async function probe(path: string): Promise<{ frames: number; audio: number | null }> {
@@ -116,7 +137,7 @@ async function audioDiff(a: string, b: string, cwd: string): Promise<number> {
 }
 
 async function expectEquivalent(name: string, doc: EditDoc, passBudget: number): Promise<RenderPass[]> {
-  const { single, multi, passes } = await renderBoth(name, doc, passBudget);
+  const { single, multi, singleMix, multiMix, passes } = await renderBoth(name, doc, passBudget);
   const cwd = join(dir, name);
   const [s, m] = [await probe(single), await probe(multi)];
   expect(s.frames).toBeGreaterThan(0);
@@ -125,8 +146,9 @@ async function expectEquivalent(name: string, doc: EditDoc, passBudget: number):
   expect(m.audio, `${name}: multi-pass has audio`).not.toBeNull();
   expect(Math.abs((m.audio ?? 0) - (s.audio ?? 0)), `${name}: audio duration`).toBeLessThanOrEqual(1 / doc.project.fps + 1e-6);
   const p = await psnr(multi, single, cwd);
-  const diff = await audioDiff(multi, single, cwd);
-  console.info(`${name}: ${passes.length} passes, ${m.frames} frames, audio ${s.audio}/${m.audio} s, PSNR mean ${p.mean.toFixed(2)} min ${p.min.toFixed(2)} (frame ${p.worstFrame}), audio diff ${diff.toFixed(1)} dBFS`);
+  const diff = await audioDiff(multiMix, singleMix, cwd);
+  const delivered = await audioDiff(multi, single, cwd); // after AAC: logged only, see withPcmSound
+  console.info(`${name}: ${passes.length} passes, ${m.frames} frames, audio ${s.audio}/${m.audio} s, PSNR mean ${p.mean.toFixed(2)} min ${p.min.toFixed(2)} (frame ${p.worstFrame}), audio diff ${diff.toFixed(1)} dBFS (after AAC ${delivered.toFixed(1)})`);
   expect(p.mean, `${name}: mean PSNR`).toBeGreaterThanOrEqual(BAR.meanPsnr);
   expect(p.min, `${name}: min PSNR at frame ${p.worstFrame}`).toBeGreaterThanOrEqual(BAR.minPsnr);
   expect(diff, `${name}: audio difference RMS (dBFS)`).toBeLessThanOrEqual(BAR.audioDiffDb);
