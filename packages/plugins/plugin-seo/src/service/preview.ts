@@ -28,7 +28,7 @@ import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
 export { PREVIEW_BASE, previewLink, previewSlug } from "./preview-links.js";
-import { assertWpBodyApplicable, needsWpBodyCheck, wpPostContent } from "./wp-body.js";
+import { assertInsertArea, assertWpBodyApplicable, needsWpBodyCheck, wpPostContent } from "./wp-body.js";
 import { PREVIEW_RENDER_URL, previewLink, previewSlug } from "./preview-links.js";
 
 function hostOf(url: string): string {
@@ -378,10 +378,12 @@ async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext):
   const wp = wpBody ? await wpBody : ({ kind: "none" } as const);
   assertWpBodyApplicable(wp, changes);
   const liveHtml = withoutNul("html" in render ? render.html : res.text);
+  const areaNote = assertInsertArea(wp, liveHtml, changes);
   const built = buildPreviewHtml(liveHtml, sourceUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
   built.notes.unshift(render.note);
   if (wp.kind === "skip") built.notes.push(wp.note);
+  if (areaNote) built.notes.push(areaNote);
   const figure = previewStats(liveHtml, built.html);
   // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
   // source basis the review page measures `stats.rendered` on first open.

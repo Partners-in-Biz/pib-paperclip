@@ -501,6 +501,19 @@ export interface PreviewResult {
   notes: string[];
 }
 
+/**
+ * PAR-10303: the slice of the page that bodyHtml (default descent) or, with no body, linkEdits (no descent) would be
+ * written into: the same script/noscript stripping and the same findContentArea call buildPreviewHtml makes. null when
+ * no area is found (the heading-anchor placement) or the change has no body or link edit. Pass the HTML the preview is built from.
+ */
+export function bodyInsertAreaHtml(html: string, changes: PreviewChanges): string | null {
+  const body = Boolean(changes.bodyHtml);
+  if (!body && !changes.linkEdits?.length) return null;
+  const stripped = html.replace(/<script\b[\s\S]*?<\/script\s*>/gi, "").replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, "");
+  const area = findContentArea(stripped, contentBoundary(stripped), changes.contentSelector, body);
+  return area ? stripped.slice(area.innerStart, area.innerEnd) : null;
+}
+
 export function buildPreviewHtml(live: string, pageUrl: string, changes: PreviewChanges, opts: { token: string; clientName?: string | null }): PreviewResult {
   const applied: string[] = [];
   const notes: string[] = [];
