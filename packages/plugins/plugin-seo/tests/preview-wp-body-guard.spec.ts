@@ -9,7 +9,8 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, SeoError, type Actor } from "../src/service/common.js";
 import { createPreview, type CreatePreviewResult } from "../src/service/preview.js";
-import { wpPostContent, wpRestLink } from "../src/service/wp-body.js";
+import { bodyInsertAreaHtml, buildPreviewHtml } from "../src/engine/preview.js";
+import { assertInsertArea, wpPostContent, wpRestLink } from "../src/service/wp-body.js";
 
 const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn(async (_ctx: unknown, _opts: Record<string, unknown>) => ({ status: "saved", requestId: "rq", driveFileId: "f1", url: "https://drive.example/f1" })) }));
 vi.mock("@partnersinbiz/pib-plugin-kit", async (importOriginal) => {
@@ -319,5 +320,98 @@ describe("T2 passes", () => {
     w.site.mockImplementation(async (u: string, i?: unknown) => { order.push(u.includes("/wp-json/") ? "rest" : "page"); return inner(u, i); });
     await make(w, "747039", BODY);
     expect(order).toEqual(["page", "rest"]);
+  });
+});
+
+/** PAR-10303 (PAR-10016 T3): the insert-area check R2, both directions. One test per row of the decision table. */
+describe("T3 insert-area check R2", () => {
+  const W = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}word${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}`).join(" ");
+  const p = (words: string) => `<p>${words}</p>`;
+  const POST = p(W(60, "post"));
+  const ok = (rendered: string): { kind: "ok"; id: number; template: string; rendered: string } => ({ kind: "ok", id: 9, template: "", rendered });
+  const shell = (main: string, extra = "") => `<html><head><title>t</title></head><body><header><p>${W(10, "head")}</p></header>${main}${extra}<footer><p>${W(30, "foot")}</p></footer></body></html>`;
+  const page = (inner: string, theme = "") => shell(`<main>${theme}<div class="entry-content">${inner}</div></main>`, `<aside class="sidebar widget_text"><p>${W(20, "side")}</p></aside>`);
+  const CHANGE = { bodyHtml: "<p>new copy</p>" };
+
+  it("T2 said none or skip: no check", () => {
+    expect(assertInsertArea({ kind: "none" }, page(POST), CHANGE)).toBeNull();
+    expect(assertInsertArea({ kind: "skip", note: "x" }, page(POST), { ...CHANGE, contentSelector: ".sidebar" })).toBeNull();
+  });
+  it("P has fewer than 5 words: skip, no note", () => {
+    expect(assertInsertArea(ok("<p>just four long words</p>"), page(POST), { ...CHANGE, contentSelector: ".sidebar" })).toBeNull();
+  });
+  it("no area (heading-anchor placement): skip with the note", () => {
+    const html = `<html><body><div><h2>Heading</h2>${POST}</div></body></html>`;
+    expect(bodyInsertAreaHtml(html, CHANGE)).toBeNull();
+    expect(assertInsertArea(ok(POST), html, CHANGE)).toBe("WordPress body check skipped: could not check that the copy lands inside the post content.");
+  });
+  it("A has fewer than 5 words (empty element chosen): skip with the note", () => {
+    expect(assertInsertArea(ok(POST), page(""), CHANGE)).toContain("could not check that the copy lands inside the post content");
+  });
+  it("at least 50% of A in P: a narrow section inside the post content passes", () => {
+    const faq = `<section class="faq"><p>${W(12, "post")}</p></section>`;
+    const html = page(POST + faq);
+    expect(assertInsertArea(ok(POST + faq), html, { ...CHANGE, contentSelector: ".faq" })).toBeNull();
+    expect(assertInsertArea(ok(POST + faq), html, { linkEdits: [{ text: "x", href: "/x/" }], contentSelector: ".faq" })).toBeNull();
+  });
+  it("at least 15% of P in A: <main> holding the post content plus theme parts passes", () => {
+    const html = page(POST, `<div class="hero"><p>${W(120, "hero")}</p></div>`);
+    expect(assertInsertArea(ok(POST), html, { ...CHANGE, contentSelector: "main" })).toBeNull();
+  });
+  it("under 50% of A in P and under 15% of P in A: refused with R2 (footer and sidebar widget)", () => {
+    const html = page(POST);
+    const footer = (() => { try { return assertInsertArea(ok(POST), html, { ...CHANGE, contentSelector: "footer" }); } catch (e) { return e as Error; } })();
+    expect(footer).toBeInstanceOf(SeoError);
+    expect((footer as Error).message).toBe("The copy would go into footer, which is outside this page's WordPress content (post 9): 0% of its words are post content, and it holds 0% of the post content's words. Applying it could not put the copy there. Set contentSelector to the element that holds the post content (for example .entry-content), or pick another page.");
+    expect(() => assertInsertArea(ok(POST), html, { ...CHANGE, contentSelector: ".widget_text" })).toThrow(/^The copy would go into \.widget_text, which is outside/);
+  });
+  it("R2 names the default area when no contentSelector is set, and stores nothing", async () => {
+    const w = wpWorld("747039");
+    const rest = JSON.parse(fx("rest-747039.json"));
+    const other = `<html><head>${fx("head-747039.html").replace(/[\s\S]*?(<link[^>]*wp-json\/wp\/v2[^>]*>)[\s\S]*/, "$1")}</head><body><main><div class="entry-content">${p(W(40, "unrelated"))}</div></main></body></html>`;
+    w.pages[SLUG["747039"]] = other;
+    w.rest.handler = (url) => w.json(rest, { url });
+    const err = await make(w, "747039", BODY).catch((e) => e);
+    expect(err).toBeInstanceOf(SeoError);
+    expect(err.message).toMatch(/^The copy would go into the content area found on the page, which is outside this page's WordPress content \(post 747039\): 0% of its words/);
+    await expectNothingStored(w);
+  });
+  it("747039: the default area passes, and so does a selector on a section inside the post content", async () => {
+    for (const changes of [BODY, { ...BODY, contentSelector: ".entry-content" }]) {
+      const w = wpWorld("747039");
+      expect((await make(w, "747039", changes)).reused).toBe(false);
+      expect(w.previews).toHaveLength(1);
+    }
+  });
+  it("bodyInsertAreaHtml returns the area the change uses: the insert lands at the end of the slice, links sit inside it", () => {
+    for (const file of ["huntandgun-hunting.html", "faq.html"]) {
+      const src = readFileSync(resolve("tests/fixtures", file), "utf-8");
+      const marker = "<p>MARKERCOPY insert here</p>";
+      const slice = bodyInsertAreaHtml(src, { bodyHtml: marker, bodyMode: "after" });
+      if (slice === null) continue;
+      const built = buildPreviewHtml(src, "https://x.example/", { bodyHtml: marker, bodyMode: "after" }, { token: "t" }).html;
+      const at = built.indexOf("MARKERCOPY");
+      expect(at).toBeGreaterThan(-1);
+      const sliceAt = built.indexOf(slice.slice(0, 80));
+      expect(sliceAt).toBeGreaterThan(-1);
+      expect(at).toBeLessThanOrEqual(sliceAt + slice.length + marker.length);
+      expect(at).toBeGreaterThanOrEqual(sliceAt);
+    }
+    const src = readFileSync(resolve("tests/fixtures/huntandgun-hunting.html"), "utf-8");
+    const linkSlice = bodyInsertAreaHtml(src, { linkEdits: [{ text: "x", href: "/x/" }] });
+    expect(linkSlice).not.toBeNull();
+  });
+});
+
+describe("T3 real page: agriauctionssa.co.za lot 105 (Divi theme, post 469209; saved 2026-11-12)", () => {
+  const html = fx("page-agriauctions-lot105.html");
+  const rest = JSON.parse(fx("rest-agriauctions-lot105.json"));
+  const body = { kind: "ok" as const, id: rest.id, template: "", rendered: rest.content.rendered as string };
+  it("passes with the default area and with .entry-content", () => {
+    expect(assertInsertArea(body, html, BODY)).toBeNull();
+    expect(assertInsertArea(body, html, { ...BODY, contentSelector: ".entry-content" })).toBeNull();
+  });
+  it("this page's footer is empty, so a footer selector is skipped with the note (A under 5 words)", () => {
+    expect(assertInsertArea(body, html, { ...BODY, contentSelector: "footer" })).toContain("could not check that the copy lands");
   });
 });

@@ -4,7 +4,7 @@
  * (`<link rel="alternate" type="application/json" href=".../wp-json/wp/v2/<type>/<id>">`) gives `content.rendered`, which is
  * what the Connector edits. T3 reuses `wpPostContent`.
  */
-import { visibleWords, type PreviewChanges } from "../engine/preview.js";
+import { bodyInsertAreaHtml, visibleWords, type PreviewChanges } from "../engine/preview.js";
 import { SeoError, type Env } from "./common.js";
 
 export const WP_BODY_TIMEOUT_MS = 5000;
@@ -98,4 +98,36 @@ export function assertWpBodyApplicable(body: WpPostContent, changes: PreviewChan
       throw new SeoError(`The link text "${edit.text}" is not in this page's WordPress content (post ${body.id}): it is in text the theme prints, which the Connector cannot change. Pick a phrase from the page's own copy, or another page.`);
     }
   }
+}
+
+const NO_CHECK_NOTE = "could not check that the copy lands inside the post content";
+const longWords = (html: string): Set<string> => new Set(visibleWords(html).filter((w) => w.replace(/[^\p{L}]/gu, "").length >= 4));
+const share = (of: Set<string>, within: Set<string>): number => {
+  let n = 0;
+  for (const w of of) if (within.has(w)) n++;
+  return of.size === 0 ? 0 : n / of.size;
+};
+
+/**
+ * R2 (PAR-10303): the area the copy would go into must overlap the post content in one direction or the other. Run on
+ * the HTML the preview is built from. Returns a note when the check could not run; throws R2 when the area is elsewhere.
+ */
+export function assertInsertArea(body: WpPostContent, builtFrom: string, changes: PreviewChanges): string | null {
+  if (body.kind !== "ok") return null;
+  const post = longWords(body.rendered);
+  if (post.size < 5) return null;
+  const variants: PreviewChanges[] = [];
+  if (changes.bodyHtml) variants.push(changes);
+  if (changes.linkEdits?.length) variants.push({ ...changes, bodyHtml: undefined });
+  let note: string | null = null;
+  for (const v of variants) {
+    const slice = bodyInsertAreaHtml(builtFrom, v);
+    const area = slice === null ? null : longWords(slice);
+    if (!area || area.size < 5) { note = `WordPress body check skipped: ${NO_CHECK_NOTE}.`; continue; }
+    const a = Math.round(share(area, post) * 100);
+    const b = Math.round(share(post, area) * 100);
+    if (share(area, post) >= 0.5 || share(post, area) >= 0.15) continue;
+    throw new SeoError(`The copy would go into ${changes.contentSelector ?? "the content area found on the page"}, which is outside this page's WordPress content (post ${body.id}): ${a}% of its words are post content, and it holds ${b}% of the post content's words. Applying it could not put the copy there. Set contentSelector to the element that holds the post content (for example .entry-content), or pick another page.`);
+  }
+  return note;
 }
