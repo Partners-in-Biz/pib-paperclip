@@ -73,7 +73,7 @@ async function readForOwnWork(ctx: PluginContext, params: Record<string, unknown
     notes: found.notes,
     next: [
       "Own work: nothing was saved. Save `forCompanyProfile` with partnersinbiz.cockpit:update-company-profile (it fills empty fields only), after you checked the colours and the logo against the site.",
-      "Write tagline and visualStyle there too, from the site's own words and look.",
+      "Write tagline and visualStyle there too, from the site's own words and look (`backgroundColor` and `textColor` are the page's paper and ink: name them in visualStyle).",
     ],
   };
 }
@@ -84,9 +84,17 @@ function foundOut(found: BrandFindings) {
     secondaryColor: found.secondaryColor,
     accentColor: found.accentColor,
     colors: found.colors.map((c) => ({ hex: c.hex, score: c.score, evidence: c.evidence.slice(0, 3).join("; ") })),
+    /** The page's own paper and ink: part of the look (say them in the visual style), not brand colours. */
+    backgroundColor: found.backgroundColor,
+    textColor: found.textColor,
     fonts: found.fonts,
+    /** Loaded by the page, but no rule that matches its markup uses them: not saved. */
+    fontsDeclared: found.fontsDeclared,
     logoUrl: found.logoUrl,
     logoCandidates: found.logoCandidates,
+    /** The share image: usually a photo or banner. Never the logo. */
+    shareImage: found.shareImage,
+    generator: found.generator,
     siteName: found.siteName,
     title: found.title,
     description: found.description,
@@ -128,7 +136,7 @@ export async function extractBrandFromSiteTool(ctx: PluginContext, viewer: Viewe
     next.push("Voice: write brandVoice (1-3 sentences) and 2-8 toneExamples from the site's own words (title, description and headings below, and its pages), then save them with update-client-profile.");
   }
   if (!candidate.primaryColor) next.push("Colours: none had enough evidence to save. Look at the site (a screenshot) and save the real ones with update-client-profile; `colors` lists what was seen.");
-  else next.push("Check the saved colours against the site once: a stylesheet can hold a theme's defaults.");
+  else next.push("Check the saved colours against the site once (the button and the logo show the real ones): a shared theme or a plugin can put another colour on many elements.");
   return {
     client: refOf(client.kind, client.id),
     name,
