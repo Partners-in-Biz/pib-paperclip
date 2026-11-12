@@ -31,6 +31,8 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     q(`INSERT INTO ${N}.deals (id, company_id, pipeline_id, stage_id, title, amount_minor, currency, updated_at, created_at)
        VALUES ('${id}', '${CO}', '${pipelineId}', '${stageId}', '${id}', ${amount}, 'ZAR', ${updated}, now() - interval '30 days')`);
 
+  const idle = "now() - interval '30 days'";
+
   async function seedTwo() {
     // An older pipeline with no stages must never win the default rule.
     await pipeline("p-empty", CO, "Empty", "2026-01-01T00:00:00Z");
@@ -42,10 +44,10 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     await stage("sp-open", CO, "p-spons", "open", 0);
     await stage("sp-won", CO, "p-spons", "won", 1);
     await stage("o-open", OTHER, "p-other", "open", 0);
-    await deal("d-sales", "p-sales", "s-open", 100_000);
-    await deal("d-spons", "p-spons", "sp-open", 900_000);
+    await deal("d-sales", "p-sales", "s-open", 100_000, idle);
+    await deal("d-spons", "p-spons", "sp-open", 900_000, idle);
     // Legacy: deal.pipeline_id says Sales, its stage belongs to Sponsors. The stage decides.
-    await deal("d-legacy", "p-sales", "sp-open", 500_000);
+    await deal("d-legacy", "p-sales", "sp-open", 500_000, idle);
     await deal("d-won-sales", "p-sales", "s-won", 200_000);
     await deal("d-won-spons", "p-spons", "sp-won", 300_000);
   }
@@ -63,7 +65,9 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     await seedTwo();
     const report = await dealOpenReport(pg.ctx, CO, null);
     expect(report.count).toBe(1);
-    expect(report.stuck ?? 0).toBeLessThanOrEqual(report.count);
+    // All three open deals are idle; only the Sales-stage one may be counted.
+    expect(report.stuck).toBe(1);
+    expect(report.oldestDays).toBe(30);
     const snap = await cockpitSnapshot(pg.ctx, CO);
     const kpi = (key: string) => snap.kpis.find((row) => row.key === key);
     expect(kpi("pipeline")).toMatchObject({ raw: 100_000, label: "Open pipeline · Sales" });
