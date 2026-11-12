@@ -14,6 +14,8 @@ const inputs: CompileInputs = {
   [inputKey("png", 1)]: { path: "clear.png", kind: "image" },
   [inputKey("grey", 1)]: { path: "grey.mp4", kind: "video" },
   [inputKey("edges", 1)]: { path: "edges.mp4", kind: "video" },
+  [inputKey("flatpng", 1)]: { path: "flat.png", kind: "image" },
+  [inputKey("flatjpg", 1)]: { path: "flat.jpg", kind: "image" },
 };
 const clip = (id: string, assetId: string, start: number, out: number, extra: Record<string, unknown> = {}) => ({ id, assetId, version: 1, start, in: 0, out, ...extra });
 const doc = (tracks: unknown[], size = "9:16") => normalizeEdit({ project: { size, fps: 30 }, tracks });
@@ -43,7 +45,13 @@ describe("looks + adjust: compiled graph", () => {
     ]));
     expect(g).toMatchSnapshot();
     expect(g).toContain(`fps=30,${TO_RGB},colorchannelmixer=rr=0.2126:rg=0.7152:rb=0.0722:gr=0.2126:gg=0.7152:gb=0.0722:br=0.2126:bg=0.7152:bb=0.0722,${TO_YUV},format=yuva420p,rotate=`);
-    expect(g).toMatch(/fps=30,scale=in_color_matrix=bt709,format=gbrap,colorchannelmixer=rr=1\.08:[^,]*,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[vga\d+\]\[vgb\d+\];\[vga\d+\]format=yuv420p,vignette=angle=1\.0472\[vgc\d+\];\[vgb\d+\]alphaextract\[vgd\d+\];\[vgc\d+\]\[vgd\d+\]alphamerge,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in/);
+    expect(g).toMatch(/fps=30,format=gbrap,colorchannelmixer=rr=1\.08:[^,]*,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[vga\d+\]\[vgb\d+\];\[vga\d+\]format=yuv420p,vignette=angle=1\.0472\[vgc\d+\];\[vgb\d+\]alphaextract\[vgd\d+\];\[vgc\d+\]\[vgd\d+\]alphamerge,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in/);
+  });
+
+  it("a graded image starts in RGB with its decoder matrix and always leaves through BT.709", () => {
+    const g = graphOf(doc([video(clip("b", "blk", 0, 1)), overlay(clip("o1", "png", 0, 1, { adjust: { saturation: 1.5 } }))]));
+    expect(g).toContain("fps=30,format=gbrap,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,eq=saturation=1.5,format=yuva420p");
+    expect(g).not.toContain("in_color_matrix");
   });
 
   it("blur sigma follows the render width (16:9 is 1920 wide)", () => {
@@ -78,7 +86,8 @@ interface Planes { y: Buffer; u: Buffer; v: Buffer }
 async function render(d: EditDoc, name = "out.mp4"): Promise<Planes> {
   const compiled = compileVideo(d, inputs, name);
   for (const f of compiled.files) writeFileSync(join(dir, f.name), f.content);
-  await ffmpeg(compiled.args.slice(2)); // keep -y: every case writes out.mp4
+  // ffmpeg() adds its own banner/log flags; -y stays, as every case writes out.mp4.
+  await ffmpeg(compiled.args.filter((a) => a !== "-hide_banner" && a !== "-nostdin"));
   const r = spawnSync("ffmpeg", ["-v", "error", "-i", name, "-vf", "select='eq(n,5)'", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"], { cwd: dir, maxBuffer: 1 << 23 });
   expect(r.stdout.length).toBe((W * H * 3) / 2);
   const q = (W * H) / 4;
@@ -118,6 +127,8 @@ describe.skipIf(!hasFfmpeg)("looks + adjust with real ffmpeg", () => {
     await source("grey.mp4", "color=c=0x808080:s=108x192");
     await source("edges.mp4", "testsrc2=s=540x960");
     await ffmpeg(["-f", "lavfi", "-i", "color=c=white@0:s=108x192,format=rgba", "-frames:v", "1", "-y", "clear.png"]);
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=0xC04020:s=108x192,format=rgba", "-frames:v", "1", "-y", "flat.png"]);
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=0xC04020:s=108x192", "-frames:v", "1", "-q:v", "1", "-y", "flat.jpg"]);
   }, 120_000);
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -150,6 +161,19 @@ describe.skipIf(!hasFfmpeg)("looks + adjust with real ffmpeg", () => {
   it("vignette keeps the source alpha: a transparent PNG overlay stays invisible", async () => {
     const d = doc([video(clip("b", "blk", 0, 0.5)), overlay(clip("o1", "png", 0, 0.5, { adjust: { vignette: 0.5 } }))]);
     expect(mean((await render(d)).y, W, centre)).toBeLessThanOrEqual(18);
+  }, 120_000);
+
+  // Every graded variant of an image takes the same YUV matrix (BT.709): an adjust-only PNG used to fall to ffmpeg's
+  // implicit BT.601 (Y 101 against 92) and a JPEG look read its BT.601 codes as BT.709. Near-neutral grades, so the
+  // centre Y must agree within 2 codes across PNG/JPEG and look-only/adjust-only/vignette-only (BT.709 Y is 92.4).
+  it("graded PNG and JPEG overlays share one BT.709 matrix whatever the grade", async () => {
+    const grades = [{ adjust: { saturation: 1.01 } }, { adjust: { vignette: 0.01 } }, { look: { id: "warm", intensity: 0.01 } }];
+    const ys: string[] = [];
+    for (const assetId of ["flatpng", "flatjpg"]) for (const g of grades) {
+      const y = mean((await render(doc([video(clip("b", "blk", 0, 0.5)), overlay(clip("o1", assetId, 0, 0.5, g))]))).y, W, centre);
+      ys.push(`${assetId} ${JSON.stringify(g)}: ${y}`);
+      expect(Math.abs(y - 92.4), ys.join("; ")).toBeLessThanOrEqual(2);
+    }
   }, 120_000);
 
   // The render matches the looks.ts reference math the preview is built from (flat colour, centre patch). Tolerance is

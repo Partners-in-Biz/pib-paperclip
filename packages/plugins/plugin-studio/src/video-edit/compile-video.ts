@@ -138,8 +138,11 @@ class Graph {
     if (!graded(clip)) return [];
     const { width } = this.doc.project;
     const alpha = kind === "image";
-    const out: string[] = [];
-    let rgb = false;
+    // An image starts in RGB with its own decoder matrix (PNG is RGB, JPEG is BT.601 by spec), so every graded image
+    // leaves the chain through the explicit BT.709 `toYuv`. Without this an adjust-only PNG fell to ffmpeg's implicit
+    // BT.601 and a JPEG look read BT.601 codes as BT.709: Y 101 against 92 for the same pixel (review, PAR-10158).
+    const out: string[] = alpha ? ["format=gbrap"] : [];
+    let rgb = alpha;
     const yuv = () => {
       if (rgb) out.push(...toYuv(alpha));
       rgb = false;
