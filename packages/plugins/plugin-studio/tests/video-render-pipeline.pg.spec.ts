@@ -412,7 +412,7 @@ setTimeout(() => {
     expect(r.runs[6].ls.filter((f) => f.startsWith("chunk-"))).toEqual(["chunk-1-0", "chunk-1-1"]);
     expect(r.left.filter((f) => f.startsWith("chunk-"))).toEqual([]);
     expect(r.left).toContain("out.mp4");
-    // Intermediates may grow to 2 GiB, the delivery file to 200 MB; the address space cap is the same for all.
+    // Intermediates may grow to INTERMEDIATE_FSIZE_BYTES (6 GiB), the delivery file to 200 MB; the address space cap is the same for all.
     expect(r.runs.map((x) => Number(x.fsize))).toEqual([...Array(6).fill(INTERMEDIATE_FSIZE_BYTES), FSIZE_BYTES]);
     expect(r.runs.every((x) => Number(x.as) === DEFAULT_AS_LIMIT_BYTES)).toBe(true);
   });
