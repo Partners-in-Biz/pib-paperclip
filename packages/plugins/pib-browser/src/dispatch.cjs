@@ -149,7 +149,12 @@ function createDispatcher(deps = {}) {
           if (violation) return violation;
 
           // The logged-in text can render a moment after the document: wait for it before calling the session expired.
-          if (!(await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS }))) {
+          const loggedIn = await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS });
+          // The page can navigate or open a popup while we wait. Check the origin wall again before deciding
+          // anything: a refused origin is reported as such, and never keeps a session or hides behind "expired".
+          const lateViolation = await afterOp(ctx, sessionKey);
+          if (lateViolation) return lateViolation;
+          if (!loggedIn) {
             await ctx.close();
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }

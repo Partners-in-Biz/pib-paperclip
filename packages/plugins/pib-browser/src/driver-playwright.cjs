@@ -2,10 +2,23 @@
 const path = require('path');
 const fs = require('fs');
 
-// How long goto lets the network settle after the document has loaded (PIB_BROWSER_SETTLE_MS, 0..30000).
-function settleMs() {
-  const raw = Number(process.env.PIB_BROWSER_SETTLE_MS);
-  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 30000) : 8000;
+// How long goto lets the network settle after the document has loaded (PIB_BROWSER_SETTLE_MS).
+// Playwright reads `timeout: 0` as "no timeout", so 0 here means "do not wait at all", never "wait for ever".
+// Unset, empty, negative and non-numeric values give the default; the most is 30 s.
+const DEFAULT_SETTLE_MS = 8000;
+const MAX_SETTLE_MS = 30000;
+function settleMs(env = {}) {
+  const raw = env.PIB_BROWSER_SETTLE_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_SETTLE_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTLE_MS;
+  return Math.min(Math.floor(n), MAX_SETTLE_MS);
+}
+
+// A dead page, context or browser. Never swallow it: the dispatcher sorts it into `browser_closed` and drops the session.
+function isClosedTargetError(e) {
+  return e?.name === 'TargetClosedError'
+    || /Target page, context or browser has been closed|Browser has been closed|browser has disconnected/i.test(String(e?.message || ''));
 }
 
 function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
@@ -129,8 +142,11 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           // timed out on a healthy, logged-in page and was reported as an expired session (2026-11-12).
           // Load the document, then give the network a bounded moment to settle.
           await page.goto(url, { waitUntil: 'domcontentloaded' });
-          if (typeof page.waitForLoadState === 'function') {
-            await page.waitForLoadState('networkidle', { timeout: settleMs() }).catch(() => {});
+          const settle = settleMs(env);
+          if (settle > 0 && typeof page.waitForLoadState === 'function') {
+            await page.waitForLoadState('networkidle', { timeout: settle }).catch((e) => {
+              if (isClosedTargetError(e)) throw e;
+            });
           }
         },
 
@@ -178,16 +194,27 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
         },
 
         // timeoutMs > 0 re-reads the page until the text shows or the time is up: a single-page app renders
-        // after the document has loaded. The default (0) is one read, as before.
+        // after the document has loaded. The default (0) is one read that throws as before. Inside a wait a
+        // failed read is tried again, but a closed page, context or browser always throws.
         hasText: async (text, opts) => {
           await ensureInitialized();
           const timeoutMs = Math.max(0, Number(opts && opts.timeoutMs) || 0);
+          if (timeoutMs === 0) {
+            const bodyText = await page.locator('body').innerText();
+            return bodyText.includes(text);
+          }
           const deadline = Date.now() + timeoutMs;
           for (;;) {
-            const bodyText = await page.locator('body').innerText().catch(() => '');
+            const remaining = Math.max(1, deadline - Date.now());
+            let bodyText = '';
+            try {
+              bodyText = await page.locator('body').innerText({ timeout: remaining });
+            } catch (e) {
+              if (isClosedTargetError(e)) throw e;
+            }
             if (bodyText.includes(text)) return true;
             if (Date.now() >= deadline) return false;
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(1, deadline - Date.now()))));
           }
         },
 
@@ -243,4 +270,4 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   };
 }
 
-module.exports = { createPlaywrightBrowser };
+module.exports = { createPlaywrightBrowser, settleMs, isClosedTargetError };
