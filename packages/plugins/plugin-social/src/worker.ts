@@ -112,6 +112,8 @@ import {
   recordReviewVerdictRecord,
   approvePostAsDelegateRecord,
   returnPostAsDelegateRecord,
+  requestChangesRecord,
+  changeNotesRecord,
   refreshAccountRecord,
   replyInboxRecord,
   requestClientApprovalRecord,
@@ -383,6 +385,8 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.detach": (ctx, v, p) => detachDestination(ctx, v, p),
   "social.review": (ctx, v, p) => transitionPost(ctx, v, requiredString(p, "postId"), "review"),
   "social.back-to-draft": (ctx, v, p) => transitionPost(ctx, v, requiredString(p, "postId"), "draft"),
+  "social.request-changes": (ctx, v, p) => requestChangesRecord(ctx, v, p),
+  "social.change-notes": (ctx, v, p) => changeNotesRecord(ctx, v, p),
   "social.approve": (ctx, v, p) => {
     requireUser(v, "approve a post");
     return transitionPost(ctx, v, requiredString(p, "postId"), "approved");

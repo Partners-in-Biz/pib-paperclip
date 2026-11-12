@@ -29,6 +29,7 @@ import { closePostReview, delegateForPost, handReviewIssue, handToDelegate, hand
 import { AUTO_APPROVE_STREAK, autoApprovalDecision, ownerStreak } from "./autonomy.js";
 import { currentSignoffs, ladderRows, outcomesForPost, postTypeOf, recordOutcome, statRows, summariseOutcomes, type OutcomeActor, type OutcomeRow, type Stage, type StageState } from "./review-outcomes.js";
 import { scheduleApproved, type ApprovalOutcome } from "./schedule.js";
+import { closeWeeklyReviewItem } from "./weekly-review.js";
 import { validatePostRow } from "./validate.js";
 import { growthEnv, type GrowthEnv } from "./growth/host.js";
 import { effectiveMediaRule } from "./growth/service.js";
@@ -589,6 +590,89 @@ export async function sendBackForChanges(ctx: PluginContext, companyId: string, 
   const text = `${who} asked for changes:\n\n> ${notes.replace(/\n/g, "\n> ")}\n\nThe post is back in draft. Fix every point, then send it for review again (\`request-review\`). If the problem is the image or video (missing, off-brand, wrong format, no alt text), call \`request-creative\` for this post first: it opens the hand-off for whoever makes the asset.`;
   // The note has to reach the Social agent even when its review issue was closed or never opened: handToSocialAgent opens a fresh one then.
   await handToSocialAgent(ctx, companyId, post, { task: "changes", note: text, wakeReason: "Changes requested on a social post" });
+}
+
+/** The longest change note a person can send from the page. */
+export const MAX_CHANGE_NOTE = 2000;
+
+export interface PersonChanges {
+  /** The Social agent (or whoever does its work) got the note on the post's issue. */
+  handed: boolean;
+  /** The status the post had before; it is a draft now. */
+  from: PostRow["status"];
+  /** What happens next, in plain words, for the page. */
+  next: string;
+}
+
+/**
+ * A person on the Social page says what to change on a post, and the note goes to the Social agent (the post's own issue,
+ * woken). Works on a draft, a post in review, and an approved or scheduled post; every one of them ends as a draft, so
+ * nothing publishes before the change is made and approved again. The note is also an owner/changes row in the ledger
+ * (the review statistics the agents read). `remember` adds the instruction to keep it as a playbook rule.
+ */
+export async function requestChangesByPerson(
+  ctx: PluginContext,
+  actor: ReviewActor,
+  post: PostRow,
+  rawNotes: string | null | undefined,
+  options: { remember?: boolean } = {},
+): Promise<PersonChanges> {
+  const companyId = actor.companyId;
+  if (actor.isAgent || !actor.userId) throw new SocialError("A person sends changes from the Social page. Agents use record-review-verdict or return-post-as-delegate.");
+  if (post.scope === "personal") throw new SocialError("My Social posts are yours alone: edit the post yourself.");
+  const notes = (rawNotes ?? "").trim();
+  if (!notes) throw new SocialError("Say what has to change: the Social agent works from your note.");
+  if (notes.length > MAX_CHANGE_NOTE) throw new SocialError(`Keep the note under ${MAX_CHANGE_NOTE} characters.`);
+  const from = post.status;
+  if (from !== "draft" && from !== "review" && from !== "approved" && from !== "scheduled") {
+    throw new SocialError(`A ${from.replace("_", " ")} post cannot be sent back for changes.`);
+  }
+  const { hash } = await postFingerprint(ctx, post);
+  const lasting = options.remember
+    ? "\n\nThis is a lasting preference, not only a fix for this post: read the playbook (`get-playbook`) and propose it as a rule (`propose-playbook-change`, with this note as the reason) so later posts follow it."
+    : "";
+  if (from === "review") {
+    await recordSignoff(ctx, companyId, post, hash, "owner", "changes", "ui", { userId: actor.userId }, notes);
+    await closeWeeklyReviewItem(ctx, companyId, post.id, "The post went back to draft for changes. A new review opens when it is sent for review again.").catch(() => undefined);
+    await sendBackForChanges(ctx, companyId, post, "A team member", `${notes}${lasting}`, true);
+    const now = await getPost(ctx, companyId, post.id);
+    if (now?.status !== "draft") throw new SocialError("The post changed while you were writing. Reload and try again.");
+    return { handed: Boolean(await reviewIssueOf(ctx, companyId, post.id)), from, next: "The post is back in draft and the Social agent has your note." };
+  }
+  if (from !== "draft" && !(await setPostStatus(ctx, companyId, post.id, [from], "draft"))) {
+    throw new SocialError("The post changed while you were writing (it may be publishing now). Reload and try again.");
+  }
+  if (from !== "draft") await supersedePendingLinks(ctx, companyId, post.id);
+  await recordSignoff(ctx, companyId, post, hash, "owner", "changes", "ui", { userId: actor.userId }, notes);
+  const moved = from === "draft" ? "The post is a draft." : `The post was ${from} and is back in draft, so it does not publish until it is approved again.`;
+  const text = `A team member asked for changes:\n\n> ${notes.replace(/\n/g, "\n> ")}${lasting}\n\n${moved} Fix every point, then send it for review again (\`request-review\`). If the problem is the image or video, call \`request-creative\` for this post first.`;
+  const issueId = await handToSocialAgent(ctx, companyId, { ...post, status: "draft" }, { task: "changes", note: text, wakeReason: "Changes requested on a social post" });
+  return {
+    handed: Boolean(issueId),
+    from,
+    next: issueId ? "The Social agent has your note and the post is in draft." : "The post is in draft, but no Social agent or person could be given the note. Link a Social agent on the Overview tab, or edit the post yourself.",
+  };
+}
+
+/** One change request on a post, for the page. */
+export interface ChangeNote {
+  stage: Stage;
+  by: string;
+  note: string;
+  at: string | null;
+}
+
+/** The change requests a post has had (Reviewer, team, delegated approver, client), newest first. Never throws. */
+export async function changeNotesFor(ctx: PluginContext, companyId: string, postId: string): Promise<ChangeNote[]> {
+  const rows = await outcomesForPost(ctx, companyId, postId).catch(() => [] as OutcomeRow[]);
+  return rows
+    .filter((row) => row.outcome === "changes" && row.note?.trim())
+    .map((row) => ({
+      stage: row.stage,
+      by: row.stage === "reviewer" ? "The Reviewer" : row.stage === "client" ? row.actor_name?.trim() || "The client" : row.via === "delegate" ? "The delegated approver" : "A team member",
+      note: row.note as string,
+      at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at ? String(row.created_at) : null,
+    }));
 }
 
 /**
