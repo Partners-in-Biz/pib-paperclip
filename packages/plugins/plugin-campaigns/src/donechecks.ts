@@ -60,7 +60,7 @@ export async function checkRevise(ctx: PluginContext, issue: DoneCheckIssue): Pr
     asked = Boolean(approval && approval.status !== "cancelled");
   }
   const missing: string[] = [];
-  if (!edited) missing.push(`Campaign "${campaign.name}" has not changed since its approval was refused: fix what the approver asked for (\`update-campaign\`, \`add-campaign-step\`, \`create-ab-variant\` or \`set-step-html\`).`);
+  if (!edited) missing.push(`Campaign "${campaign.name}" has not changed since its approval was refused: fix what the approver asked for (\`update-campaign\`, \`add-campaign-step\`, \`create-ab-variant\` \`set-step-html\` or \`edit-campaign-step\`).`);
   if (!asked) missing.push(`Campaign "${campaign.name}" has no new approval: \`request-campaign-approval\` (campaignId \`${campaign.id}\`) once it is fixed.`);
   return missing.length ? { done: false, missing } : done;
 }

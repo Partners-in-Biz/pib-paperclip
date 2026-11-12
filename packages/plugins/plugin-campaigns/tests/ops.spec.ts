@@ -177,6 +177,39 @@ describe("companies and skills", () => {
   });
 });
 
+describe("edit-campaign-step", () => {
+  const agent = { companyId: CO, agentId: "agent-camp" };
+  it("changes only the given fields of the given variant and leaves the HTML alone", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-e", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(
+      { ...step("camp-e", 1, "a", "Old subject", "Old body"), html_body: "<p>keep</p>" },
+      step("camp-e", 1, "b", "B subject", "B body"),
+    );
+    const { harness } = await boot({ store: s });
+    const out = await harness.executeTool<{ data?: { bodySet: boolean; subjectSet: boolean }; error?: string }>("edit-campaign-step", { campaignId: "camp-e", position: 1, body: "New body" }, agent);
+    expect(out.error).toBeUndefined();
+    expect(out.data).toMatchObject({ bodySet: true, subjectSet: false });
+    const rows = s.campaign_steps!.filter((r) => r.campaign_id === "camp-e");
+    expect(rows.find((r) => r.variant === "a")).toMatchObject({ subject: "Old subject", body: "New body", html_body: "<p>keep</p>" });
+    expect(rows.find((r) => r.variant === "b")).toMatchObject({ subject: "B subject", body: "B body" });
+    await harness.executeTool("edit-campaign-step", { campaignId: "camp-e", position: 1, variant: "b", subject: "B2" }, agent);
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-e" && r.variant === "b")).toMatchObject({ subject: "B2", body: "B body" });
+  });
+
+  it("needs a subject or a body, and refuses a campaign that is not a draft", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-d", { status: "draft", delivery: "email" }), campaign("camp-x", { status: "active", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-d", 1, "a", "S", "B"), step("camp-x", 1, "a", "S", "B"));
+    const { harness } = await boot({ store: s });
+    const none = await harness.executeTool<{ error?: string }>("edit-campaign-step", { campaignId: "camp-d", position: 1 }, agent);
+    expect(none.error).toMatch(/subject, a body, or both/);
+    const live = await harness.executeTool<{ error?: string }>("edit-campaign-step", { campaignId: "camp-x", position: 1, body: "x" }, agent);
+    expect(live.error).toMatch(/Only a draft/);
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-x")).toMatchObject({ body: "B" });
+  });
+});
+
 describe("an HTML body is for emails", () => {
   it("is refused on an SMS step", async () => {
     const s = seed();
