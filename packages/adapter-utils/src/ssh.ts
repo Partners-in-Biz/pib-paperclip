@@ -1431,6 +1431,96 @@ function buildSshRunRecordScript(remoteWorkspacePath: string, remoteRunDir: stri
   ].join("\n");
 }
 
+// The run directory layout of plan 13.9: `<remoteWorkspacePath>/.paperclip-runs/<runId>`.
+// One function, so the adapter and the lease (PAR-9917) name the same path.
+// Null for a run id that is not a plain token: no record, no stopRemote.
+export const SSH_RUN_DIR_PARENT = ".paperclip-runs";
+export function sshRemoteRunDirFor(remoteWorkspacePath: string, runId: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(runId) || !remoteWorkspacePath.startsWith("/")) return null;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return `${ws === "/" ? "" : ws}/${SSH_RUN_DIR_PARENT}/${runId}`;
+}
+
+// PAR-9399: a signal to the local ssh client never reaches the remote process
+// group. stopRemote reads the version-1 record over a second ssh connection
+// and signals that group.
+export type SshRemoteStopSignal = "TERM" | "KILL";
+export type SshRemoteStopOutcome =
+  | "signalled"
+  | "gone"
+  | "leader-gone"
+  | "mismatch"
+  | "refused"
+  | "missing"
+  | "unreadable"
+  | "failed"
+  | "error";
+export type SshRemoteCommandRunner = (script: string, timeoutMs: number) => Promise<SshCommandResult>;
+
+export const SSH_REMOTE_STOP_TIMEOUT_MS = 10_000;
+const SSH_REMOTE_STOP_OUTCOMES = new Set<string>([
+  "signalled", "gone", "leader-gone", "mismatch", "refused", "missing", "unreadable", "failed",
+]);
+
+// Reads `<runDir>/record` with the rules of parseSshRunRecord (exactly the
+// three keys once each, newline-terminated, `v=1`, decimal pgid, lstart with
+// no edge spaces; the shell is stricter on a leading zero or over 15 digits).
+// Then: refuses group 0/1 and its own group, requires the group to exist and
+// the leader's start time to equal the recorded one, so a reused id is never
+// signalled. Prints one outcome token. `kill -s SIG -- -pgid`, because dash
+// (Ubuntu's /bin/sh) rejects `kill -SIG -- -pgid`.
+export function buildSshRemoteStopScript(remoteRunDir: string, signal: SshRemoteStopSignal): string {
+  return [
+    "export LC_ALL=C",
+    `f=${shellQuote(`${remoteRunDir}/${SSH_RUN_RECORD_FILE}`)}`,
+    'if [ ! -f "$f" ]; then echo missing; exit 0; fi',
+    "bad() { echo unreadable; exit 0; }",
+    "n=0; v=; pg=; want=; hv=; hp=; hl=",
+    "while IFS= read -r l; do",
+    "  n=$((n+1))",
+    "  case \"$l\" in",
+    "    v=*) [ -z \"$hv\" ] || bad; hv=1; v=${l#v=};;",
+    "    pgid=*) [ -z \"$hp\" ] || bad; hp=1; pg=${l#pgid=};;",
+    "    lstart=*) [ -z \"$hl\" ] || bad; hl=1; want=${l#lstart=};;",
+    "    *) bad;;",
+    "  esac",
+    "done < \"$f\"",
+    "[ -z \"$l\" ] || bad",
+    `[ "$n" -eq 3 ] && [ "$v" = ${SSH_RUN_RECORD_VERSION} ] || bad`,
+    "case \"$pg\" in ''|0?*|*[!0-9]*|????????????????*) bad;; esac",
+    "case \"$want\" in ''|[[:space:]]*|*[[:space:]]) bad;; esac",
+    'if [ "$pg" -le 1 ]; then echo refused; exit 0; fi',
+    "self=$(ps -o pgid= -p $$ | tr -d ' ')",
+    'if [ "$pg" = "$self" ]; then echo refused; exit 0; fi',
+    'if ! kill -s 0 -- "-$pg" 2>/dev/null; then echo gone; exit 0; fi',
+    "have=$(ps -o lstart= -p \"$pg\" 2>/dev/null | sed 's/^ *//;s/ *$//')",
+    'if [ -z "$have" ]; then echo leader-gone; exit 0; fi',
+    'if [ "$have" != "$want" ]; then echo mismatch; exit 0; fi',
+    `if kill -s ${signal} -- "-$pg"; then echo signalled; else echo failed; fi`,
+  ].join("\n");
+}
+
+// Run-end removal (AC 4, temporary until PAR-9961 moves it into the lease
+// release). Deletes inside the user's workspace, so it removes only
+// `<ws>/.paperclip-runs/<runId>` after resolving links: a `.paperclip-runs`
+// that resolves outside the workspace, or a run dir that is a link, is left.
+export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `case "$rd" in "$ws"/${SSH_RUN_DIR_PARENT}/?*) ;; *) echo refused; exit 0;; esac`,
+    'name=${rd##*/}',
+    `case "$name" in ''|*[!A-Za-z0-9_-]*) echo refused; exit 0;; esac`,
+    `[ "$rd" = "$ws/${SSH_RUN_DIR_PARENT}/$name" ] || { echo refused; exit 0; }`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo refused; exit 0;; esac',
+    'if [ -L "$base/$name" ]; then echo refused; exit 0; fi',
+    'if [ ! -e "$base/$name" ]; then echo absent; exit 0; fi',
+    'rm -rf -- "$base/$name" && echo removed',
+  ].join("\n");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
@@ -1438,10 +1528,13 @@ export async function buildSshSpawnTarget(input: {
   env: Record<string, string>;
   /** Absolute run directory under `spec.remoteWorkspacePath`; absent: script unchanged. */
   remoteRunDir?: string;
+  /** Test seam: runs a stop/removal script on the remote. Defaults to ssh. */
+  remoteRunner?: SshRemoteCommandRunner;
 }): Promise<{
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote?: (signal: SshRemoteStopSignal) => Promise<SshRemoteStopOutcome>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
@@ -1479,17 +1572,53 @@ export async function buildSshSpawnTarget(input: {
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
-  sshArgs.push(
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
-  );
+  const destination = ["-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`];
+  sshArgs.push(...destination, `sh -c ${shellQuote(remoteScript)}`);
+
+  const remoteRunDir = input.remoteRunDir;
+  if (remoteRunDir == null) {
+    return { command: "ssh", args: sshArgs, cleanup: auth.cleanup };
+  }
+
+  // Stop and removal connections reuse the spawn's auth files and skip the
+  // login profiles. After cleanup the auth files are gone: stopRemote is "error".
+  let authCleaned = false;
+  let cleanupPromise: Promise<void> | null = null;
+  const runRemote: SshRemoteCommandRunner =
+    input.remoteRunner ??
+    ((script, timeoutMs) =>
+      execFileText("ssh", [...auth.args, ...destination, `sh -c ${shellQuote(script)}`], {
+        timeout: timeoutMs,
+      }));
+  const stopRemote = async (signal: SshRemoteStopSignal): Promise<SshRemoteStopOutcome> => {
+    if (authCleaned) return "error";
+    try {
+      const result = await runRemote(buildSshRemoteStopScript(remoteRunDir, signal), SSH_REMOTE_STOP_TIMEOUT_MS);
+      const token = result.stdout.trim().split(/\s+/).at(-1) ?? "";
+      return SSH_REMOTE_STOP_OUTCOMES.has(token) ? (token as SshRemoteStopOutcome) : "error";
+    } catch {
+      return "error";
+    }
+  };
 
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    stopRemote,
+    cleanup: () =>
+      (cleanupPromise ??= (async () => {
+        authCleaned = true;
+        try {
+          await runRemote(
+            buildSshRunDirRemoveScript(input.spec.remoteWorkspacePath, remoteRunDir),
+            SSH_REMOTE_STOP_TIMEOUT_MS,
+          );
+        } catch {
+          // Best effort: a leftover dir holds one small 0600 file, git-excluded.
+        } finally {
+          await auth.cleanup();
+        }
+      })()),
   };
 }
 
