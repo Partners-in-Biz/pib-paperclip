@@ -61,7 +61,7 @@ const nowIso = (env: Env) => env.now().toISOString();
  * week's open items). `rollover`: create this week's only when last week
  * still has open items (the daily run, so each week gets its own issue).
  */
-async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
+export async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
   const week = weekStart(info.today);
   const existing = await db.getNeedsYou(env.ctx.db, sprint.companyId, sprint.id, week);
   if (existing) return existing;
@@ -202,6 +202,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (merged.added && issueId && digest.issueId && !item.quiet) {
     await commentOn(env, sprint.companyId, issueId, `New item for ${sprintLabel(sprint)}: **${item.title}**. ${item.why}`, { pointer: "the whole item is on the client's SEO page" });
   }
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { issueId, added: merged.added, key: item.key };
 }
 
@@ -259,6 +260,7 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
   const next = { ...digest, items };
   await db.upsertNeedsYou(env.ctx.db, next);
   await syncDigestIssue(env, info, sprint, next);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return closed;
 }
 
@@ -466,13 +468,17 @@ export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   const tasksContinued = (await continueTasks(env, fresh, item.taskIds ?? [], by, note)) + (key.startsWith("chunk:") ? await continueGroup(env, fresh, key.slice("chunk:".length), by) : 0);
   const issueId = await syncDigestIssue(env, info, fresh, next);
   if (issueId && openItems(next.items).length > 0) await commentOn(env, sprint.companyId, issueId, `Done: **${item.title}** (${by}). ${item.after}`);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { resolved: true, stillOpen: null, tasksContinued };
 }
 
 /** Daily: close items the plugin can see done. */
 export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<number> {
   const digest = await currentDigest(env, info, sprint, "rollover");
-  if (!digest) return 0;
+  if (!digest) {
+    await tellSignoffDelegate(env, sprint.companyId, sprint.id);
+    return 0;
+  }
   // A new week: open this week's issue for the carried items (last week's closed on rollover). An existing issue is
   // re-rendered too, so its summary never falls behind while this sprint's own items stay quiet.
   if (digest.issueId || openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
@@ -492,6 +498,8 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
       env.ctx.logger.info("SEO needs-you check failed", { key: item.key, error: errorMessage(error) });
     }
   }
+  // The daily job is also the backstop: a delegate who became eligible (a preview passed) is told here.
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return resolved;
 }
 
@@ -865,4 +873,10 @@ export async function giveNeedsYouToAgent(env: Env, companyId: string, actor: Ac
 
   const left = open.length - picked.length;
   return { sprintId: sprint.id, given: picked.length, tasksResumed, issueId: createdIssueId, issueIds: issues, stillNeedYou: left };
+}
+
+/** Loaded on use: signoff-delegate reaches page-apply (via cockpit), which imports this module, so a static import would be a cycle. */
+async function tellSignoffDelegate(env: Env, companyId: string, sprintId: string): Promise<void> {
+  const { tellSignoffDelegate: tell } = await import("./signoff-delegate.js");
+  await tell(env, companyId, sprintId);
 }
