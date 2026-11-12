@@ -113,7 +113,8 @@ export interface Journey {
 export const BUILT_IN_VARS = ["client", "companyRecordId", "runId", "date", "futureDate", "period"] as const;
 
 const KEY_RE = /^[a-z][a-z0-9-]{1,40}$/;
-const TOOL_RE = /^partnersinbiz\.[a-z]+:[a-z0-9-]+$/;
+// A host tool name may hold an underscore (the CRM's drive_files_list, PAR-7712).
+const TOOL_RE = /^partnersinbiz\.[a-z]+:[a-z0-9_-]+$/;
 const PLUGIN_RE = /^partnersinbiz\.[a-z]+$/;
 const VAR_RE = /\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g;
 const OPS = ["equals", "matches", "contains", "endsWith", "exists", "notEmpty", "gte", "lte", "oneOf", "gtCapture", "gteCapture"] as const;
