@@ -1,6 +1,6 @@
 {
   "key": "drive-producers-canary",
-  "version": 2,
+  "version": 3,
   "title": "Producer Drive saves",
   "summary": "Social and evidence-save save a file for the canary; drive_files_list must find each in its folder.",
   "schedule": [
@@ -83,27 +83,7 @@
         }
       ],
       "ownerRole": "social",
-      "note": "Call it once. The tool waits up to 30 s for Drive, so the gateway may answer 504 or time out: then report {\"timedOut\": true} as the output and go on; check-social reads whether the file landed. Do not call it again: a second call stores a second asset."
-    },
-    {
-      "id": "evidence-save",
-      "title": "Evidence save",
-      "kind": "tool",
-      "tool": "partnersinbiz.cockpit:evidence-save",
-      "input": {
-        "issueId": "<the issue you run this journey under>",
-        "step": "drive-journey-{{runId}}",
-        "pngBase64": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4oRGFFTEMLQkAWChSgXZ/mz4AAAAASUVORK5CYII=",
-        "acceptanceRunId": "{{runId}}"
-      },
-      "expect": [
-        {
-          "path": "saved",
-          "equals": true
-        }
-      ],
-      "ownerRole": "operator",
-      "note": "Put the identifier of the issue you run this journey under (PAR-123) in issueId: it only names the file. acceptanceRunId sends the file to this run's canary client, whatever project that issue has. The tool waits up to 30 s for Drive: a gateway 504 or time-out fails this step, so report {\"timedOut\": true} as the output; the cleanup still runs. saved false with a reason (invalid_name, no_project, no ack from Drive) is the finding: report the answer as it came, do not call again."
+      "note": "Call it once. The tool waits up to 8 s for Drive, so the gateway may answer 504 or time out: then report {\"timedOut\": true} as the output and go on; check-social reads whether the file landed. Do not call it again: a second call stores a second asset."
     },
     {
       "id": "check-social",
@@ -139,6 +119,26 @@
       ],
       "ownerRole": "social",
       "note": "The save runs in the background. count 0: wait 30 s and call again, at most 4 times, then report the last answer. Put files[0].url and folder.path in the output: they are the evidence."
+    },
+    {
+      "id": "evidence-save",
+      "title": "Evidence save",
+      "kind": "tool",
+      "tool": "partnersinbiz.cockpit:evidence-save",
+      "input": {
+        "issueId": "<the issue you run this journey under>",
+        "step": "drive-journey-{{runId}}",
+        "pngBase64": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4oRGFFTEMLQkAWChSgXZ/mz4AAAAASUVORK5CYII=",
+        "acceptanceRunId": "{{runId}}"
+      },
+      "expect": [
+        {
+          "path": "saved",
+          "equals": true
+        }
+      ],
+      "ownerRole": "operator",
+      "note": "Put the identifier of the issue you run this journey under (PAR-123) in issueId: it only names the file. acceptanceRunId sends the file to this run's canary client, whatever project that issue has. The tool waits up to 8 s for Drive: a gateway 504 or time-out fails this step, so report {\"timedOut\": true} as the output; the cleanup still runs. saved false with a reason (invalid_name, no_project, no ack from Drive) is the finding: report the answer as it came, do not call again. Run it only after check-social found the Social file: the CRM saves one client's files one at a time and the first save builds the client's folders, so an evidence save made while the Social save was still running waited longer than the 8 s ack and answered no ack from Drive (PAR-10515)."
     },
     {
       "id": "check-evidence",
