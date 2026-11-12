@@ -144,17 +144,16 @@ function PreviewActions({ p, manual, narrow, busy, onApprove, onDecline, onUndo,
   if (!open && !(decided && !p.appliedAt)) return null;
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexDirection: narrow ? "column" : "row" }}>
-          {open ? (
-            <>
-              <Button type="button" variant="primary" disabled={disabled || Boolean(reason)} title={reason || "Approve this preview"} onClick={onApprove}>Approve</Button>
-              {reason ? <span style={{ fontSize: 12, color: tokens.muted, alignSelf: "center" }}>{reason}</span> : null}
-              <Button type="button" variant="secondary" disabled={disabled} onClick={onDecline}>Decline</Button>
-            </>
-          ) : null}
-          {decided && !p.appliedAt ? <Button type="button" variant="secondary" disabled={disabled} onClick={onUndo}>Undo</Button> : null}
-          {clientApproved && manual ? <Button type="button" variant="primary" disabled={disabled} onClick={onConfirm}>Confirm and apply</Button> : null}
-        </div>
-      
+      {open ? (
+        <>
+          <Button type="button" variant="primary" disabled={disabled || Boolean(reason)} title={reason || "Approve this preview"} onClick={onApprove}>Approve</Button>
+          {reason ? <span style={{ fontSize: 12, color: tokens.muted, alignSelf: "center" }}>{reason}</span> : null}
+          <Button type="button" variant="secondary" disabled={disabled} onClick={onDecline}>Decline</Button>
+        </>
+      ) : null}
+      {decided && !p.appliedAt ? <Button type="button" variant="secondary" disabled={disabled} onClick={onUndo}>Undo</Button> : null}
+      {clientApproved && manual ? <Button type="button" variant="primary" disabled={disabled} onClick={onConfirm}>Confirm and apply</Button> : null}
+    </div>
   );
 }
 
