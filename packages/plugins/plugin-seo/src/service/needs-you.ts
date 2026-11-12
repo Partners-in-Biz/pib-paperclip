@@ -243,7 +243,7 @@ export async function parkTasksWaitingOnYou(env: Env): Promise<number> {
  * The client asked for changes: the sign-off items that waited on that answer for this one task are no longer
  * waiting (and must not park the task again). Setup items (logins, repo links) are left alone.
  */
-export async function closeSignoffItems(env: Env, companyId: string, sprintId: string, taskId: string, note: string): Promise<number> {
+export async function closeSignoffItems(env: Env, companyId: string, sprintId: string, taskId: string, note: string, by = "client"): Promise<number> {
   const sprint = await requireSprint(env, companyId, sprintId);
   const info = await companyInfo(env, companyId);
   const digest = await currentDigest(env, info, sprint, "read");
@@ -253,7 +253,7 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
     const only = (item.taskIds ?? []).length === 1 && item.taskIds![0] === taskId;
     if (item.status !== "open" || !only || (STANDARD_KEYS as readonly string[]).includes(item.key)) return item;
     closed += 1;
-    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: "client", note };
+    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: by, note };
   });
   if (closed === 0) return 0;
   const next = { ...digest, items };

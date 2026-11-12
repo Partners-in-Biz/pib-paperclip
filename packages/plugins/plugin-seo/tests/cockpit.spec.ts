@@ -123,6 +123,9 @@ describe("SEO cockpit snapshot (configured)", () => {
         ],
       }];
     }
+    if (sql.includes(`FROM ${T("previews")}`) && sql.includes("DISTINCT ON (sprint_id, page_url)")) {
+      return [{ ...ACME_ROW, n: "3", since: "2026-09-25T05:00:00Z", task_ids: ["t-9"] }];
+    }
     if (sql.includes(`FROM ${T("sprint_tasks")} WHERE company_id = $1 AND id IN`)) return [{ id: "t-9", issue_id: "iss-t9" }];
     if (sql.includes(`FROM ${T("optimizations")} o JOIN`) && sql.includes("o.status = 'proposed'")) {
       return [{ id: "o-1", subject: "/pricing stuck on page 2", proposed_action: "Rewrite the title and intro", approval_issue_id: "iss-opt", created_at: "2026-09-21T05:00:00Z", ...ACME_ROW }];
@@ -165,11 +168,16 @@ describe("SEO cockpit snapshot (configured)", () => {
     expect(health["needs-you:sp-1"]).toMatchObject({ status: "warn", detail: "1 item: Add the service account key" });
 
     expect(snap.waiting.map((w) => [w.key, w.kind, w.issueId])).toEqual([
+      ["seo:previews:sp-2", "review", null],
       ["seo:needs-you:sp-1:service_account", "grant", "iss-ny"],
       ["seo:needs-you:sp-1:review:t-9", "review", "iss-t9"],
       ["seo:optimization:o-1", "judgement", "iss-opt"],
     ]);
-    expect(snap.waiting[2]).toMatchObject({ title: "[Acme] Approve an SEO change: /pricing stuck on page 2", href: "/seo?sprint=sp-2&tab=optimizations&client=company%3Ac1" });
+    expect(snap.waiting[0]).toMatchObject({ title: "[Acme] 3 previews await your decision", href: "/seo?sprint=sp-2&tab=previews&client=company%3Ac1&filter=awaiting" });
+    // A sign-off for a task whose previews await a decision opens the Previews tab; a grant keeps its own page.
+    expect(snap.waiting[1]!.href).toBe("/seo?sprint=sp-1&tab=integrations");
+    expect(snap.waiting[2]!.href).toBe("/seo?sprint=sp-1&tab=integrations");
+    expect(snap.waiting[3]).toMatchObject({ title: "[Acme] Approve an SEO change: /pricing stuck on page 2", href: "/seo?sprint=sp-2&tab=optimizations&client=company%3Ac1" });
 
     expect(snap.activity.map((a) => a.text)).toEqual([
       'Merged the approved PR for "Publish post 1" (Partners in Biz)',
