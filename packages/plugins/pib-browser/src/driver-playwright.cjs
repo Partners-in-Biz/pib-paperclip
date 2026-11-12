@@ -56,7 +56,14 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             executablePath: env.PIB_BROWSER_CHROMIUM || undefined,
             acceptDownloads: false,
             serviceWorkers: 'block',
-            permissions: []
+            permissions: env.PIB_BROWSER_FAKE_MIC === '1' ? ['microphone'] : [],
+            args: env.PIB_BROWSER_FAKE_MIC === '1'
+              ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']
+              : [],
+            ...(env.PIB_BROWSER_MOBILE === '1'
+              ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
+                  userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' }
+              : {})
           });
         } catch (e) {
           const err = new Error(e.message);

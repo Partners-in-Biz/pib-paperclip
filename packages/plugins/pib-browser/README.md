@@ -63,6 +63,8 @@ The daemon reads the following environment variables at startup:
 | `PIB_BROWSER_ERROR_LOG` | `/run/pib-browser/errors.log` | Agent-readable error log (JSON lines, no secrets or page content) |
 | `PIB_BROWSER_CHROMIUM` | (unset) | Explicit path to Chromium executable |
 | `PIB_BROWSER_HEADLESS` | `0` | `0` for headed (default), `1` for headless |
+| `PIB_BROWSER_FAKE_MIC` | unset | `1` launches Chromium with a fake microphone (beep tone, not speech) and grants mic permission. For voice/Talk checks. |
+| `PIB_BROWSER_MOBILE` | unset | `1` uses a 390x844 touch viewport with an iPhone user agent. |
 | `DISPLAY` | `:99` | X server display for headed mode (typically set by systemd service to `:99` via Xvfb) |
 
 ## Build and Test
