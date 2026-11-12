@@ -31,6 +31,13 @@ export const campaignsPreferences = definePreferences({
       legacy: "defaultFromName",
       max: 120,
     },
+    ownBrands: {
+      type: "text",
+      label: "Our own brands",
+      help: "CRM companies that are ours, not clients: one name per line, exactly as in the CRM. Their campaigns show on this page under the brand, go out as the brand, and are approved like our own campaigns (no client's written yes).",
+      default: "",
+      max: 2000,
+    },
   },
   ownCompanyPins: { defaultFromName: "Partners in Biz" },
   isOwnCompany: async (ctx, companyId) => (await ctx.companies.get(companyId))?.issuePrefix === OWN_COMPANY_PREFIX,

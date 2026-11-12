@@ -198,3 +198,18 @@ First release of the Campaigns overhaul (wiki `campaigns-overhaul-2026-11`, Rele
 - `campaigns.load` adds `state` per campaign; `campaigns.detail` adds `state`, `people`, `peopleCapped`, `audiencePeople` and `results`. Existing keys are unchanged. A read that fails returns null for that part and the page says it could not be read.
 
 Tests: `attention.spec.ts`, `people.spec.ts`, `people.pg.spec.ts` (real Postgres: the joins to the CRM copy and `public.issues`, company scoping), and two cases in `graph.spec.ts` for the hand-sent count.
+
+## Our own brands (0.13.0)
+
+Second release of the Campaigns overhaul (decision D1). A company can mark CRM companies as **its own brands** (for Partners in Biz: Velox, JagGids and the like). **Deploy: src-only** (no migration, no capability, no tool change). **Skill text changes** (one sentence in `pib-campaigns`): agents create a brand's campaign with the brand's company as `client`.
+
+- **The mark** is the `ownBrands` preference on the Campaigns page (Preferences, "Our own brands"): CRM company names, one per line, matched whatever the case. Only a company owner or admin can change it; an agent cannot. A name that matches no CRM company marks nothing, so a renamed company falls back to the client rules (`src/brands.ts`).
+- **A brand's campaign is a client-scoped campaign** (`client_kind = company`, `client_ref` the CRM company): it lives in the brand's workspace, needs the brand's own sender for automatic delivery and keeps the brand's own do-not-email list, exactly like a client's. Nothing about senders or suppression changes.
+- **What differs from a client: it is approved like an own campaign.** No "client's written yes" on Approve (`src/approve.ts`) or at the first launch (`launchCampaign`). Any board member may decide, unless the audience reaches a current client (CRM lifecycle `customer`), in which case only the company owner decides, as for an own campaign. The Reviewer's pass hands it to the approver by the same rule. The mark is read at the moment of the decision. When the list cannot be read the client rules apply.
+- **The own page groups them.** `campaigns.load` without a client returns `brands: [{ client, campaigns, byCampaign }]`; the list shows "Our own campaigns" and then one section per brand with a link into its workspace. A brand's campaign opens inside the brand's workspace. "Needs attention" covers the brands too. `campaigns.load` with a client returns `ownBrand`, and the workspace says so.
+- **Move a draft** (`campaigns.move`, page action): a signed-in person moves a draft between our own work and one of our own brands, from the campaign's Summary ("Belongs to", "Move to"). Refused for an agent, for a company that is not a brand, for a client's campaign, for anything launched (its emails, tasks and opt-out links were made for the current sender) and for an audience that is "the contacts at a company" (moving would change who gets it). A tag audience stays as it is. An open approval is cancelled: the approver saw another sender. (An agent could already set a draft's client with `update-campaign`; that tool is unchanged.)
+- `campaigns.detail` adds `campaign.ownBrand` and `moveTargets`.
+
+Tests: `brands.spec.ts` (the list, who may change it, approval with and without the mark, the customer rule, the sender still required, move and its refusals, the grouped load). Eight mutations of the rules were each caught.
+
+Known limit: the mark is by company name. Someone who can create a CRM company with the exact name of a brand gets the own-campaign approval rule for it; the audience and the emails are still shown to the person who approves.
