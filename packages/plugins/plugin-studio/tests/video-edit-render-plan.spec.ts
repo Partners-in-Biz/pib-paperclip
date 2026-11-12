@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hasClipAudio } from "../src/video-edit/compile-audio.js";
 import { compileVideo, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
-import { AUDIO_WEIGHT, editWeight, inputWeight, planRender, type RenderPlan } from "../src/video-edit/render-plan.js";
+import { AUDIO_WEIGHT, editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
 import { clipDuration, editDuration, normalizeEdit, type EditDoc, type MediaClip } from "../src/video-edit/timeline.js";
 
 const WD = "/srv/studio/render-1";
@@ -10,6 +10,7 @@ const inputs: CompileInputs = {
   [inputKey("g", 1)]: fhd("g.mp4"),
   [inputKey("s", 1)]: fhd("s.mp4", { hasAudio: true }),
   [inputKey("uhd", 1)]: fhd("uhd.mp4", { width: 3840, height: 2160 }),
+  [inputKey("uhds", 1)]: fhd("uhds.mp4", { width: 3840, height: 2160, hasAudio: true }),
   [inputKey("uhd60", 1)]: fhd("uhd60.mp4", { width: 3840, height: 2160, fps: 60 }),
   [inputKey("huge", 1)]: fhd("huge.mp4", { width: 7680, height: 4320, fps: 60 }),
   [inputKey("png", 1)]: { path: `${WD}/logo.png`, kind: "image", width: 1080, height: 1080 },
@@ -21,7 +22,7 @@ const clip = (id: string, assetId: string, start: number, len: number, extra: ob
 const run = (n: number, len: number, pick: (i: number) => object = () => ({})) =>
   Array.from({ length: n }, (_, i) => clip(`c${i}`, "g", Math.round(i * len * 1000) / 1000, len, { ...GRADE, ...pick(i) }));
 const edit = (main: unknown[], rest: unknown[] = [], fps = 30) => normalizeEdit({ project: { size: "9:16", fps }, tracks: [{ id: "v", kind: "video", clips: main }, ...rest] });
-const plan = (doc: EditDoc, passBudget?: number) => planRender(doc, inputs, { workdir: WD, passBudget });
+const plan = (doc: EditDoc, passBudget?: number, audioWeight?: number) => planRender(doc, inputs, { workdir: WD, passBudget, audioWeight });
 function multi(p: RenderPlan) {
   if (p.kind !== "multi") throw new Error(`expected multi, got ${p.kind}`);
   return p;
@@ -180,5 +181,149 @@ describe("main-track chunks", () => {
     expect(doc).toEqual(before);
     expect(sources).toEqual(inputs);
     expect(p.final.doc.tracks[1]).not.toBe(doc.tracks[1]);
+  });
+});
+
+const audioClips = (doc: EditDoc) => doc.tracks.flatMap((t) => (t.kind === "audio" ? t.clips : []));
+/** Overlay ids in the order `buildVideoGraph` lays them: track order, then start. */
+const composite = (doc: EditDoc) => doc.tracks.flatMap((t) => (t.kind === "overlay" ? [...t.clips].sort((a, b) => a.start - b.start).map((c) => c.id) : []));
+const byKind = (p: { passes: RenderPass[] }, kind: RenderPass["kind"]) => p.passes.filter((x) => x.kind === kind);
+/** Every pass and the final pass read only the original sources or the output of an earlier pass. */
+function expectTopological(p: ReturnType<typeof multi>) {
+  const made = new Set<string>();
+  const original = new Set(Object.values(inputs).map((s) => s.path));
+  const check = (sources: CompileInputs) => {
+    for (const s of Object.values(sources)) expect(original.has(s.path) || made.has(s.path), s.path).toBe(true);
+  };
+  for (const x of p.passes) {
+    check(x.sources);
+    made.add(x.output);
+  }
+  check(p.final.sources);
+}
+/** `n` graded overlays over 3 tracks that overlap across tracks; each track lists its clips latest first. */
+const overlays = (n: number) => [0, 1, 2].map((k) => ({
+  id: `o${k}`, kind: "overlay",
+  clips: Array.from({ length: n }, (_, i) => i).filter((i) => i % 3 === k).reverse()
+    .map((i) => clip(`ov${i}`, i % 4 === 0 ? "s" : "png", Math.floor(i / 3) * 1.5 + [0.5, 0, 0.5][k], 1.5, GRADE)),
+}));
+const words = { id: "cap", kind: "caption", clips: [{ id: "k1", start: 0, words: [{ text: "hi", start: 0, end: 0.5 }] }] };
+const title = { id: "t", kind: "text", clips: [{ id: "t1", start: 0, duration: 2, text: "Hi" }] };
+
+describe("audio stems", () => {
+  const sixty = (vol = 0.8) => [
+    { id: "a1", kind: "audio", clips: Array.from({ length: 30 }, (_, i) => clip(`x${i}`, "music", Math.round(i * 0.2 * 1000) / 1000, 0.2, { volume: vol, fadeIn: 0.1 })) },
+    { id: "a2", kind: "audio", clips: Array.from({ length: 30 }, (_, i) => clip(`y${i}`, "music", Math.round((i * 0.2 + 0.1) * 1000) / 1000, 0.2)) },
+  ];
+
+  it("AC1+AC2: 60 audio-track clips (music too) group into stems in time order; one audio track of plain stem clips", () => {
+    const doc = edit(run(2, 4), [...sixty(), { id: "m", kind: "audio", clips: [clip("m1", "music", 0, 8)] }]);
+    const p = multi(plan(doc));
+    const stems = byKind(p, "stem");
+    // Each clip stays on its own track inside the stem (x on a1, y on a2, the music bed on m).
+    expect(stems.map((x) => [x.id, x.doc.tracks.map((t) => t.id), audioClips(x.doc).length])).toEqual([["stem-0-0", ["a1", "a2", "m"], 32], ["stem-0-1", ["a1", "a2"], 29]]);
+    const timeOrder = (d: EditDoc) => audioClips(d).map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map(({ c }) => c.id);
+    const order = timeOrder(doc);
+    expect(stems.flatMap((x) => timeOrder(x.doc))).toEqual(order);
+    expect(order[0]).toBe("x0");
+    expect(audioClips(stems[0].doc).map((c) => c.id)).toContain("m1"); // music is one more clip
+    for (const x of stems) {
+      expect(x.weight).toBeLessThanOrEqual(8);
+      expect(x.output).toBe(`${WD}/${x.id}/out.wav`);
+      expect(Math.min(...audioClips(x.doc).map((c) => c.start))).toBe(0);
+      expect(() => normalizeEdit(x.doc)).not.toThrow();
+    }
+    const original = new Map(audioClips(doc).map((c) => [c.id, c]));
+    for (const c of audioClips(stems[1].doc)) expect(c).toEqual({ ...original.get(c.id), start: Math.round((original.get(c.id)!.start - 3.1) * 1000) / 1000 });
+    const finalAudio = p.final.doc.tracks.filter((t) => t.kind === "audio");
+    expect(finalAudio).toHaveLength(1);
+    expect(finalAudio[0].clips).toEqual([
+      { id: "stem-0-0", assetId: "stem-0-0", version: 1, start: 0, in: 0, out: 8, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0 },
+      { id: "stem-0-1", assetId: "stem-0-1", version: 1, start: 3.1, in: 0, out: 3, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0 },
+    ]);
+    expect(p.final.sources["stem-0-1@1"]).toEqual({ path: `${WD}/stem-0-1/out.wav`, kind: "audio", hasAudio: true });
+    expect(editDuration(p.final.doc)).toBe(editDuration(doc));
+    expect(p.final.weight).toBeLessThanOrEqual(8);
+    expect(byKind(p, "chunk")).toEqual([]);
+  });
+
+  it("AC1: audio within AUDIO_SHARE is not stemmed", () => {
+    const doc = edit(run(17, 1), [{ id: "a", kind: "audio", clips: Array.from({ length: 16 }, (_, i) => clip(`x${i}`, "music", i, 1)) }]);
+    const p = multi(plan(doc));
+    expect(byKind(p, "stem")).toEqual([]);
+    expect(p.final.doc.tracks[1]).toEqual(doc.tracks[1]);
+  });
+});
+
+describe("overlay layers", () => {
+  it("AC3: 12 graded overlays + 2 main clips keep today's composite order; text and captions only in the final pass", () => {
+    for (const budget of [8, 6, 4]) {
+      const doc = edit(run(2, 4), [...overlays(12), title, words]);
+      const p = multi(plan(doc, budget));
+      const layers = byKind(p, "layer");
+      expect(layers.length).toBeGreaterThanOrEqual(budget === 8 ? 1 : 2);
+      expect(p.passes).toEqual(layers);
+      expect([...layers.flatMap((x) => composite(x.doc)), ...composite(p.final.doc)]).toEqual(composite(doc));
+      for (const x of layers) {
+        expect(new Set(x.doc.tracks.map((t) => t.kind))).toEqual(new Set(["video", "overlay"]));
+        expect(x.weight).toBeLessThanOrEqual(budget);
+        expect(() => normalizeEdit(x.doc)).not.toThrow();
+      }
+      expect(p.final.doc.tracks.filter((t) => t.kind === "text" || t.kind === "caption")).toEqual([title, words].map((t) => normalizeEdit({ project: { size: "9:16" }, tracks: [t] }).tracks[0]));
+      expect(p.final.weight).toBeLessThanOrEqual(budget);
+      expect(editDuration(p.final.doc)).toBe(editDuration(doc));
+      expectTopological(p);
+    }
+  });
+
+  it("AC4: a layer pass holds the previous base as its only main clip, full length, its audio passing through", () => {
+    const doc = edit([clip("a", "s", 0, 4), clip("b", "g", 4, 4)], overlays(12));
+    const p = multi(plan(doc, 6));
+    const [l0, l1] = byKind(p, "layer");
+    // The first layer composites onto the main track as the main planner left it (2.25 > its share of 2: one chunk).
+    expect(mainOf(l0.doc).map((c) => c.id)).toEqual(["chunk-0-0"]);
+    expect(l0.hasAudio).toBe(true);
+    expect(mainOf(l1.doc)).toEqual([{ id: "layer-0", assetId: "layer-0", version: 1, start: 0, in: 0, out: l0.duration, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0, transform: { x: 0, y: 0, scale: 1, rotate: 0, crop: { left: 0, top: 0, right: 0, bottom: 0 } }, transitionIn: null }]);
+    expect(l0.duration).toBe(8);
+    expect(l1.sources["layer-0@1"]).toEqual({ path: `${WD}/layer-0/out.mov`, kind: "video", hasAudio: true, width: 1080, height: 1920, fps: 30 });
+    const base = graph(l1.doc, l1.sources).split("\n").find((l) => /^\[\d+:a\]/.test(l)); // sound in start order: the base first
+    expect(base).toBeDefined();
+    expect(base).not.toMatch(/volume=|afade|adelay/);
+    expect(mainOf(p.final.doc).map((c) => c.assetId)).toEqual([`layer-${byKind(p, "layer").length - 1}`]);
+  });
+
+  it("AC4: a main track too heavy to share a layer is rendered alone first", () => {
+    const pngs = Array.from({ length: 6 }, (_, i) => clip(`p${i}`, "png", 2 + i, 1));
+    const doc = edit(run(2, 4), [{ id: "o", kind: "overlay", clips: [clip("big", "uhds", 0, 2), ...pngs] }]);
+    const p = multi(plan(doc, 6));
+    expect(byKind(p, "chunk")).toHaveLength(0);
+    const layers = byKind(p, "layer");
+    expect(layers.map((x) => composite(x.doc))).toEqual([[], ["big"], ["p0", "p1"]]); // big (4.25) doesn't fit next to the 2 main clips
+    expect(mainOf(layers[0].doc).map((c) => c.id)).toEqual(["c0", "c1"]);
+    expect(layers.map((x) => x.weight)).toEqual([2, 5.25, 3.25]);
+    expect(composite(p.final.doc)).toEqual(["p2", "p3", "p4", "p5"]);
+    expect(p.final.weight).toBe(5.25);
+    expectTopological(p);
+  });
+});
+
+describe("recursion and order", () => {
+  it("AC5+AC6: stems and layers recurse until every pass fits; passes are topologically ordered", () => {
+    const voice = { id: "a", kind: "audio", clips: Array.from({ length: 60 }, (_, i) => clip(`x${i}`, "music", i * 0.25, 0.25)) };
+    const doc = edit(run(20, 0.75, (i) => (i % 2 ? { assetId: "s" } : {})), [...overlays(30), title, words, voice]);
+    const p = multi(plan(doc, 6, 1));
+    const stems = byKind(p, "stem");
+    expect([0, 1].map((l) => stems.filter((x) => x.level === l).length)).toEqual([10, 2]);
+    expect(byKind(p, "layer").length).toBeGreaterThan(5);
+    expect(byKind(p, "chunk").length).toBeGreaterThan(0);
+    expect(p.levels).toBeGreaterThan(1);
+    for (const x of p.passes) expect(x.weight, x.id).toBeLessThanOrEqual(6);
+    expect(p.final.weight).toBeLessThanOrEqual(6);
+    expect(p.final.doc.tracks.filter((t) => t.kind === "audio").flatMap((t) => t.clips.map((c) => c.assetId))).toEqual(["stem-1-0", "stem-1-1"]);
+    expect([...byKind(p, "layer").flatMap((x) => composite(x.doc)), ...composite(p.final.doc)]).toEqual(composite(doc));
+    expect(editDuration(p.final.doc)).toBe(editDuration(doc));
+    expectTopological(p);
+    expect(p.passes.map((x) => x.kind)).toEqual([...byKind(p, "chunk"), ...stems, ...byKind(p, "layer")].map((x) => x.kind));
+    expect(() => normalizeEdit(p.final.doc)).not.toThrow();
   });
 });

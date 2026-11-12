@@ -16,11 +16,23 @@
  * next chunk (an edit doc can't hold trailing black). A chunk whose first clip starts less than a frame from the
  * chunk start is shifted so that clip sits at 0. An xfade across a boundary stays in the final doc: chunk B's copy of
  * the clip drops `transitionIn`, the final clip for chunk B carries it and overlaps chunk A by the same amount.
+ *
+ * Audio stems (step 2): if the audio tracks (music included) weigh more than `passBudget / 2`, their clips are cut, in
+ * time order, into stems of weight <= `passBudget`. A stem pass mixes its clips (shifted to the stem start) to one WAV
+ * with no loudnorm; the final doc's audio tracks become one track of stem clips (volume 1, no fades). `amix normalize=0`
+ * is a plain sum and loudnorm runs only in the final pass, so the mix is the same. Repeated until the stems fit.
+ *
+ * Overlay layers (step 3): if the final doc still doesn't fit, the overlays that do fit next to the base, the stems and
+ * the other audio go to the final pass (the last ones in composite order: track order, then start, as `buildVideoGraph`
+ * lays them). The ones before are burnt in layer passes, in that same order: a layer pass holds the base (the main
+ * track, then the previous layer's output as one full-length clip whose audio passes through) plus its overlays at their
+ * absolute times. Text and captions stay in the final pass, so the z-order is the same. Passes are listed chunks, then
+ * stems, then layers; each reads only sources and earlier pass outputs.
  */
 import { join } from "node:path";
 import { clipHasSound, hasClipAudio } from "./compile-audio.js";
 import { CompileError, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
-import { clipDuration, editDuration, type EditDoc, type MediaClip, type Track } from "./timeline.js";
+import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
 /** Defaults until the T1 spike measures them (PAR-10436). */
 export const PASS_BUDGET = 8;
@@ -31,8 +43,11 @@ const EPS = 0.0005; // compile-video.ts: smaller overlaps and gaps are ignored
 const MAX_LEVELS = 8;
 
 export interface PlanOptions { workdir: string; passBudget?: number; audioWeight?: number; ext?: string }
-/** One intermediate render: compile `doc` with `sources` to `output`; `frames` long, an audio stream iff `hasAudio`. */
-export interface RenderPass { id: string; level: number; doc: EditDoc; sources: CompileInputs; output: string; duration: number; frames: number; hasAudio: boolean; weight: number }
+/**
+ * One intermediate render: compile `doc` with `sources` to `output`; `frames` long, an audio stream iff `hasAudio`.
+ * `stem` passes render sound only (a WAV, `compileAudioStem`); `chunk` and `layer` passes render with `compileVideo`.
+ */
+export interface RenderPass { kind: "chunk" | "stem" | "layer"; id: string; level: number; doc: EditDoc; sources: CompileInputs; output: string; duration: number; frames: number; hasAudio: boolean; weight: number }
 export type RenderPlan =
   | { kind: "single"; weight: number }
   | { kind: "tooComplex"; weight: number; input: string; inputWeight: number }
@@ -40,6 +55,10 @@ export type RenderPlan =
 
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 const NO_TRANSFORM = { x: 0, y: 0, scale: 1, rotate: 0, crop: { left: 0, top: 0, right: 0, bottom: 0 } };
+/** Frames a `-t t` render at `fps` writes (frames that start before `t`). */
+const framesIn = (t: number, fps: number) => Math.max(0, Math.ceil(t * fps - 1e-6));
+/** A plain clip that plays a whole pass output from `start`. */
+const plain = (id: string, start: number, out: number) => ({ id, assetId: id, version: 1, start, in: 0, out, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0 });
 
 /** The weight of one `-i` of `source`. Unknown size weighs 1; an image runs at the project rate. */
 export function inputWeight(source: CompileInput, projectFps: number, audioWeight = AUDIO_WEIGHT): number {
@@ -117,7 +136,7 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     load += w;
   }
 
-  const framesBelow = (t: number) => Math.max(0, Math.ceil(t * fps - 1e-6));
+  const framesBelow = (t: number) => framesIn(t, fps);
   const end = (c: MediaClip) => ms(c.start + clipDuration(c));
   const mainEnd = Math.max(...clips.map(end));
   const passes: RenderPass[] = [];
@@ -149,10 +168,10 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     const id = `chunk-${level}-${c}`;
     const output = join(opts.workdir, id, `out.${opts.ext}`);
     const hasAudio = hasClipAudio(sub, subSources);
-    passes.push({ id, level, doc: sub, sources: subSources, output, duration, frames, hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
+    passes.push({ kind: "chunk", id, level, doc: sub, sources: subSources, output, duration, frames, hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
     outputs[inputKey(id, 1)] = { path: output, kind: "video", hasAudio, width, height, fps };
     finals.push({
-      id, assetId: id, version: 1, start, in: 0, out: dur, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0,
+      ...plain(id, start, dur),
       transform: structuredClone(NO_TRANSFORM), transitionIn: xfade && first.transitionIn ? { ...first.transitionIn } : null,
     });
     prev = { start, dur, endFrame, clipEnd: Math.max(...group.map(end)) };
@@ -166,10 +185,111 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
   return { passes, doc: finalDoc, sources: sourcesFor(finalDoc, { ...sources, ...outputs }) };
 }
 
+/** Step 2: while the audio tracks weigh more than `AUDIO_SHARE` (half the pass budget), mix their clips into stems (recursively). */
+function stemAudio(doc: EditDoc, sources: CompileInputs, opts: Required<PlanOptions>): Level {
+  const { fps } = doc.project;
+  const per = Math.floor((opts.passBudget + W_EPS) / opts.audioWeight); // clips per stem
+  const passes: RenderPass[] = [];
+  let cur: Level = { passes, doc, sources };
+  for (let level = 0; level < MAX_LEVELS && per >= 2; level++) {
+    // Time order; ties keep track order, as `soundClips` does.
+    const clips = cur.doc.tracks.flatMap((t) => (t.kind === "audio" ? t.clips.map((c) => ({ c, t })) : [])).map((x, i) => ({ ...x, i }))
+      .sort((a, b) => a.c.start - b.c.start || a.i - b.i);
+    if (clips.length * opts.audioWeight <= opts.passBudget / 2 + W_EPS) break;
+    const first = cur.doc.tracks.findIndex((t) => t.kind === "audio");
+    const trackId = cur.doc.tracks[first].id;
+    const stems: AudioClip[] = [];
+    const outputs: CompileInputs = {};
+    for (let s = 0; s * per < clips.length; s++) {
+      const group = clips.slice(s * per, (s + 1) * per);
+      const start = group[0].c.start;
+      // Each clip stays on its own track, so clips that overlap across tracks stay valid.
+      const tracks = cur.doc.tracks.flatMap((t): Track[] => {
+        const own = group.filter((x) => x.t === t).map((x) => ({ ...structuredClone(x.c), start: ms(x.c.start - start) }));
+        return own.length ? [{ id: t.id, kind: "audio", clips: own }] : [];
+      });
+      const sub: EditDoc = { schemaVersion: doc.schemaVersion, project: { ...doc.project }, tracks };
+      const subSources = sourcesFor(sub, cur.sources);
+      const duration = editDuration(sub);
+      const id = `stem-${level}-${s}`;
+      const output = join(opts.workdir, id, "out.wav");
+      passes.push({ kind: "stem", id, level, doc: sub, sources: subSources, output, duration, frames: framesIn(duration, fps), hasAudio: true, weight: editWeight(sub, subSources, opts.audioWeight) });
+      outputs[inputKey(id, 1)] = { path: output, kind: "audio", hasAudio: true };
+      stems.push(plain(id, start, duration));
+    }
+    // One track of stem clips. Stems can overlap in time (a long music bed); `buildAudioGraph` sums them all the same.
+    const tracks = cur.doc.tracks.flatMap((t, i): Track[] => (i === first ? [{ id: trackId, kind: "audio", clips: stems }] : t.kind === "audio" ? [] : [structuredClone(t)]));
+    const next: EditDoc = { schemaVersion: doc.schemaVersion, project: { ...doc.project }, tracks };
+    cur = { passes, doc: next, sources: sourcesFor(next, { ...cur.sources, ...outputs }) };
+  }
+  return cur;
+}
+
+const BASE_TRACK = "layer-base";
+
+/** Step 3: burn the overlays that don't fit the final pass onto the base, in today's composite order. */
+function layerOverlays(doc: EditDoc, sources: CompileInputs, opts: Required<PlanOptions>): Level {
+  const { fps, width, height } = doc.project;
+  const budget = opts.passBudget + W_EPS;
+  if (editWeight(doc, sources, opts.audioWeight) <= budget) return { passes: [], doc, sources };
+  const known: CompileInputs = { ...sources };
+  const weightOf = (t: Track) => sum(trackInputs(t, known, fps, opts.audioWeight));
+  const index = mainIndex(doc);
+  // compile-video.ts buildVideoGraph: overlay tracks in order, each track's clips by start (stable).
+  const items = doc.tracks.flatMap((t, ti) => (t.kind === "overlay" ? [...t.clips].sort((a, b) => a.start - b.start).map((clip) => ({ ti, clip, weight: weightOf({ ...t, clips: [clip] }) })) : []));
+  const fixed = sum(doc.tracks.flatMap((t, i) => (i === index || t.kind === "overlay" ? [] : [{ weight: weightOf(t) }])));
+  const layerOut = inputWeight({ path: "", kind: "video", width, height, fps }, fps, opts.audioWeight) + opts.audioWeight;
+  // The final pass takes the last overlays that fit next to a layer output and the other tracks.
+  let k = items.length;
+  for (let load = 0; k > 0 && fixed + layerOut + load + items[k - 1].weight <= budget; k--) load += items[k - 1].weight;
+  const finalLoad = sum(items.slice(k));
+
+  const passes: RenderPass[] = [];
+  let base: Track | null = index >= 0 ? doc.tracks[index] : null;
+  const emit = (group: typeof items) => {
+    const id = `layer-${passes.length}`;
+    const tracks: Track[] = base ? [structuredClone(base)] : [];
+    for (const [ti, t] of doc.tracks.entries()) {
+      const clips = group.filter((x) => x.ti === ti).map((x) => structuredClone(x.clip));
+      if (clips.length) tracks.push({ id: t.id, kind: "overlay", clips });
+    }
+    const sub: EditDoc = { schemaVersion: doc.schemaVersion, project: { ...doc.project }, tracks };
+    const subSources = sourcesFor(sub, known);
+    const duration = editDuration(sub);
+    const hasAudio = hasClipAudio(sub, subSources);
+    const output = join(opts.workdir, id, `out.${opts.ext}`);
+    passes.push({ kind: "layer", id, level: passes.length, doc: sub, sources: subSources, output, duration, frames: framesIn(duration, fps), hasAudio, weight: editWeight(sub, subSources, opts.audioWeight) });
+    known[inputKey(id, 1)] = { path: output, kind: "video", hasAudio, width, height, fps };
+    base = { id: base?.id ?? BASE_TRACK, kind: "video", clips: [{ ...plain(id, 0, duration), transform: structuredClone(NO_TRANSFORM), transitionIn: null }] };
+  };
+  for (let i = 0; i < k; ) {
+    const fromMain = passes.length === 0 && base !== null;
+    const group: typeof items = [];
+    for (let load = base ? weightOf(base) : 0; i < k && load + items[i].weight <= budget; i++) {
+      group.push(items[i]);
+      load += items[i].weight;
+    }
+    // Nothing fits next to the main track: render it alone first. One overlay too heavy for any layer goes alone.
+    if (!group.length && !fromMain) group.push(items[i++]);
+    emit(group);
+  }
+  if (passes.length === 0 && base && weightOf(base) + finalLoad + fixed > budget) emit([]);
+
+  const last = new Set(items.slice(k).map((x) => x.clip));
+  const tracks = doc.tracks.map((t, i): Track => {
+    if (i === index && base) return structuredClone(base);
+    if (t.kind === "overlay") return { ...t, clips: t.clips.filter((c) => last.has(c)).map((c) => structuredClone(c)) };
+    return structuredClone(t);
+  });
+  if (index < 0 && base) tracks.unshift(base);
+  const next: EditDoc = { schemaVersion: doc.schemaVersion, project: { ...doc.project }, tracks };
+  return { passes, doc: next, sources: sourcesFor(next, known) };
+}
+
 /**
  * Plans the render of `doc`. `single`: today's one pass. `tooComplex`: one input weighs more than `passBudget - 1`, so
  * no chunk can hold it (an edit that fits the budget as a whole still renders in one pass). `multi`: run `passes` in
- * order, then the final doc. Main-track only (T2): if the other tracks alone are over budget, the final pass is too.
+ * order, then the final doc. Audio stems are planned first, so the main track's share counts the stems, not the clips.
  */
 export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOptions): RenderPlan {
   const opts: Required<PlanOptions> = { workdir: options.workdir, passBudget: options.passBudget ?? PASS_BUDGET, audioWeight: options.audioWeight ?? AUDIO_WEIGHT, ext: options.ext ?? "mov" };
@@ -179,7 +299,8 @@ export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOp
   const heaviest = all.reduce((a, b) => (b.weight > a.weight ? b : a));
   if (heaviest.weight > opts.passBudget - 1 + W_EPS) return { kind: "tooComplex", weight, input: heaviest.key, inputWeight: heaviest.weight };
 
-  let current: Level = { passes: [], doc, sources };
+  const stems = stemAudio(doc, sources, opts);
+  let current: Level = { passes: [], doc: stems.doc, sources: stems.sources };
   const passes: RenderPass[] = [];
   let levels = 0;
   while (levels < MAX_LEVELS) {
@@ -196,5 +317,7 @@ export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOp
     current = next;
     levels++;
   }
-  return { kind: "multi", weight, levels, passes, final: { doc: current.doc, sources: current.sources, weight: editWeight(current.doc, current.sources, opts.audioWeight) } };
+  const layers = layerOverlays(current.doc, current.sources, opts);
+  const final = { doc: layers.doc, sources: layers.sources, weight: editWeight(layers.doc, layers.sources, opts.audioWeight) };
+  return { kind: "multi", weight, levels, passes: [...passes, ...stems.passes, ...layers.passes], final };
 }
