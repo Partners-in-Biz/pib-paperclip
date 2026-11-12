@@ -29,12 +29,18 @@ export const NICE = 10;
 export const THREADS = 4;
 export const CANCEL_GRACE_MS = 10_000;
 export const STDERR_TAIL_BYTES = 4096;
+/** Seconds of stderr silence after which a render counts as stalled (the pipeline passes this as `stallSec`). */
+export const STALL_SEC = 60;
+/** Longest partial stderr line kept for the live scan. */
+export const STDERR_LINE_MAX = 4096;
+/** A thread could not be created: ffmpeg goes silent after this and never recovers, so kill it at once. */
+const FATAL_STDERR_LINE = /pthread_create failed/;
 const STDOUT_MAX_BYTES = 1024 * 1024;
 
 export const BINS = { timeout: "/usr/bin/timeout", prlimit: "/usr/bin/prlimit", nice: "/usr/bin/nice", ffmpeg: "ffmpeg", ffprobe: "ffprobe", node: process.execPath };
 
 /** ok; timeout (the 20-minute wall clock); rlimit (FSIZE, AS or an unexplained kill); nonzero (ffmpeg failed); cancelled (we asked). */
-export type RunOutcome = "ok" | "timeout" | "rlimit" | "nonzero" | "cancelled";
+export type RunOutcome = "ok" | "timeout" | "rlimit" | "nonzero" | "cancelled" | "stalled";
 
 /** Env keys a "node" run may get from the caller or the worker env (PAR-10126 D5b). Nothing else, so never a secret. */
 export const ML_ENV_KEY = /^PIB_ML_[A-Z0-9_]+$/;
@@ -58,6 +64,8 @@ export interface RunOptions {
   /** Tool "node": extra env, `PIB_ML_*` keys only. */
   env?: Record<string, string>;
   timeoutSec?: number;
+  /** No stderr output for this many seconds kills the run with outcome `stalled`. Off when unset. */
+  stallSec?: number;
   killAfterSec?: number;
   asLimitBytes?: number;
   fsizeBytes?: number;
@@ -110,10 +118,12 @@ export function containedArgv(toolArgs: string[], opts: RunOptions = {}): string
 }
 
 const SIGXFSZ_CODE = 128 + 25;
-const RLIMIT_TEXT = /File too large|Cannot allocate memory|Out of memory|bad_alloc/i;
+const RLIMIT_TEXT = /File too large|Cannot allocate memory|Out of memory|bad_alloc|pthread_create failed|Resource temporarily unavailable|malloc of size \d+ failed/i;
 
-export function classifyExit(r: { exitCode: number | null; signal: NodeJS.Signals | null; cancelled: boolean; stderrTail: string; spawnFailed?: boolean; pastDeadline?: boolean }): RunOutcome {
+export function classifyExit(r: { exitCode: number | null; signal: NodeJS.Signals | null; cancelled: boolean; stderrTail: string; spawnFailed?: boolean; pastDeadline?: boolean; memoryKill?: boolean; stallKill?: boolean }): RunOutcome {
   if (r.cancelled) return "cancelled";
+  if (r.memoryKill) return "rlimit";
+  if (r.stallKill) return "stalled";
   if (r.spawnFailed) return "nonzero";
   if (r.exitCode === 0) return "ok";
   // timeout(1) exits 124 after SIGTERM; after -k it SIGKILLs the whole group, itself included.
@@ -188,7 +198,13 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
   const stdoutChunks: Buffer[] = [];
   let stdoutBytes = 0;
   let cancelled = false;
+  let memoryKill = false;
+  let stallKill = false;
+  let killed = false;
   let exited = false;
+  let lastData = Date.now();
+  let partial = "";
+  let stallTimer: NodeJS.Timeout | undefined;
   let graceTimer: NodeJS.Timeout | undefined;
 
   const child = spawnImpl(argv[0]!, argv.slice(1), {
@@ -199,7 +215,39 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
   });
   const pgid = child.pid ?? 0;
 
-  child.stderr?.on("data", (c: Buffer) => stderr.push(c));
+  const terminate = () => {
+    if (exited || killed) return;
+    killed = true;
+    if (stallTimer) clearInterval(stallTimer);
+    killGroup(kill, pgid, "SIGTERM");
+    graceTimer = setTimeout(() => {
+      if (!exited) killGroup(kill, pgid, "SIGKILL");
+    }, CANCEL_GRACE_MS);
+    graceTimer.unref?.();
+  };
+
+  child.stderr?.on("data", (c: Buffer) => {
+    stderr.push(c);
+    lastData = Date.now();
+    if (killed) return;
+    // Live line scan: split on \n and \r, keep the partial last line (capped).
+    const lines = (partial + c.toString("utf8")).split(/[\n\r]/);
+    partial = (lines.pop() ?? "").slice(-STDERR_LINE_MAX);
+    if (lines.some((l) => FATAL_STDERR_LINE.test(l)) || FATAL_STDERR_LINE.test(partial)) {
+      memoryKill = true;
+      terminate();
+    }
+  });
+  if (opts.stallSec !== undefined && opts.stallSec > 0) {
+    const stallMs = opts.stallSec * 1000;
+    stallTimer = setInterval(() => {
+      if (!exited && !killed && Date.now() - lastData >= stallMs) {
+        stallKill = true;
+        terminate();
+      }
+    }, Math.max(50, Math.min(1000, Math.floor(stallMs / 4))));
+    stallTimer.unref?.();
+  }
   child.stdout?.on("data", (c: Buffer) => {
     if (stdoutBytes >= STDOUT_MAX_BYTES) return;
     stdoutChunks.push(c);
@@ -211,6 +259,7 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
       if (exited) return;
       exited = true;
       if (graceTimer) clearTimeout(graceTimer);
+      if (stallTimer) clearInterval(stallTimer);
       // Leftovers in the group (timeout itself was SIGKILLed, or a stray child) go with it.
       killGroup(kill, pgid, "SIGKILL");
       if (error) stderr.push(Buffer.from(`\n${error}`));
@@ -218,7 +267,7 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
       const durationMs = Date.now() - started;
       const pastDeadline = durationMs >= (opts.timeoutSec ?? TIMEOUT_SEC) * 1000;
       resolve({
-        outcome: classifyExit({ exitCode, signal, cancelled, stderrTail, spawnFailed: !!error, pastDeadline }),
+        outcome: classifyExit({ exitCode, signal, cancelled, stderrTail, spawnFailed: !!error, pastDeadline, memoryKill, stallKill }),
         exitCode,
         signal,
         stderrTail,
@@ -238,11 +287,8 @@ export function runContained(toolArgs: string[], opts: RunOptions = {}): RunHand
     cancel() {
       if (exited || cancelled) return;
       cancelled = true;
-      killGroup(kill, pgid, "SIGTERM");
-      graceTimer = setTimeout(() => {
-        if (!exited) killGroup(kill, pgid, "SIGKILL");
-      }, CANCEL_GRACE_MS);
-      graceTimer.unref?.();
+      if (killed) return; // our own kill is already under way; the outcome stays cancelled
+      terminate();
     },
   };
 }

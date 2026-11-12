@@ -49,7 +49,7 @@ export class RenderFailure extends Error {
   }
 }
 
-const DETERMINISTIC = new Set(["probe_failed", "unsupported_codec", "unsupported_feature", "compile_error", "ffmpeg_failed", "verify_failed", "too_large", "unsafe_key", "forbidden_key", "missing_input", "bad_input_path", "bad_render", "bad_edit", "unknown_asset"]);
+const DETERMINISTIC = new Set(["probe_failed", "unsupported_codec", "unsupported_feature", "compile_error", "ffmpeg_failed", "stalled", "verify_failed", "too_large", "unsafe_key", "forbidden_key", "missing_input", "bad_input_path", "bad_render", "bad_edit", "unknown_asset"]);
 const INFRA = new Set(["disk_low", "timeout", "rlimit", "stale_heartbeat", "cancelled"]);
 
 export interface ClassifiedFailure {
@@ -78,6 +78,8 @@ export function failureFromRun(result: RunResult): RenderFailure | null {
       return new RenderFailure("The render took longer than the time limit.", "infra", "timeout", result.stderrTail);
     case "rlimit":
       return new RenderFailure("The render hit a memory or file size limit.", "infra", "rlimit", result.stderrTail);
+    case "stalled":
+      return new RenderFailure("The render stopped making progress (likely out of memory). Try a shorter or simpler edit.", "deterministic", "stalled", result.stderrTail);
     case "cancelled":
       return new RenderFailure("The render was stopped.", "infra", "cancelled", result.stderrTail);
     default:

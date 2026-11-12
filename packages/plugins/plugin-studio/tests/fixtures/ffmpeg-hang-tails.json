@@ -1,0 +1,87 @@
+[
+ {
+  "case": "w3",
+  "variant": "base,t20",
+  "code": 187,
+  "err": "e memory | Failed to inject frame into filter network: Cannot allocate memory | [out#0/mp4 @ 0x5aa7e2a48f40] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "p12",
+  "variant": "base,t20",
+  "code": 124,
+  "err": " Invalid data found when processing input |     Last message repeated 9 times | [out#0/mp4 @ 0x5643eeb7e7c0] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "p12",
+  "variant": "dthr2,t20",
+  "code": 187,
+  "err": "idth or height. | Error while filtering: Generic error in an external library | [out#0/mp4 @ 0x5d8b531a3a00] Nothing was written into output file, because at least one of its streams received no packets. | ",
+  "recordedTailLacksMemoryText": true
+ },
+ {
+  "case": "w3",
+  "variant": "fct4,t20",
+  "code": 187,
+  "err": "ering: Cannot allocate memory | Failed to inject frame into filter network: Cannot allocate memory | x264 [error]: malloc of size 12030144 failed | [vost#0:0/libx264 @ 0x644f3791aa80] video encoding failed | "
+ },
+ {
+  "case": "w12",
+  "variant": "base,t20",
+  "code": 124,
+  "err": "arsed_scale_2 | Error initializing filters! | Error marking filters as finished | [out#0/mp4 @ 0x5990befac240] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "w12",
+  "variant": "dthr1,t20",
+  "code": 134,
+  "err": "rsed_scale_70 | [fc#0 @ 0x6359a8ec8540] Error reinitializing filters! | Failed to inject frame into filter network: Resource temporarily unavailable | Assertion 0 failed at src/fftools/ffmpeg_filter.c:2472 | "
+ },
+ {
+  "case": "w12",
+  "variant": "stack2048,t20",
+  "code": 124,
+  "err": "arsed_scale_2 | Error initializing filters! | Error marking filters as finished | [out#0/mp4 @ 0x583f8c9ea240] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "w12",
+  "variant": "stack1024,arena2,t20",
+  "code": 244,
+  "err": "ed to inject frame into filter network: Cannot allocate memory | [fc#0 @ 0x617c14c71540] Error while filtering: Cannot allocate memory | Failed to inject frame into filter network: Cannot allocate memory | "
+ },
+ {
+  "case": "w24",
+  "variant": "dthr1,fct2,arena2,stack2048,t30",
+  "code": 244,
+  "err": "ed to inject frame into filter network: Cannot allocate memory | [fc#0 @ 0x55bd57297540] Error while filtering: Cannot allocate memory | Failed to inject frame into filter network: Cannot allocate memory | "
+ },
+ {
+  "case": "w36",
+  "variant": "dthr1,fct2,arena2,stack2048,t30",
+  "code": 244,
+  "err": "ailed to inject frame into filter network: Resource temporarily unavailable | [out#0/mp4 @ 0x598cf21b7bc0] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "w60",
+  "variant": "dthr1,fct2,arena2,stack2048,t30",
+  "code": 244,
+  "err": "ailed to inject frame into filter network: Resource temporarily unavailable | [out#0/mp4 @ 0x5757b5bb1e40] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "w24",
+  "variant": "dthr1,fct1,arena1,stack1024,t30",
+  "code": 244,
+  "err": "ed to inject frame into filter network: Cannot allocate memory | [fc#0 @ 0x56b2a6b65540] Error while filtering: Cannot allocate memory | Failed to inject frame into filter network: Cannot allocate memory | "
+ },
+ {
+  "case": "w60",
+  "variant": "dthr1,fct1,arena1,stack1024,t30",
+  "code": 244,
+  "err": "filters! | Failed to inject frame into filter network: Cannot allocate memory | [out#0/mp4 @ 0x55c4254db500] Nothing was written into output file, because at least one of its streams received no packets. | "
+ },
+ {
+  "case": "p12",
+  "variant": "info",
+  "code": 124,
+  "err": "21:1 (aac) -> aresample:default\n  Stream #22:1 (aac) -> aresample:default\n  Stream #23:1 (aac) -> aresample:default\n  Stream #24:1 (aac) -> aresample:default\n  setsar:default -> Stream #0:0 (libx264)\n  atrim:default -> Stream #0:1 (aac)\n[h264 @ 0x5d204b37b080] get_buffer() failed\n[h264 @ 0x5d204b37b080] thread_get_buffer() failed\n[h264 @ 0x5d204b37b080] decode_slice_header error\n[h264 @ 0x5d204b37b080] no frame!\n[h264 @ 0x5d204b449f00] Error splitting the input into NAL units.\n[h264 @ 0x5d204b518d80] Error splitting the input into NAL units.\n[h264 @ 0x5d204b5e7c00] Error splitting the input into NAL units.\n[in#3/mov,mp4,m4a,3gp,3g2,mj2 @ 0x5d2047771740] Error during demuxing: Cannot allocate memory\n[h264 @ 0x5d204b6b6a80] Error splitting the input into NAL units.\n[h264 @ 0x5d204b785900] Error splitting the input into NAL units.\n[h264 @ 0x5d204b854780] Error splitting the input into NAL units.\n[h264 @ 0x5d204b923600] Error splitting the input into NAL units.\n[h264 @ 0x5d204acd7c80] get_buffer() failed\n[h264 @ 0x5d204acd7c80] thread_get_buffer() failed\n[h264 @ 0x5d204acd7c80] decode_slice_header error\n[h264 @ 0x5d204acd7c80] no frame!\n[in#4/mov,mp4,m4a,3gp,3g2,mj2 @ 0x5d20477d5400] pthread_create failed: Resource temporarily unavailable. Try to increase `ulimit -v` or decrease `ulimit -s`.\n[h264 @ 0x5d204add2bc0] get_buffer() failed\n[h264 @ 0x5d204add2bc0] thread_get_buffer() failed\n[h264 @ 0x5d204add2bc0] decode_slice_header error\n[h264 @ 0x5d204add2bc0] no frame!\n[in#4/mov,mp4,m4a,3gp,3g2,mj2 @ 0x5d20477d5400] pthread_create failed: Resource temporarily unavailable. Try to increase `ulimit -v` or decrease `ulimit -s`.\n    Last message repeated 14704 times\n[vist#3:0/h264 @ 0x5d2047798700] Decoding error: Invalid data found when processing input\n    Last message repeated 9 times\n[out#0/mp4 @ 0x5d2052ab8440] Nothing was written into output file, because at least one of its streams received no packets.\nframe=    0 fps=0.0 q=0.0 Lsize=       0kB time=N/A bitrate=N/A speed=N/A    \nExiting normally, received signal 15.\n"
+ }
+]
