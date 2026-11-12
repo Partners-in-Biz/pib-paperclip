@@ -621,6 +621,10 @@ export interface PreviewRow {
   issueIdentifier: string | null;
   /** Which fields the proposal changes, in words the tab shows. */
   changedFields: string[];
+  /** The proposed copy the drawer shows (no html: the proposal link shows the page). */
+  changes: { title: string | null; metaDescription: string | null; h1: string | null; bodyMode: string | null };
+  /** Why the SEO agent proposes it. */
+  why: string | null;
   decidedBy: string | null;
   decisionSource: string | null;
   decidedAt: string | null;
@@ -631,6 +635,8 @@ export interface PreviewRow {
   /** Other pending previews of the same page (read-only note, no gating). */
   overlapIds: string[];
 }
+
+const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
 
 const CHANGE_FIELDS: Array<[string, string]> = [["title", "Title"], ["metaDescription", "Meta description"], ["h1", "Heading"], ["bodyHtml", "Body copy"], ["css", "Styles"]];
 
@@ -676,6 +682,8 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
       issueId: r.issue_id ? String(r.issue_id) : null,
       issueIdentifier: r.issue_identifier ? String(r.issue_identifier) : null,
       changedFields: CHANGE_FIELDS.filter(([key]) => Boolean(changes[key])).map(([, label]) => label),
+      changes: { title: strOrNull(changes.title), metaDescription: strOrNull(changes.metaDescription), h1: strOrNull(changes.h1), bodyMode: changes.bodyHtml ? strOrNull(changes.bodyMode) ?? "before" : null },
+      why: strOrNull(changes.why),
       decidedBy: r.decided_by ? String(r.decided_by) : null,
       decisionSource: r.decision_source ? String(r.decision_source) : null,
       decidedAt: iso(r.decided_at),
