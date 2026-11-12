@@ -14,6 +14,7 @@ import { CHANGE_POLICIES, HOSTINGS, SEO_SCOPE_CATEGORIES } from "./engine/site-c
 import { AUTOPILOT_MODES, SPRINT_STATUSES, TASK_STATUSES } from "./engine/sprint.js";
 import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
+import { BING_VERIFY_SITE_TOOL_TIMEOUT_MS } from "./integrations/bing.js";
 import { RUN_PAGESPEED_TOOL_TIMEOUT_MS } from "./integrations/pagespeed.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -687,7 +688,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (metaTags [{ name: \"msvalidate.01\", content }] or files [{ path: \"/BingSiteAuth.xml\", content }]; the result carries the call). Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
-  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }) },
+  { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }), timeoutMs: BING_VERIFY_SITE_TOOL_TIMEOUT_MS },
   { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
 
   // Site repo
