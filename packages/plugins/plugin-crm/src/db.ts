@@ -613,25 +613,97 @@ export async function getDeal(ctx: PluginContext, id: string): Promise<DealDraft
   return rows[0] ? mapDeal(rows[0]) : null;
 }
 
-export async function ensurePipeline(ctx: PluginContext, companyId: string): Promise<{ pipelineId: string; openStageId: string }> {
-  const existing = await ctx.db.query<{ id: string }>(
-    `SELECT id FROM ${table(ctx, "pipelines")} WHERE company_id = $1 ORDER BY created_at LIMIT 1`,
+/**
+ * SQL for the id of the company's default pipeline: the oldest one that has at least one stage (a row left empty by a failed
+ * create is never the default). `companyRef` is a `$n` placeholder bound to the company id.
+ */
+export function defaultPipelineSql(ctx: PluginContext, companyRef = "$1"): string {
+  return `(SELECT dp.id FROM ${table(ctx, "pipelines")} dp
+            WHERE dp.company_id = ${companyRef}
+              AND EXISTS (SELECT 1 FROM ${table(ctx, "pipeline_stages")} vs WHERE vs.pipeline_id = dp.id)
+            ORDER BY dp.created_at, dp.id LIMIT 1)`;
+}
+
+export interface PipelineRow {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/** The company's pipelines that have stages, oldest first; the first is the default (the same rule as `defaultPipelineSql`). */
+export async function listPipelines(ctx: PluginContext, companyId: string): Promise<PipelineRow[]> {
+  const [pipelines, stages] = await Promise.all([
+    ctx.db.query<{ id: string; name: string }>(
+      `SELECT id, name FROM ${table(ctx, "pipelines")} WHERE company_id = $1 ORDER BY created_at, id`,
+      [companyId],
+    ),
+    listCompanyStages(ctx, companyId),
+  ]);
+  const staged = new Set(stages.map((stage) => stage.pipeline_id));
+  return pipelines.filter((row) => staged.has(row.id)).map((row, index) => ({ id: row.id, name: row.name, isDefault: index === 0 }));
+}
+
+export async function defaultPipelineId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  return (await listPipelines(ctx, companyId))[0]?.id ?? null;
+}
+
+/** Every stage of every pipeline of the company (classification: open, won or lost). */
+export async function listCompanyStages(ctx: PluginContext, companyId: string): Promise<StageRow[]> {
+  return ctx.db.query<StageRow>(
+    `SELECT id, company_id, pipeline_id, name, kind, position
+       FROM ${table(ctx, "pipeline_stages")}
+      WHERE company_id = $1
+      ORDER BY position`,
     [companyId],
   );
-  let pipelineId = existing[0]?.id;
+}
+
+/** A visible pipeline of this company by id or by name (case-insensitive). */
+export async function resolvePipeline(ctx: PluginContext, companyId: string, value: string): Promise<PipelineRow> {
+  const all = await listPipelines(ctx, companyId);
+  const wanted = value.trim();
+  const byId = all.find((row) => row.id === wanted);
+  if (byId) return byId;
+  const byName = all.filter((row) => row.name.trim().toLowerCase() === wanted.toLowerCase());
+  if (byName.length === 1) return byName[0]!;
+  if (byName.length > 1) throw new Error(`More than one pipeline is named "${wanted}"; use its id`);
+  throw new Error(`Pipeline "${wanted}" was not found. Pipelines: ${all.map((row) => row.name).join(", ") || "none"}`);
+}
+
+/** Writes all the stages in one statement (positions as given), so a failure leaves none of them. */
+export async function insertStages(
+  ctx: PluginContext,
+  companyId: string,
+  pipelineId: string,
+  stages: ReadonlyArray<{ name: string; kind: string; position: number }>,
+): Promise<void> {
+  if (stages.length === 0) return;
+  const params: unknown[] = [];
+  const tuples = stages.map((stage) => {
+    const base = params.length;
+    params.push(randomUUID(), companyId, pipelineId, stage.name, stage.kind, stage.position);
+    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
+  });
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "pipeline_stages")} (id, company_id, pipeline_id, name, kind, position) VALUES ${tuples.join(", ")}`,
+    params,
+  );
+}
+
+/** The default pipeline and its first open stage; an empty company gets "Sales" with the default stages. */
+export async function ensurePipeline(ctx: PluginContext, companyId: string): Promise<{ pipelineId: string; openStageId: string }> {
+  let pipelineId = await defaultPipelineId(ctx, companyId);
   if (!pipelineId) {
     pipelineId = randomUUID();
     await ctx.db.execute(
       `INSERT INTO ${table(ctx, "pipelines")} (id, company_id, name) VALUES ($1, $2, 'Sales')`,
       [pipelineId, companyId],
     );
-    for (const stage of DEFAULT_STAGES) {
-      await ctx.db.execute(
-        `INSERT INTO ${table(ctx, "pipeline_stages")}
-          (id, company_id, pipeline_id, name, kind, position)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [randomUUID(), companyId, pipelineId, stage.name, stage.kind, stage.position],
-      );
+    try {
+      await insertStages(ctx, companyId, pipelineId, DEFAULT_STAGES);
+    } catch (error) {
+      await ctx.db.execute(`DELETE FROM ${table(ctx, "pipelines")} WHERE id = $1`, [pipelineId]).catch(() => undefined);
+      throw error;
     }
   }
   const stages = await listStages(ctx, pipelineId);

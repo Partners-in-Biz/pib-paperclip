@@ -38,6 +38,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { LEAD_DIMENSION_LABELS, LEAD_DIMENSIONS, leadBand, leadLevelLabel, type LeadScore } from "../lead-levels.js";
 import { leadBands, recentDelta, type CrmSeries } from "../series.js";
+import { openPipelineLabel } from "../pipeline-label.js";
 
 // ---------------------------------------------------------------------------
 // Status tones (one mapping for every CRM page)
@@ -78,6 +79,8 @@ export interface OverviewSummary {
   dealCount: number;
   openDealCount: number;
   openPipelineByCurrency: Record<string, number>;
+  defaultPipelineName?: string | null;
+  pipelineCount?: number;
   byStage: Record<string, { count: number; amountMinor: number }>;
   accountLifecycle: Record<string, number>;
   contactLifecycle: Record<string, number>;
@@ -156,7 +159,7 @@ export function CrmOverview({ summary, series, stages, contacts, needs, unlinked
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(160), gap: 10 }}>
         <KpiCard
-          label="Open pipeline"
+          label={openPipelineLabel(summary)}
           value={formatMoney(openPipeline, currency)}
           hint={`${summary?.openDealCount ?? 0} open ${summary?.openDealCount === 1 ? "deal" : "deals"}${otherCurrencies.length ? ` · also ${otherCurrencies.join(", ")}` : ""}`}
           icon={Funnel}
