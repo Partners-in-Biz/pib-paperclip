@@ -337,6 +337,25 @@ function stdoutStartsWithQueryEcho(stdout: string): boolean {
 // Output parsing
 // ---------------------------------------------------------------------------
 
+const GATEWAY_NOT_READY_TEXT = "Gateway starting: deadline";
+const GATEWAY_RETRY_MIN_REMAINING_SEC = 30;
+
+/**
+ * True when a local attempt died only because the Hermes gateway was still
+ * booting: a plain non-zero exit (no timeout, no signal), the gateway text in
+ * the output, and nothing usable (session id, answer) from that attempt.
+ */
+export function gatewayWasNotReady(
+  result: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout?: string; stderr?: string },
+  parsed: { sessionId?: string | null; response?: string | null },
+): boolean {
+  if (result.timedOut || result.signal !== null) return false;
+  if (typeof result.exitCode !== "number" || result.exitCode === 0) return false;
+  const text = `${result.stderr || ""}\n${result.stdout || ""}`;
+  if (!text.includes(GATEWAY_NOT_READY_TEXT)) return false;
+  return !parsed.sessionId && !parsed.response;
+}
+
 function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
@@ -872,6 +891,27 @@ async function executeHermes(
   }
   await ctx.onLog("stdout", `[hermes] Prompt: ${query.bytes} bytes via ${query.via}\n`);
   let result: Awaited<ReturnType<typeof runChildProcess>>;
+  const meteredBox: { last: Awaited<ReturnType<typeof resolveRun>> | null } = { last: null };
+  const parseAttempt = async (attempt: typeof result) => {
+    const out = parseHermesOutput(attempt.stdout || "", attempt.stderr || "");
+    // The regexes above never match current Hermes output and read prose as cost.
+    // Take the session id from the lines Hermes prints, and tokens and cost from
+    // its own session record.
+    const metered = await resolveRun(attempt.stdout || "", attempt.stderr || "", hermesStoreEnv, resumeBaseline, remoteSessions);
+    meteredBox.last = metered;
+    out.sessionId = metered.sessionId ?? undefined;
+    out.usage = metered.usage;
+    out.costUsd = metered.costUsd;
+    const streamed = parseHermesStreamJsonOutput(`${attempt.stdout || ""}\n${attempt.stderr || ""}`);
+    if (!out.sessionId && (streamed.sessionId || checkpointedSessionId)) {
+      out.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
+    }
+    if (!out.response && streamed.response) out.response = streamed.response;
+    if (!out.usage && streamed.usage) out.usage = streamed.usage;
+    if (!out.errorMessage && streamed.errorMessage) out.errorMessage = streamed.errorMessage;
+    return out;
+  };
+  let parsed: ParsedOutput | null = null;
   try {
     if (remote && remoteQuery) {
       // Fail early with a clear message when hermes is not installed on the host.
@@ -896,14 +936,32 @@ async function executeHermes(
         await killRemoteTree(remote.run, remoteQuery.pidFile, graceSec);
       }
     } else {
-      result = await runChildProcess(ctx.runId, hermesCmd, args, {
-        cwd,
-        env,
-        timeoutSec,
-        graceSec,
-        onLog: wrappedOnLog,
-        onSpawn: ctx.onSpawn,
-      });
+      const startedAt = Date.now();
+      const runLocal = (attemptTimeoutSec: number) =>
+        runChildProcess(ctx.runId, hermesCmd, args, {
+          cwd,
+          env,
+          timeoutSec: attemptTimeoutSec,
+          graceSec,
+          onLog: wrappedOnLog,
+          onSpawn: ctx.onSpawn,
+        });
+      result = await runLocal(timeoutSec);
+      // The gateway dies with every server restart; a run that starts while it
+      // boots fails fast. Try once more (the query file is still in place).
+      if (streamBuffer.trim()) await forwardStdoutLines("\n", true);
+      if (!ctx.signal?.aborted && result.exitCode !== 0 && !result.timedOut && result.signal === null) {
+        parsed = await parseAttempt(result);
+        const remainingSec = timeoutSec > 0 ? timeoutSec - (Date.now() - startedAt) / 1000 : 0;
+        if (
+          gatewayWasNotReady(result, parsed) &&
+          (timeoutSec <= 0 || remainingSec >= GATEWAY_RETRY_MIN_REMAINING_SEC)
+        ) {
+          await ctx.onLog("stdout", "[hermes] Hermes gateway was still starting; trying once more\n");
+          parsed = null;
+          result = await runLocal(timeoutSec > 0 ? Math.floor(remainingSec) : 0);
+        }
+      }
     }
   } catch (err) {
     if (remote && remoteQuery) await killRemoteTree(remote.run, remoteQuery.pidFile, graceSec);
@@ -916,28 +974,14 @@ async function executeHermes(
   }
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
-  // The regexes above never match current Hermes output and read prose as cost.
-  // Take the session id from the lines Hermes prints, and tokens and cost from
-  // its own session record.
-  const metered = await resolveRun(result.stdout || "", result.stderr || "", hermesStoreEnv, resumeBaseline, remoteSessions);
-  parsed.sessionId = metered.sessionId ?? undefined;
-  parsed.usage = metered.usage;
-  parsed.costUsd = metered.costUsd;
-  if (metered.usage) {
+  parsed = parsed ?? (await parseAttempt(result));
+  const lastMetered = meteredBox.last;
+  if (lastMetered?.usage) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Usage: input ${metered.usage.inputTokens}, cached ${metered.usage.cachedInputTokens ?? 0}, output ${metered.usage.outputTokens}${metered.costUsd !== undefined ? `, cost $${metered.costUsd.toFixed(4)} (Hermes estimate)` : ""}\n`,
+      `[hermes] Usage: input ${lastMetered.usage.inputTokens}, cached ${lastMetered.usage.cachedInputTokens ?? 0}, output ${lastMetered.usage.outputTokens}${lastMetered.costUsd !== undefined ? `, cost $${lastMetered.costUsd.toFixed(4)} (Hermes estimate)` : ""}\n`,
     );
   }
-  const streamed = parseHermesStreamJsonOutput(`${result.stdout || ""}\n${result.stderr || ""}`);
-  if (!parsed.sessionId && (streamed.sessionId || checkpointedSessionId)) {
-    parsed.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
-  }
-  if (!parsed.response && streamed.response) parsed.response = streamed.response;
-  if (!parsed.usage && streamed.usage) parsed.usage = streamed.usage;
-  if (!parsed.errorMessage && streamed.errorMessage) parsed.errorMessage = streamed.errorMessage;
-
   await ctx.onLog(
     "stdout",
     `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
