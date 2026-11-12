@@ -3,11 +3,17 @@
  * and when, so a person can check a campaign before approving it. No host
  * hooks; the page passes the data, the actions and `linkFor`.
  */
-import type { ReactNode } from "react";
-import { Button, CircleAlert, Clock, Mail, Pill, Send, Users, formatDate, formatShortDate, tokens, tone, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
+import { useState, type ReactNode } from "react";
+import { Button, ChartColumn, CircleAlert, Clock, LayoutDashboard, Mail, Pill, Send, Tabs, Users, formatDate, formatShortDate, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, showApprovalBar, type NextSend } from "../detail.js";
 import { ApprovalBar, type ApproveInput } from "./approval-bar.js";
 import { StatusPill } from "./overview.js";
+import { PeopleTab, type AudiencePerson } from "./people.js";
+import { ResultsTab } from "./results.js";
+import type { CampaignState } from "../attention.js";
+import type { CampaignResults, PersonView } from "../people.js";
+
+export type DetailTab = "summary" | "people" | "emails" | "results";
 
 export interface DetailStep { position: number; delayDays: number; subject: string; body: string; htmlBody?: string | null; variant?: "a" | "b"; channel?: "email" | "sms" | "whatsapp" }
 
@@ -57,6 +63,15 @@ export interface CampaignDetailData {
     sample: Array<{ name: string | null; status: string; stepPosition: number; nextDueAt: string | null; waiting: boolean }>;
   };
   next: NextSend;
+  /** Where it stands in plain words (the same state the list shows). Absent from an older worker. */
+  state?: CampaignState | null;
+  /** Everyone enrolled, with where each person stands. Null when it could not be read. */
+  people?: PersonView[] | null;
+  /** More people are enrolled than `people` holds. */
+  peopleCapped?: boolean;
+  /** Before launch: who would get it. */
+  audiencePeople?: AudiencePerson[] | null;
+  results?: CampaignResults | null;
 }
 
 export interface DetailActions {
@@ -72,8 +87,6 @@ export interface DetailActions {
   onApprove: (input: ApproveInput) => void;
   onSendBack: (note: string) => void;
 }
-
-const APPROVAL_TONE: Record<string, ToneInput> = { "not-requested": "neutral", waiting: "warn", approved: "ok", "could-not-launch": "bad", launched: "ok", none: "neutral" };
 
 /** "All contacts", "Contacts tagged vip, hot", "Contacts at Northwind", "Northwind only". */
 export function audienceText(campaign: Pick<CampaignDetailData["campaign"], "audienceMode" | "audienceTags" | "client">): string {
@@ -114,22 +127,17 @@ function nextSendText(data: CampaignDetailData, numbers: Map<number, number>, no
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
-function enrolledLine(row: CampaignDetailData["enrolled"]["sample"][number], numbers: Map<number, number>): string {
-  const step = numbers.get(row.stepPosition) ?? row.stepPosition;
-  if (row.status === "done") return "finished";
-  if (row.status === "stopped") return "stopped";
-  if (row.waiting) return `step ${step}, waiting for the agent`;
-  if (row.nextDueAt && Date.parse(row.nextDueAt) > Date.now() + 5 * 60_000) return `step ${step} on ${formatShortDate(row.nextDueAt)}`;
-  return `step ${step}, due now`;
-}
-
-export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
+export function CampaignDetail({ data, actions, linkFor, now = new Date(), initialTab = "summary" }: {
   data: CampaignDetailData;
   actions: DetailActions;
   linkFor: (href: string) => Record<string, unknown>;
   now?: Date;
+  initialTab?: DetailTab;
 }) {
   const { campaign, approval, audience, enrolled } = data;
+  const [tab, setTab] = useState<DetailTab>(initialTab);
+  const draft = campaign.status === "draft";
+  const peopleCount = draft ? audience?.willGet ?? null : enrolled.total;
   const state = approvalState(campaign);
   const steps = orderedSteps(campaign.steps);
   const numbers = stepNumbers(campaign.steps);
@@ -166,9 +174,15 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
     <div style={{ display: "grid", gap: 18, minWidth: 0 }}>
       <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-          <StatusPill status={campaign.status} />
-          <Pill tone={APPROVAL_TONE[state.key] ?? "neutral"} dot>{state.label}</Pill>
+          {data.state ? <Pill tone={data.state.tone} dot>{data.state.label}</Pill> : <StatusPill status={campaign.status} />}
         </div>
+        {data.state?.key === "stuck" ? (
+          <Callout tone="bad">
+            {data.state.detail} <button type="button" onClick={() => setTab("people")} style={linkButton}>See who is held</button>
+          </Callout>
+        ) : data.state?.detail && data.state.key !== "could-not-launch" ? (
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, overflowWrap: "anywhere" }}>{data.state.detail}</p>
+        ) : null}
         {campaign.description ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>{campaign.description}</p> : null}
         {bar ? <ApprovalBar key={`${campaign.id}:${approval?.issueId}`} data={data} busy={actions.busy} onApprove={actions.onApprove} onSendBack={actions.onSendBack} /> : null}
         {state.key === "waiting" && !bar ? (
@@ -189,6 +203,19 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
         ) : null}
       </div>
 
+      <Tabs
+        tabs={[
+          { id: "summary", label: "Summary", icon: LayoutDashboard },
+          { id: "people", label: "People", icon: Users, count: peopleCount },
+          { id: "emails", label: "Emails", icon: Mail, count: steps.length || null },
+          { id: "results", label: "Results", icon: ChartColumn },
+        ]}
+        active={tab}
+        onChange={(id) => setTab(id as DetailTab)}
+      />
+
+      {tab === "summary" ? (
+        <>
       <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "minmax(86px, auto) minmax(0, 1fr)", gap: "10px 14px", fontSize: 13, lineHeight: 1.45 }}>
         <Fact term="Delivery">
           <strong style={{ fontWeight: 600 }}>{deliveryLabel(campaign.delivery)}</strong>
@@ -213,40 +240,28 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
         ) : null}
       </dl>
 
-      <Section icon={Users} title={campaign.status === "draft" ? "Who gets it" : "Who is enrolled"}>
-        {campaign.status === "draft" ? (
+      <Section icon={Users} title={draft ? "Who gets it" : "Who is in it"}>
+        {draft ? (
           audience ? (
-            <>
-              <p style={{ margin: 0, fontSize: 13 }}>
-                <strong>{plural(audience.willGet, "contact")}</strong> will get it
-                {audience.leftOut ? <span style={{ color: tokens.muted }}> · {audience.leftOut} left out (unsubscribed or bounced)</span> : null}
-                {audience.notReachable ? <span style={{ color: tokens.muted }}> · {audience.notReachable} left out (no mobile number or no opt-in)</span> : null}
-              </p>
-              {audience.sample.length ? <Names names={audience.sample} total={audience.willGet} /> : <Muted>Nobody matches this audience yet.</Muted>}
-            </>
+            <p style={{ margin: 0, fontSize: 13 }}>
+              <strong>{plural(audience.willGet, "contact")}</strong> will get it
+              {audience.leftOut ? <span style={{ color: tokens.muted }}> · {audience.leftOut} left out (unsubscribed or bounced)</span> : null}
+              {audience.notReachable ? <span style={{ color: tokens.muted }}> · {audience.notReachable} left out (no mobile number or no opt-in)</span> : null}
+              {audience.willGet === 0 ? <span style={{ color: tone("warn").fg }}> · nobody matches this audience yet</span> : null}
+            </p>
           ) : <Muted>The audience could not be read just now.</Muted>
         ) : (
           <>
             <p style={{ margin: 0, fontSize: 13 }}>
-              <strong>{enrolled.total}</strong> enrolled
+              <strong>{plural(enrolled.total, "person", "people")}</strong>
               <span style={{ color: tokens.muted }}> · {enrolled.running} in progress, {enrolled.done} finished, {enrolled.stopped} stopped</span>
             </p>
-            {enrolled.sample.length ? (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4, fontSize: 13 }}>
-                {enrolled.sample.map((row, index) => (
-                  <li key={index} style={{ display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap", minWidth: 0 }}>
-                    <span style={{ fontWeight: 550, overflowWrap: "anywhere" }}>{row.name ?? "A contact no longer in the CRM"}</span>
-                    <span style={{ color: tokens.muted }}>{enrolledLine(row, numbers)}</span>
-                  </li>
-                ))}
-                {enrolled.total > enrolled.sample.length ? <li style={{ color: tokens.muted }}>And {enrolled.total - enrolled.sample.length} more.</li> : null}
-              </ul>
-            ) : <Muted>Nobody is enrolled.</Muted>}
             {campaign.status === "paused" && audience && audience.willGet > enrolled.total ? (
               <Muted>{plural(audience.willGet - enrolled.total, "more contact")} match the audience now. Enroll new contacts adds them.</Muted>
             ) : null}
           </>
         )}
+        <p style={{ margin: 0 }}><button type="button" onClick={() => setTab("people")} style={linkButton}>{draft ? "See who would get it" : "See everyone and where they stand"}</button></p>
       </Section>
 
       {data.preflight && (data.preflight.errors.length > 0 || data.preflight.warnings.length > 0) ? (
@@ -262,7 +277,24 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
         </Section>
       ) : null}
 
-      <Section icon={Mail} title={`Steps, in order (${steps.length})`}>
+        </>
+      ) : null}
+
+      {tab === "people" ? (
+        <PeopleTab
+          people={data.people ?? null}
+          audience={data.audiencePeople ?? null}
+          capped={Boolean(data.peopleCapped)}
+          total={enrolled.total}
+          draft={draft}
+          numbers={numbers}
+          linkFor={linkFor}
+        />
+      ) : null}
+
+      {tab === "emails" ? (
+        <>
+      <Section icon={Mail} title={`Emails, in order (${steps.length})`}>
         {steps.length === 0 ? <Muted>No emails yet. Add the first one; a campaign needs at least one before approval.</Muted> : (
           <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 10 }}>
             {steps.map((step) => (
@@ -280,6 +312,10 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date() }: {
         )}
         {usesTokens ? <Muted>{"Words in double braces, like {{first_name}}, are filled in for each contact."}</Muted> : null}
       </Section>
+        </>
+      ) : null}
+
+      {tab === "results" ? <ResultsTab results={data.results ?? null} draft={draft} delivery={deliveryKey(campaign.delivery)} /> : null}
     </div>
   );
 }
@@ -303,14 +339,6 @@ function Email({ label, subject, body, html, channel }: { label: string | null; 
       ) : <span style={{ fontSize: 13, color: tone("warn").fg }}>No text yet.</span>}
       {html ? <span style={{ fontSize: 12, color: tokens.muted, display: "inline-flex", gap: 4, alignItems: "center" }}><Send size={12} aria-hidden="true" /> Sent as a designed (HTML) email; the text above is the plain version.</span> : null}
     </div>
-  );
-}
-
-function Names({ names, total }: { names: string[]; total: number }) {
-  return (
-    <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-      {names.join(", ")}{total > names.length ? `, and ${total - names.length} more` : ""}.
-    </p>
   );
 }
 
@@ -343,6 +371,8 @@ function Callout({ tone: t, children }: { tone: "warn" | "bad"; children: ReactN
     </p>
   );
 }
+
+const linkButton = { appearance: "none", border: "none", background: "transparent", padding: 0, font: "inherit", fontWeight: 600, color: tokens.primary, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 } as const;
 
 function Muted({ children }: { children: ReactNode }) {
   return <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{children}</p>;

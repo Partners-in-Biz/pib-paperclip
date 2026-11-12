@@ -34,6 +34,7 @@ import {
   insertReplyLog,
   insertStep,
   insertStepEvent,
+  insertStepEventOnce,
   isSuppressed,
   listCampaigns,
   listCampaignTemplates,
@@ -98,7 +99,9 @@ import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
-import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
+import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT, unfilledPlaceholders } from "./preflight.js";
+import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFacts } from "./attention.js";
+import { enrollmentPeople, peopleView, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
@@ -149,13 +152,13 @@ import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSen
 import { PLUGIN_ID } from "./namespace.js";
 import { campaignsGrowthStore, campaignsGrowthToolsHost } from "./growth-host.js";
 import { linkCampaignToExperiment, measureExperimentsJob } from "./growth-measure.js";
-import { eventCounts, eventDays } from "./db.js";
+import { enrollmentsWithFailedSend, eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
 import { approverUserId, assigneeFields, workOwner } from "./owner.js";
-import { approvalOrigin, reviseOrigin, stepOrigin } from "./origins.js";
+import { approvalOrigin, handSentKey, reviseOrigin, stepOrigin } from "./origins.js";
 import { announceSuppression, onContactSuppressed, reannounceSuppressions, suppressAddress, suppressionEvents, suppressionPayload } from "./suppress.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
@@ -408,29 +411,72 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const companyId = requiredCompany(context);
   const scope = readClientScope(params) ?? null;
   const campaigns = await listCampaigns(ctx, companyId, scope);
+  const config = await readConfig(ctx, companyId).catch(() => ({}));
+  const now = new Date();
+  const ids = new Set(campaigns.map((campaign) => campaign.id));
+  const [counts, days, suppressed, attention] = await Promise.all([
+    eventCounts(ctx, companyId).catch(() => []),
+    eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
+    suppressionCount(ctx, companyId).catch(() => 0),
+    attentionFacts(ctx, companyId),
+  ]);
+  const byCampaign = eventTotals(counts, ids);
   const result = [];
   for (const campaign of campaigns) {
     const steps = await listSteps(ctx, campaign.id);
     const stats = await campaignStats(ctx, campaign.id);
     const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
-    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null });
+    const state = campaignState(stateFacts(campaign, steps, stats, approval, byCampaign[campaign.id]?.sent ?? 0, attention), now);
+    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null, state });
   }
-  const config = await readConfig(ctx, companyId).catch(() => ({}));
-  const now = new Date();
-  const ids = new Set(campaigns.map((campaign) => campaign.id));
-  const [counts, days, suppressed] = await Promise.all([
-    eventCounts(ctx, companyId).catch(() => []),
-    eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
-    suppressionCount(ctx, companyId).catch(() => 0),
-  ]);
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
   return {
     campaigns: result,
     suppressed,
-    series: { weeks: weeklySends(days, now, 12, ids), byCampaign: eventTotals(counts, ids) },
+    series: { weeks: weeklySends(days, now, 12, ids), byCampaign },
     settingsSaved: Object.keys(config).length > 0,
     client: scope ? await clientDetails(ctx, companyId, scope, campaigns) : null,
     messaging: setup ? { sms: setup.sms, whatsapp: setup.whatsapp, windows: describeWindows(setup.config.windows) } : null,
+  };
+}
+
+/** What the list and the "Needs attention" strip need beyond the campaign rows: open step tasks, failed sends and drafts a person sent back. A part that cannot be read counts as nothing wrong, so the page still loads. */
+interface AttentionFacts { tasks: Map<string, TaskCounts>; failed: Map<string, number>; revise: Set<string> }
+
+async function attentionFacts(ctx: PluginContext, companyId: string): Promise<AttentionFacts> {
+  const [tasks, failed, revise] = await Promise.all([
+    stepTaskCounts(ctx, companyId).catch(() => new Map<string, TaskCounts>()),
+    enrollmentsWithFailedSend(ctx).then((rows) => failedByCampaign(rows.filter((row) => row.companyId === companyId))).catch(() => new Map<string, number>()),
+    openReviseCampaigns(ctx, companyId).catch(() => new Set<string>()),
+  ]);
+  return { tasks, failed, revise };
+}
+
+function stateFacts(
+  campaign: CampaignDraft,
+  steps: CampaignStepDraft[],
+  stats: { enrolled: number; running: number; done: number },
+  approval: { status: string; assigneeAgentId?: string | null } | null,
+  sent: number,
+  attention: AttentionFacts,
+): CampaignFacts {
+  const numbers = stepNumbers(steps);
+  return {
+    status: campaign.status,
+    stepCount: numbers.size,
+    approvalIssueId: campaign.approvalIssueId ?? null,
+    approvalStatus: approval?.status ?? null,
+    approvalWithAgent: Boolean(approval?.assigneeAgentId),
+    launchError: campaign.launchError ?? null,
+    stats,
+    sent,
+    tasks: attention.tasks.get(campaign.id) ?? null,
+    failedSends: attention.failed.get(campaign.id) ?? 0,
+    // Only a running campaign is judged on leftover placeholders here: a draft's are caught by the check before approval.
+    placeholders: campaign.status === "active"
+      ? steps.map((step) => ({ number: numbers.get(step.position) ?? step.position, items: unfilledPlaceholders(step) })).filter((entry) => entry.items.length > 0)
+      : [],
+    reviseOpen: attention.revise.has(campaign.id),
   };
 }
 
@@ -458,11 +504,16 @@ async function clientDetails(ctx: PluginContext, companyId: string, scope: NonNu
  */
 async function campaignDetail(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
-  const [steps, stats, enrollments, approval] = await Promise.all([
+  const now = new Date();
+  const [steps, stats, enrollments, approval, peopleRows, results, attention] = await Promise.all([
     listSteps(ctx, campaign.id),
     campaignStats(ctx, campaign.id),
     enrollmentViews(ctx, campaign.id),
     campaign.approvalIssueId ? ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : Promise.resolve(null),
+    // The People and Results tabs. A read that fails shows as "could not be read", never as nobody or nothing.
+    enrollmentPeople(ctx, companyId, campaign.id).catch(() => null),
+    resultRows(ctx, companyId, campaign.id).catch(() => null),
+    attentionFacts(ctx, companyId),
   ]);
   // The same resolution (and country) as the approve action, so the hash the bar sends matches when nothing changed.
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
@@ -508,6 +559,14 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       sample: enrollments.slice(0, 5).map((row) => ({ name: row.name, status: row.status, stepPosition: row.stepPosition, nextDueAt: row.nextDueAt, waiting: row.waiting })),
     },
     next: nextSend(running),
+    state: campaignState(stateFacts(campaign, steps, stats, approval, (results ?? []).filter((row) => row.eventType === "sent").reduce((total, row) => total + row.count, 0), attention), now),
+    people: peopleRows ? peopleView(peopleRows, steps, now) : null,
+    peopleCapped: (peopleRows?.length ?? 0) < stats.enrolled,
+    // Before launch nobody is enrolled: the People tab lists who would get it (the same audience the approver sees).
+    audiencePeople: campaign.status === "draft" && audience
+      ? audience.eligible.slice(0, 500).map((contact) => ({ contactId: contact.id, name: contact.name, email: campaignAddress(contact.emails) ?? null }))
+      : null,
+    results: results ? resultsView(steps, results) : null,
   };
 }
 
@@ -1019,6 +1078,17 @@ async function closeStep(ctx: PluginContext, enrollment: EnrollmentDraft, status
     await saveEnrollment(ctx, { ...enrollment, status: "stopped", nextDueAt: null, openIssueId: null });
     return;
   }
+  // The agent sent this step by hand: count it, once, so Results and the A/B numbers include emails sent from a task.
+  await insertStepEventOnce(ctx, {
+    companyId: enrollment.companyId,
+    campaignId: enrollment.campaignId,
+    enrollmentId: enrollment.id,
+    stepPosition: enrollment.stepPosition,
+    eventType: "sent",
+    variant: enrollment.variant ?? "a",
+    sourceKey: handSentKey(enrollment.id, enrollment.stepPosition),
+    meta: { by: "task" },
+  }).catch((error) => ctx.logger.warn("A hand-sent campaign step could not be counted", { enrollmentId: enrollment.id, error: error instanceof Error ? error.message : String(error) }));
   const steps = await listSteps(ctx, enrollment.campaignId);
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }
