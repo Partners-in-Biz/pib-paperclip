@@ -7,6 +7,7 @@ import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
 import { captionClipAction, type CaptionDeps } from "./auto-caption.js";
+import { musicAction, type MusicDeps } from "./music.js";
 import { voiceoverAction, type VoiceoverDeps } from "./voiceover.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
@@ -20,6 +21,7 @@ export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-cancel-render",
   "video-edit-delete",
   "video-edit-voiceover",
+  "video-edit-music",
 ] as const;
 
 export const isVideoEditTool = (name: string): boolean => (VIDEO_EDIT_TOOL_NAMES as readonly string[]).includes(name);
@@ -31,7 +33,7 @@ export async function runVideoEditTool(
   params: Record<string, unknown>,
   run: Pick<ToolRunContext, "companyId" | "agentId"> & { runId?: string },
   work: { projectId: string | null; issueId?: string | null },
-  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps } = {},
+  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps; music?: MusicDeps } = {},
 ): Promise<unknown> {
   const companyId = run.companyId;
   const actor = { agentId: run.agentId };
@@ -59,6 +61,8 @@ export async function runVideoEditTool(
     case "video-edit-voiceover":
       // The run id lets the per-run spend limit apply, like studio-generate.
       return voiceoverAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId ?? null, issueId: work.issueId ?? null }, deps.voiceover);
+    case "video-edit-music":
+      return musicAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId ?? null, issueId: work.issueId ?? null }, deps.music);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }

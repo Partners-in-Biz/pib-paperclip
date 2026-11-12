@@ -10,6 +10,7 @@ import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
 import { CAPTION_STYLES, EASES, LIMITS, SIZES, TRANSITIONS } from "./video-edit/timeline.js";
 import { DEFAULT_VOICE, XAI_VOICES } from "./video-edit/tts.js";
+import { MAX_PROMPT_CHARS, MUSIC_DEFAULT_SECONDS, MUSIC_MAX_SECONDS, STABLE_AUDIO_MONTHLY_USD_CAP, STABLE_AUDIO_USD_PER_GENERATION } from "./music/stable-audio-price.js";
 import { MAX_SCRIPT_CHARS, ttsCredits } from "./video-edit/tts-price.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
@@ -119,6 +120,21 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
       at: { type: "number", minimum: 0, description: "Where on the timeline it starts, in seconds; default 0 (moved past any sound already there)" } as JsonSchema,
       name: text("Optional Library name for the sound"),
       provider: text("Optional text to speech provider key, e.g. xai; default: the company's setting"),
+      issueId: ISSUE,
+    }),
+  },
+  {
+    name: "video-edit-music",
+    displayName: "Add music to a video edit",
+    description:
+      `Make instrumental music from a prompt with Stable Audio (up to ${MUSIC_MAX_SECONDS} seconds), save it as a sound asset in the Library and put it on the edit's audio track at \`at\` seconds, at the revision you read. Costs USD ${STABLE_AUDIO_USD_PER_GENERATION.toFixed(2)} per track and counts against a shared limit of USD ${STABLE_AUDIO_MONTHLY_USD_CAP} a month across Studio, and against the company cap and your run's limit. It can take over 20 seconds: then it answers status "synthesizing" and the music lands in the Library without being added to the edit; do not start it again, add it with video-edit-apply-ops. Your own Library audio costs nothing.`,
+    parametersSchema: schema(["editId", "baseRevision", "prompt"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      prompt: { type: "string", minLength: 1, maxLength: MAX_PROMPT_CHARS, description: "The music to make: genre, mood, instruments, tempo" } as JsonSchema,
+      duration: { type: "number", minimum: 1, maximum: MUSIC_MAX_SECONDS, description: `Length in seconds; default ${MUSIC_DEFAULT_SECONDS}` } as JsonSchema,
+      at: { type: "number", minimum: 0, description: "Where on the timeline it starts, in seconds; default 0 (moved past any sound already there)" } as JsonSchema,
+      name: text("Optional Library name for the music"),
       issueId: ISSUE,
     }),
   },

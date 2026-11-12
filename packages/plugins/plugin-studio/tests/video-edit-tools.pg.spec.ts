@@ -18,7 +18,7 @@ const BUCKET: PrivateBucket = { accountId: "acct", bucket: "b", accessKeyId: "k"
 
 describe("video edit tool declarations", () => {
   const tools = STUDIO_TOOLS.filter((t) => t.name.startsWith("video-edit-"));
-  it("declares the eight tools, registered through the manifest", () => {
+  it("declares the nine tools, registered through the manifest", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...VIDEO_EDIT_TOOL_NAMES].sort());
     expect(manifest.tools).toBe(STUDIO_TOOLS);
     expect(manifest.capabilities).toContain("agent.tools.register");
