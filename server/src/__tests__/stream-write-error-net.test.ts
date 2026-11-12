@@ -72,7 +72,7 @@ describe("stream write error net", () => {
       httpIntegration: () => ({ name: "Http" }),
       onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
     };
-    const opts = buildSentryInitOptions("https://k@example.com/1", sentry) as any;
+    const opts = buildSentryInitOptions("https://k@example.com/1", sentry) as unknown as { integrations: (d: { name: string }[]) => { name: string }[] };
     const out = opts.integrations([{ name: "OnUncaughtException" }, { name: "OnUnhandledRejection" }, { name: "Other" }]);
     const names = out.map((i: { name: string }) => i.name);
     expect(names).not.toContain("OnUncaughtException");
