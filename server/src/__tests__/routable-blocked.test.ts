@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   deliverAgentUnblockNotification,
+  isRunBackedWakeResult,
   ROUTABLE_BLOCKED_ROLLOUT_AT,
 } from "../services/routable-blocked.js";
 
@@ -41,30 +42,24 @@ describe("routable blocked notifications", () => {
     expect(markNotified).toHaveBeenCalledWith(now);
   });
 
-  it("records delivery for a deferred (admitted, not skipped) receipt", async () => {
-    const markNotified = vi.fn(async () => undefined);
-    await expect(deliverAgentUnblockNotification({
-      issue: blockedIssue(),
-      wakeup: vi.fn(async () => ({ status: "deferred_issue_execution" })),
-      markNotified,
-    })).resolves.toBe(true);
-    expect(markNotified).toHaveBeenCalledTimes(1);
-  });
-
-  // PAR-9390 AC 1: a skipped wake reached nobody, so blockedOwnerNotifiedAt stays null.
+  // PAR-10086 AC 3: the owner counts as notified only when a run exists for the wake.
   it.each([
-    ["a skipped receipt", { status: "skipped" }],
-    ["no run and no receipt", null],
-  ])("leaves the owner unnotified after %s", async (_name, result) => {
+    ["a returned run", true, queuedRun],
+    ["a receipt with a runId", true, { status: "coalesced", runId: queuedRun.id }],
+    ["a deferred receipt with no runId", false, { status: "deferred_issue_execution", runId: null }],
+    ["a skipped receipt", false, { status: "skipped", runId: null }],
+    ["no run and no receipt", false, null],
+  ] as const)("treats %s as notified=%s", async (_name, notified, result) => {
+    expect(isRunBackedWakeResult(result)).toBe(notified);
     const issue = blockedIssue();
     const markNotified = vi.fn(async (at: Date) => { issue.blockedOwnerNotifiedAt = at as never; });
     await expect(deliverAgentUnblockNotification({
       issue,
       wakeup: vi.fn(async () => result),
       markNotified,
-    })).resolves.toBe(false);
-    expect(markNotified).not.toHaveBeenCalled();
-    expect(issue.blockedOwnerNotifiedAt).toBeNull();
+    })).resolves.toBe(notified);
+    expect(markNotified).toHaveBeenCalledTimes(notified ? 1 : 0);
+    expect(issue.blockedOwnerNotifiedAt === null).toBe(!notified);
   });
 
   it("leaves pre-existing blocked issues untouched", async () => {
