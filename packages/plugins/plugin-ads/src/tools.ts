@@ -29,7 +29,11 @@ const creative: JsonSchema = {
 const proposalFields: Record<string, JsonSchema> = {
   accountId: str("The ad account's id from list-ad-accounts (the plugin's id, not the platform's). Needed for create_campaign, change_budget, create_ad_set, create_ad_creative, create_ad, create_ad_group, add_keywords and create_responsive_search_ad."),
   name: str("create_campaign: the new campaign's name. create_ad_set: the new ad set's name. create_ad_creative: the creative's name. create_ad: the ad's name. create_ad_group: the new ad group's name. creative_check: a label for the copy."),
-  objective: str("create_campaign: Meta OUTCOME_LEADS, OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT or OUTCOME_APP_PROMOTION; Google SEARCH (the only Google type version 0.1 creates). Default OUTCOME_LEADS / SEARCH."),
+  objective: str("create_campaign: Meta OUTCOME_LEADS, OUTCOME_TRAFFIC, OUTCOME_SALES, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT or OUTCOME_APP_PROMOTION; Google SEARCH, or MULTI_CHANNEL for an App campaign (app installs; needs appStore, appId and locationIds). Default OUTCOME_LEADS / SEARCH."),
+  appStore: oneOf(["GOOGLE_APP_STORE", "APPLE_APP_STORE"], "create_campaign, Google MULTI_CHANNEL: the store the app is in."),
+  appId: str("create_campaign, Google MULTI_CHANNEL: the Play package name (com.example.app) or the App Store's numeric id."),
+  targetInstallCostMinor: int("create_campaign, Google MULTI_CHANNEL: target cost per install in minor units (at most the daily budget). Leave out for as many installs as the budget buys."),
+  locationIds: list("create_campaign, Google MULTI_CHANNEL: Google geo target ids where the ads may show (2710 is South Africa). At least one."),
   capMinor: int("create_campaign: hard cap for the whole campaign in minor units (at least one day of its budget). Recorded when the owner approves and the campaign is created (paused); without a cap the campaign cannot be switched on or given more budget."),
   dailyBudgetMinor: int("create_campaign: the daily budget in minor units of the account's currency (15000 means 150.00)."),
   lifetimeBudgetMinor: int("create_ad_set: the total budget in minor units for the lifetime of the ad set."),

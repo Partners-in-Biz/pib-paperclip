@@ -37,6 +37,12 @@ export function numberLines(p: ProposalRow, currency: string): string[] {
     const audience = typeof x.audience === "string" ? x.audience : null;
     if (audience) lines.push(`Audience (to build in the platform): ${audience}`);
     if (Array.isArray(x.specialAdCategories) && x.specialAdCategories.length) lines.push(`Special ad categories: ${x.specialAdCategories.join(", ")}`);
+    const app = x.app as { appStore: string; appId: string; targetInstallCostMinor: number | null; locationIds: string[] } | null | undefined;
+    if (app) {
+      lines.push(`App: **${app.appId}** on ${app.appStore === "APPLE_APP_STORE" ? "the Apple App Store" : "Google Play"}`);
+      lines.push(app.targetInstallCostMinor ? `Bidding: target cost per install **${money(app.targetInstallCostMinor, currency)}**` : "Bidding: as many installs as the budget buys (no target cost per install)");
+      lines.push(`Shows in: Google location ids ${app.locationIds.join(", ")}`);
+    }
   } else if (p.kind === "change_budget") {
     lines.push(`Campaign: **${String(x.campaignName)}** on ${String(x.accountName)} (${String(x.platform)}), currently ${String(x.campaignStatus)}`);
     lines.push(`Daily budget: ${money(x.currentDailyBudgetMinor, currency)} to **${money(x.newDailyBudgetMinor, currency)}**`);
