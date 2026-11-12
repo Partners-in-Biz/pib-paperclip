@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
-import { runInternalLinkAudit, type LinkAuditResult, type SiteFetcher } from "../src/checks/site.js";
+import { clearLinkAuditCache, runInternalLinkAudit, type LinkAuditResult, type SiteFetcher } from "../src/checks/site.js";
 import { internalLinkAuditTool } from "../src/service/checks.js";
 import type { Env } from "../src/service/common.js";
 
@@ -16,7 +16,7 @@ function fakeSite(count: number, delays: { page: number; sitemap?: number }) {
       setTimeout(() => resolve({ status, url, redirects: [], headers: {}, text, ms }), ms));
   const fetcher: SiteFetcher = async (url) => {
     const path = new URL(url).pathname;
-    if (path === "/robots.txt") return reply(url, 404, "", 5);
+    if (path === "/robots.txt" || path === "/sitemap_index.xml") return reply(url, 404, "", 5);
     if (path === "/sitemap.xml") {
       const locs = paths.map((p) => `<url><loc>${ORIGIN}${p}</loc></url>`).join("");
       return reply(url, 200, `<urlset>${locs}<url><loc>${ORIGIN}/p0</loc></url></urlset>`, delays.sitemap ?? 5);
@@ -43,6 +43,7 @@ async function timed<T>(run: () => Promise<T>): Promise<{ result: T; elapsed: nu
 describe("internal link audit within the 10 s gateway limit", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    clearLinkAuditCache();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -67,16 +68,17 @@ describe("internal link audit within the 10 s gateway limit", () => {
     const r1: LinkAuditResult = first.result;
     expect(r1.partial).toBe(true);
     expect(r1.pagesRequested).toBe(40);
-    expect(r1.pagesCrawled).toBe(20);
-    expect(r1.nextStartAt).toBe(20);
-    expect(r1.note).toContain("startAt 20 (nextStartAt)");
+    // The home page loads while the sitemap is read (PAR-9952), then 10 at a time: 1 + 20 pages.
+    expect(r1.pagesCrawled).toBe(21);
+    expect(r1.nextStartAt).toBe(21);
+    expect(r1.note).toContain("startAt 21 (nextStartAt)");
     expect(r1).not.toHaveProperty("orphans");
     expect(r1.findings.filter((f) => f.category === "links")).toEqual([]);
 
     const second = await timed(() => runInternalLinkAudit(site.fetcher, { siteUrl: ORIGIN, maxPages: 40, startAt: r1.nextStartAt! }));
     expect(second.elapsed).toBeLessThanOrEqual(9_500);
     const r2 = second.result;
-    expect(r2.startAt).toBe(20);
+    expect(r2.startAt).toBe(21);
     expect(r2.pagesCrawled).toBeGreaterThan(0);
     expect(r2.crawledPages.filter((p) => r1.crawledPages.includes(p))).toEqual([]);
     expect(r2.crawledPages).not.toContain(`${ORIGIN}/`);
@@ -87,10 +89,11 @@ describe("internal link audit within the 10 s gateway limit", () => {
   it("says so when the sitemap itself times out, with nextStartAt 0", async () => {
     const { fetcher, fetched } = fakeSite(5, { page: 10, sitemap: 7_000 });
     const { result, elapsed } = await timed(() => runInternalLinkAudit(fetcher, { siteUrl: ORIGIN }));
-    expect(elapsed).toBeLessThanOrEqual(5_500);
+    expect(elapsed).toBeLessThanOrEqual(6_500);
     expect(result).toMatchObject({ partial: true, sitemapTimedOut: true, nextStartAt: 0, pagesCrawled: 0 });
     expect(result.note).toContain("sitemap did not load");
-    expect(fetched).toEqual([]);
+    // Only the home page, preloaded while the sitemap was read; no page counts as crawled.
+    expect(fetched).toEqual(["/"]);
   });
 
   it("tool: a partial run returns no orphans or link findings and stores nothing", async () => {
@@ -101,7 +104,7 @@ describe("internal link audit within the 10 s gateway limit", () => {
     expect(result).not.toHaveProperty("orphans");
     expect(result.findings.some((f) => f.category === "links")).toBe(false);
     expect(result.stored).toEqual({ recorded: 0, resolved: 0 });
-    expect(result.nextStartAt).toBe(20);
+    expect(result.nextStartAt).toBe(21);
     expect(result.note).toContain("nextStartAt");
   });
 });

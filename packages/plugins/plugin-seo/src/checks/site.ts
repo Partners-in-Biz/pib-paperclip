@@ -127,27 +127,66 @@ export interface SitemapCheckResult {
   urls: string[];
 }
 
+/** Where sitemaps usually live when robots.txt names none: core, Yoast / Rank Math, WordPress core. */
+export const SITEMAP_FALLBACKS = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml"];
+const SITEMAP_MAX_CHARS = 5_000_000;
+
 export async function resolveSitemapUrl(fetcher: SiteFetcher, siteUrl: string, explicit?: string | null): Promise<string> {
   if (explicit) return absoluteUrl(explicit, siteUrl);
   try {
     const robots = await runRobotsCheck(fetcher, siteUrl);
     if (robots.robots.sitemaps[0]) return absoluteUrl(robots.robots.sitemaps[0], siteUrl);
   } catch {
-    // fall back to the conventional location
+    // fall back to the conventional locations
   }
-  return `${originOf(siteUrl)}/sitemap.xml`;
+  const origin = originOf(siteUrl);
+  // robots.txt names no sitemap: take the first conventional location that answers.
+  for (const path of SITEMAP_FALLBACKS) {
+    try {
+      const res = await fetcher(`${origin}${path}`, { maxChars: SITEMAP_MAX_CHARS });
+      if (res.status < 400) return `${origin}${path}`;
+    } catch {
+      // try the next location
+    }
+  }
+  return `${origin}/sitemap.xml`;
+}
+
+/** Memoise GETs by URL and size for the life of one check, so a probe and the real read share one fetch. */
+export function memoFetcher(fetcher: SiteFetcher): SiteFetcher {
+  const seen = new Map<string, Promise<SafeFetchResult>>();
+  return (url, init) => {
+    if (init?.method && init.method !== "GET") return fetcher(url, init);
+    const key = `${url}|${init?.maxChars ?? ""}|${JSON.stringify(init?.headers ?? {})}`;
+    let hit = seen.get(key);
+    if (!hit) {
+      hit = fetcher(url, init);
+      seen.set(key, hit);
+    }
+    return hit;
+  };
 }
 
 export async function runSitemapCheck(
-  fetcher: SiteFetcher,
-  input: { siteUrl: string; sitemapUrl?: string | null; sample?: number; deadlineMs?: number },
+  siteFetcher: SiteFetcher,
+  input: {
+    siteUrl: string;
+    sitemapUrl?: string | null;
+    sample?: number;
+    deadlineMs?: number;
+    maxChildren?: number;
+    /** Called with each child sitemap's URLs as it arrives (index = position in the sitemap index). */
+    onChildUrls?: (index: number, urls: string[]) => void;
+  },
 ): Promise<SitemapCheckResult> {
+  // Sitemap discovery may already have read the sitemap: reuse that response.
+  const fetcher = memoFetcher(siteFetcher);
   const deadlineAt = Date.now() + (input.deadlineMs ?? 18_000);
   const sitemapUrl = await resolveSitemapUrl(fetcher, input.siteUrl, input.sitemapUrl);
   const findings: CheckFinding[] = [];
   const add = (severity: CheckFinding["severity"], finding: string, url: string | null = sitemapUrl) =>
     findings.push({ category: "sitemap", severity, url, finding });
-  const res = await fetcher(sitemapUrl, { maxChars: 5_000_000 });
+  const res = await fetcher(sitemapUrl, { maxChars: SITEMAP_MAX_CHARS });
   if (res.status >= 400) {
     add("high", `Sitemap returns HTTP ${res.status}`);
     return { sitemapUrl, status: res.status, kind: "unknown", totalUrls: 0, childSitemaps: [], sampleUrls: [], spotChecked: [], partial: false, findings, urls: [] };
@@ -157,9 +196,15 @@ export async function runSitemapCheck(
   let partial = false;
   const childSitemaps = parsed.sitemaps;
   if (parsed.kind === "index") {
-    const children = childSitemaps.slice(0, 3);
-    if (childSitemaps.length > 3) partial = true;
-    const fetched = await mapLimit(children, 3, deadlineAt, async (child) => parseSitemap((await fetcher(absoluteUrl(child, input.siteUrl), { maxChars: 5_000_000 })).text).urls);
+    const maxChildren = Math.max(input.maxChildren ?? 3, 1);
+    const children = childSitemaps.slice(0, maxChildren);
+    if (childSitemaps.length > maxChildren) partial = true;
+    // All children at once: each is one slow round trip on a typical WordPress site.
+    const fetched = await mapLimit(children, Math.min(children.length, 10), deadlineAt, async (child) => {
+      const childUrls = parseSitemap((await fetcher(absoluteUrl(child, input.siteUrl), { maxChars: SITEMAP_MAX_CHARS })).text).urls;
+      input.onChildUrls?.(children.indexOf(child), childUrls);
+      return childUrls;
+    });
     if (fetched.timedOut) partial = true;
     urls = fetched.results.flatMap((r) => r ?? []);
   }
@@ -259,7 +304,131 @@ export async function runCrawlerSim(fetcher: SiteFetcher, url: string): Promise<
 /** Agent MCP calls time out after 10 s in the tool gateway; 1 s is left for overhead. */
 export const LINK_AUDIT_MAX_MS = 9_000;
 /** The sitemap (robots.txt, sitemap, child sitemaps) gets at most this; the crawl gets the rest. */
-export const LINK_AUDIT_SITEMAP_MS = 5_000;
+export const LINK_AUDIT_SITEMAP_MS = 6_000;
+
+/** Pages the link audit loads at once. */
+export const LINK_AUDIT_CONCURRENCY = 10;
+/**
+ * Pages loaded at once when less than LINK_AUDIT_SHORT_CRAWL_MS is left after the sitemap (a cold sitemap
+ * read on a slow site). Live on agristudies.co.za (PAR-9952), 4-6 s left: 10 at once finished 0-1 pages
+ * (each slowed to 5.5 s), 4 at once finished 4.
+ */
+export const LINK_AUDIT_SHORT_CRAWL_CONCURRENCY = 4;
+export const LINK_AUDIT_SHORT_CRAWL_MS = 7_500;
+/** Child sitemaps the link audit reads (all at once); more are reported as a partial sitemap. */
+export const LINK_AUDIT_MAX_CHILD_SITEMAPS = 25;
+/** A cached read or page load still pending after this is dropped and started again (a hung fetch never pins the cache). */
+export const LINK_AUDIT_PENDING_MAX_MS = 60_000;
+/** How long a fully read sitemap is reused between paged link-audit calls. */
+export const LINK_AUDIT_SITEMAP_CACHE_MS = 30 * 60_000;
+const SITEMAP_CACHE_MAX_ENTRIES = 50;
+
+/**
+ * Sitemaps read by the link audit, keyed by site origin and sitemap URL (PAR-9952). Paged calls
+ * (startAt = nextStartAt) reuse the list instead of re-reading a slow sitemap index on every call,
+ * which keeps the crawl list stable between pages and leaves the whole budget for the crawl. A read
+ * still running when a call times out stays here, so the next call picks it up. Only complete reads
+ * are kept once settled.
+ */
+const sitemapCache = new Map<string, { expiresAt: number; result: Promise<SitemapCheckResult> }>();
+
+/** How long a crawled page's links are reused by the next paged call. */
+export const LINK_AUDIT_PAGE_CACHE_MS = 5 * 60_000;
+const PAGE_CACHE_MAX_ENTRIES = 1_000;
+
+/**
+ * Links per crawled page, keyed by URL (PAR-9952). A page load still running when a call hits its
+ * deadline is not wasted: it finishes in the background and the next paged call reads it from here.
+ * Only links are kept, never page bodies.
+ */
+const pageCache = new Map<string, { expiresAt: number; result: Promise<{ page: string; links: ReturnType<typeof extractLinks> }> }>();
+
+function crawlPage(fetcher: SiteFetcher, page: string): Promise<{ page: string; links: ReturnType<typeof extractLinks> }> {
+  const hit = pageCache.get(page);
+  if (hit && hit.expiresAt > Date.now()) return hit.result;
+  if (hit) pageCache.delete(page);
+  const result = fetcher(page, { headers: { Accept: "text/html,application/xhtml+xml" }, maxChars: 1_500_000 })
+    .then((res) => ({ page, links: res.status < 400 ? extractLinks(res.text, res.url) : [] }));
+  const entry = { expiresAt: Date.now() + LINK_AUDIT_PENDING_MAX_MS, result };
+  pageCache.set(page, entry);
+  while (pageCache.size > PAGE_CACHE_MAX_ENTRIES) pageCache.delete(pageCache.keys().next().value!);
+  result.then(
+    () => {
+      if (pageCache.get(page) === entry) entry.expiresAt = Date.now() + LINK_AUDIT_PAGE_CACHE_MS;
+    },
+    () => {
+      if (pageCache.get(page) === entry) pageCache.delete(page);
+    },
+  );
+  return result;
+}
+
+/**
+ * While a cold sitemap index is read, start loading the first `count` crawl-list pages as soon as the
+ * child sitemaps they come from have arrived, so the first call crawls more than the home page (PAR-9952).
+ * The crawl list is the home page, then the de-duplicated child URLs in index order, so once children
+ * 0..i are in, the start of the list is fixed.
+ */
+function warmFirstPages(fetcher: SiteFetcher, home: string, count: number): (index: number, urls: string[]) => void {
+  const byChild: Array<string[] | undefined> = [];
+  const warmed = new Set<string>();
+  const want = Math.min(Math.max(count, 0), LINK_AUDIT_SHORT_CRAWL_CONCURRENCY);
+  return (index, urls) => {
+    byChild[index] = urls;
+    const seen = new Set<string>([home]);
+    for (let i = 0; warmed.size < want && byChild[i]; i += 1) {
+      for (const url of byChild[i]!) {
+        const page = comparableUrl(url);
+        if (!page || seen.has(page)) continue;
+        seen.add(page);
+        if (!warmed.has(page)) {
+          warmed.add(page);
+          void crawlPage(fetcher, page).catch(() => null);
+        }
+        if (warmed.size >= want) break;
+      }
+    }
+  };
+}
+
+/** Forget cached sitemaps and crawled pages (tests). */
+export function clearLinkAuditCache(): void {
+  sitemapCache.clear();
+  pageCache.clear();
+}
+
+function cachedLinkAuditSitemap(
+  fetcher: SiteFetcher,
+  siteUrl: string,
+  explicit: string | null | undefined,
+  onChildUrls?: (index: number, urls: string[]) => void,
+): Promise<SitemapCheckResult> {
+  const key = `${originOf(siteUrl)}|${explicit ? absoluteUrl(explicit, siteUrl) : ""}`;
+  const now = Date.now();
+  const hit = sitemapCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.result;
+  if (hit) sitemapCache.delete(key);
+  const memo = memoFetcher(fetcher);
+  if (!explicit) {
+    // Read robots.txt and the most common sitemap index at the same time; resolveSitemapUrl reuses the response.
+    void memo(`${originOf(siteUrl)}/sitemap_index.xml`, { maxChars: SITEMAP_MAX_CHARS }).catch(() => null);
+  }
+  const result = runSitemapCheck(memo, { siteUrl, sitemapUrl: explicit, sample: 0, deadlineMs: LINK_AUDIT_SITEMAP_CACHE_MS, maxChildren: LINK_AUDIT_MAX_CHILD_SITEMAPS, onChildUrls });
+  const entry = { expiresAt: Date.now() + LINK_AUDIT_PENDING_MAX_MS, result };
+  sitemapCache.set(key, entry);
+  while (sitemapCache.size > SITEMAP_CACHE_MAX_ENTRIES) sitemapCache.delete(sitemapCache.keys().next().value!);
+  result.then(
+    (r) => {
+      if (sitemapCache.get(key) !== entry) return;
+      if (r.partial || r.status >= 400 || r.urls.length === 0) sitemapCache.delete(key);
+      else entry.expiresAt = Date.now() + LINK_AUDIT_SITEMAP_CACHE_MS;
+    },
+    () => {
+      if (sitemapCache.get(key) === entry) sitemapCache.delete(key);
+    },
+  );
+  return result;
+}
 
 export interface LinkAuditResult {
   sitemapUrl: string | null;
@@ -270,8 +439,10 @@ export interface LinkAuditResult {
   partial: boolean;
   sitemapTimedOut: boolean;
   startAt: number;
-  /** Pass as startAt to continue; null when nothing is left. */
+  /** Pass as startAt to continue; null when nothing is left. Always greater than startAt when pages remain. */
   nextStartAt: number | null;
+  /** Pages skipped because the first page of the batch did not load within the budget (the cursor still advances). */
+  skippedPages: string[];
   totalInternalLinks: number;
   /** Only on a complete crawl (partial: false): on a partial crawl orphans are not knowable. */
   orphans?: string[];
@@ -284,17 +455,20 @@ export interface LinkAuditResult {
 
 export async function runInternalLinkAudit(
   fetcher: SiteFetcher,
-  input: { siteUrl: string; sitemapUrl?: string | null; maxPages?: number; deadlineMs?: number; startAt?: number },
+  input: { siteUrl: string; sitemapUrl?: string | null; maxPages?: number; deadlineMs?: number; startAt?: number; concurrency?: number },
 ): Promise<LinkAuditResult> {
   const startedAt = Date.now();
   const budget = Math.min(Math.max(input.deadlineMs ?? LINK_AUDIT_MAX_MS, 0), LINK_AUDIT_MAX_MS);
   const deadlineAt = startedAt + budget;
   const sitemapDeadlineAt = startedAt + Math.min(LINK_AUDIT_SITEMAP_MS, budget);
   const maxPages = Math.min(Math.max(input.maxPages ?? 25, 1), 40);
+  const home = comparableUrl(originOf(input.siteUrl)) ?? originOf(input.siteUrl);
   const startAt = Math.max(0, Math.floor(input.startAt ?? 0));
-  // safeFetch has no abort signal: a fetch still running at the deadline is left to finish in the background.
+  // The home page is always first in the crawl list: load it while the sitemap is read.
+  if (startAt === 0) void crawlPage(fetcher, home).catch(() => null);
+  // safeFetch has no abort signal: a read still running at the deadline finishes in the background and is cached for the next call.
   const sitemap = await withDeadline(
-    runSitemapCheck(fetcher, { siteUrl: input.siteUrl, sitemapUrl: input.sitemapUrl, sample: 0, deadlineMs: sitemapDeadlineAt - Date.now() }),
+    cachedLinkAuditSitemap(fetcher, input.siteUrl, input.sitemapUrl, startAt === 0 ? warmFirstPages(fetcher, home, maxPages - 1) : undefined),
     sitemapDeadlineAt,
   );
   if (sitemap === TIMEOUT) {
@@ -306,16 +480,17 @@ export async function runInternalLinkAudit(
       partial: true,
       sitemapTimedOut: true,
       startAt,
-      nextStartAt: 0,
+      // Never move the cursor back: the next call retries the same batch (the sitemap read carries on in the background).
+      nextStartAt: startAt,
+      skippedPages: [],
       totalInternalLinks: 0,
       topLinked: [],
       linkedNotInSitemap: [],
       crawledPages: [],
       findings: [],
-      note: `The sitemap did not load within ${LINK_AUDIT_SITEMAP_MS / 1000} s, so no pages were crawled. Call again with startAt 0 (nextStartAt), or pass sitemapUrl.`,
+      note: `The sitemap did not load within ${LINK_AUDIT_SITEMAP_MS / 1000} s, so no pages were crawled. Call again with startAt ${startAt} (nextStartAt); the sitemap keeps loading in the background. Or pass sitemapUrl.`,
     };
   }
-  const home = comparableUrl(originOf(input.siteUrl)) ?? originOf(input.siteUrl);
   const sitemapSet = new Set(sitemap.urls.map((u) => comparableUrl(u)).filter((u): u is string => !!u));
   const crawlList = [home, ...[...sitemapSet].filter((u) => u !== home)];
   const pages = crawlList.slice(startAt, startAt + maxPages);
@@ -323,11 +498,18 @@ export async function runInternalLinkAudit(
   const inbound = new Map<string, number>(pages.map((p) => [p, 0]));
   const outsideSitemap = new Set<string>();
   let totalLinks = 0;
-  const crawled = await mapLimit(pages, 10, deadlineAt, async (page) => {
-    const res = await fetcher(page, { headers: { Accept: "text/html,application/xhtml+xml" }, maxChars: 1_500_000 });
-    return { page, links: res.status < 400 ? extractLinks(res.text, res.url) : [] };
-  });
-  for (const entry of crawled.results) {
+  const concurrency = input.concurrency
+    ?? (deadlineAt - Date.now() < LINK_AUDIT_SHORT_CRAWL_MS ? LINK_AUDIT_SHORT_CRAWL_CONCURRENCY : LINK_AUDIT_CONCURRENCY);
+  const crawled = await mapLimit(pages, concurrency, deadlineAt, (page) => crawlPage(fetcher, page));
+  // The cursor stops at the first page not finished. Pages finished after it are not reported now: the next
+  // call reads them from the page cache, so no page is reported twice.
+  const firstUndone = crawled.done.indexOf(false);
+  // The first page of the batch did not load within the budget: skip it so the cursor always advances (PAR-9952).
+  const skippedPages = firstUndone === 0 ? [pages[0]!] : [];
+  const advanceTo = firstUndone > 0 ? startAt + firstUndone : firstUndone === 0 ? startAt + 1 : startAt + pages.length;
+  const nextStartAt = advanceTo < crawlList.length ? advanceTo : null;
+  const reported = crawled.results.slice(0, firstUndone >= 0 ? firstUndone : pages.length);
+  for (const entry of reported) {
     if (!entry) continue;
     const seen = new Set<string>();
     for (const link of entry.links) {
@@ -344,12 +526,8 @@ export async function runInternalLinkAudit(
       else if (!sitemapSet.has(link.url)) outsideSitemap.add(link.url);
     }
   }
-  const crawledPages = crawled.results.filter(Boolean).map((r) => r!.page);
-  // The cursor stops at the first page not finished; pages finished after it are crawled again on the next call.
-  const firstUndone = crawled.done.indexOf(false);
-  const end = startAt + pages.length;
-  const nextStartAt = firstUndone >= 0 ? startAt + firstUndone : end < crawlList.length ? end : null;
-  const partial = startAt > 0 || nextStartAt !== null || sitemap.partial;
+  const crawledPages = reported.filter(Boolean).map((r) => r!.page);
+  const partial = startAt > 0 || nextStartAt !== null || sitemap.partial || skippedPages.length > 0;
   // Orphans need every page's links: only a complete crawl from startAt 0 reports them.
   const orphans = partial ? [] : crawledPages.filter((p) => p !== home && (inbound.get(p) ?? 0) === 0);
   const findings: CheckFinding[] = [
@@ -359,8 +537,9 @@ export async function runInternalLinkAudit(
   const note = partial
     ? [
       `Partial crawl: ${crawledPages.length} of ${pages.length} requested pages crawled from startAt ${startAt} (${crawlList.length} pages in the crawl list: home page, then sitemap URLs).`,
+      skippedPages.length > 0 ? `Skipped ${skippedPages[0]}: it did not load within the time limit.` : "",
       nextStartAt !== null ? `Call again with startAt ${nextStartAt} (nextStartAt) to continue.` : "No pages left after this batch.",
-      sitemap.partial ? "The sitemap was not read in full (more than 3 child sitemaps, or time ran out)." : "",
+      sitemap.partial ? `The sitemap was not read in full (more than ${LINK_AUDIT_MAX_CHILD_SITEMAPS} child sitemaps, or a child sitemap failed).` : "",
       "Orphans are only reported by one complete crawl from startAt 0, so none are listed or stored.",
     ].filter(Boolean).join(" ")
     : undefined;
@@ -373,6 +552,7 @@ export async function runInternalLinkAudit(
     sitemapTimedOut: false,
     startAt,
     nextStartAt,
+    skippedPages,
     totalInternalLinks: totalLinks,
     ...(partial ? {} : { orphans }),
     note,
