@@ -51,7 +51,6 @@ import { agentInstruction, agentRouteFor, isPageChangeTitle, needsPageWindow, ty
 import { findSeoClientProject } from "./site.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
 import { routePrReview } from "./review.js";
-import { tellSignoffDelegate } from "./signoff-delegate.js";
 import { setVerifyFailure, sprintVerifyRoute, sprintWordPressSite, verifyFailureOf, sprintHasSftp, wpConnectorItemFor, wpSftpItemFor } from "./wordpress.js";
 
 const nowIso = (env: Env) => env.now().toISOString();
@@ -874,4 +873,10 @@ export async function giveNeedsYouToAgent(env: Env, companyId: string, actor: Ac
 
   const left = open.length - picked.length;
   return { sprintId: sprint.id, given: picked.length, tasksResumed, issueId: createdIssueId, issueIds: issues, stillNeedYou: left };
+}
+
+/** Loaded on use: signoff-delegate reaches page-apply (via cockpit), which imports this module, so a static import would be a cycle. */
+async function tellSignoffDelegate(env: Env, companyId: string, sprintId: string): Promise<void> {
+  const { tellSignoffDelegate: tell } = await import("./signoff-delegate.js");
+  await tell(env, companyId, sprintId);
 }
