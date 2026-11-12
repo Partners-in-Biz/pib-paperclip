@@ -166,7 +166,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     metaDescription: str(params, "metaDescription", { max: 500 }),
     h1: str(params, "h1", { max: 300 }),
     bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
-    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
+    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace", "afterFirstParagraph"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
     contentSelector: str(params, "contentSelector", { max: 100 }),
   };

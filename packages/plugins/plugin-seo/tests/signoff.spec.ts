@@ -49,9 +49,9 @@ describe("approve-site-writes comment", () => {
   };
   const owner = { kind: "user", userId: "user-1" } as unknown as Actor;
 
-  function approvedHost(count: number) {
+  function approvedHost(count: number, changes?: unknown) {
     const comments: string[] = [];
-    const previews = Array.from({ length: count }, (_, i) => ({ id: `p${i}`, task_id: "t-1", issue_id: "iss-1", page_url: `https://acme.co.za/category/page-${i}/`, title: `Page ${i}: ${"long title ".repeat(20)}` }));
+    const previews = Array.from({ length: count }, (_, i) => ({ id: `p${i}`, task_id: "t-1", issue_id: "iss-1", page_url: `https://acme.co.za/category/page-${i}/`, title: `Page ${i}: ${"long title ".repeat(20)}`, changes }));
     const ctx = {
       db: {
         namespace: "plugin_seo_8099f8879a",
@@ -91,5 +91,14 @@ describe("approve-site-writes comment", () => {
     await approveSiteWrites(h.env, "co-1", owner, { sprintId: "sp-1" });
     expect((h.comments[0]!.match(/^- https:/gm) ?? []).length).toBe(3);
     expect(h.comments[0]).not.toContain("…and");
+  });
+
+  it("adds the afterFirstParagraph guidance only when an approved preview uses the mode", async () => {
+    const used = approvedHost(2, { bodyHtml: "<p>x</p>", bodyMode: "afterFirstParagraph" });
+    await approveSiteWrites(used.env, "co-1", owner, { sprintId: "sp-1" });
+    expect(used.comments[0]).toContain("bodyMode afterFirstParagraph: read post_content");
+    const plain = approvedHost(2, { bodyHtml: "<p>x</p>", bodyMode: "before" });
+    await approveSiteWrites(plain.env, "co-1", owner, { sprintId: "sp-1" });
+    expect(plain.comments[0]).not.toContain("bodyMode afterFirstParagraph: read post_content");
   });
 });

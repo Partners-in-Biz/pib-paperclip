@@ -16,7 +16,7 @@
  */
 import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { createHash } from "node:crypto";
-import { ARCHIVE_APPLY_GUIDANCE, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
+import { AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE, ARCHIVE_APPLY_GUIDANCE, usesAfterFirstParagraph, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
 import { PREVIEW_LIVE_SQL } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
@@ -406,7 +406,7 @@ async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, 
       ? ["", "**Changes requested: revise these and make new previews** (the Reviewer checks them; do not apply them):", ...changes.map((r) => `${line(r)}${note(r, "requested change")}`)]
       : []),
     "",
-    ...(open ? [ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE, ...(hasLinkEdits ? [LINK_EDITS_APPLY_GUIDANCE] : [])] : []),
+    ...(open ? [ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE, ...(hasLinkEdits ? [LINK_EDITS_APPLY_GUIDANCE] : []), ...(approved.some((r) => usesAfterFirstParagraph(r.changes)) ? [AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE] : [])] : []),
     "Rules: apply only the approved previews and nothing else; read each page back and check it live (cache-busting load, phone and desktop); complete this task only when every page of it is applied or dropped. New previews park this task again by themselves: end your turn after making them.",
   ];
   const unpark = task.assigneeKind === "client" || task.status === "blocked" || task.issueStatus === "blocked";

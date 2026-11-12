@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildPreviewHtml, type BodyMode } from "../src/engine/preview.js";
+import { bodyInsertAreaHtml, buildPreviewHtml, previewStats, type BodyMode } from "../src/engine/preview.js";
+import { SeoError } from "../src/service/common.js";
 
 // PAR-10107: huntandgun.co.za pages paste a whole HTML document into the WordPress page text: a <style> that paints the
 // body dark grey, a stray <body>, then div.containerSet (the white card with the copy), then an auction categories list.
@@ -118,5 +119,62 @@ describe("whole-document signature stays narrow (PAR-10107)", () => {
   it("a stray body after the content area still ends the content (partner-widget shape)", () => {
     const html = `<html><head></head><body><div class="entry-content"><p>a</p></div><body><div><p>w</p></div></body></html>`;
     expect(build(html, "after")).toContain(`<p>a</p><p>NEW</p></div><body>`);
+  });
+});
+
+describe.each([
+  ["source", SOURCE],
+  ["rendered", RENDERED],
+])("bodyMode afterFirstParagraph (PAR-10520, %s)", (_name, live) => {
+  it("lands directly after the intro </p>, inside the card, and keeps every live word", () => {
+    const r = buildPreviewHtml(live, URL_, { bodyHtml: "<p>NEW</p>", bodyMode: "afterFirstParagraph" }, opts);
+    expect(r.html).toMatch(/<div class="containerSet">\s*<section>\s*<p>South Africa is renowned[\s\S]*?<\/p><p>NEW<\/p>\s*(<p|<\/section>|<div|<h)/);
+    const card = r.html.slice(r.html.indexOf(CARD));
+    expect(card.indexOf("<p>NEW</p>")).toBeLessThan(card.indexOf("</section>"));
+    expect(previewStats(live, r.html).keptPct).toBe(100);
+    expect(r.notes.join(" ")).toContain("South Africa is renowned");
+  });
+});
+
+describe("afterFirstParagraph anchor rules (PAR-10520)", () => {
+  const page = (inner: string) => `<html><head></head><body><article><div class="entry-content">${inner}</div></article><footer>f</footer></body></html>`;
+  const run = (inner: string, extra: Record<string, unknown> = {}) =>
+    buildPreviewHtml(page(inner), "https://x.example/", { bodyHtml: "<p>NEW</p>", bodyMode: "afterFirstParagraph", ...extra }, opts).html;
+  const INTRO = "<p>real intro words here</p>";
+
+  it("skips empty and nbsp paragraphs", () => {
+    expect(run(`<p></p><p>&nbsp;</p>${INTRO}<p>more words in here</p>`)).toContain(`${INTRO}<p>NEW</p>`);
+  });
+  it("throws naming before/after when no paragraph has 3 words, no area, or a listing", () => {
+    expect(() => run("<p>two words</p>")).toThrow(/before or after/);
+    expect(() => buildPreviewHtml("<html><body><h2>Head</h2><p>some words in here</p></body></html>", "https://x.example/", { bodyHtml: "<p>N</p>", bodyMode: "afterFirstParagraph" }, opts)).toThrow(SeoError);
+    const listing = `<html><body><article><p>a b c d</p></article><article><p>e f g h</p></article></body></html>`;
+    expect(() => buildPreviewHtml(listing, "https://x.example/", { bodyHtml: "<p>N</p>", bodyMode: "afterFirstParagraph" }, opts)).toThrow(SeoError);
+  });
+  it("with h1 and no in-area H1: h1 at the top, body after the first paragraph", () => {
+    const out = run(`${INTRO}<p>second para here</p>`, { h1: "Fresh heading" });
+    expect(out).toContain(`<div class="entry-content"><h1>Fresh heading</h1>${INTRO}<p>NEW</p>`);
+  });
+  it("ignores <pre>, <picture>, <param> look-alikes", () => {
+    expect(run(`<pre>a b c d</pre><picture>x y z w</picture>${INTRO}`)).toContain(`${INTRO}<p>NEW</p>`);
+  });
+  it("ignores <p> inside <style> and HTML comments", () => {
+    const out = run(`<style>.a:before{content:"<p>"} <p>style words here</p></style><!-- <p>old intro words here</p> -->${INTRO}`);
+    expect(out).toContain(`${INTRO}<p>NEW</p>`);
+    expect(out.indexOf("<p>NEW</p>")).toBeGreaterThan(out.indexOf("-->"));
+  });
+  it("skips an unclosed first <p>", () => {
+    expect(run(`<p>a b c<p>d e f g</p>`)).toContain(`<p>d e f g</p><p>NEW</p>`);
+    expect(() => run(`<p>a b c d e`)).toThrow(/before or after/);
+  });
+  it("skips paragraphs in blockquote, li, figure, table, aside, form, header", () => {
+    for (const tag of ["blockquote", "ul><li", "figure", "table", "aside", "header"]) {
+      const close = tag.includes("<") ? "li></ul" : tag;
+      expect(run(`<${tag}><p>quoted words of three</p></${close}>${INTRO}`), tag).toContain(`${INTRO}<p>NEW</p>`);
+    }
+  });
+  it("bodyInsertAreaHtml: same slice as before", () => {
+    const html = page(INTRO);
+    expect(bodyInsertAreaHtml(html, { bodyHtml: "<p>N</p>", bodyMode: "afterFirstParagraph" })).toBe(bodyInsertAreaHtml(html, { bodyHtml: "<p>N</p>", bodyMode: "before" }));
   });
 });

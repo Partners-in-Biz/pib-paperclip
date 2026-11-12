@@ -8,7 +8,7 @@ import { SeoError } from "../service/common.js";
 import { PREVIEW_BASE, previewSlug } from "../service/preview-links.js";
 
 /** before = added above the page's existing content (default), after = added below it, replace = takes the place of ALL of it. */
-export type BodyMode = "before" | "after" | "replace";
+export type BodyMode = "before" | "after" | "replace" | "afterFirstParagraph";
 
 export interface LinkEdit {
   text: string;
@@ -495,6 +495,33 @@ export function applyLinkEdits(html: string, area: { innerStart: number; innerEn
   return { html: out, innerEnd: end };
 }
 
+const NO_INTRO_PARAGRAPH = "bodyMode afterFirstParagraph needs an intro paragraph (a <p> with 3 or more visible words, not inside a blockquote, list, figure, table, aside, form or header) in the content area, and this page has none. Use before or after.";
+const NON_INTRO_CONTAINERS = ["blockquote", "li", "figure", "table", "aside", "form", "header"];
+
+/** Offsets (in `html`) just after the first intro paragraph's </p> inside the area, and its text; null when none qualifies (PAR-10520). */
+function findIntroParagraphEnd(html: string, area: { innerStart: number; innerEnd: number }): { at: number; text: string } | null {
+  // Blank comments and style/script/svg/template ranges with same-length filler so offsets hold.
+  const masked = html
+    .slice(area.innerStart, area.innerEnd)
+    .replace(/<!--[\s\S]*?-->|<(style|script|svg|template)\b[\s\S]*?<\/\1\s*>/gi, (c) => " ".repeat(c.length));
+  const skip: Array<[number, number]> = [];
+  for (const m of masked.matchAll(new RegExp(`<(${NON_INTRO_CONTAINERS.join("|")})(?=[\\s>])`, "gi"))) {
+    const end = elementEnd(masked, m.index!, m[1]!.toLowerCase());
+    skip.push([m.index!, end ? end.innerEnd : masked.length]);
+  }
+  for (const m of masked.matchAll(/<p(?=[\s>])/gi)) {
+    const open = m.index!;
+    if (skip.some(([a, b]) => open > a && open < b)) continue;
+    const end = elementEnd(masked, open, "p");
+    if (!end) continue;
+    const inner = masked.slice(end.innerStart, end.innerEnd);
+    if (/<p(?=[\s>])/i.test(inner) || visibleWords(inner).length < 3) continue;
+    const close = masked.indexOf(">", end.innerEnd) + 1;
+    return { at: area.innerStart + close, text: decodeText(inner) };
+  }
+  return null;
+}
+
 export interface PreviewResult {
   html: string;
   applied: string[];
@@ -585,10 +612,22 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     if (!area && mode === "replace" && changes.bodyHtml) {
       throw new SeoError("bodyMode replace needs a known content area, and this page has none (no entry-content, <main>, role=main or single article). Use before or after, or set contentSelector.");
     }
-    const at = area
+    let introAt: { at: number; text: string } | null = null;
+    if (mode === "afterFirstParagraph" && changes.bodyHtml) {
+      if (!area || area.listing) throw new SeoError(`bodyMode afterFirstParagraph needs a single content area, and this page has ${area ? "a listing" : "none"}. Use before or after.`);
+      introAt = findIntroParagraphEnd(html, area);
+      if (!introAt) throw new SeoError(NO_INTRO_PARAGRAPH);
+    }
+    if (introAt) {
+      const bodyOnly = changes.bodyHtml ? sanitizeBody(changes.bodyHtml) : "";
+      html = `${html.slice(0, introAt.at)}${bodyOnly}${html.slice(introAt.at)}`;
+      if (headingHtml) html = `${html.slice(0, area!.innerStart)}${headingHtml}${html.slice(area!.innerStart)}`;
+      notes.push(`The copy was added right after the page's first paragraph, which starts "${introAt.text.split(" ").slice(0, 6).join(" ")}".`);
+    }
+    const at = introAt ? [0, 0] : area
       ? mode === "replace" ? [area.innerStart, area.innerEnd] : mode === "after" ? [area.innerEnd, area.innerEnd] : [area.innerStart, area.innerStart]
       : mode === "after" ? [anchor!.after, anchor!.after] : [anchor!.before, anchor!.before];
-    html = `${html.slice(0, at[0])}${body}${html.slice(at[1])}`;
+    if (!introAt) html = `${html.slice(0, at[0])}${body}${html.slice(at[1])}`;
     if (changes.bodyHtml) applied.push("bodyHtml");
     if (headingHtml) applied.push("h1");
     if (area && mode === "replace" && changes.bodyHtml) notes.push("The page's whole content area was replaced.");
