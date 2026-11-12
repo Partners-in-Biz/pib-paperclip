@@ -10,7 +10,8 @@
  * track), optionally run through `loudnorm`, and padded/cut to the edit's length. Encoded as AAC 48 kHz stereo 160k.
  * An edit with no sound has no segments: the output then has no audio stream at all (`-an`).
  */
-import { CompileError, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import { CompileError, GRAPH_FILE, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import type { CompiledVideo } from "./compile-video.js";
 import { toFfmpegExpr } from "./keyframes.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type TrackKind } from "./timeline.js";
 
@@ -18,6 +19,8 @@ export interface AudioOptions { loudnorm?: boolean }
 /** The sound half of a render: extra input args, graph lines, and the final label (`null`: the edit is silent). */
 export interface AudioGraph { inputArgs: string[]; filters: string[]; outLabel: string | null }
 
+/** Multi-pass stems and intermediates: lossless PCM, so the final pass is the only lossy audio encode. */
+export const INTERMEDIATE_AUDIO_ENCODER_ARGS = ["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2"] as const;
 export const AUDIO_ENCODER_ARGS = ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"] as const;
 /** EBU R128 single pass, aimed at social platforms (-14 LUFS); loudnorm resamples to 192 kHz, so resample back after. */
 export const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000";
@@ -118,4 +121,23 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
   const outLabel = "aout";
   filters.push(`${labels.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
   return { inputArgs, filters, outLabel };
+}
+
+/**
+ * ffmpeg args for one audio stem pass: the edit's sound only (same per-clip chain as `buildAudioGraph`, no loudnorm, which
+ * runs once in the final pass), as PCM s16le 48 kHz stereo WAV. Throws if the edit has no sound.
+ */
+export function compileAudioStem(doc: EditDoc, sources: CompileInputs, outputPath: string): CompiledVideo {
+  const audio = buildAudioGraph(doc, sources, 0);
+  if (!audio.outLabel) throw new CompileError("unsupported_feature", "stem_without_audio");
+  const args = [
+    "-hide_banner", "-nostdin", "-y",
+    ...audio.inputArgs,
+    "-filter_complex_script", GRAPH_FILE,
+    "-map", `[${audio.outLabel}]`,
+    ...INTERMEDIATE_AUDIO_ENCODER_ARGS,
+    "-t", num(editDuration(doc)),
+    filePath(outputPath),
+  ];
+  return { args, files: [{ name: GRAPH_FILE, content: `${audio.filters.join(";\n")}\n` }] };
 }

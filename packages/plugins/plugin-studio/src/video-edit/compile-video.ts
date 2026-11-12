@@ -17,7 +17,7 @@
  * model throws `CompileError` with `unsupported_feature:<name>`.
  */
 import { StudioError } from "../errors.js";
-import { AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
+import { AUDIO_ENCODER_ARGS, INTERMEDIATE_AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
 import { toFfmpegExpr } from "./keyframes.js";
@@ -36,7 +36,12 @@ export interface CompiledVideo { args: string[]; files: CompileFile[] }
 /** The video half of a render, for the audio compiler to extend: input args, graph lines, the final label, work-dir files. */
 export interface VideoGraph { inputArgs: string[]; filters: string[]; outLabel: string; inputCount: number; duration: number; files: CompileFile[] }
 /** `fontsDir`: where the bundled TTFs are (default: beside the worker); only read when the edit has text or captions. */
-export interface CompileOptions { fontsDir?: string; loudnorm?: boolean }
+export interface CompileOptions {
+  fontsDir?: string;
+  loudnorm?: boolean;
+  /** A multi-pass intermediate: near-lossless H.264 plus PCM sound. The caller names the output `.mov`. Default: the delivery encode. */
+  intermediate?: boolean;
+}
 
 export const GRAPH_FILE = "video.graph";
 /** H.264 High, CRF 20 capped at 6 Mbit/s: a 180 s 1080x1920 render stays near 140 MB (plan PAR-8276, Critic 2d). */
@@ -48,6 +53,8 @@ export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset",
  * the 6 GiB `--as` cap: three 10 s clips with a look reached 186 threads and failed at VmPeak 6143 MiB, and plain
  * 30 s edits already peaked at 5695 MiB. With these caps (and `MALLOC_ARENAS` in ffmpeg.ts) they peak near 2.5 GiB.
  */
+/** Near-lossless intermediate between passes (PAR-10460: mean PSNR >= 52 dB against the single pass). */
+export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p"] as const;
 export const DECODE_THREADS = 2;
 export const FILTER_THREADS = 4;
 export const ENCODE_THREADS = 4;
@@ -383,8 +390,8 @@ export function compileVideo(doc: EditDoc, sources: CompileInputs, outputPath: s
     "-filter_complex_threads", String(FILTER_THREADS),
     "-filter_complex_script", GRAPH_FILE,
     "-map", `[${graph.outLabel}]`,
-    ...(audio.outLabel ? ["-map", `[${audio.outLabel}]`, ...AUDIO_ENCODER_ARGS] : ["-an"]),
-    ...ENCODER_ARGS,
+    ...(audio.outLabel ? ["-map", `[${audio.outLabel}]`, ...(options.intermediate ? INTERMEDIATE_AUDIO_ENCODER_ARGS : AUDIO_ENCODER_ARGS)] : ["-an"]),
+    ...(options.intermediate ? INTERMEDIATE_ENCODER_ARGS : ENCODER_ARGS),
     "-threads", String(ENCODE_THREADS),
     "-r", String(doc.project.fps),
     "-t", num(graph.duration),

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CompileError, compileVideo, GRAPH_FILE, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { CompileError, compileVideo, ENCODER_ARGS, GRAPH_FILE, INTERMEDIATE_ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { editDuration, normalizeEdit, TRANSITIONS } from "../src/video-edit/timeline.js";
 
 const inputs: CompileInputs = {
@@ -105,6 +105,25 @@ describe("compileVideo snapshots", () => {
     const g = graph(r);
     expect(g).toContain("rotate=a=90*PI/180:ow=rotw(90*PI/180):oh=roth(90*PI/180):c=none,scale=w=2880:h=1620");
     expect(g).toContain("[blk2][shp1]overlay=x=(W-w)/2+50:y=(H-h)/2+0:eof_action=pass");
+  });
+});
+
+describe("compileVideo intermediate option", () => {
+  const withSound: CompileInputs = { ...inputs, [inputKey("a", 1)]: { path: "in/a.mp4", kind: "video", hasAudio: true } };
+  const doc = edit([video(clip("c1", "a", 0, 0, 2), clip("c2", "b", 2, 1, 3))]);
+  it("is off by default: the args are the delivery args", () => {
+    expect(compileVideo(doc, withSound, "out.mp4", { intermediate: false })).toEqual(compileVideo(doc, withSound, "out.mp4"));
+  });
+  it("swaps only the video and audio encoder args (PCM, .mov), snapshot", () => {
+    const r = compileVideo(doc, withSound, "out.mov", { intermediate: true });
+    expect(r).toMatchSnapshot();
+    const base = compileVideo(doc, withSound, "out.mov");
+    expect(r.files).toEqual(base.files);
+    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset veryfast -crf 12 -pix_fmt yuv420p`);
+    expect(r.args.join(" ")).toContain("-c:a pcm_s16le -ar 48000 -ac 2");
+    expect(r.args.at(-1)).toBe("file:out.mov");
+    const strip = (a: string[]) => a.join(" ").replace(ENCODER_ARGS.join(" "), "V").replace(INTERMEDIATE_ENCODER_ARGS.join(" "), "V").replace(/-c:a \S+( -b:a \S+)? -ar 48000 -ac 2/, "A");
+    expect(strip(r.args)).toBe(strip(base.args));
   });
 });
 

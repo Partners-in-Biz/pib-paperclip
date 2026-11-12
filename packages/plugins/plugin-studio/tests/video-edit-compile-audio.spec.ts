@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { atempoChain, buildAudioGraph } from "../src/video-edit/compile-audio.js";
+import { atempoChain, buildAudioGraph, compileAudioStem } from "../src/video-edit/compile-audio.js";
+import { runContained } from "../src/video-edit/ffmpeg.js";
 import { CompileError, compileVideo, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { editDuration, normalizeEdit } from "../src/video-edit/timeline.js";
 
@@ -144,6 +145,42 @@ describe.skipIf(!hasFfmpeg)("compile audio with real ffmpeg", () => {
       expect((JSON.parse(sp.stdout) as { streams: unknown[] }).streams).toEqual([{ codec_type: "video" }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+describe("compileAudioStem", () => {
+  const doc = edit([video(clip("c1", "a", 0, 0, 2, { volume: 0.5, fadeIn: 0.2 })), audio("music", clip("m1", "music", 0.5, 0, 3, { speed: 2 }))]);
+  it("emits PCM WAV with no loudnorm and the same per-clip chain as buildAudioGraph", () => {
+    const r = compileAudioStem(doc, inputs, "stem.wav");
+    expect(r).toMatchSnapshot();
+    expect(r.args.join(" ")).toContain("-c:a pcm_s16le -ar 48000 -ac 2");
+    expect(r.args).not.toContain("-c:v");
+    expect(r.args.at(-1)).toBe("file:stem.wav");
+    expect(r.files[0].content).not.toContain("loudnorm");
+    const g = buildAudioGraph(doc, inputs, 0);
+    expect(r.files[0].content).toBe(`${g.filters.join(";\n")}\n`);
+    expect(r.args.join(" ")).toContain(g.inputArgs.join(" "));
+  });
+  it("rejects an edit with no sound", () => {
+    expect(errorOf(() => compileAudioStem(edit([video(clip("c1", "mute", 0, 0, 1))]), inputs, "stem.wav")).message).toContain("stem_without_audio");
+  });
+  it.skipIf(spawnSync("ffmpeg", ["-version"]).status !== 0)("a real 2 s stem has the planned duration (runContained + ffprobe)", async () => {
+    const d = mkdtempSync(join(tmpdir(), "stem-"));
+    try {
+      const gen = await runContained(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=44100", "-t", "5", "music.m4a"], { cwd: d, timeoutSec: 60 }).done;
+      expect(gen.outcome).toBe("ok");
+      const stemDoc = edit([audio("music", clip("m1", "music", 0, 0, 2))]);
+      const r = compileAudioStem(stemDoc, { [inputKey("music", 1)]: { path: "music.m4a", kind: "audio" } }, "stem.wav");
+      for (const f of r.files) writeFileSync(join(d, f.name), f.content);
+      const res = await runContained(["-loglevel", "error", ...r.args.filter((a) => a !== "-hide_banner" && a !== "-nostdin")], { cwd: d, timeoutSec: 60 }).done;
+      expect(res.outcome).toBe("ok");
+      const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name,sample_rate,channels:format=duration", "-of", "json", "stem.wav"], { cwd: d, encoding: "utf8" });
+      const info = JSON.parse(probe.stdout) as { streams: Record<string, string | number>[]; format: { duration: string } };
+      expect(info.streams).toEqual([{ codec_name: "pcm_s16le", sample_rate: "48000", channels: 2 }]);
+      expect(Math.abs(Number(info.format.duration) - 2)).toBeLessThan(0.05);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
     }
   }, 120_000);
 });

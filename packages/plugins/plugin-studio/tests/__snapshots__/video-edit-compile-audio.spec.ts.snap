@@ -310,3 +310,47 @@ exports[`compile audio snapshots > speed 4: clip audio sped up with a chained at
   ],
 }
 `;
+
+exports[`compileAudioStem > emits PCM WAV with no loudnorm and the same per-clip chain as buildAudioGraph 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "3",
+    "-i",
+    "file:in/music.m4a",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[aout]",
+    "-c:a",
+    "pcm_s16le",
+    "-ar",
+    "48000",
+    "-ac",
+    "2",
+    "-t",
+    "2",
+    "file:stem.wav",
+  ],
+  "files": [
+    {
+      "content": "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=2,asetpts=PTS-STARTPTS,atrim=duration=2,volume=0.5,afade=t=in:st=0:d=0.2[aud0];
+[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atempo=2,atrim=duration=1.5,adelay=delays=500:all=1[aud1];
+[aud0][aud1]amix=inputs=2:duration=longest:normalize=0,apad=whole_dur=2,atrim=duration=2[aout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;

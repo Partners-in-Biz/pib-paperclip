@@ -1,5 +1,80 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`compileVideo intermediate option > swaps only the video and audio encoder args (PCM, .mov), snapshot 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-threads",
+    "2",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-threads",
+    "2",
+    "-ss",
+    "1",
+    "-t",
+    "2",
+    "-i",
+    "file:in/b.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-filter_complex_threads",
+    "4",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[vout]",
+    "-map",
+    "[aout]",
+    "-c:a",
+    "pcm_s16le",
+    "-ar",
+    "48000",
+    "-ac",
+    "2",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "12",
+    "-pix_fmt",
+    "yuv420p",
+    "-threads",
+    "4",
+    "-r",
+    "30",
+    "-t",
+    "4",
+    "-movflags",
+    "+faststart",
+    "file:out.mov",
+  ],
+  "files": [
+    {
+      "content": "[0:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg0];
+[1:v]setpts=PTS-STARTPTS,fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=w=1080:h=1920:x=(ow-iw)/2:y=(oh-ih)/2:color=black,format=yuv420p,setsar=1,trim=duration=2[seg1];
+[seg0][seg1]concat=n=2:v=1:a=0,settb=1/30[cat2];
+[cat2]format=yuv420p,setsar=1[vout];
+[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=2,asetpts=PTS-STARTPTS,atrim=duration=2[aud0];
+[aud0]apad=whole_dur=4,atrim=duration=4[aout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
 exports[`compileVideo snapshots > gaps: black lead-in, gap and tail up to the overlay's end 1`] = `
 {
   "args": [
