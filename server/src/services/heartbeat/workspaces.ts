@@ -2876,11 +2876,15 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   }
   // A selected immutable skill version is its identity; source is merely its
   // disposable projection. Unversioned/local skills retain their path boundary.
+  // skillId is link bookkeeping, not config, so it never enters the fingerprint.
   const versionedSkills = (value: unknown) => Array.isArray(value) ? value.map(entry => {
     const skill = parseObject(entry);
-    return readNonEmptyString(skill.versionId)
-      ? { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId }
-      : entry;
+    if (readNonEmptyString(skill.versionId)) {
+      return { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId };
+    }
+    if (!("skillId" in skill)) return entry;
+    const { skillId: _skillId, ...rest } = skill;
+    return rest;
   }) : value;
   if (effectiveAdapterConfig.paperclipRuntimeSkills !== undefined) {
     effectiveAdapterConfig.paperclipRuntimeSkills = versionedSkills(effectiveAdapterConfig.paperclipRuntimeSkills);

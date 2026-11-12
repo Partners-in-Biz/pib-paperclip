@@ -6220,7 +6220,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         versionSelections: new Map([[selection.key, selection.versionId]]),
       });
       if (!sourceResolution) continue;
-      out.push({ key: selection.key, runtimeName: selection.runtimeName, versionId: selection.versionId,
+      out.push({ key: selection.key, runtimeName: selection.runtimeName, skillId: selection.skillId, versionId: selection.versionId,
         currentVersionId: selection.currentVersionId, source: sourceResolution.source,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null });

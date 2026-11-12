@@ -285,6 +285,8 @@ export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  /** Company skill id; lets adapters recognise this skill's version folders. */
+  skillId?: string | null;
   versionId?: string | null;
   currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
@@ -4149,10 +4151,12 @@ function normalizeConfiguredPaperclipRuntimeSkills(
     ).trim();
     const source = asString(entry.source, "").trim();
     if (!key || !runtimeName || !source) continue;
+    const skillId = typeof entry.skillId === "string" ? entry.skillId.trim() : "";
     out.push({
       key,
       runtimeName,
       source,
+      ...(skillId ? { skillId } : {}),
       versionId:
         typeof entry.versionId === "string" && entry.versionId.trim().length > 0
           ? entry.versionId.trim()

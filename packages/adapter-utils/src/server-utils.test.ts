@@ -4042,6 +4042,14 @@ describe("runtime skill assignment boundaries", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps the skill id on configured runtime entries", async () => {
+    const base = { key: "acme/deploy", runtimeName: "deploy--0123456789", source: "/skills/__versions__/s1/v1" };
+    const [withId, withoutId] = await readPaperclipRuntimeSkillEntries(
+      { paperclipRuntimeSkills: [{ ...base, skillId: " s1 " }, { ...base, skillId: "" }] }, "/nonexistent");
+    expect(withId?.skillId).toBe("s1");
+    expect(withoutId).not.toHaveProperty("skillId");
+  });
 });
 
 describe("wake continuation comment ownership", () => {
