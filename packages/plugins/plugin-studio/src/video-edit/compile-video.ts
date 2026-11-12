@@ -24,8 +24,11 @@ import { toFfmpegExpr } from "./keyframes.js";
 import { adjustToFfmpeg, lookToFfmpeg } from "./looks.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform, type TransitionType } from "./timeline.js";
 
-/** A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe. */
-export interface CompileInput { path: string; kind: "video" | "image" | "audio"; hasAudio?: boolean }
+/**
+ * A downloaded source: `path` is local (absolute or relative to the work dir); `kind` comes from the asset row/probe.
+ * `width`, `height` and `fps` (from the probe) only weigh the input for the render planner; the compiler ignores them.
+ */
+export interface CompileInput { path: string; kind: "video" | "image" | "audio"; hasAudio?: boolean; width?: number; height?: number; fps?: number }
 /** Inputs keyed by `inputKey(assetId, version)`. */
 export type CompileInputs = Record<string, CompileInput>;
 export interface CompileFile { name: string; content: string }
