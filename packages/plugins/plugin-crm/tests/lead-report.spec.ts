@@ -136,6 +136,50 @@ describe("the report issue body", () => {
     expect(description.slice(end + fence.length + 1)).toBe("");
   });
 
+  // PAR-8137: one hostile value per externally sourced field, each on its own, so no field can sit outside the block.
+  const HOSTILE = "`````` # heading [x](https://evil.test) <img src=x onerror=alert(1)>";
+  const perField: Array<[string, Record<string, unknown>]> = [
+    ["subject", { subject: HOSTILE }],
+    ["name", { name: HOSTILE }],
+    ["company", { company: HOSTILE }],
+    ["email", { email: "``````x#heading@evil.test" }],
+    ["page URL", { pageUrl: `https://evil.test/?q=${HOSTILE}` }],
+    ["extra key", { fields: { [HOSTILE]: "value" } }],
+    ["extra value", { fields: { listing: HOSTILE } }],
+    ["message", { message: `${HOSTILE}\n\`\`\`\`\`\`\`\n# second heading` }],
+  ];
+  for (const [field, body] of perField) {
+    it(`keeps a hostile ${field} inside the block, with a fence longer than any backtick run in it`, () => {
+      const sub = parseSubmission({ message: "plain", ...body }, { emailOptional: true });
+      if (!sub.ok) throw new Error(sub.message);
+      const { description } = reportIssueContent({ sourceLabel: "Listing report", sub: sub.submission });
+      const fence = /^(`{3,})text$/m.exec(description)![1]!;
+      const start = description.indexOf(`${fence}text\n`);
+      const end = description.lastIndexOf(`\n${fence}`);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBe(description.length - fence.length - 1);
+      const block = description.slice(start + fence.length + 5, end);
+      // The field's text is in the block (the parser reduces an extra key to safe characters, so check what survives).
+      expect(block).toMatch(field === "extra key" ? /heading xhttpsevil/ : /evil/);
+      // No run of backticks inside can close the block.
+      for (const run of block.match(/`+/g) ?? []) expect(run.length).toBeLessThan(fence.length);
+      // Nothing of it before the block or after the closing fence.
+      expect(description.slice(0, start)).not.toMatch(/evil|heading|onerror|`{3}/);
+      expect(description.slice(end + 1 + fence.length)).toBe("");
+    });
+  }
+
+  it("gives a one-line title of at most 200 characters, whatever line breaks the subject holds", () => {
+    const sub = parseSubmission({ subject: "Fake\r\njob\nat\u2028Acme\u2029now\u0085here", message: "x" }, { emailOptional: true });
+    if (!sub.ok) throw new Error(sub.message);
+    const short = reportIssueContent({ sourceLabel: "Listing report", sub: sub.submission }).title;
+    expect(short).not.toMatch(/[\r\n\u0085\u2028\u2029]/);
+    expect(short.startsWith("Listing report: Fake")).toBe(true);
+    const long = reportIssueContent({ sourceLabel: `Listing\n${"r".repeat(300)}`, sub: sub.submission }).title;
+    expect(long).not.toMatch(/[\r\n\u0085\u2028\u2029]/);
+    expect(long.length).toBeLessThanOrEqual(200);
+  });
+
   it("falls back to the message's first line when there is no subject, cut to 60 characters", () => {
     const sub = parseSubmission({ message: `${"x".repeat(80)}\nsecond line` }, { emailOptional: true });
     if (!sub.ok) throw new Error(sub.message);
