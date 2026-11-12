@@ -1,12 +1,13 @@
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { classifyExit, containedArgv, DEFAULT_AS_LIMIT_BYTES, FSIZE_BYTES, pidsInGroup, runContained, Tail } from "../src/video-edit/ffmpeg.js";
+import { classifyExit, containedArgv, DEFAULT_AS_LIMIT_BYTES, FSIZE_BYTES, pidsInGroup, runContained, Tail, type RunOptions } from "../src/video-edit/ffmpeg.js";
+import { failureFromRun } from "../src/video-edit/runner.js";
 import { parseProbe, probeArgs, probeMedia } from "../src/video-edit/probe.js";
 import { assertDiskSpace, downloadToWorkdir, MIN_FREE_BYTES, rendersRoot, sweepRenderWorkdirs, withRenderWorkdir } from "../src/video-edit/workdir.js";
 
@@ -304,4 +305,84 @@ describe.skipIf(!hasFfmpeg)("runContained (real ffmpeg)", () => {
     expect(res.outcome).toBe("cancelled");
     expect(await pidsInGroup(run.pgid)).toEqual([]);
   }, 30_000);
+});
+
+describe("runContained fail-fast (PAR-10462)", () => {
+  const sh = (script: string) => (_cmd: string, _args: string[], o: SpawnOptions) => nodeSpawn("sh", ["-c", script], o);
+  const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
+
+  async function watched(script: string, opts: Partial<RunOptions> = {}) {
+    let termAt = 0;
+    const killImpl = (pid: number, sig: NodeJS.Signals) => {
+      if (sig === "SIGTERM" && !termAt) termAt = Date.now();
+      try { process.kill(pid, sig); } catch { /* gone */ }
+    };
+    const t0 = Date.now();
+    const res = await runContained([], { spawnImpl: sh(script), killImpl, bins: { timeout: "/usr/bin/env", prlimit: "/usr/bin/env", nice: "/usr/bin/env" }, ...opts }).done;
+    return { res, termMs: termAt ? termAt - t0 : -1 };
+  }
+  // `bins` swap timeout/prlimit/nice for env so the shell stays the group leader; the spawnImpl ignores argv anyway.
+
+  it("kills the group within 1 s of a pthread_create line and reports rlimit", async () => {
+    const { res, termMs } = await watched("echo 'pthread_create failed: Resource temporarily unavailable' >&2; sleep 30");
+    expect(termMs).toBeGreaterThanOrEqual(0);
+    expect(termMs).toBeLessThan(1000);
+    expect(res.outcome).toBe("rlimit");
+  });
+  it("catches the line split across two chunks", async () => {
+    const { res, termMs } = await watched("printf 'noise\\npthread_cre' >&2; sleep 0.3; printf 'ate failed: x\\n' >&2; sleep 30");
+    expect(termMs).toBeLessThan(1500);
+    expect(res.outcome).toBe("rlimit");
+  });
+  it("catches a \\r-separated line with no newline", async () => {
+    const { res, termMs } = await watched("printf 'frame=1\\rpthread_create failed: x\\r' >&2; sleep 30");
+    expect(termMs).toBeLessThan(1000);
+    expect(res.outcome).toBe("rlimit");
+  });
+  it("stallSec kills a silent child as stalled, and failureFromRun maps it", async () => {
+    const { res } = await watched("sleep 30", { stallSec: 2 });
+    expect(res.outcome).toBe("stalled");
+    expect(res.durationMs).toBeLessThan(5000);
+    const f = failureFromRun(res)!;
+    expect(f.kind).toBe("deterministic");
+    expect(f.code).toBe("stalled");
+    expect(f.message).toBe("The render stopped making progress (likely out of memory). Try a shorter or simpler edit.");
+  });
+  it("does not kill a child that writes every 0.5 s with stallSec 2", async () => {
+    const { res } = await watched("i=0; while [ $i -lt 10 ]; do echo tick >&2; sleep 0.5; i=$((i+1)); done", { stallSec: 2 });
+    expect(res.outcome).toBe("ok");
+  }, 15_000);
+  it("without stallSec a silent child is left alone", async () => {
+    const { res } = await watched("sleep 3");
+    expect(res.outcome).toBe("ok");
+  }, 10_000);
+  it("replays recorded hang tails: rlimit, except exit 124 which is timeout", () => {
+    const rows = JSON.parse(readFileSync(join(__dirname, "fixtures/ffmpeg-hang-tails.json"), "utf8")) as Array<{ code: number; err: string; recordedTailLacksMemoryText?: boolean }>;
+    expect(rows.length).toBeGreaterThan(10);
+    for (const r of rows) {
+      const outcome = classifyExit({ exitCode: r.code, signal: null, cancelled: false, stderrTail: r.err });
+      // One recorded 187 row kept only a 206-byte tail with no memory text; no signal separates it from a plain filter error.
+      const want = r.code === 124 ? "timeout" : r.recordedTailLacksMemoryText ? "nonzero" : "rlimit";
+      expect(outcome, `exit ${r.code}: ${r.err.slice(-80)}`).toBe(want);
+    }
+  });
+  it.skipIf(!hasFfmpeg)("a real 3 s testsrc encode with stallSec 5 finishes ok (default loglevel)", async () => {
+    const out = join(tmpdir(), `par10462-${process.pid}.mp4`);
+    const chunks: number[] = [];
+    const t0 = Date.now();
+    const res = await runContained(["-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=3", "-c:v", "libx264", "-y", out], {
+      stallSec: 5,
+      spawnImpl: (cmd, args, o) => {
+        const c = nodeSpawn(cmd, args, o);
+        c.stderr?.on("data", () => chunks.push(Date.now() - t0));
+        return c;
+      },
+    }).done;
+    await rm(out, { force: true });
+    console.log(`stderr chunk cadence (ms since start): ${JSON.stringify(chunks)}`);
+    expect(res.outcome).toBe("ok");
+  }, 30_000);
+  it("containedArgv is unchanged by stallSec", () => {
+    expect(containedArgv(["-i", "a"], { stallSec: 5 })).toEqual(containedArgv(["-i", "a"]));
+  });
 });
