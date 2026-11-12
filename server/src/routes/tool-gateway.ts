@@ -19,6 +19,24 @@ import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
+// Cloudflare replaces origin 502/504 bodies with "error code: 5xx"; upstream tool
+// failures go out as 424 so agents see the JSON reason. Body and JSON-RPC code unchanged.
+const UPSTREAM_FAILURE_REASON_CODES = new Set([
+  "tool_error",
+  "remote_mcp_error",
+  "mcp_remote_status",
+  "mcp_remote_fetch_failed",
+  "mcp_remote_invalid_json",
+  "mcp_remote_response_too_large",
+  "tool_timeout",
+]);
+
+function gatewayHttpStatus(err: ToolGatewayHttpError): number {
+  return (err.status === 502 || err.status === 504) && UPSTREAM_FAILURE_REASON_CODES.has(err.reasonCode)
+    ? 424
+    : err.status;
+}
+
 const TOOL_ACTIVITY_EVENT_TYPES = [
   "call_completed",
   "call_failed",
@@ -245,7 +263,7 @@ async function handleMcpGatewayProtocol(
         });
         return;
       }
-      res.status(err.status).json({
+      res.status(gatewayHttpStatus(err)).json({
         jsonrpc: "2.0",
         id,
         error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
@@ -341,7 +359,7 @@ function outcomeCondition(outcome: string) {
 function sendGatewayError(res: import("express").Response, err: unknown) {
   if (res.destroyed) return;
   if (err instanceof ToolGatewayHttpError) {
-    res.status(err.status).json({
+    res.status(gatewayHttpStatus(err)).json({
       error: err.message,
       reasonCode: err.reasonCode,
       ...err.details,
